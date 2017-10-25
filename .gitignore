@@ -1,0 +1,11 @@
+.session_conf.sav
+local_configuration.py
+.tox/
+staging/
+*.pyc
+*.swp
+*.egg-info/
+htmlcov/
+.coverage*
+.editorconfig
+.idea

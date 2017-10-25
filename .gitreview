@@ -1,0 +1,5 @@
+[gerrit]
+host=gerrit.cmail.yandex.net
+port=9501
+project=mdb/ch-backup
+defaultbranch=master
