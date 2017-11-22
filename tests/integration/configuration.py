@@ -155,6 +155,9 @@ def generate_dynamic_config(net_name):
             'enc_access_key_id':
                 api_to_client_box.encrypt_utf(s3_credentials['access_key_id']),
         },
+        'ch_backup': {
+            'encrypt_key': crypto.gen_plain_random_string(32),
+        },
     }
 
     return config

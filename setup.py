@@ -15,7 +15,8 @@ REQUREMENTS = [
     'retrying>=1.3.3',
     'boto3==1.4.7',
     'botocore==1.7.43',
-    'PyYAML>=3.10'
+    'PyYAML>=3.10',
+    'PyNaCl==1.1.2',
 ]
 
 
@@ -35,6 +36,8 @@ setup(
     package_dir={
         'ch_backup': 'ch_backup',
         'ch_backup.storages': 'ch_backup/storages',
+        'ch_backup.stages': 'ch_backup/stages',
+        'ch_backup.encryption': 'ch_backup/encryption',
     },
     entry_points={'console_scripts': [
         'ch-backup = ch_backup.main:main',

@@ -2,8 +2,8 @@
 Pluggable storages for backups
 """
 
-from ..exceptions import StorageUnknownError
-from .s3 import S3Loader
+from ch_backup.exceptions import StorageUnknownError
+from ch_backup.storages.s3 import S3Loader
 
 SUPPORTED_STORAGES = {
     's3': S3Loader,

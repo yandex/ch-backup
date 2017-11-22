@@ -18,9 +18,10 @@ unit_test:
 	tox -e py35_unit_test
 
 clean: stop_env clean_pycache
-	rm -fr staging .tox ${SESSION_FILE}
-	rm -fr .cache
+	rm -rf staging .tox ${SESSION_FILE}
+	rm -rf .cache
 	rm -rf *.egg-info htmlcov .coverage*
+	rm -rf .hypothesis
 
 clean_pycache:
 	find . -name __pycache__ -type d -exec rm -rf {} +

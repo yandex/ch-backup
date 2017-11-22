@@ -18,13 +18,14 @@ DEFAULT_CONFIG = {
     },
     'backup': {
         'exclude_dbs': ['system', 'default'],
-        'path_root': 'ch_backup',
+        'path_root': None,
         'deduplicate_parts': True,
         'deduplication_age_limit': {
-            'seconds': 300,
+            'days': 7,
         },
     },
-    's3': {
+    'storage': {
+        'type': 's3',
         'credentials': {
             'endpoint_url': None,
             'access_key_id': None,
@@ -32,6 +33,22 @@ DEFAULT_CONFIG = {
             'bucket': None,
         },
         'disable_ssl_warnings': True,
+        'chunk_size': 8 * 1024 * 1024,
+        'buffer_size': 128 * 1024 * 1024,
+    },
+    'encryption': {
+        'type': 'nacl',
+        'chunk_size': 8 * 1024 * 1024,
+        'buffer_size': 128 * 1024 * 1024,
+        'key': None,
+    },
+    'filesystem': {
+        'type': 'unlimited',
+        'chunk_size': 1 * 1024 * 1024,
+        'buffer_size': 128 * 1024 * 1024,
+    },
+    'multiprocessing': {
+        'workers': 4,
     },
     'main': {
         'user': 'clickhouse',
@@ -39,7 +56,6 @@ DEFAULT_CONFIG = {
         'drop_privileges': True,
         'ca_bundle': [],
         'disable_ssl_warnings': False,
-        'storage': None,
     },
     'logging': {
         'log_level_root': 'DEBUG',
@@ -84,3 +100,17 @@ class Config(object):
         except KeyError:
             logging.critical('Config item "%s" was not defined', item)
             raise
+
+    def __setitem__(self, item, value):
+        try:
+            self._conf[item] = value
+        except KeyError:
+            logging.critical('Config item "%s" was not defined', item)
+            raise
+
+    def get(self, key, default=None):
+        """
+        Returns value by key or default
+        """
+
+        return self._conf.get(key, default)

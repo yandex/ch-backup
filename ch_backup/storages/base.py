@@ -1,52 +1,45 @@
 """
-Abstract class for storages
+Abstract classes for storages
 """
 
 from abc import ABCMeta, abstractmethod
 
 
-class Loader(metaclass=ABCMeta):
+class BaseLoader(metaclass=ABCMeta):
     """
     Base class for storage loaders
     """
 
     @abstractmethod
-    def upload_file(self, local_path, remote_path, path_prefix):
+    def upload_file(self, local_path, remote_path):
         """
         Upload file from filesystem
         """
         pass
 
     @abstractmethod
-    def upload_data(self, data, remote_path, path_prefix):
+    def upload_data(self, data, remote_path):
         """
         Upload given bytes or file-like object
         """
         pass
 
     @abstractmethod
-    def upload_dir(self, dir_path, path_prefix):
-        """
-        Upload directory from filesystem
-        """
-        pass
-
-    @abstractmethod
-    def download_file(self, remote_path, local_path, path_prefix):
+    def download_file(self, remote_path, local_path):
         """
         Download file from storage to filesystem
         """
         pass
 
     @abstractmethod
-    def download_data(self, remote_path, path_prefix):
+    def download_data(self, remote_path):
         """
         Download file from storage to str object
         """
         pass
 
     @abstractmethod
-    def list_dir(self, remote_path, abs_path):
+    def list_dir(self, remote_path):
         """
         Get directory listing
         """
@@ -59,16 +52,50 @@ class Loader(metaclass=ABCMeta):
         """
         pass
 
+
+class PipeLineCompatibleBaseLoader(metaclass=ABCMeta):
+    """
+    Base class for pipeline-compatible storage loaders
+    """
+
     @abstractmethod
-    def download_dir(self, remote_path, local_path):
+    def create_multipart_upload(self, remote_path):
         """
-        Download files from directory to filesystem
+        Start multipart upload
         """
         pass
 
     @abstractmethod
-    def get_abs_path(self, rel_path):
+    def upload_part(self, data, remote_path, upload_id):
         """
-        Get absolute path using prefix
+        Upload data part in multipart upload
+        """
+        pass
+
+    @abstractmethod
+    def complete_multipart_upload(self, remote_path, upload_id):
+        """
+        Finish multipart upload
+        """
+        pass
+
+    @abstractmethod
+    def create_multipart_download(self, remote_path):
+        """
+        Start multipart download
+        """
+        pass
+
+    @abstractmethod
+    def download_part(self, download_id, part_len=None):
+        """
+        Download data part in multipart download
+        """
+        pass
+
+    @abstractmethod
+    def complete_multipart_download(self, download_id):
+        """
+        Finish multipart download
         """
         pass

@@ -17,3 +17,11 @@ class StorageUnknownError(StorageError):
 
 class InvalidBackupStruct(ClickHouseBackupError):
     pass
+
+
+class StageError(ClickHouseBackupError):
+    pass
+
+
+class UnknownEncryptionError(ClickHouseBackupError):
+    pass

@@ -67,7 +67,8 @@ def step_count_deduplicated_parts(context, links_count, entry_num, node_name):
 @when('we restore clickhouse #{backup_num} backup to {node_name}')
 def step_restore_backup(context, backup_num, node_name):
     ch_instance = docker.get_container(context, node_name)
-    clickhouse.restore_backup_num(ch_instance, int(backup_num))
+    backup_id = clickhouse.restore_backup_num(ch_instance, int(backup_num))
+    assert_that(backup_id, matches_regexp('^[0-9]{8}T[0-9]{6}$'))
 
 
 @then('we got same clickhouse data at {nodes_list}')

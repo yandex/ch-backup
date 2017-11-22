@@ -190,7 +190,7 @@ def restore_backup_num(ch_instance, backup_num):
     Call ch-backup cli to run restore backup by serial number
     """
     backup_entries = get_backup_entries(ch_instance)
-    restore_backup_entry(ch_instance, backup_entries[backup_num])
+    return restore_backup_entry(ch_instance, backup_entries[backup_num])
 
 
 def get_backup_entries(ch_instance, cli_path=None, conf_path=None):
@@ -220,11 +220,10 @@ def restore_backup_entry(ch_instance,
         cli_path = CH_BACKUP_CLI_PATH
     if conf_path is None:
         conf_path = CH_BACKUP_CONF_PATH
-    ch_instance.exec_run('{cli_path} -c {conf_path} -p {backup_entry} restore'
-                         .format(
-                             cli_path=cli_path,
-                             conf_path=conf_path,
-                             backup_entry=backup_entry))
+    output = ch_instance.exec_run(
+        '{cli_path} -c {conf_path} -p {backup_entry} restore'.format(
+            cli_path=cli_path, conf_path=conf_path, backup_entry=backup_entry))
+    return output.decode()
 
 
 def get_all_user_data(ch_client):

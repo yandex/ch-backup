@@ -1,0 +1,225 @@
+"""
+Pipeline and PipelineCMD unit tests
+TODO: rewrite with hypothesis
+"""
+
+import hashlib
+import io
+import os
+import shutil
+import tempfile
+from functools import partial
+
+from ch_backup.pipeline import Pipeline
+from ch_backup.stages.encryption import DecryptStage, EncryptStage
+from ch_backup.stages.filesystem import ReadFileStage, WriteFileStage
+
+import pytest
+from hypothesis import strategies as st
+from hypothesis import example, given, settings
+
+WRITE_FILE_CMD_TEST_COUNT = 1024
+PIPELINE_TEST_COUNT = 1024
+ENCRYPT_DECRYPT_TEST_COUNT = 1024
+
+SECRET_KEY = 'a' * 32
+
+DEFAULT_TMP_DIR_PATH = 'staging/tmp_test_data'
+
+
+def get_test_stream(total_size):
+    """
+    Generates test stream
+    """
+
+    data = io.BytesIO()
+    i = 0
+    while True:
+        data.write('{line_num}\n'.format(line_num=i).encode())
+        if data.tell() >= total_size:
+            break
+        i += 1
+    data.seek(0)
+    return data
+
+
+class StreamInter(object):  # pylint: disable=too-few-public-methods
+    """
+    Iterate stream
+    """
+
+    def __init__(self, chunk_size):
+        self._chunk_size = chunk_size
+
+    def __call__(self, incoming_data, src_key=None, dst_key=None):
+        while True:
+            chunk = incoming_data.read(self._chunk_size)
+            if not chunk:
+                break
+            yield chunk
+
+
+@pytest.fixture(scope='module')
+def tmp_dir_path(dir_path=None):
+    """
+    Create-delete tmp dir
+    """
+
+    if dir_path is None:
+        dir_path = DEFAULT_TMP_DIR_PATH
+    os.makedirs(dir_path, exist_ok=True)
+    yield dir_path
+    shutil.rmtree(dir_path)
+
+
+@settings(max_examples=PIPELINE_TEST_COUNT, deadline=None)
+@given(
+    file_size=st.integers(1, 1024),
+    read_conf=st.fixed_dictionaries({
+        'chunk_size': st.integers(1, 1024),
+    }),
+    encrypt_conf=st.fixed_dictionaries({
+        'buffer_size': st.integers(1, 1024),
+        'chunk_size': st.integers(1, 1024),
+        'type': st.just('nacl'),
+        'key': st.just(SECRET_KEY),
+    }),
+    write_conf=st.fixed_dictionaries(
+        {key: st.integers(1, 1024)
+         for key in ('buffer_size', 'chunk_size')}),
+)
+def test_pipeline_roundtrip(tmp_dir_path, file_size, read_conf, encrypt_conf,
+                            write_conf):
+    # pylint: disable=redefined-outer-name
+    """
+    Pipeline
+    """
+    with tempfile.NamedTemporaryFile(
+        mode='wb', prefix='test_file_', dir=tmp_dir_path, delete=False)\
+            as orig_fobj:
+        test_stream = get_test_stream(file_size)
+        test_stream.seek(0)
+        orig_fobj.write(test_stream.read())
+        original_file_path = orig_fobj.name
+
+    forward_file_path = original_file_path + '-forward'
+    backward_file_name = original_file_path + '-backward'
+
+    run_forward_pl(original_file_path, forward_file_path, read_conf,
+                   encrypt_conf, write_conf)
+    run_backward_pl(forward_file_path, backward_file_name, read_conf,
+                    encrypt_conf, write_conf)
+
+    with open(original_file_path, 'rb') as orig_fobj,\
+            open(backward_file_name, 'rb') as res_fobj:
+        orig_contents = orig_fobj.read()
+        res_contents = res_fobj.read()
+
+        assert orig_contents.decode() == res_contents.decode(),\
+            'Equal contents expected'
+
+        orig_md5sum = hashlib.md5(orig_contents).digest()
+        res_md5sum = hashlib.md5(res_contents).digest()
+
+        assert orig_md5sum == res_md5sum, 'Equal md5sum of contents expected'
+
+
+def run_forward_pl(in_file_name, out_file_name, read_conf, encrypt_conf,
+                   write_conf):
+    """
+    Creates and executes forward pipeline
+    """
+
+    pipeline = Pipeline()
+    pipeline.append(ReadFileStage(read_conf))
+    pipeline.append(EncryptStage(encrypt_conf))
+    pipeline.append(WriteFileStage(write_conf))
+
+    return pipeline(in_file_name, out_file_name)
+
+
+def run_backward_pl(in_file_name, out_file_name, read_conf, encrypt_conf,
+                    write_conf):
+    """
+    Creates and executes backward pipeline
+    """
+
+    pipeline = Pipeline()
+    pipeline.append(ReadFileStage(read_conf))
+    pipeline.append(DecryptStage(encrypt_conf))
+    pipeline.append(WriteFileStage(write_conf))
+
+    return pipeline(in_file_name, out_file_name)
+
+
+@settings(max_examples=ENCRYPT_DECRYPT_TEST_COUNT, deadline=None)
+@example(791, 28, {'buffer_size': 562, 'chunk_size': 211})
+@given(
+    incoming_stream_size=st.integers(1, 1024),
+    incoming_chunk_size=st.integers(1, 1024),
+    conf=st.fixed_dictionaries({
+        'buffer_size': st.integers(1, 1024),
+        'chunk_size': st.integers(1, 1024),
+        'type': st.just('nacl'),
+        'key': st.just(SECRET_KEY),
+    }))
+def test_nacl_ecrypt_decrypt(incoming_stream_size, incoming_chunk_size, conf):
+    """
+    Tests encryption stage
+    """
+
+    encrypted_stream = io.BytesIO()
+    decrypted_stream = io.BytesIO()
+
+    conf['key'] = SECRET_KEY
+    conf['type'] = 'nacl'
+
+    encrypt_cmd = EncryptStage(conf)
+    decrypt_cmd = DecryptStage(conf)
+
+    test_stream = get_test_stream(incoming_stream_size)
+    stream_iter = StreamInter(chunk_size=incoming_chunk_size)
+
+    for chunk in encrypt_cmd(partial(stream_iter, test_stream)):
+        encrypted_stream.write(chunk)
+
+    encrypted_stream.seek(0)
+    for chunk in decrypt_cmd(partial(stream_iter, encrypted_stream)):
+        decrypted_stream.write(chunk)
+
+    test_stream.seek(0)
+    decrypted_stream.seek(0)
+
+    assert test_stream.read().decode() == decrypted_stream.read().decode()
+
+
+@settings(max_examples=WRITE_FILE_CMD_TEST_COUNT, deadline=None)
+@example(791, 28, {'buffer_size': 562, 'chunk_size': 211})
+@given(
+    incoming_stream_size=st.integers(1, 1024),
+    incoming_chunk_size=st.integers(1, 1024),
+    conf=st.fixed_dictionaries(
+        {key: st.integers(1, 1024)
+         for key in ('buffer_size', 'chunk_size')}))
+def test_write_file_cmd(monkeypatch, incoming_stream_size, incoming_chunk_size,
+                        conf):
+    """
+    Tests write file stage
+    """
+
+    result_stream = io.BytesIO()
+
+    monkeypatch.setattr(WriteFileStage, '_pre_process', lambda x, y, z: None)
+    monkeypatch.setattr(WriteFileStage, '_post_process', lambda x: None)
+    write_file_cmd = WriteFileStage(conf)
+    monkeypatch.setattr(write_file_cmd, '_fobj', result_stream)
+
+    test_stream = get_test_stream(incoming_stream_size)
+    stream_iter = StreamInter(chunk_size=incoming_chunk_size)
+    for _ in write_file_cmd(partial(stream_iter, test_stream)):
+        pass
+
+    result_stream.seek(0)
+    test_stream.seek(0)
+
+    assert test_stream.read().decode() == result_stream.read().decode()
