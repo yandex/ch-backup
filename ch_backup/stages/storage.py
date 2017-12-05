@@ -9,7 +9,6 @@ STAGE_TYPE = 'storage'
 
 
 class UploadStorageStage(IterBufferedStage):
-    # pylint: disable=too-few-public-methods
     """
     Uploads data from iterator by multipart upload
     """
@@ -38,7 +37,6 @@ class UploadStorageStage(IterBufferedStage):
 
 
 class DownloadStorageStage(InputFileStage):
-    # pylint: disable=too-few-public-methods
     """
     Downloads data from iterator by multipart download
     """
@@ -63,7 +61,7 @@ class DownloadStorageStage(InputFileStage):
         self._download_id = None
 
 
-class StorageListDirStage(object):  # pylint: disable=too-few-public-methods
+class StorageListDirStage(object):
     """
     List files in storage dir
     """
@@ -79,7 +77,7 @@ class StorageListDirStage(object):  # pylint: disable=too-few-public-methods
         return self._loader.list_dir(dst_key)
 
 
-class PathExistsStorageStage(object):  # pylint: disable=too-few-public-methods
+class PathExistsStorageStage(object):
     """
     Ensure storage path exists
     """

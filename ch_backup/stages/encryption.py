@@ -9,7 +9,6 @@ STAGE_TYPE = 'encryption'
 
 
 class EncryptStage(IterBufferedStage):
-    # pylint: disable=too-few-public-methods
     """
     Encrypts data by chunk of specified size
     """
@@ -25,7 +24,6 @@ class EncryptStage(IterBufferedStage):
 
 
 class DecryptStage(IterBufferedStage):
-    # pylint: disable=too-few-public-methods
     """
     Encrypts data by chunk of specified size + encrypt metadata size
     """

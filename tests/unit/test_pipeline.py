@@ -43,7 +43,7 @@ def get_test_stream(total_size):
     return data
 
 
-class StreamInter(object):  # pylint: disable=too-few-public-methods
+class StreamInter(object):
     """
     Iterate stream
     """

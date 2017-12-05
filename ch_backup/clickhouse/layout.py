@@ -463,7 +463,6 @@ class ClickhousePartInfo(object):
     Clickhouse part metadata and few helpers
     """
 
-    # pylint: disable=too-few-public-methods
     def __init__(self, meta, link=None, paths=None):
         self._meta = meta
         if link is None:

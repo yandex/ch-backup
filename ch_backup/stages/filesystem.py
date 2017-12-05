@@ -10,7 +10,7 @@ from ch_backup.stages.base import (InputFileStage, IterBufferedStage,
 STAGE_TYPE = 'filesystem'
 
 
-class ReadDataStage(object):  # pylint: disable=too-few-public-methods
+class ReadDataStage(object):
     """
     Simple yield of consumed data
     """
@@ -25,7 +25,6 @@ class ReadDataStage(object):  # pylint: disable=too-few-public-methods
 
 
 class WriteFileStage(IterBufferedStage):
-    # pylint: disable=too-few-public-methods
     """
     Write consumed from iter data to file
     """
@@ -46,7 +45,7 @@ class WriteFileStage(IterBufferedStage):
         self._fobj.close()
 
 
-class ReadFileStage(InputFileStage):  # pylint: disable=too-few-public-methods
+class ReadFileStage(InputFileStage):
     """
     Reads data from file unlimited
     """
@@ -68,7 +67,6 @@ class ReadFileStage(InputFileStage):  # pylint: disable=too-few-public-methods
 
 
 class CollectDataStage(OutputDataStage):
-    # pylint: disable=too-few-public-methods
     """
     Gathers all data from iterable and returns
     """

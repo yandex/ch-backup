@@ -65,7 +65,6 @@ DEFAULT_CONFIG = {
 }
 
 
-# pylint: disable=too-few-public-methods
 class Config(object):
     """
     Config for all components

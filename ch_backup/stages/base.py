@@ -6,7 +6,7 @@ import io
 from abc import ABCMeta, abstractmethod
 
 
-class BaseStage(metaclass=ABCMeta):  # pylint: disable=too-few-public-methods
+class BaseStage(metaclass=ABCMeta):
     """
     Base stage class
 
@@ -38,7 +38,7 @@ class BaseStage(metaclass=ABCMeta):  # pylint: disable=too-few-public-methods
         pass
 
 
-class InputFileStage(BaseStage):  # pylint: disable=too-few-public-methods
+class InputFileStage(BaseStage):
     """
     Base input unbuffered stage
 
@@ -70,7 +70,7 @@ class InputFileStage(BaseStage):  # pylint: disable=too-few-public-methods
         pass
 
 
-class IterBufferedStage(BaseStage):  # pylint: disable=too-few-public-methods
+class IterBufferedStage(BaseStage):
     """
     Base middleware buffered stage
 
@@ -143,7 +143,7 @@ class IterBufferedStage(BaseStage):  # pylint: disable=too-few-public-methods
         pass
 
 
-class OutputDataStage(BaseStage):  # pylint: disable=too-few-public-methods
+class OutputDataStage(BaseStage):
     """
     Gathers all data from iter in memory buffer and returns it
     """

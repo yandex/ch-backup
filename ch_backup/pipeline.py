@@ -49,7 +49,7 @@ STAGE_TYPES = (
 )
 
 
-class Pipeline(object):  # pylint: disable=too-few-public-methods
+class Pipeline(object):
     """
     Pipeline class
 
@@ -84,7 +84,7 @@ class Pipeline(object):  # pylint: disable=too-few-public-methods
             return ex.value
 
 
-class PipelineBuilder(object):  # pylint: disable=too-few-public-methods
+class PipelineBuilder(object):
     """
     Pipeline builder
 

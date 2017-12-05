@@ -262,7 +262,7 @@ class ClickhouseCTL(object):
         return os.path.join(data_path, 'shadow')
 
 
-class ClickhouseClient(object):  # pylint: disable=too-few-public-methods
+class ClickhouseClient(object):
     """
     Simple clickhouse client
     """

@@ -38,7 +38,7 @@ TEST_TABLE_SCHEMA = utils.strip_query("""
 """)
 
 
-class ClickhouseClient(object):  # pylint: disable=too-few-public-methods
+class ClickhouseClient(object):
     """
     Simple clickhouse client
     """
