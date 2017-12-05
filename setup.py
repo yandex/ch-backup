@@ -32,11 +32,10 @@ setup(
     maintainer_email='mdb-admin@yandex-team.ru',
     zip_safe=False,
     platforms=['Linux', 'BSD', 'MacOS'],
-    packages=['ch_backup', 'ch_backup.storages'],
+    packages=['ch_backup', 'ch_backup.storage'],
     package_dir={
         'ch_backup': 'ch_backup',
-        'ch_backup.storages': 'ch_backup/storages',
-        'ch_backup.stages': 'ch_backup/stages',
+        'ch_backup.storage': 'ch_backup/storage',
         'ch_backup.encryption': 'ch_backup/encryption',
     },
     entry_points={'console_scripts': [

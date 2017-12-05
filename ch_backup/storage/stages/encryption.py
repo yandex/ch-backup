@@ -3,7 +3,8 @@ Encryption pipeline stages module
 """
 
 from ch_backup.encryption import get_encryption
-from ch_backup.stages.base import IterBufferedStage
+
+from .base import IterBufferedStage
 
 STAGE_TYPE = 'encryption'
 

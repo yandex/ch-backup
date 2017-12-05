@@ -1,101 +1,101 @@
 """
-Abstract classes for storages
+Interfaces for storage engines.
 """
 
 from abc import ABCMeta, abstractmethod
 
 
-class BaseLoader(metaclass=ABCMeta):
+class StorageEngine(metaclass=ABCMeta):
     """
-    Base class for storage loaders
+    Base class for storage engines.
     """
 
     @abstractmethod
     def upload_file(self, local_path, remote_path):
         """
-        Upload file from filesystem
+        Upload file from local filesystem.
         """
         pass
 
     @abstractmethod
     def upload_data(self, data, remote_path):
         """
-        Upload given bytes or file-like object
+        Upload given bytes or file-like object.
         """
         pass
 
     @abstractmethod
     def download_file(self, remote_path, local_path):
         """
-        Download file from storage to filesystem
+        Download file from storage to local filesystem.
         """
         pass
 
     @abstractmethod
     def download_data(self, remote_path):
         """
-        Download file from storage to str object
+        Download file from storage and return its content as a string.
         """
         pass
 
     @abstractmethod
     def list_dir(self, remote_path):
         """
-        Get directory listing
+        Get directory listing.
         """
         pass
 
     @abstractmethod
     def path_exists(self, remote_path):
         """
-        Check if path exists
+        Check if remote path exists.
         """
         pass
 
 
-class PipeLineCompatibleBaseLoader(metaclass=ABCMeta):
+class PipeLineCompatibleStorageEngine(StorageEngine):
     """
-    Base class for pipeline-compatible storage loaders
+    Base class for pipeline-compatible storage engines.
     """
 
     @abstractmethod
     def create_multipart_upload(self, remote_path):
         """
-        Start multipart upload
+        Start multipart upload.
         """
         pass
 
     @abstractmethod
     def upload_part(self, data, remote_path, upload_id):
         """
-        Upload data part in multipart upload
+        Upload data part in multipart upload.
         """
         pass
 
     @abstractmethod
     def complete_multipart_upload(self, remote_path, upload_id):
         """
-        Finish multipart upload
+        Finish multipart upload.
         """
         pass
 
     @abstractmethod
     def create_multipart_download(self, remote_path):
         """
-        Start multipart download
+        Start multipart download.
         """
         pass
 
     @abstractmethod
     def download_part(self, download_id, part_len=None):
         """
-        Download data part in multipart download
+        Download data part in multipart download.
         """
         pass
 
     @abstractmethod
     def complete_multipart_download(self, download_id):
         """
-        Finish multipart download
+        Finish multipart download.
         """
         pass

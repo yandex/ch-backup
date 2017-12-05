@@ -1,9 +1,13 @@
+"""
+Errors specific to ch-backup.
+"""
+
 # pylint: disable=missing-docstring
 
 
 class ClickHouseBackupError(Exception):
     """
-    Base exception
+    Base class for ch-backup related errors.
     """
 
 
@@ -11,8 +15,10 @@ class StorageError(ClickHouseBackupError):
     pass
 
 
-class StorageUnknownError(StorageError):
-    pass
+class ConfigurationError(ClickHouseBackupError):
+    """
+    Configuration errors (e.g. invalid value of configuration parameter).
+    """
 
 
 class InvalidBackupStruct(ClickHouseBackupError):

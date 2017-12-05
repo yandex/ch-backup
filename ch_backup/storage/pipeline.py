@@ -9,13 +9,10 @@ from concurrent.futures import wait as executor_wait
 from concurrent.futures import ALL_COMPLETED, ProcessPoolExecutor
 from functools import partial
 
-from ch_backup.stages.encryption import DecryptStage, EncryptStage
-from ch_backup.stages.filesystem import (CollectDataStage, ReadDataStage,
-                                         ReadFileStage, WriteFileStage)
-from ch_backup.stages.storage import (DownloadStorageStage,
-                                      PathExistsStorageStage,
-                                      StorageListDirStage, UploadStorageStage)
-from ch_backup.storages.base import BaseLoader
+from .stages.encryption import DecryptStage, EncryptStage
+from .stages.filesystem import (CollectDataStage, ReadDataStage, ReadFileStage,
+                                WriteFileStage)
+from .stages.storage import DownloadStorageStage, UploadStorageStage
 
 DEFAULT_PIPELINE_RULES = {
     'upload_file': (
@@ -23,8 +20,6 @@ DEFAULT_PIPELINE_RULES = {
         EncryptStage,
         UploadStorageStage,
     ),
-    'list_dir': (StorageListDirStage, ),
-    'path_exists': (PathExistsStorageStage, ),
     'upload_data': (
         ReadDataStage,
         EncryptStage,
@@ -97,7 +92,6 @@ class PipelineBuilder:
 
         self._pipeline_rules = rules
         self._config = config
-        # self._update_cfg(config)
 
     def __getattr__(self, item):
         try:
@@ -182,7 +176,7 @@ def pipeline_wrapper(pipeline_cls, pipeline_config, pipeline_type, *args,
     return pipeline(*args, **kwargs)
 
 
-class PipelineLoader(BaseLoader):
+class PipelineLoader:
     # TODO: refactor loader classes structure
     # pylint: disable=arguments-differ
     """
@@ -214,32 +208,36 @@ class PipelineLoader(BaseLoader):
 
         return pipeline_runner()
 
+    def upload_data(self, data, remote_path, is_async=False):
+        """
+        Upload given bytes or file-like object.
+        """
+        return self._execute_pipeline(is_async, 'upload_data', data,
+                                      remote_path)
+
     def upload_file(self, local_path, remote_path, is_async=False):
+        """
+        Upload file from local filesystem.
+        """
         return self._execute_pipeline(is_async, 'upload_file', local_path,
                                       remote_path)
 
     def download_data(self, remote_path, is_async=False):
+        """
+        Download file from storage and return its content as a string.
+        """
         return self._execute_pipeline(is_async, 'download_data', remote_path)
 
     def download_file(self, remote_path, local_path, is_async=False):
+        """
+        Download file to local filesystem.
+        """
         return self._execute_pipeline(is_async, 'download_file', remote_path,
                                       local_path)
 
-    def gather_async(self):
+    def await(self):
         """
-        Wait for async jobs complete
+        Wait for completion of async operations.
         """
-
         if self._exec_pool:
             self._exec_pool.wait_all()
-
-    def upload_data(self, data, remote_path, is_async=False):
-        return self._execute_pipeline(is_async, 'upload_data', data,
-                                      remote_path)
-
-    def list_dir(self, remote_path, is_async=False):
-        return self._execute_pipeline(is_async, 'list_dir', None, remote_path)
-
-    def path_exists(self, remote_path, is_async=False):
-        return self._execute_pipeline(is_async, 'path_exists', None,
-                                      remote_path)

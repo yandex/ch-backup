@@ -10,9 +10,9 @@ import shutil
 import tempfile
 from functools import partial
 
-from ch_backup.pipeline import Pipeline
-from ch_backup.stages.encryption import DecryptStage, EncryptStage
-from ch_backup.stages.filesystem import ReadFileStage, WriteFileStage
+from ch_backup.storage.pipeline import Pipeline
+from ch_backup.storage.stages.encryption import DecryptStage, EncryptStage
+from ch_backup.storage.stages.filesystem import ReadFileStage, WriteFileStage
 
 import pytest
 from hypothesis import strategies as st

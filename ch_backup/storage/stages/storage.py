@@ -2,8 +2,8 @@
 Storage pipeline stages module
 """
 
-from ch_backup.stages.base import InputFileStage, IterBufferedStage
-from ch_backup.storages import get_storage_loader
+from ..engine import get_storage_engine
+from .base import InputFileStage, IterBufferedStage
 
 STAGE_TYPE = 'storage'
 
@@ -17,7 +17,7 @@ class UploadStorageStage(IterBufferedStage):
 
     def __init__(self, conf):
         super().__init__(conf)
-        self._loader = get_storage_loader(conf['type'], conf)
+        self._loader = get_storage_engine(conf)
         self._dst_key = None
         self._upload_id = None
 
@@ -45,7 +45,7 @@ class DownloadStorageStage(InputFileStage):
 
     def __init__(self, conf):
         super().__init__(conf)
-        self._loader = get_storage_loader(conf['type'], conf)
+        self._loader = get_storage_engine(conf)
         self._download_id = None
 
     def _pre_process(self, src_key=None, dst_key=None):
@@ -59,35 +59,3 @@ class DownloadStorageStage(InputFileStage):
     def _post_process(self):
         self._loader.complete_multipart_download(download_id=self._download_id)
         self._download_id = None
-
-
-class StorageListDirStage:
-    """
-    List files in storage dir
-    """
-
-    stype = STAGE_TYPE
-
-    def __init__(self, conf):
-        self._loader = get_storage_loader(conf['type'], conf)
-        self._dst_key = None
-
-    def __call__(self, src_key=None, dst_key=None):
-        yield
-        return self._loader.list_dir(dst_key)
-
-
-class PathExistsStorageStage:
-    """
-    Ensure storage path exists
-    """
-
-    stype = STAGE_TYPE
-
-    def __init__(self, conf):
-        self._loader = get_storage_loader(conf['type'], conf)
-        self._dst_key = None
-
-    def __call__(self, src_key=None, dst_key=None):
-        yield
-        return self._loader.path_exists(dst_key)

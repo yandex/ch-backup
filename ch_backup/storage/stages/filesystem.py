@@ -4,8 +4,7 @@ Filesystem pipeline stages module
 
 import io
 
-from ch_backup.stages.base import (InputFileStage, IterBufferedStage,
-                                   OutputDataStage)
+from .base import InputFileStage, IterBufferedStage, OutputDataStage
 
 STAGE_TYPE = 'filesystem'
 

@@ -1,5 +1,5 @@
 """
-Implementation of s3 storage
+S3 storage engine.
 """
 
 import os
@@ -10,14 +10,14 @@ import boto3
 import botocore.vendored.requests.packages.urllib3 as boto_urllib3
 from botocore.errorfactory import ClientError
 
-from .base import BaseLoader, PipeLineCompatibleBaseLoader
+from .base import PipeLineCompatibleStorageEngine
 
 DEFAULT_DOWNLOAD_PART_LEN = 8 * 1024 * 1024
 
 
-class S3Loader(BaseLoader, PipeLineCompatibleBaseLoader):
+class S3StorageEngine(PipeLineCompatibleStorageEngine):
     """
-    Loader for s3-like storage
+    Engine for S3-compatible storage services.
     """
 
     def __init__(self, config):

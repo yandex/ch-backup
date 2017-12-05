@@ -11,6 +11,7 @@ from collections import defaultdict
 from datetime import datetime
 
 from ch_backup.exceptions import InvalidBackupStruct, StorageError
+from ch_backup.storage import StorageLoader
 
 CBS_DEFAULT_PNAME_FMT = '%Y%m%dT%H%M%S'
 CBS_DEFAULT_DATE_FMT = '%Y-%m-%d %H:%M:%S'
@@ -24,9 +25,9 @@ class ClickhouseBackupLayout:
     Storage layout and transfer
     """
 
-    def __init__(self, loader, ch_ctl, config):
-        self._storage_loader = loader
-        self._config = config
+    def __init__(self, ch_ctl, config, storage_loader=None):
+        self._storage_loader = storage_loader or StorageLoader(config)
+        self._config = config['backup']
         self._ch_ctl = ch_ctl
 
         self._backup_name_fmt = CBS_DEFAULT_PNAME_FMT
@@ -239,7 +240,7 @@ class ClickhouseBackupLayout:
 
     def path_exists(self, remote_path):
         """
-        Ensure storage path exists
+        Check whether storage path exists or not.
         """
 
         return self._storage_loader.path_exists(remote_path)
@@ -251,7 +252,7 @@ class ClickhouseBackupLayout:
 
         try:
             logging.debug('Collecting async jobs')
-            self._storage_loader.gather_async()
+            self._storage_loader.await()
         except Exception as exc:
             logging.critical('Errors in async transfers: %s', exc)
             raise StorageError
