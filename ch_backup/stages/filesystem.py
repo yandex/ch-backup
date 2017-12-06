@@ -10,7 +10,7 @@ from ch_backup.stages.base import (InputFileStage, IterBufferedStage,
 STAGE_TYPE = 'filesystem'
 
 
-class ReadDataStage(object):
+class ReadDataStage:
     """
     Simple yield of consumed data
     """

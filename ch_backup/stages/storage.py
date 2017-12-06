@@ -61,7 +61,7 @@ class DownloadStorageStage(InputFileStage):
         self._download_id = None
 
 
-class StorageListDirStage(object):
+class StorageListDirStage:
     """
     List files in storage dir
     """
@@ -77,7 +77,7 @@ class StorageListDirStage(object):
         return self._loader.list_dir(dst_key)
 
 
-class PathExistsStorageStage(object):
+class PathExistsStorageStage:
     """
     Ensure storage path exists
     """

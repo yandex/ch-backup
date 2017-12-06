@@ -18,7 +18,7 @@ CBS_DEFAULT_FNAME = 'backup_struct.json'
 CBS_DEFAULT_JSON_INDENT = 4
 
 
-class ClickhouseBackupLayout(object):
+class ClickhouseBackupLayout:
     # pylint: disable=too-many-instance-attributes
     """
     Storage layout and transfer
@@ -257,7 +257,7 @@ class ClickhouseBackupLayout(object):
             raise StorageError
 
 
-class ClickhouseBackupStructure(object):
+class ClickhouseBackupStructure:
     """
     Clickhouse backup meta
     """
@@ -458,7 +458,7 @@ class ClickhouseBackupStructure(object):
         return self._databases[db_name]['parts_paths'][table_name]
 
 
-class ClickhousePartInfo(object):
+class ClickhousePartInfo:
     """
     Clickhouse part metadata and few helpers
     """

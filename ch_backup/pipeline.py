@@ -49,7 +49,7 @@ STAGE_TYPES = (
 )
 
 
-class Pipeline(object):
+class Pipeline:
     """
     Pipeline class
 
@@ -84,7 +84,7 @@ class Pipeline(object):
             return ex.value
 
 
-class PipelineBuilder(object):
+class PipelineBuilder:
     """
     Pipeline builder
 
@@ -119,7 +119,7 @@ class PipelineBuilder(object):
         return pipeline
 
 
-class ExecPool(object):
+class ExecPool:
     """
     Multiprocessing runner
 

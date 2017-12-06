@@ -48,7 +48,7 @@ GET_ALL_TABLE_PARTS_INFO_SQL = strip_query("""
 """)
 
 
-class ClickhouseCTL(object):
+class ClickhouseCTL:
     """
     Clickhouse control tool
     """
@@ -262,7 +262,7 @@ class ClickhouseCTL(object):
         return os.path.join(data_path, 'shadow')
 
 
-class ClickhouseClient(object):
+class ClickhouseClient:
     """
     Simple clickhouse client
     """

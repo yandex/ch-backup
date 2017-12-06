@@ -11,7 +11,7 @@ from ch_backup.clickhouse.layout import (ClickhouseBackupStructure,
 from ch_backup.exceptions import ClickHouseBackupError, InvalidBackupStruct
 
 
-class ClickhouseBackup(object):
+class ClickhouseBackup:
     """
     Clickhouse backup logic
     """

@@ -43,7 +43,7 @@ def get_test_stream(total_size):
     return data
 
 
-class StreamInter(object):
+class StreamInter:
     """
     Iterate stream
     """

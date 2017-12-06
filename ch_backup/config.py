@@ -65,7 +65,7 @@ DEFAULT_CONFIG = {
 }
 
 
-class Config(object):
+class Config:
     """
     Config for all components
     """

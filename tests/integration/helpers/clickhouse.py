@@ -38,7 +38,7 @@ TEST_TABLE_SCHEMA = utils.strip_query("""
 """)
 
 
-class ClickhouseClient(object):
+class ClickhouseClient:
     """
     Simple clickhouse client
     """

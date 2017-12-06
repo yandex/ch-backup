@@ -13,7 +13,7 @@ MULTILINE_SQL = """
 MULTILINE_SQL_STRIPPED = 'SHOW TABLES FROM {db_name} FORMAT JSON'
 
 
-class Test_strip_query(object):  # pylint: disable=invalid-name
+class Test_strip_query:  # pylint: disable=invalid-name
     # pylint: disable=missing-docstring, no-self-use, invalid-name
 
     def test_return_same_query_for_query_without_endlines(self):
