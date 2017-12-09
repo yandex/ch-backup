@@ -11,7 +11,7 @@ TEMP_FILE_EXT = 'temp~'
 
 
 @utils.env_stage('create', fail=True)
-def render_configs(state, conf):
+def render_configs(conf, **_extra):
     """
     Render each template in the subtree.
     Each template is rendered in-place. As the framework
@@ -24,7 +24,6 @@ def render_configs(state, conf):
     context = {
         'conf': conf,
         'compose': compose_conf,
-        'ssl': state['ssl'],
     }
     # Render configs only for projects that are
     # present in config file.
