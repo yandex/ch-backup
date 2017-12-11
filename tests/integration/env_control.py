@@ -66,7 +66,6 @@ def create(state_file=None):
 
     _save_state(
         {
-            'ssl': state['ssl'],
             'config': state['config'],
         }, path=state_file)
 
@@ -75,15 +74,9 @@ def create(state_file=None):
 
 def start(state=None, state_file=None):
     """
-    Restart test environment runtime.
+    Start test environment runtime.
     """
     _run_stage('start', state=state, state_file=state_file)
-
-    _save_state(
-        {
-            'ssl': state['ssl'],
-            'config': state['config'],
-        }, path=state_file)
 
 
 def restart(state=None, state_file=None):
@@ -109,7 +102,6 @@ def _init_state(state_file=None):
     if state_file is None:
         state_file = SESSION_STATE_CONF
     state = {
-        'ssl': None,  # SSL API, see certs.init_ssl
         'config': None,
     }
     # Load previous state if found.
