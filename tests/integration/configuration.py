@@ -65,7 +65,7 @@ def get():
                 'tag': 'dbaas-ch-backup-base',
                 'path': 'images/base',
             },
-        },  # noqa: E122
+        },
         # Docker network name. Also doubles as a project and domain name.
         'network_name':
             net_name,

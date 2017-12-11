@@ -3,10 +3,10 @@ Steps related to clickhouse and backups.
 """
 
 import requests
-from retrying import retry
-
 from behave import given, then, when
 from hamcrest import assert_that, equal_to, matches_regexp
+from retrying import retry
+
 from tests.integration.helpers import clickhouse, docker
 
 

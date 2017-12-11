@@ -2,9 +2,9 @@
 Steps related to s3.
 """
 
+from behave import given
 from retrying import retry
 
-from behave import given
 from tests.integration.helpers import docker
 
 
