@@ -14,35 +14,6 @@ from .stages.filesystem import (CollectDataStage, ReadDataStage, ReadFileStage,
                                 WriteFileStage)
 from .stages.storage import DownloadStorageStage, UploadStorageStage
 
-DEFAULT_PIPELINE_RULES = {
-    'upload_file': (
-        ReadFileStage,
-        EncryptStage,
-        UploadStorageStage,
-    ),
-    'upload_data': (
-        ReadDataStage,
-        EncryptStage,
-        UploadStorageStage,
-    ),
-    'download_data': (
-        DownloadStorageStage,
-        DecryptStage,
-        CollectDataStage,
-    ),
-    'download_file': (
-        DownloadStorageStage,
-        DecryptStage,
-        WriteFileStage,
-    ),
-}
-
-STAGE_TYPES = (
-    'filesystem',
-    'storage',
-    'encryption',
-)
-
 
 class Pipeline:
     """
@@ -77,40 +48,6 @@ class Pipeline:
                 next(gen)
         except StopIteration as ex:
             return ex.value
-
-
-class PipelineBuilder:
-    """
-    Pipeline builder
-
-    constructs pipeline based on rules
-    """
-
-    def __init__(self, config, rules=None):
-        if rules is None:
-            rules = DEFAULT_PIPELINE_RULES
-
-        self._pipeline_rules = rules
-        self._config = config
-
-    def __getattr__(self, item):
-        try:
-            pipeline_stages = self._pipeline_rules[item]
-        except KeyError:
-            raise AttributeError('Unknown stage: %s', item)
-
-        pipeline = Pipeline()
-        for stage in pipeline_stages:
-            try:
-                stage_conf = self._config[stage.stype]
-            except KeyError:
-                logging.debug(
-                    'Skipping stage "%s": type "%s" is not configured', item,
-                    stage.stype)
-                continue
-
-            pipeline.append(stage(stage_conf))
-        return pipeline
 
 
 class ExecPool:
@@ -163,25 +100,25 @@ class ExecPool:
         self._futures = {}
 
 
-def pipeline_wrapper(pipeline_cls, pipeline_config, pipeline_type, *args,
-                     **kwargs):
+def pipeline_wrapper(config, stages, *args, **kwargs):
     """
-    Build pipeline and run it
-
-    builds pipeline and executes
+    Build and execute pipeline.
     """
+    pipeline = Pipeline()
 
-    pipeline_builder = pipeline_cls(pipeline_config)
-    pipeline = getattr(pipeline_builder, pipeline_type)
+    for stage in stages:
+        stage_conf = config[stage.stype]
+        pipeline.append(stage(stage_conf))
+
     return pipeline(*args, **kwargs)
 
 
 class PipelineLoader:
-    # TODO: refactor loader classes structure
-    # pylint: disable=arguments-differ
     """
     Pipeline-based storage loader
     """
+
+    # pylint: disable=missing-kwoa
 
     def __init__(self, config):
         self._config = config
@@ -191,49 +128,61 @@ class PipelineLoader:
         if multiprocessing_conf:
             self._exec_pool = ExecPool(multiprocessing_conf)
 
-    def _execute_pipeline(self, async_exec, pipeline_type, *args, **kwargs):
+    def _execute_pipeline(self, id_tuple, stages, *args, is_async, encryption):
         """
         Run pipeline inplace or schedule for exec in process pool
         """
+        if not encryption:
+            stages = [s for s in stages if s.stype != 'encryption']
 
         # we have to create pipelines inside running job, because
         # multiproc futures must be pickable, but boto3 is not pickable
         # https://github.com/boto/botocore/issues/636
-        pipeline_runner = partial(pipeline_wrapper, PipelineBuilder,
-                                  self._config, pipeline_type, *args, **kwargs)
+        pipeline_runner = partial(pipeline_wrapper, self._config, stages,
+                                  *args)
 
-        if async_exec and self._exec_pool:
-            pipeline_id = (pipeline_type, args)
-            return self._exec_pool.submit(pipeline_id, pipeline_runner)
+        if is_async and self._exec_pool:
+            job_id = "{id}({args})".format(
+                id=id_tuple[0], args=', '.join(map(repr, id_tuple[1:])))
+
+            return self._exec_pool.submit(job_id, pipeline_runner)
 
         return pipeline_runner()
 
-    def upload_data(self, data, remote_path, is_async=False):
+    def upload_data(self, data, *args, **kwargs):
         """
         Upload given bytes or file-like object.
         """
-        return self._execute_pipeline(is_async, 'upload_data', data,
-                                      remote_path)
+        return self._execute_pipeline(
+            (self.upload_data.__name__, '<data>', *args),
+            (ReadDataStage, EncryptStage, UploadStorageStage), data, *args,
+            **kwargs)
 
-    def upload_file(self, local_path, remote_path, is_async=False):
+    def upload_file(self, *args, **kwargs):
         """
         Upload file from local filesystem.
         """
-        return self._execute_pipeline(is_async, 'upload_file', local_path,
-                                      remote_path)
+        return self._execute_pipeline(
+            (self.upload_file.__name__, *args),
+            (ReadFileStage, EncryptStage, UploadStorageStage), *args, **kwargs)
 
-    def download_data(self, remote_path, is_async=False):
+    def download_data(self, *args, **kwargs):
         """
         Download file from storage and return its content as a string.
         """
-        return self._execute_pipeline(is_async, 'download_data', remote_path)
+        return self._execute_pipeline(
+            (self.download_data.__name__, *args),
+            (DownloadStorageStage, DecryptStage, CollectDataStage), *args,
+            **kwargs)
 
-    def download_file(self, remote_path, local_path, is_async=False):
+    def download_file(self, *args, **kwargs):
         """
         Download file to local filesystem.
         """
-        return self._execute_pipeline(is_async, 'download_file', remote_path,
-                                      local_path)
+        return self._execute_pipeline(
+            (self.download_file.__name__, *args),
+            (DownloadStorageStage, DecryptStage, WriteFileStage), *args,
+            **kwargs)
 
     def await(self):
         """

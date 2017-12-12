@@ -20,7 +20,12 @@ class StorageLoader:
         self._engine = get_storage_engine(config['storage'])
         self._ploader = PipelineLoader(config)
 
-    def upload_data(self, data, remote_path, is_async=False, encoding='utf-8'):
+    def upload_data(self,
+                    data,
+                    remote_path,
+                    is_async=False,
+                    encryption=False,
+                    encoding='utf-8'):
         """
         Upload data to storage.
 
@@ -30,29 +35,45 @@ class StorageLoader:
         if isinstance(data, str):
             data = data.encode(encoding)
 
-        return self._ploader.upload_data(data, remote_path, is_async)
+        return self._ploader.upload_data(
+            data, remote_path, is_async=is_async, encryption=encryption)
 
-    def upload_file(self, local_path, remote_path, is_async=False):
+    def upload_file(self,
+                    local_path,
+                    remote_path,
+                    is_async=False,
+                    encryption=False):
         """
         Upload file from local filesystem.
         """
-        return self._ploader.upload_file(local_path, remote_path, is_async)
+        return self._ploader.upload_file(
+            local_path, remote_path, is_async=is_async, encryption=encryption)
 
-    def download_data(self, remote_path, is_async=False, encoding='utf-8'):
+    def download_data(self,
+                      remote_path,
+                      is_async=False,
+                      encryption=False,
+                      encoding='utf-8'):
         """
         Download file from storage and return its content.
 
         Unless encoding is None, the data will be decoded and returned as
         a string.
         """
-        data = self._ploader.download_data(remote_path, is_async)
+        data = self._ploader.download_data(
+            remote_path, is_async=is_async, encryption=encryption)
         return data.decode(encoding) if encoding else data
 
-    def download_file(self, remote_path, local_path, is_async=False):
+    def download_file(self,
+                      remote_path,
+                      local_path,
+                      is_async=False,
+                      encryption=False):
         """
         Download file to local filesystem.
         """
-        return self._ploader.download_file(remote_path, local_path, is_async)
+        return self._ploader.download_file(
+            remote_path, local_path, is_async=is_async, encryption=encryption)
 
     def await(self):
         """

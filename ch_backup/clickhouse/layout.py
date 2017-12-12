@@ -56,14 +56,12 @@ class ClickhouseBackupLayout:
         """
         Returns storage backup path
         """
-
         return os.path.join(self._config['path_root'], backup_name)
 
     def get_backup_meta_path(self, backup_name):
         """
         Returns backup meta path
         """
-
         return os.path.join(self._config['path_root'], backup_name,
                             self._backup_meta_fname)
 
@@ -71,14 +69,17 @@ class ClickhouseBackupLayout:
         """
         Backup table meta (sql-file)
         """
-
         table_sql_rel_path = self._ch_ctl.get_table_sql_rel_path(
             db_name, table_name)
         remote_path = os.path.join(self.backup_path, table_sql_rel_path)
         try:
 
             future_id = self._storage_loader.upload_data(
-                metadata, remote_path=remote_path, is_async=True)
+                metadata,
+                remote_path=remote_path,
+                is_async=True,
+                encryption=True)
+
             logging.debug('Saving table sql-file "%s": %s', table_sql_rel_path,
                           future_id)
             return remote_path
@@ -91,14 +92,13 @@ class ClickhouseBackupLayout:
         """
         Backup database meta (sql-file)
         """
-
         db_sql_rel_path = self._ch_ctl.get_db_sql_rel_path(db_name)
         remote_path = os.path.join(self.backup_path, db_sql_rel_path)
         try:
             logging.debug('Saving database sql-file "%s": %s', db_sql_rel_path,
                           self.backup_meta_path)
             self._storage_loader.upload_data(
-                metadata, remote_path=remote_path, is_async=False)
+                metadata, remote_path=remote_path, encryption=True)
             return remote_path
         except Exception as exc:
             logging.critical(
@@ -110,14 +110,11 @@ class ClickhouseBackupLayout:
         """
         Upload backup meta file into storage
         """
-
         remote_path = self.backup_meta_path
         try:
-            self._storage_loader.encryption = False
             logging.debug('Saving backup meta in key: %s', remote_path)
             result = self._storage_loader.upload_data(
-                backup_meta, remote_path=remote_path, is_async=False)
-            self._storage_loader.encryption = True
+                backup_meta, remote_path=remote_path)
             return result
         except Exception as exc:
             logging.critical('Unable to upload backup metadata to storage: %s',
@@ -128,7 +125,6 @@ class ClickhouseBackupLayout:
         """
         Backup part files and return storage paths
         """
-
         local_dir_path = self._ch_ctl.get_shadow_part_abs_path(
             db_name, table_name, part_name)
         remote_dir_path = os.path.join(self.backup_path, 'data', db_name,
@@ -147,7 +143,8 @@ class ClickhouseBackupLayout:
                 self._storage_loader.upload_file(
                     local_path=local_fname,
                     remote_path=remote_fname,
-                    is_async=True)
+                    is_async=True,
+                    encryption=True)
                 uploaded_files.append(remote_fname)
 
             except Exception as exc:
@@ -160,13 +157,9 @@ class ClickhouseBackupLayout:
         """
         Download backup meta file from storage
         """
-
         remote_path = self.backup_meta_path
         try:
-            self._storage_loader.encryption = False
-            result = self._storage_loader.download_data(
-                remote_path=remote_path, is_async=False)
-            self._storage_loader.encryption = True
+            result = self._storage_loader.download_data(remote_path)
             return result
         except Exception as exc:
             logging.critical(
@@ -178,21 +171,18 @@ class ClickhouseBackupLayout:
         """
         Downloads data and tries to decode
         """
-
-        return self._storage_loader.download_data(remote_path, is_async=False)
+        return self._storage_loader.download_data(remote_path, encryption=True)
 
     def download_backup_meta(self, remote_path):
         """
-        Downloads backup meta
+        Downloads backup metadata
         """
-
-        return self.download_str(remote_path)
+        return self._storage_loader.download_data(remote_path)
 
     def download_part_data(self, db_name, table_name, part_name, part_files):
         """
         Restore part from detached directory
         """
-
         logging.debug('Downloading part %s in %s.%s', part_name, db_name,
                       table_name)
 
@@ -212,7 +202,8 @@ class ClickhouseBackupLayout:
                 self._storage_loader.download_file(
                     remote_path=remote_path,
                     local_path=local_path,
-                    is_async=True)
+                    is_async=True,
+                    encryption=True)
                 downloaded_files.append((
                     remote_path,
                     local_path,
@@ -228,21 +219,18 @@ class ClickhouseBackupLayout:
         """
         Get current backup entries
         """
-
         return self._storage_loader.list_dir(self._config['path_root'])
 
     def path_exists(self, remote_path):
         """
         Check whether storage path exists or not.
         """
-
         return self._storage_loader.path_exists(remote_path)
 
     def wait(self):
         """
         Wait for async jobs
         """
-
         try:
             logging.debug('Collecting async jobs')
             self._storage_loader.await()
@@ -290,7 +278,6 @@ class ClickhouseBackupStructure:
         """
         Mark backup as started
         """
-
         return datetime.strptime(self._meta['start_time'],
                                  self._meta['date_fmt'])
 
@@ -299,7 +286,6 @@ class ClickhouseBackupStructure:
         """
         Mark backup as finished
         """
-
         return datetime.strptime(self._meta['end_time'],
                                  self._meta['date_fmt'])
 
@@ -324,14 +310,12 @@ class ClickhouseBackupStructure:
         """
         Get databases meta
         """
-
         return self._databases
 
     def mark_start(self):
         """
         Set start datetime
         """
-
         self._meta['start_time'] = datetime.now().strftime(
             self._meta['date_fmt'])
 
@@ -339,7 +323,6 @@ class ClickhouseBackupStructure:
         """
         Set end datetime
         """
-
         self._meta['end_time'] = datetime.now().strftime(
             self._meta['date_fmt'])
 
@@ -347,7 +330,6 @@ class ClickhouseBackupStructure:
         """
         Dump struct to json data
         """
-
         report = {}
         report.update({'databases': self._databases})
         report.update({'meta': self._meta})
@@ -357,7 +339,6 @@ class ClickhouseBackupStructure:
         """
         Load struct from json data
         """
-
         try:
             loaded = json.loads(data)
             self._databases = loaded['databases']
@@ -369,21 +350,18 @@ class ClickhouseBackupStructure:
         """
         Get database sql path
         """
-
         return self._databases[db_name]['db_sql_path']
 
     def set_db_sql_path(self, db_name, path):
         """
         Set database sql path
         """
-
         self._databases[db_name]['db_sql_path'] = path
 
     def get_tables(self, db_name):
         """
         Get tables for specified database
         """
-
         return (table_name
                 for table_name in self._databases[db_name]['parts_paths'])
 
@@ -391,7 +369,6 @@ class ClickhouseBackupStructure:
         """
         Get tables sql paths
         """
-
         return (
             sql_path
             for _, sql_path in self._databases[db_name]['tables_sql_paths'])
@@ -402,7 +379,6 @@ class ClickhouseBackupStructure:
 
         path is list, order matters
         """
-
         self._databases[db_name]['tables_sql_paths'].append((table_name, path))
 
     # pylint: disable=too-many-arguments
@@ -416,7 +392,6 @@ class ClickhouseBackupStructure:
         """
         Add part backup contents to backup struct
         """
-
         self._databases[db_name]['parts_paths'][table_name].update({
             part_name: {
                 'link': link,
@@ -429,7 +404,6 @@ class ClickhouseBackupStructure:
         """
         Get part backup contents from backup struct
         """
-
         try:
             return self._databases[db_name]['parts_paths'][table_name][
                 part_name]
@@ -440,7 +414,6 @@ class ClickhouseBackupStructure:
         """
         Get storage file paths of specified part
         """
-
         return self._databases[db_name]['parts_paths'][table_name][part_name][
             'paths']
 
@@ -448,7 +421,6 @@ class ClickhouseBackupStructure:
         """
         Get all parts of specified database.table
         """
-
         return self._databases[db_name]['parts_paths'][table_name]
 
 
