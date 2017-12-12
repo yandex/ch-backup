@@ -18,9 +18,9 @@ import pytest
 from hypothesis import strategies as st
 from hypothesis import example, given, settings
 
-WRITE_FILE_CMD_TEST_COUNT = 1024
-PIPELINE_TEST_COUNT = 1024
-ENCRYPT_DECRYPT_TEST_COUNT = 1024
+WRITE_FILE_CMD_TEST_COUNT = 100
+PIPELINE_TEST_COUNT = 100
+ENCRYPT_DECRYPT_TEST_COUNT = 100
 
 SECRET_KEY = 'a' * 32
 
@@ -88,6 +88,25 @@ def tmp_dir_path(dir_path=None):
         {key: st.integers(1, 1024)
          for key in ('buffer_size', 'chunk_size')}),
 )
+@example(
+    file_size=1024,
+    read_conf={'chunk_size': 128},
+    encrypt_conf={
+        'buffer_size': 512,
+        'chunk_size': 256,
+        'type': 'nacl',
+        'key': SECRET_KEY,
+    },
+    write_conf={'buffer_size': 512,
+                'chunk_size': 256},
+)
+@example(
+    file_size=1024,
+    read_conf={'chunk_size': 128},
+    encrypt_conf={},
+    write_conf={'buffer_size': 512,
+                'chunk_size': 256},
+)
 def test_pipeline_roundtrip(tmp_dir_path, file_size, read_conf, encrypt_conf,
                             write_conf):
     # pylint: disable=redefined-outer-name
@@ -132,7 +151,8 @@ def run_forward_pl(in_file_name, out_file_name, read_conf, encrypt_conf,
 
     pipeline = Pipeline()
     pipeline.append(ReadFileStage(read_conf))
-    pipeline.append(EncryptStage(encrypt_conf))
+    if encrypt_conf:
+        pipeline.append(EncryptStage(encrypt_conf))
     pipeline.append(WriteFileStage(write_conf))
 
     return pipeline(in_file_name, out_file_name)
@@ -146,7 +166,8 @@ def run_backward_pl(in_file_name, out_file_name, read_conf, encrypt_conf,
 
     pipeline = Pipeline()
     pipeline.append(ReadFileStage(read_conf))
-    pipeline.append(DecryptStage(encrypt_conf))
+    if encrypt_conf:
+        pipeline.append(DecryptStage(encrypt_conf))
     pipeline.append(WriteFileStage(write_conf))
 
     return pipeline(in_file_name, out_file_name)
