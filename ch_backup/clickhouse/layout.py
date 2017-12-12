@@ -78,9 +78,7 @@ class ClickhouseBackupLayout:
         try:
 
             future_id = self._storage_loader.upload_data(
-                metadata.encode('utf-8'),
-                remote_path=remote_path,
-                is_async=True)
+                metadata, remote_path=remote_path, is_async=True)
             logging.debug('Saving table sql-file "%s": %s', table_sql_rel_path,
                           future_id)
             return remote_path
@@ -100,9 +98,7 @@ class ClickhouseBackupLayout:
             logging.debug('Saving database sql-file "%s": %s', db_sql_rel_path,
                           self.backup_meta_path)
             self._storage_loader.upload_data(
-                metadata.encode('utf-8'),
-                remote_path=remote_path,
-                is_async=False)
+                metadata, remote_path=remote_path, is_async=False)
             return remote_path
         except Exception as exc:
             logging.critical(
@@ -120,9 +116,7 @@ class ClickhouseBackupLayout:
             self._storage_loader.encryption = False
             logging.debug('Saving backup meta in key: %s', remote_path)
             result = self._storage_loader.upload_data(
-                backup_meta.encode('utf-8'),
-                remote_path=remote_path,
-                is_async=False)
+                backup_meta, remote_path=remote_path, is_async=False)
             self._storage_loader.encryption = True
             return result
         except Exception as exc:
@@ -171,7 +165,7 @@ class ClickhouseBackupLayout:
         try:
             self._storage_loader.encryption = False
             result = self._storage_loader.download_data(
-                remote_path=remote_path, is_async=False).decode('utf-8')
+                remote_path=remote_path, is_async=False)
             self._storage_loader.encryption = True
             return result
         except Exception as exc:
@@ -185,8 +179,7 @@ class ClickhouseBackupLayout:
         Downloads data and tries to decode
         """
 
-        return self._storage_loader.download_data(remote_path, is_async=False)\
-            .decode('utf-8')
+        return self._storage_loader.download_data(remote_path, is_async=False)
 
     def download_backup_meta(self, remote_path):
         """

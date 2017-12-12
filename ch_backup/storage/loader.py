@@ -20,10 +20,16 @@ class StorageLoader:
         self._engine = get_storage_engine(config['storage'])
         self._ploader = PipelineLoader(config)
 
-    def upload_data(self, data, remote_path, is_async=False):
+    def upload_data(self, data, remote_path, is_async=False, encoding='utf-8'):
         """
-        Upload given bytes or file-like object.
+        Upload data to storage.
+
+        Data can be either byte-like object or string. The latter will be
+        converted to bytes using provided encoding.
         """
+        if isinstance(data, str):
+            data = data.encode(encoding)
+
         return self._ploader.upload_data(data, remote_path, is_async)
 
     def upload_file(self, local_path, remote_path, is_async=False):
@@ -32,11 +38,15 @@ class StorageLoader:
         """
         return self._ploader.upload_file(local_path, remote_path, is_async)
 
-    def download_data(self, remote_path, is_async=False):
+    def download_data(self, remote_path, is_async=False, encoding='utf-8'):
         """
-        Download file from storage and return its content as a string.
+        Download file from storage and return its content.
+
+        Unless encoding is None, the data will be decoded and returned as
+        a string.
         """
-        return self._ploader.download_data(remote_path, is_async)
+        data = self._ploader.download_data(remote_path, is_async)
+        return data.decode(encoding) if encoding else data
 
     def download_file(self, remote_path, local_path, is_async=False):
         """
