@@ -2,9 +2,10 @@
 NaCl encryption module
 """
 
-from ch_backup.encryption.base import BaseEncryption
 from nacl.secret import SecretBox
 from nacl.utils import random
+
+from ch_backup.encryption.base import BaseEncryption
 
 
 class NaClEncryption(BaseEncryption):

@@ -87,6 +87,8 @@ def drop_privileges(config):
     except KeyError:
         pass
 
+    return False
+
 
 def strip_query(query_text):
     """

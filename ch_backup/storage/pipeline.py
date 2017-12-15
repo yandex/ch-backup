@@ -184,7 +184,7 @@ class PipelineLoader:
             (DownloadStorageStage, DecryptStage, WriteFileStage), *args,
             **kwargs)
 
-    def await(self):
+    def wait(self):
         """
         Wait for completion of async operations.
         """

@@ -37,8 +37,7 @@ def get_exposed_port(container, port):
 
     binding = container.attrs['NetworkSettings']['Ports'].get('%d/tcp' % port)
 
-    if binding:
-        return (host, binding[0]['HostPort'])
+    return (host, binding[0]['HostPort']) if binding else None
 
 
 def generate_ipv6(subnet=None):

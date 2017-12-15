@@ -10,13 +10,13 @@ import shutil
 import tempfile
 from functools import partial
 
-from ch_backup.storage.pipeline import Pipeline
-from ch_backup.storage.stages.encryption import DecryptStage, EncryptStage
-from ch_backup.storage.stages.filesystem import ReadFileStage, WriteFileStage
-
 import pytest
 from hypothesis import strategies as st
 from hypothesis import example, given, settings
+
+from ch_backup.storage.pipeline import Pipeline
+from ch_backup.storage.stages.encryption import DecryptStage, EncryptStage
+from ch_backup.storage.stages.filesystem import ReadFileStage, WriteFileStage
 
 WRITE_FILE_CMD_TEST_COUNT = 100
 PIPELINE_TEST_COUNT = 100

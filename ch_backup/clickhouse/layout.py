@@ -233,7 +233,7 @@ class ClickhouseBackupLayout:
         """
         try:
             logging.debug('Collecting async jobs')
-            self._storage_loader.await()
+            self._storage_loader.wait()
         except Exception as exc:
             logging.critical('Errors in async transfers: %s', exc)
             raise StorageError

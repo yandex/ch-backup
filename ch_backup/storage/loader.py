@@ -75,11 +75,11 @@ class StorageLoader:
         return self._ploader.download_file(
             remote_path, local_path, is_async=is_async, encryption=encryption)
 
-    def await(self):
+    def wait(self):
         """
         Wait for completion of async operations.
         """
-        return self._ploader.await()
+        return self._ploader.wait()
 
     def list_dir(self, remote_path):
         """
