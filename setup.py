@@ -4,10 +4,7 @@
 setup.py for DBaaS ch-backup
 """
 
-try:
-    from setuptools import setup
-except ImportError:
-    from distutils import setup
+from setuptools import setup, find_packages
 
 
 REQUREMENTS = [
@@ -23,7 +20,7 @@ REQUREMENTS = [
 setup(
     name='ch-backup',
     version='0.0.1',
-    description='DBaaS Clickhouse backup',
+    description='DBaaS ClickHouse backup tool',
     license='Yandex License',
     url='https://github.yandex-team.ru/mdb/ch-backup/',
     author='DBaaS team',
@@ -32,12 +29,7 @@ setup(
     maintainer_email='mdb-admin@yandex-team.ru',
     zip_safe=False,
     platforms=['Linux', 'BSD', 'MacOS'],
-    packages=['ch_backup', 'ch_backup.storage'],
-    package_dir={
-        'ch_backup': 'ch_backup',
-        'ch_backup.storage': 'ch_backup/storage',
-        'ch_backup.encryption': 'ch_backup/encryption',
-    },
+    packages=find_packages(exclude=['tests*']),
     entry_points={'console_scripts': [
         'ch-backup = ch_backup.main:main',
     ]},

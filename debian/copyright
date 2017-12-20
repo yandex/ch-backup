@@ -1,0 +1,8 @@
+Format: http://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: ch-backup
+Source: <https://github.yandex-team.ru/mdb/ch-backup
+
+Files: *
+Copyright: 2017 Yandex LLC <legal@yandex-team.ru>
+License:
+ This software is released under Yandex License.

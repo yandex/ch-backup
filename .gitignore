@@ -11,3 +11,6 @@ htmlcov/
 .idea
 .hypothesis/
 .cache
+debian/changelog
+debian/files
+debian/ch-backup*
