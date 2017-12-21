@@ -10,4 +10,5 @@ Homepage: https://github.yandex-team.ru/mdb/ch-backup
 
 Package: ch-backup
 Architecture: any
+Depends: python3.5
 Description: DBaaS ClickHouse backup tool

@@ -35,7 +35,7 @@ clean_pycache:
 
 install:
 	@echo "Installing into $(INSTALL_DIR)"
-	python3.5 -m venv --copies $(INSTALL_DIR)
+	python3.5 -m venv $(INSTALL_DIR)
 	$(INSTALL_DIR)/bin/pip install .
 	rm -rf $(INSTALL_DIR)/bin/activate*
 	find $(INSTALL_DIR) -name __pycache__ -type d -exec rm -rf {} +
