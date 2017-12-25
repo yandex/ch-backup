@@ -5,7 +5,7 @@ For details of env bootstrap, see env_control
 """
 import logging
 
-from tests.integration import env_control
+from tests.integration import env_control, logs
 
 
 def before_all(context):
@@ -21,6 +21,14 @@ def before_scenario(context, _scenario):
     Cleanup function executing per feature scenario.
     """
     env_control.restart(state=context.state)
+
+
+def after_step(context, step):
+    """
+    Save logs after failed step.
+    """
+    if step.status == 'failed':
+        logs.save_logs(context)
 
 
 def after_all(context):
