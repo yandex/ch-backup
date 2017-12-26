@@ -25,49 +25,28 @@ class ClickhouseBackup:
 
         self._backup_layout = backup_layout
 
-    @property
-    def commands(self):
-        """
-        Exported commands to cli
-        """
-
-        return {
-            'backup': self.backup,
-            'restore': self.restore,
-            'list': self.list,
-            'show': self.show,
-        }
-
-    def show(self, **kwargs):  # pylint: disable=unused-argument
+    def show(self, backup_name):
         """
         Show backup meta struct
         """
-        backup_name = kwargs['path']
         backup_meta_path = self._backup_layout.get_backup_meta_path(
             backup_name)
         backup_meta = self._load_backup_meta(backup_meta_path)
         return backup_meta
 
-    def list(self, **kwargs):  # pylint: disable=unused-argument
+    def list(self):
         """
-        List backup entries
+        Get list of existing backup names.
         """
+        return self._backup_layout.get_existing_backups_names()
 
-        return '\n'.join(
-            sorted(
-                self._backup_layout.get_existing_backups_names(),
-                reverse=True))
-
-    def backup(self, **kwargs):
+    def backup(self, databases=None):
         """
         Start backup
         """
-
-        if kwargs['databases'] is None:
+        if databases is None:
             databases = self._ch_ctl.get_all_databases(
                 self._config['exclude_dbs'])
-        else:
-            databases = kwargs['databases'].split(',')
 
         # load existing backups if deduplication is enabled
         if self._config.get('deduplicate_parts'):
@@ -97,20 +76,17 @@ class ClickhouseBackup:
 
         return backup_meta.name
 
-    def restore(self, **kwargs):
+    def restore(self, backup_name, databases=None):
         """
         Restore specified backup
         """
-        backup_name = kwargs['path']
         self._backup_layout.backup_name = backup_name
         backup_meta = ClickhouseBackupStructure()
         backup_meta.load_json(self._backup_layout.get_backup_meta())
 
-        if kwargs['databases'] is None:
+        if databases is None:
             databases = backup_meta.get_databases()
         else:
-            databases = kwargs['databases'].split(',')
-
             # check all required databases exists in backup meta
             missed_databases = (db_name for db_name in databases
                                 if db_name not in backup_meta.get_databases())
@@ -123,8 +99,6 @@ class ClickhouseBackup:
 
         for db_name in databases:
             self.restore_database(db_name, backup_meta)
-
-        return backup_name
 
     def _get_backup_path(self, backup_name):
         """
@@ -147,7 +121,7 @@ class ClickhouseBackup:
 
             # save table sql
             backup_meta.add_table_sql_path(db_name, table_name,
-                                           self.backup_table_meta(
+                                           self._backup_table_meta(
                                                db_name, table_name))
 
             parts_rows = self._ch_ctl.get_all_table_parts_info(
@@ -198,9 +172,9 @@ class ClickhouseBackup:
 
         # save database sql
         backup_meta.set_db_sql_path(db_name,
-                                    self.backup_database_meta(db_name))
+                                    self._backup_database_meta(db_name))
 
-    def backup_database_meta(self, db_name):
+    def _backup_database_meta(self, db_name):
         """
         Backup database sql
         """
@@ -214,7 +188,7 @@ class ClickhouseBackup:
         metadata = file_contents.replace('ATTACH ', 'CREATE ', 1)
         return self._backup_layout.save_database_meta(db_name, metadata)
 
-    def backup_table_meta(self, db_name, table_name):
+    def _backup_table_meta(self, db_name, table_name):
         """
         Backup table sql
         """

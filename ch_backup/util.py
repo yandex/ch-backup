@@ -44,13 +44,6 @@ def setup_environment(config):
         pass
 
 
-def pretty_print(msg):
-    """
-    Pretty print for util report
-    """
-    print(msg)
-
-
 def demote_group(new_group):
     """
     Perform group change

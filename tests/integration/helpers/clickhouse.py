@@ -180,8 +180,10 @@ def make_backup(ch_instance, cli_path=None, conf_path=None):
     if conf_path is None:
         conf_path = CH_BACKUP_CONF_PATH
 
-    output = ch_instance.exec_run('{cli_path} -c {conf_path} backup'.format(
-        cli_path=cli_path, conf_path=conf_path))
+    output = ch_instance.exec_run(
+        '{cli_path} -c {conf_path} backup'.format(
+            cli_path=cli_path, conf_path=conf_path),
+        user='root')
     return output.decode()
 
 
@@ -202,8 +204,10 @@ def get_backup_entries(ch_instance, cli_path=None, conf_path=None):
         cli_path = CH_BACKUP_CLI_PATH
     if conf_path is None:
         conf_path = CH_BACKUP_CONF_PATH
-    output = ch_instance.exec_run('{cli_path} -c {conf_path} list'.format(
-        cli_path=cli_path, conf_path=conf_path))
+    output = ch_instance.exec_run(
+        '{cli_path} -c {conf_path} list'.format(
+            cli_path=cli_path, conf_path=conf_path),
+        user='root')
     raw_entries = output.decode().split('\n')
     return list(filter(None, raw_entries))
 
@@ -221,8 +225,9 @@ def restore_backup_entry(ch_instance,
     if conf_path is None:
         conf_path = CH_BACKUP_CONF_PATH
     output = ch_instance.exec_run(
-        '{cli_path} -c {conf_path} -p {backup_entry} restore'.format(
-            cli_path=cli_path, conf_path=conf_path, backup_entry=backup_entry))
+        '{cli_path} -c {conf_path} restore {backup_entry}'.format(
+            cli_path=cli_path, conf_path=conf_path, backup_entry=backup_entry),
+        user='root')
     return output.decode()
 
 
@@ -261,8 +266,9 @@ def count_deduplicated_parts(context,
     ch_instance = docker.get_container(context, node_name)
     backup_entry = get_backup_entries(ch_instance)[entry_num]
     backup_json = ch_instance.exec_run(
-        '{cli_path} -c {conf_path} -p {backup_entry} show'.format(
-            cli_path=cli_path, conf_path=conf_path, backup_entry=backup_entry))
+        '{cli_path} -c {conf_path} show {backup_entry}'.format(
+            cli_path=cli_path, conf_path=conf_path, backup_entry=backup_entry),
+        user='root')
     backup_meta = json.loads(backup_json.decode())
 
     links_count = 0

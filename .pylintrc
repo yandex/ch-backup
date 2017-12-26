@@ -128,10 +128,10 @@ function-rgx=[a-z_][a-z0-9_]{2,30}$
 function-name-hint=[a-z_][a-z0-9_]{2,30}$
 
 # Regular expression matching correct argument names
-argument-rgx=[a-z_][a-z0-9_]{1,30}$
+argument-rgx=[a-z_][a-z0-9_]{0,30}$
 
 # Naming hint for argument names
-argument-name-hint=[a-z_][a-z0-9_]{1,30}$
+argument-name-hint=[a-z_][a-z0-9_]{0,30}$
 
 # Regular expression matching correct attribute names
 attr-rgx=[a-z_][a-z0-9_]{2,30}$

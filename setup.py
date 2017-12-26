@@ -14,6 +14,7 @@ REQUREMENTS = [
     'botocore==1.7.43',
     'PyYAML>=3.10',
     'PyNaCl==1.1.2',
+    'click==6.7.0',
 ]
 
 
@@ -31,7 +32,7 @@ setup(
     platforms=['Linux', 'BSD', 'MacOS'],
     packages=find_packages(exclude=['tests*']),
     entry_points={'console_scripts': [
-        'ch-backup = ch_backup.main:main',
+        'ch-backup = ch_backup:main',
     ]},
     install_requires=REQUREMENTS,
 )
