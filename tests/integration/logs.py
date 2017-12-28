@@ -3,10 +3,9 @@ Logs save handler
 """
 
 import io
+import json
 import os
 import tarfile
-
-import yaml
 
 from .helpers.docker import DOCKER_API
 
@@ -41,5 +40,5 @@ def save_logs(context):
         if network_name in networks:
             save_container_logs(container, logs_dir)
 
-    with open(os.path.join(logs_dir, 'session_conf.yaml'), 'w') as out:
-        yaml.dump(context.state, out)
+    with open(os.path.join(logs_dir, 'session_conf.json'), 'w') as out:
+        json.dump(context.state, out, default=repr, indent=4)
