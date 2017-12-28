@@ -43,10 +43,12 @@ install:
 	    && grep -l -r -F '#!$(INSTALL_DIR)' $(INSTALL_DIR) \
 	        | xargs sed -i -e 's|$(INSTALL_DIR)|/opt/yandex/ch-backup|' \
 	    || true
+	mkdir -p $(DESTDIR)/usr/bin/
+	ln -s /opt/yandex/ch-backup/bin/ch-backup $(DESTDIR)/usr/bin/
 
 uninstall:
 	@echo "Uninstalling from $(INSTALL_DIR)"
-	rm -rf $(INSTALL_DIR)
+	rm -rf $(INSTALL_DIR) /usr/bin/ch-backup
 
 
 debuild: debian_changelog
