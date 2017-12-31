@@ -50,7 +50,7 @@ class ClickhouseBackup:
 
         # load existing backups if deduplication is enabled
         if self._config.get('deduplicate_parts'):
-            backup_age_limit = datetime.now() - timedelta(
+            backup_age_limit = datetime.utcnow() - timedelta(
                 **self._config['deduplication_age_limit'])
 
             self._load_existing_backups(backup_age_limit)

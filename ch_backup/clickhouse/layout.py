@@ -31,7 +31,7 @@ class ClickhouseBackupLayout:
         self._ch_ctl = ch_ctl
 
         self._backup_name_fmt = CBS_DEFAULT_PNAME_FMT
-        self._backup_name = datetime.now().strftime(self._backup_name_fmt)
+        self._backup_name = datetime.utcnow().strftime(self._backup_name_fmt)
         self._backup_meta_fname = CBS_DEFAULT_FNAME
 
         self.backup_path = self._get_backup_path(self._backup_name)
@@ -316,14 +316,14 @@ class ClickhouseBackupStructure:
         """
         Set start datetime
         """
-        self._meta['start_time'] = datetime.now().strftime(
+        self._meta['start_time'] = datetime.utcnow().strftime(
             self._meta['date_fmt'])
 
     def mark_end(self):
         """
         Set end datetime
         """
-        self._meta['end_time'] = datetime.now().strftime(
+        self._meta['end_time'] = datetime.utcnow().strftime(
             self._meta['date_fmt'])
 
     def dump_json(self):

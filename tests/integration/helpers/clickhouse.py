@@ -162,7 +162,7 @@ def gen_record(row_num=0, day_diff=None, str_len=5, str_prefix=None):
 
     rand_str = crypto.gen_plain_random_string(str_len)
 
-    dt_now = datetime.now() - timedelta(**day_diff)
+    dt_now = datetime.utcnow() - timedelta(**day_diff)
     row = (dt_now.strftime('%Y-%m-%d'), dt_now.strftime('%Y-%m-%d %H:%M:%S'),
            str(row_num), '{prefix}{rand_str}'.format(
                prefix=str_prefix, rand_str=rand_str))
