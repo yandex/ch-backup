@@ -32,8 +32,8 @@ STAGES = {
         # Build docker images
         compose.build_images,
     ],
-    'start': [compose.startup_containers, ],
-    'restart': [compose.recreate_containers, ],
+    'start': [compose.startup_containers],
+    'restart': [compose.recreate_containers],
     'stop': [
         # Shutdown docker containers
         compose.shutdown_containers,
@@ -129,15 +129,11 @@ def parse_args(commands):
     """
     Parse command-line arguments.
     """
-    arg = argparse.ArgumentParser(
-        description="""
+    arg = argparse.ArgumentParser(description="""
         DBaaS testing environment initializer script
-        """, )
+        """)
     arg.add_argument(
-        'command',
-        choices=list(commands),
-        help='command to perform',
-    )
+        'command', choices=list(commands), help='command to perform')
     arg.add_argument(
         '-s',
         '--state-file',
@@ -145,8 +141,7 @@ def parse_args(commands):
         type=str,
         metavar='<path>',
         default=SESSION_STATE_CONF,
-        help='path to state file (pickle dump)',
-    )
+        help='path to state file (pickle dump)')
     return arg.parse_args()
 
 

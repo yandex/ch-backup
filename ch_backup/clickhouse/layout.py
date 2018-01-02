@@ -398,7 +398,7 @@ class ClickhouseBackupStructure:
                 'paths': paths,
                 'meta': meta,
             },
-        }, )
+        })
 
     def get_part_contents(self, db_name, table_name, part_name):
         """

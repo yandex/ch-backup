@@ -94,13 +94,12 @@ def prep_network(state, conf):
     # Do not create new network if there is an another net with the same name.
     if DOCKER_API.networks.list(names='^%s$' % conf.get('network_name')):
         return
-    ip_subnet_pool = docker.types.IPAMConfig(
-        pool_configs=[
-            docker.types.IPAMPool(
-                subnet=generate_ipv4(conf.get('docker_ip4_subnet'))),
-            docker.types.IPAMPool(
-                subnet=generate_ipv6(conf.get('docker_ip6_subnet'))),
-        ], )
+    ip_subnet_pool = docker.types.IPAMConfig(pool_configs=[
+        docker.types.IPAMPool(
+            subnet=generate_ipv4(conf.get('docker_ip4_subnet'))),
+        docker.types.IPAMPool(
+            subnet=generate_ipv6(conf.get('docker_ip6_subnet'))),
+    ])
     bridge_name = '{name}_{num}'.format(
         name=conf.get('docker_bridge_name', 'dbaas'),
         num=random.randint(0, 65535),
