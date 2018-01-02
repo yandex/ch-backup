@@ -37,6 +37,12 @@ TEST_TABLE_SCHEMA = utils.strip_query("""
     engine = MergeTree(date, int_num, 8192)
 """)
 
+GET_VERSION_SQL = utils.strip_query("""
+    SELECT value
+    FROM system.build_options
+    WHERE name = 'VERSION_DESCRIBE'
+""")
+
 
 class ClickhouseClient:
     """
@@ -57,7 +63,6 @@ class ClickhouseClient:
         """
         Perform query to configured clickhouse endpoint
         """
-
         if timeout is None:
             timeout = self._timeout
         query_url = self._query_url.format(query=query_str)
@@ -75,7 +80,7 @@ class ClickhouseClient:
         try:
             return http_response.json()
         except ValueError:
-            return {}
+            return str.strip(http_response.text)
 
 
 def get_ch_client(context, node_name, proto=None):
@@ -123,6 +128,13 @@ def init_schema(ch_client):
                                 db_name=db_name,
                                 table_name=table_name,
                                 table_schema=TEST_TABLE_SCHEMA))
+
+
+def get_version(ch_client):
+    """
+    Get ClickHouse version
+    """
+    return ch_client.query(GET_VERSION_SQL)
 
 
 def fill_with_data(ch_client, mark=None):
@@ -249,6 +261,22 @@ def get_all_user_data(ch_client):
     return rows_count, user_data
 
 
+def get_backup_meta(ch_instance, backup_entry, cli_path=None, conf_path=None):
+    """
+    Get backup entry metadata.
+    """
+    if cli_path is None:
+        cli_path = CH_BACKUP_CLI_PATH
+    if conf_path is None:
+        conf_path = CH_BACKUP_CONF_PATH
+
+    response = ch_instance.exec_run(
+        '{cli_path} -c {conf_path} show {backup_entry}'.format(
+            cli_path=cli_path, conf_path=conf_path, backup_entry=backup_entry),
+        user='root')
+    return json.loads(response.decode())
+
+
 def count_deduplicated_parts(context,
                              node_name,
                              entry_num,
@@ -265,11 +293,8 @@ def count_deduplicated_parts(context,
 
     ch_instance = docker.get_container(context, node_name)
     backup_entry = get_backup_entries(ch_instance)[entry_num]
-    backup_json = ch_instance.exec_run(
-        '{cli_path} -c {conf_path} show {backup_entry}'.format(
-            cli_path=cli_path, conf_path=conf_path, backup_entry=backup_entry),
-        user='root')
-    backup_meta = json.loads(backup_json.decode())
+    backup_meta = get_backup_meta(ch_instance, backup_entry, cli_path,
+                                  conf_path)
 
     links_count = 0
     for _, db_contents in backup_meta['databases'].items():

@@ -6,8 +6,9 @@ import logging
 import os
 from datetime import datetime, timedelta
 
-from ch_backup.clickhouse.layout import (ClickhouseBackupStructure,
-                                         ClickhousePartInfo)
+from ch_backup.clickhouse.control import ClickhouseCTL
+from ch_backup.clickhouse.layout import (
+    ClickhouseBackupLayout, ClickhouseBackupStructure, ClickhousePartInfo)
 from ch_backup.exceptions import ClickHouseBackupError, InvalidBackupStruct
 
 
@@ -17,13 +18,13 @@ class ClickhouseBackup:
     """
 
     # pylint: disable=too-many-arguments,too-many-instance-attributes
-    def __init__(self, config, ch_ctl, backup_layout):
-        self._config = config
-        self._ch_ctl = ch_ctl
+    def __init__(self, config, ch_ctl=None, backup_layout=None):
+        self._ch_ctl = ch_ctl or ClickhouseCTL(config['clickhouse'])
+        self._backup_layout = backup_layout or \
+            ClickhouseBackupLayout(config, ch_ctl=self._ch_ctl)
+        self._config = config['backup']
         self._existing_backups = []
         self._dedup_time = None
-
-        self._backup_layout = backup_layout
 
     def show(self, backup_name):
         """
@@ -55,7 +56,8 @@ class ClickhouseBackup:
 
             self._load_existing_backups(backup_age_limit)
 
-        backup_meta = ClickhouseBackupStructure()
+        ch_version = self._ch_ctl.get_version()
+        backup_meta = ClickhouseBackupStructure(ch_version)
         backup_meta.name = self._backup_layout.backup_name
         backup_meta.path = self._backup_layout.backup_path
 

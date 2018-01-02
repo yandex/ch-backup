@@ -4,7 +4,8 @@ Steps related to clickhouse and backups.
 
 import requests
 from behave import given, then, when
-from hamcrest import assert_that, equal_to, matches_regexp
+from hamcrest import (assert_that, equal_to, has_entries, has_length,
+                      matches_regexp)
 from retrying import retry
 
 from tests.integration.helpers import clickhouse, docker
@@ -50,10 +51,20 @@ def step_create_backup(context, node_name):
 
 @then('we got {backups_count} ch_backup entries of {node_name}')
 def step_check_backup_entries(context, backups_count, node_name):
-    current_backups_count = len(
-        clickhouse.get_backup_entries(
-            docker.get_container(context, node_name)))
-    assert_that(current_backups_count, equal_to(int(backups_count)))
+    ch_instance = docker.get_container(context, node_name)
+    ch_client = clickhouse.get_ch_client(context, node_name)
+    version = clickhouse.get_version(ch_client)
+    backup_entries = clickhouse.get_backup_entries(ch_instance)
+
+    assert_that(backup_entries, has_length(int(backups_count)))
+    for entry in backup_entries:
+        metadata = clickhouse.get_backup_meta(ch_instance, entry)
+        assert_that(metadata,
+                    has_entries({
+                        'meta': has_entries({
+                            'ch_version': version,
+                        }),
+                    }))
 
 
 @then('deduplicated {links_count} parts in #{entry_num} ch_backup entry of'

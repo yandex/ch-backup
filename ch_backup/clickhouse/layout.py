@@ -10,6 +10,7 @@ import socket
 from collections import defaultdict
 from datetime import datetime
 
+from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.exceptions import InvalidBackupStruct, StorageError
 from ch_backup.storage import StorageLoader
 
@@ -25,10 +26,10 @@ class ClickhouseBackupLayout:
     Storage layout and transfer
     """
 
-    def __init__(self, ch_ctl, config, storage_loader=None):
+    def __init__(self, config, ch_ctl=None, storage_loader=None):
         self._storage_loader = storage_loader or StorageLoader(config)
+        self._ch_ctl = ch_ctl or ClickhouseCTL(config['clickhouse'])
         self._config = config['backup']
-        self._ch_ctl = ch_ctl
 
         self._backup_name_fmt = CBS_DEFAULT_PNAME_FMT
         self._backup_name = datetime.utcnow().strftime(self._backup_name_fmt)
@@ -244,7 +245,7 @@ class ClickhouseBackupStructure:
     Clickhouse backup meta
     """
 
-    def __init__(self, date_fmt=None, hostname=None):
+    def __init__(self, ch_version=None, date_fmt=None, hostname=None):
         if hostname is None:
             hostname = socket.getfqdn()
 
@@ -252,6 +253,7 @@ class ClickhouseBackupStructure:
             date_fmt = CBS_DEFAULT_DATE_FMT
 
         self._meta = {
+            'ch_version': ch_version,
             'hostname': hostname,
             'rows': 0,
             'bytes': 0,

@@ -10,8 +10,6 @@ from functools import wraps
 from click import ParamType, Path, argument, group, option, pass_context
 
 from .backup import ClickhouseBackup
-from .clickhouse.control import ClickhouseCTL
-from .clickhouse.layout import ClickhouseBackupLayout
 from .config import Config
 from .util import drop_privileges, setup_environment, setup_logging
 
@@ -34,10 +32,7 @@ def cli(ctx, config):
     if not drop_privileges(cfg['main']):
         logging.warning('Drop privileges was disabled in config file.')
 
-    ch_ctl = ClickhouseCTL(cfg['clickhouse'])
-    backup_layout = ClickhouseBackupLayout(ch_ctl, cfg)
-
-    ch_backup = ClickhouseBackup(cfg['backup'], ch_ctl, backup_layout)
+    ch_backup = ClickhouseBackup(cfg)
 
     ctx.obj = dict(backup=ch_backup)
 

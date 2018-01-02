@@ -48,6 +48,12 @@ GET_ALL_TABLE_PARTS_INFO_SQL = strip_query("""
     FORMAT JSON;
 """)
 
+GET_VERSION_SQL = strip_query("""
+    SELECT value
+    FROM system.build_options
+    WHERE name = 'VERSION_DESCRIBE'
+""")
+
 
 class ClickhouseCTL:
     """
@@ -246,6 +252,12 @@ class ClickhouseCTL:
             '{db_name}'.format(db_name=db_name),
             '{table_name}.sql'.format(table_name=table_name))
 
+    def get_version(self):
+        """
+        Get ClickHouse version
+        """
+        return self._ch_client.query(GET_VERSION_SQL)
+
     @staticmethod
     def _get_metadata_abs_path(data_path):
         """
@@ -282,7 +294,6 @@ class ClickhouseClient:
         """
         Perform query to configured clickhouse endpoint
         """
-
         if timeout is None:
             timeout = self._timeout
 
@@ -301,4 +312,4 @@ class ClickhouseClient:
         try:
             return http_response.json()
         except ValueError:
-            return {}
+            return str.strip(http_response.text)
