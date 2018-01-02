@@ -110,11 +110,7 @@ def list_command(_ctx, ch_backup):
 @argument('name', metavar='BACKUP')
 def show(ctx, ch_backup, name):
     """Show details for a particular backup."""
-    if name == 'LAST':
-        backups = ch_backup.list()
-        if not backups:
-            ctx.fail('There are no backups to show.')
-        name = max(backups)
+    name = _validate_name(ctx, ch_backup, name)
 
     print(ch_backup.show(name))
 
@@ -138,6 +134,23 @@ def backup(_ctx, ch_backup, databases):
     '--databases',
     type=List(regexp=r'\w+'),
     help='Comma-separated list of databases to restore.')
-def restore(_ctx, ch_backup, name, databases):
+def restore(ctx, ch_backup, name, databases):
     """Restore data from a particular backup."""
+    name = _validate_name(ctx, ch_backup, name)
+
     ch_backup.restore(name, databases)
+
+
+def _validate_name(ctx, ch_backup, name):
+
+    backups = ch_backup.list()
+
+    if name == 'LAST':
+        if not backups:
+            ctx.fail('There are no backups.')
+        return max(backups)
+
+    if name not in backups:
+        ctx.fail('No backups with name "%s" were found.' % name)
+
+    return name
