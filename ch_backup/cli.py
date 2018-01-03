@@ -5,6 +5,7 @@ Command-line interface.
 
 import logging
 import re
+import sys
 from functools import wraps
 
 from click import ParamType, Path, argument, group, option, pass_context
@@ -123,7 +124,9 @@ def show(ctx, ch_backup, name):
     help='Comma-separated list of databases to backup.')
 def backup(_ctx, ch_backup, databases):
     """Perform backup."""
-    name = ch_backup.backup(databases)
+    (name, msg) = ch_backup.backup(databases)
+    if msg:
+        print(msg, file=sys.stderr, flush=True)
     print(name)
 
 

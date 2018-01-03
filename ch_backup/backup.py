@@ -3,8 +3,8 @@ Clickhouse backup logic
 """
 
 import logging
-import os
 from datetime import datetime, timedelta
+from functools import lru_cache
 
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.layout import (
@@ -17,7 +17,6 @@ class ClickhouseBackup:
     Clickhouse backup logic
     """
 
-    # pylint: disable=too-many-arguments,too-many-instance-attributes
     def __init__(self, config, ch_ctl=None, backup_layout=None):
         self._ch_ctl = ch_ctl or ClickhouseCTL(config['clickhouse'])
         self._backup_layout = backup_layout or \
@@ -30,16 +29,13 @@ class ClickhouseBackup:
         """
         Show backup meta struct
         """
-        backup_meta_path = self._backup_layout.get_backup_meta_path(
-            backup_name)
-        backup_meta = self._load_backup_meta(backup_meta_path)
-        return backup_meta
+        return self._get_backup_meta(backup_name)
 
     def list(self):
         """
         Get list of existing backup names.
         """
-        return self._backup_layout.get_existing_backups_names()
+        return self._get_existing_backup_names()
 
     def backup(self, databases=None):
         """
@@ -49,12 +45,23 @@ class ClickhouseBackup:
             databases = self._ch_ctl.get_all_databases(
                 self._config['exclude_dbs'])
 
+        current_time = datetime.utcnow()
+
         # load existing backups if deduplication is enabled
         if self._config.get('deduplicate_parts'):
-            backup_age_limit = datetime.utcnow() - timedelta(
+            backup_age_limit = current_time - timedelta(
                 **self._config['deduplication_age_limit'])
 
             self._load_existing_backups(backup_age_limit)
+
+        min_interval = self._config.get('min_interval')
+        existing_backup_names = self._get_existing_backup_names()
+        if min_interval and existing_backup_names:
+            last_backup = self._get_backup_meta(max(existing_backup_names))
+            if current_time - last_backup.end_time < timedelta(**min_interval):
+                msg = 'Backup is skipped per backup.min_interval config option'
+                logging.info(msg)
+                return (last_backup.name, msg)
 
         ch_version = self._ch_ctl.get_version()
         backup_meta = ClickhouseBackupStructure(ch_version)
@@ -76,7 +83,7 @@ class ClickhouseBackup:
         logging.debug('Resultant backup meta:\n%s', backup_meta_json)
         self._backup_layout.save_backup_meta(backup_meta_json)
 
-        return backup_meta.name
+        return (backup_meta.name, None)
 
     def restore(self, backup_name, databases=None):
         """
@@ -101,12 +108,6 @@ class ClickhouseBackup:
 
         for db_name in databases:
             self.restore_database(db_name, backup_meta)
-
-    def _get_backup_path(self, backup_name):
-        """
-        Get storage backup path
-        """
-        return os.path.join(self._config['path_root'], backup_name)
 
     def backup_database(self, db_name, backup_meta):
         """
@@ -180,7 +181,6 @@ class ClickhouseBackup:
         """
         Backup database sql
         """
-
         db_sql_abs_path = self._ch_ctl.get_db_sql_abs_path(db_name)
         logging.debug('Making database "%s" sql backup: %s', db_name,
                       db_sql_abs_path)
@@ -194,7 +194,6 @@ class ClickhouseBackup:
         """
         Backup table sql
         """
-
         table_sql_abs_path = self._ch_ctl.get_table_sql_abs_path(
             db_name, table_name)
         logging.debug('Making table "%s.%s" sql backup: %s', db_name,
@@ -215,7 +214,6 @@ class ClickhouseBackup:
         """
         Restore database
         """
-
         logging.debug('Running database restore: %s', db_name)
 
         # restore db sql
@@ -260,7 +258,6 @@ class ClickhouseBackup:
         """
         Deduplicate part if it's possible
         """
-
         logging.debug('Looking for deduplication of part "%s"', part_info.name)
 
         for backup_meta in self._existing_backups:
@@ -297,7 +294,6 @@ class ClickhouseBackup:
         """
         Check if part files exist in storage
         """
-
         failed_part_files = [
             path for path in part_info.paths
             if not self._backup_layout.path_exists(path)
@@ -310,19 +306,23 @@ class ClickhouseBackup:
 
         return True
 
-    def _load_backup_meta(self, backup_meta_path):
+    @lru_cache()
+    def _get_existing_backup_names(self):
+        return self._backup_layout.get_existing_backups_names()
+
+    @lru_cache()
+    def _get_backup_meta(self, backup_name):
         """
         Download from storage and load backup meta file
         """
+        path = self._backup_layout.get_backup_meta_path(backup_name)
 
-        backup_meta_contents = self._backup_layout.download_backup_meta(
-            backup_meta_path)
+        backup_meta_contents = self._backup_layout.download_backup_meta(path)
         backup_meta = ClickhouseBackupStructure()
         try:
             backup_meta.load_json(backup_meta_contents)
         except InvalidBackupStruct:
-            logging.critical('Can not load backup meta file: %s',
-                             backup_meta_path)
+            logging.critical('Can not load backup meta file: %s', path)
             raise
         return backup_meta
 
@@ -330,31 +330,29 @@ class ClickhouseBackup:
         """
         Load all current backup entries
         """
-
         if backup_age_limit is None:
             backup_age_limit = datetime.fromtimestamp(0)
 
         logging.debug('Collecting existing backups for deduplication')
-        backup_paths = self._backup_layout.get_existing_backups_names()
 
         existing_backups = []
-        for backup_name in backup_paths:
-            backup_meta_path = self._backup_layout.get_backup_meta_path(
-                backup_name)
-            if not self._backup_layout.path_exists(backup_meta_path):
-                logging.warning('Backup path without meta file was found: %s',
-                                backup_meta_path)
-                continue
+        for backup_name in self._get_existing_backup_names():
+            try:
+                backup_meta = self._get_backup_meta(backup_name)
 
-            backup_meta = self._load_backup_meta(backup_meta_path)
-
-            # filter old entries (see deduplication_age_limit)
-            if backup_meta.end_time > backup_age_limit:
-                existing_backups.append(backup_meta)
-            else:
-                logging.debug(
-                    'Backup "%s" is too old for deduplication (%s > %s), skip',
-                    backup_meta_path, backup_meta.end_time, backup_age_limit)
+                # filter old entries (see deduplication_age_limit)
+                if backup_meta.end_time > backup_age_limit:
+                    existing_backups.append(backup_meta)
+                else:
+                    logging.debug(
+                        'Backup "%s" is too old for deduplication (%s > %s),'
+                        ' skipping', backup_name, backup_meta.end_time,
+                        backup_age_limit)
+            except Exception:
+                logging.warning(
+                    'Failed to load metadata for backup %s',
+                    backup_name,
+                    exc_info=True)
 
         # Sort by time (new is first)
         # we want to duplicate part based on freshest backup

@@ -23,6 +23,9 @@ DEFAULT_CONFIG = {
         'deduplication_age_limit': {
             'days': 7,
         },
+        'min_interval': {
+            'minutes': 0,
+        },
     },
     'storage': {
         'type': 's3',
