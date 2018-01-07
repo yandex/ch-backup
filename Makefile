@@ -45,10 +45,12 @@ install:
 	    || true
 	mkdir -p $(DESTDIR)/usr/bin/
 	ln -s /opt/yandex/ch-backup/bin/ch-backup $(DESTDIR)/usr/bin/
+	mdifr -p $(DESTDIR)/etc/bash_completion.d/
+	_CH_BACKUP_COMPLETE=source $(INSTALL_DIR)/bin/ch-backup > $(DESTDIR)/etc/bash_completion.d/ch-backup
 
 uninstall:
 	@echo "Uninstalling from $(INSTALL_DIR)"
-	rm -rf $(INSTALL_DIR) /usr/bin/ch-backup
+	rm -rf $(INSTALL_DIR) $(DESTDIR)/usr/bin/ch-backup $(DESTDIR)/etc/bash_completion.d/ch-backup
 
 
 debuild: debian_changelog
