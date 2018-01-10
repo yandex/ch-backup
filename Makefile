@@ -37,16 +37,18 @@ install:
 	@echo "Installing into $(INSTALL_DIR)"
 	python3.5 -m venv $(INSTALL_DIR)
 	$(INSTALL_DIR)/bin/pip install .
+	mkdir -p $(DESTDIR)/usr/bin/
+	ln -s /opt/yandex/ch-backup/bin/ch-backup $(DESTDIR)/usr/bin/
+	mkdir -p $(DESTDIR)/etc/bash_completion.d/
+	env LC_ALL=C.UTF-8 LANG=C.UTF-8 \
+	    _CH_BACKUP_COMPLETE=source $(INSTALL_DIR)/bin/ch-backup > $(DESTDIR)/etc/bash_completion.d/ch-backup || \
+	    test -s $(DESTDIR)/etc/bash_completion.d/ch-backup
 	rm -rf $(INSTALL_DIR)/bin/activate*
 	find $(INSTALL_DIR) -name __pycache__ -type d -exec rm -rf {} +
 	test -n '$(DESTDIR)' \
 	    && grep -l -r -F '#!$(INSTALL_DIR)' $(INSTALL_DIR) \
 	        | xargs sed -i -e 's|$(INSTALL_DIR)|/opt/yandex/ch-backup|' \
 	    || true
-	mkdir -p $(DESTDIR)/usr/bin/
-	ln -s /opt/yandex/ch-backup/bin/ch-backup $(DESTDIR)/usr/bin/
-	mdifr -p $(DESTDIR)/etc/bash_completion.d/
-	_CH_BACKUP_COMPLETE=source $(INSTALL_DIR)/bin/ch-backup > $(DESTDIR)/etc/bash_completion.d/ch-backup
 
 uninstall:
 	@echo "Uninstalling from $(INSTALL_DIR)"
