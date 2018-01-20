@@ -10,7 +10,7 @@ ENV CH_TMP_DIR /var/tmp/ch-backup
 
 ARG repository="deb https://repo.yandex.ru/clickhouse/xenial/ dists/stable/main/binary-amd64/"
 # ARG version=\*
-ARG version=1.1.54292
+ARG version=1.1.54327
 
 ENV CLICKHOUSE_CONFIG /etc/clickhouse-server/config.xml
 ENV CLICKHOUSE_USERS /etc/clickhouse-server/users.xml
