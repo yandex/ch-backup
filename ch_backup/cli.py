@@ -113,7 +113,7 @@ def show(ctx, ch_backup, name):
     """Show details for a particular backup."""
     name = _validate_name(ctx, ch_backup, name)
 
-    print(ch_backup.show(name))
+    print(ch_backup.get(name))
 
 
 @command()

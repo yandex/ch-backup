@@ -9,7 +9,7 @@ from functools import lru_cache
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.layout import (
     ClickhouseBackupLayout, ClickhouseBackupStructure, ClickhousePartInfo)
-from ch_backup.exceptions import ClickHouseBackupError, InvalidBackupStruct
+from ch_backup.exceptions import ClickHouseBackupError
 
 
 class ClickhouseBackup:
@@ -25,9 +25,9 @@ class ClickhouseBackup:
         self._existing_backups = []
         self._dedup_time = None
 
-    def show(self, backup_name):
+    def get(self, backup_name):
         """
-        Show backup meta struct
+        Get backup information.
         """
         return self._get_backup_meta(backup_name)
 
@@ -39,7 +39,7 @@ class ClickhouseBackup:
 
     def backup(self, databases=None):
         """
-        Start backup
+        Perform backup.
         """
         if databases is None:
             databases = self._ch_ctl.get_all_databases(
@@ -55,10 +55,10 @@ class ClickhouseBackup:
             self._load_existing_backups(backup_age_limit)
 
         min_interval = self._config.get('min_interval')
-        existing_backup_names = self._get_existing_backup_names()
-        if min_interval and existing_backup_names:
-            last_backup = self._get_backup_meta(max(existing_backup_names))
-            if current_time - last_backup.end_time < timedelta(**min_interval):
+        if min_interval:
+            last_backup = self._get_last_backup()
+            threshold_time = current_time - timedelta(**min_interval)
+            if last_backup and threshold_time < last_backup.end_time:
                 msg = 'Backup is skipped per backup.min_interval config option'
                 logging.info(msg)
                 return (last_backup.name, msg)
@@ -319,12 +319,24 @@ class ClickhouseBackup:
 
         backup_meta_contents = self._backup_layout.download_backup_meta(path)
         backup_meta = ClickhouseBackupStructure()
-        try:
-            backup_meta.load_json(backup_meta_contents)
-        except InvalidBackupStruct:
-            logging.critical('Can not load backup meta file: %s', path)
-            raise
+        backup_meta.load_json(backup_meta_contents)
+
         return backup_meta
+
+    def _get_last_backup(self):
+        """
+        Return the last valid backup.
+        """
+        backups = self._get_existing_backup_names()
+        for backup in sorted(backups, reverse=True):
+            try:
+                return self._get_backup_meta(backup)
+            except Exception:
+                logging.warning(
+                    'Failed to load metadata for backup %s',
+                    backup,
+                    exc_info=True)
+        return None
 
     def _load_existing_backups(self, backup_age_limit=None):
         """
