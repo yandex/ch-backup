@@ -5,6 +5,7 @@ Clickhouse-control classes module
 import logging
 import os
 import shutil
+from urllib.parse import quote
 
 import requests
 
@@ -20,12 +21,12 @@ GET_ALL_DB_TABLES_ORDERED_SQL = strip_query("""
 """)
 
 PART_ATTACH_SQL = strip_query("""
-    ALTER TABLE {db_name}.{table_name}
+    ALTER TABLE `{db_name}`.`{table_name}`
     ATTACH PART '{part_name}'
 """)
 
 TABLE_FREEZE_SQL = strip_query("""
-    ALTER TABLE {db_name}.{table_name}
+    ALTER TABLE `{db_name}`.`{table_name}`
     FREEZE PARTITION ''
 """)
 
@@ -40,18 +41,24 @@ SHOW_TABLES_SQL = strip_query("""
     FORMAT JSON
 """)
 
+SHOW_CREATE_TABLE_SQL = strip_query("""
+    SHOW CREATE TABLE `{db_name}`.`{table_name}`
+    FORMAT TSV
+""")
+
 GET_ALL_TABLE_PARTS_INFO_SQL = strip_query("""
     SELECT *
     FROM system.parts
     WHERE active AND database == '{db_name}'
     AND table == '{table_name}'
-    FORMAT JSON;
+    FORMAT JSON
 """)
 
 GET_VERSION_SQL = strip_query("""
     SELECT value
     FROM system.build_options
     WHERE name = 'VERSION_DESCRIBE'
+    FORMAT TSV
 """)
 
 
@@ -64,16 +71,16 @@ class ClickhouseCTL:
         self._config = config
         self._ch_client = ClickhouseClient(config)
 
-        self.data_path = config['data_path']
-        self.metadata_path = self._get_metadata_abs_path(self.data_path)
-        self.shadow_data_path = self._get_shadow_data_abs_path(self.data_path)
+        self.root_data_path = config['data_path']
+        self.data_path = os.path.join(self.root_data_path, 'data')
+        self.metadata_path = os.path.join(self.root_data_path, 'metadata')
+        self.shadow_data_path = os.path.join(self.root_data_path, 'shadow')
         self.shadow_data_path_inc = os.path.join(self.shadow_data_path, '1')
 
     def chown_attach_part(self, db_name, table_name, part_name):
         """
         Chown detached part files
         """
-
         part_path = self.get_detached_part_abs_path(db_name, table_name,
                                                     part_name)
         self.chown_dir_contents(part_path)
@@ -83,7 +90,6 @@ class ClickhouseCTL:
         """
         Chown detached table files
         """
-
         dettached_path = self.get_detached_abs_path(db_name, table_name)
         self.chown_dir_contents(dettached_path)
 
@@ -91,7 +97,6 @@ class ClickhouseCTL:
         """
         Attach part to database.table from dettached dir
         """
-
         query_sql = PART_ATTACH_SQL\
             .format(db_name=db_name,
                     table_name=table_name,
@@ -104,7 +109,6 @@ class ClickhouseCTL:
         """
         Chown directory contents to configured owner:group
         """
-
         if not dir_path.startswith(self._config['data_path']):
             raise ClickHouseBackupError(
                 'Trying to chown directory outside clickhouse data path')
@@ -115,7 +119,6 @@ class ClickhouseCTL:
         """
         Freeze all partitions in specified database.table
         """
-
         query_sql = TABLE_FREEZE_SQL.format(
             db_name=db_name, table_name=table_name)
         logging.debug('Freezing partition: %s', query_sql)
@@ -126,7 +129,6 @@ class ClickhouseCTL:
         """
         Recursively delete shadow data path
         """
-
         if not self.shadow_data_path.startswith(self._config['data_path']):
             raise ClickHouseBackupError(
                 'Trying to drop directory outside clickhouse data path')
@@ -138,7 +140,6 @@ class ClickhouseCTL:
         """
         Get list of all databases
         """
-
         result = []
         ch_resp = self._ch_client.query(SHOW_DATABASES_SQL)
         if 'data' in ch_resp:
@@ -152,20 +153,23 @@ class ClickhouseCTL:
         """
         Get unordered list of all database tables
         """
-
-        result = []
         query_sql = SHOW_TABLES_SQL.format(db_name=db_name)
         logging.debug('Fetching all %s tables: %s', db_name, query_sql)
         ch_resp = self._ch_client.query(query_sql)
-        if 'data' in ch_resp:
-            result = [row['name'] for row in ch_resp['data']]
-        return result
+        return [row['name'] for row in ch_resp.get('data', [])]
+
+    def get_table_schema(self, db_name, table_name):
+        """
+        Return table schema (CREATE TABLE query)
+        """
+        query_sql = SHOW_CREATE_TABLE_SQL.format(
+            db_name=db_name, table_name=table_name)
+        return self._ch_client.query(query_sql)
 
     def get_all_db_tables_ordered(self, db_name):
         """
         Get ordered by mtime list of all database tables
         """
-
         result = []
         query_sql = GET_ALL_DB_TABLES_ORDERED_SQL.format(db_name=db_name)
         logging.debug('Fetching all %s tables ordered: %s', db_name, query_sql)
@@ -178,7 +182,6 @@ class ClickhouseCTL:
         """
         Get dict with all table parts
         """
-
         query_sql = GET_ALL_TABLE_PARTS_INFO_SQL.format(
             db_name=db_name, table_name=table_name)
         logging.debug('Fetching all %s table parts: %s', db_name, query_sql)
@@ -189,7 +192,6 @@ class ClickhouseCTL:
         """
         Restore database or table meta sql
         """
-
         logging.debug('Restoring meta sql: %s', query_sql)
         return self._ch_client.query(query_sql)
 
@@ -197,60 +199,30 @@ class ClickhouseCTL:
         """
         Get filesystem absolute path of detached part
         """
-
-        return os.path.join(self._config['data_path'], 'data', db_name,
-                            table_name, 'detached', part_name)
+        return os.path.join(self.data_path, self._quote(db_name),
+                            self._quote(table_name), 'detached', part_name)
 
     def get_detached_abs_path(self, db_name, table_name):
         """
         Get filesystem absolute path of detached table parts
         """
-
-        return os.path.join(self._config['data_path'], 'data', db_name,
-                            table_name, 'detached')
+        return os.path.join(self.data_path, self._quote(db_name),
+                            self._quote(table_name), 'detached')
 
     def get_db_sql_abs_path(self, db_name):
         """
         Get filesystem absolute path of database meta sql
         """
-
-        return os.path.join(self.data_path, self.get_db_sql_rel_path(db_name))
-
-    def get_table_sql_abs_path(self, db_name, table_name):
-        """
-        Get filesystem absolute path of database.table meta sql
-        """
-
-        return os.path.join(self.data_path,
-                            self.get_table_sql_rel_path(db_name, table_name))
+        return os.path.join(self.root_data_path,
+                            self.get_db_sql_rel_path(db_name))
 
     def get_shadow_part_abs_path(self, db_name, table_name, part_name):
         """
         Get freezed part absolute path
         """
-
-        return os.path.join(self.shadow_data_path_inc, 'data', db_name,
-                            table_name, part_name)
-
-    @staticmethod
-    def get_db_sql_rel_path(db_name):
-        """
-        Get filesystem relative path of database meta sql
-        """
-
-        return os.path.join(
-            'metadata', '{db_name}.sql'.format(db_name=db_name))
-
-    @staticmethod
-    def get_table_sql_rel_path(db_name, table_name):
-        """
-        Get filesystem relative path of database.table meta sql
-        """
-
-        return os.path.join(
-            'metadata',
-            '{db_name}'.format(db_name=db_name),
-            '{table_name}.sql'.format(table_name=table_name))
+        return os.path.join(self.shadow_data_path_inc, 'data',
+                            self._quote(db_name), self._quote(table_name),
+                            part_name)
 
     def get_version(self):
         """
@@ -258,21 +230,28 @@ class ClickhouseCTL:
         """
         return self._ch_client.query(GET_VERSION_SQL)
 
+    @classmethod
+    def get_db_sql_rel_path(cls, db_name):
+        """
+        Get filesystem relative path of database meta sql
+        """
+        return os.path.join('metadata', cls._quote(db_name) + '.sql')
+
+    @classmethod
+    def get_table_sql_rel_path(cls, db_name, table_name):
+        """
+        Get filesystem relative path of database.table meta sql
+        """
+        return os.path.join('metadata', cls._quote(db_name),
+                            cls._quote(table_name) + '.sql')
+
     @staticmethod
-    def _get_metadata_abs_path(data_path):
-        """
-        Get filesystem metadata dir abs path
-        """
-
-        return os.path.join(data_path, 'metadata')
-
-    @staticmethod
-    def _get_shadow_data_abs_path(data_path):
-        """
-        Get filesystem metadata dir abs path
-        """
-
-        return os.path.join(data_path, 'shadow')
+    def _quote(value):
+        return quote(
+            value, safe='').translate({
+                ord('.'): '%2E',
+                ord('-'): '%2D',
+            })
 
 
 class ClickhouseClient:

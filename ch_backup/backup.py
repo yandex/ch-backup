@@ -74,7 +74,6 @@ class ClickhouseBackup:
                       backup_meta.name, ', '.join(databases))
 
         for db_name in databases:
-            # run backup per db
             self.backup_database(db_name, backup_meta)
         self._ch_ctl.remove_shadow_data()
 
@@ -192,23 +191,17 @@ class ClickhouseBackup:
 
     def _backup_table_meta(self, db_name, table_name):
         """
-        Backup table sql
+        Backup table schema (CREATE TABLE sql) and return path to saved data
+        on remote storage.
         """
-        table_sql_abs_path = self._ch_ctl.get_table_sql_abs_path(
-            db_name, table_name)
-        logging.debug('Making table "%s.%s" sql backup: %s', db_name,
-                      table_name, table_sql_abs_path)
+        logging.debug('Making table schema backup for "%s"."%s"', db_name,
+                      table_name)
 
-        with open(table_sql_abs_path) as file_fd:
-            file_contents = file_fd.read()
+        schema = self._ch_ctl.get_table_schema(db_name, table_name)
 
-        metadata = file_contents.replace(
-            'ATTACH TABLE ',
-            'CREATE TABLE {db_name}.'.format(db_name=db_name),
-            1)
-
-        return self._backup_layout.save_table_meta(db_name, table_name,
-                                                   metadata)
+        remote_path = self._backup_layout.save_table_meta(
+            db_name, table_name, schema)
+        return remote_path
 
     def restore_database(self, db_name, backup_meta):
         """

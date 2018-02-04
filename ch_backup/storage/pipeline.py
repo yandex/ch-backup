@@ -5,8 +5,8 @@ Pipeline builder, loader and runner
 """
 
 import logging
-from concurrent.futures import wait as executor_wait
 from concurrent.futures import ALL_COMPLETED, ProcessPoolExecutor
+from concurrent.futures import wait as executor_wait
 from functools import partial
 
 from .stages.encryption import DecryptStage, EncryptStage

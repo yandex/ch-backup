@@ -11,8 +11,8 @@ import tempfile
 from functools import partial
 
 import pytest
-from hypothesis import strategies as st
 from hypothesis import example, given, settings
+from hypothesis import strategies as st
 
 from ch_backup.storage.pipeline import Pipeline
 from ch_backup.storage.stages.encryption import DecryptStage, EncryptStage
