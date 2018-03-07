@@ -49,11 +49,10 @@ def command(*args, **kwargs):
         def wrapper(ctx, *args, **kwargs):
             try:
                 logging.info('Executing command \'%s\', params: %s, args %s',
-                             ctx.command.name,
-                             {**
-                              ctx.parent.params,
-                              **
-                              ctx.params}, ctx.args)
+                             ctx.command.name, {
+                                 **ctx.parent.params,
+                                 **ctx.params,
+                             }, ctx.args)
                 result = ctx.invoke(f, ctx, ctx.obj['backup'], *args, **kwargs)
                 logging.info('Command \'%s\' completed', ctx.command.name)
                 return result

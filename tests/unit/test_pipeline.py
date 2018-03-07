@@ -97,15 +97,19 @@ def tmp_dir_path(dir_path=None):
         'type': 'nacl',
         'key': SECRET_KEY,
     },
-    write_conf={'buffer_size': 512,
-                'chunk_size': 256},
+    write_conf={
+        'buffer_size': 512,
+        'chunk_size': 256,
+    },
 )
 @example(
     file_size=1024,
     read_conf={'chunk_size': 128},
     encrypt_conf={},
-    write_conf={'buffer_size': 512,
-                'chunk_size': 256},
+    write_conf={
+        'buffer_size': 512,
+        'chunk_size': 256,
+    },
 )
 def test_pipeline_roundtrip(tmp_dir_path, file_size, read_conf, encrypt_conf,
                             write_conf):
