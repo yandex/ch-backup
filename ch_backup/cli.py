@@ -121,9 +121,14 @@ def show(ctx, ch_backup, name):
     '--databases',
     type=List(regexp=r'\w+'),
     help='Comma-separated list of databases to backup.')
-def backup(_ctx, ch_backup, databases):
+@option(
+    '-f',
+    '--force',
+    is_flag=True,
+    help='Enables force mode (backup.min_interval is ignored).')
+def backup(_ctx, ch_backup, databases, force):
     """Perform backup."""
-    (name, msg) = ch_backup.backup(databases)
+    (name, msg) = ch_backup.backup(databases, force)
     if msg:
         print(msg, file=sys.stderr, flush=True)
     print(name)

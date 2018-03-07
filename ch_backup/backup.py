@@ -37,9 +37,11 @@ class ClickhouseBackup:
         """
         return self._get_existing_backup_names()
 
-    def backup(self, databases=None):
+    def backup(self, databases=None, force=False):
         """
         Perform backup.
+
+        If force is True, backup.min_interval config option is ignored.
         """
         if databases is None:
             databases = self._ch_ctl.get_all_databases(
@@ -55,7 +57,7 @@ class ClickhouseBackup:
             self._load_existing_backups(backup_age_limit)
 
         min_interval = self._config.get('min_interval')
-        if min_interval:
+        if min_interval and not force:
             last_backup = self._get_last_backup()
             threshold_time = current_time - timedelta(**min_interval)
             if last_backup and threshold_time < last_backup.end_time:
