@@ -21,7 +21,6 @@ CBS_DEFAULT_JSON_INDENT = 4
 
 
 class ClickhouseBackupLayout:
-    # pylint: disable=too-many-instance-attributes
     """
     Storage layout and transfer
     """
@@ -59,7 +58,7 @@ class ClickhouseBackupLayout:
         """
         return os.path.join(self._config['path_root'], backup_name)
 
-    def get_backup_meta_path(self, backup_name):
+    def _get_backup_meta_path(self, backup_name):
         """
         Returns backup meta path
         """
@@ -154,18 +153,22 @@ class ClickhouseBackupLayout:
 
         return uploaded_files
 
-    def get_backup_meta(self):
+    def get_backup_meta(self, backup_name=None):
         """
-        Download backup meta file from storage
+        Download backup meta from storage
         """
-        remote_path = self.backup_meta_path
+        if backup_name is None:
+            path = self.backup_meta_path
+        else:
+            path = self._get_backup_meta_path(backup_name)
+
         try:
-            result = self._storage_loader.download_data(remote_path)
-            return result
+            data = self._storage_loader.download_data(path)
+            return ClickhouseBackupStructure.load_json(data)
         except Exception as exc:
             logging.critical(
                 'Unable to download backup metadata "%s" from storage: %s',
-                remote_path, exc)
+                path, exc)
             raise StorageError
 
     def download_str(self, remote_path):
@@ -173,12 +176,6 @@ class ClickhouseBackupLayout:
         Downloads data and tries to decode
         """
         return self._storage_loader.download_data(remote_path, encryption=True)
-
-    def download_backup_meta(self, remote_path):
-        """
-        Downloads backup metadata
-        """
-        return self._storage_loader.download_data(remote_path)
 
     def download_part_data(self, db_name, table_name, part_name, part_files):
         """
@@ -245,25 +242,17 @@ class ClickhouseBackupStructure:
     Clickhouse backup meta
     """
 
-    def __init__(self, ch_version=None, date_fmt=None, hostname=None):
-        if hostname is None:
-            hostname = socket.getfqdn()
-
-        if date_fmt is None:
-            date_fmt = CBS_DEFAULT_DATE_FMT
-
-        self._meta = {
-            'ch_version': ch_version,
-            'hostname': hostname,
-            'rows': 0,
-            'bytes': 0,
-            'date_fmt': date_fmt,
-        }
-
+    def __init__(self, name, path, ch_version, date_fmt=None, hostname=None):
+        self.name = name
+        self.path = path
+        self.ch_version = ch_version
+        self.hostname = hostname or socket.getfqdn()
+        self.rows = 0
+        self.bytes = 0
+        self.date_fmt = date_fmt or CBS_DEFAULT_DATE_FMT
+        self.start_time = None
+        self.end_time = None
         self._databases = {}
-
-        self.name = None
-        self.path = None
 
     def add_database(self, db_name):
         """
@@ -274,36 +263,6 @@ class ClickhouseBackupStructure:
             'tables_sql_paths': [],
             'parts_paths': defaultdict(dict),
         }
-
-    @property
-    def start_time(self):
-        """
-        Mark backup as started
-        """
-        return datetime.strptime(self._meta['start_time'],
-                                 self._meta['date_fmt'])
-
-    @property
-    def end_time(self):
-        """
-        Mark backup as finished
-        """
-        return datetime.strptime(self._meta['end_time'],
-                                 self._meta['date_fmt'])
-
-    def __setattr__(self, key, value):
-        if key in ('_meta', '_databases'):
-            return super().__setattr__(key, value)
-
-        self._meta[key] = value
-
-    def __getattr__(self, item):
-        if item in ('_meta', '_databases'):
-            return super().__getattribute__(item)
-        try:
-            return self._meta[item]
-        except KeyError:
-            raise AttributeError
 
     def __str__(self):
         return self.dump_json()
@@ -318,33 +277,63 @@ class ClickhouseBackupStructure:
         """
         Set start datetime
         """
-        self._meta['start_time'] = datetime.utcnow().strftime(
-            self._meta['date_fmt'])
+        self.start_time = datetime.utcnow()
 
     def mark_end(self):
         """
         Set end datetime
         """
-        self._meta['end_time'] = datetime.utcnow().strftime(
-            self._meta['date_fmt'])
+        self.end_time = datetime.utcnow()
 
     def dump_json(self):
         """
         Dump struct to json data
         """
-        report = {}
-        report.update({'databases': self._databases})
-        report.update({'meta': self._meta})
+        report = {
+            'databases': self._databases,
+            'meta': {
+                'name': self.name,
+                'path': self.path,
+                'ch_version': self.ch_version,
+                'hostname': self.hostname,
+                'date_fmt': self.date_fmt,
+                'start_time': self._format_time(self.start_time),
+                'end_time': self._format_time(self.end_time),
+                'rows': self.rows,
+                'bytes': self.bytes,
+            },
+        }
         return json.dumps(report, indent=CBS_DEFAULT_JSON_INDENT)
 
-    def load_json(self, data):
+    def _format_time(self, value):
+        return value.strftime(self.date_fmt)
+
+    @staticmethod
+    def load_json(data):
         """
         Load struct from json data
         """
+        # pylint: disable=protected-access
         try:
             loaded = json.loads(data)
-            self._databases = loaded['databases']
-            self._meta = loaded['meta']
+            meta = loaded['meta']
+
+            backup = ClickhouseBackupStructure(
+                name=meta['name'],
+                path=meta['path'],
+                ch_version=meta.get('ch_version'),
+                hostname=meta['hostname'],
+                date_fmt=meta['date_fmt'])
+            backup._databases = loaded['databases']
+            backup.start_time = datetime.strptime(meta['start_time'],
+                                                  backup.date_fmt)
+            backup.end_time = datetime.strptime(meta['end_time'],
+                                                backup.date_fmt)
+            backup.rows = meta['rows']
+            backup.bytes = meta['bytes']
+
+            return backup
+
         except (ValueError, KeyError):
             raise InvalidBackupStruct
 

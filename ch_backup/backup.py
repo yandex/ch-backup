@@ -65,10 +65,10 @@ class ClickhouseBackup:
                 logging.info(msg)
                 return (last_backup.name, msg)
 
-        ch_version = self._ch_ctl.get_version()
-        backup_meta = ClickhouseBackupStructure(ch_version)
-        backup_meta.name = self._backup_layout.backup_name
-        backup_meta.path = self._backup_layout.backup_path
+        backup_meta = ClickhouseBackupStructure(
+            name=self._backup_layout.backup_name,
+            path=self._backup_layout.backup_path,
+            ch_version=self._ch_ctl.get_version())
 
         backup_meta.mark_start()
 
@@ -91,8 +91,7 @@ class ClickhouseBackup:
         Restore specified backup
         """
         self._backup_layout.backup_name = backup_name
-        backup_meta = ClickhouseBackupStructure()
-        backup_meta.load_json(self._backup_layout.get_backup_meta())
+        backup_meta = self._backup_layout.get_backup_meta()
 
         if databases is None:
             databases = backup_meta.get_databases()
@@ -307,16 +306,7 @@ class ClickhouseBackup:
 
     @lru_cache()
     def _get_backup_meta(self, backup_name):
-        """
-        Download from storage and load backup meta file
-        """
-        path = self._backup_layout.get_backup_meta_path(backup_name)
-
-        backup_meta_contents = self._backup_layout.download_backup_meta(path)
-        backup_meta = ClickhouseBackupStructure()
-        backup_meta.load_json(backup_meta_contents)
-
-        return backup_meta
+        return self._backup_layout.get_backup_meta(backup_name)
 
     def _get_last_backup(self):
         """
