@@ -10,6 +10,7 @@ from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.layout import (
     ClickhouseBackupLayout, ClickhouseBackupStructure, ClickhousePartInfo)
 from ch_backup.exceptions import ClickHouseBackupError
+from ch_backup.util import utcnow
 
 
 class ClickhouseBackup:
@@ -47,7 +48,7 @@ class ClickhouseBackup:
             databases = self._ch_ctl.get_all_databases(
                 self._config['exclude_dbs'])
 
-        current_time = datetime.utcnow()
+        current_time = utcnow()
 
         # load existing backups if deduplication is enabled
         if self._config.get('deduplicate_parts'):

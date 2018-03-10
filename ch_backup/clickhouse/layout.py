@@ -8,14 +8,15 @@ import logging
 import os
 import socket
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.exceptions import InvalidBackupStruct, StorageError
 from ch_backup.storage import StorageLoader
+from ch_backup.util import now, utcnow
 
 CBS_DEFAULT_PNAME_FMT = '%Y%m%dT%H%M%S'
-CBS_DEFAULT_DATE_FMT = '%Y-%m-%d %H:%M:%S'
+CBS_DEFAULT_DATE_FMT = '%Y-%m-%d %H:%M:%S %z'
 CBS_DEFAULT_FNAME = 'backup_struct.json'
 CBS_DEFAULT_JSON_INDENT = 4
 
@@ -31,7 +32,7 @@ class ClickhouseBackupLayout:
         self._config = config['backup']
 
         self._backup_name_fmt = CBS_DEFAULT_PNAME_FMT
-        self._backup_name = datetime.utcnow().strftime(self._backup_name_fmt)
+        self._backup_name = utcnow().strftime(self._backup_name_fmt)
         self._backup_meta_fname = CBS_DEFAULT_FNAME
 
         self.backup_path = self._get_backup_path(self._backup_name)
@@ -277,13 +278,13 @@ class ClickhouseBackupStructure:
         """
         Set start datetime
         """
-        self.start_time = datetime.utcnow()
+        self.start_time = now()
 
     def mark_end(self):
         """
         Set end datetime
         """
-        self.end_time = datetime.utcnow()
+        self.end_time = now()
 
     def dump_json(self):
         """
@@ -308,8 +309,8 @@ class ClickhouseBackupStructure:
     def _format_time(self, value):
         return value.strftime(self.date_fmt)
 
-    @staticmethod
-    def load_json(data):
+    @classmethod
+    def load_json(cls, data):
         """
         Load struct from json data
         """
@@ -325,10 +326,8 @@ class ClickhouseBackupStructure:
                 hostname=meta['hostname'],
                 date_fmt=meta['date_fmt'])
             backup._databases = loaded['databases']
-            backup.start_time = datetime.strptime(meta['start_time'],
-                                                  backup.date_fmt)
-            backup.end_time = datetime.strptime(meta['end_time'],
-                                                backup.date_fmt)
+            backup.start_time = cls._load_time(meta, 'start_time')
+            backup.end_time = cls._load_time(meta, 'end_time')
             backup.rows = meta['rows']
             backup.bytes = meta['bytes']
 
@@ -336,6 +335,13 @@ class ClickhouseBackupStructure:
 
         except (ValueError, KeyError):
             raise InvalidBackupStruct
+
+    @staticmethod
+    def _load_time(meta, attr):
+        result = datetime.strptime(meta[attr], meta['date_fmt'])
+        if result.tzinfo is None:
+            result = result.replace(tzinfo=timezone.utc)
+        return result
 
     def get_db_sql_path(self, db_name):
         """

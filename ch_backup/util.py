@@ -8,6 +8,11 @@ import os
 import pwd
 import re
 import shutil
+import time
+from datetime import datetime, timedelta, timezone
+
+LOCAL_TZ = timezone(
+    timedelta(seconds=-1 * (time.altzone if time.daylight else time.timezone)))
 
 
 def chown_dir_contents(user, group, dir_path):
@@ -88,3 +93,17 @@ def strip_query(query_text):
     Remove query without endlines and duplicate whitespaces
     """
     return re.sub(r'\s{2,}', ' ', query_text.replace('\n', ' ')).strip()
+
+
+def now():
+    """
+    Return local datetime with timezone information.
+    """
+    return datetime.now(LOCAL_TZ)
+
+
+def utcnow():
+    """
+    Return UTC datetime with timezone information.
+    """
+    return datetime.utcnow().replace(tzinfo=timezone.utc)
