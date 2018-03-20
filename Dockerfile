@@ -7,13 +7,8 @@ ENV CLICKHOUSE_GROUP clickhouse
 ENV CH_BACKUP_CONFIG /etc/yandex/ch-backup/ch-backup.conf
 ENV CH_TMP_DIR /var/tmp/ch-backup
 
-
-ARG repository="deb https://repo.yandex.ru/clickhouse/xenial/ dists/stable/main/binary-amd64/"
-# ARG version=\*
-ARG version=1.1.54327
-
-ENV CLICKHOUSE_CONFIG /etc/clickhouse-server/config.xml
-ENV CLICKHOUSE_USERS /etc/clickhouse-server/users.xml
+ARG repository="deb https://repo.yandex.ru/clickhouse/deb/stable/ main/"
+ARG version=1.1.54343
 
 RUN apt-get update -qq && \
     apt-get install -y apt-transport-https tzdata && \
@@ -24,24 +19,18 @@ RUN apt-get update -qq && \
     rm -rf /var/lib/apt/lists/* /var/cache/debconf && \
     apt-get clean
 
-RUN sed -i 's,<listen_host>127.0.0.1</listen_host>,<listen_host>0.0.0.0</listen_host>,' /etc/clickhouse-server/config.xml && \
-    sed -i 's,<listen_host>::1</listen_host>,<listen_host>::</listen_host>,' /etc/clickhouse-server/config.xml
-RUN chown -R clickhouse /etc/clickhouse-server/
-
+RUN chown -R clickhouse /etc/clickhouse-server/ && \
+    mkdir -p /etc/clickhouse-server/conf.d && \
+    ln -s /config/clickhouse-server.xml /etc/clickhouse-server/conf.d/
 
 RUN mkdir -p ${CH_TMP_DIR}
 COPY ch_backup ${CH_TMP_DIR}/ch_backup
 COPY setup.py ${CH_TMP_DIR}/
-
-RUN cd ${CH_TMP_DIR} && pip3 install -e .
-
-
-RUN ln --force -s /config/users.xml $CLICKHOUSE_USERS && \
+RUN cd ${CH_TMP_DIR} && pip3 install -e . && \
     mkdir -p /etc/yandex/ch-backup && \
-    ln --force -s /config/ch-backup.conf /etc/yandex/ch-backup/ch-backup.conf
-
+    ln -s /config/ch-backup.conf /etc/yandex/ch-backup/ch-backup.conf
 
 USER clickhouse
 VOLUME /var/lib/clickhouse
 
-ENTRYPOINT exec /usr/bin/clickhouse-server --config=${CLICKHOUSE_CONFIG}
+ENTRYPOINT exec /usr/bin/clickhouse-server --config=/etc/clickhouse-server/config.xml
