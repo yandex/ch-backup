@@ -36,7 +36,9 @@ COPY setup.py ${CH_TMP_DIR}/
 RUN cd ${CH_TMP_DIR} && pip3 install -e .
 
 
-RUN ln --force -s /config/users.xml $CLICKHOUSE_USERS
+RUN ln --force -s /config/users.xml $CLICKHOUSE_USERS && \
+    mkdir -p /etc/yandex/ch-backup && \
+    ln --force -s /config/ch-backup.conf /etc/yandex/ch-backup/ch-backup.conf
 
 
 USER clickhouse
