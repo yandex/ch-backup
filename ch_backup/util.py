@@ -106,4 +106,4 @@ def utcnow():
     """
     Return UTC datetime with timezone information.
     """
-    return datetime.utcnow().replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc)
