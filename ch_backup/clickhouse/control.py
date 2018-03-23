@@ -43,7 +43,7 @@ SHOW_TABLES_SQL = strip_query("""
 
 SHOW_CREATE_TABLE_SQL = strip_query("""
     SHOW CREATE TABLE `{db_name}`.`{table_name}`
-    FORMAT TSV
+    FORMAT TSVRaw
 """)
 
 GET_ALL_TABLE_PARTS_INFO_SQL = strip_query("""
@@ -58,7 +58,7 @@ GET_VERSION_SQL = strip_query("""
     SELECT value
     FROM system.build_options
     WHERE name = 'VERSION_DESCRIBE'
-    FORMAT TSV
+    FORMAT TSVRaw
 """)
 
 
