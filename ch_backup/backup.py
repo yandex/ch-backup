@@ -87,7 +87,7 @@ class ClickhouseBackup:
 
         return (backup_meta.name, None)
 
-    def restore(self, backup_name, databases=None):
+    def restore(self, backup_name, databases=None, schema_only=False):
         """
         Restore specified backup
         """
@@ -108,7 +108,13 @@ class ClickhouseBackup:
                     'Required databases were not found in backup struct')
 
         for db_name in databases:
-            self.restore_database(db_name, backup_meta)
+            self._restore_database_schema(db_name, backup_meta)
+            if schema_only:
+                logging.debug(
+                    'Don\'t restore %s data, cause schema_only is set %r',
+                    db_name, schema_only)
+            else:
+                self._restore_database_data(db_name, backup_meta)
 
     def backup_database(self, db_name, backup_meta):
         """
@@ -205,23 +211,26 @@ class ClickhouseBackup:
             db_name, table_name, schema)
         return remote_path
 
-    def restore_database(self, db_name, backup_meta):
+    def _restore_database_schema(self, db_name, backup_meta):
         """
-        Restore database
+        Restore database schema
         """
-        logging.debug('Running database restore: %s', db_name)
+        logging.debug('Running database schema restore: %s', db_name)
 
         # restore db sql
         db_sql = self._backup_layout.download_str(
             backup_meta.get_db_sql_path(db_name))
         self._ch_ctl.restore_meta(db_sql)
 
-        logging.debug('Restoring "%s" tables', db_name)
-
         # restore table sql
         for table_sql_path in backup_meta.get_tables_sql_paths(db_name):
             table_sql = self._backup_layout.download_str(table_sql_path)
             self._ch_ctl.restore_meta(table_sql)
+
+    def _restore_database_data(self, db_name, backup_meta):
+        """
+        Restore database data
+        """
 
         # restore table data (download and attach parts)
         for table_name in backup_meta.get_tables(db_name):

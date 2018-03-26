@@ -75,11 +75,24 @@ def step_count_deduplicated_parts(context, links_count, entry_num, node_name):
     assert_that(dedup_parts_count, equal_to(int(links_count)))
 
 
-@when('we restore clickhouse #{backup_num} backup to {node_name}')
-def step_restore_backup(context, backup_num, node_name):
+def restore_backup(context, node_name, backup_num, options):
+    """
+    Restore backup
+    """
     ch_instance = docker.get_container(context, node_name)
-    response = clickhouse.restore_backup_num(ch_instance, int(backup_num))
+    response = clickhouse.restore_backup_num(
+        ch_instance, backup_num, options=options)
     assert_that(response, equal_to(''))
+
+
+@when('we restore clickhouse #{backup_num:d} backup to {node_name:w}')
+def step_restore_backup(context, backup_num, node_name):
+    restore_backup(context, node_name, backup_num, None)
+
+
+@when('we restore clickhouse {backup_num:d} backup schema to {node_name:w}')
+def step_restore_backup_schema_only(context, backup_num, node_name):
+    restore_backup(context, node_name, backup_num, options=['--schema-only'])
 
 
 @then('we got same clickhouse data at {nodes_list}')
@@ -94,3 +107,26 @@ def step_same_clickhouse_data(context, nodes_list):
     for node_num in range(1, len(user_data)):
         node_data = user_data[node_num]
         assert_that(node_data, equal_to(node1_data))
+
+
+@when('we drop all databases at {node_name:w}')
+def step_drop_databases(context, node_name):
+    ch_client = clickhouse.get_ch_client(context, node_name)
+    for db_name in clickhouse.get_all_user_databases(ch_client):
+        clickhouse.drop_database(ch_client, db_name)
+
+
+@then('{node_name1:w} has same schema as {node_name2:w}')
+def step_has_same_schema(context, node_name1, node_name2):
+    def _get_ddl(node_name):
+        ch_client = clickhouse.get_ch_client(context, node_name)
+        return clickhouse.get_all_user_schemas(ch_client)
+
+    assert_that(_get_ddl(node_name1), equal_to(_get_ddl(node_name2)))
+
+
+@then('on {node_name:w} tables are empty')
+def step_check_tables_are_empty(context, node_name):
+    ch_client = clickhouse.get_ch_client(context, node_name)
+    row_count, _ = clickhouse.get_all_user_data(ch_client)
+    assert_that(row_count, equal_to(0))

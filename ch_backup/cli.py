@@ -141,11 +141,12 @@ def backup(_ctx, ch_backup, databases, force):
     '--databases',
     type=List(regexp=r'\w+'),
     help='Comma-separated list of databases to restore.')
-def restore(ctx, ch_backup, name, databases):
+@option('--schema-only', is_flag=True, help='Restore only databases schemas')
+def restore(ctx, ch_backup, name, databases, schema_only):
     """Restore data from a particular backup."""
     name = _validate_name(ctx, ch_backup, name)
 
-    ch_backup.restore(name, databases)
+    ch_backup.restore(name, databases, schema_only)
 
 
 def _validate_name(ctx, ch_backup, name):

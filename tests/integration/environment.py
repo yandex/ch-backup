@@ -29,6 +29,12 @@ def after_step(context, step):
     """
     if step.status == 'failed':
         logs.save_logs(context)
+        if context.config.userdata.getbool('debug'):
+            try:
+                import ipdb as pdb
+            except ImportError:
+                import pdb
+            pdb.post_mortem(step.exc_traceback)
 
 
 def after_all(context):

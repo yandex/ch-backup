@@ -25,6 +25,22 @@ GET_ALL_USER_TABLES_SQL = utils.strip_query("""
     FORMAT JSONCompact
 """)
 
+GET_ALL_DATABASES = utils.strip_query("""
+    SELECT name
+    FROM system.databases
+    WHERE name NOT IN ('system')
+    FORMAT JSONCompact
+""")
+
+DROP_DATABASE = utils.strip_query("""
+    DROP DATABASE {db_name}
+""")
+
+GET_TEST_TABLE_SCHEMA = utils.strip_query("""
+    DESCRIBE {db_name}.{table_name}
+    FORMAT JSONCompact
+""")
+
 GET_TEST_TABLE_DATA_SQL = utils.strip_query("""
     SELECT *
     FROM {db_name}.{table_name}
@@ -199,12 +215,13 @@ def make_backup(ch_instance, cli_path=None, conf_path=None):
     return output.decode()
 
 
-def restore_backup_num(ch_instance, backup_num):
+def restore_backup_num(ch_instance, backup_num, options):
     """
     Call ch-backup cli to run restore backup by serial number
     """
     backup_entries = get_backup_entries(ch_instance)
-    return restore_backup_entry(ch_instance, backup_entries[backup_num])
+    return restore_backup_entry(
+        ch_instance, backup_entries[backup_num], options=options)
 
 
 def get_backup_entries(ch_instance, cli_path=None, conf_path=None):
@@ -227,7 +244,8 @@ def get_backup_entries(ch_instance, cli_path=None, conf_path=None):
 def restore_backup_entry(ch_instance,
                          backup_entry,
                          cli_path=None,
-                         conf_path=None):
+                         conf_path=None,
+                         options=None):
     """
     Call ch-backup cli to run restore backup entry
     """
@@ -237,8 +255,11 @@ def restore_backup_entry(ch_instance,
     if conf_path is None:
         conf_path = CH_BACKUP_CONF_PATH
     output = ch_instance.exec_run(
-        '{cli_path} -c {conf_path} restore {backup_entry}'.format(
-            cli_path=cli_path, conf_path=conf_path, backup_entry=backup_entry),
+        '{cli_path} -c {conf_path} restore {options} {backup_entry}'.format(
+            cli_path=cli_path,
+            conf_path=conf_path,
+            backup_entry=backup_entry,
+            options=' '.join(options or [])),
         user='root')
     return output.decode()
 
@@ -259,6 +280,36 @@ def get_all_user_data(ch_client):
         user_data['.'.join([db_name, table_name])] = table_data['data']
         rows_count += table_data['rows']
     return rows_count, user_data
+
+
+def get_all_user_schemas(ch_client):
+    """
+    Retrieve dll for user schemas
+    """
+
+    dbs_tables = ch_client.query(GET_ALL_USER_TABLES_SQL)['data']
+    all_tables_desc = {}
+    for db_name, table_name in dbs_tables:
+        query_sql = GET_TEST_TABLE_SCHEMA.format(
+            db_name=db_name, table_name=table_name)
+        table_data = ch_client.query(query_sql)
+        all_tables_desc[(db_name, table_name)] = table_data['data']
+    return all_tables_desc
+
+
+def get_all_user_databases(ch_client):
+    """
+    Get user databases
+    """
+    all_dbs = ch_client.query(GET_ALL_DATABASES)['data']
+    return [r[0] for r in all_dbs]
+
+
+def drop_database(ch_client, db_name):
+    """
+    Drop database
+    """
+    ch_client.query(DROP_DATABASE.format(db_name=db_name))
 
 
 def get_backup_meta(ch_instance, backup_entry, cli_path=None, conf_path=None):

@@ -22,5 +22,11 @@ Feature: Clickhouse backups check
     When we restore clickhouse #0 backup to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
+  @schema-only
+  Scenario: Backup with schema_only restored successfully
+    When we drop all databases at clickhouse02
+    And we restore clickhouse 1 backup schema to clickhouse02
+    Then clickhouse02 has same schema as clickhouse01
+    But on clickhouse02 tables are empty
 # TODO: check backup entry contents carefully
 # TODO: check deduplication with overdue backups
