@@ -8,6 +8,7 @@ from tempfile import TemporaryFile
 
 import boto3
 import botocore.vendored.requests.packages.urllib3 as boto_urllib3
+from botocore.client import Config
 from botocore.errorfactory import ClientError
 
 from .base import PipeLineCompatibleStorageEngine
@@ -22,6 +23,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
 
     def __init__(self, config):
         credentials_config = config['credentials']
+        boto_config = config['boto_config']
         self._s3_session = boto3.session.Session(
             aws_access_key_id=credentials_config['access_key_id'],
             aws_secret_access_key=credentials_config['secret_access_key'],
@@ -30,6 +32,11 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
         self._s3_client = self._s3_session.client(
             service_name='s3',
             endpoint_url=credentials_config['endpoint_url'],
+            config=Config(
+                s3={
+                    'addressing_style': boto_config['addressing_style'],
+                    'region_name': boto_config['region_name'],
+                }),
         )
 
         self._s3_bucket_name = credentials_config['bucket']

@@ -35,6 +35,10 @@ DEFAULT_CONFIG = {
             'secret_access_key': None,
             'bucket': None,
         },
+        'boto_config': {
+            'addressing_style': 'auto',
+            'region_name': 'us-east-1',
+        },
         'disable_ssl_warnings': True,
         'chunk_size': 8 * 1024 * 1024,
         'buffer_size': 128 * 1024 * 1024,
