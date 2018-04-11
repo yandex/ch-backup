@@ -57,15 +57,6 @@ def get():
         # See above.
         'port_factor':
             port_factor,
-        # These docker images are brewed on `docker.prep_images` stage.
-        # Options below are passed as-is to
-        # <docker_api_instance>.container.create()
-        'base_images': {
-            'dbaas-ch-backup-base': {
-                'tag': 'dbaas-ch-backup-base',
-                'path': 'images/base',
-            },
-        },
         # Docker network name. Also doubles as a project and domain name.
         'network_name':
             net_name,

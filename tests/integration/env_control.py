@@ -20,7 +20,7 @@ STAGES = {
         # e.g. you wont get much success building from docker-compose
         # unless you have base image in place.
 
-        # Prepare base image(s)
+        # copy images to staging
         docker.prep_images,
         # Create docker containers` network to enable
         # cross-container network communication.

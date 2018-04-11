@@ -63,7 +63,7 @@ def generate_ipv4(subnet=None):
 @utils.env_stage('create', fail=True)
 def prep_images(state, conf):
     """
-    Prepare base images.
+    Prepare images.
     """
     for arg in (state, conf):
         assert arg is not None, '%s must not be None' % arg
@@ -76,9 +76,6 @@ def prep_images(state, conf):
         '{staging}/{images}'.format(staging=staging_dir, images=images_dir),
         update=True,
     )
-
-    for props in conf.get('base_images', {}).values():
-        DOCKER_API.images.build(**props)
 
 
 @utils.env_stage('create', fail=True)

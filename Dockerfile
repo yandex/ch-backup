@@ -1,7 +1,8 @@
 # Largely a copy-paste from
 # https://hub.docker.com/r/yandex/clickhouse-server/~/dockerfile/
-FROM dbaas-ch-backup-base
+FROM registry.yandex.net/ubuntu:xenial
 
+ENV LANG en_US.utf8
 ENV CLICKHOUSE_USER clickhouse
 ENV CLICKHOUSE_GROUP clickhouse
 ENV CH_BACKUP_CONFIG /etc/yandex/ch-backup/ch-backup.conf
@@ -10,12 +11,20 @@ ENV CH_TMP_DIR /var/tmp/ch-backup
 ARG repository="deb https://repo.yandex.ru/clickhouse/deb/stable/ main/"
 ARG version=1.1.54343
 
-RUN apt-get update -qq && \
-    apt-get install -y apt-transport-https tzdata && \
+RUN echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen && \
+    locale-gen && \
+    apt-get update -qq && \
+    apt-get install -y \
+        apt-transport-https tzdata \
+        python3-pip && \
+    pip3 install --upgrade pip && \
     mkdir -p /etc/apt/sources.list.d && \
     echo $repository | tee /etc/apt/sources.list.d/clickhouse.list && \
     apt-get update -qq && \
-    apt-get install --allow-unauthenticated -y clickhouse-server-common=$version clickhouse-server-base=$version clickhouse-client=$version && \
+    apt-get install --allow-unauthenticated -y \
+        clickhouse-server-common=$version \
+        clickhouse-server-base=$version \
+        clickhouse-client=$version && \
     rm -rf /var/lib/apt/lists/* /var/cache/debconf && \
     apt-get clean
 
