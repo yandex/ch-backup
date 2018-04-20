@@ -29,6 +29,9 @@ RUN echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen && \
     apt-get clean
 
 RUN chown -R clickhouse /etc/clickhouse-server/ && \
+    openssl req -subj "/CN=localhost" -new -newkey rsa:2048 -days 365 -nodes -x509 \
+        -keyout /etc/clickhouse-server/server.key \
+        -out /etc/clickhouse-server/server.crt && \
     mkdir -p /etc/clickhouse-server/conf.d && \
     ln -s /config/clickhouse-server.xml /etc/clickhouse-server/conf.d/
 
@@ -42,4 +45,5 @@ RUN cd ${CH_TMP_DIR} && pip3 install -e . && \
 USER clickhouse
 VOLUME /var/lib/clickhouse
 
+EXPOSE 8123 8443 9000 9440
 ENTRYPOINT exec /usr/bin/clickhouse-server --config=/etc/clickhouse-server/config.xml

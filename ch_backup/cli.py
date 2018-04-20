@@ -8,7 +8,8 @@ import re
 import sys
 from functools import wraps
 
-from click import ParamType, Path, argument, group, option, pass_context
+from click import (Choice, ParamType, Path, argument, group, option,
+                   pass_context)
 
 from .backup import ClickhouseBackup
 from .config import Config
@@ -22,10 +23,21 @@ from .util import drop_privileges, setup_environment, setup_logging
     type=Path(exists=True),
     default='/etc/yandex/ch-backup/ch-backup.conf',
     help='Configuration file path.')
+@option(
+    '--protocol',
+    default='http',
+    type=Choice(['http', 'https']),
+    help='Protocol used to connect to ClickHouse server.')
+@option(
+    '--port', default=8123, help='Port used to connect to ClickHouse server.')
+@option('--ca-path', help='Path to custom CA bundle path for https protocol.')
 @pass_context
-def cli(ctx, config):
+def cli(ctx, config, protocol, port, ca_path):
     """Tool for managing ClickHouse backups."""
     cfg = Config(config)
+    cfg['clickhouse']['protocol'] = protocol
+    cfg['clickhouse']['port'] = port
+    cfg['clickhouse']['ca_path'] = ca_path
 
     setup_logging(cfg['logging'])
     setup_environment(cfg['main'])

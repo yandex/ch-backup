@@ -4,15 +4,18 @@ config module defines Config class and default values
 
 import copy
 import logging
+import socket
 
 import yaml
 
 DEFAULT_CONFIG = {
     'clickhouse': {
         'data_path': '/var/lib/clickhouse',
-        'host': '127.0.0.1',
-        'port': '8123',
-        'timeout': '3',
+        'host': socket.gethostname(),
+        'protocol': 'http',
+        'port': 8123,
+        'ca_path': None,
+        'timeout': 3,
         'user': 'clickhouse',
         'group': 'clickhouse',
     },

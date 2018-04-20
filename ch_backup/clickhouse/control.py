@@ -5,9 +5,10 @@ Clickhouse-control classes module
 import logging
 import os
 import shutil
+import socket
 from urllib.parse import quote
 
-import requests
+from requests import HTTPError, Session
 
 from ch_backup.exceptions import ClickHouseBackupError
 from ch_backup.util import chown_dir_contents, strip_query
@@ -261,34 +262,38 @@ class ClickhouseClient:
 
     def __init__(self, config):
         self._config = config
-        self._timeout = int(config.get('timeout', 3))
-        self._query_url = '{proto}://{host}:{port}/?query={query}'. \
-            format(
-                proto=config.get('proto', 'http'),
-                host=config.get('host', 'localhost'),
-                port=config.get('port', 8123),
-                query='{query}')
+        self._session = Session()
+        self._session.verify = config.get('ca_path')
+        self._url = '{protocol}://{host}:{port}'.format(
+            protocol=config.get('protocol', 'http'),
+            host=config.get('host', socket.getfqdn()),
+            port=config.get('port', '8123'))
+        self._timeout = int(config.get('timeout'))
 
-    def query(self, query_str, post_data=None, timeout=None):
+    def query(self, query, post_data=None, timeout=None):
         """
         Perform query to configured clickhouse endpoint
         """
         if timeout is None:
             timeout = self._timeout
 
-        query_url = self._query_url.format(query=query_str)
-        logging.debug('Clickhouse request url: %s', query_url)
-        http_response = requests.post(
-            query_url, data=post_data, timeout=timeout)
-
         try:
-            http_response.raise_for_status()
-        except requests.HTTPError:
+            logging.debug('Executing ClickHouse query: %s', query)
+            response = self._session.post(
+                self._url,
+                params={
+                    'query': query,
+                },
+                json=post_data,
+                timeout=timeout)
+
+            response.raise_for_status()
+        except HTTPError as e:
             logging.critical('Error while performing request: %s',
-                             http_response.text)
+                             e.response.text)
             raise
 
         try:
-            return http_response.json()
+            return response.json()
         except ValueError:
-            return str.strip(http_response.text)
+            return str.strip(response.text)
