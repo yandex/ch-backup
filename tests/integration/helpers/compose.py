@@ -46,16 +46,6 @@ def startup_containers(conf, **_extra):
     _call_compose(conf, 'up -d')
 
 
-@utils.env_stage('restart', fail=True)
-def recreate_containers(conf, **_extra):
-    """
-    Recreate and restart docker containers.
-    """
-    assert conf, '"conf" must be non-empty dict'
-
-    _call_compose(conf, 'up -d --force-recreate')
-
-
 @utils.env_stage('stop', fail=False)
 def shutdown_containers(conf, **_extra):
     """
@@ -63,7 +53,7 @@ def shutdown_containers(conf, **_extra):
     """
     assert conf, '"conf" must be non-empty dict'
 
-    _call_compose(conf, 'down')
+    _call_compose(conf, 'down --volumes')
 
 
 @utils.env_stage('create', fail=True)

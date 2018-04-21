@@ -33,7 +33,10 @@ STAGES = {
         compose.build_images,
     ],
     'start': [compose.startup_containers],
-    'restart': [compose.recreate_containers],
+    'restart': [
+        compose.shutdown_containers,
+        compose.startup_containers,
+    ],
     'stop': [
         # Shutdown docker containers
         compose.shutdown_containers,

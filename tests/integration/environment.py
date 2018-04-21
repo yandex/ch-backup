@@ -16,9 +16,9 @@ def before_all(context):
     context.conf = context.state['config']
 
 
-def before_scenario(context, _scenario):
+def before_feature(context, _feature):
     """
-    Cleanup function executing per feature scenario.
+    Cleanup function executing per feature.
     """
     env_control.restart(state=context.state)
 

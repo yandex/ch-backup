@@ -1,5 +1,3 @@
-# Largely a copy-paste from
-# https://hub.docker.com/r/yandex/clickhouse-server/~/dockerfile/
 FROM registry.yandex.net/ubuntu:xenial
 
 ENV LANG en_US.utf8
@@ -43,7 +41,6 @@ RUN cd ${CH_TMP_DIR} && pip3 install -e . && \
     ln -s /config/ch-backup.conf /etc/yandex/ch-backup/ch-backup.conf
 
 USER clickhouse
-VOLUME /var/lib/clickhouse
 
 EXPOSE 8123 8443 9000 9440
 ENTRYPOINT exec /usr/bin/clickhouse-server --config=/etc/clickhouse-server/config.xml
