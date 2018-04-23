@@ -5,7 +5,6 @@ Clickhouse-control classes module
 import logging
 import os
 import shutil
-import socket
 from urllib.parse import quote
 
 import requests
@@ -262,17 +261,16 @@ class ClickhouseClient:
     """
 
     def __init__(self, config):
-        self._config = config
-        self._session = Session()
+        host = config['host']
+        protocol = config['protocol']
+        port = 8123 if protocol == 'http' else 8443
         ca_path = config.get('ca_path')
+        self._session = Session()
         self._session.verify = True if ca_path is None else ca_path
         # pylint: disable=no-member
         requests.packages.urllib3.disable_warnings()
-        self._url = '{protocol}://{host}:{port}'.format(
-            protocol=config.get('protocol', 'http'),
-            host=config.get('host', socket.getfqdn()),
-            port=config.get('port', '8123'))
-        self._timeout = int(config.get('timeout'))
+        self._url = '{0}://{1}:{2}'.format(protocol, host, port)
+        self._timeout = config['timeout']
 
     def query(self, query, post_data=None, timeout=None):
         """

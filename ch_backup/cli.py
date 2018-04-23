@@ -25,7 +25,6 @@ from .util import drop_privileges, setup_environment, setup_logging
     help='Configuration file path.')
 @option(
     '--protocol',
-    default='http',
     type=Choice(['http', 'https']),
     help='Protocol used to connect to ClickHouse server.')
 @option('--port', type=int, help='Port used to connect to ClickHouse server.')
@@ -40,15 +39,16 @@ from .util import drop_privileges, setup_environment, setup_logging
 @pass_context
 def cli(ctx, config, protocol, port, ca_path, insecure):
     """Tool for managing ClickHouse backups."""
-    if port is None:
-        port = 8123 if protocol == 'http' else 8443
     if insecure:
         ca_path = False
 
     cfg = Config(config)
-    cfg['clickhouse']['protocol'] = protocol
-    cfg['clickhouse']['port'] = port
-    cfg['clickhouse']['ca_path'] = ca_path
+    if protocol is not None:
+        cfg['clickhouse']['protocol'] = protocol
+    if port is not None:
+        cfg['clickhouse']['port'] = port
+    if ca_path is not None:
+        cfg['clickhouse']['ca_path'] = ca_path
 
     setup_logging(cfg['logging'])
     setup_environment(cfg['main'])

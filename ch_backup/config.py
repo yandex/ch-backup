@@ -13,7 +13,7 @@ DEFAULT_CONFIG = {
         'data_path': '/var/lib/clickhouse',
         'host': socket.gethostname(),
         'protocol': 'http',
-        'port': 8123,
+        'port': None,
         'ca_path': None,
         'timeout': 3,
         'user': 'clickhouse',
