@@ -107,3 +107,10 @@ def utcnow():
     Return UTC datetime with timezone information.
     """
     return datetime.now(timezone.utc)
+
+
+def utc_fromtimestamp(timestamp):
+    """
+    Return UTC datetime with timezone information.
+    """
+    return datetime.fromtimestamp(timestamp, timezone.utc)

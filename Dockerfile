@@ -3,7 +3,6 @@ FROM registry.yandex.net/ubuntu:xenial
 ENV LANG en_US.utf8
 ENV CLICKHOUSE_USER clickhouse
 ENV CLICKHOUSE_GROUP clickhouse
-ENV CH_BACKUP_CONFIG /etc/yandex/ch-backup/ch-backup.conf
 ENV CH_TMP_DIR /var/tmp/ch-backup
 
 ARG repository="deb https://repo.yandex.ru/clickhouse/deb/stable/ main/"
@@ -14,7 +13,9 @@ RUN echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen && \
     apt-get update -qq && \
     apt-get install -y \
         apt-transport-https tzdata \
-        python3-pip && \
+        python3-pip \
+        openssh-server \
+        supervisor && \
     pip3 install --upgrade pip && \
     mkdir -p /etc/apt/sources.list.d && \
     echo $repository | tee /etc/apt/sources.list.d/clickhouse.list && \
@@ -36,11 +37,18 @@ RUN chown -R clickhouse /etc/clickhouse-server/ && \
 RUN mkdir -p ${CH_TMP_DIR}
 COPY ch_backup ${CH_TMP_DIR}/ch_backup
 COPY setup.py ${CH_TMP_DIR}/
+
+# setup ssh for debugging
+RUN echo "root:root" | chpasswd && \
+    sed -i -e '/PermitRootLogin/ s/ .*/ yes/' /etc/ssh/sshd_config && \
+    mkdir /var/run/sshd
+
 RUN cd ${CH_TMP_DIR} && pip3 install -e . && \
     mkdir -p /etc/yandex/ch-backup && \
-    ln -s /config/ch-backup.conf /etc/yandex/ch-backup/ch-backup.conf
-
-USER clickhouse
+    ln -s /config/ch-backup.conf /etc/yandex/ch-backup/ch-backup.conf && \
+    rm -rf /etc/supervisor && \
+    ln --force -s /config/supervisor /etc/supervisor
 
 EXPOSE 8123 8443 9000 9440
-ENTRYPOINT exec /usr/bin/clickhouse-server --config=/etc/clickhouse-server/config.xml
+
+CMD ["supervisord", "-c", "/etc/supervisor/supervisord.conf"]

@@ -99,3 +99,18 @@ class DownloadStorageStage(InputFileStage):
     def _post_process(self):
         self._loader.complete_multipart_download(download_id=self._download_id)
         self._download_id = None
+
+
+class DeleteStorageStage:  # pylint: disable=too-few-public-methods
+    """
+    Delete file from storage
+    """
+
+    stype = STAGE_TYPE
+
+    def __init__(self, conf):
+        self._loader = get_storage_engine(conf)
+
+    def __call__(self, src_key=None, dst_key=None):
+        yield
+        return self._loader.delete_file(remote_path=src_key)

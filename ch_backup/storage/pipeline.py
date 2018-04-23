@@ -12,8 +12,8 @@ from functools import partial
 from .stages.encryption import DecryptStage, EncryptStage
 from .stages.filesystem import (CollectDataStage, ReadDataStage, ReadFileStage,
                                 WriteFileStage)
-from .stages.storage import (DownloadStorageStage, UploadDataStorageStage,
-                             UploadFileStorageStage)
+from .stages.storage import (DeleteStorageStage, DownloadStorageStage,
+                             UploadDataStorageStage, UploadFileStorageStage)
 
 
 class Pipeline:
@@ -188,6 +188,13 @@ class PipelineLoader:
             (self.download_file.__name__, *args),
             (DownloadStorageStage, DecryptStage, WriteFileStage), *args,
             **kwargs)
+
+    def delete_file(self, *args, **kwargs):
+        """
+        Delete file from storage.
+        """
+        return self._execute_pipeline((self.delete_file.__name__, *args),
+                                      (DeleteStorageStage, ), *args, **kwargs)
 
     def wait(self):
         """

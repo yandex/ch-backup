@@ -54,6 +54,8 @@ def get():
                 },
                 'expose': {
                     'http': 8123,
+                    'clickhouse': 9000,
+                    'ssh': 22,
                 },
                 'docker_instances':
                     2,
@@ -99,6 +101,8 @@ def _generate_dynamic_config(net_name):
                 'minio',
             'bucket':
                 'dbaas',
+            'port':
+                9000,
             'endpoint':
                 'http://minio:9000',
             'access_secret_key':
@@ -110,6 +114,10 @@ def _generate_dynamic_config(net_name):
                     s3_credentials['access_secret_key']),
             'enc_access_key_id':
                 api_to_client_box.encrypt_utf(s3_credentials['access_key_id']),
+            'boto_config': {
+                'addressing_style': 'auto',
+                'region_name': 'us-east-1',
+            },
         },
         'ch_backup': {
             'encrypt_key': crypto.gen_plain_random_string(32),

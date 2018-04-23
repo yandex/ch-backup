@@ -74,28 +74,40 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
             data = fileobj.read()
         return data
 
-    def list_dir(self, remote_path):
+    def delete_file(self, remote_path):
+        remote_path = remote_path.lstrip('/')
+        self._s3_client.delete_object(
+            Bucket=self._s3_bucket_name, Key=remote_path)
+        return remote_path
+
+    def list_dir(self, remote_path, recursive=False, absolute=False):
         contents = []
+        delimiter = '' if recursive else '/'
         paginator = self._s3_client.get_paginator('list_objects')
         for result in paginator.paginate(
                 Bucket=self._s3_bucket_name,
                 Prefix='{s3_path}/'.format(s3_path=remote_path),
-                Delimiter='/'):
+                Delimiter=delimiter):
             if result.get('CommonPrefixes') is not None:
                 for dir_prefix in result.get('CommonPrefixes'):
-                    dir_path = os.path.relpath(
-                        dir_prefix.get('Prefix'), remote_path)
+                    dir_path = dir_prefix.get('Prefix') if absolute \
+                        else os.path.relpath(dir_prefix.get('Prefix'),
+                                             remote_path)
+
                     contents.append(dir_path)
 
             if result.get('Contents') is not None:
                 for file_key in result.get('Contents'):
-                    file_path = os.path.relpath(
-                        file_key.get('Key'), remote_path)
+                    file_path = file_key.get('Key') if absolute \
+                        else os.path.relpath(file_key.get('Key'), remote_path)
                     contents.append(file_path)
 
         return contents
 
     def path_exists(self, remote_path):
+        """
+        Check if remote path exists.
+        """
         try:
             self._s3_client.head_object(
                 Bucket=self._s3_bucket_name, Key=remote_path)

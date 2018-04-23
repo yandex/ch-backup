@@ -216,6 +216,38 @@ class ClickhouseBackupLayout:
 
         return downloaded_files
 
+    def delete_loaded_files(self, delete_files):
+        """
+        Delete files from backup storage
+        """
+        # TODO: use bulk delete
+        deleted_files = []
+        for remote_path in delete_files:
+            try:
+                logging.debug('Deleting file: %s', remote_path)
+                self._storage_loader.delete_file(
+                    remote_path=remote_path, is_async=True)
+                deleted_files.append(remote_path)
+            except Exception as exc:
+                logging.critical('Unable to delete file %s: %s', remote_path,
+                                 exc)
+                raise StorageError
+
+        return deleted_files
+
+    def delete_backup_path(self, backup_name=None):
+        """
+        Delete files from backup storage
+        """
+        if backup_name is None:
+            path = self.backup_path
+        else:
+            path = self._get_backup_path(backup_name)
+
+        delete_files = self._storage_loader.list_dir(
+            path, recursive=True, absolute=True)
+        return self.delete_loaded_files(delete_files)
+
     def get_existing_backups_names(self):
         """
         Get current backup entries
@@ -245,6 +277,8 @@ class ClickhouseBackupStructure:
     Clickhouse backup meta
     """
 
+    # pylint: disable=too-many-instance-attributes
+
     def __init__(self, name, path, ch_version, date_fmt=None, hostname=None):
         self.name = name
         self.path = path
@@ -252,9 +286,13 @@ class ClickhouseBackupStructure:
         self.hostname = hostname or socket.getfqdn()
         self.rows = 0
         self.bytes = 0
+        self.real_rows = 0
+        self.real_bytes = 0
+        self.state = 'not_started'
         self.date_fmt = date_fmt or CBS_DEFAULT_DATE_FMT
         self.start_time = None
         self.end_time = None
+
         self._databases = {}
 
     def add_database(self, db_name):
@@ -270,23 +308,25 @@ class ClickhouseBackupStructure:
     def __str__(self):
         return self.dump_json()
 
-    def get_databases(self):
+    def mark_creating(self):
         """
-        Get databases meta
-        """
-        return self._databases
-
-    def mark_start(self):
-        """
-        Set start datetime
+        Set start datetime and state
         """
         self.start_time = now()
+        self.state = 'creating'
 
-    def mark_end(self):
+    def mark_created(self):
         """
-        Set end datetime
+        Set end datetime and state
         """
         self.end_time = now()
+        self.state = 'created'
+
+    def mark_partially_deleted(self):
+        """
+        Set partially deleted state
+        """
+        self.state = 'partially_deleted'
 
     def dump_json(self):
         """
@@ -304,12 +344,15 @@ class ClickhouseBackupStructure:
                 'end_time': self._format_time(self.end_time),
                 'rows': self.rows,
                 'bytes': self.bytes,
+                'real_rows': self.real_rows,
+                'real_bytes': self.real_bytes,
+                'state': self.state,
             },
         }
         return json.dumps(report, indent=CBS_DEFAULT_JSON_INDENT)
 
     def _format_time(self, value):
-        return value.strftime(self.date_fmt)
+        return value.strftime(self.date_fmt) if value else None
 
     @classmethod
     def load_json(cls, data):
@@ -332,6 +375,12 @@ class ClickhouseBackupStructure:
             backup.end_time = cls._load_time(meta, 'end_time')
             backup.rows = meta['rows']
             backup.bytes = meta['bytes']
+
+            # TODO: delete in few months
+            if 'real_rows' in meta:
+                backup.real_rows = meta['real_rows']
+                backup.real_bytes = meta['real_bytes']
+                backup.state = meta['state']
 
             return backup
 
@@ -357,12 +406,17 @@ class ClickhouseBackupStructure:
         """
         self._databases[db_name]['db_sql_path'] = path
 
+    def get_databases(self):
+        """
+        Get databases meta
+        """
+        return tuple(self._databases)
+
     def get_tables(self, db_name):
         """
         Get tables for specified database
         """
-        return (table_name
-                for table_name in self._databases[db_name]['parts_paths'])
+        return tuple(self._databases[db_name]['parts_paths'])
 
     def get_tables_sql_paths(self, db_name):
         """
@@ -398,6 +452,29 @@ class ClickhouseBackupStructure:
                 'meta': meta,
             },
         })
+        part_rows = int(meta['rows'])
+        part_bytes = int(meta['bytes'])
+        self.rows += part_rows
+        self.bytes += part_bytes
+        if not link:
+            self.real_rows += part_rows
+            self.real_bytes += part_bytes
+
+    def del_part_contents(self, db_name, table_name, part_name):
+        """
+        Delete part contents from backup struct
+        """
+        part_contents = \
+            self._databases[db_name]['parts_paths'][table_name].pop(part_name)
+        part_rows = int(part_contents['meta']['rows'])
+        part_bytes = int(part_contents['meta']['bytes'])
+        self.rows -= part_rows
+        self.bytes -= part_bytes
+        if part_contents['link']:
+            # TODO: delete in few months
+            if hasattr(self, 'real_rows'):
+                self.real_rows -= part_rows
+                self.real_bytes -= part_bytes
 
     def get_part_contents(self, db_name, table_name, part_name):
         """
@@ -413,14 +490,52 @@ class ClickhouseBackupStructure:
         """
         Get storage file paths of specified part
         """
-        return self._databases[db_name]['parts_paths'][table_name][part_name][
-            'paths']
+        return tuple(self._databases[db_name]['parts_paths'][table_name][
+            part_name]['paths'])
+
+    def is_part_linked(self, db_name, table_name, part_name):
+        """
+        Get storage file paths of specified part
+        """
+        return bool(self._databases[db_name]['parts_paths'][table_name][
+            part_name]['link'])
 
     def get_parts(self, db_name, table_name):
         """
         Get all parts of specified database.table
         """
-        return self._databases[db_name]['parts_paths'][table_name]
+        return tuple(self._databases[db_name]['parts_paths'][table_name])
+
+    def get_deduplicated_parts(self, deduplicated_to=None):
+        """
+        Get all deduplicated parts
+        """
+        deduplicated_parts = {}
+        for db_name in self.get_databases():
+            for table_name in self.get_tables(db_name):
+                for part_name in self.get_parts(db_name, table_name):
+                    content = self.get_part_contents(db_name, table_name,
+                                                     part_name)
+                    if not content['link']:
+                        continue
+
+                    if deduplicated_to and \
+                            not content['link'].endswith(deduplicated_to):
+                        continue
+                    deduplicated_parts[(db_name, table_name, part_name)]\
+                        = self.name
+        return deduplicated_parts
+
+    def is_empty(self):
+        """
+        Get storage file paths of specified part
+        """
+        # TODO: mb is enough to check bytes&rows
+        for db_name in self.get_databases():
+            for table_name in self.get_tables(db_name):
+                if self.get_parts(db_name, table_name):
+                    return False
+        return True
 
 
 class ClickhousePartInfo:

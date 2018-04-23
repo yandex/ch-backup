@@ -4,9 +4,11 @@ This module defines functions that facilitate the interaction with docker,
 e.g. creating or shutting down an external network.
 """
 
+import io
 import os
 import random
 import subprocess
+import tarfile
 from distutils import dir_util
 
 import docker
@@ -124,3 +126,17 @@ def shutdown_network(conf, **_extra):
         names=conf.get('network_name', '^test_net_'))
     for net in nets:
         net.remove()
+
+
+def put_file(container, data, path):
+    """
+    Put provided bytes data to given path
+    """
+    tarstream = io.BytesIO()
+    tar_data = tarfile.open(fileobj=tarstream, mode='w')
+    tarinfo = tarfile.TarInfo(name=path)
+    tarinfo.size = len(data)
+    tar_data.addfile(tarinfo, io.BytesIO(data))
+    tar_data.close()
+
+    return container.put_archive(path='/', data=tarstream.getvalue())

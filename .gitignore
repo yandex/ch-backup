@@ -15,3 +15,4 @@ debian/changelog
 debian/files
 debian/ch-backup*
 .pytest_cache/
+venv/

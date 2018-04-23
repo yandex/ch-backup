@@ -38,8 +38,14 @@ class StorageEngine(metaclass=ABCMeta):
         """
         pass
 
+    def delete_file(self, remote_path):
+        """
+        Delete file from storage
+        """
+        pass
+
     @abstractmethod
-    def list_dir(self, remote_path):
+    def list_dir(self, remote_path, recursive=False, absolute=False):
         """
         Get directory listing.
         """

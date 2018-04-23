@@ -14,7 +14,9 @@ Feature: Backup of single database table
     tables:
       - test_db_01.test_table_01
     """
-    Then we got 1 ch_backup entries of clickhouse01
+    Then ch_backup entries of clickhouse01 are in proper condition
+      | num | state    | data_count | link_count   | title         |
+      | 0   | created  | 1          | 0            | data          |
 
   Scenario: Backup restored successfully
     When we restore clickhouse #0 backup to clickhouse02

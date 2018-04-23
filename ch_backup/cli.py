@@ -10,6 +10,7 @@ from functools import wraps
 
 from click import (Choice, ParamType, Path, argument, group, option,
                    pass_context)
+from tabulate import tabulate
 
 from .backup import ClickhouseBackup
 from .config import Config
@@ -122,11 +123,17 @@ class List(ParamType):
 
 
 @command(name='list')
-def list_command(_ctx, ch_backup):
+@option('-a', '--all', is_flag=True, default=False, help='List all backups.')
+@option('-v', '--verbose', is_flag=True, default=False, help='Verbose output.')
+def list_command(_ctx, ch_backup, verbose, **kwargs):
     """List existing backups."""
-    backups = ch_backup.list()
+    fields, backups = ch_backup.list(kwargs['all'])
 
-    print('\n'.join(sorted(backups, reverse=True)))
+    if verbose:
+        print(tabulate(backups, headers=fields))
+    else:
+        name_idx = fields.index('name')
+        print('\n'.join([b[name_idx] for b in backups]))
 
 
 @command()
@@ -182,16 +189,32 @@ def restore(ctx, ch_backup, name, databases, schema_only):
     ch_backup.restore(name, databases, schema_only)
 
 
+@command()
+@argument('name', metavar='BACKUP')
+def delete(ctx, ch_backup, name):
+    """Delete particular backup."""
+    name = _validate_name(ctx, ch_backup, name)
+
+    ch_backup.delete(name)
+
+
+@command()
+def purge(_ctx, ch_backup):
+    """Purge outdated backups."""
+
+    ch_backup.purge()
+
+
 def _validate_name(ctx, ch_backup, name):
-
-    backups = ch_backup.list()
-
+    fields, backups = ch_backup.list(all_opt=True)
+    name_idx = fields.index('name')
+    backup_names = [b[name_idx] for b in backups]
     if name == 'LAST':
-        if not backups:
+        if not backup_names:
             ctx.fail('There are no backups.')
-        return max(backups)
+        return max(backup_names)
 
-    if name not in backups:
+    if name not in backup_names:
         ctx.fail('No backups with name "%s" were found.' % name)
 
     return name

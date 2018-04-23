@@ -1,6 +1,5 @@
 """
 Pipeline and PipelineCMD unit tests
-TODO: rewrite with hypothesis
 """
 
 import hashlib

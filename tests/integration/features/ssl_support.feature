@@ -14,7 +14,9 @@ Feature: SSL support
   Scenario: Backup done successfully
     Given clickhouse01 has test clickhouse data test1
     When we create clickhouse01 clickhouse backup
-    Then we got 1 ch_backup entries of clickhouse01
+    Then ch_backup entries of clickhouse01 are in proper condition
+      | num | state    | data_count | link_count   | title         |
+      | 0   | created  | 4          | 0            | data          |
 
   Scenario: Backup restored successfully
     When we restore clickhouse #0 backup to clickhouse02

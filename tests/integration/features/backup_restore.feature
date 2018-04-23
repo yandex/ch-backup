@@ -10,14 +10,17 @@ Feature: Backup & Restore
   Scenario: Backup done successfully
     Given clickhouse01 has test clickhouse data test1
     When we create clickhouse01 clickhouse backup
-    Then we got 1 ch_backup entries of clickhouse01
+    Then ch_backup entries of clickhouse01 are in proper condition
+      | num | state    | data_count | link_count   | title         |
+      | 0   | created  | 4          | 0            | data          |
 
   Scenario: Backup with increments done successfully
     Given clickhouse01 has test clickhouse data test2
     When we create clickhouse01 clickhouse backup
-    Then we got 2 ch_backup entries of clickhouse01
-    And deduplicated 4 parts in #0 ch_backup entry of clickhouse01
-    And deduplicated 0 parts in #1 ch_backup entry of clickhouse01
+    Then ch_backup entries of clickhouse01 are in proper condition
+      | num | state    | data_count | link_count   | title         |
+      | 0   | created  | 4          | 4            | data+links    |
+      | 1   | created  | 4          | 0            | shared        |
 
   Scenario: Backup restored successfully
     When we restore clickhouse #0 backup to clickhouse02
@@ -29,5 +32,4 @@ Feature: Backup & Restore
     And we restore clickhouse 1 backup schema to clickhouse02
     Then clickhouse02 has same schema as clickhouse01
     But on clickhouse02 tables are empty
-# TODO: check backup entry contents carefully
 # TODO: check deduplication with overdue backups

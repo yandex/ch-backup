@@ -75,17 +75,25 @@ class StorageLoader:
         return self._ploader.download_file(
             remote_path, local_path, is_async=is_async, encryption=encryption)
 
+    def delete_file(self, remote_path, is_async=False, encryption=False):
+        """
+        Delete file from storage.
+        """
+        return self._ploader.delete_file(
+            remote_path, is_async=is_async, encryption=encryption)
+
     def wait(self):
         """
         Wait for completion of async operations.
         """
         return self._ploader.wait()
 
-    def list_dir(self, remote_path):
+    def list_dir(self, remote_path, recursive=False, absolute=False):
         """
         Return list of entries in a remote path.
         """
-        return self._engine.list_dir(remote_path)
+        return self._engine.list_dir(
+            remote_path, recursive=recursive, absolute=absolute)
 
     def path_exists(self, remote_path):
         """

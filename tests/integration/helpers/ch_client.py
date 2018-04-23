@@ -33,6 +33,10 @@ DROP_DATABASE = utils.strip_query("""
     DROP DATABASE {db_name}
 """)
 
+DROP_TABLE = utils.strip_query("""
+    DROP TABLE {db_name}.{table_name}
+""")
+
 GET_TEST_TABLE_SCHEMA = utils.strip_query("""
     DESCRIBE {db_name}.{table_name}
     FORMAT JSONCompact
@@ -85,6 +89,20 @@ class ClickhouseClient:
         """
         return self._query('GET', GET_VERSION_SQL)
 
+    @staticmethod
+    def get_test_db_name(db_num):
+        """
+        Get test database name
+        """
+        return 'test_db_{db_num:02d}'.format(db_num=db_num)
+
+    @staticmethod
+    def get_test_table_name(table_num):
+        """
+        Get test table name
+        """
+        return 'test_table_{table_num:02d}'.format(table_num=table_num)
+
     def init_schema(self):
         """
         Create test schema.
@@ -112,11 +130,10 @@ class ClickhouseClient:
         if mark is None:
             mark = ''
         for db_num in range(1, DB_COUNT + 1):
-            db_name = 'test_db_{db_num:02d}'.format(db_num=db_num)
+            db_name = self.get_test_db_name(db_num)
             for table_num in range(1, TABLE_COUNT + 1):
                 rows = []
-                table_name = 'test_table_{table_num:02d}'. \
-                    format(table_num=table_num)
+                table_name = self.get_test_table_name(table_num)
                 for row_num in range(1, ROWS_COUNT + 1):
                     rows.append(', '.join(
                         self._gen_record(row_num=row_num, str_prefix=mark)))
@@ -168,6 +185,16 @@ class ClickhouseClient:
         Drop database.
         """
         self._query('POST', DROP_DATABASE.format(db_name=db_name))
+
+    def drop_test_table(self, db_num, table_num):
+        """
+        Drop test table.
+        """
+        self._query(
+            'POST',
+            DROP_TABLE.format(
+                db_name=self.get_test_db_name(db_num),
+                table_name=self.get_test_table_name(table_num)))
 
     @staticmethod
     def _gen_record(row_num=0, day_diff=None, str_len=5, str_prefix=None):

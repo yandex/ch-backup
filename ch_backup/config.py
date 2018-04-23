@@ -29,6 +29,8 @@ DEFAULT_CONFIG = {
         'min_interval': {
             'minutes': 0,
         },
+        'retain_time': {},
+        'retain_count': None,
     },
     'storage': {
         'type': 's3',

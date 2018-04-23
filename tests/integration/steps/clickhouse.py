@@ -3,7 +3,7 @@ Steps related to ClickHouse and backups.
 """
 import yaml
 from behave import given, then, when
-from hamcrest import assert_that, equal_to, has_length, matches_regexp
+from hamcrest import assert_that, equal_to, has_length, is_not, matches_regexp
 from retrying import retry
 
 from tests.integration.helpers.ch_backup import BackupManager
@@ -20,6 +20,7 @@ def step_wait_for_clickhouse_alive(context, node):
 
 
 @given('clickhouse on {node:w} has test schema')
+@when('clickhouse on {node:w} has test schema')
 def step_init_test_schema(context, node):
     """
     Load test schema to clickhouse.
@@ -28,6 +29,7 @@ def step_init_test_schema(context, node):
 
 
 @given('{node:w} has test clickhouse data {test_name:w}')
+@when('{node:w} has test clickhouse data {test_name:w}')
 def step_fill_with_test_data(context, node, test_name):
     """
     Load test_data to clickhouse
@@ -35,6 +37,17 @@ def step_fill_with_test_data(context, node, test_name):
     ClickhouseClient(context, node).init_data(mark=test_name)
 
 
+@given('we have dropped test table #{table_num:d} in db #{db_num:d} on {node}')
+@when('we drop test table #{table_num:d} in db #{db_num:d} on {node}')
+def step_drop_test_table(context, table_num, db_num, node):
+    """
+    Drop test table
+    """
+    ClickhouseClient(context, node).drop_test_table(
+        db_num=db_num, table_num=table_num)
+
+
+@given('we have created {node:w} clickhouse backup')
 @when('we create {node:w} clickhouse backup')
 def step_create_backup(context, node):
     options = yaml.load(context.text or '') or {}
@@ -42,33 +55,88 @@ def step_create_backup(context, node):
     assert_that(backup_id, matches_regexp('^[0-9]{8}T[0-9]{6}$'))
 
 
-@then('we got {backup_count:d} ch_backup entries of {node:w}')
-def step_check_backup_entries(context, backup_count, node):
-    version = ClickhouseClient(context, node).get_version()
+@then('ch_backup entries of {node:w} are in proper condition')
+def step_check_backups_conditions(context, node):
     ch_backup = BackupManager(context, node)
     backup_ids = ch_backup.get_backup_ids()
 
-    assert_that(backup_ids, has_length(backup_count))
-    for backup_id in backup_ids:
-        backup = ch_backup.get_backup(backup_id)
-        assert_that(backup.version, equal_to(version))
+    # check backup's count
+    expected_backups_count = len(backup_ids)
+    current_backups_count = len(context.table.rows)
+    assert_that(
+        expected_backups_count, equal_to(current_backups_count),
+        'Backups count = {0}, expected {1}'.format(current_backups_count,
+                                                   expected_backups_count))
+
+    # check backup contents
+    for row in context.table:
+        backup = ch_backup.get_backup(backup_ids[int(row['num'])])
+
+        # check if all backup's files exists
+        missed_paths = ch_backup.get_missed_paths(backup.name)
+        assert_that(missed_paths, equal_to([]),
+                    '{0} missed files were found'.format(len(missed_paths)))
+
+        # check given backup properties
+        for cond in context.table.headings:
+            if cond in ('num', 'title'):
+                continue
+            current_value = str(getattr(backup, cond))
+            expected_value = row[cond]
+            assert_that(
+                current_value, equal_to(expected_value),
+                'Backup #{0} "{1}": expected {2} = {3}, but was {4}'.format(
+                    row['title'], row['num'], cond, expected_value,
+                    current_value))
 
 
-@then('deduplicated {link_count:d} parts in #{entry_num:d} ch_backup entry of'
-      ' {node:w}')
-def step_count_deduplicated_parts(context, link_count, entry_num, node):
-    backup = BackupManager(context, node).get_backup(entry_num)
-    assert_that(backup.link_count, equal_to(link_count))
+@when('we purge {node} clickhouse backups')
+def step_purge_backups(context, node):
+    """
+    Purge backups
+    """
+    backup_ids = BackupManager(context, node).purge()
+    assert_that(backup_ids, matches_regexp('^([0-9]{8}T[0-9]{6}\n)*$'))
+
+
+@given('create time of backup #{backup_num:d} of {node:w} was adjusted to'
+       ' following delta')
+@when('we adjust create time of backup #{backup_num:d} of {node:w}'
+      ' to following delta')
+def step_adjust_backup_mtime(context, backup_num, node):
+    """
+    Adjust mtime of specified backup
+    """
+    ch_backup = BackupManager(context, node)
+    assert_that(
+        ch_backup.adjust_backup_ctime(backup_num, yaml.load(context.text)),
+        is_not(equal_to(None)))
+
+
+@given('ch-backup config on {node:w} was merged with following')
+@when('we merge ch-backup config on {node:w} with following')
+def step_update_ch_backup_config(context, node):
+    conf = yaml.load(context.text)
+    BackupManager(context, node).update_config(conf)
+
+
+@when('we delete {node:w} clickhouse backup #{backup_num:d}')
+def step_delete_backup(context, node, backup_num):
+    backup_id = BackupManager(context, node).delete(backup_num)
+    assert_that(backup_id, matches_regexp('^([0-9]{8}T[0-9]{6}\n)*$'))
 
 
 @when('we restore clickhouse #{backup_num:d} backup to {node:w}')
 def step_restore_backup(context, backup_num, node):
-    BackupManager(context, node).restore(backup_num)
+    backup_id = BackupManager(context, node).restore(backup_num)
+    assert_that(backup_id, matches_regexp('^$'))
 
 
 @when('we restore clickhouse {backup_num:d} backup schema to {node:w}')
 def step_restore_backup_schema_only(context, backup_num, node):
-    BackupManager(context, node).restore(backup_num, schema_only=True)
+    backup_id = BackupManager(context, node).restore(
+        backup_num, schema_only=True)
+    assert_that(backup_id, matches_regexp('^$'))
 
 
 @then('we got same clickhouse data at {nodes}')
