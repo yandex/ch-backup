@@ -16,6 +16,8 @@ class BackupManager:
 
     def __init__(self, context, node_name):
         self._container = docker.get_container(context, node_name)
+        self._cmd_base = '{0} --protocol {1} --insecure'.format(
+            CH_BACKUP_CLI_PATH, context.ch_backup['protocol'])
 
     def backup(self):
         """
@@ -50,7 +52,7 @@ class BackupManager:
                                                    backup_id))
 
     def _exec(self, command):
-        cmd = '{0} {1}'.format(CH_BACKUP_CLI_PATH, command)
+        cmd = '{0} {1}'.format(self._cmd_base, command)
         return self._container.exec_run(cmd, user='root').decode()
 
     def _normalize_id(self, backup_id):

@@ -28,12 +28,23 @@ from .util import drop_privileges, setup_environment, setup_logging
     default='http',
     type=Choice(['http', 'https']),
     help='Protocol used to connect to ClickHouse server.')
+@option('--port', type=int, help='Port used to connect to ClickHouse server.')
 @option(
-    '--port', default=8123, help='Port used to connect to ClickHouse server.')
-@option('--ca-path', help='Path to custom CA bundle path for https protocol.')
+    '--ca-path',
+    type=str,
+    help='Path to custom CA bundle path for https protocol.')
+@option(
+    '--insecure',
+    is_flag=True,
+    help='Disable certificate verification for https protocol.')
 @pass_context
-def cli(ctx, config, protocol, port, ca_path):
+def cli(ctx, config, protocol, port, ca_path, insecure):
     """Tool for managing ClickHouse backups."""
+    if port is None:
+        port = 8123 if protocol == 'http' else 8443
+    if insecure:
+        ca_path = False
+
     cfg = Config(config)
     cfg['clickhouse']['protocol'] = protocol
     cfg['clickhouse']['port'] = port

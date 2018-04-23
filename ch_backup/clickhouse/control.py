@@ -8,6 +8,7 @@ import shutil
 import socket
 from urllib.parse import quote
 
+import requests
 from requests import HTTPError, Session
 
 from ch_backup.exceptions import ClickHouseBackupError
@@ -263,7 +264,10 @@ class ClickhouseClient:
     def __init__(self, config):
         self._config = config
         self._session = Session()
-        self._session.verify = config.get('ca_path')
+        ca_path = config.get('ca_path')
+        self._session.verify = True if ca_path is None else ca_path
+        # pylint: disable=no-member
+        requests.packages.urllib3.disable_warnings()
         self._url = '{protocol}://{host}:{port}'.format(
             protocol=config.get('protocol', 'http'),
             host=config.get('host', socket.getfqdn()),

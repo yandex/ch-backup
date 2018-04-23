@@ -1,10 +1,11 @@
-Feature: Clickhouse backups check
+Feature: Backup & Restore
 
   Background: Insert initial data into clickhouse
-    Given a working clickhouse on clickhouse01
-      And clickhouse on clickhouse01 has test schema
-      And a working s3 on minio01
-      And minio01 s3 has bucket dbaas
+    Given default configuration
+    And a working clickhouse on clickhouse01
+    And clickhouse on clickhouse01 has test schema
+    And a working s3 on minio01
+    And minio01 s3 has bucket dbaas
 
   Scenario: Backup done successfully
     Given clickhouse01 has test clickhouse data test1
@@ -15,8 +16,8 @@ Feature: Clickhouse backups check
     Given clickhouse01 has test clickhouse data test2
     When we create clickhouse01 clickhouse backup
     Then we got 2 ch_backup entries of clickhouse01
-      And deduplicated 4 parts in #0 ch_backup entry of clickhouse01
-      And deduplicated 0 parts in #1 ch_backup entry of clickhouse01
+    And deduplicated 4 parts in #0 ch_backup entry of clickhouse01
+    And deduplicated 0 parts in #1 ch_backup entry of clickhouse01
 
   Scenario: Backup restored successfully
     When we restore clickhouse #0 backup to clickhouse02

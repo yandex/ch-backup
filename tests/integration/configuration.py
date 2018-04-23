@@ -2,7 +2,6 @@
 Variables that influence testing behavior are defined here.
 """
 
-import os
 import random
 
 from tests.integration.helpers import crypto
@@ -23,72 +22,38 @@ def get():
     # Docker network name. Also used as a project and domain name.
     net_name = 'test_net_{num}'.format(num=port_factor)
 
-    dynamic_config = generate_dynamic_config(net_name)
+    dynamic_config = _generate_dynamic_config(net_name)
 
     config = {
         # Common conf options.
         # See below for dynamic stuff (keys, certs, etc)
-        'dynamic':
-            dynamic_config,
+        'dynamic': dynamic_config,
         # Controls whether to perform cleanup after tests execution or not.
-        'cleanup':
-            True,
+        'cleanup': True,
         # Code checkout
         # Where does all the fun happens.
         # Assumption is that it can be safely rm-rf`ed later.
-        'staging_dir':
-            'staging',
-        # Default repository to pull code from.
-        'git_repo_base':
-            os.environ.get('DBAAS_INFRA_REPO_BASE',
-                           'ssh://{user}@gerrit.cmail.yandex.net:9501'),
-        # Controls whether overwrite existing locally checked out
-        # code or not (default)
-        'git_clone_overwrite':
-            False,
-        # If present, git.checkout_code will attempt to checkout this topic.
-        'gerrit_topic':
-            os.environ.get('GERRIT_TOPIC'),
+        'staging_dir': 'staging',
         # Docker-related
-        'docker_ip4_subnet':
-            '10.%s.0/24',
-        'docker_ip6_subnet':
-            'fd00:dead:beef:%s::/96',
+        'docker_ip4_subnet': '10.%s.0/24',
+        'docker_ip6_subnet': 'fd00:dead:beef:%s::/96',
         # See above.
-        'port_factor':
-            port_factor,
+        'port_factor': port_factor,
         # Docker network name. Also doubles as a project and domain name.
-        'network_name':
-            net_name,
+        'network_name': net_name,
 
         # A dict with all projects that are going to interact in this
         # testing environment.
         'projects': {
-            # Basically this mimics docker-compose 'service'.
-            # Matching keys will be used in docker-compose,
-            # while others will be ignored in compose file, but may be
-            # referenced in any other place.
-            'base': {
-                # The base needs to be present so templates,
-                # if any, will be rendered.
-                # It is brewed by docker directly,
-                # and not used in compose environment.
-                'docker_instances': 0,
-            },
             'clickhouse': {
                 'build':
                     '..',
-                # Config can have arbitrary keys.
-                # This one is used in template matching of config file options.
-                # See Dockerfile itself for examples.
-                # 'docker_instances': 3,
                 'db': {
                     'user': 'dbaas_reader',
                     'password': 'dbaas_reader_password',
                 },
                 'expose': {
                     'http': 8123,
-                    'clickhouse': 9000,
                 },
                 'docker_instances':
                     2,
@@ -108,7 +73,7 @@ def get():
     return merge(config, CONF_OVERRIDE)
 
 
-def generate_dynamic_config(net_name):
+def _generate_dynamic_config(net_name):
     """
     Generates dynamic stuff like keys, uuids and other.
     """
