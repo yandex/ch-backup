@@ -433,6 +433,14 @@ class ClickhousePartInfo:
         self.link = link
         self.paths = paths
 
+    @property
+    def bytes(self):
+        """
+        The size of part on disk in bytes.
+        """
+        # bytes_on_disk is a new name starting from ClickHouse 1.1.54380.
+        return self._meta.get('bytes_on_disk', self._meta.get('bytes'))
+
     def __getattr__(self, item):
         try:
             return self._meta[item]
