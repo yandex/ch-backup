@@ -1,2 +1,3 @@
 features/backup_restore.feature
 features/ssl_support.feature
+features/single_table.feature

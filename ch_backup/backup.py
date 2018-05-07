@@ -3,6 +3,7 @@ Clickhouse backup logic
 """
 
 import logging
+from collections import defaultdict
 from datetime import datetime, timedelta
 from functools import lru_cache
 
@@ -38,21 +39,29 @@ class ClickhouseBackup:
         """
         return self._get_existing_backup_names()
 
-    def backup(self, databases=None, force=False):
+    def backup(self, databases=None, tables=None, force=False):
         """
         Perform backup.
 
         If force is True, backup.min_interval config option is ignored.
         """
+        assert not (databases and tables)
+
+        db_tables = defaultdict(list)
+        if tables:
+            for table in tables or []:
+                db_name, table_name = table.split('.', 1)
+                db_tables[db_name].append(table_name)
+
+            databases = list(db_tables.keys())
+
         if databases is None:
             databases = self._ch_ctl.get_all_databases(
                 self._config['exclude_dbs'])
 
-        current_time = utcnow()
-
         # load existing backups if deduplication is enabled
         if self._config.get('deduplicate_parts'):
-            backup_age_limit = current_time - timedelta(
+            backup_age_limit = utcnow() - timedelta(
                 **self._config['deduplication_age_limit'])
 
             self._load_existing_backups(backup_age_limit)
@@ -60,8 +69,8 @@ class ClickhouseBackup:
         min_interval = self._config.get('min_interval')
         if min_interval and not force:
             last_backup = self._get_last_backup()
-            threshold_time = current_time - timedelta(**min_interval)
-            if last_backup and threshold_time < last_backup.end_time:
+            if (last_backup and utcnow() - last_backup.end_time <
+                    timedelta(**min_interval)):
                 msg = 'Backup is skipped per backup.min_interval config option'
                 logging.info(msg)
                 return (last_backup.name, msg)
@@ -77,13 +86,11 @@ class ClickhouseBackup:
                       backup_meta.name, ', '.join(databases))
 
         for db_name in databases:
-            self.backup_database(db_name, backup_meta)
+            self.backup_database(db_name, backup_meta, db_tables[db_name])
         self._ch_ctl.remove_shadow_data()
 
         backup_meta.mark_end()
-        backup_meta_json = backup_meta.dump_json()
-        logging.debug('Resultant backup meta:\n%s', backup_meta_json)
-        self._backup_layout.save_backup_meta(backup_meta_json)
+        self._backup_layout.save_backup_meta(backup_meta)
 
         return (backup_meta.name, None)
 
@@ -116,7 +123,7 @@ class ClickhouseBackup:
             else:
                 self._restore_database_data(db_name, backup_meta)
 
-    def backup_database(self, db_name, backup_meta):
+    def backup_database(self, db_name, backup_meta, tables=None):
         """
         Backup database
         """
@@ -125,7 +132,7 @@ class ClickhouseBackup:
         logging.debug('Running database backup: %s', db_name)
 
         # get db objects ordered by mtime
-        tables = self._ch_ctl.get_all_db_tables_ordered(db_name)
+        tables = self._ch_ctl.get_tables_ordered(db_name, tables)
         for table_name in tables:
             logging.debug('Running table "%s.%s" backup', db_name, table_name)
 

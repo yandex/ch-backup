@@ -13,10 +13,12 @@ from requests import HTTPError, Session
 from ch_backup.exceptions import ClickHouseBackupError
 from ch_backup.util import chown_dir_contents, strip_query
 
-GET_ALL_DB_TABLES_ORDERED_SQL = strip_query("""
+GET_TABLES_ORDERED_SQL = strip_query("""
     SELECT name
     FROM system.tables
-    WHERE engine like '%MergeTree%' and database = '{db_name}'
+    WHERE engine like '%MergeTree%'
+      AND database = '{db_name}'
+      AND (empty({tables}) OR has(cast({tables}, 'Array(String)'), name))
     ORDER BY metadata_modification_time
     FORMAT JSON
 """)
@@ -167,12 +169,13 @@ class ClickhouseCTL:
             db_name=db_name, table_name=table_name)
         return self._ch_client.query(query_sql)
 
-    def get_all_db_tables_ordered(self, db_name):
+    def get_tables_ordered(self, db_name, tables=None):
         """
         Get ordered by mtime list of all database tables
         """
         result = []
-        query_sql = GET_ALL_DB_TABLES_ORDERED_SQL.format(db_name=db_name)
+        query_sql = GET_TABLES_ORDERED_SQL.format(
+            db_name=db_name, tables=tables or [])
         logging.debug('Fetching all %s tables ordered: %s', db_name, query_sql)
         ch_resp = self._ch_client.query(query_sql)
         if 'data' in ch_resp:

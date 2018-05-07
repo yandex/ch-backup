@@ -19,11 +19,17 @@ class BackupManager:
         self._cmd_base = '{0} --protocol {1} --insecure'.format(
             CH_BACKUP_CLI_PATH, context.ch_backup['protocol'])
 
-    def backup(self):
+    def backup(self, databases=None, tables=None):
         """
         Perform backup.
         """
-        return self._exec('backup')
+        options = []
+        if databases:
+            options.append('--databases {0}'.format(','.join(databases or [])))
+        if tables:
+            options.append('--tables {0}'.format(','.join(tables or [])))
+
+        return self._exec('backup {0}'.format(' '.join(options)))
 
     def get_backup_ids(self):
         """

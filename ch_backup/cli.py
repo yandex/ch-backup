@@ -145,13 +145,23 @@ def show(ctx, ch_backup, name):
     type=List(regexp=r'\w+'),
     help='Comma-separated list of databases to backup.')
 @option(
+    '-t',
+    '--tables',
+    type=List(regexp=r'[\w.]+'),
+    help='Comma-separated list of tables to backup.')
+@option(
     '-f',
     '--force',
     is_flag=True,
     help='Enables force mode (backup.min_interval is ignored).')
-def backup(_ctx, ch_backup, databases, force):
+def backup(ctx, ch_backup, databases, tables, force):
     """Perform backup."""
-    (name, msg) = ch_backup.backup(databases, force)
+    if databases and tables:
+        ctx.fail('Options --databases and --tables are mutually exclusive.')
+
+    (name, msg) = ch_backup.backup(
+        databases=databases, tables=tables, force=force)
+
     if msg:
         print(msg, file=sys.stderr, flush=True)
     print(name)

@@ -113,9 +113,11 @@ class ClickhouseBackupLayout:
         """
         remote_path = self.backup_meta_path
         try:
-            logging.debug('Saving backup meta in key: %s', remote_path)
+            json_dump = backup_meta.dump_json()
+            logging.debug('Saving backup meta in key %s:\n%s', remote_path,
+                          json_dump)
             result = self._storage_loader.upload_data(
-                backup_meta, remote_path=remote_path)
+                json_dump, remote_path=remote_path)
             return result
         except Exception as exc:
             logging.critical('Unable to upload backup metadata to storage: %s',
