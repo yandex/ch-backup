@@ -105,8 +105,10 @@ class ClickhouseBackup:
             databases = backup_meta.get_databases()
         else:
             # check all required databases exists in backup meta
-            missed_databases = (db_name for db_name in databases
-                                if db_name not in backup_meta.get_databases())
+            missed_databases = [
+                db_name for db_name in databases
+                if db_name not in backup_meta.get_databases()
+            ]
             if missed_databases:
                 logging.critical(
                     'Required databases %s were not found in backup meta: %s',
