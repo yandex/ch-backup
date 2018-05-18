@@ -139,9 +139,9 @@ class ClickhouseBackup:
             logging.debug('Running table "%s.%s" backup', db_name, table_name)
 
             # save table sql
-            backup_meta.add_table_sql_path(db_name, table_name,
-                                           self._backup_table_meta(
-                                               db_name, table_name))
+            backup_meta.add_table_sql_path(
+                db_name, table_name,
+                self._backup_table_meta(db_name, table_name))
 
             parts_rows = self._ch_ctl.get_all_table_parts_info(
                 db_name, table_name)

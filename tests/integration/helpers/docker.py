@@ -20,8 +20,8 @@ def get_container(context, prefix):
     """
     Get container object by prefix
     """
-    return DOCKER_API.containers.get('%s.%s' % (prefix,
-                                                context.conf['network_name']))
+    return DOCKER_API.containers.get(
+        '%s.%s' % (prefix, context.conf['network_name']))
 
 
 def get_exposed_port(container, port):

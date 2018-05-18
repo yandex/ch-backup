@@ -98,11 +98,12 @@ class ClickhouseClient:
             for table_num in range(1, TABLE_COUNT + 1):
                 table_name = 'test_table_{table_num:02d}'. \
                     format(table_num=table_num)
-                self._query('POST', 'CREATE TABLE IF NOT EXISTS '
-                            '{db_name}.{table_name} {table_schema}'.format(
-                                db_name=db_name,
-                                table_name=table_name,
-                                table_schema=TEST_TABLE_SCHEMA))
+                self._query(
+                    'POST', 'CREATE TABLE IF NOT EXISTS '
+                    '{db_name}.{table_name} {table_schema}'.format(
+                        db_name=db_name,
+                        table_name=table_name,
+                        table_schema=TEST_TABLE_SCHEMA))
 
     def init_data(self, mark=None):
         """

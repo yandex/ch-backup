@@ -32,5 +32,5 @@ def step_ensure_s3_bucket(context, node_name, bucket_name):
     if all(
             log not in output
             for log in ('created successfully', 'already own it')):
-        raise RuntimeError('Can not create bucket %s: %s' % (bucket_name,
-                                                             output))
+        raise RuntimeError(
+            'Can not create bucket %s: %s' % (bucket_name, output))
