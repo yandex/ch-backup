@@ -58,9 +58,9 @@ class ExecPool:
     uses concurrent.futures.ProcessPoolExecutor
     """
 
-    def __init__(self, config):
+    def __init__(self, worker_count):
         self._futures = {}
-        self._pool = ProcessPoolExecutor(max_workers=config['workers'])
+        self._pool = ProcessPoolExecutor(max_workers=worker_count)
 
     def shutdown(self, graceful=True):
         """
@@ -124,9 +124,9 @@ class PipelineLoader:
         self._config = config
         self._exec_pool = None
 
-        multiprocessing_conf = self._config.get('multiprocessing')
-        if multiprocessing_conf:
-            self._exec_pool = ExecPool(multiprocessing_conf)
+        worker_count = self._config['multiprocessing'].get('workers')
+        if worker_count:
+            self._exec_pool = ExecPool(worker_count)
 
     def _execute_pipeline(self, id_tuple, stages, *args, is_async, encryption):
         """
