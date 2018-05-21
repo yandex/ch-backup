@@ -12,7 +12,8 @@ from functools import partial
 from .stages.encryption import DecryptStage, EncryptStage
 from .stages.filesystem import (CollectDataStage, ReadDataStage, ReadFileStage,
                                 WriteFileStage)
-from .stages.storage import DownloadStorageStage, UploadStorageStage
+from .stages.storage import (DownloadStorageStage, UploadDataStorageStage,
+                             UploadFileStorageStage)
 
 
 class Pipeline:
@@ -158,7 +159,7 @@ class PipelineLoader:
         """
         return self._execute_pipeline(
             (self.upload_data.__name__, '<data>', *args),
-            (ReadDataStage, EncryptStage, UploadStorageStage), data, *args,
+            (ReadDataStage, EncryptStage, UploadDataStorageStage), data, *args,
             **kwargs)
 
     def upload_file(self, *args, **kwargs):
@@ -167,7 +168,8 @@ class PipelineLoader:
         """
         return self._execute_pipeline(
             (self.upload_file.__name__, *args),
-            (ReadFileStage, EncryptStage, UploadStorageStage), *args, **kwargs)
+            (ReadFileStage, EncryptStage, UploadFileStorageStage), *args,
+            **kwargs)
 
     def download_data(self, *args, **kwargs):
         """
