@@ -1,95 +1,86 @@
 """
-Base pipeline stages module
+Base pipeline stages module.
 """
 
 import io
 from abc import ABCMeta, abstractmethod
 
 
-class BaseStage(metaclass=ABCMeta):
+class InputStage(metaclass=ABCMeta):
     """
-    Base stage class
+    Base input stage.
 
-    each stage is an generator
-    """
-
-    @abstractmethod
-    def _process(self, data):
-        """
-        Data processing
-        """
-
-        pass
-
-    @abstractmethod
-    def _pre_process(self, src_key=None, dst_key=None):
-        """
-        Pre processing hook
-        """
-
-        pass
-
-    @abstractmethod
-    def _post_process(self):
-        """
-        Pre processing hook
-        """
-
-        pass
-
-
-class InputFileStage(BaseStage):
-    """
-    Base input unbuffered stage
-
-    gathers data from external source by required chunks
-    produces collected data
+    - gathers data from external source by required chunks.
+    - produces collected data.
     """
 
     stype = None
 
-    def __init__(self, conf):
-        self._chunk_size = conf['chunk_size']
-
-    def _pre_process(self, src_key=None, dst_key=None):
-        pass
-
-    def __call__(self, src_key=None, dst_key=None):
+    def __call__(self, src_key, dst_key):
         self._pre_process(src_key)
+
         while True:
-            data = self._process(None)
+            data = self._process()
             if not data:
                 break
             yield data
+
         self._post_process()
 
-    def _process(self, data):
-        raise NotImplementedError
+    def _pre_process(self, src_key):
+        pass
+
+    @abstractmethod
+    def _process(self):
+        pass
 
     def _post_process(self):
         pass
 
 
-class IterBufferedStage(BaseStage):
+class IterStage(metaclass=ABCMeta):
     """
-    Base middleware buffered stage
-
-    gathers data from iterator
-    collects chunk of desired size in memory buffer
-    produces processed data
+    Base middleware stage.
     """
 
     stype = None
+
+    def __call__(self, src_iter, src_key, dst_key):
+        self._pre_process(src_key, dst_key)
+
+        for data in src_iter(src_key, dst_key):
+            yield self._process(data)
+
+        return self._post_process()
+
+    def _pre_process(self, src_key, dst_key):
+        pass
+
+    @abstractmethod
+    def _process(self, data):
+        pass
+
+    def _post_process(self):
+        pass
+
+
+class BufferedIterStage(IterStage, metaclass=ABCMeta):
+    """
+    Base middleware buffered stage.
+
+    - gathers data from iterator.
+    - collects chunk of desired size in memory buffer.
+    - produces processed data.
+    """
 
     def __init__(self, conf):
         self._buffer_size = conf['buffer_size']
         self._chunk_size = conf['chunk_size']
 
-    def __call__(self, src_iter, src_key=None, dst_key=None):
+    def __call__(self, src_iter, src_key, dst_key):
         """
-        Handles incoming data
+        Handles incoming data.
         """
-
         self._pre_process(src_key, dst_key)
 
         consumed_size = 0
@@ -133,43 +124,6 @@ class IterBufferedStage(BaseStage):
 
         return self._post_process()
 
-    def _process(self, data):
-        raise NotImplementedError
-
-    def _pre_process(self, src_key=None, dst_key=None):
-        pass
-
-    def _post_process(self):
-        pass
-
-
-class OutputDataStage(BaseStage):
-    """
-    Gathers all data from iter in memory buffer and returns it
-    """
-
-    stype = None
-
-    def __init__(self, conf):
-        self._conf = conf
-        self._buffer = io.BytesIO()
-        self._dst_key = None
-
-    def _pre_process(self, src_key=None, dst_key=None):
-        pass
-
-    def __call__(self, src_iter, src_key=None, dst_key=None):
-        self._dst_key = dst_key
-        for data in src_iter(src_key, dst_key):
-            yield self._buffer.write(data)
-        return self._post_process()
-
+    @abstractmethod
     def _process(self, data):
         pass
-
-    def _post_process(self):
-        self._buffer.seek(0)
-        resp = self._buffer.read()
-        self._buffer.seek(0)
-        self._buffer.truncate()
-        return resp

@@ -4,26 +4,32 @@ Filesystem pipeline stages module
 
 import io
 
-from .base import InputFileStage, IterBufferedStage, OutputDataStage
+from .base import BufferedIterStage, InputStage, IterStage
 
 STAGE_TYPE = 'filesystem'
 
 
-class ReadDataStage:
+class ReadDataStage(InputStage):
     """
     Simple yield of consumed data
     """
 
     stype = STAGE_TYPE
 
-    def __init__(self, conf):
-        self._conf = conf
+    def __init__(self, *_):
+        self._src_key = None
+        self._read = False
 
-    def __call__(self, src_key=None, dst_key=None):
-        yield src_key
+    def _pre_process(self, src_key):
+        self._src_key = src_key
+
+    def _process(self):
+        if not self._read:
+            self._read = True
+            return self._src_key
 
 
-class WriteFileStage(IterBufferedStage):
+class WriteFileStage(BufferedIterStage):
     """
     Write consumed from iter data to file
     """
@@ -34,7 +40,7 @@ class WriteFileStage(IterBufferedStage):
         super().__init__(conf)
         self._fobj = None
 
-    def _pre_process(self, src_key=None, dst_key=None):
+    def _pre_process(self, src_key, dst_key):
         self._fobj = open(dst_key, 'bw', 0)
 
     def _process(self, data):
@@ -44,7 +50,7 @@ class WriteFileStage(IterBufferedStage):
         self._fobj.close()
 
 
-class ReadFileStage(InputFileStage):
+class ReadFileStage(InputStage):
     """
     Reads data from file unlimited
     """
@@ -52,30 +58,31 @@ class ReadFileStage(InputFileStage):
     stype = STAGE_TYPE
 
     def __init__(self, conf):
-        super().__init__(conf)
+        self._chunk_size = conf['chunk_size']
         self._fobj = None
 
-    def _pre_process(self, src_key=None, dst_key=None):
+    def _pre_process(self, src_key):
         self._fobj = open(src_key, 'br')
 
-    def _process(self, data):
+    def _process(self):
         return self._fobj.read(self._chunk_size)
 
     def _post_process(self):
         self._fobj.close()
 
 
-class CollectDataStage(OutputDataStage):
+class CollectDataStage(IterStage):
     """
     Gathers all data from iterable and returns
     """
 
     stype = STAGE_TYPE
 
-    def __init__(self, conf):
-        super().__init__(conf)
+    def __init__(self, *_):
         self._buffer = io.BytesIO()
-        self._dst_key = None
+
+    def _process(self, data):
+        return self._buffer.write(data)
 
     def _post_process(self):
         self._buffer.seek(0)

@@ -204,11 +204,12 @@ def test_nacl_ecrypt_decrypt(incoming_stream_size, incoming_chunk_size, conf):
     test_stream = get_test_stream(incoming_stream_size)
     stream_iter = StreamInter(chunk_size=incoming_chunk_size)
 
-    for chunk in encrypt_cmd(partial(stream_iter, test_stream)):
+    for chunk in encrypt_cmd(partial(stream_iter, test_stream), None, None):
         encrypted_stream.write(chunk)
 
     encrypted_stream.seek(0)
-    for chunk in decrypt_cmd(partial(stream_iter, encrypted_stream)):
+    for chunk in decrypt_cmd(
+            partial(stream_iter, encrypted_stream), None, None):
         decrypted_stream.write(chunk)
 
     test_stream.seek(0)
@@ -240,7 +241,7 @@ def test_write_file_cmd(monkeypatch, incoming_stream_size, incoming_chunk_size,
 
     test_stream = get_test_stream(incoming_stream_size)
     stream_iter = StreamInter(chunk_size=incoming_chunk_size)
-    for _ in write_file_cmd(partial(stream_iter, test_stream)):
+    for _ in write_file_cmd(partial(stream_iter, test_stream), None, None):
         pass
 
     result_stream.seek(0)

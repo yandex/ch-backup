@@ -4,12 +4,12 @@ Encryption pipeline stages module
 
 from ch_backup.encryption import get_encryption
 
-from .base import IterBufferedStage
+from .base import BufferedIterStage
 
 STAGE_TYPE = 'encryption'
 
 
-class EncryptStage(IterBufferedStage):
+class EncryptStage(BufferedIterStage):
     """
     Encrypts data by chunk of specified size
     """
@@ -24,7 +24,7 @@ class EncryptStage(IterBufferedStage):
         return self._crypto.encrypt(data)
 
 
-class DecryptStage(IterBufferedStage):
+class DecryptStage(BufferedIterStage):
     """
     Encrypts data by chunk of specified size + encrypt metadata size
     """

@@ -5,12 +5,12 @@ import os
 from abc import ABCMeta, abstractmethod
 
 from ..engine import get_storage_engine
-from .base import InputFileStage, IterBufferedStage
+from .base import BufferedIterStage, InputStage
 
 STAGE_TYPE = 'storage'
 
 
-class UploadStorageStage(IterBufferedStage, metaclass=ABCMeta):
+class UploadStorageStage(BufferedIterStage, metaclass=ABCMeta):
     """
     Base class for uploading data using configured storage engine.
     """
@@ -24,7 +24,7 @@ class UploadStorageStage(IterBufferedStage, metaclass=ABCMeta):
         self._upload_id = None
         self._processed = False
 
-    def _pre_process(self, src_key=None, dst_key=None):
+    def _pre_process(self, src_key, dst_key):
         self._remote_path = dst_key
 
         # use multi-part upload if source data size > chunk_size
@@ -76,7 +76,7 @@ class UploadFileStorageStage(UploadStorageStage):
         return os.path.getsize(source)
 
 
-class DownloadStorageStage(InputFileStage):
+class DownloadStorageStage(InputStage):
     """
     Downloads data from iterator by multipart download
     """
@@ -84,15 +84,15 @@ class DownloadStorageStage(InputFileStage):
     stype = STAGE_TYPE
 
     def __init__(self, conf):
-        super().__init__(conf)
+        self._chunk_size = conf['chunk_size']
         self._loader = get_storage_engine(conf)
         self._download_id = None
 
-    def _pre_process(self, src_key=None, dst_key=None):
+    def _pre_process(self, src_key):
         self._download_id = self._loader.create_multipart_download(
             remote_path=src_key)
 
-    def _process(self, data):
+    def _process(self):
         return self._loader.download_part(
             download_id=self._download_id, part_len=self._chunk_size)
 
@@ -101,7 +101,7 @@ class DownloadStorageStage(InputFileStage):
         self._download_id = None
 
 
-class DeleteStorageStage:  # pylint: disable=too-few-public-methods
+class DeleteStorageStage(InputStage):
     """
     Delete file from storage
     """
@@ -110,7 +110,13 @@ class DeleteStorageStage:  # pylint: disable=too-few-public-methods
 
     def __init__(self, conf):
         self._loader = get_storage_engine(conf)
+        self._remote_path = None
 
-    def __call__(self, src_key=None, dst_key=None):
-        yield
-        return self._loader.delete_file(remote_path=src_key)
+    def _pre_process(self, src_key):
+        self._remote_path = src_key
+
+    def _process(self):
+        self._loader.delete_file(self._remote_path)
+
+    def _post_process(self):
+        return self._remote_path
