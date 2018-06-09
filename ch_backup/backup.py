@@ -8,7 +8,8 @@ from datetime import timedelta
 
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.layout import (
-    ClickhouseBackupLayout, ClickhouseBackupStructure, ClickhousePartInfo)
+    ClickhouseBackupLayout, ClickhouseBackupState, ClickhouseBackupStructure,
+    ClickhousePartInfo)
 from ch_backup.exceptions import ClickHouseBackupError, StorageError
 from ch_backup.util import now, utc_fromtimestamp, utcnow
 
@@ -42,8 +43,11 @@ class ClickhouseBackup:
         fields = ('name', 'state', 'start_time', 'end_time', 'bytes',
                   'real_bytes', 'rows', 'real_rows', 'ch_version')
 
+        i_state = fields.index('state')
         for backup_meta in self._existing_backups:
-            report.append([str(getattr(backup_meta, x, None)) for x in fields])
+            entry_report = [str(getattr(backup_meta, x, None)) for x in fields]
+            entry_report[i_state] = backup_meta.state.value
+            report.append(entry_report)
 
         return fields, report
 
@@ -502,7 +506,8 @@ class ClickhouseBackup:
                         ' skipping', backup_name, backup_meta.end_time,
                         backup_age_limit)
                 # filter non-consistent entries
-                elif backup_meta.state != 'backup_finished' and not load_all:
+                elif backup_meta.state != ClickhouseBackupState.CREATED \
+                        and not load_all:
                     logging.debug('Backup "%s" is skipped due to state "%s"',
                                   backup_name, backup_meta.state)
                 else:

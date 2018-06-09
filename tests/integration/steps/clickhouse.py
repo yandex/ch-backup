@@ -61,10 +61,10 @@ def step_check_backups_conditions(context, node):
     backup_ids = ch_backup.get_backup_ids()
 
     # check backup's count
-    expected_backups_count = len(backup_ids)
-    current_backups_count = len(context.table.rows)
+    expected_backups_count = len(context.table.rows)
+    current_backups_count = len(backup_ids)
     assert_that(
-        expected_backups_count, equal_to(current_backups_count),
+        current_backups_count, equal_to(expected_backups_count),
         'Backups count = {0}, expected {1}'.format(current_backups_count,
                                                    expected_backups_count))
 

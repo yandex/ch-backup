@@ -9,6 +9,7 @@ import os
 import socket
 from collections import defaultdict
 from datetime import datetime, timezone
+from enum import Enum
 
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.exceptions import InvalidBackupStruct, StorageError
@@ -19,6 +20,17 @@ CBS_DEFAULT_PNAME_FMT = '%Y%m%dT%H%M%S'
 CBS_DEFAULT_DATE_FMT = '%Y-%m-%d %H:%M:%S %z'
 CBS_DEFAULT_FNAME = 'backup_struct.json'
 CBS_DEFAULT_JSON_INDENT = 4
+
+
+class ClickhouseBackupState(Enum):
+    """
+    Valid backup states
+    """
+
+    NOT_STARTED = 'not_started'
+    CREATED = 'created'
+    CREATING = 'creating'
+    PARTIALLY_DELETED = 'partially_deleted'
 
 
 class ClickhouseBackupLayout:
@@ -288,7 +300,7 @@ class ClickhouseBackupStructure:
         self.bytes = 0
         self.real_rows = 0
         self.real_bytes = 0
-        self.state = 'not_started'
+        self.state = ClickhouseBackupState.NOT_STARTED
         self.date_fmt = date_fmt or CBS_DEFAULT_DATE_FMT
         self.start_time = None
         self.end_time = None
@@ -313,20 +325,20 @@ class ClickhouseBackupStructure:
         Set start datetime and state
         """
         self.start_time = now()
-        self.state = 'creating'
+        self.state = ClickhouseBackupState.CREATING
 
     def mark_created(self):
         """
         Set end datetime and state
         """
         self.end_time = now()
-        self.state = 'created'
+        self.state = ClickhouseBackupState.CREATED
 
     def mark_partially_deleted(self):
         """
         Set partially deleted state
         """
-        self.state = 'partially_deleted'
+        self.state = ClickhouseBackupState.PARTIALLY_DELETED
 
     def dump_json(self):
         """
@@ -346,7 +358,7 @@ class ClickhouseBackupStructure:
                 'bytes': self.bytes,
                 'real_rows': self.real_rows,
                 'real_bytes': self.real_bytes,
-                'state': self.state,
+                'state': self.state.value,
             },
         }
         return json.dumps(report, indent=CBS_DEFAULT_JSON_INDENT)
@@ -377,10 +389,12 @@ class ClickhouseBackupStructure:
             backup.bytes = meta['bytes']
 
             # TODO: delete in few months
-            if 'real_rows' in meta:
+            if 'state' in meta:
                 backup.real_rows = meta['real_rows']
                 backup.real_bytes = meta['real_bytes']
-                backup.state = meta['state']
+                backup.state = ClickhouseBackupState(meta['state'])
+            else:
+                backup.state = ClickhouseBackupState.CREATED
 
             return backup
 
