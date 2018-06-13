@@ -12,7 +12,8 @@ from datetime import datetime, timezone
 from enum import Enum
 
 from ch_backup.clickhouse.control import ClickhouseCTL
-from ch_backup.exceptions import InvalidBackupStruct, StorageError
+from ch_backup.exceptions import (InvalidBackupStruct, StorageError,
+                                  UnknownBackupStateError)
 from ch_backup.storage import StorageLoader
 from ch_backup.util import now, utcnow
 
@@ -30,7 +31,9 @@ class ClickhouseBackupState(Enum):
     NOT_STARTED = 'not_started'
     CREATED = 'created'
     CREATING = 'creating'
+    DELETING = 'deleting'
     PARTIALLY_DELETED = 'partially_deleted'
+    FAILED = 'failed'
 
 
 class ClickhouseBackupLayout:
@@ -123,7 +126,7 @@ class ClickhouseBackupLayout:
         """
         Upload backup meta file into storage
         """
-        remote_path = self.backup_meta_path
+        remote_path = self._get_backup_meta_path(backup_meta.name)
         try:
             json_dump = backup_meta.dump_json()
             logging.debug('Saving backup meta in key %s:\n%s', remote_path,
@@ -264,7 +267,8 @@ class ClickhouseBackupLayout:
         """
         Get current backup entries
         """
-        return self._storage_loader.list_dir(self._config['path_root'])
+        return self._storage_loader.list_dir(
+            self._config['path_root'], recursive=False, absolute=False)
 
     def path_exists(self, remote_path):
         """
@@ -280,7 +284,8 @@ class ClickhouseBackupLayout:
             logging.debug('Collecting async jobs')
             self._storage_loader.wait()
         except Exception as exc:
-            logging.critical('Errors in async transfers: %s', exc)
+            logging.critical(
+                'Errors in async transfers: %s', exc, exc_info=True)
             raise StorageError
 
 
@@ -300,7 +305,7 @@ class ClickhouseBackupStructure:
         self.bytes = 0
         self.real_rows = 0
         self.real_bytes = 0
-        self.state = ClickhouseBackupState.NOT_STARTED
+        self._state = ClickhouseBackupState.NOT_STARTED
         self.date_fmt = date_fmt or CBS_DEFAULT_DATE_FMT
         self.start_time = None
         self.end_time = None
@@ -320,25 +325,30 @@ class ClickhouseBackupStructure:
     def __str__(self):
         return self.dump_json()
 
-    def mark_creating(self):
+    @property
+    def state(self):
         """
-        Set start datetime and state
+        Backup state
+        """
+        return self._state
+
+    @state.setter
+    def state(self, value):
+        if value not in ClickhouseBackupState:
+            raise UnknownBackupStateError
+        self._state = value
+
+    def update_start_time(self):
+        """
+        Set start datetime
         """
         self.start_time = now()
-        self.state = ClickhouseBackupState.CREATING
 
-    def mark_created(self):
+    def update_end_time(self):
         """
-        Set end datetime and state
+        Set end datetime
         """
         self.end_time = now()
-        self.state = ClickhouseBackupState.CREATED
-
-    def mark_partially_deleted(self):
-        """
-        Set partially deleted state
-        """
-        self.state = ClickhouseBackupState.PARTIALLY_DELETED
 
     def dump_json(self):
         """
@@ -358,7 +368,7 @@ class ClickhouseBackupStructure:
                 'bytes': self.bytes,
                 'real_rows': self.real_rows,
                 'real_bytes': self.real_bytes,
-                'state': self.state.value,
+                'state': self._state.value,
             },
         }
         return json.dumps(report, indent=CBS_DEFAULT_JSON_INDENT)
@@ -392,9 +402,9 @@ class ClickhouseBackupStructure:
             if 'state' in meta:
                 backup.real_rows = meta['real_rows']
                 backup.real_bytes = meta['real_bytes']
-                backup.state = ClickhouseBackupState(meta['state'])
+                backup._state = ClickhouseBackupState(meta['state'])
             else:
-                backup.state = ClickhouseBackupState.CREATED
+                backup._state = ClickhouseBackupState.CREATED
 
             return backup
 
@@ -484,7 +494,7 @@ class ClickhouseBackupStructure:
         part_bytes = int(part_contents['meta']['bytes'])
         self.rows -= part_rows
         self.bytes -= part_bytes
-        if part_contents['link']:
+        if not part_contents['link']:
             # TODO: delete in few months
             if hasattr(self, 'real_rows'):
                 self.real_rows -= part_rows

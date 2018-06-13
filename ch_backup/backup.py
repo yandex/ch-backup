@@ -92,18 +92,24 @@ class ClickhouseBackup:
             path=self._backup_layout.backup_path,
             ch_version=self._ch_ctl.get_version())
 
-        backup_meta.mark_creating()
-        self._backup_layout.save_backup_meta(backup_meta)
+        backup_meta.state = ClickhouseBackupState.CREATING
+        backup_meta.update_start_time()
 
         logging.debug('Starting backup "%s" for databases: %s',
                       backup_meta.name, ', '.join(databases))
 
-        for db_name in databases:
-            self.backup_database(db_name, backup_meta, db_tables[db_name])
-        self._ch_ctl.remove_shadow_data()
-
-        backup_meta.mark_created()
-        self._backup_layout.save_backup_meta(backup_meta)
+        try:
+            for db_name in databases:
+                self.backup_database(db_name, backup_meta, db_tables[db_name])
+            backup_meta.state = ClickhouseBackupState.CREATED
+        except Exception as exc:
+            logging.critical('Backup failed with: "%s"', exc, exc_info=True)
+            backup_meta.state = ClickhouseBackupState.FAILED
+            raise
+        finally:
+            backup_meta.update_end_time()
+            self._backup_layout.save_backup_meta(backup_meta)
+            self._ch_ctl.remove_shadow_data()
 
         return (backup_meta.name, None)
 
@@ -228,64 +234,57 @@ class ClickhouseBackup:
             skip_parts.update(
                 new_backup.get_deduplicated_parts(deduplicated_to=backup_name))
 
-        # TODO: do we need backup_meta.start_delete()
-        #  and check if backup create is in progress
-        # backup_meta.mark_start_delete()
-        # self._backup_layout.save_backup_meta(backup_meta.dump_json())
-        is_deleted = False
-        delete_paths = []
-        for db_name in backup_meta.get_databases():
-            for table_name in backup_meta.get_tables(db_name):
-                for part_name in backup_meta.get_parts(db_name, table_name):
-                    part_id = (db_name, table_name, part_name)
+        logging.debug('Running backup delete: %s', backup_name)
+        prev_state = backup_meta.state
+        backup_meta.state = ClickhouseBackupState.DELETING
+        self._backup_layout.save_backup_meta(backup_meta)
 
-                    logging.debug('Working on part "%s.%s.%s"', *part_id)
-                    if part_id in skip_parts:
-                        logging.debug(
-                            'Skip removing part "%s": link from "%s"'
-                            ' was found', part_name, skip_parts[part_id])
-                        continue
+        is_changed, delete_paths = self._pop_deleting_paths(
+            backup_meta, skip_parts)
+        is_empty = backup_meta.is_empty()
 
-                    logging.debug('Dropping part contents from meta "%s"',
-                                  part_name)
+        try:
+            # delete whole backup prefix if backup entry is empty
+            if is_empty:
+                logging.info('Running removing path of backup "%s": %s',
+                             backup_name, backup_meta.path)
+                self._backup_layout.delete_backup_path(backup_name)
+                return backup_name, None
 
-                    # Do not delete linked part paths
-                    if not backup_meta.is_part_linked(*part_id):
-                        logging.debug('Scheduling deletion of part files "%s"',
-                                      part_name)
-                        delete_paths.extend(
-                            backup_meta.get_part_paths(*part_id))
+            if is_changed:
+                # some data (not linked) parts were deleted
+                if delete_paths:
+                    logging.info(
+                        'Running removing of deleted parts for backup "%s"',
+                        backup_name)
+                    self._backup_layout.delete_loaded_files(delete_paths)
 
-                    backup_meta.del_part_contents(*part_id)
-                    is_deleted = True
+                backup_meta.state = ClickhouseBackupState.PARTIALLY_DELETED
+                return None, 'Backup was partially deleted as its data is ' \
+                             'in use by subsequent backups per ' \
+                             'deduplication settings.'
+            else:
+                logging.info('Nothing was found for deletion')
+                backup_meta.state = prev_state
+                return None, 'Backup was not deleted as its data is in use ' \
+                             'by subsequent backups per deduplication ' \
+                             'settings.'
 
-        # delete whole backup prefix if backup entry is empty
-        if backup_meta.is_empty():
-            logging.info('Running removing path of backup "%s": %s',
-                         backup_name, backup_meta.path)
-            self._backup_layout.delete_backup_path(backup_name)
-        elif is_deleted:
-            if delete_paths:
-                logging.info(
-                    'Running removing of deleted parts for backup "%s"',
-                    backup_name)
-                self._backup_layout.delete_loaded_files(delete_paths)
-            backup_meta.mark_partially_deleted()
-            self._backup_layout.backup_name = backup_meta.name
-            self._backup_layout.save_backup_meta(backup_meta)
-        else:
-            logging.info('Nothing was found for deletion')
-            return
+        except Exception as exc:
+            logging.critical('Delete failed with: "%s"', exc, exc_info=True)
+            backup_meta.state = ClickhouseBackupState.FAILED
+            raise
 
-        logging.debug('Waiting for completion of storage operations')
-        self._backup_layout.wait()
-        return backup_name
+        finally:
+            logging.debug('Waiting for completion of storage operations')
+            self._backup_layout.wait()
+            if not is_empty:
+                self._backup_layout.save_backup_meta(backup_meta)
 
     def purge(self):
         """
         Purge backups
         """
-        current_time = now()
         retain_time = self._config['retain_time']
         retain_count = self._config['retain_count']
         purge_count_backup_names = []
@@ -303,7 +302,7 @@ class ClickhouseBackup:
             return
 
         if retain_time:
-            backup_age_limit = current_time - timedelta(**retain_time)
+            backup_age_limit = now() - timedelta(**retain_time)
 
             for backup_meta in self._existing_backups:
                 if backup_meta.end_time < backup_age_limit:
@@ -333,10 +332,13 @@ class ClickhouseBackup:
         purged_backups = []
         for backup_name in purge_backup_names:
             logging.debug('Purging backup: %s', backup_name)
-            purged_backups.append(self.delete(backup_name))
+            name, _ = self.delete(backup_name)
+            if name:
+                purged_backups.append(backup_name)
+
             self._reload_existing_backup(backup_name)
 
-        return '\n'.join(purge_backup_names)
+        return '\n'.join(purged_backups)
 
     def _backup_database_meta(self, db_name):
         """
@@ -544,3 +546,36 @@ class ClickhouseBackup:
         if not backup_meta:
             raise ClickHouseBackupError(
                 'Backup "{0}" was not loaded before'.format(backup_name))
+
+    @staticmethod
+    def _pop_deleting_paths(backup_meta, skip_parts):
+        """
+        Get backup paths which are safe for delete
+        """
+        is_changed = False
+        delete_paths = []
+        for db_name in backup_meta.get_databases():
+            for table_name in backup_meta.get_tables(db_name):
+                for part_name in backup_meta.get_parts(db_name, table_name):
+                    part_id = (db_name, table_name, part_name)
+
+                    logging.debug('Working on part "%s.%s.%s"', *part_id)
+                    if part_id in skip_parts:
+                        logging.debug(
+                            'Skip removing part "%s": link from "%s"'
+                            ' was found', part_name, skip_parts[part_id])
+                        continue
+
+                    logging.debug('Dropping part contents from meta "%s"',
+                                  part_name)
+
+                    # Do not delete linked part paths
+                    if not backup_meta.is_part_linked(*part_id):
+                        logging.debug('Scheduling deletion of part files "%s"',
+                                      part_name)
+                        delete_paths.extend(
+                            backup_meta.get_part_paths(*part_id))
+
+                    backup_meta.del_part_contents(*part_id)
+                    is_changed = True
+        return is_changed, delete_paths

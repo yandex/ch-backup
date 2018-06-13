@@ -31,3 +31,9 @@ class StageError(ClickHouseBackupError):
 
 class UnknownEncryptionError(ClickHouseBackupError):
     pass
+
+
+class UnknownBackupStateError(ClickHouseBackupError):
+    """
+    Invalid state of backup
+    """

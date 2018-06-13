@@ -3,7 +3,8 @@ Steps related to ClickHouse and backups.
 """
 import yaml
 from behave import given, then, when
-from hamcrest import assert_that, equal_to, has_length, is_not, matches_regexp
+from hamcrest import (any_of, assert_that, contains_string, equal_to,
+                      has_length, is_not, matches_regexp)
 from retrying import retry
 
 from tests.integration.helpers.ch_backup import BackupManager
@@ -85,9 +86,9 @@ def step_check_backups_conditions(context, node):
             expected_value = row[cond]
             assert_that(
                 current_value, equal_to(expected_value),
-                'Backup #{0} "{1}": expected {2} = {3}, but was {4}'.format(
-                    row['title'], row['num'], cond, expected_value,
-                    current_value))
+                'Backup #{0} "{1}": {2} expected {3} = {4}, but was {5}'.
+                format(row['num'], row['title'], backup.name, cond,
+                       expected_value, current_value))
 
 
 @when('we purge {node} clickhouse backups')
@@ -123,7 +124,12 @@ def step_update_ch_backup_config(context, node):
 @when('we delete {node:w} clickhouse backup #{backup_num:d}')
 def step_delete_backup(context, node, backup_num):
     backup_id = BackupManager(context, node).delete(backup_num)
-    assert_that(backup_id, matches_regexp('^([0-9]{8}T[0-9]{6}\n)*$'))
+    assert_that(
+        backup_id,
+        any_of(
+            matches_regexp('^([0-9]{8}T[0-9]{6}\n)*$'),
+            contains_string('Backup was not deleted'),
+            contains_string('Backup was partially deleted')))
 
 
 @when('we restore clickhouse #{backup_num:d} backup to {node:w}')

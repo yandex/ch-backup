@@ -195,7 +195,12 @@ def delete(ctx, ch_backup, name):
     """Delete particular backup."""
     name = _validate_name(ctx, ch_backup, name)
 
-    ch_backup.delete(name)
+    name, msg = ch_backup.delete(name)
+
+    if msg:
+        print(msg, file=sys.stderr, flush=True)
+    if name:
+        print(name)
 
 
 @command()
