@@ -81,13 +81,16 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
         return remote_path
 
     def list_dir(self, remote_path, recursive=False, absolute=False):
+        remote_path = remote_path.lstrip('/')
         contents = []
-        delimiter = '' if recursive else '/'
         paginator = self._s3_client.get_paginator('list_objects')
-        for result in paginator.paginate(
-                Bucket=self._s3_bucket_name,
-                Prefix='{s3_path}/'.format(s3_path=remote_path),
-                Delimiter=delimiter):
+        list_object_kwargs = dict(
+            Bucket=self._s3_bucket_name,
+            Prefix='{s3_path}/'.format(s3_path=remote_path))
+        if not recursive:
+            list_object_kwargs['Delimiter'] = '/'
+
+        for result in paginator.paginate(**list_object_kwargs):
             if result.get('CommonPrefixes') is not None:
                 for dir_prefix in result.get('CommonPrefixes'):
                     dir_path = dir_prefix.get('Prefix') if absolute \
