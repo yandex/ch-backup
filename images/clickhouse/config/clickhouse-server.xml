@@ -1,5 +1,4 @@
 <yandex>
-    <listen_host>0.0.0.0</listen_host>
     <listen_host>::</listen_host>
     <https_port>8443</https_port>
     <tcp_ssl_port>9440</tcp_ssl_port>

@@ -6,7 +6,7 @@ ENV CLICKHOUSE_GROUP clickhouse
 ENV CH_TMP_DIR /var/tmp/ch-backup
 
 ARG repository="deb https://repo.yandex.ru/clickhouse/deb/stable/ main/"
-ARG version=1.1.54343
+ARG version=1.1.54380
 
 RUN echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen && \
     locale-gen && \

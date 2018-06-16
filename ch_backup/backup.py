@@ -190,14 +190,11 @@ class ClickhouseBackup:
                     part_remote_paths = self._backup_layout.save_part_data(
                         db_name, table_name, part_info.name)
 
+                part_info.link = link
+                part_info.paths = part_remote_paths
+
                 # save part files and meta in backup struct
-                backup_meta.add_part_contents(
-                    db_name,
-                    table_name,
-                    part_info.name,
-                    part_remote_paths,
-                    part_info.get_contents(),
-                    link=link)
+                backup_meta.add_part_contents(db_name, table_name, part_info)
 
             logging.debug('Waiting for uploads')
             self._backup_layout.wait()

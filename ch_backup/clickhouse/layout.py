@@ -459,28 +459,22 @@ class ClickhouseBackupStructure:
         self._databases[db_name]['tables_sql_paths'].append((table_name, path))
 
     # pylint: disable=too-many-arguments
-    def add_part_contents(self,
-                          db_name,
-                          table_name,
-                          part_name,
-                          paths,
-                          meta,
-                          link=False):
+    def add_part_contents(self, db_name, table_name, part_info):
         """
         Add part backup contents to backup struct
         """
         self._databases[db_name]['parts_paths'][table_name].update({
-            part_name: {
-                'link': link,
-                'paths': paths,
-                'meta': meta,
+            part_info.name: {
+                'link': part_info.link,
+                'paths': part_info.paths,
+                'meta': part_info.get_contents(),
             },
         })
-        part_rows = int(meta['rows'])
-        part_bytes = int(meta['bytes'])
+        part_rows = int(part_info.rows)
+        part_bytes = int(part_info.bytes)
         self.rows += part_rows
         self.bytes += part_bytes
-        if not link:
+        if not part_info.link:
             self.real_rows += part_rows
             self.real_bytes += part_bytes
 
@@ -488,13 +482,14 @@ class ClickhouseBackupStructure:
         """
         Delete part contents from backup struct
         """
-        part_contents = \
+        part = \
             self._databases[db_name]['parts_paths'][table_name].pop(part_name)
-        part_rows = int(part_contents['meta']['rows'])
-        part_bytes = int(part_contents['meta']['bytes'])
+        part_info = ClickhousePartInfo(meta=part['meta'], link=part['link'])
+        part_rows = int(part_info.rows)
+        part_bytes = int(part_info.bytes)
         self.rows -= part_rows
         self.bytes -= part_bytes
-        if not part_contents['link']:
+        if not part_info.link:
             # TODO: delete in few months
             if hasattr(self, 'real_rows'):
                 self.real_rows -= part_rows
