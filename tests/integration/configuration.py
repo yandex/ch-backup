@@ -2,6 +2,7 @@
 Variables that influence testing behavior are defined here.
 """
 
+import os
 import random
 
 from tests.integration.helpers import crypto
@@ -63,6 +64,9 @@ def get():
                     '%s:%s' % (dynamic_config['s3']['host'],
                                dynamic_config['s3']['fake_host']),
                 ],
+                'args': {
+                    'CLICKHOUSE_VERSION': os.environ['CLICKHOUSE_VERSION'],
+                },
             },
             'minio': {
                 'build': 'images/minio',

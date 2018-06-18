@@ -245,7 +245,10 @@ def _generate_service_dict(name, instance_name, instance_conf, network,
         # The path is relative to the location of the compose config file.
         # https://docs.docker.com/compose/compose-file/#build
         # Dockerfile dir
-        'build': build_path,
+        'build': {
+            'context': build_path,
+            'args': instance_conf.get('args', []),
+        },
         'image': '{nm}:{nt}'.format(nm=name, nt=network),
         'hostname': instance_name,
         'domainname': network,

@@ -6,6 +6,7 @@ ISORT_VENV=.tox/isort
 YAPF_VENV=.tox/yapf
 SESSION_FILE=.session_conf.sav
 INSTALL_DIR=$(DESTDIR)/opt/yandex/ch-backup
+CLICKHOUSE_VERSION?=1.1.54343
 
 build:
 
@@ -20,8 +21,16 @@ lint:
 unit_test:
 	tox -e py35_unit_test
 
-integration_test:
-	tox -e py35_integration_test
+integration_test_1.1.54343:
+	CLICKHOUSE_VERSION=1.1.54343 tox -e py35_integration_test
+
+integration_test_1.1.54380:
+	CLICKHOUSE_VERSION=1.1.54380 tox -e py35_integration_test
+
+integration_test_1.1.54385:
+	CLICKHOUSE_VERSION=1.1.54385 tox -e py35_integration_test
+
+integration_test: integration_test_1.1.54343 clean integration_test_1.1.54380 clean integration_test_1.1.54385 clean
 
 clean: stop_env clean_pycache
 	rm -rf staging .tox ${SESSION_FILE}
@@ -71,14 +80,14 @@ clean-debuild: clean
 
 
 create_env: ${TEST_VENV}
-	PATH=${TEST_VENV}/bin:$$PATH ${TEST_VENV}/bin/python -m tests.integration.env_control create
+	CLICKHOUSE_VERSION=$(CLICKHOUSE_VERSION) PATH=${TEST_VENV}/bin:$$PATH ${TEST_VENV}/bin/python -m tests.integration.env_control create
 
 start_env: create_env
-	PATH=${TEST_VENV}/bin:$$PATH ${TEST_VENV}/bin/python -m tests.integration.env_control start
+	CLICKHOUSE_VERSION=$(CLICKHOUSE_VERSION) PATH=${TEST_VENV}/bin:$$PATH ${TEST_VENV}/bin/python -m tests.integration.env_control start
 
 stop_env:
 	test -d ${TEST_VENV}/bin && test -f ${SESSION_FILE} && \
-	PATH=${TEST_VENV}/bin:$$PATH ${TEST_VENV}/bin/python -m tests.integration.env_control stop || true
+	CLICKHOUSE_VERSION=$(CLICKHOUSE_VERSION) PATH=${TEST_VENV}/bin:$$PATH ${TEST_VENV}/bin/python -m tests.integration.env_control stop || true
 
 
 format: ${ISORT_VENV} ${YAPF_VENV}
@@ -87,7 +96,7 @@ format: ${ISORT_VENV} ${YAPF_VENV}
 
 
 ${TEST_VENV}:
-	tox -e py35_integration_test --notest
+	CLICKHOUSE_VERSION=$(CLICKHOUSE_VERSION) tox -e py35_integration_test --notest
 
 ${ISORT_VENV}:
 	tox -e isort --notest
@@ -98,20 +107,23 @@ ${YAPF_VENV}:
 
 help:
 	@echo 'Targets:'
-	@echo "  build (default)    Build project (it's currently no-op)."
-	@echo '  all                Alias for "lint unit_test integration_test".'
-	@echo '  test               Alias for "lint unit_test".'
-	@echo '  lint               Run linter tools on tests source code.'
-	@echo '  unit_test          Run unit tests.'
-	@echo '  integration_test   Run integration tests.'
-	@echo '  create_env         Create test environment.'
-	@echo '  start_env          Start test environment runtime.'
-	@echo '  stop_env           Stop test environment runtime.'
-	@echo '  clean              Clean up test environment left from the previous test run.'
-	@echo '  clean_pycache      Clean up __pycache__ directories.'
-	@echo "  debuild            Build Debian package."
-	@echo "  clean-debuild      Clean up build and test artifacts including ones produced by"
-	@echo "                     debuild target outside the project worksapce."
-	@echo '  format             Re-format source code to conform style settings enforced by'
-	@echo '                     isort and yapf tools.'
-	@echo '  help               Show this help message.'
+	@echo "  build (default)            Build project (it's currently no-op)."
+	@echo '  all                        Alias for "lint unit_test integration_test".'
+	@echo '  test                       Alias for "lint unit_test".'
+	@echo '  lint                       Run linter tools on tests source code.'
+	@echo '  unit_test                  Run unit tests.'
+	@echo '  integration_test           Run integration tests against all supported versions of ClickHouse.'
+	@echo '  integration_test_1.1.54343 Run integration tests against the ClickhHouse version 1.1.54343.'
+	@echo '  integration_test_1.1.54380 Run integration tests against the ClickhHouse version 1.1.54380.'
+	@echo '  integration_test_1.1.54385 Run integration tests against the ClickhHouse version 1.1.54385.'
+	@echo '  create_env                 Create test environment.'
+	@echo '  start_env                  Start test environment runtime.'
+	@echo '  stop_env                   Stop test environment runtime.'
+	@echo '  clean                      Clean up test environment left from the previous test run.'
+	@echo '  clean_pycache              Clean up __pycache__ directories.'
+	@echo "  debuild                    Build Debian package."
+	@echo "  clean-debuild              Clean up build and test artifacts including ones produced by"
+	@echo "                             debuild target outside the project worksapce."
+	@echo '  format                     Re-format source code to conform style settings enforced by'
+	@echo '                             isort and yapf tools.'
+	@echo '  help                       Show this help message.'
