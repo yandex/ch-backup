@@ -94,6 +94,7 @@ class ClickhouseBackup:
 
         backup_meta.state = ClickhouseBackupState.CREATING
         backup_meta.update_start_time()
+        self._backup_layout.save_backup_meta(backup_meta)
 
         logging.debug('Starting backup "%s" for databases: %s',
                       backup_meta.name, ', '.join(databases))
@@ -260,12 +261,12 @@ class ClickhouseBackup:
                 return None, 'Backup was partially deleted as its data is ' \
                              'in use by subsequent backups per ' \
                              'deduplication settings.'
-            else:
-                logging.info('Nothing was found for deletion')
-                backup_meta.state = prev_state
-                return None, 'Backup was not deleted as its data is in use ' \
-                             'by subsequent backups per deduplication ' \
-                             'settings.'
+
+            logging.info('Nothing was found for deletion')
+            backup_meta.state = prev_state
+            return None, 'Backup was not deleted as its data is in use ' \
+                         'by subsequent backups per deduplication ' \
+                         'settings.'
 
         except Exception as exc:
             logging.critical('Delete failed with: "%s"', exc, exc_info=True)
