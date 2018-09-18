@@ -1,5 +1,5 @@
 [gerrit]
-host=gerrit.cmail.yandex.net
-port=9501
+host=review.db.yandex-team.ru
+port=9440
 project=mdb/ch-backup
 defaultbranch=master
