@@ -110,9 +110,8 @@ class ClickhouseClient:
         for db_num in range(1, DB_COUNT + 1):
             db_name = 'test_db_{db_num:02d}'.format(db_num=db_num)
             self._query(
-                'POST',
-                'CREATE DATABASE IF NOT EXISTS {db_name}'
-                .format(db_name=db_name))
+                'POST', 'CREATE DATABASE IF NOT EXISTS {db_name}'.format(
+                    db_name=db_name))
             for table_num in range(1, TABLE_COUNT + 1):
                 table_name = 'test_table_{table_num:02d}'. \
                     format(table_num=table_num)

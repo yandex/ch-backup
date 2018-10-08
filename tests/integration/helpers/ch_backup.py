@@ -78,8 +78,8 @@ class BackupManager:
         """
         conf = yaml.load(
             self._container.exec_run(
-                '/bin/cat {0}'.format(self._config_path), user='root')
-            .decode())
+                '/bin/cat {0}'.format(self._config_path),
+                user='root').decode())
 
         utils.merge(conf, update)
         docker.put_file(

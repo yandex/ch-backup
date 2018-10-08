@@ -509,15 +509,15 @@ class ClickhouseBackupStructure:
         """
         Get storage file paths of specified part
         """
-        return tuple(self._databases[db_name]['parts_paths'][table_name][
-            part_name]['paths'])
+        return tuple(self._databases[db_name]['parts_paths'][table_name]
+                     [part_name]['paths'])
 
     def is_part_linked(self, db_name, table_name, part_name):
         """
         Get storage file paths of specified part
         """
-        return bool(self._databases[db_name]['parts_paths'][table_name][
-            part_name]['link'])
+        return bool(self._databases[db_name]['parts_paths'][table_name]
+                    [part_name]['link'])
 
     def get_parts(self, db_name, table_name):
         """

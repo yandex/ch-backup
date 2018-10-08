@@ -67,10 +67,9 @@ def create(state_file=None):
     """
     state = _run_stage('create', state_file=state_file)
 
-    _save_state(
-        {
-            'config': state['config'],
-        }, path=state_file)
+    _save_state({
+        'config': state['config'],
+    }, path=state_file)
 
     return state
 

@@ -26,8 +26,8 @@ def step_ensure_s3_bucket(context, bucket_name):
     Create s3 bucket
     """
     output = context.s3_container.exec_run(
-        'mc mb fake-s3/{bucket_name}'
-        .format(bucket_name=bucket_name)).decode()
+        'mc mb fake-s3/{bucket_name}'.format(
+            bucket_name=bucket_name)).decode()
 
     if all(
             log not in output
