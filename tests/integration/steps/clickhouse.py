@@ -4,7 +4,7 @@ Steps related to ClickHouse and backups.
 import yaml
 from behave import given, then, when
 from hamcrest import (any_of, assert_that, contains_string, equal_to,
-                      has_length, is_not, matches_regexp)
+                      has_entries, has_length, is_not, matches_regexp)
 from retrying import retry
 
 from tests.integration.helpers.ch_backup import BackupManager
@@ -143,6 +143,14 @@ def step_restore_backup_schema_only(context, backup_num, node):
     backup_id = BackupManager(context, node).restore(
         backup_num, schema_only=True)
     assert_that(backup_id, matches_regexp('^$'))
+
+
+@then('{node:w} backup #{backup_num:d} metadata contains')
+def step_backup_metadata(context, node, backup_num):
+    expected_meta = yaml.load(context.text)
+
+    backup = BackupManager(context, node).get_backup(backup_num)
+    assert_that(backup.meta, has_entries(expected_meta))
 
 
 @then('we got same clickhouse data at {nodes}')

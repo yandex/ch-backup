@@ -161,13 +161,25 @@ def show(ctx, ch_backup, name):
     '--force',
     is_flag=True,
     help='Enables force mode (backup.min_interval is ignored).')
-def backup(ctx, ch_backup, databases, tables, force):
+@option(
+    '-l',
+    '--label',
+    multiple=True,
+    help='Custom labels as key-value pairs that represents user metadata.')
+def backup(ctx, ch_backup, databases, tables, force, label):
     """Perform backup."""
     if databases and tables:
         ctx.fail('Options --databases and --tables are mutually exclusive.')
 
+    labels = {}
+    for key_value_str in label:
+        key_value = key_value_str.split('=', 1)
+        key = key_value.pop(0)
+        value = key_value.pop() if key_value else None
+        labels[key] = value
+
     (name, msg) = ch_backup.backup(
-        databases=databases, tables=tables, force=force)
+        databases=databases, tables=tables, force=force, labels=labels)
 
     if msg:
         print(msg, file=sys.stderr, flush=True)

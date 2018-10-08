@@ -296,8 +296,15 @@ class ClickhouseBackupStructure:
 
     # pylint: disable=too-many-instance-attributes
 
-    def __init__(self, name, path, ch_version, date_fmt=None, hostname=None):
+    def __init__(self,
+                 name,
+                 path,
+                 ch_version,
+                 date_fmt=None,
+                 hostname=None,
+                 labels=None):
         self.name = name
+        self.labels = labels
         self.path = path
         self.ch_version = ch_version
         self.hostname = hostname or socket.getfqdn()
@@ -369,6 +376,7 @@ class ClickhouseBackupStructure:
                 'real_rows': self.real_rows,
                 'real_bytes': self.real_bytes,
                 'state': self._state.value,
+                'labels': self.labels,
             },
         }
         return json.dumps(report, indent=CBS_DEFAULT_JSON_INDENT)
@@ -389,6 +397,7 @@ class ClickhouseBackupStructure:
             backup = ClickhouseBackupStructure(
                 name=meta['name'],
                 path=meta['path'],
+                labels=meta.get('labels'),
                 ch_version=meta.get('ch_version'),
                 hostname=meta['hostname'],
                 date_fmt=meta['date_fmt'])

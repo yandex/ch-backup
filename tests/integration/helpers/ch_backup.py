@@ -32,7 +32,7 @@ class BackupManager:
 
         self._s3_client = s3.S3Client(context)
 
-    def backup(self, databases=None, tables=None):
+    def backup(self, databases=None, tables=None, labels=None):
         """
         Perform backup.
         """
@@ -41,6 +41,8 @@ class BackupManager:
             options.append('--databases {0}'.format(','.join(databases or [])))
         if tables:
             options.append('--tables {0}'.format(','.join(tables or [])))
+        for key, value in (labels or {}).items():
+            options.append('--label {0}={1}'.format(key, value))
 
         return self._exec('backup {0}'.format(' '.join(options)))
 
@@ -145,11 +147,18 @@ class Backup:
         self._metadata = metadata
 
     @property
+    def meta(self):
+        """
+        Backup meta.
+        """
+        return self._metadata.get('meta', {})
+
+    @property
     def version(self):
         """
         ClickHouse version.
         """
-        return self._metadata.get('meta', {}).get('ch_version')
+        return self.meta.get('ch_version')
 
     @property
     def link_count(self):
@@ -182,21 +191,21 @@ class Backup:
         """
         Backup name.
         """
-        return self._metadata.get('meta', {}).get('name')
+        return self.meta.get('name')
 
     @property
     def state(self):
         """
         Backup state.
         """
-        return self._metadata.get('meta', {}).get('state')
+        return self.meta.get('state')
 
     @property
     def start_time(self):
         """
         Backup start time
         """
-        return self._metadata.get('meta', {}).get('start_time')
+        return self.meta.get('start_time')
 
     @start_time.setter
     def start_time(self, item):
@@ -210,7 +219,7 @@ class Backup:
         """
         Backup end time
         """
-        return self._metadata.get('meta', {}).get('end_time')
+        return self.meta.get('end_time')
 
     @end_time.setter
     def end_time(self, item):
@@ -224,15 +233,14 @@ class Backup:
         """
         Backup date format
         """
-        return self._metadata.get('meta', {}).get('date_fmt')
+        return self.meta.get('date_fmt')
 
     @property
     def path(self):
         """
         Path to backup struct
         """
-        return os.path.join(
-            self._metadata.get('meta', {}).get('path'), 'backup_struct.json')
+        return os.path.join(self.meta.get('path'), 'backup_struct.json')
 
     def dump_json(self):
         """

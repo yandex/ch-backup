@@ -4,6 +4,7 @@ Clickhouse backup logic
 
 import logging
 from collections import defaultdict
+from copy import copy
 from datetime import timedelta
 
 from ch_backup.clickhouse.control import ClickhouseCTL
@@ -51,13 +52,17 @@ class ClickhouseBackup:
 
         return fields, report
 
-    def backup(self, databases=None, tables=None, force=False):
+    def backup(self, databases=None, tables=None, force=False, labels=None):
         """
         Perform backup.
 
         If force is True, backup.min_interval config option is ignored.
         """
         assert not (databases and tables)
+
+        backup_labels = copy(self._config.get('labels'))
+        if labels:
+            backup_labels.update(labels)
 
         db_tables = defaultdict(list)
         if tables:
@@ -90,6 +95,7 @@ class ClickhouseBackup:
         backup_meta = ClickhouseBackupStructure(
             name=self._backup_layout.backup_name,
             path=self._backup_layout.backup_path,
+            labels=backup_labels,
             ch_version=self._ch_ctl.get_version())
 
         backup_meta.state = ClickhouseBackupState.CREATING

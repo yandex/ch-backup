@@ -31,6 +31,7 @@ DEFAULT_CONFIG = {
         },
         'retain_time': {},
         'retain_count': None,
+        'labels': {},
     },
     'storage': {
         'type': 's3',
