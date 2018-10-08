@@ -14,20 +14,20 @@ def step_wait_for_s3_alive(context, node_name):
     """
     Wait until s3 is ready to accept incoming requests.
     """
-    s3cmd_container = docker.get_container(context, node_name)
-    output = s3cmd_container.exec_run('mc admin info fake-s3').decode()
+    context.s3_container = docker.get_container(context, node_name)
+    output = context.s3_container.exec_run('mc admin info fake-s3').decode()
     if 'online' not in output:
         raise RuntimeError('s3 is not available: ' + output)
 
 
-@given('{node_name} s3 has bucket {bucket_name}')
-def step_ensure_s3_bucket(context, node_name, bucket_name):
+@given('s3 bucket {bucket_name}')
+def step_ensure_s3_bucket(context, bucket_name):
     """
     Create s3 bucket
     """
-    s3_container = docker.get_container(context, node_name)
-    output = s3_container.exec_run('mc mb fake-s3/{bucket_name}'
-                                   .format(bucket_name=bucket_name)).decode()
+    output = context.s3_container.exec_run(
+        'mc mb fake-s3/{bucket_name}'
+        .format(bucket_name=bucket_name)).decode()
 
     if all(
             log not in output
