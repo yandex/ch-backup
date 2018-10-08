@@ -6,6 +6,7 @@ ENV CLICKHOUSE_GROUP clickhouse
 ENV CH_TMP_DIR /var/tmp/ch-backup
 
 ARG CLICKHOUSE_REPOSITORY="deb https://repo.yandex.ru/clickhouse/deb/stable/ main/"
+ARG CLICKHOUSE_REPOSITORY_KEY=C8F1E19FE0C56BD4
 ARG CLICKHOUSE_VERSION
 
 RUN echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen && \
@@ -35,8 +36,9 @@ RUN cd ${CH_TMP_DIR} && pip3 install -e . && \
 
 RUN mkdir -p /etc/apt/sources.list.d && \
     echo $CLICKHOUSE_REPOSITORY | tee /etc/apt/sources.list.d/clickhouse.list && \
+    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys $CLICKHOUSE_REPOSITORY_KEY && \
     apt-get update -qq && \
-    apt-get install --allow-unauthenticated -y \
+    apt-get install -y \
         clickhouse-server-common=$CLICKHOUSE_VERSION \
         clickhouse-server-base=$CLICKHOUSE_VERSION \
         clickhouse-client=$CLICKHOUSE_VERSION && \
