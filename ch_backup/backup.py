@@ -107,7 +107,7 @@ class ClickhouseBackup:
 
         try:
             for db_name in databases:
-                self.backup_database(db_name, backup_meta, db_tables[db_name])
+                self._backup_database(backup_meta, db_name, db_tables[db_name])
             backup_meta.state = ClickhouseBackupState.CREATED
         except Exception as exc:
             logging.critical('Backup failed with: "%s"', exc, exc_info=True)
@@ -150,9 +150,9 @@ class ClickhouseBackup:
             else:
                 self._restore_database_data(db_name, backup_meta)
 
-    def backup_database(self, db_name, backup_meta, tables=None):
+    def _backup_database(self, backup_meta, db_name, tables=None):
         """
-        Backup database
+        Backup database.
         """
         backup_meta.add_database(db_name)
 
@@ -161,54 +161,55 @@ class ClickhouseBackup:
         # get db objects ordered by mtime
         tables = self._ch_ctl.get_tables_ordered(db_name, tables)
         for table_name in tables:
-            logging.debug('Running table "%s.%s" backup', db_name, table_name)
+            self._backup_table(backup_meta, db_name, table_name)
 
-            # save table sql
-            backup_meta.add_table_sql_path(
-                db_name, table_name,
-                self._backup_table_meta(db_name, table_name))
-
-            parts_rows = self._ch_ctl.get_all_table_parts_info(
-                db_name, table_name)
-
-            # remove previous data from shadow path
-            self._ch_ctl.remove_shadow_data()
-
-            # freeze table parts
-            try:
-                self._ch_ctl.freeze_table(db_name, table_name)
-            except Exception as exc:
-                logging.critical('Unable to freeze: %s', exc)
-                raise ClickHouseBackupError
-
-            for part_row in parts_rows:
-                part_info = ClickhousePartInfo(meta=part_row)
-                logging.debug('Working on part %s: %s', part_info.name,
-                              part_info)
-
-                # trying to find part in storage
-                link, part_remote_paths = self._deduplicate_part(part_info)
-
-                if not link:
-                    # preform backup if deduplication is not available
-                    logging.debug('Starting backup for "%s.%s" part: %s',
-                                  db_name, table_name, part_info.name)
-
-                    part_remote_paths = self._backup_layout.save_part_data(
-                        db_name, table_name, part_info.name)
-
-                part_info.link = link
-                part_info.paths = part_remote_paths
-
-                # save part files and meta in backup struct
-                backup_meta.add_part_contents(db_name, table_name, part_info)
-
-            logging.debug('Waiting for uploads')
-            self._backup_layout.wait()
-
-        # save database sql
         backup_meta.set_db_sql_path(db_name,
                                     self._backup_database_meta(db_name))
+
+    def _backup_table(self, backup_meta, db_name, table_name):
+        """
+        Backup table.
+        """
+        logging.debug('Running table "%s.%s" backup', db_name, table_name)
+
+        backup_meta.add_table_sql_path(
+            db_name, table_name, self._backup_table_meta(db_name, table_name))
+
+        parts_rows = self._ch_ctl.get_all_table_parts_info(db_name, table_name)
+
+        # remove previous data from shadow path
+        self._ch_ctl.remove_shadow_data()
+
+        # freeze table parts
+        try:
+            self._ch_ctl.freeze_table(db_name, table_name)
+        except Exception as exc:
+            logging.critical('Unable to freeze: %s', exc)
+            raise ClickHouseBackupError
+
+        for part_row in parts_rows:
+            part_info = ClickhousePartInfo(meta=part_row)
+            logging.debug('Working on part %s: %s', part_info.name, part_info)
+
+            # trying to find part in storage
+            link, part_remote_paths = self._deduplicate_part(part_info)
+
+            if not link:
+                # preform backup if deduplication is not available
+                logging.debug('Starting backup for "%s.%s" part: %s', db_name,
+                              table_name, part_info.name)
+
+                part_remote_paths = self._backup_layout.save_part_data(
+                    db_name, table_name, part_info.name)
+
+            part_info.link = link
+            part_info.paths = part_remote_paths
+
+            # save part files and meta in backup struct
+            backup_meta.add_part_contents(db_name, table_name, part_info)
+
+        logging.debug('Waiting for uploads')
+        self._backup_layout.wait()
 
     def delete(self, backup_name):
         """
