@@ -19,18 +19,15 @@ class S3Client:
     """
 
     def __init__(self, context):
-        config = context.conf['dynamic']['s3']
+        config = context.conf['s3']
         boto_config = config['boto_config']
         self._s3_session = boto3.session.Session(
             aws_access_key_id=config['access_key_id'],
-            aws_secret_access_key=config['access_secret_key'],
-        )
+            aws_secret_access_key=config['access_secret_key'])
 
         host, port = docker.get_exposed_port(
-            docker.get_container(
-                context, context.conf['dynamic']['s3']['host'].split('.')[0]),
-            context.conf['dynamic']['s3']['port'],
-        )
+            docker.get_container(context, context.conf['s3']['container']),
+            context.conf['s3']['port'])
 
         endpoint_url = 'http://{0}:{1}'.format(host, port)
         self._s3_client = self._s3_session.client(
@@ -40,8 +37,7 @@ class S3Client:
                 s3={
                     'addressing_style': boto_config['addressing_style'],
                     'region_name': boto_config['region_name'],
-                }),
-        )
+                }))
 
         self._s3_bucket_name = config['bucket']
         self.disable_boto_requests_warnings()

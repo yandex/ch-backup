@@ -207,7 +207,7 @@ class ClickhouseClient:
         else:
             str_prefix = '{prefix}_'.format(prefix=str_prefix)
 
-        rand_str = crypto.gen_plain_random_string(str_len)
+        rand_str = crypto.generate_random_string(str_len)
 
         dt_now = datetime.utcnow() - timedelta(**day_diff)
         row = (dt_now.strftime('%Y-%m-%d'),
