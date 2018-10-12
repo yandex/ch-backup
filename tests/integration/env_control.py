@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """
 Manage test environment.
-
-For config, see configuration.py.
 """
 
 import argparse
 import logging
 import pickle
+from types import SimpleNamespace
 
 from tests.integration import configuration
-# This modules define stages to prepare the environment
 from tests.integration.helpers import compose, docker, templates
 
 SESSION_STATE_CONF = '.session_conf.sav'
@@ -46,88 +44,89 @@ STAGES = {
 }
 
 
-def _run_stage(event, state=None, state_file=None):
-    """
-    Run stage steps.
-    """
-    assert event in STAGES, event + ' not implemented'
-
-    if not state:
-        state = _init_state(state_file)
-
-    for step in STAGES[event]:
-        step(state=state, conf=state['config'])
-
-    return state
-
-
-def create(state_file=None):
+def create(context):
     """
     Create test environment.
     """
-    state = _run_stage('create', state_file=state_file)
+    _run_stage('create', context)
 
-    _save_state({
-        'config': state['config'],
-    }, path=state_file)
-
-    return state
+    with open(context.state_file, 'wb') as session_conf:
+        pickle.dump(context.conf, session_conf)
 
 
-def start(state=None, state_file=None):
+def start(context):
     """
     Start test environment runtime.
     """
-    _run_stage('start', state=state, state_file=state_file)
+    _run_stage('start', context)
 
 
-def restart(state=None, state_file=None):
+def restart(context):
     """
     Restart test environment runtime.
     """
-    _run_stage('restart', state=state, state_file=state_file)
+    _run_stage('restart', context)
 
 
-def stop(state=None, state_file=None):
+def stop(context):
     """
     Stop test environment runtime.
     """
-    _run_stage('stop', state=state, state_file=state_file)
+    _run_stage('stop', context)
 
 
-def _init_state(state_file=None):
+def _run_stage(stage, context):
     """
-    Create state.
-    If previous state file is found, restore it.
-    If not, create new.
+    Run stage steps.
     """
-    if state_file is None:
-        state_file = SESSION_STATE_CONF
-    state = {
-        'config': None,
-    }
-    # Load previous state if found.
+    assert stage in STAGES, stage + ' not implemented'
+
+    _init_context(context)
+
+    for step in STAGES[stage]:
+        step(context)
+
+
+def _init_context(context):
+    """
+    Initialize context.
+    """
+    if getattr(context, 'initialized', False):
+        return
+
+    if not hasattr(context, 'state_file'):
+        context.state_file = SESSION_STATE_CONF
+
     try:
-        with open(state_file, 'rb') as session_conf:
-            return pickle.load(session_conf)
+        with open(context.state_file, 'rb') as session_conf:
+            context.conf = pickle.load(session_conf)
     except FileNotFoundError:
-        # Clean slate: only need config for now, as
-        # other stuff will be defined later.
-        state['config'] = configuration.get()
-    return state
+        context.conf = configuration.create()
 
 
-def _save_state(conf, path=None):
+def cli_main():
     """
-    Pickle state to disk.
+    CLI entry.
     """
-    if path is None:
-        path = SESSION_STATE_CONF
-    with open(path, 'wb') as session_conf:
-        pickle.dump(conf, session_conf)
+    commands = {
+        'create': create,
+        'start': start,
+        'stop': stop,
+    }
+
+    logging.basicConfig(
+        format='%(asctime)s [%(levelname)s]:\t%(message)s',
+        level=logging.INFO,
+    )
+
+    args = _parse_args(commands)
+
+    context = SimpleNamespace(state_file=args.state_file)
+
+    commands[args.command](context)
 
 
-def parse_args(commands):
+def _parse_args(commands):
     """
     Parse command-line arguments.
     """
@@ -145,24 +144,6 @@ def parse_args(commands):
         default=SESSION_STATE_CONF,
         help='path to state file (pickle dump)')
     return arg.parse_args()
-
-
-def cli_main():
-    """
-    CLI entry.
-    """
-    commands = {
-        'create': create,
-        'start': start,
-        'stop': stop,
-    }
-
-    logging.basicConfig(
-        format='%(asctime)s [%(levelname)s]:\t%(message)s',
-        level=logging.INFO,
-    )
-    args = parse_args(commands)
-    commands[args.command](state_file=args.state_file)
 
 
 if __name__ == '__main__':

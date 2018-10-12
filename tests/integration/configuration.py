@@ -14,9 +14,9 @@ except ImportError:
     CONF_OVERRIDE = {}
 
 
-def get():
+def create():
     """
-    Get configuration (non-idempotent function)
+    Create test configuration (non-idempotent function).
     """
     # This "factor" is later used in the network name and port forwarding.
     port_factor = random.randint(0, 4096)

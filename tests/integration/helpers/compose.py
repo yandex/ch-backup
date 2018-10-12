@@ -27,48 +27,41 @@ BASE_CONF = {
 
 
 @utils.env_stage('create', fail=True)
-def build_images(conf, **_extra):
+def build_images(context):
     """
     Build docker images.
     """
-    assert conf, '"conf" must be non-empty dict'
-
-    _call_compose(conf, 'build')
+    _call_compose(context.conf, 'build')
 
 
 @utils.env_stage('start', fail=True)
-def startup_containers(conf, **_extra):
+def startup_containers(context):
     """
     Start up docker containers.
     """
-    assert conf, '"conf" must be non-empty dict'
-
-    _call_compose(conf, 'up -d')
+    _call_compose(context.conf, 'up -d')
 
 
 @utils.env_stage('stop', fail=False)
-def shutdown_containers(conf, **_extra):
+def shutdown_containers(context):
     """
     Shutdown and remove docker containers.
     """
-    assert conf, '"conf" must be non-empty dict'
-
-    _call_compose(conf, 'down --volumes')
+    _call_compose(context.conf, 'down --volumes')
 
 
 @utils.env_stage('create', fail=True)
-def create_config(conf, **_extra):
+def create_config(context):
     """
     Generate config file and write it.
     """
-    assert conf, '"conf" must be non-empty dict'
-
+    conf = context.conf
     staging_dir = _get_staging_dir(conf)
     compose_conf_path = _get_config_path(conf, staging_dir)
     # Create this directory now, otherwise if docker does
     # it later, it will be owned by root.
     compose_conf = _generate_config_dict(
-        projects=conf.get('projects', {}),
+        projects=conf['projects'],
         network_name=conf['network_name'],
         basedir=staging_dir,
     )

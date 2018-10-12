@@ -12,15 +12,14 @@ def before_all(context):
     """
     Prepare environment for tests.
     """
-    context.state = env_control.create()
-    context.conf = context.state['config']
+    env_control.create(context)
 
 
 def before_feature(context, _feature):
     """
     Cleanup function executing per feature.
     """
-    env_control.restart(state=context.state)
+    env_control.restart(context)
 
 
 def after_step(context, step):
@@ -44,4 +43,4 @@ def after_all(context):
     if context.failed and not context.aborted:
         logging.warning('Remember to run `make clean` after you done')
         return
-    env_control.stop(state=context.state)
+    env_control.stop(context)

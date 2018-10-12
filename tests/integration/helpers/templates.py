@@ -11,13 +11,14 @@ TEMP_FILE_EXT = 'temp~'
 
 
 @utils.env_stage('create', fail=True)
-def render_configs(conf, **_extra):
+def render_configs(context):
     """
     Render each template in the subtree.
     Each template is rendered in-place. As the framework
     operates in staging dir, this is easily reset
     by `make clean`, or `rm -fr staging`.
     """
+    conf = context.conf
     compose_conf = compose.read_config(conf)
     config_root = '{staging}/images'.format(
         staging=conf.get('staging_dir', 'staging'))

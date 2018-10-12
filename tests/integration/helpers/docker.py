@@ -63,16 +63,13 @@ def generate_ipv4(subnet=None):
 
 
 @utils.env_stage('create', fail=True)
-def prep_images(state, conf):
+def prep_images(context):
     """
     Prepare images.
     """
-    for arg in (state, conf):
-        assert arg is not None, '%s must not be None' % arg
-
     # Copy docker-files and configs to staging dir
-    images_dir = conf.get('images_dir', 'images')
-    staging_dir = conf.get('staging_dir', 'staging')
+    images_dir = context.conf.get('images_dir', 'images')
+    staging_dir = context.conf.get('staging_dir', 'staging')
     dir_util.copy_tree(
         images_dir,
         '{staging}/{images}'.format(staging=staging_dir, images=images_dir),
@@ -81,13 +78,11 @@ def prep_images(state, conf):
 
 
 @utils.env_stage('create', fail=True)
-def prep_network(state, conf):
+def prep_network(context):
     """
     Creates ipv6-enabled docker network with random name and address space
     """
-    for arg in (state, conf):
-        assert arg is not None, '%s must not be None' % arg
-
+    conf = context.conf
     # Unfortunately docker is retarded and not able to create
     # ipv6-only network (see https://github.com/docker/libnetwork/issues/1192)
     # Do not create new network if there is an another net with the same name.
@@ -118,12 +113,12 @@ def prep_network(state, conf):
 
 
 @utils.env_stage('stop', fail=False)
-def shutdown_network(conf, **_extra):
+def shutdown_network(context):
     """
     Stop docker network(s)
     """
     nets = DOCKER_API.networks.list(
-        names=conf.get('network_name', '^test_net_'))
+        names=context.conf.get('network_name', '^test_net_'))
     for net in nets:
         net.remove()
 
