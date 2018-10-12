@@ -9,6 +9,7 @@ import boto3
 import botocore.vendored.requests.packages.urllib3 as boto_urllib3
 from botocore.client import Config
 from botocore.errorfactory import ClientError
+from retrying import retry
 
 from . import docker
 
@@ -86,3 +87,37 @@ class S3Client:
 
         for module_logger in ('boto3', 'botocore', 's3transfer', 'urllib3'):
             logging.getLogger(module_logger).setLevel(logging.CRITICAL)
+
+
+@retry(wait_fixed=200, stop_max_attempt_number=25)
+def wait_for_s3_alive(context):
+    """
+    Ensure that s3 is ready to accept incoming requests.
+    """
+    output = get_s3_container(context).exec_run(
+        'mc admin info fake-s3').decode()
+    if 'online' not in output:
+        raise RuntimeError('s3 is not available: ' + output)
+
+
+def ensure_s3_bucket(context):
+    """
+    Ensure s3 has the bucket specified in the config.
+    """
+    bucket = (context.conf['s3']['bucket'])
+
+    output = get_s3_container(context).exec_run(
+        'mc mb fake-s3/{0}'.format(bucket)).decode()
+
+    if all(
+            log not in output
+            for log in ('created successfully', 'already own it')):
+        raise RuntimeError('Can not create bucket {0}: {1}'.format(
+            bucket, output))
+
+
+def get_s3_container(context):
+    """
+    Get S3 Docker container.
+    """
+    return docker.get_container(context, context.conf['s3']['container'])

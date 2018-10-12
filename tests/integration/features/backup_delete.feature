@@ -2,10 +2,9 @@ Feature: Backup & Clean & Restore
 
   Background: Insert initial data into clickhouse
     Given default configuration
+    And a working s3
     And a working clickhouse on clickhouse01
     And clickhouse on clickhouse01 has test schema
-    And a working s3 on minio01
-    And s3 bucket dbaas
 
 
   Scenario: Backup "shared" done successfully

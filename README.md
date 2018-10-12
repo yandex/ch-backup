@@ -20,12 +20,19 @@ Usage: ch-backup [OPTIONS] COMMAND [ARGS]...
   Tool for managing ClickHouse backups.
 
 Options:
-  -c, --config PATH  Configuration file path.
-  -h, --help         Show this message and exit.
+  -c, --config PATH        Configuration file path.
+  --protocol [http|https]  Protocol used to connect to ClickHouse server.
+  --port INTEGER           Port used to connect to ClickHouse server.
+  --ca-path TEXT           Path to custom CA bundle path for https protocol.
+  --insecure               Disable certificate verification for https
+                           protocol.
+  -h, --help               Show this message and exit.
 
 Commands:
   backup   Perform backup.
+  delete   Delete particular backup.
   list     List existing backups.
+  purge    Purge outdated backups.
   restore  Restore data from a particular backup.
   show     Show details for a particular backup.
 ```
@@ -64,12 +71,7 @@ Creating clickhouse01.test_net_711 ...
 Creating clickhouse02.test_net_711 ... done
 ```
 
-2. Create S3 bucket for backups.
-```
-$ docker exec -it -u root minio01.test_net_711 mc mb fake-s3/dbaas
-```
-
-3. Log in to ClickHouse docker container and you are all set to issue ch-backup
+2. Log in to ClickHouse docker container and you are all set to issue ch-backup
  commands.
 ```
 $ docker exec -it -u root clickhouse01.test_net_711 bash

@@ -9,7 +9,7 @@ import pickle
 from types import SimpleNamespace
 
 from tests.integration import configuration
-from tests.integration.helpers import compose, docker, templates
+from tests.integration.helpers import compose, docker, s3, templates
 
 SESSION_STATE_CONF = '.session_conf.sav'
 STAGES = {
@@ -30,7 +30,11 @@ STAGES = {
         # Build docker images
         compose.build_images,
     ],
-    'start': [compose.startup_containers],
+    'start': [
+        compose.startup_containers,
+        s3.wait_for_s3_alive,
+        s3.ensure_s3_bucket,
+    ],
     'restart': [
         compose.shutdown_containers,
         compose.startup_containers,
