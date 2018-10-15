@@ -59,6 +59,7 @@ def create():
                     'clickhouse': 9000,
                     'ssh': 22,
                 },
+                'volumes': ['../:/code:rw'],
                 'docker_instances': 2,
                 'external_links': ['{0}:minio'.format(s3['host'])],
                 'args': {

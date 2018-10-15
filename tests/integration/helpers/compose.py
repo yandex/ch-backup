@@ -56,15 +56,11 @@ def create_config(context):
     Generate config file and write it.
     """
     conf = context.conf
-    staging_dir = _get_staging_dir(conf)
-    compose_conf_path = _get_config_path(conf, staging_dir)
+    compose_conf_path = _get_config_path(conf)
     # Create this directory now, otherwise if docker does
     # it later, it will be owned by root.
     compose_conf = _generate_config_dict(
-        projects=conf['projects'],
-        network_name=conf['network_name'],
-        basedir=staging_dir,
-    )
+        projects=conf['projects'], network_name=conf['network_name'])
     return _write_config(compose_conf_path, compose_conf)
 
 
@@ -105,16 +101,11 @@ def _write_config(path, compose_conf):
     _remove_config(temp_file_path)
 
 
-def _get_staging_dir(conf):
-    return conf.get('staging_dir', 'staging')
-
-
-def _get_config_path(conf, staging_dir=None):
+def _get_config_path(conf):
     """
     Return file path to docker compose config file.
     """
-    if not staging_dir:
-        staging_dir = _get_staging_dir(conf)
+    staging_dir = conf.get('staging_dir', 'staging')
     return os.path.join(staging_dir, 'docker-compose.yml')
 
 
@@ -135,7 +126,7 @@ def _validate_config(config_path):
     _call_compose_on_config(config_path, '__config_test', 'config')
 
 
-def _generate_config_dict(projects, network_name, basedir):
+def _generate_config_dict(projects, network_name):
     """
     Create docker-compose.yml with initial images
     """
@@ -148,11 +139,7 @@ def _generate_config_dict(projects, network_name, basedir):
     # Also relative to config file location.
     for name, props in projects.items():
         instances = props.get('docker_instances', 1)
-        # Zero means no images, right?
         if not instances:
-            continue
-        # Skip local-only projects
-        if props.get('localinstall', False):
             continue
         # This num is also used in hostnames, later in
         # generate_service_dict()
@@ -174,9 +161,7 @@ def _generate_config_dict(projects, network_name, basedir):
                 name=name,
                 instance_name=instance_name,
                 instance_conf=service_props,
-                network=network_name,
-                basedir=basedir,
-            )
+                network=network_name)
             # Fill in local placeholders with own context.
             # Useful when we need to reference stuff like
             # hostname or domainname inside of the other config value.
@@ -185,8 +170,7 @@ def _generate_config_dict(projects, network_name, basedir):
     return compose_conf
 
 
-def _generate_service_dict(name, instance_name, instance_conf, network,
-                           basedir):
+def _generate_service_dict(name, instance_name, instance_conf, network):
     """
     Generates a single service config based on name and
     instance config.
@@ -194,31 +178,7 @@ def _generate_service_dict(name, instance_name, instance_conf, network,
     All paths are relative to the location of compose-config.yaml
     (which is ./staging/compose-config.yaml by default)
     """
-
-    # Take care of volumes
-    code_volume = './code/{name}'.format(name=name)
-    local_code_volume = './images/{name}/src'.format(name=name)
-    # Override '/code' path if local code is present.
-    if os.path.exists(os.path.join(basedir, local_code_volume)):
-        code_volume = local_code_volume
-    volumes = {
-        # Source code -- the original cloned repository.
-        'code': {
-            'local': code_volume,
-            'remote': '/code',
-            'mode': 'rw',
-        },
-        # Instance configs from images
-        'config': {
-            'local': './images/{name}/config'.format(name=name),
-            'remote': '/config',
-            'mode': 'rw',
-        },
-    }
-    volume_list = _prepare_volumes(
-        volumes,
-        local_basedir=basedir,
-    )
+    volumes = ['./images/{0}/config:/config:rw'.format(name)]
     # Take care of port forwarding
     ports_list = []
     for port in instance_conf.get('expose', {}).values():
@@ -256,8 +216,7 @@ def _generate_service_dict(name, instance_name, instance_conf, network,
         'container_name': '%s.%s' % (instance_name, network),
         # Ports exposure
         'ports': ports_list + instance_conf.get('ports', []),
-        # Config and code volumes
-        'volumes': volume_list + instance_conf.get('volumes', []),
+        'volumes': volumes + instance_conf.get('volumes', []),
         # https://github.com/moby/moby/issues/12080
         'tmpfs': '/var/run',
         # external resolver: dns64-cache.yandex.net
@@ -265,9 +224,6 @@ def _generate_service_dict(name, instance_name, instance_conf, network,
         'external_links': instance_conf.get('external_links', []),
     }
 
-    # print('%s' % instance_conf)
-    # print('%s' % instance_conf['external_links'])
-    # raise Exception('')
     return service
 
 
