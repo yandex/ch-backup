@@ -41,4 +41,4 @@ def save_logs(context):
             save_container_logs(container, logs_dir)
 
     with open(os.path.join(logs_dir, 'session_conf.json'), 'w') as out:
-        json.dump(context.state, out, default=repr, indent=4)
+        json.dump(context.conf, out, default=repr, indent=4)
