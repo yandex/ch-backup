@@ -1,5 +1,5 @@
 """
-Clickhouse backup layout structures
+ClickHouse backup layout structures.
 """
 
 import copy
@@ -139,23 +139,21 @@ class ClickhouseBackupLayout:
                              exc)
             raise StorageError
 
-    def save_part_data(self, db_name, table_name, part_name):
+    def save_part_data(self, db_name, table_name, part_name, part_path):
         """
         Backup part files and return storage paths
         """
-        local_dir_path = self._ch_ctl.get_shadow_part_abs_path(
-            db_name, table_name, part_name)
         remote_dir_path = os.path.join(self.backup_path, 'data', db_name,
                                        table_name, part_name)
 
         uploaded_files = []
         part_files = [
-            f for f in os.listdir(local_dir_path)
-            if os.path.isfile(os.path.join(local_dir_path, f))
+            f for f in os.listdir(part_path)
+            if os.path.isfile(os.path.join(part_path, f))
         ]
 
         for fname in part_files:
-            local_fname = os.path.join(local_dir_path, fname)
+            local_fname = os.path.join(part_path, fname)
             remote_fname = os.path.join(remote_dir_path, fname)
             try:
                 self._storage_loader.upload_file(
@@ -291,7 +289,7 @@ class ClickhouseBackupLayout:
 
 class ClickhouseBackupStructure:
     """
-    Clickhouse backup meta
+    ClickHouse backup meta
     """
 
     # pylint: disable=too-many-instance-attributes
@@ -568,7 +566,7 @@ class ClickhouseBackupStructure:
 
 class ClickhousePartInfo:
     """
-    Clickhouse part metadata and few helpers
+    ClickHouse part metadata and few helpers
     """
 
     def __init__(self, meta, link=None, paths=None):

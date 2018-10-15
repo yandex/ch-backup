@@ -3,6 +3,7 @@ Clickhouse backup logic
 """
 
 import logging
+import os
 from collections import defaultdict
 from copy import copy
 from datetime import timedelta
@@ -175,38 +176,46 @@ class ClickhouseBackup:
         backup_meta.add_table_sql_path(
             db_name, table_name, self._backup_table_meta(db_name, table_name))
 
-        parts_rows = self._ch_ctl.get_all_table_parts_info(db_name, table_name)
+        all_parts_rows = self._ch_ctl.get_all_table_parts_info(
+            db_name, table_name)
+
+        partitions = defaultdict(list)
+        for part_row in all_parts_rows:
+            partitions[part_row['partition']].append(part_row)
 
         # remove previous data from shadow path
         self._ch_ctl.remove_shadow_data()
 
-        # freeze table parts
-        try:
-            self._ch_ctl.freeze_table(db_name, table_name)
-        except Exception as exc:
-            logging.critical('Unable to freeze: %s', exc)
-            raise ClickHouseBackupError
+        for partition, parts_rows in partitions.items():
+            try:
+                freeze_path = self._ch_ctl.freeze_partition(
+                    db_name, table_name, partition)
+            except Exception as exc:
+                logging.critical('Unable to freeze: %s', exc)
+                raise ClickHouseBackupError
 
-        for part_row in parts_rows:
-            part_info = ClickhousePartInfo(meta=part_row)
-            logging.debug('Working on part %s: %s', part_info.name, part_info)
+            for part_row in parts_rows:
+                part_info = ClickhousePartInfo(meta=part_row)
+                logging.debug('Working on part %s: %s', part_info.name,
+                              part_info)
 
-            # trying to find part in storage
-            link, part_remote_paths = self._deduplicate_part(part_info)
+                # trying to find part in storage
+                link, part_remote_paths = self._deduplicate_part(part_info)
 
-            if not link:
-                # preform backup if deduplication is not available
-                logging.debug('Starting backup for "%s.%s" part: %s', db_name,
-                              table_name, part_info.name)
+                if not link:
+                    # preform backup if deduplication is not available
+                    logging.debug('Starting backup for "%s.%s" part: %s',
+                                  db_name, table_name, part_info.name)
 
-                part_remote_paths = self._backup_layout.save_part_data(
-                    db_name, table_name, part_info.name)
+                    part_remote_paths = self._backup_layout.save_part_data(
+                        db_name, table_name, part_info.name,
+                        os.path.join(freeze_path, part_info.name))
 
-            part_info.link = link
-            part_info.paths = part_remote_paths
+                part_info.link = link
+                part_info.paths = part_remote_paths
 
-            # save part files and meta in backup struct
-            backup_meta.add_part_contents(db_name, table_name, part_info)
+                # save part files and meta in backup struct
+                backup_meta.add_part_contents(db_name, table_name, part_info)
 
         logging.debug('Waiting for uploads')
         self._backup_layout.wait()

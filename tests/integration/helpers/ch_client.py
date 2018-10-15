@@ -15,10 +15,14 @@ TABLE_COUNT = 2
 ROWS_COUNT = 3
 
 GET_ALL_USER_TABLES_SQL = utils.strip_query("""
-    SELECT database, name as table
-    FROM system.tables
+    SELECT
+        database,
+        table,
+        groupArray(name) AS columns
+    FROM system.columns
     WHERE database NOT IN ('system')
-    ORDER BY metadata_modification_time, database, table
+    GROUP BY database, table
+    ORDER BY database, table
     FORMAT JSONCompact
 """)
 
@@ -45,7 +49,7 @@ GET_TEST_TABLE_SCHEMA = utils.strip_query("""
 GET_TEST_TABLE_DATA_SQL = utils.strip_query("""
     SELECT *
     FROM {db_name}.{table_name}
-    ORDER BY datetime, int_num
+    ORDER BY {order_by}
     FORMAT JSONCompact
 """)
 
@@ -82,6 +86,12 @@ class ClickhouseClient:
         Ping ClickHouse server.
         """
         self._query('GET', url='ping')
+
+    def execute(self, query):
+        """
+        Execute arbitrary query.
+        """
+        self._query('POST', query=query)
 
     def get_version(self):
         """
@@ -150,10 +160,11 @@ class ClickhouseClient:
         dbs_tables = self._query('GET', GET_ALL_USER_TABLES_SQL)['data']
         user_data = {}
         rows_count = 0
-        for db_table in dbs_tables:
-            db_name, table_name = db_table
+        for db_name, table_name, columns in dbs_tables:
             query_sql = GET_TEST_TABLE_DATA_SQL.format(
-                db_name=db_name, table_name=table_name)
+                db_name=db_name,
+                table_name=table_name,
+                order_by=','.join(columns))
             table_data = self._query('GET', query_sql)
             user_data['.'.join([db_name, table_name])] = table_data['data']
             rows_count += table_data['rows']
@@ -165,7 +176,7 @@ class ClickhouseClient:
         """
         dbs_tables = self._query('GET', GET_ALL_USER_TABLES_SQL)['data']
         all_tables_desc = {}
-        for db_name, table_name in dbs_tables:
+        for db_name, table_name, _ in dbs_tables:
             query_sql = GET_TEST_TABLE_SCHEMA.format(
                 db_name=db_name, table_name=table_name)
             table_data = self._query('GET', query_sql)

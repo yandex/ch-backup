@@ -38,6 +38,19 @@ def step_fill_with_test_data(context, node, test_name):
     ClickhouseClient(context, node).init_data(mark=test_name)
 
 
+@given('test data on {node:w} that was created as follows')
+def step_test_data(context, node):
+    queries = []
+    for string in context.text.split(';'):
+        string = string.strip()
+        if string:
+            queries.append(string)
+
+    ch_client = ClickhouseClient(context, node)
+    for query in queries:
+        ch_client.execute(query)
+
+
 @given('we have dropped test table #{table_num:d} in db #{db_num:d} on {node}')
 @when('we drop test table #{table_num:d} in db #{db_num:d} on {node}')
 def step_drop_test_table(context, table_num, db_num, node):

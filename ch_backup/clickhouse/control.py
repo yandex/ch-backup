@@ -28,9 +28,9 @@ PART_ATTACH_SQL = strip_query("""
     ATTACH PART '{part_name}'
 """)
 
-TABLE_FREEZE_SQL = strip_query("""
+PARTITION_FREEZE_SQL = strip_query("""
     ALTER TABLE `{db_name}`.`{table_name}`
-    FREEZE PARTITION ''
+    FREEZE PARTITION {partition_name}
 """)
 
 SHOW_DATABASES_SQL = strip_query("""
@@ -78,7 +78,6 @@ class ClickhouseCTL:
         self.data_path = os.path.join(self.root_data_path, 'data')
         self.metadata_path = os.path.join(self.root_data_path, 'metadata')
         self.shadow_data_path = os.path.join(self.root_data_path, 'shadow')
-        self.shadow_data_path_inc = os.path.join(self.shadow_data_path, '1')
 
     def chown_attach_part(self, db_name, table_name, part_name):
         """
@@ -118,15 +117,21 @@ class ClickhouseCTL:
         chown_dir_contents(self._config['user'], self._config['group'],
                            dir_path)
 
-    def freeze_table(self, db_name, table_name):
+    def freeze_partition(self, db_name, table_name, partition_name):
         """
-        Freeze all partitions in specified database.table
+        Freeze the specified partition.
         """
-        query_sql = TABLE_FREEZE_SQL.format(
-            db_name=db_name, table_name=table_name)
+        query_sql = PARTITION_FREEZE_SQL.format(
+            db_name=db_name,
+            table_name=table_name,
+            partition_name=partition_name)
         logging.debug('Freezing partition: %s', query_sql)
 
-        return self._ch_client.query(query_sql)
+        self._ch_client.query(query_sql)
+
+        return os.path.join(self.shadow_data_path,
+                            self._get_shadow_increment(), 'data',
+                            self._quote(db_name), self._quote(table_name))
 
     def remove_shadow_data(self):
         """
@@ -220,19 +225,16 @@ class ClickhouseCTL:
         return os.path.join(self.root_data_path,
                             self.get_db_sql_rel_path(db_name))
 
-    def get_shadow_part_abs_path(self, db_name, table_name, part_name):
-        """
-        Get freezed part absolute path
-        """
-        return os.path.join(self.shadow_data_path_inc, 'data',
-                            self._quote(db_name), self._quote(table_name),
-                            part_name)
-
     def get_version(self):
         """
         Get ClickHouse version
         """
         return self._ch_client.query(GET_VERSION_SQL)
+
+    def _get_shadow_increment(self):
+        file_path = os.path.join(self.shadow_data_path, 'increment.txt')
+        with open(file_path, 'r') as file:
+            return file.read().strip()
 
     @classmethod
     def get_db_sql_rel_path(cls, db_name):
