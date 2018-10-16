@@ -2,7 +2,6 @@
 Variables that influence testing behavior are defined here.
 """
 
-import os
 import random
 
 from tests.integration.helpers.crypto import generate_random_string
@@ -63,7 +62,7 @@ def create():
                 'docker_instances': 2,
                 'external_links': ['{0}:minio'.format(s3['host'])],
                 'args': {
-                    'CLICKHOUSE_VERSION': os.environ['CLICKHOUSE_VERSION'],
+                    'CLICKHOUSE_VERSION': '$CLICKHOUSE_VERSION',
                 },
             },
             'minio': {
