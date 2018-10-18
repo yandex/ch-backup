@@ -11,7 +11,7 @@ from tests.integration.helpers.utils import merge
 @given('default configuration')
 @given('configuration')
 def step_configuration(context):
-    default = {'ch_backup': {'protocol': 'https'}}
+    default = {'ch_backup': {'protocol': 'http'}}
     overridden_options = yaml.load(context.text or '') or {}
     for key, value in merge(default, overridden_options).items():
         context.__setattr__(key, value)
