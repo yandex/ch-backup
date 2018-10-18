@@ -45,7 +45,7 @@ RUN mkdir -p /etc/apt/sources.list.d && \
     rm -rf /var/lib/apt/lists/* /var/cache/debconf && \
     apt-get clean
 
-RUN chown -R clickhouse /etc/clickhouse-server/ && \
+RUN chown -R clickhouse /etc/clickhouse-server/ /usr/bin/clickhouse && \
     openssl req -subj "/CN=localhost" -new -newkey rsa:2048 -days 365 -nodes -x509 \
         -keyout /etc/clickhouse-server/server.key \
         -out /etc/clickhouse-server/server.crt && \
