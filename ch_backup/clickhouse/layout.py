@@ -420,9 +420,14 @@ class ClickhouseBackupStructure:
 
     @staticmethod
     def _load_time(meta, attr):
-        result = datetime.strptime(meta[attr], meta['date_fmt'])
+        attr_value = meta.get(attr)
+        if not attr_value:
+            return None
+
+        result = datetime.strptime(attr_value, meta['date_fmt'])
         if result.tzinfo is None:
             result = result.replace(tzinfo=timezone.utc)
+
         return result
 
     def get_db_sql_path(self, db_name):
