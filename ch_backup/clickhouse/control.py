@@ -10,7 +10,7 @@ from urllib.parse import quote
 import requests
 from requests import HTTPError, Session
 
-from ch_backup.exceptions import ClickHouseBackupError
+from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.util import chown_dir_contents, strip_query
 
 GET_TABLES_ORDERED_SQL = strip_query("""
@@ -112,7 +112,7 @@ class ClickhouseCTL:
         Chown directory contents to configured owner:group
         """
         if not dir_path.startswith(self._config['data_path']):
-            raise ClickHouseBackupError(
+            raise ClickhouseBackupError(
                 'Trying to chown directory outside clickhouse data path')
         chown_dir_contents(self._config['user'], self._config['group'],
                            dir_path)
@@ -138,7 +138,7 @@ class ClickhouseCTL:
         Recursively delete shadow data path
         """
         if not self.shadow_data_path.startswith(self._config['data_path']):
-            raise ClickHouseBackupError(
+            raise ClickhouseBackupError(
                 'Trying to drop directory outside clickhouse data path')
 
         logging.debug('Removing shadow data path: %s', self.shadow_data_path)

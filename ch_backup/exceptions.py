@@ -2,38 +2,38 @@
 Errors specific to ch-backup.
 """
 
-# pylint: disable=missing-docstring
 
-
-class ClickHouseBackupError(Exception):
+class ClickhouseBackupError(Exception):
     """
     Base class for ch-backup related errors.
     """
 
 
-class StorageError(ClickHouseBackupError):
-    pass
+class StorageError(ClickhouseBackupError):
+    """
+    Storage layer error (e.g. save or load of data failed).
+    """
 
 
-class ConfigurationError(ClickHouseBackupError):
+class ConfigurationError(ClickhouseBackupError):
     """
     Configuration errors (e.g. invalid value of configuration parameter).
     """
 
 
-class InvalidBackupStruct(ClickHouseBackupError):
-    pass
-
-
-class StageError(ClickHouseBackupError):
-    pass
-
-
-class UnknownEncryptionError(ClickHouseBackupError):
-    pass
-
-
-class UnknownBackupStateError(ClickHouseBackupError):
+class UnknownEncryptionError(ConfigurationError):
     """
-    Invalid state of backup
+    Invalid encryption type.
+    """
+
+
+class InvalidBackupStruct(ClickhouseBackupError):
+    """
+    Invalid backup metadata.
+    """
+
+
+class UnknownBackupStateError(ClickhouseBackupError):
+    """
+    Invalid backup state.
     """

@@ -12,7 +12,7 @@ from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.layout import (
     ClickhouseBackupLayout, ClickhouseBackupState, ClickhouseBackupStructure,
     ClickhousePartInfo)
-from ch_backup.exceptions import ClickHouseBackupError, StorageError
+from ch_backup.exceptions import ClickhouseBackupError, StorageError
 from ch_backup.util import now, utc_fromtimestamp, utcnow
 
 
@@ -139,7 +139,7 @@ class ClickhouseBackup:
                 logging.critical(
                     'Required databases %s were not found in backup meta: %s',
                     ', '.join(missed_databases), backup_meta.path)
-                raise ClickHouseBackupError(
+                raise ClickhouseBackupError(
                     'Required databases were not found in backup struct')
 
         for db_name in databases:
@@ -192,7 +192,7 @@ class ClickhouseBackup:
                     db_name, table_name, partition)
             except Exception as exc:
                 logging.critical('Unable to freeze: %s', exc)
-                raise ClickHouseBackupError
+                raise ClickhouseBackupError
 
             for part_row in parts_rows:
                 part_info = ClickhousePartInfo(meta=part_row)
@@ -233,7 +233,7 @@ class ClickhouseBackup:
                                  if e.name == backup_name)
         except StopIteration:
             logging.error('Backup "%s" was not found', backup_name)
-            raise ClickHouseBackupError('Required backup was not found')
+            raise ClickhouseBackupError('Required backup was not found')
 
         backup_meta = self._existing_backups[current_index]
 
@@ -558,7 +558,7 @@ class ClickhouseBackup:
                 break
 
         if not backup_meta:
-            raise ClickHouseBackupError(
+            raise ClickhouseBackupError(
                 'Backup "{0}" was not loaded before'.format(backup_name))
 
     @staticmethod
