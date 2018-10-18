@@ -83,15 +83,15 @@ root@clickhouse01:/# ch-backup show LAST
 {
     "databases": {},
     "meta": {
-        "path": "ch_backup/test_uuid/test_clickhouse/20180320T084137",
-        "end_time": "2018-03-20 08:41:37 +0000",
-        "rows": 0,
+        "name": "20180320T084137",
+        "path": "ch_backup/20180320T084137",
         "start_time": "2018-03-20 08:41:37 +0000",
-        "hostname": "clickhouse01.test_net_711",
+        "end_time": "2018-03-20 08:41:37 +0000",
         "date_fmt": "%Y-%m-%d %H:%M:%S %z",
+        "rows": 0,
         "bytes": 0,
-        "ch_version": "v1.1.54327-testing",
-        "name": "20180320T084137"
+        "hostname": "clickhouse01.test_net_711",
+        "ch_version": "v1.1.54327-testing"
     }
 }
 ```
