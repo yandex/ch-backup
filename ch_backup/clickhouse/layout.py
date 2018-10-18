@@ -470,7 +470,6 @@ class ClickhouseBackupStructure:
         """
         self._databases[db_name]['tables_sql_paths'].append((table_name, path))
 
-    # pylint: disable=too-many-arguments
     def add_part_contents(self, db_name, table_name, part_info):
         """
         Add part backup contents to backup struct

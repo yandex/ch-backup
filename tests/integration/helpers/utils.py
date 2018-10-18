@@ -48,7 +48,7 @@ def env_stage(event, fail=False):
 
     def wrapper(fun):
         @wraps(fun)
-        def wrapped_fun(*args, **kwargs):  # pylint: disable=missing-docstring
+        def _wrapped_fun(*args, **kwargs):
             stage_name = '{mod}.{fun}'.format(
                 mod=fun.__module__,
                 fun=fun.__name__,
@@ -61,7 +61,7 @@ def env_stage(event, fail=False):
                 if fail:
                     raise
 
-        return wrapped_fun
+        return _wrapped_fun
 
     return wrapper
 

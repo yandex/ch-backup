@@ -112,7 +112,6 @@ def tmp_dir_path(dir_path=None):
 )
 def test_pipeline_roundtrip(tmp_dir_path, file_size, read_conf, encrypt_conf,
                             write_conf):
-    # pylint: disable=redefined-outer-name
     """
     Pipeline
     """

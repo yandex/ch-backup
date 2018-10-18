@@ -122,8 +122,6 @@ class PipelineLoader:
     Pipeline-based storage loader
     """
 
-    # pylint: disable=missing-kwoa
-
     def __init__(self, config):
         self._config = config
         self._exec_pool = None
