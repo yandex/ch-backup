@@ -14,7 +14,7 @@ REQUREMENTS = [
     'botocore==1.7.43',
     'PyYAML>=3.10',
     'PyNaCl==1.1.2',
-    'click==6.7.0',
+    'click==7.0',
     'tabulate==0.8.2',
 ]
 
