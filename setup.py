@@ -9,7 +9,6 @@ from setuptools import setup, find_packages
 
 REQUREMENTS = [
     'requests>=2.13.0',
-    'retrying>=1.3.3',
     'boto3==1.4.7',
     'botocore==1.7.43',
     'PyYAML>=3.10',
