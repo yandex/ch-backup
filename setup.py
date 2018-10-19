@@ -8,13 +8,13 @@ from setuptools import setup, find_packages
 
 
 REQUREMENTS = [
-    'requests>=2.13.0',
-    'boto3==1.4.7',
-    'botocore==1.7.43',
-    'PyYAML>=3.10',
-    'PyNaCl==1.1.2',
-    'click==7.0',
-    'tabulate==0.8.2',
+    'requests',
+    'boto3',
+    'botocore',
+    'PyYAML',
+    'PyNaCl',
+    'click',
+    'tabulate',
 ]
 
 
