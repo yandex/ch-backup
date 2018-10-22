@@ -12,7 +12,7 @@ from tests.integration.helpers.ch_client import ClickhouseClient
 
 
 @given('a working clickhouse on {node:w}')
-@retry(wait_fixed=200, stop_max_attempt_number=25)
+@retry(wait_fixed=500, stop_max_attempt_number=360)
 def step_wait_for_clickhouse_alive(context, node):
     """
     Wait until clickhouse is ready to accept incoming requests.

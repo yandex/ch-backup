@@ -1,6 +1,5 @@
-FROM registry.yandex.net/ubuntu:xenial
+FROM ubuntu:xenial
 
-ENV LANG en_US.utf8
 ENV CLICKHOUSE_USER clickhouse
 ENV CLICKHOUSE_GROUP clickhouse
 ENV CH_TMP_DIR /var/tmp/ch-backup
@@ -9,15 +8,21 @@ ARG CLICKHOUSE_REPOSITORY="deb https://repo.yandex.ru/clickhouse/deb/stable/ mai
 ARG CLICKHOUSE_REPOSITORY_KEY=C8F1E19FE0C56BD4
 ARG CLICKHOUSE_VERSION
 
-RUN echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen && \
-    locale-gen && \
-    apt-get update -qq && \
+RUN apt-get update -qq && \
     apt-get install -y \
-        apt-transport-https tzdata \
+        apt-transport-https \
+        tzdata \
+        locales \
         python3-pip \
         openssh-server \
         supervisor && \
-    pip3 install --upgrade pip
+    pip3 install --upgrade pip && \
+    echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen && \
+    locale-gen
+
+ENV LANG en_US.UTF-8
+ENV LANGUAGE en_US:en
+ENV LC_ALL en_US.UTF-8
 
 # setup ssh for debugging
 RUN echo "root:root" | chpasswd && \

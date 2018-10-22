@@ -32,7 +32,7 @@ STAGES = {
     ],
     'start': [
         compose.startup_containers,
-        s3.wait_for_s3_alive,
+        s3.configure_s3_credentials,
         s3.ensure_s3_bucket,
     ],
     'restart': [

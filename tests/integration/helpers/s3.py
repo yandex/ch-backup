@@ -1,7 +1,7 @@
 """
-Simple s3-client
+S3 client and utility functions for dealing with S3 server.
 """
-
+import json
 import logging
 from tempfile import TemporaryFile
 
@@ -16,7 +16,7 @@ from . import docker
 
 class S3Client:
     """
-    S3-compatible simple client
+    S3 client.
     """
 
     def __init__(self, context):
@@ -41,7 +41,7 @@ class S3Client:
                 }))
 
         self._s3_bucket_name = config['bucket']
-        self.disable_boto_requests_warnings()
+        self._disable_boto_requests_warnings()
 
     def upload_data(self, data, remote_path):
         """
@@ -78,10 +78,7 @@ class S3Client:
             return False
 
     @staticmethod
-    def disable_boto_requests_warnings():
-        """
-        Disable urllib warnings (annoys with self-signed ca)
-        """
+    def _disable_boto_requests_warnings():
         boto_urllib3.disable_warnings(
             boto_urllib3.exceptions.InsecureRequestWarning)
 
@@ -89,35 +86,40 @@ class S3Client:
             logging.getLogger(module_logger).setLevel(logging.CRITICAL)
 
 
-@retry(wait_fixed=200, stop_max_attempt_number=25)
-def wait_for_s3_alive(context):
+@retry(wait_fixed=500, stop_max_attempt_number=360)
+def configure_s3_credentials(context):
     """
-    Ensure that s3 is ready to accept incoming requests.
+    Configure S3 credentials in mc (Minio client).
     """
-    output = get_s3_container(context).exec_run(
-        'mc admin info fake-s3').decode()
-    if 'online' not in output:
-        raise RuntimeError('s3 is not available: ' + output)
+    access_key = context.conf['s3']['access_key_id']
+    secret_key = bucket = context.conf['s3']['access_secret_key']
+
+    response = _mc_execute(
+        context, 'config host add local http://localhost:9000 {0} {1}'.format(
+            access_key, secret_key))
+    if response['status'] != 'success':
+        raise RuntimeError('Cannot configure s3 credentials {0}: {1}'.format(
+            bucket, response))
 
 
 def ensure_s3_bucket(context):
     """
-    Ensure s3 has the bucket specified in the config.
+    Ensure S3 has the bucket specified in the config.
     """
-    bucket = (context.conf['s3']['bucket'])
+    bucket = context.conf['s3']['bucket']
 
-    output = get_s3_container(context).exec_run(
-        'mc mb fake-s3/{0}'.format(bucket)).decode()
-
-    if all(
-            log not in output
-            for log in ('created successfully', 'already own it')):
-        raise RuntimeError('Can not create bucket {0}: {1}'.format(
-            bucket, output))
+    response = _mc_execute(context, 'mb local/{0}'.format(bucket))
+    if (response['status'] != 'success' and
+            response['error']['cause']['error']['Code'] !=
+            'BucketAlreadyOwnedByYou'):
+        raise RuntimeError('Cannot create bucket {0}: {1}'.format(
+            bucket, response))
 
 
-def get_s3_container(context):
+def _mc_execute(context, command):
     """
-    Get S3 Docker container.
+    Execute mc (Minio client) command.
     """
-    return docker.get_container(context, context.conf['s3']['container'])
+    container = docker.get_container(context, context.conf['s3']['container'])
+    output = container.exec_run('mc --json {0}'.format(command)).decode()
+    return json.loads(output)
