@@ -14,28 +14,27 @@ TEMP_FILE_EXT = 'temp~'
 def render_configs(context):
     """
     Render each template in the subtree.
-    Each template is rendered in-place. As the framework
-    operates in staging dir, this is easily reset
-    by `make clean`, or `rm -fr staging`.
+    Each template is rendered in-place. As the framework operates in
+    staging dir, this is easily reset by `make clean`, or `rm -fr staging`.
     """
     conf = context.conf
     compose_conf = compose.read_config(conf)
     config_root = '{0}/images'.format(conf['staging_dir'])
-    context = {
+    jinja_context = {
         'conf': conf,
         'compose': compose_conf,
     }
     # Render configs only for projects that are
     # present in config file.
-    for project in conf.get('projects'):
+    for project in conf['projects']:
         for root, _, files in os.walk('%s/%s' % (config_root, project)):
             for basename in files:
                 if basename.endswith(TEMP_FILE_EXT):
                     continue
-                render_templates_dir(context, root, basename)
+                render_templates_dir(jinja_context, root, basename)
 
 
-def render_templates_dir(context, directory, basename):
+def render_templates_dir(jinja_context, directory, basename):
     """
     Renders the actual template.
     """
@@ -46,7 +45,7 @@ def render_templates_dir(context, directory, basename):
     # Various filters, e.g. "password_clear | sha256" yields a hashed password.
     try:
         with open(temp_file_path, 'w') as temp_file:
-            temp_file.write(env.get_template(basename).render(context))
+            temp_file.write(env.get_template(basename).render(jinja_context))
     except Exception as exc:
         raise RuntimeError(
             "'{exc_type}' while rendering '{name}': {exc}".format(

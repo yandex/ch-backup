@@ -22,7 +22,7 @@ def create():
     s3 = {
         'container': 'minio01',
         'host': 'minio01.{0}'.format(network_name),
-        'bucket': 'dbaas',
+        'bucket': 'ch-backup',
         'port': 9000,
         'endpoint': 'http://minio:9000',
         'access_secret_key': generate_random_string(40),
@@ -50,8 +50,8 @@ def create():
             'clickhouse': {
                 'build': '..',
                 'db': {
-                    'user': 'dbaas_reader',
-                    'password': 'dbaas_reader_password',
+                    'user': 'reader',
+                    'password': 'reader_password',
                 },
                 'expose': {
                     'http': 8123,

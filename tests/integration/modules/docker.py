@@ -80,7 +80,7 @@ def prep_network(context):
     # Unfortunately docker is retarded and not able to create
     # ipv6-only network (see https://github.com/docker/libnetwork/issues/1192)
     # Do not create new network if there is an another net with the same name.
-    if DOCKER_API.networks.list(names='^%s$' % conf.get('network_name')):
+    if DOCKER_API.networks.list(names='^%s$' % conf['network_name']):
         return
     ip_subnet_pool = docker.types.IPAMConfig(pool_configs=[
         docker.types.IPAMPool(
@@ -88,22 +88,14 @@ def prep_network(context):
         docker.types.IPAMPool(
             subnet=generate_ipv6(conf.get('docker_ip6_subnet'))),
     ])
-    bridge_name = '{name}_{num}'.format(
-        name=conf.get('docker_bridge_name', 'dbaas'),
-        num=random.randint(0, 65535),
-    )
-    net_name = conf.get('network_name', 'test_net_%s' % bridge_name)
+    net_name = conf['network_name']
     net_opts = {
         'com.docker.network.bridge.enable_ip_masquerade': 'true',
         'com.docker.network.bridge.enable_icc': 'true',
-        'com.docker.network.bridge.name': bridge_name,
+        'com.docker.network.bridge.name': net_name,
     }
     DOCKER_API.networks.create(
-        net_name,
-        options=net_opts,
-        enable_ipv6=True,
-        ipam=ip_subnet_pool,
-    )
+        net_name, options=net_opts, enable_ipv6=True, ipam=ip_subnet_pool)
 
 
 @utils.env_stage('stop', fail=False)
@@ -111,8 +103,7 @@ def shutdown_network(context):
     """
     Stop docker network(s)
     """
-    nets = DOCKER_API.networks.list(
-        names=context.conf.get('network_name', '^test_net_'))
+    nets = DOCKER_API.networks.list(names=context.conf['network_name'])
     for net in nets:
         net.remove()
 
