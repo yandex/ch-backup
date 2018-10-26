@@ -4,14 +4,6 @@ Unit test for util module.
 
 from ch_backup.util import strip_query
 
-MULTILINE_SQL = """
-    SHOW TABLES
-    FROM {db_name}
-    FORMAT JSON
-"""
-
-MULTILINE_SQL_STRIPPED = 'SHOW TABLES FROM {db_name} FORMAT JSON'
-
 
 class TestStripQuery:
     """
@@ -19,8 +11,15 @@ class TestStripQuery:
     """
 
     def test_query_without_newlines(self):
-        assert (strip_query('SELECT 42 FROM {db_name}.{table_name}') ==
-                'SELECT 42 FROM {db_name}.{table_name}')
+        input_query = 'SELECT 42 FROM {db_name}.{table_name}'
+        expected = 'SELECT 42 FROM {db_name}.{table_name}'
+        assert strip_query(input_query) == expected
 
     def test_query_with_newlines(self):
-        assert strip_query(MULTILINE_SQL) == MULTILINE_SQL_STRIPPED
+        input_query = '''
+            SHOW TABLES
+            FROM {db_name}
+            FORMAT JSON
+        '''
+        expected = 'SHOW TABLES FROM {db_name} FORMAT JSON'
+        assert strip_query(input_query) == expected

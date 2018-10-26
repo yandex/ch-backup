@@ -84,14 +84,11 @@ class ClickhouseBackup:
 
             self._load_existing_backups(backup_age_limit)
 
-        min_interval = self._config.get('min_interval')
-        if min_interval and not force:
-            last_backup = self._get_last_backup()
-            if (last_backup and utcnow() - last_backup.end_time <
-                    timedelta(**min_interval)):
-                msg = 'Backup is skipped per backup.min_interval config option'
-                logging.info(msg)
-                return (last_backup.name, msg)
+        last_backup = self._get_last_backup()
+        if not self._check_min_interval(last_backup, force):
+            msg = 'Backup is skipped per backup.min_interval config option'
+            logging.info(msg)
+            return (last_backup.name, msg)
 
         backup_meta = ClickhouseBackupStructure(
             name=self._backup_layout.backup_name,
@@ -560,6 +557,19 @@ class ClickhouseBackup:
         if not backup_meta:
             raise ClickhouseBackupError(
                 'Backup "{0}" was not loaded before'.format(backup_name))
+
+    def _check_min_interval(self, last_backup, force):
+        if not last_backup or force:
+            return True
+
+        min_interval = self._config.get('min_interval')
+        if not min_interval:
+            return True
+
+        if utcnow() - last_backup.end_time >= timedelta(**min_interval):
+            return True
+
+        return False
 
     @staticmethod
     def _pop_deleting_paths(backup_meta, skip_parts):

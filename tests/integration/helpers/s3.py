@@ -109,11 +109,11 @@ def ensure_s3_bucket(context):
     bucket = context.conf['s3']['bucket']
 
     response = _mc_execute(context, 'mb local/{0}'.format(bucket))
-    if (response['status'] != 'success' and
-            response['error']['cause']['error']['Code'] !=
-            'BucketAlreadyOwnedByYou'):
-        raise RuntimeError('Cannot create bucket {0}: {1}'.format(
-            bucket, response))
+    if response['status'] != 'success':
+        error_code = response['error']['cause']['error']['Code']
+        if error_code != 'BucketAlreadyOwnedByYou':
+            raise RuntimeError('Cannot create bucket {0}: {1}'.format(
+                bucket, response))
 
 
 def _mc_execute(context, command):
