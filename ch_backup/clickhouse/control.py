@@ -5,13 +5,14 @@ Clickhouse-control classes module
 import logging
 import os
 import shutil
+from http.client import RemoteDisconnected
 from urllib.parse import quote
 
 import requests
 from requests import HTTPError, Session
 
 from ch_backup.exceptions import ClickhouseBackupError
-from ch_backup.util import chown_dir_contents, strip_query
+from ch_backup.util import chown_dir_contents, retry, strip_query
 
 GET_TABLES_ORDERED_SQL = strip_query("""
     SELECT name
@@ -277,6 +278,7 @@ class ClickhouseClient:
         self._url = '{0}://{1}:{2}'.format(protocol, host, port)
         self._timeout = config['timeout']
 
+    @retry(RemoteDisconnected)
     def query(self, query, post_data=None, timeout=None):
         """
         Perform query to configured clickhouse endpoint

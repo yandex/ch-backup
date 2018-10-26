@@ -5,3 +5,4 @@ PyYAML
 PyNaCl==1.1.2
 click
 tabulate
+tenacity

@@ -9,7 +9,7 @@ import boto3
 import botocore.vendored.requests.packages.urllib3 as boto_urllib3
 from botocore.client import Config
 from botocore.errorfactory import ClientError
-from retrying import retry
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 from . import docker
 
@@ -86,7 +86,7 @@ class S3Client:
             logging.getLogger(module_logger).setLevel(logging.CRITICAL)
 
 
-@retry(wait_fixed=500, stop_max_attempt_number=360)
+@retry(wait=wait_fixed(0.5), stop=stop_after_attempt(360))
 def configure_s3_credentials(context):
     """
     Configure S3 credentials in mc (Minio client).

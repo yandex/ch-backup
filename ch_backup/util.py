@@ -11,6 +11,8 @@ import shutil
 import time
 from datetime import datetime, timedelta, timezone
 
+import tenacity
+
 LOCAL_TZ = timezone(
     timedelta(seconds=-1 * (time.altzone if time.daylight else time.timezone)))
 
@@ -114,3 +116,24 @@ def utc_fromtimestamp(timestamp):
     Return UTC datetime with timezone information.
     """
     return datetime.fromtimestamp(timestamp, timezone.utc)
+
+
+def retry(exception_types=Exception, max_attempts=5, max_interval=5):
+    """
+    Function decorator that retries wrapped function on failures.
+    """
+
+    def _log_retry(retry_state):
+        logging.debug("Retrying %s.%s in %.2fs, attempt: %s, reason: %r",
+                      retry_state.fn.__module__, retry_state.fn.__qualname__,
+                      retry_state.next_action.sleep,
+                      retry_state.attempt_number,
+                      retry_state.outcome.exception())
+
+    return tenacity.retry(
+        retry=tenacity.retry_if_exception_type(exception_types),
+        wait=tenacity.wait_random_exponential(
+            multiplier=0.5, max=max_interval),
+        stop=tenacity.stop_after_attempt(max_attempts),
+        reraise=True,
+        before_sleep=_log_retry)

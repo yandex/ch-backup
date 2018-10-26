@@ -5,14 +5,14 @@ import yaml
 from behave import given, then, when
 from hamcrest import (any_of, assert_that, contains_string, equal_to,
                       has_entries, has_length, is_not, matches_regexp)
-from retrying import retry
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 from tests.integration.helpers.ch_backup import BackupManager
 from tests.integration.helpers.ch_client import ClickhouseClient
 
 
 @given('a working clickhouse on {node:w}')
-@retry(wait_fixed=500, stop_max_attempt_number=360)
+@retry(wait=wait_fixed(0.5), stop=stop_after_attempt(360))
 def step_wait_for_clickhouse_alive(context, node):
     """
     Wait until clickhouse is ready to accept incoming requests.
