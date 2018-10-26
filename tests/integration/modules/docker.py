@@ -1,7 +1,5 @@
 """
-Docker-helpers for dbaas infra tests.
-This module defines functions that facilitate the interaction with docker,
-e.g. creating or shutting down an external network.
+Docker interface.
 """
 
 import io
@@ -20,7 +18,7 @@ DOCKER_API = docker.from_env()
 
 def get_container(context, prefix):
     """
-    Get container object by prefix
+    Get container object by prefix.
     """
     return DOCKER_API.containers.get(
         '%s.%s' % (prefix, context.conf['network_name']))
@@ -67,14 +65,10 @@ def prep_images(context):
     """
     Prepare images.
     """
-    # Copy docker-files and configs to staging dir
-    images_dir = context.conf.get('images_dir', 'images')
-    staging_dir = context.conf.get('staging_dir', 'staging')
+    images_dir = context.conf['images_dir']
+    staging_dir = context.conf['staging_dir']
     dir_util.copy_tree(
-        images_dir,
-        '{staging}/{images}'.format(staging=staging_dir, images=images_dir),
-        update=True,
-    )
+        images_dir, '{0}/images'.format(staging_dir), update=True)
 
 
 @utils.env_stage('create', fail=True)

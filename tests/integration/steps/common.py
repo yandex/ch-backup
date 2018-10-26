@@ -5,7 +5,7 @@ Common steps.
 import yaml
 from behave import given
 
-from tests.integration.helpers.utils import merge
+from tests.integration.modules.utils import merge
 
 
 @given('default configuration')

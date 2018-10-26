@@ -1,11 +1,10 @@
 """
 Behave entry point.
-
-For details of env bootstrap, see env_control
 """
 import logging
 
-from tests.integration import env_control, logs
+from tests.integration import env_control
+from tests.integration.modules.logs import save_logs
 
 
 def before_all(context):
@@ -27,7 +26,7 @@ def after_step(context, step):
     Save logs after failed step.
     """
     if step.status == 'failed':
-        logs.save_logs(context)
+        save_logs(context)
         if context.config.userdata.getbool('debug'):
             try:
                 import ipdb as pdb

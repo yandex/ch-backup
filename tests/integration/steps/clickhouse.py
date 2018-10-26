@@ -1,14 +1,12 @@
 """
-Steps related to ClickHouse and backups.
+Steps for interacting with ClickHouse DBMS.
 """
 import yaml
 from behave import given, then, when
-from hamcrest import (any_of, assert_that, contains_string, equal_to,
-                      has_entries, has_length, is_not, matches_regexp)
+from hamcrest import assert_that, equal_to, has_length
 from tenacity import retry, stop_after_attempt, wait_fixed
 
-from tests.integration.helpers.ch_backup import BackupManager
-from tests.integration.helpers.ch_client import ClickhouseClient
+from tests.integration.modules.clickhouse import ClickhouseClient
 
 
 @given('a working clickhouse on {node:w}')
@@ -33,7 +31,7 @@ def step_init_test_schema(context, node):
 @when('{node:w} has test clickhouse data {test_name:w}')
 def step_fill_with_test_data(context, node, test_name):
     """
-    Load test_data to clickhouse
+    Load test data to clickhouse.
     """
     ClickhouseClient(context, node).init_data(mark=test_name)
 
@@ -54,116 +52,8 @@ def step_test_data(context, node):
 @given('we have dropped test table #{table_num:d} in db #{db_num:d} on {node}')
 @when('we drop test table #{table_num:d} in db #{db_num:d} on {node}')
 def step_drop_test_table(context, table_num, db_num, node):
-    """
-    Drop test table
-    """
     ClickhouseClient(context, node).drop_test_table(
         db_num=db_num, table_num=table_num)
-
-
-@given('we have created {node:w} clickhouse backup')
-@when('we create {node:w} clickhouse backup')
-def step_create_backup(context, node):
-    options = yaml.load(context.text or '') or {}
-    backup_id = BackupManager(context, node).backup(**options)
-    assert_that(backup_id, matches_regexp('^[0-9]{8}T[0-9]{6}$'))
-
-
-@then('ch_backup entries of {node:w} are in proper condition')
-def step_check_backups_conditions(context, node):
-    ch_backup = BackupManager(context, node)
-    backup_ids = ch_backup.get_backup_ids()
-
-    # check backup's count
-    expected_backups_count = len(context.table.rows)
-    current_backups_count = len(backup_ids)
-    assert_that(
-        current_backups_count, equal_to(expected_backups_count),
-        'Backups count = {0}, expected {1}'.format(current_backups_count,
-                                                   expected_backups_count))
-
-    # check backup contents
-    for row in context.table:
-        backup = ch_backup.get_backup(backup_ids[int(row['num'])])
-
-        # check if all backup's files exists
-        missed_paths = ch_backup.get_missed_paths(backup.name)
-        assert_that(missed_paths, equal_to([]),
-                    '{0} missed files were found'.format(len(missed_paths)))
-
-        # check given backup properties
-        for cond in context.table.headings:
-            if cond in ('num', 'title'):
-                continue
-            current_value = str(getattr(backup, cond))
-            expected_value = row[cond]
-            assert_that(
-                current_value, equal_to(expected_value),
-                'Backup #{0} "{1}": {2} expected {3} = {4}, but was {5}'.
-                format(row['num'], row['title'], backup.name, cond,
-                       expected_value, current_value))
-
-
-@when('we purge {node} clickhouse backups')
-def step_purge_backups(context, node):
-    """
-    Purge backups
-    """
-    backup_ids = BackupManager(context, node).purge()
-    assert_that(backup_ids, matches_regexp('^([0-9]{8}T[0-9]{6}\n)*$'))
-
-
-@given('create time of backup #{backup_num:d} of {node:w} was adjusted to'
-       ' following delta')
-@when('we adjust create time of backup #{backup_num:d} of {node:w}'
-      ' to following delta')
-def step_adjust_backup_mtime(context, backup_num, node):
-    """
-    Adjust mtime of specified backup
-    """
-    ch_backup = BackupManager(context, node)
-    assert_that(
-        ch_backup.adjust_backup_ctime(backup_num, yaml.load(context.text)),
-        is_not(equal_to(None)))
-
-
-@given('ch-backup config on {node:w} was merged with following')
-@when('we merge ch-backup config on {node:w} with following')
-def step_update_ch_backup_config(context, node):
-    conf = yaml.load(context.text)
-    BackupManager(context, node).update_config(conf)
-
-
-@when('we delete {node:w} clickhouse backup #{backup_num:d}')
-def step_delete_backup(context, node, backup_num):
-    backup_id = BackupManager(context, node).delete(backup_num)
-    assert_that(
-        backup_id,
-        any_of(
-            matches_regexp('^([0-9]{8}T[0-9]{6}\n)*$'),
-            contains_string('Backup was not deleted'),
-            contains_string('Backup was partially deleted')))
-
-
-@when('we restore clickhouse #{backup_num:d} backup to {node:w}')
-def step_restore_backup(context, backup_num, node):
-    backup_id = BackupManager(context, node).restore(backup_num)
-    assert_that(backup_id, matches_regexp('^$'))
-
-
-@when('we restore clickhouse {backup_num:d} backup schema to {node:w}')
-def step_restore_backup_schema_only(context, backup_num, node):
-    backup_id = BackupManager(context, node).restore(
-        backup_num, schema_only=True)
-    assert_that(backup_id, matches_regexp('^$'))
-
-
-@then('{node:w} backup #{backup_num:d} metadata contains')
-def step_backup_metadata(context, node, backup_num):
-    expected_meta = yaml.load(context.text)
-
-    backup = BackupManager(context, node).get_backup(backup_num)
-    assert_that(backup.meta, has_entries(expected_meta))
 
 
 @then('we got same clickhouse data at {nodes}')

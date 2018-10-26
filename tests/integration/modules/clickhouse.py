@@ -8,13 +8,14 @@ from urllib.parse import urljoin
 
 from requests import HTTPError, Session
 
-from . import crypto, docker, utils
+from . import docker
+from .utils import generate_random_string, strip_query
 
 DB_COUNT = 2
 TABLE_COUNT = 2
 ROWS_COUNT = 3
 
-GET_ALL_USER_TABLES_SQL = utils.strip_query("""
+GET_ALL_USER_TABLES_SQL = strip_query("""
     SELECT
         database,
         table,
@@ -26,39 +27,39 @@ GET_ALL_USER_TABLES_SQL = utils.strip_query("""
     FORMAT JSONCompact
 """)
 
-GET_ALL_DATABASES = utils.strip_query("""
+GET_ALL_DATABASES = strip_query("""
     SELECT name
     FROM system.databases
     WHERE name NOT IN ('system')
     FORMAT JSONCompact
 """)
 
-DROP_DATABASE = utils.strip_query("""
+DROP_DATABASE = strip_query("""
     DROP DATABASE {db_name}
 """)
 
-DROP_TABLE = utils.strip_query("""
+DROP_TABLE = strip_query("""
     DROP TABLE {db_name}.{table_name}
 """)
 
-GET_TEST_TABLE_SCHEMA = utils.strip_query("""
+GET_TEST_TABLE_SCHEMA = strip_query("""
     DESCRIBE {db_name}.{table_name}
     FORMAT JSONCompact
 """)
 
-GET_TEST_TABLE_DATA_SQL = utils.strip_query("""
+GET_TEST_TABLE_DATA_SQL = strip_query("""
     SELECT *
     FROM {db_name}.{table_name}
     ORDER BY {order_by}
     FORMAT JSONCompact
 """)
 
-TEST_TABLE_SCHEMA = utils.strip_query("""
+TEST_TABLE_SCHEMA = strip_query("""
     (date Date, datetime DateTime, int_num UInt32, str String)
     engine = MergeTree(date, int_num, 8192)
 """)
 
-GET_VERSION_SQL = utils.strip_query("""
+GET_VERSION_SQL = strip_query("""
     SELECT value
     FROM system.build_options
     WHERE name = 'VERSION_DESCRIBE'
@@ -218,7 +219,7 @@ class ClickhouseClient:
         else:
             str_prefix = '{prefix}_'.format(prefix=str_prefix)
 
-        rand_str = crypto.generate_random_string(str_len)
+        rand_str = generate_random_string(str_len)
 
         dt_now = datetime.utcnow() - timedelta(**day_diff)
         row = (dt_now.strftime('%Y-%m-%d'),

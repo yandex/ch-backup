@@ -4,8 +4,7 @@ Variables that influence testing behavior are defined here.
 
 import random
 
-from tests.integration.helpers.crypto import generate_random_string
-from tests.integration.helpers.utils import merge
+from tests.integration.modules.utils import generate_random_string, merge
 
 try:
     from local_configuration import CONF_OVERRIDE
@@ -35,6 +34,7 @@ def create():
     }
 
     config = {
+        'images_dir': 'images',
         'staging_dir': 'staging',
         'docker_ip4_subnet': '10.%s.0/24',
         'docker_ip6_subnet': 'fd00:dead:beef:%s::/96',

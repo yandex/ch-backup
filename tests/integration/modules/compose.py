@@ -1,5 +1,5 @@
 """
-Docker Compose helpers
+Docker Compose interface.
 """
 
 import copy
@@ -105,8 +105,7 @@ def _get_config_path(conf):
     """
     Return file path to docker compose config file.
     """
-    staging_dir = conf.get('staging_dir', 'staging')
-    return os.path.join(staging_dir, 'docker-compose.yml')
+    return os.path.join(conf['staging_dir'], 'docker-compose.yml')
 
 
 def _remove_config(path):
@@ -249,8 +248,7 @@ def _prepare_volumes(volumes, local_basedir):
 
 
 def _call_compose(conf, action):
-    conf_path = '{base}/docker-compose.yml'.format(
-        base=conf.get('staging_dir', 'staging'))
+    conf_path = _get_config_path(conf)
     project_name = conf['network_name']
 
     _call_compose_on_config(conf_path, project_name, action)

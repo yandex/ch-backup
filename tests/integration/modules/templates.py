@@ -1,5 +1,5 @@
 """
-Renders configs using all available context: config, docker-compose.yaml, state
+Module responsible for template rendering.
 """
 import os
 
@@ -20,8 +20,7 @@ def render_configs(context):
     """
     conf = context.conf
     compose_conf = compose.read_config(conf)
-    config_root = '{staging}/images'.format(
-        staging=conf.get('staging_dir', 'staging'))
+    config_root = '{0}/images'.format(conf['staging_dir'])
     context = {
         'conf': conf,
         'compose': compose_conf,
@@ -33,25 +32,7 @@ def render_configs(context):
             for basename in files:
                 if basename.endswith(TEMP_FILE_EXT):
                     continue
-                render_templates_dir(
-                    context,
-                    root,
-                    basename,
-                )
-
-
-def getenv(loader=None):
-    """
-    Create Jinja2 env object
-    """
-    env = Environment(
-        autoescape=False,
-        trim_blocks=False,
-        undefined=StrictUndefined,
-        keep_trailing_newline=True,
-        loader=loader,
-    )
-    return env
+                render_templates_dir(context, root, basename)
 
 
 def render_templates_dir(context, directory, basename):
@@ -74,3 +55,15 @@ def render_templates_dir(context, directory, basename):
                 exc=exc,
             ))
     os.rename(temp_file_path, path)
+
+
+def getenv(loader=None):
+    """
+    Create Jinja2 env object.
+    """
+    return Environment(
+        autoescape=False,
+        trim_blocks=False,
+        undefined=StrictUndefined,
+        keep_trailing_newline=True,
+        loader=loader)

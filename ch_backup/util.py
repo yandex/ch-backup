@@ -92,7 +92,7 @@ def drop_privileges(config):
 
 def strip_query(query_text):
     """
-    Remove query without endlines and duplicate whitespaces
+    Remove query without newlines and duplicate whitespaces.
     """
     return re.sub(r'\s{2,}', ' ', query_text.replace('\n', ' ')).strip()
 

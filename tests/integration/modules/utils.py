@@ -1,10 +1,13 @@
 """
-General purpose stuff, like dict merging or str.format() template filler.
+Utility functions.
 """
+
 import collections
 import logging
 import re
+import string
 from functools import wraps
+from random import choice as random_choise
 
 
 def merge(original, update):
@@ -13,9 +16,7 @@ def merge(original, update):
     """
     for key in update:
         recurse_conditions = [
-            # Does update have same key?
             key in original,
-            # Do both the update and original have dicts at this key?
             isinstance(original.get(key), dict),
             isinstance(update.get(key), collections.Mapping),
         ]
@@ -43,7 +44,7 @@ def format_object(obj, **replacements):
 
 def env_stage(event, fail=False):
     """
-    Nicely logs env stage
+    Nicely logs env stage.
     """
 
     def wrapper(fun):
@@ -68,6 +69,15 @@ def env_stage(event, fail=False):
 
 def strip_query(query_text):
     """
-    Remove query without endlines and duplicate whitespaces
+    Remove query without newlines and duplicate whitespaces.
     """
     return re.sub(r'\s{2,}', ' ', query_text.replace('\n', ' ')).strip()
+
+
+def generate_random_string(length=64):
+    """
+    Generate random alphanum sequence.
+    """
+    return ''.join(
+        random_choise(string.ascii_letters + string.digits)
+        for _ in range(length))

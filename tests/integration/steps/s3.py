@@ -1,11 +1,11 @@
 """
-Steps related to s3.
+Steps for interacting with S3.
 """
 
 from behave import given
 
-from tests.integration.helpers.s3 import (configure_s3_credentials,
-                                          ensure_s3_bucket)
+from tests.integration.modules.minio import (configure_s3_credentials,
+                                             ensure_s3_bucket)
 
 
 @given('a working s3')
