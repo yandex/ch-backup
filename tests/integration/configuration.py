@@ -48,7 +48,6 @@ def create():
         # testing environment.
         'projects': {
             'clickhouse': {
-                'build': '..',
                 'db': {
                     'user': 'reader',
                     'password': 'reader_password',
@@ -66,9 +65,8 @@ def create():
                 },
             },
             'minio': {
-                'build': 'images/minio',
                 'expose': {
-                    'http': 9000,
+                    'http': s3['port'],
                 },
             },
         },

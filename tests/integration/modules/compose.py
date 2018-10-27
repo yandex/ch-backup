@@ -55,12 +55,8 @@ def create_config(context):
     """
     Generate config file and write it.
     """
-    conf = context.conf
-    compose_conf_path = _get_config_path(conf)
-    # Create this directory now, otherwise if docker does
-    # it later, it will be owned by root.
-    compose_conf = _generate_config_dict(
-        projects=conf['projects'], network_name=conf['network_name'])
+    compose_conf_path = _get_config_path(context.conf)
+    compose_conf = _generate_compose_config(context.conf)
     return _write_config(compose_conf_path, compose_conf)
 
 
@@ -125,11 +121,12 @@ def _validate_config(config_path):
     _call_compose_on_config(config_path, '__config_test', 'config')
 
 
-def _generate_config_dict(projects, network_name):
+def _generate_compose_config(config):
     """
-    Create docker-compose.yml with initial images
+    Create docker compose config.
     """
-    assert isinstance(projects, dict), 'projects must be a dict'
+    projects = config['projects']
+    network_name = config['network_name']
 
     compose_conf = copy.deepcopy(BASE_CONF)
     # Set net name at global scope so containers will be able to reference it.
@@ -143,24 +140,9 @@ def _generate_config_dict(projects, network_name):
         # This num is also used in hostnames, later in
         # generate_service_dict()
         for num in range(1, instances + 1):
-            instance_name = '{name}{num:02d}'.format(
-                name=name,
-                num=num,
-            )
-            # Account for instance-specific configs, if provided.
-            # 'More specific wins' semantic is assumed.
-            service_props = utils.merge(
-                copy.deepcopy(props),
-                # A service may contain a key with instance
-                # name -- this is assumed to be a more specific
-                # config.
-                copy.deepcopy(props.get(instance_name, {})))
-            # Generate 'service' section configs.
-            service_conf = _generate_service_dict(
-                name=name,
-                instance_name=instance_name,
-                instance_conf=service_props,
-                network=network_name)
+            instance_name = '{name}{num:02d}'.format(name=name, num=num)
+            service_conf = _generate_service_config(config, name,
+                                                    instance_name, props)
             # Fill in local placeholders with own context.
             # Useful when we need to reference stuff like
             # hostname or domainname inside of the other config value.
@@ -169,7 +151,7 @@ def _generate_config_dict(projects, network_name):
     return compose_conf
 
 
-def _generate_service_dict(name, instance_name, instance_conf, network):
+def _generate_service_config(config, name, instance_name, instance_config):
     """
     Generates a single service config based on name and
     instance config.
@@ -177,50 +159,43 @@ def _generate_service_dict(name, instance_name, instance_conf, network):
     All paths are relative to the location of compose-config.yaml
     (which is ./staging/compose-config.yaml by default)
     """
+    staging_dir = config['staging_dir']
+    network_name = config['network_name']
+
     volumes = ['./images/{0}/config:/config:rw'.format(name)]
     # Take care of port forwarding
     ports_list = []
-    for port in instance_conf.get('expose', {}).values():
+    for port in instance_config.get('expose', {}).values():
         ports_list.append(port)
 
-    # Set build path which contains Dockerfile
-    build_path = instance_conf.get('build')
-    if isinstance(build_path, dict):
-        build_path = build_path.copy()
-    # Default is to look for Dockerfile inside the projects` dir.
-    elif build_path is None:
-        build_path = './code/{name}/{subdir}'.format(
-            name=name,
-            subdir=instance_conf.get('build_subdir', '.'),
-        )
     service = {
-        # The path is relative to the location of the compose config file.
-        # https://docs.docker.com/compose/compose-file/#build
-        # Dockerfile dir
         'build': {
-            'context': build_path,
-            'args': instance_conf.get('args', []),
+            'context':
+                '..',
+            'dockerfile':
+                '{0}/images/{1}/Dockerfile'.format(staging_dir, name),
+            'args':
+                instance_config.get('args', []),
         },
-        'image': '{nm}:{nt}'.format(nm=name, nt=network),
+        'image': '{0}:{1}'.format(name, network_name),
         'hostname': instance_name,
-        'domainname': network,
+        'domainname': network_name,
         # Networks. We use external anyway.
-        'networks': instance_conf.get('networks', ['test_net']),
-        # Runtime envs
-        'environment': instance_conf.get('environment', []),
+        'networks': instance_config.get('networks', ['test_net']),
+        'environment': instance_config.get('environment', []),
         # Nice container name with domain name part.
         # This results, however, in a strange rdns name:
         # the domain part will end up there twice.
         # Does not affect A or AAAA, though.
-        'container_name': '%s.%s' % (instance_name, network),
+        'container_name': '{0}.{1}'.format(instance_name, network_name),
         # Ports exposure
-        'ports': ports_list + instance_conf.get('ports', []),
-        'volumes': volumes + instance_conf.get('volumes', []),
+        'ports': ports_list,
+        'volumes': volumes + instance_config.get('volumes', []),
         # https://github.com/moby/moby/issues/12080
         'tmpfs': '/var/run',
         # external resolver: dns64-cache.yandex.net
         'dns': ['2a02:6b8:0:3400::1023'],
-        'external_links': instance_conf.get('external_links', []),
+        'external_links': instance_config.get('external_links', []),
     }
 
     return service
