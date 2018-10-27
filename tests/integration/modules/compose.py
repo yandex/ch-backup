@@ -193,8 +193,6 @@ def _generate_service_config(config, name, instance_name, instance_config):
         'volumes': volumes + instance_config.get('volumes', []),
         # https://github.com/moby/moby/issues/12080
         'tmpfs': '/var/run',
-        # external resolver: dns64-cache.yandex.net
-        'dns': ['2a02:6b8:0:3400::1023'],
         'external_links': instance_config.get('external_links', []),
     }
 
