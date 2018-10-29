@@ -1,13 +1,12 @@
 Feature: Backup & Clean & Restore
 
-  Background: Insert initial data into clickhouse
+  Background:
     Given default configuration
     And a working s3
     And a working clickhouse on clickhouse01
     And clickhouse on clickhouse01 has test schema
 
-
-  Scenario: Backup "shared" done successfully
+  Scenario: Create "shared" backup
     Given ch-backup config on clickhouse01 was merged with following
     """
     backup:
@@ -19,7 +18,7 @@ Feature: Backup & Clean & Restore
       | num | state    | data_count | link_count   | title         |
       | 0   | created  | 4          | 0            | shared        |
 
-  Scenario: Backup "shared + links" done successfully
+  Scenario: Create "shared + links" backup
     Given ch-backup config on clickhouse01 was merged with following
     """
     backup:
@@ -32,7 +31,7 @@ Feature: Backup & Clean & Restore
       | 0   | created  | 4          | 4            | shared+links  |
       | 1   | created  | 4          | 0            | shared        |
 
-  Scenario: Backup "links" done successfully
+  Scenario: Create "links" backup
     Given ch-backup config on clickhouse01 was merged with following
     """
     backup:
@@ -45,7 +44,7 @@ Feature: Backup & Clean & Restore
       | 1   | created  | 4          | 4            | shared+links  |
       | 2   | created  | 4          | 0            | shared        |
 
-  Scenario: Backup "shared + data" done successfully
+  Scenario: Create "shared + data" backup
     Given ch-backup config on clickhouse01 was merged with following
     """
     backup:
@@ -60,7 +59,7 @@ Feature: Backup & Clean & Restore
       | 2   | created  | 4          | 4            | shared+links  |
       | 3   | created  | 4          | 0            | shared        |
 
-  Scenario: Backup "links + data" done successfully
+  Scenario: Create "links + data" backup
     Given ch-backup config on clickhouse01 was merged with following
     """
     backup:
@@ -78,7 +77,7 @@ Feature: Backup & Clean & Restore
       | 3   | created  | 4          | 4            | shared+links  |
       | 4   | created  | 4          | 0            | shared        |
 
-  Scenario: Backup "data" done successfully
+  Scenario: Create "data" backup
     Given ch-backup config on clickhouse01 was merged with following
     """
     backup:
@@ -94,7 +93,7 @@ Feature: Backup & Clean & Restore
       | 4   | created  | 4          | 4            | shared+links  |
       | 5   | created  | 4          | 0            | shared        |
 
-  Scenario: Backup "shared" is not deleted
+  Scenario: Attempt to delete "shared" backup deletes no data
     When we delete clickhouse01 clickhouse backup #5
     Then ch_backup entries of clickhouse01 are in proper condition
       | num | state    | data_count | link_count   | title         |
@@ -105,7 +104,7 @@ Feature: Backup & Clean & Restore
       | 4   | created  | 4          | 4            | shared+links  |
       | 5   | created  | 4          | 0            | shared        |
 
-  Scenario: Backup "shared + links" deletes links but not shared data
+  Scenario: Attempt to delete "shared + links" backup deletes links only
     When we delete clickhouse01 clickhouse backup #4
     Then ch_backup entries of clickhouse01 are in proper condition
       | num | state             | data_count | link_count   | title        |
@@ -116,7 +115,7 @@ Feature: Backup & Clean & Restore
       | 4   | partially_deleted | 4          | 0            | shared+links |
       | 5   | created           | 4          | 0            | shared       |
 
-  Scenario: Backup "links" deleted successfully
+  Scenario: Attempt to delete "links" backup succeeds
     When we delete clickhouse01 clickhouse backup #3
     Then ch_backup entries of clickhouse01 are in proper condition
       | num | state             | data_count | link_count   | title        |
@@ -126,7 +125,7 @@ Feature: Backup & Clean & Restore
       | 3   | partially_deleted | 4          | 0            | shared+links |
       | 4   | created           | 4          | 0            | shared       |
 
-  Scenario: Backup "shared + data" deletes data but not shared data
+  Scenario: Attempt to delete "shared + data" backup deletes non-shared data only
     When we delete clickhouse01 clickhouse backup #2
     Then ch_backup entries of clickhouse01 are in proper condition
       | num | state             | data_count | link_count   | title        |
@@ -136,7 +135,7 @@ Feature: Backup & Clean & Restore
       | 3   | partially_deleted | 4          | 0            | shared+links |
       | 4   | created           | 4          | 0            | shared       |
 
-  Scenario: Backup "links + data" deleted successfully
+  Scenario: Attempt to delete  "links + data" backup succeeds
     When we delete clickhouse01 clickhouse backup #1
     Then ch_backup entries of clickhouse01 are in proper condition
       | num | state             | data_count | link_count   | title        |
@@ -145,7 +144,7 @@ Feature: Backup & Clean & Restore
       | 2   | partially_deleted | 4          | 0            | shared+links |
       | 3   | created           | 4          | 0            | shared       |
 
-  Scenario: Backup "data" deleted successfully
+  Scenario: Attempt to delete  "data" backup succeeds
     When we delete clickhouse01 clickhouse backup #0
     Then ch_backup entries of clickhouse01 are in proper condition
       | num | state             | data_count | link_count   | title        |

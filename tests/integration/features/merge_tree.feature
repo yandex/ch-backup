@@ -5,7 +5,7 @@ Feature: Backup of MergeTree tables with different configurations
     And a working s3
     And a working clickhouse on clickhouse01
 
-  Scenario: Backup
+  Scenario: Create backup
     Given test data on clickhouse01 that was created as follows
     """
     CREATE DATABASE test_db;
@@ -21,7 +21,7 @@ Feature: Backup of MergeTree tables with different configurations
       | num | state    | data_count | link_count   | title         |
       | 0   | created  | 12         | 0            | data          |
 
-  Scenario: Backup restored successfully
+  Scenario: Restore from backup
     Given a working clickhouse on clickhouse02
     When we restore clickhouse #0 backup to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02

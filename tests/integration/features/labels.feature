@@ -6,7 +6,7 @@ Feature: Lables
     And a working clickhouse on clickhouse01
     And clickhouse on clickhouse01 has test schema
 
-  Scenario: Backup done successfully
+  Scenario: Create backup with labels
     Given clickhouse01 has test clickhouse data test1
     When we create clickhouse01 clickhouse backup
     """

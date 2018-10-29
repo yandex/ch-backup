@@ -1,6 +1,6 @@
 Feature: SSL support
 
-  Background: Insert initial data into clickhouse
+  Background:
     Given configuration
     """
     ch_backup:
@@ -10,13 +10,13 @@ Feature: SSL support
     And a working clickhouse on clickhouse01
     And clickhouse on clickhouse01 has test schema
 
-  Scenario: Backup done successfully
+  Scenario: Create backup
     Given clickhouse01 has test clickhouse data test1
     When we create clickhouse01 clickhouse backup
     Then ch_backup entries of clickhouse01 are in proper condition
       | num | state    | data_count | link_count   | title         |
       | 0   | created  | 4          | 0            | data          |
 
-  Scenario: Backup restored successfully
+  Scenario: Restore from backup
     When we restore clickhouse #0 backup to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
