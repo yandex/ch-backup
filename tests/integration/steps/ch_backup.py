@@ -4,13 +4,13 @@ Steps related to ch-backup command-line tool.
 import yaml
 from behave import given, then, when
 from hamcrest import (any_of, assert_that, contains_string, equal_to,
-                      has_entries, is_not, matches_regexp)
+                      has_entries, matches_regexp)
 
 from tests.integration.modules.ch_backup import BackupManager
+from tests.integration.modules.templates import render_template
 
 
 @given('ch-backup config on {node:w} was merged with following')
-@when('we merge ch-backup config on {node:w} with following')
 def step_update_ch_backup_config(context, node):
     conf = yaml.load(context.text)
     BackupManager(context, node).update_config(conf)
@@ -24,15 +24,12 @@ def step_create_backup(context, node):
     assert_that(backup_id, matches_regexp('^[0-9]{8}T[0-9]{6}$'))
 
 
-@given('create time of backup #{backup_num:d} of {node:w} was adjusted to'
-       ' following delta')
-@when('we adjust create time of backup #{backup_num:d} of {node:w}'
-      ' to following delta')
-def step_adjust_backup_mtime(context, backup_num, node):
+@given('metadata of {node:w} backup #{backup_num:d} was adjusted with')
+def step_update_backup_metadata(context, node, backup_num):
     ch_backup = BackupManager(context, node)
-    assert_that(
-        ch_backup.adjust_backup_ctime(backup_num, yaml.load(context.text)),
-        is_not(equal_to(None)))
+    context.backup = ch_backup.get_backup(backup_num)
+    metadata = yaml.load(render_template(context, context.text))
+    ch_backup.update_backup_metadata(backup_num, metadata)
 
 
 @when('we restore clickhouse #{backup_num:d} backup to {node:w}')

@@ -2,7 +2,6 @@
 Interface to ch-backup command-line tool.
 """
 
-import datetime
 import json
 import os
 
@@ -59,20 +58,14 @@ class BackupManager:
         """
         return self._exec('purge')
 
-    def adjust_backup_ctime(self, backup_id, timedelta):
+    def update_backup_metadata(self, backup_id, metadata, merge=True):
         """
-        Move backup create time by timedelta
+        Update backup metadata.
         """
         backup = self.get_backup(backup_id)
-        date_fmt = backup.date_fmt
-        for item in ('start_time', 'end_time'):
-            dt_str = getattr(backup, item)
-            dt = datetime.datetime.strptime(dt_str, date_fmt) \
-                + datetime.timedelta(**timedelta)
-            setattr(backup, item, dt.strftime(date_fmt))
-
-        return self._s3_client.upload_data(backup.dump_json().encode('utf-8'),
-                                           backup.path)
+        backup.update(metadata, merge)
+        self._s3_client.upload_data(backup.dump_json().encode('utf-8'),
+                                    backup.path)
 
     def update_config(self, update):
         """
@@ -207,26 +200,12 @@ class Backup:
         """
         return self.meta.get('start_time')
 
-    @start_time.setter
-    def start_time(self, item):
-        """
-        Backup start time
-        """
-        self._metadata['meta']['start_time'] = item
-
     @property
     def end_time(self):
         """
         Backup end time
         """
         return self.meta.get('end_time')
-
-    @end_time.setter
-    def end_time(self, item):
-        """
-        Backup end time
-        """
-        self._metadata['meta']['end_time'] = item
 
     @property
     def date_fmt(self):
@@ -241,6 +220,15 @@ class Backup:
         Path to backup struct
         """
         return os.path.join(self.meta.get('path'), 'backup_struct.json')
+
+    def update(self, metadata, merge=True):
+        """
+        Update metadata.
+        """
+        if merge:
+            utils.merge(self._metadata, metadata)
+        else:
+            self._metadata = metadata
 
     def dump_json(self):
         """

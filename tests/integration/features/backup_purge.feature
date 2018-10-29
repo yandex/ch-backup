@@ -81,13 +81,17 @@ Feature: Backup & Restore
       | 5   | created  | 4          | 0            | shared         |
 
   Scenario: Purge with count removal = 0 and time removal >=1 leads to 0 deletes
-    Given create time of backup #5 of clickhouse01 was adjusted to following delta
+    Given metadata of clickhouse01 backup #5 was adjusted with
     """
-    weeks: -1
+    meta:
+        start_time: {{ backup.meta.start_time | decrease_on('1 week') }}
+        end_time: {{ backup.meta.end_time | decrease_on('1 week') }}
     """
-    And create time of backup #4 of clickhouse01 was adjusted to following delta
+    And metadata of clickhouse01 backup #4 was adjusted with
     """
-    weeks: -1
+    meta:
+        start_time: {{ backup.meta.start_time | decrease_on('1 week') }}
+        end_time: {{ backup.meta.end_time | decrease_on('1 week') }}
     """
     And ch-backup config on clickhouse01 was merged with following
     """

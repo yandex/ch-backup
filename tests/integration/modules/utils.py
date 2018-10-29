@@ -8,6 +8,7 @@ import re
 import string
 from functools import wraps
 from random import choice as random_choise
+from types import SimpleNamespace
 
 
 def merge(original, update):
@@ -81,3 +82,21 @@ def generate_random_string(length=64):
     return ''.join(
         random_choise(string.ascii_letters + string.digits)
         for _ in range(length))
+
+
+def context_to_dict(context):
+    """
+    Convert context to dict representation.
+
+    The context type can be either types.SimpleNamespace or behave.Context.
+    """
+    if isinstance(context, SimpleNamespace):
+        return context.__dict__
+
+    result = {}
+    for frame in context._stack:  # pylint: disable=protected-access
+        for key, value in frame.items():
+            if key not in result:
+                result[key] = value
+
+    return result
