@@ -490,7 +490,9 @@ class ClickhouseBackup:
         backups = self._get_existing_backup_names()
         for backup in sorted(backups, reverse=True):
             try:
-                return self._get_backup_meta(backup)
+                backup_meta = self._get_backup_meta(backup)
+                if backup_meta.state == ClickhouseBackupState.CREATED:
+                    return backup_meta
             except Exception:
                 logging.warning(
                     'Failed to load metadata for backup %s',

@@ -3,5 +3,6 @@ features/backup_restore.feature
 features/backup_delete.feature
 features/backup_purge.feature
 features/single_table.feature
+features/min_interval.feature
 features/ssl_support.feature
 features/labels.feature

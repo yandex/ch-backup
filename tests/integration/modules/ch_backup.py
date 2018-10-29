@@ -31,11 +31,13 @@ class BackupManager:
 
         self._s3_client = s3.S3Client(context)
 
-    def backup(self, databases=None, tables=None, labels=None):
+    def backup(self, force=None, databases=None, tables=None, labels=None):
         """
         Perform backup.
         """
         options = []
+        if force:
+            options.append('--force')
         if databases:
             options.append('--databases {0}'.format(','.join(databases or [])))
         if tables:
