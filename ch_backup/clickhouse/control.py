@@ -5,14 +5,11 @@ Clickhouse-control classes module
 import logging
 import os
 import shutil
-from http.client import RemoteDisconnected
 from urllib.parse import quote
 
-import requests
-from requests import HTTPError, Session
-
+from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.exceptions import ClickhouseBackupError
-from ch_backup.util import chown_dir_contents, retry, strip_query
+from ch_backup.util import chown_dir_contents, strip_query
 
 GET_TABLES_ORDERED_SQL = strip_query("""
     SELECT name
@@ -259,50 +256,3 @@ class ClickhouseCTL:
                 ord('.'): '%2E',
                 ord('-'): '%2D',
             })
-
-
-class ClickhouseClient:
-    """
-    Simple clickhouse client
-    """
-
-    def __init__(self, config):
-        host = config['host']
-        protocol = config['protocol']
-        port = 8123 if protocol == 'http' else 8443
-        ca_path = config.get('ca_path')
-        self._session = Session()
-        self._session.verify = True if ca_path is None else ca_path
-        # pylint: disable=no-member
-        requests.packages.urllib3.disable_warnings()
-        self._url = '{0}://{1}:{2}'.format(protocol, host, port)
-        self._timeout = config['timeout']
-
-    @retry(RemoteDisconnected)
-    def query(self, query, post_data=None, timeout=None):
-        """
-        Perform query to configured clickhouse endpoint
-        """
-        if timeout is None:
-            timeout = self._timeout
-
-        try:
-            logging.debug('Executing ClickHouse query: %s', query)
-            response = self._session.post(
-                self._url,
-                params={
-                    'query': query,
-                },
-                json=post_data,
-                timeout=timeout)
-
-            response.raise_for_status()
-        except HTTPError as e:
-            logging.critical('Error while performing request: %s',
-                             e.response.text)
-            raise
-
-        try:
-            return response.json()
-        except ValueError:
-            return str.strip(response.text)
