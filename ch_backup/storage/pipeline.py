@@ -47,8 +47,8 @@ class Pipeline:
             gen = func_part(src_key, dst_key)
             while True:
                 next(gen)
-        except StopIteration as ex:
-            return ex.value
+        except StopIteration as e:
+            return e.value
 
 
 class ExecPool:
@@ -88,11 +88,10 @@ class ExecPool:
         for future_id, future in self._futures.items():
             try:
                 future_result = future.result()
-            except Exception as exc:
+            except Exception:
                 logging.error(
-                    'Future "%s" generated an exception: %s',
+                    'Future "%s" generated an exception:',
                     future_id,
-                    exc,
                     exc_info=True)
                 raise
             else:

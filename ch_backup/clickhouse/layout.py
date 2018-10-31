@@ -99,10 +99,10 @@ class ClickhouseBackupLayout:
             logging.debug('Saving table sql-file "%s": %s', table_sql_rel_path,
                           future_id)
             return remote_path
-        except Exception as exc:
-            logging.critical('Unable create async upload %s: %s',
-                             table_sql_rel_path, exc)
-            raise StorageError
+        except Exception as e:
+            msg = 'Failed to create async upload of {0}'.format(
+                table_sql_rel_path)
+            raise StorageError(msg) from e
 
     def save_database_meta(self, db_name, metadata):
         """
@@ -111,16 +111,14 @@ class ClickhouseBackupLayout:
         db_sql_rel_path = self._ch_ctl.get_db_sql_rel_path(db_name)
         remote_path = os.path.join(self.backup_path, db_sql_rel_path)
         try:
-            logging.debug('Saving database sql-file "%s": %s', db_sql_rel_path,
+            logging.debug('Saving database sql file "%s": %s', db_sql_rel_path,
                           self.backup_meta_path)
             self._storage_loader.upload_data(
                 metadata, remote_path=remote_path, encryption=True)
             return remote_path
-        except Exception as exc:
-            logging.critical(
-                'Unable to upload database "%s" sql-file to storage: %s',
-                db_name, exc)
-            raise StorageError
+        except Exception as e:
+            msg = 'Failed to upload database sql file to {0}'.format(db_name)
+            raise StorageError(msg) from e
 
     def save_backup_meta(self, backup_meta):
         """
@@ -134,10 +132,8 @@ class ClickhouseBackupLayout:
             result = self._storage_loader.upload_data(
                 json_dump, remote_path=remote_path)
             return result
-        except Exception as exc:
-            logging.critical('Unable to upload backup metadata to storage: %s',
-                             exc)
-            raise StorageError
+        except Exception as e:
+            raise StorageError('Failed to upload backup metadata') from e
 
     def save_part_data(self, db_name, table_name, part_name, part_path):
         """
@@ -163,9 +159,10 @@ class ClickhouseBackupLayout:
                     encryption=True)
                 uploaded_files.append(remote_fname)
 
-            except Exception as exc:
-                logging.critical('Unable to upload partition: %s', exc)
-                raise StorageError
+            except Exception as e:
+                msg = 'Failed to create async upload of {0}'.format(
+                    remote_fname)
+                raise StorageError(msg) from e
 
         return uploaded_files
 
@@ -181,11 +178,8 @@ class ClickhouseBackupLayout:
         try:
             data = self._storage_loader.download_data(path)
             return ClickhouseBackupStructure.load_json(data)
-        except Exception as exc:
-            logging.critical(
-                'Unable to download backup metadata "%s" from storage: %s',
-                path, exc)
-            raise StorageError
+        except Exception as e:
+            raise StorageError('Failed to download backup metadata') from e
 
     def download_str(self, remote_path):
         """
@@ -222,10 +216,9 @@ class ClickhouseBackupLayout:
                     remote_path,
                     local_path,
                 ))
-            except Exception as exc:
-                logging.critical('Unable to download part file %s: %s',
-                                 remote_path, exc)
-                raise StorageError
+            except Exception as e:
+                msg = 'Failed to download part file {0}'.format(remote_path)
+                raise StorageError(msg) from e
 
         return downloaded_files
 
@@ -241,10 +234,9 @@ class ClickhouseBackupLayout:
                 self._storage_loader.delete_file(
                     remote_path=remote_path, is_async=True)
                 deleted_files.append(remote_path)
-            except Exception as exc:
-                logging.critical('Unable to delete file %s: %s', remote_path,
-                                 exc)
-                raise StorageError
+            except Exception as e:
+                msg = 'Failed to delete file {0}'.format(remote_path)
+                raise StorageError(msg) from e
 
         return deleted_files
 
@@ -281,10 +273,8 @@ class ClickhouseBackupLayout:
         try:
             logging.debug('Collecting async jobs')
             self._storage_loader.wait()
-        except Exception as exc:
-            logging.critical(
-                'Errors in async transfers: %s', exc, exc_info=True)
-            raise StorageError
+        except Exception as e:
+            raise StorageError('Failed to complete async jobs') from e
 
 
 class ClickhouseBackupStructure:

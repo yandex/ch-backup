@@ -102,9 +102,8 @@ class Config:
                 custom_config = yaml.safe_load(fileobj)
                 if custom_config:
                     self._recursively_update(self._conf, custom_config)
-            except yaml.YAMLError as exc:
-                logging.error('Unable to load config file(%s): %s', file_name,
-                              exc)
+            except yaml.YAMLError as e:
+                raise RuntimeError('Failed to load config file: {0}'.format(e))
 
     def __getitem__(self, item):
         try:

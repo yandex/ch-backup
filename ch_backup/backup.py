@@ -107,8 +107,8 @@ class ClickhouseBackup:
             for db_name in databases:
                 self._backup_database(backup_meta, db_name, db_tables[db_name])
             backup_meta.state = ClickhouseBackupState.CREATED
-        except Exception as exc:
-            logging.critical('Backup failed with: "%s"', exc, exc_info=True)
+        except Exception:
+            logging.critical('Backup failed', exc_info=True)
             backup_meta.state = ClickhouseBackupState.FAILED
             raise
         finally:
@@ -187,8 +187,8 @@ class ClickhouseBackup:
             try:
                 freeze_path = self._ch_ctl.freeze_partition(
                     db_name, table_name, partition)
-            except Exception as exc:
-                logging.critical('Unable to freeze: %s', exc)
+            except Exception:
+                logging.critical('Unable to freeze', exc_info=True)
                 raise ClickhouseBackupError
 
             for part_row in parts_rows:
@@ -281,8 +281,8 @@ class ClickhouseBackup:
                          'by subsequent backups per deduplication ' \
                          'settings.'
 
-        except Exception as exc:
-            logging.critical('Delete failed with: "%s"', exc, exc_info=True)
+        except Exception:
+            logging.critical('Delete failed', exc_info=True)
             backup_meta.state = ClickhouseBackupState.FAILED
             raise
 

@@ -46,10 +46,8 @@ def _render_file(context, directory, basename):
         with open(temp_file_path, 'w') as temp_file:
             template = environment.get_template(basename)
             temp_file.write(template.render(jinja_context))
-    except Exception as exc:
-        raise RuntimeError(
-            "'{exc_type}' while rendering '{name}': {exc}".format(
-                exc_type=exc.__class__.__name__, name=path, exc=exc))
+    except Exception as e:
+        raise RuntimeError('Failed to render {0}'.format(path)) from e
     os.rename(temp_file_path, path)
 
 
