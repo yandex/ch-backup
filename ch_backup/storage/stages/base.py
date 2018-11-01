@@ -14,7 +14,7 @@ class InputStage(metaclass=ABCMeta):
     - produces collected data.
     """
 
-    stype = None
+    stype = None  # type: str
 
     def __call__(self, src_key, dst_key):
         self._pre_process(src_key)
@@ -43,7 +43,7 @@ class IterStage(metaclass=ABCMeta):
     Base middleware stage.
     """
 
-    stype = None
+    stype = None  # type: str
 
     def __call__(self, src_iter, src_key, dst_key):
         self._pre_process(src_key, dst_key)

@@ -24,7 +24,7 @@ test: lint unit_test
 .PHONY: lint
 lint:
 	git --no-pager diff HEAD~1 --check
-	tox -e isort,yapf,flake8,pylint,bandit
+	tox -e isort,yapf,flake8,pylint,mypy,bandit
 
 
 .PHONY: unit_test
