@@ -514,19 +514,21 @@ class ClickhouseBackup:
             try:
                 backup_meta = self._get_backup_meta(backup_name)
 
-                # filter old entries
-                if backup_meta.end_time <= backup_age_limit:
-                    logging.debug(
-                        'Backup "%s" is too old for given timelimit (%s > %s),'
-                        ' skipping', backup_name, backup_meta.end_time,
-                        backup_age_limit)
-                # filter non-consistent entries
-                elif backup_meta.state != ClickhouseBackupState.CREATED \
-                        and not load_all:
-                    logging.debug('Backup "%s" is skipped due to state "%s"',
-                                  backup_name, backup_meta.state)
-                else:
-                    existing_backups.append(backup_meta)
+                if not load_all:
+                    if backup_meta.state != ClickhouseBackupState.CREATED:
+                        logging.debug(
+                            'Backup "%s" is skipped due to state "%s"',
+                            backup_name, backup_meta.state)
+                        continue
+
+                    if backup_meta.end_time <= backup_age_limit:
+                        logging.debug(
+                            'Backup "%s" is too old for given timelimit'
+                            ' (%s > %s), skipping', backup_name,
+                            backup_meta.end_time, backup_age_limit)
+                        continue
+
+                existing_backups.append(backup_meta)
 
             except Exception:
                 logging.warning(
