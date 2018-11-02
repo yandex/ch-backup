@@ -21,7 +21,7 @@ def step_update_ch_backup_config(context, node):
 def step_create_backup(context, node):
     options = yaml.load(context.text or '') or {}
     backup_id = BackupManager(context, node).backup(**options)
-    assert_that(backup_id, matches_regexp('[0-9]{8}T[0-9]{6}$'))
+    assert_that(backup_id, matches_regexp('[0-9]{8}T[0-9]{6}'))
 
 
 @given('metadata of {node:w} backup #{backup_num:d} was adjusted with')
