@@ -22,7 +22,7 @@ class ClickhouseClient:
     ClickHouse client.
     """
 
-    def __init__(self, config):
+    def __init__(self, config: dict) -> None:
         host = config['host']
         protocol = config['protocol']
         port = 8123 if protocol == 'http' else 8443
@@ -35,13 +35,10 @@ class ClickhouseClient:
         self._timeout = config['timeout']
 
     @retry(RemoteDisconnected)
-    def query(self, query, post_data=None, timeout=None):
+    def query(self, query: str, post_data: dict = None):
         """
         Execute query.
         """
-        if timeout is None:
-            timeout = self._timeout
-
         try:
             logging.debug('Executing query: %s', query)
             response = self._session.post(
@@ -50,7 +47,7 @@ class ClickhouseClient:
                     'query': query,
                 },
                 json=post_data,
-                timeout=timeout)
+                timeout=self._timeout)
 
             response.raise_for_status()
         except HTTPError as e:

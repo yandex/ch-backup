@@ -10,6 +10,7 @@ import re
 import shutil
 import time
 from datetime import datetime, timedelta, timezone
+from typing import Callable, Union
 
 import tenacity
 
@@ -17,7 +18,7 @@ LOCAL_TZ = timezone(
     timedelta(seconds=-1 * (time.altzone if time.daylight else time.timezone)))
 
 
-def chown_dir_contents(user, group, dir_path):
+def chown_dir_contents(user: str, group: str, dir_path: str) -> None:
     """
     Recursively change directory user/group
     """
@@ -25,7 +26,7 @@ def chown_dir_contents(user, group, dir_path):
         shutil.chown(os.path.join(dir_path, path), user, group)
 
 
-def setup_logging(config):
+def setup_logging(config: dict) -> None:
     """
     Configure logging
     """
@@ -40,7 +41,7 @@ def setup_logging(config):
         logging.getLogger(module_logger).setLevel(aux_level)
 
 
-def setup_environment(config):
+def setup_environment(config: dict) -> None:
     """
     Set environment variables
     """
@@ -51,7 +52,7 @@ def setup_environment(config):
         pass
 
 
-def demote_group(new_group):
+def demote_group(new_group: str) -> None:
     """
     Perform group change
     """
@@ -59,7 +60,7 @@ def demote_group(new_group):
     os.setgid(new_gid)
 
 
-def demote_user(new_user):
+def demote_user(new_user: str) -> None:
     """
     Perform user change
     """
@@ -67,7 +68,7 @@ def demote_user(new_user):
     os.setuid(new_uid)
 
 
-def demote_user_group(new_user, new_group):
+def demote_user_group(new_user: str, new_group: str) -> None:
     """
     Perform user and group change
     """
@@ -75,7 +76,7 @@ def demote_user_group(new_user, new_group):
     demote_user(new_user)
 
 
-def drop_privileges(config):
+def drop_privileges(config: dict) -> bool:
     """
     Demote user/group if needed
     """
@@ -90,35 +91,37 @@ def drop_privileges(config):
     return False
 
 
-def strip_query(query_text):
+def strip_query(query_text: str) -> str:
     """
     Remove query without newlines and duplicate whitespaces.
     """
     return re.sub(r'\s{2,}', ' ', query_text.replace('\n', ' ')).strip()
 
 
-def now():
+def now() -> datetime:
     """
     Return local datetime with timezone information.
     """
     return datetime.now(LOCAL_TZ)
 
 
-def utcnow():
+def utcnow() -> datetime:
     """
     Return UTC datetime with timezone information.
     """
     return datetime.now(timezone.utc)
 
 
-def utc_fromtimestamp(timestamp):
+def utc_fromtimestamp(timestamp) -> datetime:
     """
     Return UTC datetime with timezone information.
     """
     return datetime.fromtimestamp(timestamp, timezone.utc)
 
 
-def retry(exception_types=Exception, max_attempts=5, max_interval=5):
+def retry(exception_types: Union[type, tuple] = Exception,
+          max_attempts=5,
+          max_interval=5) -> Callable:
     """
     Function decorator that retries wrapped function on failures.
     """

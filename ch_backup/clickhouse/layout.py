@@ -10,8 +10,10 @@ import socket
 from collections import defaultdict
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ch_backup.clickhouse.control import ClickhouseCTL
+from ch_backup.config import Config
 from ch_backup.exceptions import (InvalidBackupStruct, StorageError,
                                   UnknownBackupStateError)
 from ch_backup.storage import StorageLoader
@@ -36,14 +38,57 @@ class ClickhouseBackupState(Enum):
     FAILED = 'failed'
 
 
+class ClickhousePartInfo:
+    """
+    ClickHouse part metadata and few helpers
+    """
+
+    def __init__(self, meta: dict, link=None, paths=None) -> None:
+        self._meta = meta
+        if link is None:
+            link = False
+        self.link = link
+        self.paths = paths
+
+    @property
+    def bytes(self) -> int:
+        """
+        The size of part on disk in bytes.
+        """
+        # bytes_on_disk is a new name starting from ClickHouse 1.1.54380.
+        return self._meta.get('bytes_on_disk', self._meta.get('bytes'))
+
+    def __getattr__(self, item):
+        try:
+            return self._meta[item]
+        except KeyError:
+            raise AttributeError
+
+    def __eq__(self, other):
+        criteria = ('modification_time', 'rows')
+        for check_attr in criteria:
+            if getattr(self, check_attr) != getattr(other, check_attr):
+                return False
+        return True
+
+    def __str__(self):
+        return str(self._meta)
+
+    def get_contents(self) -> dict:
+        """
+        Get part meta
+        """
+        return copy.deepcopy(self._meta)
+
+
 class ClickhouseBackupLayout:
     """
     Storage layout and transfer
     """
 
-    def __init__(self, config, ch_ctl=None, storage_loader=None):
-        self._storage_loader = storage_loader or StorageLoader(config)
-        self._ch_ctl = ch_ctl or ClickhouseCTL(config['clickhouse'])
+    def __init__(self, config: Config, ch_ctl: ClickhouseCTL) -> None:
+        self._storage_loader = StorageLoader(config)
+        self._ch_ctl = ch_ctl
         self._config = config['backup']
 
         self._backup_name_fmt = CBS_DEFAULT_PNAME_FMT
@@ -55,14 +100,14 @@ class ClickhouseBackupLayout:
                                              self._backup_meta_fname)
 
     @property
-    def backup_name(self):
+    def backup_name(self) -> str:
         """
         Backup name getter
         """
         return self._backup_name
 
     @backup_name.setter
-    def backup_name(self, value):
+    def backup_name(self, value: str) -> None:
         self._backup_name = value
         self.backup_path = self._get_backup_path(value)
         self.backup_meta_path = os.path.join(self.backup_path,
@@ -135,7 +180,8 @@ class ClickhouseBackupLayout:
         except Exception as e:
             raise StorageError('Failed to upload backup metadata') from e
 
-    def save_part_data(self, db_name, table_name, part_name, part_path):
+    def save_part_data(self, db_name: str, table_name: str, part_name: str,
+                       part_path: str) -> list:
         """
         Backup part files and return storage paths
         """
@@ -166,7 +212,8 @@ class ClickhouseBackupLayout:
 
         return uploaded_files
 
-    def get_backup_meta(self, backup_name=None):
+    def get_backup_meta(
+            self, backup_name: str = None) -> 'ClickhouseBackupStructure':
         """
         Download backup meta from storage
         """
@@ -181,13 +228,14 @@ class ClickhouseBackupLayout:
         except Exception as e:
             raise StorageError('Failed to download backup metadata') from e
 
-    def download_str(self, remote_path):
+    def download_str(self, remote_path: str) -> str:
         """
         Downloads data and tries to decode
         """
         return self._storage_loader.download_data(remote_path, encryption=True)
 
-    def download_part_data(self, db_name, table_name, part_name, part_files):
+    def download_part_data(self, db_name: str, table_name: str, part_name: str,
+                           part_files: Sequence[str]) -> list:
         """
         Restore part from detached directory
         """
@@ -212,35 +260,28 @@ class ClickhouseBackupLayout:
                     local_path=local_path,
                     is_async=True,
                     encryption=True)
-                downloaded_files.append((
-                    remote_path,
-                    local_path,
-                ))
+                downloaded_files.append((remote_path, local_path))
             except Exception as e:
                 msg = 'Failed to download part file {0}'.format(remote_path)
                 raise StorageError(msg) from e
 
         return downloaded_files
 
-    def delete_loaded_files(self, delete_files):
+    def delete_loaded_files(self, delete_files: List[str]) -> None:
         """
         Delete files from backup storage
         """
         # TODO: use bulk delete
-        deleted_files = []
         for remote_path in delete_files:
             try:
                 logging.debug('Deleting file: %s', remote_path)
                 self._storage_loader.delete_file(
                     remote_path=remote_path, is_async=True)
-                deleted_files.append(remote_path)
             except Exception as e:
                 msg = 'Failed to delete file {0}'.format(remote_path)
                 raise StorageError(msg) from e
 
-        return deleted_files
-
-    def delete_backup_path(self, backup_name=None):
+    def delete_backup_path(self, backup_name=None) -> None:
         """
         Delete files from backup storage
         """
@@ -251,22 +292,22 @@ class ClickhouseBackupLayout:
 
         delete_files = self._storage_loader.list_dir(
             path, recursive=True, absolute=True)
-        return self.delete_loaded_files(delete_files)
+        self.delete_loaded_files(delete_files)
 
-    def get_existing_backups_names(self):
+    def get_existing_backups_names(self) -> list:
         """
         Get current backup entries
         """
         return self._storage_loader.list_dir(
             self._config['path_root'], recursive=False, absolute=False)
 
-    def path_exists(self, remote_path):
+    def path_exists(self, remote_path: str) -> bool:
         """
         Check whether storage path exists or not.
         """
         return self._storage_loader.path_exists(remote_path)
 
-    def wait(self):
+    def wait(self) -> None:
         """
         Wait for async jobs
         """
@@ -285,12 +326,12 @@ class ClickhouseBackupStructure:
     # pylint: disable=too-many-instance-attributes
 
     def __init__(self,
-                 name,
-                 path,
-                 ch_version,
+                 name: str,
+                 path: str,
+                 ch_version: str,
                  date_fmt=None,
                  hostname=None,
-                 labels=None):
+                 labels=None) -> None:
         self.name = name
         self.labels = labels
         self.path = path
@@ -302,12 +343,11 @@ class ClickhouseBackupStructure:
         self.real_bytes = 0
         self._state = ClickhouseBackupState.NOT_STARTED
         self.date_fmt = date_fmt or CBS_DEFAULT_DATE_FMT
-        self.start_time = None
-        self.end_time = None
+        self.start_time = None  # type: Optional[datetime]
+        self.end_time = None  # type: Optional[datetime]
+        self._databases = {}  # type: Dict[str, dict]
 
-        self._databases = {}
-
-    def add_database(self, db_name):
+    def add_database(self, db_name: str) -> None:
         """
         Add database dict to backup struct
         """
@@ -317,35 +357,35 @@ class ClickhouseBackupStructure:
             'parts_paths': defaultdict(dict),
         }
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.dump_json()
 
     @property
-    def state(self):
+    def state(self) -> ClickhouseBackupState:
         """
         Backup state
         """
         return self._state
 
     @state.setter
-    def state(self, value):
+    def state(self, value: ClickhouseBackupState) -> None:
         if value not in ClickhouseBackupState:
             raise UnknownBackupStateError
         self._state = value
 
-    def update_start_time(self):
+    def update_start_time(self) -> None:
         """
         Set start datetime
         """
         self.start_time = now()
 
-    def update_end_time(self):
+    def update_end_time(self) -> None:
         """
         Set end datetime
         """
         self.end_time = now()
 
-    def dump_json(self):
+    def dump_json(self) -> str:
         """
         Dump struct to json data
         """
@@ -460,7 +500,8 @@ class ClickhouseBackupStructure:
         """
         self._databases[db_name]['tables_sql_paths'].append((table_name, path))
 
-    def add_part_contents(self, db_name, table_name, part_info):
+    def add_part_contents(self, db_name: str, table_name: str,
+                          part_info: ClickhousePartInfo):
         """
         Add part backup contents to backup struct
         """
@@ -479,7 +520,8 @@ class ClickhouseBackupStructure:
             self.real_rows += part_rows
             self.real_bytes += part_bytes
 
-    def del_part_contents(self, db_name, table_name, part_name):
+    def del_part_contents(self, db_name: str, table_name: str,
+                          part_name: str) -> None:
         """
         Delete part contents from backup struct
         """
@@ -496,7 +538,7 @@ class ClickhouseBackupStructure:
                 self.real_rows -= part_rows
                 self.real_bytes -= part_bytes
 
-    def get_part_contents(self, db_name, table_name, part_name):
+    def get_part_contents(self, db_name: str, table_name: str, part_name: str):
         """
         Get part backup contents from backup struct
         """
@@ -506,27 +548,30 @@ class ClickhouseBackupStructure:
         except KeyError:
             return None
 
-    def get_part_paths(self, db_name, table_name, part_name):
+    def get_part_paths(self, db_name: str, table_name: str,
+                       part_name: str) -> Sequence[str]:
         """
         Get storage file paths of specified part
         """
         return tuple(self._databases[db_name]['parts_paths'][table_name]
                      [part_name]['paths'])
 
-    def is_part_linked(self, db_name, table_name, part_name):
+    def is_part_linked(self, db_name: str, table_name: str,
+                       part_name: str) -> bool:
         """
         Get storage file paths of specified part
         """
         return bool(self._databases[db_name]['parts_paths'][table_name]
                     [part_name]['link'])
 
-    def get_parts(self, db_name, table_name):
+    def get_parts(self, db_name: str, table_name: str) -> Iterable:
         """
         Get all parts of specified database.table
         """
         return tuple(self._databases[db_name]['parts_paths'][table_name])
 
-    def get_deduplicated_parts(self, deduplicated_to=None):
+    def get_deduplicated_parts(self, deduplicated_to: str = None) \
+            -> Dict[Tuple[str, str, str], str]:
         """
         Get all deduplicated parts
         """
@@ -546,7 +591,7 @@ class ClickhouseBackupStructure:
                         = self.name
         return deduplicated_parts
 
-    def is_empty(self):
+    def is_empty(self) -> bool:
         """
         Get storage file paths of specified part
         """
@@ -556,46 +601,3 @@ class ClickhouseBackupStructure:
                 if self.get_parts(db_name, table_name):
                     return False
         return True
-
-
-class ClickhousePartInfo:
-    """
-    ClickHouse part metadata and few helpers
-    """
-
-    def __init__(self, meta, link=None, paths=None):
-        self._meta = meta
-        if link is None:
-            link = False
-        self.link = link
-        self.paths = paths
-
-    @property
-    def bytes(self):
-        """
-        The size of part on disk in bytes.
-        """
-        # bytes_on_disk is a new name starting from ClickHouse 1.1.54380.
-        return self._meta.get('bytes_on_disk', self._meta.get('bytes'))
-
-    def __getattr__(self, item):
-        try:
-            return self._meta[item]
-        except KeyError:
-            raise AttributeError
-
-    def __eq__(self, other):
-        criteria = ('modification_time', 'rows')
-        for check_attr in criteria:
-            if getattr(self, check_attr) != getattr(other, check_attr):
-                return False
-        return True
-
-    def __str__(self):
-        return str(self._meta)
-
-    def get_contents(self):
-        """
-        Get part meta
-        """
-        return copy.deepcopy(self._meta)

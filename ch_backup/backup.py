@@ -7,11 +7,13 @@ import os
 from collections import defaultdict
 from copy import copy
 from datetime import timedelta
+from typing import Dict, List, Optional, Tuple
 
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.layout import (
     ClickhouseBackupLayout, ClickhouseBackupState, ClickhouseBackupStructure,
     ClickhousePartInfo)
+from ch_backup.config import Config
 from ch_backup.exceptions import ClickhouseBackupError, StorageError
 from ch_backup.util import now, utc_fromtimestamp, utcnow
 
@@ -21,21 +23,20 @@ class ClickhouseBackup:
     Clickhouse backup logic
     """
 
-    def __init__(self, config, ch_ctl=None, backup_layout=None):
-        self._ch_ctl = ch_ctl or ClickhouseCTL(config['clickhouse'])
-        self._backup_layout = backup_layout or \
-            ClickhouseBackupLayout(config, ch_ctl=self._ch_ctl)
+    def __init__(self, config: Config) -> None:
+        self._ch_ctl = ClickhouseCTL(config['clickhouse'])
+        self._backup_layout = ClickhouseBackupLayout(config, self._ch_ctl)
         self._config = config['backup']
-        self._existing_backups = []
+        self._existing_backups = []  # type: List[ClickhouseBackupStructure]
         self._dedup_time = None
 
-    def get(self, backup_name):
+    def get(self, backup_name: str) -> ClickhouseBackupStructure:
         """
         Get backup information.
         """
         return self._get_backup_meta(backup_name)
 
-    def list(self, all_opt=True):
+    def list(self, all_opt=True) -> Tuple[tuple, List]:
         """
         Get list of existing backup names.
         """
@@ -53,7 +54,8 @@ class ClickhouseBackup:
 
         return fields, report
 
-    def backup(self, databases=None, tables=None, force=False, labels=None):
+    def backup(self, databases=None, tables=None, force=False,
+               labels=None) -> Tuple[str, Optional[str]]:
         """
         Perform backup.
 
@@ -65,7 +67,7 @@ class ClickhouseBackup:
         if labels:
             backup_labels.update(labels)
 
-        db_tables = defaultdict(list)
+        db_tables = defaultdict(list)  # type: Dict[str, list]
         if tables:
             for table in tables or []:
                 db_name, table_name = table.split('.', 1)
@@ -85,7 +87,7 @@ class ClickhouseBackup:
             self._load_existing_backups(backup_age_limit)
 
         last_backup = self._get_last_backup()
-        if not self._check_min_interval(last_backup, force):
+        if last_backup and not self._check_min_interval(last_backup, force):
             msg = 'Backup is skipped per backup.min_interval config option'
             logging.info(msg)
             return (last_backup.name, msg)
@@ -118,7 +120,10 @@ class ClickhouseBackup:
 
         return (backup_meta.name, None)
 
-    def restore(self, backup_name, databases=None, schema_only=False):
+    def restore(self,
+                backup_name: str,
+                databases: List[str] = None,
+                schema_only=False) -> None:
         """
         Restore specified backup
         """
@@ -148,7 +153,10 @@ class ClickhouseBackup:
             else:
                 self._restore_database_data(db_name, backup_meta)
 
-    def _backup_database(self, backup_meta, db_name, tables=None):
+    def _backup_database(self,
+                         backup_meta: ClickhouseBackupStructure,
+                         db_name: str,
+                         tables: List[str] = None):
         """
         Backup database.
         """
@@ -164,7 +172,8 @@ class ClickhouseBackup:
         backup_meta.set_db_sql_path(db_name,
                                     self._backup_database_meta(db_name))
 
-    def _backup_table(self, backup_meta, db_name, table_name):
+    def _backup_table(self, backup_meta: ClickhouseBackupStructure,
+                      db_name: str, table_name: str) -> None:
         """
         Backup table.
         """
@@ -176,7 +185,7 @@ class ClickhouseBackup:
         all_parts_rows = self._ch_ctl.get_all_table_parts_info(
             db_name, table_name)
 
-        partitions = defaultdict(list)
+        partitions = defaultdict(list)  # type: Dict[str, list]
         for part_row in all_parts_rows:
             partitions[part_row['partition']].append(part_row)
 
@@ -217,7 +226,7 @@ class ClickhouseBackup:
         logging.debug('Waiting for uploads')
         self._backup_layout.wait()
 
-    def delete(self, backup_name):
+    def delete(self, backup_name: str) -> Tuple[Optional[str], Optional[str]]:
         """
         Delete specified backup
         """
@@ -240,7 +249,7 @@ class ClickhouseBackup:
         newer_backups = self._existing_backups[current_index - 1::-1]\
             if current_index != 0 else []
 
-        skip_parts = {}
+        skip_parts = {}  # type: Dict[Tuple[str, str, str], str]
         for new_backup in newer_backups:
             skip_parts.update(
                 new_backup.get_deduplicated_parts(deduplicated_to=backup_name))
@@ -394,11 +403,11 @@ class ClickhouseBackup:
             table_sql = self._backup_layout.download_str(table_sql_path)
             self._ch_ctl.restore_meta(table_sql)
 
-    def _restore_database_data(self, db_name, backup_meta):
+    def _restore_database_data(self, db_name: str,
+                               backup_meta: ClickhouseBackupStructure) -> None:
         """
         Restore database data
         """
-
         # restore table data (download and attach parts)
         for table_name in backup_meta.get_tables(db_name):
             logging.debug('Running table "%s.%s" data restore', db_name,
@@ -425,7 +434,7 @@ class ClickhouseBackup:
 
                 self._ch_ctl.attach_part(db_name, table_name, part_name)
 
-    def _deduplicate_part(self, part_info):
+    def _deduplicate_part(self, part_info: ClickhousePartInfo):
         """
         Deduplicate part if it's possible
         """
@@ -461,7 +470,7 @@ class ClickhouseBackup:
 
         return False, None
 
-    def _check_part_availability(self, part_info):
+    def _check_part_availability(self, part_info: ClickhousePartInfo) -> bool:
         """
         Check if part files exist in storage
         """
@@ -477,13 +486,13 @@ class ClickhouseBackup:
 
         return True
 
-    def _get_existing_backup_names(self):
+    def _get_existing_backup_names(self) -> List[str]:
         return self._backup_layout.get_existing_backups_names()
 
-    def _get_backup_meta(self, backup_name):
+    def _get_backup_meta(self, backup_name: str) -> ClickhouseBackupStructure:
         return self._backup_layout.get_backup_meta(backup_name)
 
-    def _get_last_backup(self):
+    def _get_last_backup(self) -> Optional[ClickhouseBackupStructure]:
         """
         Return the last valid backup.
         """
@@ -500,7 +509,8 @@ class ClickhouseBackup:
                     exc_info=True)
         return None
 
-    def _load_existing_backups(self, backup_age_limit=None, load_all=True):
+    def _load_existing_backups(self, backup_age_limit=None,
+                               load_all=True) -> None:
         """
         Load all current backup entries
         """
@@ -541,7 +551,7 @@ class ClickhouseBackup:
         existing_backups.sort(key=lambda b: b.end_time, reverse=True)
         self._existing_backups = existing_backups
 
-    def _reload_existing_backup(self, backup_name):
+    def _reload_existing_backup(self, backup_name: str) -> None:
         """
         Reload once loaded backup entry
         """
@@ -562,12 +572,16 @@ class ClickhouseBackup:
             raise ClickhouseBackupError(
                 'Backup "{0}" was not loaded before'.format(backup_name))
 
-    def _check_min_interval(self, last_backup, force):
-        if not last_backup or force:
+    def _check_min_interval(self, last_backup: ClickhouseBackupStructure,
+                            force: bool) -> bool:
+        if force:
             return True
 
         min_interval = self._config.get('min_interval')
         if not min_interval:
+            return True
+
+        if not last_backup.end_time:
             return True
 
         if utcnow() - last_backup.end_time >= timedelta(**min_interval):
@@ -576,12 +590,13 @@ class ClickhouseBackup:
         return False
 
     @staticmethod
-    def _pop_deleting_paths(backup_meta, skip_parts):
+    def _pop_deleting_paths(backup_meta: ClickhouseBackupStructure,
+                            skip_parts: dict) -> Tuple[bool, List[str]]:
         """
         Get backup paths which are safe for delete
         """
         is_changed = False
-        delete_paths = []
+        delete_paths = []  # type: List[str]
         for db_name in backup_meta.get_databases():
             for table_name in backup_meta.get_tables(db_name):
                 for part_name in backup_meta.get_parts(db_name, table_name):

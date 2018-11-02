@@ -83,7 +83,7 @@ class Config:
     Config for all components
     """
 
-    def __init__(self, config_file):
+    def __init__(self, config_file: str) -> None:
         self._conf = copy.deepcopy(DEFAULT_CONFIG)
         self._read_config(file_name=config_file)
 
@@ -119,7 +119,7 @@ class Config:
             logging.critical('Config item "%s" was not defined', item)
             raise
 
-    def get(self, key, default=None):
+    def get(self, key: str, default=None):
         """
         Returns value by key or default
         """
