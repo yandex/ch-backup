@@ -1,6 +1,6 @@
 isort
-yapf==0.24.0
-flake8==3.6.0
+yapf
+flake8
 flake8-string-format
 flake8-commas
 flake8-quotes
@@ -15,7 +15,6 @@ hypothesis
 behave==1.2.5
 docker==2.5.1
 docker-compose==1.15.0
-cryptography==2.0.3
 argon2-cffi==16.3.0
-Jinja2==2.10
-humanfriendly==4.17
+Jinja2
+humanfriendly
