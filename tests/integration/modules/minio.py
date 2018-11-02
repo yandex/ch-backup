@@ -6,7 +6,7 @@ import json
 from tenacity import (retry, retry_if_exception_type, stop_after_attempt,
                       wait_fixed)
 
-from . import docker
+from .docker import get_container
 
 
 class MinioException(Exception):
@@ -71,7 +71,7 @@ def _mc_execute(context, command):
     """
     Execute mc (Minio client) command.
     """
-    container = docker.get_container(context, context.conf['s3']['container'])
+    container = get_container(context, context.conf['s3']['container'])
 
     output = container.exec_run('mc --json {0}'.format(command)).decode()
 

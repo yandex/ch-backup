@@ -138,13 +138,17 @@ generate_test_requirements: ${TEST_REQUIREMENTS_VENV}
 
 
 .tox/%:
-	tox -e $* --notest
+	tox -r -e $* --notest
 
 ${PY35_VENV}:
-	tox -e py35_integration_test --notest
+	tox -r -e py35_integration_test --notest
 
 ${PY36_VENV}:
-	tox -e yapf --notest
+	tox -r -e yapf --notest
+
+${REQUIREMENTS_VENV}: requirements.in.txt
+
+${TEST_REQUIREMENTS_VENV}: requirements.txt requirements-test.in.txt
 
 
 .PHONY: help

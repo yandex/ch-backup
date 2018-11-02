@@ -4,6 +4,7 @@ Module responsible for template rendering.
 import os
 
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
+
 from tests.integration.modules.datetime import (decrease_time_str,
                                                 increase_time_str)
 

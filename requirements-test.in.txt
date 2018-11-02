@@ -12,8 +12,8 @@ bandit
 pytest
 pyhamcrest
 hypothesis
-behave==1.2.5
-docker==2.5.1
-docker-compose==1.15.0
+behave
+docker < 3
+docker-compose < 1.20
 Jinja2
 humanfriendly
