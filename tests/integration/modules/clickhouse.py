@@ -80,7 +80,7 @@ class ClickhouseClient:
 
         self._session = Session()
         self._url = '{0}://{1}:{2}'.format(protocol, host, port)
-        self._timeout = 5
+        self._timeout = 30
 
     def ping(self):
         """
