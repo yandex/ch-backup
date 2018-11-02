@@ -15,6 +15,5 @@ hypothesis
 behave==1.2.5
 docker==2.5.1
 docker-compose==1.15.0
-argon2-cffi==16.3.0
 Jinja2
 humanfriendly
