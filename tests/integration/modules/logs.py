@@ -2,28 +2,31 @@
 Logs management.
 """
 
-import io
 import json
+import logging
 import os
-import tarfile
 
-from .docker import DOCKER_API
+from .docker import copy_container_dir, get_containers
+from .minio import export_s3_data
 
 
 def save_logs(context):
     """
     Save logs and support materials.
     """
-    network_name = context.conf['network_name']
-    logs_dir = os.path.join(context.conf['staging_dir'], 'logs')
+    try:
+        logs_dir = os.path.join(context.conf['staging_dir'], 'logs')
 
-    for container in DOCKER_API.containers.list():
-        networks = container.attrs['NetworkSettings']['Networks']
-        if network_name in networks:
+        for container in get_containers(context):
             _save_container_logs(container, logs_dir)
 
-    with open(os.path.join(logs_dir, 'session_conf.json'), 'w') as out:
-        json.dump(context.conf, out, default=repr, indent=4)
+        with open(os.path.join(logs_dir, 'session_conf.json'), 'w') as out:
+            json.dump(context.conf, out, default=repr, indent=4)
+
+        export_s3_data(context, logs_dir)
+    except Exception:
+        logging.exception('Failed to save logs')
+        raise
 
 
 def _save_container_logs(container, logs_dir):
@@ -32,10 +35,4 @@ def _save_container_logs(container, logs_dir):
     with open(os.path.join(base, 'docker.log'), 'wb') as out:
         out.write(container.logs(stdout=True, stderr=True, timestamps=True))
 
-    var_log_archive, _ = container.get_archive('/var/log')
-
-    raw_archive = io.BytesIO(var_log_archive.read())
-
-    tar = tarfile.open(mode='r', fileobj=raw_archive)
-
-    tar.extractall(path=base)
+    copy_container_dir(container, '/var/log', base)

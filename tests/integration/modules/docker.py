@@ -16,6 +16,19 @@ from . import utils
 DOCKER_API = docker.from_env()
 
 
+def get_containers(context):
+    """
+    Get containers.
+    """
+    containers = []
+    for container in DOCKER_API.containers.list():
+        networks = container.attrs['NetworkSettings']['Networks']
+        if context.conf['network_name'] in networks:
+            containers.append(container)
+
+    return containers
+
+
 def get_container(context, prefix):
     """
     Get container object by prefix.
@@ -26,7 +39,7 @@ def get_container(context, prefix):
 
 def get_exposed_port(container, port):
     """
-    Get pair of (host, port) for connection to exposed port
+    Get pair of (host, port) for connection to exposed port.
     """
     machine_name = os.getenv('DOCKER_MACHINE_NAME')
     if machine_name:
@@ -38,6 +51,30 @@ def get_exposed_port(container, port):
     binding = container.attrs['NetworkSettings']['Ports'].get('%d/tcp' % port)
 
     return (host, binding[0]['HostPort']) if binding else None
+
+
+def put_file(container, data, path):
+    """
+    Put provided bytes data to given path
+    """
+    tarstream = io.BytesIO()
+    tar_data = tarfile.open(fileobj=tarstream, mode='w')
+    tarinfo = tarfile.TarInfo(name=path)
+    tarinfo.size = len(data)
+    tar_data.addfile(tarinfo, io.BytesIO(data))
+    tar_data.close()
+
+    return container.put_archive(path='/', data=tarstream.getvalue())
+
+
+def copy_container_dir(container, container_dir, local_dir):
+    """
+    Save docker directory.
+    """
+    archive, _ = container.get_archive(container_dir)
+    raw_archive = io.BytesIO(archive.read())
+    tar = tarfile.open(mode='r', fileobj=raw_archive)
+    tar.extractall(path=local_dir)
 
 
 def generate_ipv6(subnet=None):
@@ -106,17 +143,3 @@ def shutdown_network(context):
     nets = DOCKER_API.networks.list(names=context.conf['network_name'])
     for net in nets:
         net.remove()
-
-
-def put_file(container, data, path):
-    """
-    Put provided bytes data to given path
-    """
-    tarstream = io.BytesIO()
-    tar_data = tarfile.open(fileobj=tarstream, mode='w')
-    tarinfo = tarfile.TarInfo(name=path)
-    tarinfo.size = len(data)
-    tar_data.addfile(tarinfo, io.BytesIO(data))
-    tar_data.close()
-
-    return container.put_archive(path='/', data=tarstream.getvalue())

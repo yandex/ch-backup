@@ -2,11 +2,12 @@
 Interface to Minio S3 server.
 """
 import json
+import os
 
 from tenacity import (retry, retry_if_exception_type, stop_after_attempt,
                       wait_fixed)
 
-from .docker import get_container
+from .docker import copy_container_dir, get_container
 
 
 class MinioException(Exception):
@@ -67,13 +68,24 @@ def ensure_s3_bucket(context):
         pass
 
 
+def export_s3_data(context, path):
+    """
+    Export S3 data to the specified directory.
+    """
+    local_dir = os.path.join(path, 'minio')
+    copy_container_dir(_container(context), '/export', local_dir)
+
+
+def _container(context):
+    return get_container(context, context.conf['s3']['container'])
+
+
 def _mc_execute(context, command):
     """
     Execute mc (Minio client) command.
     """
-    container = get_container(context, context.conf['s3']['container'])
-
-    output = container.exec_run('mc --json {0}'.format(command)).decode()
+    output = _container(context).exec_run(
+        'mc --json {0}'.format(command)).decode()
 
     response = json.loads(output)
     if response['status'] == 'success':
