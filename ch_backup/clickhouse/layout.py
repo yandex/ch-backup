@@ -409,9 +409,6 @@ class ClickhouseBackupStructure:
         }
         return json.dumps(report, indent=CBS_DEFAULT_JSON_INDENT)
 
-    def _format_time(self, value):
-        return value.strftime(self.date_fmt) if value else None
-
     @classmethod
     def load_json(cls, data):
         """
@@ -447,18 +444,6 @@ class ClickhouseBackupStructure:
 
         except (ValueError, KeyError):
             raise InvalidBackupStruct
-
-    @staticmethod
-    def _load_time(meta, attr):
-        attr_value = meta.get(attr)
-        if not attr_value:
-            return None
-
-        result = datetime.strptime(attr_value, meta['date_fmt'])
-        if result.tzinfo is None:
-            result = result.replace(tzinfo=timezone.utc)
-
-        return result
 
     def get_db_sql_path(self, db_name):
         """
@@ -593,11 +578,21 @@ class ClickhouseBackupStructure:
 
     def is_empty(self) -> bool:
         """
-        Get storage file paths of specified part
+        Return True if backup has no data.
         """
-        # TODO: mb is enough to check bytes&rows
-        for db_name in self.get_databases():
-            for table_name in self.get_tables(db_name):
-                if self.get_parts(db_name, table_name):
-                    return False
-        return True
+        return self.bytes == 0
+
+    def _format_time(self, value):
+        return value.strftime(self.date_fmt) if value else None
+
+    @staticmethod
+    def _load_time(meta, attr):
+        attr_value = meta.get(attr)
+        if not attr_value:
+            return None
+
+        result = datetime.strptime(attr_value, meta['date_fmt'])
+        if result.tzinfo is None:
+            result = result.replace(tzinfo=timezone.utc)
+
+        return result
