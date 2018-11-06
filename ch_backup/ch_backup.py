@@ -9,9 +9,8 @@ from copy import copy
 from datetime import timedelta
 from typing import Dict, List, Optional, Tuple
 
-from ch_backup.backup.layout import (
-    ClickhouseBackupLayout, ClickhouseBackupState, ClickhouseBackupStructure,
-    ClickhousePartInfo)
+from ch_backup.backup.layout import ClickhouseBackupLayout
+from ch_backup.backup.metadata import BackupMetadata, BackupState, Part
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.config import Config
 from ch_backup.exceptions import ClickhouseBackupError, StorageError
@@ -27,10 +26,10 @@ class ClickhouseBackup:
         self._ch_ctl = ClickhouseCTL(config['clickhouse'])
         self._backup_layout = ClickhouseBackupLayout(config, self._ch_ctl)
         self._config = config['backup']
-        self._existing_backups = []  # type: List[ClickhouseBackupStructure]
+        self._existing_backups = []  # type: List[BackupMetadata]
         self._dedup_time = None
 
-    def get(self, backup_name: str) -> ClickhouseBackupStructure:
+    def get(self, backup_name: str) -> BackupMetadata:
         """
         Get backup information.
         """
@@ -92,13 +91,13 @@ class ClickhouseBackup:
             logging.info(msg)
             return (last_backup.name, msg)
 
-        backup_meta = ClickhouseBackupStructure(
+        backup_meta = BackupMetadata(
             name=self._backup_layout.backup_name,
             path=self._backup_layout.backup_path,
             labels=backup_labels,
             ch_version=self._ch_ctl.get_version())
 
-        backup_meta.state = ClickhouseBackupState.CREATING
+        backup_meta.state = BackupState.CREATING
         backup_meta.update_start_time()
         self._backup_layout.save_backup_meta(backup_meta)
 
@@ -108,10 +107,10 @@ class ClickhouseBackup:
         try:
             for db_name in databases:
                 self._backup_database(backup_meta, db_name, db_tables[db_name])
-            backup_meta.state = ClickhouseBackupState.CREATED
+            backup_meta.state = BackupState.CREATED
         except Exception:
             logging.critical('Backup failed', exc_info=True)
-            backup_meta.state = ClickhouseBackupState.FAILED
+            backup_meta.state = BackupState.FAILED
             raise
         finally:
             backup_meta.update_end_time()
@@ -154,7 +153,7 @@ class ClickhouseBackup:
                 self._restore_database_data(db_name, backup_meta)
 
     def _backup_database(self,
-                         backup_meta: ClickhouseBackupStructure,
+                         backup_meta: BackupMetadata,
                          db_name: str,
                          tables: List[str] = None):
         """
@@ -172,8 +171,8 @@ class ClickhouseBackup:
         backup_meta.set_db_sql_path(db_name,
                                     self._backup_database_meta(db_name))
 
-    def _backup_table(self, backup_meta: ClickhouseBackupStructure,
-                      db_name: str, table_name: str) -> None:
+    def _backup_table(self, backup_meta: BackupMetadata, db_name: str,
+                      table_name: str) -> None:
         """
         Backup table.
         """
@@ -201,7 +200,7 @@ class ClickhouseBackup:
                 raise ClickhouseBackupError
 
             for part_row in parts_rows:
-                part_info = ClickhousePartInfo(meta=part_row)
+                part_info = Part(meta=part_row)
                 logging.debug('Working on part %s: %s', part_info.name,
                               part_info)
 
@@ -256,7 +255,7 @@ class ClickhouseBackup:
 
         logging.debug('Running backup delete: %s', backup_name)
         prev_state = backup_meta.state
-        backup_meta.state = ClickhouseBackupState.DELETING
+        backup_meta.state = BackupState.DELETING
         self._backup_layout.save_backup_meta(backup_meta)
 
         is_changed, delete_paths = self._pop_deleting_paths(
@@ -279,7 +278,7 @@ class ClickhouseBackup:
                         backup_name)
                     self._backup_layout.delete_loaded_files(delete_paths)
 
-                backup_meta.state = ClickhouseBackupState.PARTIALLY_DELETED
+                backup_meta.state = BackupState.PARTIALLY_DELETED
                 return None, 'Backup was partially deleted as its data is ' \
                              'in use by subsequent backups per ' \
                              'deduplication settings.'
@@ -292,7 +291,7 @@ class ClickhouseBackup:
 
         except Exception:
             logging.critical('Delete failed', exc_info=True)
-            backup_meta.state = ClickhouseBackupState.FAILED
+            backup_meta.state = BackupState.FAILED
             raise
 
         finally:
@@ -404,7 +403,7 @@ class ClickhouseBackup:
             self._ch_ctl.restore_meta(table_sql)
 
     def _restore_database_data(self, db_name: str,
-                               backup_meta: ClickhouseBackupStructure) -> None:
+                               backup_meta: BackupMetadata) -> None:
         """
         Restore database data
         """
@@ -434,7 +433,7 @@ class ClickhouseBackup:
 
                 self._ch_ctl.attach_part(db_name, table_name, part_name)
 
-    def _deduplicate_part(self, part_info: ClickhousePartInfo):
+    def _deduplicate_part(self, part_info: Part):
         """
         Deduplicate part if it's possible
         """
@@ -450,7 +449,7 @@ class ClickhouseBackup:
                               part_info.name, backup_meta.name)
                 continue
 
-            backup_part_info = ClickhousePartInfo(**backup_part_contents)
+            backup_part_info = Part(**backup_part_contents)
 
             if backup_part_info.link:
                 logging.debug('Part "%s" in backup "%s" is link, skip',
@@ -470,7 +469,7 @@ class ClickhouseBackup:
 
         return False, None
 
-    def _check_part_availability(self, part_info: ClickhousePartInfo) -> bool:
+    def _check_part_availability(self, part_info: Part) -> bool:
         """
         Check if part files exist in storage
         """
@@ -489,10 +488,10 @@ class ClickhouseBackup:
     def _get_existing_backup_names(self) -> List[str]:
         return self._backup_layout.get_existing_backups_names()
 
-    def _get_backup_meta(self, backup_name: str) -> ClickhouseBackupStructure:
+    def _get_backup_meta(self, backup_name: str) -> BackupMetadata:
         return self._backup_layout.get_backup_meta(backup_name)
 
-    def _get_last_backup(self) -> Optional[ClickhouseBackupStructure]:
+    def _get_last_backup(self) -> Optional[BackupMetadata]:
         """
         Return the last valid backup.
         """
@@ -500,7 +499,7 @@ class ClickhouseBackup:
         for backup in sorted(backups, reverse=True):
             try:
                 backup_meta = self._get_backup_meta(backup)
-                if backup_meta.state == ClickhouseBackupState.CREATED:
+                if backup_meta.state == BackupState.CREATED:
                     return backup_meta
             except Exception:
                 logging.warning(
@@ -525,7 +524,7 @@ class ClickhouseBackup:
                 backup_meta = self._get_backup_meta(backup_name)
 
                 if not load_all:
-                    if backup_meta.state != ClickhouseBackupState.CREATED:
+                    if backup_meta.state != BackupState.CREATED:
                         logging.debug(
                             'Backup "%s" is skipped due to state "%s"',
                             backup_name, backup_meta.state)
@@ -572,7 +571,7 @@ class ClickhouseBackup:
             raise ClickhouseBackupError(
                 'Backup "{0}" was not loaded before'.format(backup_name))
 
-    def _check_min_interval(self, last_backup: ClickhouseBackupStructure,
+    def _check_min_interval(self, last_backup: BackupMetadata,
                             force: bool) -> bool:
         if force:
             return True
@@ -590,7 +589,7 @@ class ClickhouseBackup:
         return False
 
     @staticmethod
-    def _pop_deleting_paths(backup_meta: ClickhouseBackupStructure,
+    def _pop_deleting_paths(backup_meta: BackupMetadata,
                             skip_parts: dict) -> Tuple[bool, List[str]]:
         """
         Get backup paths which are safe for delete

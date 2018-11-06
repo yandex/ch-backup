@@ -7,11 +7,10 @@ from datetime import datetime
 
 import pytest
 
-from ch_backup.backup.layout import (ClickhouseBackupState,
-                                     ClickhouseBackupStructure)
+from ch_backup.backup.metadata import BackupMetadata, BackupState
 
 
-class TestClickhouseBackupStructure:
+class TestBackupMetadata:
     """
     Tests for ClickhouseBackupStructure.
     """
@@ -50,10 +49,10 @@ class TestClickhouseBackupStructure:
             'databases': [],
         }
 
-        backup = ClickhouseBackupStructure.load_json(json.dumps(metadata))
+        backup = BackupMetadata.load_json(json.dumps(metadata))
         assert backup.name == meta['name']
         assert backup.path == meta['path']
-        assert backup.state == ClickhouseBackupState(meta['state'])
+        assert backup.state == BackupState(meta['state'])
         date_fmt = meta['date_fmt']
         assert backup.date_fmt == date_fmt
         assert backup.start_time == datetime.strptime(meta['start_time'],
