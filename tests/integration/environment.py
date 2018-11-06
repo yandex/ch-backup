@@ -11,7 +11,8 @@ def before_all(context):
     """
     Prepare environment for tests.
     """
-    env_control.create(context)
+    if not context.config.userdata.getbool('skip_setup'):
+        env_control.create(context)
 
 
 def before_feature(context, _feature):

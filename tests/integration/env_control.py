@@ -20,9 +20,6 @@ STAGES = {
 
         # copy images to staging
         docker.prep_images,
-        # Create docker containers` network to enable
-        # cross-container network communication.
-        docker.prep_network,
         # Generate docker-compose.yml
         compose.create_config,
         # Render configs using all available contexts
@@ -31,12 +28,14 @@ STAGES = {
         compose.build_images,
     ],
     'start': [
+        docker.create_network,
         compose.startup_containers,
         minio.configure_s3_credentials,
-        minio.ensure_s3_bucket,
+        minio.create_s3_bucket,
     ],
     'restart': [
         compose.shutdown_containers,
+        docker.create_network,
         compose.startup_containers,
     ],
     'stop': [
@@ -103,6 +102,7 @@ def _init_context(context):
         with open(context.state_file, 'rb') as session_conf:
             context.conf = pickle.load(session_conf)
     except FileNotFoundError:
+        logging.info('creating new test config')
         context.conf = configuration.create()
 
 

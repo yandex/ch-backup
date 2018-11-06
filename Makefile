@@ -8,6 +8,8 @@ INSTALL_DIR=$(DESTDIR)/opt/yandex/ch-backup
 CLICKHOUSE_VERSIONS?=1.1.54343 1.1.54385 18.5.1 18.12.17
 CLICKHOUSE_VERSION?=$(lastword $(CLICKHOUSE_VERSIONS))
 
+export CLICKHOUSE_VERSION
+
 
 .PHONY: build
 build:
@@ -33,8 +35,8 @@ unit_test:
 
 
 .PHONY: integration_test
-integration_test:
-	CLICKHOUSE_VERSION=$(CLICKHOUSE_VERSION) tox -e py35_integration_test
+integration_test: create_env
+	tox -e py35_integration_test -- -D skip_setup
 
 
 .PHONY: integration_test_all
@@ -99,19 +101,21 @@ clean_debuild: clean
 
 
 .PHONY: create_env
-create_env: ${PY35_VENV}
-	CLICKHOUSE_VERSION=$(CLICKHOUSE_VERSION) PATH=${PY35_VENV}/bin:$$PATH ${PY35_VENV}/bin/python -m tests.integration.env_control create
+create_env: ${PY35_VENV} ${SESSION_FILE}
+
+${SESSION_FILE}:
+	PATH=${PY35_VENV}/bin:$$PATH ${PY35_VENV}/bin/python -m tests.integration.env_control create
 
 
 .PHONY: start_env
 start_env: create_env
-	CLICKHOUSE_VERSION=$(CLICKHOUSE_VERSION) PATH=${PY35_VENV}/bin:$$PATH ${PY35_VENV}/bin/python -m tests.integration.env_control start
+	PATH=${PY35_VENV}/bin:$$PATH ${PY35_VENV}/bin/python -m tests.integration.env_control start
 
 
 .PHONY: stop_env
 stop_env:
 	test -d ${PY35_VENV}/bin && test -f ${SESSION_FILE} && \
-	CLICKHOUSE_VERSION=$(CLICKHOUSE_VERSION) PATH=${PY35_VENV}/bin:$$PATH ${PY35_VENV}/bin/python -m tests.integration.env_control stop || true
+	PATH=${PY35_VENV}/bin:$$PATH ${PY35_VENV}/bin/python -m tests.integration.env_control stop || true
 
 
 .PHONY: clean_env

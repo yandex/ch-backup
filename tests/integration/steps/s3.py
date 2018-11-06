@@ -5,7 +5,7 @@ Steps for interacting with S3.
 from behave import given
 
 from tests.integration.modules.minio import (configure_s3_credentials,
-                                             ensure_s3_bucket)
+                                             create_s3_bucket)
 
 
 @given('a working s3')
@@ -15,4 +15,4 @@ def step_wait_for_s3_alive(context):
     the bucket specified in the config is created.
     """
     configure_s3_credentials(context)
-    ensure_s3_bucket(context)
+    create_s3_bucket(context)

@@ -57,9 +57,9 @@ def configure_s3_credentials(context):
             access_key, secret_key))
 
 
-def ensure_s3_bucket(context):
+def create_s3_bucket(context):
     """
-    Ensure S3 has the bucket specified in the config.
+    Create S3 bucket specified in the config.
     """
     bucket = context.conf['s3']['bucket']
     try:

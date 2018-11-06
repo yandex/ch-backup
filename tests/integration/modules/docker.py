@@ -109,9 +109,9 @@ def prep_images(context):
 
 
 @utils.env_stage('create', fail=True)
-def prep_network(context):
+def create_network(context):
     """
-    Creates ipv6-enabled docker network with random name and address space
+    Create docker network specified in the config.
     """
     conf = context.conf
     # Unfortunately docker is retarded and not able to create
