@@ -177,7 +177,7 @@ class Backup:
         for _, db_contents in self._metadata['databases'].items():
             for _, table_contents in db_contents['parts_paths'].items():
                 for _, part_contents in table_contents.items():
-                    if part_contents['link'] is False:
+                    if not part_contents['link']:
                         count += 1
         return count
 

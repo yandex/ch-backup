@@ -7,7 +7,7 @@ import os
 from collections import defaultdict
 from copy import copy
 from datetime import timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from ch_backup.backup.layout import ClickhouseBackupLayout
 from ch_backup.backup.metadata import BackupMetadata, BackupState, Part
@@ -121,7 +121,7 @@ class ClickhouseBackup:
 
     def restore(self,
                 backup_name: str,
-                databases: List[str] = None,
+                databases: Sequence[str] = None,
                 schema_only=False) -> None:
         """
         Restore specified backup
@@ -159,17 +159,16 @@ class ClickhouseBackup:
         """
         Backup database.
         """
-        backup_meta.add_database(db_name)
-
         logging.debug('Running database backup: %s', db_name)
+
+        db_remote_path = self._backup_database_meta(db_name)
+
+        backup_meta.add_database(db_name, db_remote_path)
 
         # get db objects ordered by mtime
         tables = self._ch_ctl.get_tables_ordered(db_name, tables)
         for table_name in tables:
             self._backup_table(backup_meta, db_name, table_name)
-
-        backup_meta.set_db_sql_path(db_name,
-                                    self._backup_database_meta(db_name))
 
     def _backup_table(self, backup_meta: BackupMetadata, db_name: str,
                       table_name: str) -> None:
@@ -178,8 +177,9 @@ class ClickhouseBackup:
         """
         logging.debug('Running table "%s.%s" backup', db_name, table_name)
 
-        backup_meta.add_table_sql_path(
-            db_name, table_name, self._backup_table_meta(db_name, table_name))
+        table_remote_path = self._backup_table_meta(db_name, table_name)
+
+        backup_meta.add_table(db_name, table_name, table_remote_path)
 
         all_parts_rows = self._ch_ctl.get_all_table_parts_info(
             db_name, table_name)
@@ -200,27 +200,26 @@ class ClickhouseBackup:
                 raise ClickhouseBackupError
 
             for part_row in parts_rows:
-                part_info = Part(meta=part_row)
-                logging.debug('Working on part %s: %s', part_info.name,
-                              part_info)
+                part = Part(meta=part_row)
+                logging.debug('Working on part %s: %s', part.name, part)
 
                 # trying to find part in storage
-                link, part_remote_paths = self._deduplicate_part(part_info)
-
-                if not link:
+                link, existing_part = self._deduplicate_part(part)
+                if link and existing_part:
+                    part_remote_paths = existing_part.paths
+                else:
                     # preform backup if deduplication is not available
                     logging.debug('Starting backup for "%s.%s" part: %s',
-                                  db_name, table_name, part_info.name)
+                                  db_name, table_name, part.name)
 
                     part_remote_paths = self._backup_layout.save_part_data(
-                        db_name, table_name, part_info.name,
-                        os.path.join(freeze_path, part_info.name))
+                        db_name, table_name, part.name,
+                        os.path.join(freeze_path, part.name))
 
-                part_info.link = link
-                part_info.paths = part_remote_paths
+                part.link = link
+                part.paths = part_remote_paths
 
-                # save part files and meta in backup struct
-                backup_meta.add_part_contents(db_name, table_name, part_info)
+                backup_meta.add_part(part)
 
         logging.debug('Waiting for uploads')
         self._backup_layout.wait()
@@ -248,18 +247,13 @@ class ClickhouseBackup:
         newer_backups = self._existing_backups[current_index - 1::-1]\
             if current_index != 0 else []
 
-        skip_parts = {}  # type: Dict[Tuple[str, str, str], str]
-        for new_backup in newer_backups:
-            skip_parts.update(
-                new_backup.get_deduplicated_parts(deduplicated_to=backup_name))
-
         logging.debug('Running backup delete: %s', backup_name)
         prev_state = backup_meta.state
         backup_meta.state = BackupState.DELETING
         self._backup_layout.save_backup_meta(backup_meta)
 
         is_changed, delete_paths = self._pop_deleting_paths(
-            backup_meta, skip_parts)
+            backup_meta, newer_backups)
         is_empty = backup_meta.is_empty()
 
         try:
@@ -359,7 +353,7 @@ class ClickhouseBackup:
 
         return '\n'.join(purged_backups)
 
-    def _backup_database_meta(self, db_name):
+    def _backup_database_meta(self, db_name: str) -> str:
         """
         Backup database sql
         """
@@ -372,7 +366,7 @@ class ClickhouseBackup:
         metadata = file_contents.replace('ATTACH ', 'CREATE ', 1)
         return self._backup_layout.save_database_meta(db_name, metadata)
 
-    def _backup_table_meta(self, db_name, table_name):
+    def _backup_table_meta(self, db_name: str, table_name: str) -> str:
         """
         Backup table schema (CREATE TABLE sql) and return path to saved data
         on remote storage.
@@ -386,7 +380,8 @@ class ClickhouseBackup:
             db_name, table_name, schema)
         return remote_path
 
-    def _restore_database_schema(self, db_name, backup_meta):
+    def _restore_database_schema(self, db_name: str,
+                                 backup_meta: BackupMetadata) -> None:
         """
         Restore database schema
         """
@@ -413,16 +408,13 @@ class ClickhouseBackup:
                           table_name)
 
             attach_parts = []
-            for part_name in backup_meta.get_parts(db_name, table_name):
+            for part in backup_meta.get_parts(db_name, table_name):
                 logging.debug('Fetching "%s.%s" part: %s', db_name, table_name,
-                              part_name)
-
-                part_paths = backup_meta.get_part_paths(
-                    db_name, table_name, part_name)
+                              part.name)
 
                 self._backup_layout.download_part_data(db_name, table_name,
-                                                       part_name, part_paths)
-                attach_parts.append(part_name)
+                                                       part.name, part.paths)
+                attach_parts.append(part.name)
 
             logging.debug('Waiting for downloads')
             self._backup_layout.wait()
@@ -433,48 +425,46 @@ class ClickhouseBackup:
 
                 self._ch_ctl.attach_part(db_name, table_name, part_name)
 
-    def _deduplicate_part(self, part_info: Part):
+    def _deduplicate_part(self,
+                          part: Part) -> Tuple[Optional[str], Optional[Part]]:
         """
         Deduplicate part if it's possible
         """
-        logging.debug('Looking for deduplication of part "%s"', part_info.name)
+        logging.debug('Looking for deduplication of part "%s"', part.name)
 
         for backup_meta in self._existing_backups:
-            # load every existing backup entry
-            backup_part_contents = backup_meta.get_part_contents(
-                part_info.database, part_info.table, part_info.name)
+            existing_part = backup_meta.get_part(part.database, part.table,
+                                                 part.name)
 
-            if not backup_part_contents:
+            if not existing_part:
                 logging.debug('Part "%s" was not found in backup "%s", skip',
-                              part_info.name, backup_meta.name)
+                              part.name, backup_meta.name)
                 continue
 
-            backup_part_info = Part(**backup_part_contents)
-
-            if backup_part_info.link:
+            if existing_part.link:
                 logging.debug('Part "%s" in backup "%s" is link, skip',
-                              part_info.name, backup_meta.name)
+                              part.name, backup_meta.name)
                 continue
 
-            if backup_part_info != part_info:
+            if existing_part != part:
                 logging.debug('Part "%s" in backup "%s" is differ form local',
-                              part_info.name, backup_meta.name)
+                              part.name, backup_meta.name)
                 continue
 
             #  check if part files exist in storage
-            if self._check_part_availability(backup_part_info):
-                logging.info('Deduplicating part "%s" based on %s',
-                             part_info.name, backup_meta.name)
-                return backup_meta.path, backup_part_info.paths
+            if self._check_part_availability(existing_part):
+                logging.info('Deduplicating part "%s" based on %s', part.name,
+                             backup_meta.name)
+                return backup_meta.path, existing_part
 
-        return False, None
+        return None, None
 
-    def _check_part_availability(self, part_info: Part) -> bool:
+    def _check_part_availability(self, part: Part) -> bool:
         """
         Check if part files exist in storage
         """
         failed_part_files = [
-            path for path in part_info.paths
+            path for path in part.paths
             if not self._backup_layout.path_exists(path)
         ]
 
@@ -589,35 +579,44 @@ class ClickhouseBackup:
         return False
 
     @staticmethod
-    def _pop_deleting_paths(backup_meta: BackupMetadata,
-                            skip_parts: dict) -> Tuple[bool, List[str]]:
+    def _pop_deleting_paths(
+            backup_meta: BackupMetadata,
+            newer_backups: Sequence[BackupMetadata]) -> Tuple[bool, List[str]]:
         """
         Get backup paths which are safe for delete
         """
+        skip_parts = {}
+        for new_backup in newer_backups:
+            for part in new_backup.get_parts():
+                if not part.link:
+                    continue
+
+                if not part.link.endswith(backup_meta.name):
+                    continue
+
+                part_id = (part.database, part.table, part.name)
+                skip_parts[part_id] = new_backup.name
+
         is_changed = False
         delete_paths = []  # type: List[str]
-        for db_name in backup_meta.get_databases():
-            for table_name in backup_meta.get_tables(db_name):
-                for part_name in backup_meta.get_parts(db_name, table_name):
-                    part_id = (db_name, table_name, part_name)
+        for part in backup_meta.get_parts():
+            part_id = (part.database, part.table, part.name)
 
-                    logging.debug('Working on part "%s.%s.%s"', *part_id)
-                    if part_id in skip_parts:
-                        logging.debug(
-                            'Skip removing part "%s": link from "%s"'
-                            ' was found', part_name, skip_parts[part_id])
-                        continue
+            logging.debug('Working on part "%s.%s.%s"', *part_id)
+            if part_id in skip_parts:
+                logging.debug(
+                    'Skip removing part "%s": link from "%s"'
+                    ' was found', part.name, skip_parts[part_id])
+                continue
 
-                    logging.debug('Dropping part contents from meta "%s"',
-                                  part_name)
+            logging.debug('Dropping part contents from meta "%s"', part.name)
 
-                    # Do not delete linked part paths
-                    if not backup_meta.is_part_linked(*part_id):
-                        logging.debug('Scheduling deletion of part files "%s"',
-                                      part_name)
-                        delete_paths.extend(
-                            backup_meta.get_part_paths(*part_id))
+            if not part.link:
+                logging.debug('Scheduling deletion of part files "%s"',
+                              part.name)
+                delete_paths.extend(part.paths)
 
-                    backup_meta.del_part_contents(*part_id)
-                    is_changed = True
+            backup_meta.remove_part(part)
+            is_changed = True
+
         return is_changed, delete_paths

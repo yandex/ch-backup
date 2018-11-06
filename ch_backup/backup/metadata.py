@@ -1,13 +1,12 @@
 """
 Backup metadata.
 """
-import copy
 import json
 import socket
 from collections.__init__ import defaultdict
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, Iterable, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence
 
 from ch_backup.exceptions import InvalidBackupStruct, UnknownBackupStateError
 from ch_backup.util import now
@@ -46,7 +45,14 @@ class Part:
         The size of part on disk in bytes.
         """
         # bytes_on_disk is a new name starting from ClickHouse 1.1.54380.
-        return self._meta.get('bytes_on_disk', self._meta.get('bytes'))
+        return int(self._meta.get('bytes_on_disk', self._meta.get('bytes')))
+
+    @property
+    def rows(self) -> int:
+        """
+        The number of rows in the part.
+        """
+        return int(self._meta['rows'])
 
     def __getattr__(self, item):
         try:
@@ -64,11 +70,15 @@ class Part:
     def __str__(self):
         return str(self._meta)
 
-    def get_contents(self) -> dict:
+    def dump(self) -> dict:
         """
-        Get part meta
+        Return part metadata as a dict.
         """
-        return copy.deepcopy(self._meta)
+        return {
+            'meta': self._meta,
+            'paths': self.paths,
+            'link': self.link,
+        }
 
 
 class BackupMetadata:
@@ -90,25 +100,15 @@ class BackupMetadata:
         self.path = path
         self.ch_version = ch_version
         self.hostname = hostname or socket.getfqdn()
-        self.rows = 0
-        self.bytes = 0
-        self.real_rows = 0
-        self.real_bytes = 0
         self._state = BackupState.NOT_STARTED
         self.date_fmt = date_fmt or CBS_DEFAULT_DATE_FMT
         self.start_time = None  # type: Optional[datetime]
         self.end_time = None  # type: Optional[datetime]
         self._databases = {}  # type: Dict[str, dict]
-
-    def add_database(self, db_name: str) -> None:
-        """
-        Add database dict to backup struct
-        """
-        self._databases[db_name] = {
-            'db_sql_path': None,
-            'tables_sql_paths': [],
-            'parts_paths': defaultdict(dict),
-        }
+        self.rows = 0
+        self.bytes = 0
+        self.real_rows = 0
+        self.real_bytes = 0
 
     def __str__(self) -> str:
         return self.dump_json()
@@ -116,7 +116,7 @@ class BackupMetadata:
     @property
     def state(self) -> BackupState:
         """
-        Backup state
+        Backup state.
         """
         return self._state
 
@@ -128,19 +128,19 @@ class BackupMetadata:
 
     def update_start_time(self) -> None:
         """
-        Set start datetime
+        Set start time to the current time.
         """
         self.start_time = now()
 
     def update_end_time(self) -> None:
         """
-        Set end datetime
+        Set end time to the current time.
         """
         self.end_time = now()
 
     def dump_json(self, indent=4) -> str:
         """
-        Dump struct to json data
+        Return json representation of backup metadata.
         """
         report = {
             'databases': self._databases,
@@ -165,7 +165,7 @@ class BackupMetadata:
     @classmethod
     def load_json(cls, data):
         """
-        Load struct from json data
+        Load backup metadata from json representation.
         """
         # pylint: disable=protected-access
         try:
@@ -198,136 +198,99 @@ class BackupMetadata:
         except (ValueError, KeyError):
             raise InvalidBackupStruct
 
-    def get_db_sql_path(self, db_name):
+    def add_database(self, db_name: str, meta_remote_path: str) -> None:
         """
-        Get database sql path
+        Add database to backup metadata.
         """
-        return self._databases[db_name]['db_sql_path']
+        self._databases[db_name] = {
+            'db_sql_path': meta_remote_path,
+            'tables_sql_paths': [],
+            'parts_paths': defaultdict(dict),
+        }
 
-    def set_db_sql_path(self, db_name, path):
+    def get_databases(self) -> Sequence[str]:
         """
-        Set database sql path
-        """
-        self._databases[db_name]['db_sql_path'] = path
-
-    def get_databases(self):
-        """
-        Get databases meta
+        Get databases.
         """
         return tuple(self._databases)
 
-    def get_tables(self, db_name):
+    def get_db_sql_path(self, db_name: str) -> str:
         """
-        Get tables for specified database
+        Get database sql path.
+        """
+        return self._databases[db_name]['db_sql_path']
+
+    def add_table(self, db_name: str, table_name: str,
+                  meta_remote_path: str) -> None:
+        """
+        Add table to backup metadata.
+        """
+        self._databases[db_name]['tables_sql_paths'].append((table_name,
+                                                             meta_remote_path))
+
+    def get_tables(self, db_name: str) -> Sequence[str]:
+        """
+        Get tables for the specified database.
         """
         return tuple(self._databases[db_name]['parts_paths'])
 
-    def get_tables_sql_paths(self, db_name):
+    def get_tables_sql_paths(self, db_name: str) -> Sequence[str]:
         """
-        Get tables sql paths
+        Get sql paths of database tables.
         """
-        return (
+        return [
             sql_path
-            for _, sql_path in self._databases[db_name]['tables_sql_paths'])
+            for _, sql_path in self._databases[db_name]['tables_sql_paths']
+        ]
 
-    def add_table_sql_path(self, db_name, table_name, path):
+    def add_part(self, part: Part) -> None:
         """
-        Set storage path of table ddl
+        Add data part to backup metadata.
+        """
+        self._databases[part.database]['parts_paths'][part.table][
+            part.name] = part.dump()
+        self.rows += part.rows
+        self.bytes += part.bytes
+        if not part.link:
+            self.real_rows += part.rows
+            self.real_bytes += part.bytes
 
-        path is list, order matters
+    def remove_part(self, part: Part) -> None:
         """
-        self._databases[db_name]['tables_sql_paths'].append((table_name, path))
-
-    def add_part_contents(self, db_name: str, table_name: str,
-                          part_info: Part):
+        Remove data part from backup metadata.
         """
-        Add part backup contents to backup struct
-        """
-        self._databases[db_name]['parts_paths'][table_name].update({
-            part_info.name: {
-                'link': part_info.link,
-                'paths': part_info.paths,
-                'meta': part_info.get_contents(),
-            },
-        })
-        part_rows = int(part_info.rows)
-        part_bytes = int(part_info.bytes)
-        self.rows += part_rows
-        self.bytes += part_bytes
-        if not part_info.link:
-            self.real_rows += part_rows
-            self.real_bytes += part_bytes
-
-    def del_part_contents(self, db_name: str, table_name: str,
-                          part_name: str) -> None:
-        """
-        Delete part contents from backup struct
-        """
-        part = \
-            self._databases[db_name]['parts_paths'][table_name].pop(part_name)
-        part_info = Part(meta=part['meta'], link=part['link'])
-        part_rows = int(part_info.rows)
-        part_bytes = int(part_info.bytes)
-        self.rows -= part_rows
-        self.bytes -= part_bytes
-        if not part_info.link:
+        self._table_parts(part.database, part.table).pop(part.name)
+        self.rows -= part.rows
+        self.bytes -= part.bytes
+        if not part.link:
             # TODO: delete in few months
             if hasattr(self, 'real_rows'):
-                self.real_rows -= part_rows
-                self.real_bytes -= part_bytes
+                self.real_rows -= part.rows
+                self.real_bytes -= part.bytes
 
-    def get_part_contents(self, db_name: str, table_name: str, part_name: str):
+    def get_part(self, db_name: str, table_name: str,
+                 part_name: str) -> Optional[Part]:
         """
-        Get part backup contents from backup struct
+        Get data part.
         """
-        try:
-            return self._databases[db_name]['parts_paths'][table_name][
-                part_name]
-        except KeyError:
-            return None
+        raw_part = self._table_parts(db_name, table_name).get(part_name)
+        return Part(**raw_part) if raw_part else None
 
-    def get_part_paths(self, db_name: str, table_name: str,
-                       part_name: str) -> Sequence[str]:
+    def get_parts(self, db_name: str = None,
+                  table_name: str = None) -> Sequence[Part]:
         """
-        Get storage file paths of specified part
+        Get data parts.
         """
-        return tuple(self._databases[db_name]['parts_paths'][table_name]
-                     [part_name]['paths'])
+        if table_name:
+            assert db_name
 
-    def is_part_linked(self, db_name: str, table_name: str,
-                       part_name: str) -> bool:
-        """
-        Get storage file paths of specified part
-        """
-        return bool(self._databases[db_name]['parts_paths'][table_name]
-                    [part_name]['link'])
+        databases = [db_name] if db_name else self.get_databases()
 
-    def get_parts(self, db_name: str, table_name: str) -> Iterable:
-        """
-        Get all parts of specified database.table
-        """
-        return tuple(self._databases[db_name]['parts_paths'][table_name])
+        parts = []  # type: List[Part]
+        for db in databases:
+            parts.extend(self._iter_database_parts(db, table_name))
 
-    def get_deduplicated_parts(self, deduplicated_to: str = None) \
-            -> Dict[Tuple[str, str, str], str]:
-        """
-        Get all deduplicated parts
-        """
-        deduplicated_parts = {}
-        for db_name in self.get_databases():
-            for table_name in self.get_tables(db_name):
-                for part_name in self.get_parts(db_name, table_name):
-                    content = self.get_part_contents(db_name, table_name,
-                                                     part_name)
-                    if not content['link']:
-                        continue
-
-                    if deduplicated_to and \
-                            not content['link'].endswith(deduplicated_to):
-                        continue
-                    deduplicated_parts[(db_name, table_name, part_name)]\
-                        = self.name
-        return deduplicated_parts
+        return parts
 
     def is_empty(self) -> bool:
         """
@@ -335,11 +298,24 @@ class BackupMetadata:
         """
         return self.bytes == 0
 
-    def _format_time(self, value):
+    def _table_parts(self, db_name: str, table_name: str) -> dict:
+        try:
+            return self._databases[db_name]['parts_paths'][table_name]
+        except KeyError:
+            return {}
+
+    def _iter_database_parts(self, db_name: str,
+                             table_name: str = None) -> Iterable[Part]:
+        tables = [table_name] if table_name else self.get_tables(db_name)
+        for table in tables:
+            for raw_part in self._table_parts(db_name, table).values():
+                yield Part(**raw_part)
+
+    def _format_time(self, value: Optional[datetime]) -> Optional[str]:
         return value.strftime(self.date_fmt) if value else None
 
     @staticmethod
-    def _load_time(meta, attr):
+    def _load_time(meta: dict, attr: str) -> Optional[datetime]:
         attr_value = meta.get(attr)
         if not attr_value:
             return None
