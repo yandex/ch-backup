@@ -7,8 +7,8 @@ from datetime import datetime
 
 import pytest
 
-from ch_backup.clickhouse.layout import (ClickhouseBackupState,
-                                         ClickhouseBackupStructure)
+from ch_backup.backup.layout import (ClickhouseBackupState,
+                                     ClickhouseBackupStructure)
 
 
 class TestClickhouseBackupStructure:

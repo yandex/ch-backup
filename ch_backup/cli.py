@@ -12,7 +12,7 @@ from click import (Choice, ParamType, Path, argument, group, option,
                    pass_context)
 from tabulate import tabulate
 
-from .backup import ClickhouseBackup
+from .ch_backup import ClickhouseBackup
 from .config import Config
 from .util import drop_privileges, setup_environment, setup_logging
 

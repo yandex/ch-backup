@@ -9,10 +9,10 @@ from copy import copy
 from datetime import timedelta
 from typing import Dict, List, Optional, Tuple
 
-from ch_backup.clickhouse.control import ClickhouseCTL
-from ch_backup.clickhouse.layout import (
+from ch_backup.backup.layout import (
     ClickhouseBackupLayout, ClickhouseBackupState, ClickhouseBackupStructure,
     ClickhousePartInfo)
+from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.config import Config
 from ch_backup.exceptions import ClickhouseBackupError, StorageError
 from ch_backup.util import now, utc_fromtimestamp, utcnow
