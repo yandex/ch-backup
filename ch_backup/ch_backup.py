@@ -157,7 +157,7 @@ class ClickhouseBackup:
         """
         Backup database.
         """
-        logging.debug('Running database backup: %s', db_name)
+        logging.debug('Performing database backup for "%s"', db_name)
 
         db_remote_path = self._backup_database_meta(db_name)
 
@@ -173,7 +173,7 @@ class ClickhouseBackup:
         """
         Backup table.
         """
-        logging.debug('Running table "%s.%s" backup', db_name, table_name)
+        logging.debug('Performing table backup for "%s"', table_name)
 
         table_remote_path = self._backup_table_meta(db_name, table_name)
 
@@ -184,14 +184,14 @@ class ClickhouseBackup:
 
             fpartition = self._ch_ctl.freeze_partition(partition)
             for fpart in self._ch_ctl.get_freezed_parts(fpartition):
-                logging.debug('Working on data part %s', fpart)
+                logging.debug('Working on %s', fpart)
 
                 # trying to find part in storage
                 link, existing_part = self._deduplicate_part(fpart)
                 if link and existing_part:
                     part_remote_paths = existing_part.paths
                 else:
-                    logging.debug('Backing up data part %s', fpart.name)
+                    logging.debug('Backing up part "%s"', fpart.name)
 
                     part_remote_paths = self._backup_layout.save_part_data(
                         fpart)
