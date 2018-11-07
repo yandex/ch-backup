@@ -6,8 +6,10 @@ import socket
 from collections.__init__ import defaultdict
 from datetime import datetime, timezone
 from enum import Enum
+from types import SimpleNamespace
 from typing import Dict, Iterable, List, Optional, Sequence
 
+from ch_backup.clickhouse.control import FreezedPart
 from ch_backup.exceptions import InvalidBackupStruct, UnknownBackupStateError
 from ch_backup.util import now
 
@@ -27,58 +29,58 @@ class BackupState(Enum):
     FAILED = 'failed'
 
 
-class Part:
+class PartMetadata(SimpleNamespace):
     """
-    Part metadata.
+    Backup metadata for ClickHouse data part.
     """
 
-    def __init__(self, meta: dict, link=None, paths=None) -> None:
-        self._meta = meta
-        if link is None:
-            link = False
+    def __init__(self, fpart: FreezedPart, link: Optional[str],
+                 paths: Sequence[str]) -> None:
+        super().__init__()
+        self.database = fpart.database
+        self.table = fpart.table
+        self.partition = fpart.partition
+        self.name = fpart.name
+        self.size = fpart.size
+        self.checksum = fpart.checksum
         self.link = link
         self.paths = paths
 
-    @property
-    def bytes(self) -> int:
-        """
-        The size of part on disk in bytes.
-        """
-        # bytes_on_disk is a new name starting from ClickHouse 1.1.54380.
-        return int(self._meta.get('bytes_on_disk', self._meta.get('bytes')))
-
-    @property
-    def rows(self) -> int:
-        """
-        The number of rows in the part.
-        """
-        return int(self._meta['rows'])
-
-    def __getattr__(self, item):
-        try:
-            return self._meta[item]
-        except KeyError:
-            raise AttributeError
-
-    def __eq__(self, other):
-        criteria = ('modification_time', 'rows')
-        for check_attr in criteria:
-            if getattr(self, check_attr) != getattr(other, check_attr):
-                return False
-        return True
-
-    def __str__(self):
-        return str(self._meta)
-
     def dump(self) -> dict:
         """
-        Return part metadata as a dict.
+        Convert data part metadata to dict representation.
         """
         return {
-            'meta': self._meta,
+            'meta': {
+                'database': self.database,
+                'table': self.table,
+                'partition': self.partition,
+                'name': self.name,
+                'bytes_on_disk': self.size,
+                'checksum': self.checksum,
+            },
             'paths': self.paths,
             'link': self.link,
         }
+
+    @classmethod
+    def load(cls, value: dict) -> 'PartMetadata':
+        """
+        Create PartMetadata object from a dict.
+        """
+        meta = value['meta']
+
+        part = cls.__new__(cls)
+        part.database = meta['database']
+        part.table = meta['table']
+        part.partition = meta['partition']
+        part.name = meta['name']
+        part.size = int(meta['bytes_on_disk'])
+        part.checksum = meta.get('checksum')
+        part.link = value['link']
+        part.paths = value['paths']
+
+        return part
 
 
 class BackupMetadata:
@@ -105,10 +107,8 @@ class BackupMetadata:
         self.start_time = None  # type: Optional[datetime]
         self.end_time = None  # type: Optional[datetime]
         self._databases = {}  # type: Dict[str, dict]
-        self.rows = 0
-        self.bytes = 0
-        self.real_rows = 0
-        self.real_bytes = 0
+        self.size = 0
+        self.real_size = 0
 
     def __str__(self) -> str:
         return self.dump_json()
@@ -152,10 +152,8 @@ class BackupMetadata:
                 'date_fmt': self.date_fmt,
                 'start_time': self._format_time(self.start_time),
                 'end_time': self._format_time(self.end_time),
-                'rows': self.rows,
-                'bytes': self.bytes,
-                'real_rows': self.real_rows,
-                'real_bytes': self.real_bytes,
+                'bytes': self.size,
+                'real_bytes': self.real_size,
                 'state': self._state.value,
                 'labels': self.labels,
             },
@@ -182,13 +180,11 @@ class BackupMetadata:
             backup._databases = loaded['databases']
             backup.start_time = cls._load_time(meta, 'start_time')
             backup.end_time = cls._load_time(meta, 'end_time')
-            backup.rows = meta['rows']
-            backup.bytes = meta['bytes']
+            backup.size = meta['bytes']
 
             # TODO: delete in few months
             if 'state' in meta:
-                backup.real_rows = meta['real_rows']
-                backup.real_bytes = meta['real_bytes']
+                backup.real_size = meta['real_bytes']
                 backup._state = BackupState(meta['state'])
             else:
                 backup._state = BackupState.CREATED
@@ -243,41 +239,37 @@ class BackupMetadata:
             for _, sql_path in self._databases[db_name]['tables_sql_paths']
         ]
 
-    def add_part(self, part: Part) -> None:
+    def add_part(self, part: PartMetadata) -> None:
         """
         Add data part to backup metadata.
         """
         self._databases[part.database]['parts_paths'][part.table][
             part.name] = part.dump()
-        self.rows += part.rows
-        self.bytes += part.bytes
+        self.size += part.size
         if not part.link:
-            self.real_rows += part.rows
-            self.real_bytes += part.bytes
+            self.real_size += part.size
 
-    def remove_part(self, part: Part) -> None:
+    def remove_part(self, part: PartMetadata) -> None:
         """
         Remove data part from backup metadata.
         """
         self._table_parts(part.database, part.table).pop(part.name)
-        self.rows -= part.rows
-        self.bytes -= part.bytes
+        self.size -= part.size
         if not part.link:
             # TODO: delete in few months
             if hasattr(self, 'real_rows'):
-                self.real_rows -= part.rows
-                self.real_bytes -= part.bytes
+                self.real_size -= part.size
 
     def get_part(self, db_name: str, table_name: str,
-                 part_name: str) -> Optional[Part]:
+                 part_name: str) -> Optional[PartMetadata]:
         """
         Get data part.
         """
         raw_part = self._table_parts(db_name, table_name).get(part_name)
-        return Part(**raw_part) if raw_part else None
+        return PartMetadata.load(raw_part) if raw_part else None
 
     def get_parts(self, db_name: str = None,
-                  table_name: str = None) -> Sequence[Part]:
+                  table_name: str = None) -> Sequence[PartMetadata]:
         """
         Get data parts.
         """
@@ -286,7 +278,7 @@ class BackupMetadata:
 
         databases = [db_name] if db_name else self.get_databases()
 
-        parts = []  # type: List[Part]
+        parts = []  # type: List[PartMetadata]
         for db in databases:
             parts.extend(self._iter_database_parts(db, table_name))
 
@@ -296,7 +288,7 @@ class BackupMetadata:
         """
         Return True if backup has no data.
         """
-        return self.bytes == 0
+        return self.size == 0
 
     def _table_parts(self, db_name: str, table_name: str) -> dict:
         try:
@@ -305,11 +297,11 @@ class BackupMetadata:
             return {}
 
     def _iter_database_parts(self, db_name: str,
-                             table_name: str = None) -> Iterable[Part]:
+                             table_name: str = None) -> Iterable[PartMetadata]:
         tables = [table_name] if table_name else self.get_tables(db_name)
         for table in tables:
             for raw_part in self._table_parts(db_name, table).values():
-                yield Part(**raw_part)
+                yield PartMetadata.load(raw_part)
 
     def _format_time(self, value: Optional[datetime]) -> Optional[str]:
         return value.strftime(self.date_fmt) if value else None

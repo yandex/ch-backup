@@ -5,6 +5,8 @@ Clickhouse-control classes module
 import logging
 import os
 import shutil
+from hashlib import md5
+from types import SimpleNamespace
 from typing import List, Optional
 from urllib.parse import quote
 
@@ -48,11 +50,12 @@ SHOW_CREATE_TABLE_SQL = strip_query("""
     FORMAT TSVRaw
 """)
 
-GET_ALL_TABLE_PARTS_INFO_SQL = strip_query("""
-    SELECT *
+GET_TABLE_PARTITIONS_SQL = strip_query("""
+    SELECT DISTINCT partition
     FROM system.parts
-    WHERE active AND database == '{db_name}'
-    AND table == '{table_name}'
+    WHERE active
+      AND database == '{db_name}'
+      AND table == '{table_name}'
     FORMAT JSON
 """)
 
@@ -62,6 +65,48 @@ GET_VERSION_SQL = strip_query("""
     WHERE name = 'VERSION_DESCRIBE'
     FORMAT TSVRaw
 """)
+
+
+class Partition(SimpleNamespace):
+    """
+    Table partition.
+    """
+
+    def __init__(self, database: str, table: str, name: str) -> None:
+        super().__init__()
+        self.database = database
+        self.table = table
+        self.name = name
+
+
+class FreezedPartition(SimpleNamespace):
+    """
+    Freezed table partition.
+    """
+
+    def __init__(self, partition: Partition, shadow_increment: str) -> None:
+        super().__init__()
+        self.database = partition.database
+        self.table = partition.table
+        self.name = partition.name
+        self.shadow_increment = shadow_increment
+
+
+class FreezedPart(SimpleNamespace):
+    """
+    Part of freezed table partition.
+    """
+
+    def __init__(self, fpartition: FreezedPartition, name: str, path: str,
+                 checksum: str, size: int):
+        super().__init__()
+        self.database = fpartition.database
+        self.table = fpartition.table
+        self.partition = fpartition.name
+        self.name = name
+        self.path = path
+        self.checksum = checksum
+        self.size = size
 
 
 class ClickhouseCTL:
@@ -119,22 +164,41 @@ class ClickhouseCTL:
         chown_dir_contents(self._config['user'], self._config['group'],
                            dir_path)
 
-    def freeze_partition(self, db_name: str, table_name: str,
-                         partition_name: str) -> str:
+    def freeze_partition(self, partition: Partition) -> FreezedPartition:
         """
         Freeze the specified partition.
         """
         query_sql = PARTITION_FREEZE_SQL.format(
-            db_name=db_name,
-            table_name=table_name,
-            partition_name=partition_name)
-        logging.debug('Freezing partition: %s', query_sql)
+            db_name=partition.database,
+            table_name=partition.table,
+            partition_name=partition.name)
 
         self._ch_client.query(query_sql)
 
-        return os.path.join(self.shadow_data_path,
-                            self._get_shadow_increment(), 'data',
-                            self._quote(db_name), self._quote(table_name))
+        return FreezedPartition(partition, self._get_shadow_increment())
+
+    def get_freezed_parts(self,
+                          fpartition: FreezedPartition) -> List[FreezedPart]:
+        """
+        Get parts of freezed partition.
+        """
+        path = os.path.join(self.shadow_data_path, fpartition.shadow_increment,
+                            'data', self._quote(fpartition.database),
+                            self._quote(fpartition.table))
+
+        if not os.path.exists(path):
+            logging.debug('Freezed partition %s is empty', fpartition.name)
+            return []
+
+        fparts = []  # type: List[FreezedPart]
+        for part in os.listdir(path):
+            part_path = os.path.join(path, part)
+            checksum = self._get_part_checksum(part_path)
+            size = self._get_part_size(part_path)
+            fparts.append(
+                FreezedPart(fpartition, part, part_path, checksum, size))
+
+        return fparts
 
     def remove_shadow_data(self) -> None:
         """
@@ -197,16 +261,16 @@ class ClickhouseCTL:
             result = [row['name'] for row in ch_resp['data']]
         return result
 
-    def get_all_table_parts_info(self, db_name: str,
-                                 table_name: str) -> List[dict]:
+    def get_partitions(self, database: str, table: str) -> List[Partition]:
         """
         Get dict with all table parts
         """
-        query_sql = GET_ALL_TABLE_PARTS_INFO_SQL.format(
-            db_name=db_name, table_name=table_name)
-        logging.debug('Fetching all %s table parts: %s', db_name, query_sql)
+        query_sql = GET_TABLE_PARTITIONS_SQL.format(
+            db_name=database, table_name=table)
+        logging.debug('Fetching all %s table parts: %s', database, query_sql)
 
-        return self._ch_client.query(query_sql)['data']
+        data = self._ch_client.query(query_sql)['data']
+        return [Partition(database, table, item['partition']) for item in data]
 
     def restore_meta(self, query_sql: str) -> None:
         """
@@ -243,11 +307,6 @@ class ClickhouseCTL:
         """
         return self._ch_client.query(GET_VERSION_SQL)
 
-    def _get_shadow_increment(self) -> str:
-        file_path = os.path.join(self.shadow_data_path, 'increment.txt')
-        with open(file_path, 'r') as file:
-            return file.read().strip()
-
     @classmethod
     def get_db_sql_rel_path(cls, db_name: str) -> str:
         """
@@ -270,3 +329,20 @@ class ClickhouseCTL:
                 ord('.'): '%2E',
                 ord('-'): '%2D',
             })
+
+    def _get_shadow_increment(self) -> str:
+        file_path = os.path.join(self.shadow_data_path, 'increment.txt')
+        with open(file_path, 'r') as file:
+            return file.read().strip()
+
+    @staticmethod
+    def _get_part_checksum(part_path: str) -> str:
+        with open(os.path.join(part_path, 'checksums.txt'), 'rb') as f:
+            return md5(f.read()).hexdigest()  # nosec
+
+    @staticmethod
+    def _get_part_size(part_path: str) -> int:
+        size = 0
+        for file in os.listdir(part_path):
+            size += os.path.getsize(os.path.join(part_path, file))
+        return size

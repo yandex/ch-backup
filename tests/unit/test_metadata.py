@@ -36,8 +36,6 @@ class TestBackupMetadata:
             'name': '20181017T210300',
             'path': 'ch_backup/20181017T210300',
             'date_fmt': '%Y-%m-%d %H:%M:%S %z',
-            'rows': 0,
-            'real_rows': 0,
             'bytes': 0,
             'real_bytes': 0,
             'hostname': 'clickhouse01.test_net_711',
@@ -61,9 +59,7 @@ class TestBackupMetadata:
         end_time = datetime.strptime(end_time_str,
                                      date_fmt) if end_time_str else None
         assert backup.end_time == end_time
-        assert backup.rows == meta['rows']
-        assert backup.real_rows == meta['real_rows']
-        assert backup.bytes == meta['bytes']
-        assert backup.real_bytes == meta['real_bytes']
+        assert backup.size == meta['bytes']
+        assert backup.real_size == meta['real_bytes']
         assert backup.hostname == meta['hostname']
         assert backup.ch_version == meta['ch_version']

@@ -7,7 +7,7 @@ import os
 from typing import List, Sequence
 
 from ch_backup.backup.metadata import BackupMetadata
-from ch_backup.clickhouse.control import ClickhouseCTL
+from ch_backup.clickhouse.control import ClickhouseCTL, FreezedPart
 from ch_backup.config import Config
 from ch_backup.exceptions import StorageError
 from ch_backup.storage import StorageLoader
@@ -116,23 +116,22 @@ class ClickhouseBackupLayout:
         except Exception as e:
             raise StorageError('Failed to upload backup metadata') from e
 
-    def save_part_data(self, db_name: str, table_name: str, part_name: str,
-                       part_path: str) -> list:
+    def save_part_data(self, fpart: FreezedPart) -> List[str]:
         """
-        Backup part files and return storage paths
+        Backup part files and return storage paths.
         """
-        remote_dir_path = os.path.join(self.backup_path, 'data', db_name,
-                                       table_name, part_name)
+        remote_dir_path = os.path.join(self.backup_path, 'data',
+                                       fpart.database, fpart.table, fpart.name)
 
         uploaded_files = []
         part_files = [
-            f for f in os.listdir(part_path)
-            if os.path.isfile(os.path.join(part_path, f))
+            f for f in os.listdir(fpart.path)
+            if os.path.isfile(os.path.join(fpart.path, f))
         ]
 
-        for fname in part_files:
-            local_fname = os.path.join(part_path, fname)
-            remote_fname = os.path.join(remote_dir_path, fname)
+        for part_file in part_files:
+            local_fname = os.path.join(fpart.path, part_file)
+            remote_fname = os.path.join(remote_dir_path, part_file)
             try:
                 self._storage_loader.upload_file(
                     local_path=local_fname,

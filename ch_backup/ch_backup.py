@@ -3,15 +3,14 @@ Clickhouse backup logic
 """
 
 import logging
-import os
 from collections import defaultdict
 from copy import copy
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from ch_backup.backup.layout import ClickhouseBackupLayout
-from ch_backup.backup.metadata import BackupMetadata, BackupState, Part
-from ch_backup.clickhouse.control import ClickhouseCTL
+from ch_backup.backup.metadata import BackupMetadata, BackupState, PartMetadata
+from ch_backup.clickhouse.control import ClickhouseCTL, FreezedPart
 from ch_backup.config import Config
 from ch_backup.exceptions import ClickhouseBackupError, StorageError
 from ch_backup.util import now, utc_fromtimestamp, utcnow
@@ -35,15 +34,15 @@ class ClickhouseBackup:
         """
         return self._get_backup_meta(backup_name)
 
-    def list(self, all_opt=True) -> Tuple[tuple, List]:
+    def list(self, all_opt=True) -> Tuple[Sequence, Sequence]:
         """
         Get list of existing backup names.
         """
         self._load_existing_backups(load_all=all_opt)
 
         report = []
-        fields = ('name', 'state', 'start_time', 'end_time', 'bytes',
-                  'real_bytes', 'rows', 'real_rows', 'ch_version')
+        fields = ('name', 'state', 'start_time', 'end_time', 'size',
+                  'real_size', 'ch_version')
 
         i_state = fields.index('state')
         for backup_meta in self._existing_backups:
@@ -181,43 +180,26 @@ class ClickhouseBackup:
 
         backup_meta.add_table(db_name, table_name, table_remote_path)
 
-        all_parts_rows = self._ch_ctl.get_all_table_parts_info(
-            db_name, table_name)
-
-        partitions = defaultdict(list)  # type: Dict[str, list]
-        for part_row in all_parts_rows:
-            partitions[part_row['partition']].append(part_row)
-
-        # remove previous data from shadow path
         self._ch_ctl.remove_shadow_data()
 
-        for partition, parts_rows in partitions.items():
-            try:
-                freeze_path = self._ch_ctl.freeze_partition(
-                    db_name, table_name, partition)
-            except Exception:
-                logging.critical('Unable to freeze', exc_info=True)
-                raise ClickhouseBackupError
+        partitions = self._ch_ctl.get_partitions(db_name, table_name)
+        for partition in partitions:
 
-            for part_row in parts_rows:
-                part = Part(meta=part_row)
-                logging.debug('Working on part %s: %s', part.name, part)
+            fpartition = self._ch_ctl.freeze_partition(partition)
+            for fpart in self._ch_ctl.get_freezed_parts(fpartition):
+                logging.debug('Working on data part %s', fpart)
 
                 # trying to find part in storage
-                link, existing_part = self._deduplicate_part(part)
+                link, existing_part = self._deduplicate_part(fpart)
                 if link and existing_part:
                     part_remote_paths = existing_part.paths
                 else:
-                    # preform backup if deduplication is not available
-                    logging.debug('Starting backup for "%s.%s" part: %s',
-                                  db_name, table_name, part.name)
+                    logging.debug('Backing up data part %s', fpart.name)
 
                     part_remote_paths = self._backup_layout.save_part_data(
-                        db_name, table_name, part.name,
-                        os.path.join(freeze_path, part.name))
+                        fpart)
 
-                part.link = link
-                part.paths = part_remote_paths
+                part = PartMetadata(fpart, link, part_remote_paths)
 
                 backup_meta.add_part(part)
 
@@ -425,41 +407,42 @@ class ClickhouseBackup:
 
                 self._ch_ctl.attach_part(db_name, table_name, part_name)
 
-    def _deduplicate_part(self,
-                          part: Part) -> Tuple[Optional[str], Optional[Part]]:
+    def _deduplicate_part(self, fpart: FreezedPart) \
+            -> Tuple[Optional[str], Optional[PartMetadata]]:
         """
         Deduplicate part if it's possible
         """
-        logging.debug('Looking for deduplication of part "%s"', part.name)
+        logging.debug('Looking for deduplication of part "%s"', fpart.name)
 
         for backup_meta in self._existing_backups:
-            existing_part = backup_meta.get_part(part.database, part.table,
-                                                 part.name)
+            existing_part = backup_meta.get_part(fpart.database, fpart.table,
+                                                 fpart.name)
 
             if not existing_part:
                 logging.debug('Part "%s" was not found in backup "%s", skip',
-                              part.name, backup_meta.name)
+                              fpart.name, backup_meta.name)
                 continue
 
             if existing_part.link:
                 logging.debug('Part "%s" in backup "%s" is link, skip',
-                              part.name, backup_meta.name)
+                              fpart.name, backup_meta.name)
                 continue
 
-            if existing_part != part:
-                logging.debug('Part "%s" in backup "%s" is differ form local',
-                              part.name, backup_meta.name)
+            if existing_part.checksum != fpart.checksum:
+                logging.debug(
+                    'Part "%s" in backup "%s" has mismatched checksum, skip',
+                    fpart.name, backup_meta.name)
                 continue
 
             #  check if part files exist in storage
             if self._check_part_availability(existing_part):
-                logging.info('Deduplicating part "%s" based on %s', part.name,
+                logging.info('Deduplicating part "%s" based on %s', fpart.name,
                              backup_meta.name)
                 return backup_meta.path, existing_part
 
         return None, None
 
-    def _check_part_availability(self, part: Part) -> bool:
+    def _check_part_availability(self, part: PartMetadata) -> bool:
         """
         Check if part files exist in storage
         """
