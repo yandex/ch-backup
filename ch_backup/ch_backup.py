@@ -6,7 +6,7 @@ import logging
 import os
 from collections import defaultdict
 from copy import copy
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from ch_backup.backup.layout import ClickhouseBackupLayout
@@ -498,7 +498,8 @@ class ClickhouseBackup:
                     exc_info=True)
         return None
 
-    def _load_existing_backups(self, backup_age_limit=None,
+    def _load_existing_backups(self,
+                               backup_age_limit: datetime = None,
                                load_all=True) -> None:
         """
         Load all current backup entries
@@ -520,6 +521,11 @@ class ClickhouseBackup:
                             backup_name, backup_meta.state)
                         continue
 
+                    if not backup_meta.end_time:
+                        logging.debug(
+                            'Backup "%s" has no end timestamp, skipping')
+                        continue
+
                     if backup_meta.end_time <= backup_age_limit:
                         logging.debug(
                             'Backup "%s" is too old for given timelimit'
@@ -537,7 +543,7 @@ class ClickhouseBackup:
 
         # Sort by time (new is first)
         # we want to duplicate part based on freshest backup
-        existing_backups.sort(key=lambda b: b.end_time, reverse=True)
+        existing_backups.sort(key=lambda b: b.start_time, reverse=True)
         self._existing_backups = existing_backups
 
     def _reload_existing_backup(self, backup_name: str) -> None:
