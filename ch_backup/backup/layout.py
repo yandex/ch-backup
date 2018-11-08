@@ -101,18 +101,17 @@ class ClickhouseBackupLayout:
             msg = 'Failed to upload database sql file to {0}'.format(db_name)
             raise StorageError(msg) from e
 
-    def save_backup_meta(self, backup_meta):
+    def save_backup_meta(self, backup: BackupMetadata) -> None:
         """
         Upload backup meta file into storage
         """
-        remote_path = self._get_backup_meta_path(backup_meta.name)
+        remote_path = self._get_backup_meta_path(backup.name)
         try:
-            json_dump = backup_meta.dump_json()
+            json_dump = backup.dump_json()
             logging.debug('Saving backup meta in key %s:\n%s', remote_path,
                           json_dump)
-            result = self._storage_loader.upload_data(
+            self._storage_loader.upload_data(
                 json_dump, remote_path=remote_path)
-            return result
         except Exception as e:
             raise StorageError('Failed to upload backup metadata') from e
 

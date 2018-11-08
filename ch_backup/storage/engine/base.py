@@ -11,52 +11,45 @@ class StorageEngine(metaclass=ABCMeta):
     """
 
     @abstractmethod
-    def upload_file(self, local_path, remote_path):
+    def upload_file(self, local_path: str, remote_path: str):
         """
         Upload file from local filesystem.
         """
-        pass
 
     @abstractmethod
-    def upload_data(self, data, remote_path):
+    def upload_data(self, data, remote_path: str):
         """
         Upload given bytes or file-like object.
         """
-        pass
 
     @abstractmethod
-    def download_file(self, remote_path, local_path):
+    def download_file(self, remote_path: str, local_path: str):
         """
         Download file from storage to local filesystem.
         """
-        pass
 
     @abstractmethod
-    def download_data(self, remote_path):
+    def download_data(self, remote_path: str):
         """
         Download file from storage and return its content as a string.
         """
-        pass
 
-    def delete_file(self, remote_path):
+    def delete_file(self, remote_path: str):
         """
         Delete file from storage
         """
-        pass
 
     @abstractmethod
-    def list_dir(self, remote_path, recursive=False, absolute=False):
+    def list_dir(self, remote_path: str, recursive=False, absolute=False):
         """
         Get directory listing.
         """
-        pass
 
     @abstractmethod
-    def path_exists(self, remote_path):
+    def path_exists(self, remote_path: str) -> bool:
         """
         Check if remote path exists.
         """
-        pass
 
 
 class PipeLineCompatibleStorageEngine(StorageEngine):
@@ -65,43 +58,37 @@ class PipeLineCompatibleStorageEngine(StorageEngine):
     """
 
     @abstractmethod
-    def create_multipart_upload(self, remote_path):
+    def create_multipart_upload(self, remote_path: str):
         """
         Start multipart upload.
         """
-        pass
 
     @abstractmethod
     def upload_part(self, data, remote_path, upload_id):
         """
         Upload data part in multipart upload.
         """
-        pass
 
     @abstractmethod
     def complete_multipart_upload(self, remote_path, upload_id):
         """
         Finish multipart upload.
         """
-        pass
 
     @abstractmethod
     def create_multipart_download(self, remote_path):
         """
         Start multipart download.
         """
-        pass
 
     @abstractmethod
     def download_part(self, download_id, part_len=None):
         """
         Download data part in multipart download.
         """
-        pass
 
     @abstractmethod
     def complete_multipart_download(self, download_id):
         """
         Finish multipart download.
         """
-        pass

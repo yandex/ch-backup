@@ -65,8 +65,8 @@ class StorageLoader:
         return data.decode(encoding) if encoding else data
 
     def download_file(self,
-                      remote_path,
-                      local_path,
+                      remote_path: str,
+                      local_path: str,
                       is_async=False,
                       encryption=False):
         """
@@ -82,20 +82,20 @@ class StorageLoader:
         return self._ploader.delete_file(
             remote_path, is_async=is_async, encryption=encryption)
 
-    def wait(self):
+    def wait(self) -> None:
         """
         Wait for completion of async operations.
         """
-        return self._ploader.wait()
+        self._ploader.wait()
 
-    def list_dir(self, remote_path, recursive=False, absolute=False):
+    def list_dir(self, remote_path: str, recursive=False, absolute=False):
         """
         Return list of entries in a remote path.
         """
         return self._engine.list_dir(
             remote_path, recursive=recursive, absolute=absolute)
 
-    def path_exists(self, remote_path):
+    def path_exists(self, remote_path: str) -> bool:
         """
         Check whether a remote path exists or not.
         """

@@ -5,6 +5,7 @@ S3 storage engine.
 import os
 import time
 from tempfile import TemporaryFile
+from typing import List
 
 import boto3
 import botocore.vendored.requests.packages.urllib3 as boto_urllib3
@@ -21,7 +22,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
     Engine for S3-compatible storage services.
     """
 
-    def __init__(self, config):
+    def __init__(self, config: dict) -> None:
         credentials_config = config['credentials']
         boto_config = config['boto_config']
         self._s3_session = boto3.session.Session(
@@ -41,26 +42,26 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
 
         self._s3_bucket_name = credentials_config['bucket']
 
-        self._multipart_uploads = {}
-        self._multipart_downloads = {}
+        self._multipart_uploads = {}  # type: dict
+        self._multipart_downloads = {}  # type: dict
 
         if config.get('disable_ssl_warnings'):
             self.disable_boto_requests_warnings()
 
-    def upload_file(self, local_path, remote_path):
+    def upload_file(self, local_path: str, remote_path: str) -> str:
         remote_path = remote_path.lstrip('/')
         with open(local_path, 'rb') as data:
             self._s3_client.upload_fileobj(data, self._s3_bucket_name,
                                            remote_path)
         return remote_path
 
-    def upload_data(self, data, remote_path):
+    def upload_data(self, data: bytes, remote_path: str) -> str:
         remote_path = remote_path.lstrip('/')
         self._s3_client.put_object(
             Body=data, Bucket=self._s3_bucket_name, Key=remote_path)
         return remote_path
 
-    def download_file(self, remote_path, local_path):
+    def download_file(self, remote_path: str, local_path: str) -> str:
         remote_path = remote_path.lstrip('/')
         return self._s3_client.download_file(self._s3_bucket_name, remote_path,
                                              local_path)
@@ -74,13 +75,14 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
             data = fileobj.read()
         return data
 
-    def delete_file(self, remote_path):
+    def delete_file(self, remote_path: str) -> str:
         remote_path = remote_path.lstrip('/')
         self._s3_client.delete_object(
             Bucket=self._s3_bucket_name, Key=remote_path)
         return remote_path
 
-    def list_dir(self, remote_path, recursive=False, absolute=False):
+    def list_dir(self, remote_path: str, recursive=False,
+                 absolute=False) -> List[str]:
         remote_path = remote_path.lstrip('/')
         contents = []
         paginator = self._s3_client.get_paginator('list_objects')
@@ -107,7 +109,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
 
         return contents
 
-    def path_exists(self, remote_path):
+    def path_exists(self, remote_path: str) -> bool:
         """
         Check if remote path exists.
         """
@@ -118,7 +120,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
         except ClientError:
             return False
 
-    def create_multipart_upload(self, remote_path):
+    def create_multipart_upload(self, remote_path: str) -> str:
         s3_resp = self._s3_client.create_multipart_upload(
             Bucket=self._s3_bucket_name, Key=remote_path)
 
@@ -148,7 +150,8 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
         # save part metadata for complete upload
         upload_parts.append({'ETag': s3_resp['ETag'], 'PartNumber': part_num})
 
-    def complete_multipart_upload(self, remote_path, upload_id):
+    def complete_multipart_upload(self, remote_path: str,
+                                  upload_id: str) -> None:
         parts = self._multipart_uploads[upload_id]['Parts']
         self._s3_client.complete_multipart_upload(
             Bucket=self._s3_bucket_name,
@@ -160,7 +163,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
 
         del self._multipart_uploads[upload_id]
 
-    def create_multipart_download(self, remote_path):
+    def create_multipart_download(self, remote_path: str) -> str:
         remote_path = remote_path.lstrip('/')
 
         resp = self._s3_client.get_object(
@@ -170,7 +173,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
         self._multipart_downloads[download_id] = resp
         return download_id
 
-    def download_part(self, download_id, part_len=None):
+    def download_part(self, download_id: str, part_len: int = None):
         if part_len:
             part_len = DEFAULT_DOWNLOAD_PART_LEN
         return self._multipart_downloads[download_id]['Body'].read(part_len)
@@ -180,7 +183,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
         del self._multipart_downloads[download_id]
 
     @staticmethod
-    def disable_boto_requests_warnings():
+    def disable_boto_requests_warnings() -> None:
         """
         Disable urllib warnings (annoys with self-signed ca)
         """

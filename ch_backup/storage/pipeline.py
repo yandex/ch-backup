@@ -5,9 +5,10 @@ Pipeline builder, loader and runner
 """
 
 import logging
-from concurrent.futures import ALL_COMPLETED, ProcessPoolExecutor
+from concurrent.futures import ALL_COMPLETED, Future, ProcessPoolExecutor
 from concurrent.futures import wait as executor_wait
 from functools import partial
+from typing import Callable, Dict, List, Sequence, Tuple
 
 from .stages.encryption import DecryptStage, EncryptStage
 from .stages.filesystem import (CollectDataStage, ReadDataStage, ReadFileStage,
@@ -23,15 +24,14 @@ class Pipeline:
     stores and runs pipe stages
     """
 
-    def __init__(self):
-        self._func_list = []
+    def __init__(self) -> None:
+        self._func_list = []  # type: List[Tuple[Callable, Sequence, dict]]
 
-    def append(self, func, *args, **kwargs):
+    def append(self, func: Callable, *args, **kwargs) -> None:
         """
         Append stage cmd
         """
-
-        return self._func_list.append((func, args, kwargs))
+        self._func_list.append((func, args, kwargs))
 
     def __call__(self, src_key=None, dst_key=None):
         func_part = None
@@ -59,26 +59,24 @@ class ExecPool:
     uses concurrent.futures.ProcessPoolExecutor
     """
 
-    def __init__(self, worker_count):
-        self._futures = {}
+    def __init__(self, worker_count: int) -> None:
+        self._futures = {}  # type: Dict[str, Future]
         self._pool = ProcessPoolExecutor(max_workers=worker_count)
 
-    def shutdown(self, graceful=True):
+    def shutdown(self, graceful=True) -> None:
         """
         Wait workers for complete jobs and shutdown workers
         """
-
         self._pool.shutdown(wait=graceful)
 
-    def submit(self, future_id, func, *args, **kwargs):
+    def submit(self, future_id: str, func: Callable, *args, **kwargs) -> None:
         """
         Schedule job for execution
         """
-
         self._futures[future_id] = \
             self._pool.submit(func, *args, **kwargs)
 
-    def wait_all(self):
+    def wait_all(self) -> None:
         """
         Wait workers for complete jobs and
         """
@@ -100,7 +98,7 @@ class ExecPool:
         self._futures = {}
 
 
-def pipeline_wrapper(config, stages, *args, **kwargs):
+def pipeline_wrapper(config: dict, stages, *args, **kwargs):
     """
     Build and execute pipeline.
     """
@@ -121,7 +119,7 @@ class PipelineLoader:
     Pipeline-based storage loader
     """
 
-    def __init__(self, config):
+    def __init__(self, config: dict) -> None:
         self._config = config
         self._exec_pool = None
 
@@ -193,7 +191,7 @@ class PipelineLoader:
         return self._execute_pipeline((self.delete_file.__name__, *args),
                                       (DeleteStorageStage, ), *args, **kwargs)
 
-    def wait(self):
+    def wait(self) -> None:
         """
         Wait for completion of async operations.
         """

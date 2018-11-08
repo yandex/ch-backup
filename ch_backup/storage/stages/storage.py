@@ -17,7 +17,7 @@ class UploadStorageStage(BufferedIterStage, metaclass=ABCMeta):
 
     stype = STAGE_TYPE
 
-    def __init__(self, conf):
+    def __init__(self, conf: dict) -> None:
         super().__init__(conf)
         self._loader = get_storage_engine(conf)
         self._remote_path = None
@@ -42,7 +42,9 @@ class UploadStorageStage(BufferedIterStage, metaclass=ABCMeta):
             self._loader.upload_data(data, self._remote_path)
             self._processed = True
 
-    def _post_process(self):
+    def _post_process(self) -> str:
+        assert self._remote_path
+
         if not self._processed:
             if self._upload_id:
                 self._loader.complete_multipart_upload(
@@ -63,7 +65,7 @@ class UploadDataStorageStage(UploadStorageStage):
     UploadStorageStage for uploading data objects.
     """
 
-    def _source_size(self, source):
+    def _source_size(self, source: str) -> int:
         return len(source)
 
 
@@ -72,7 +74,7 @@ class UploadFileStorageStage(UploadStorageStage):
     UploadStorageStage for uploading local files.
     """
 
-    def _source_size(self, source):
+    def _source_size(self, source: str) -> int:
         return os.path.getsize(source)
 
 

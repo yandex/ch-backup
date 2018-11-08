@@ -3,6 +3,7 @@ Filesystem pipeline stages module
 """
 
 import io
+from typing import IO, Optional
 
 from .base import BufferedIterStage, InputStage, IterStage
 
@@ -57,18 +58,19 @@ class ReadFileStage(InputStage):
 
     stype = STAGE_TYPE
 
-    def __init__(self, conf):
+    def __init__(self, conf: dict) -> None:
         self._chunk_size = conf['chunk_size']
-        self._fobj = None
+        self._fobj = None  # type: Optional[IO]
 
-    def _pre_process(self, src_key):
+    def _pre_process(self, src_key) -> None:
         self._fobj = open(src_key, 'br')
 
     def _process(self):
         return self._fobj.read(self._chunk_size)
 
-    def _post_process(self):
-        self._fobj.close()
+    def _post_process(self) -> None:
+        if self._fobj:
+            self._fobj.close()
 
 
 class CollectDataStage(IterStage):
