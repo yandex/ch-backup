@@ -3,6 +3,7 @@ Storage pipeline stages module
 """
 import os
 from abc import ABCMeta, abstractmethod
+from math import ceil
 
 from ..engine import get_storage_engine
 from .base import BufferedIterStage, InputStage
@@ -19,6 +20,7 @@ class UploadStorageStage(BufferedIterStage, metaclass=ABCMeta):
 
     def __init__(self, conf: dict) -> None:
         super().__init__(conf)
+        self._max_chunk_count = conf['max_chunk_count']
         self._loader = get_storage_engine(conf)
         self._remote_path = None
         self._upload_id = None
@@ -27,10 +29,18 @@ class UploadStorageStage(BufferedIterStage, metaclass=ABCMeta):
     def _pre_process(self, src_key, dst_key):
         self._remote_path = dst_key
 
+        src_size = self._source_size(src_key)
+
         # use multi-part upload if source data size > chunk_size
-        if self._source_size(src_key) > self._chunk_size:
+        if src_size > self._chunk_size:
             self._upload_id = self._loader.create_multipart_upload(
                 remote_path=dst_key)
+
+        chunk_count = src_size / self._chunk_size
+        if chunk_count > self._max_chunk_count:
+            multiplier = ceil(chunk_count / self._max_chunk_count)
+            self._buffer_size *= multiplier
+            self._chunk_size *= multiplier
 
     def _process(self, data):
         assert not self._processed, 'already processed'

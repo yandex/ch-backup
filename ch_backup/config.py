@@ -46,18 +46,30 @@ DEFAULT_CONFIG = {
             'region_name': 'us-east-1',
         },
         'disable_ssl_warnings': True,
+        # Chunk size used when uploading / downloading data, in bytes.
         'chunk_size': 8 * 1024 * 1024,
+        # Buffer size, in bytes.
         'buffer_size': 128 * 1024 * 1024,
+        # The maximum number of chunks on which uploading or downloading data
+        # can be split. If data_size > chunk_size * max_chunk_count,
+        # chunk_size will be multiplied on a required number of times
+        # to satisfy the limit.
+        'max_chunk_count': 10000,
     },
     'encryption': {
         'type': 'nacl',
+        # Chunk size used when encrypting / decrypting data, in bytes.
         'chunk_size': 8 * 1024 * 1024,
+        # Buffer size, in bytes.
         'buffer_size': 128 * 1024 * 1024,
+        # Encryption key.
         'key': None,
     },
     'filesystem': {
         'type': 'unlimited',
+        # Chunk size used when reading from / writing to filesystem, in bytes.
         'chunk_size': 1 * 1024 * 1024,
+        # Buffer size, in bytes.
         'buffer_size': 128 * 1024 * 1024,
     },
     'multiprocessing': {
