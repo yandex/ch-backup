@@ -200,9 +200,9 @@ class ClickhouseCTL:
 
         return fparts
 
-    def remove_shadow_data(self) -> None:
+    def remove_freezed_data(self) -> None:
         """
-        Recursively delete shadow data path
+        Remove all freezed partitions.
         """
         if not self.shadow_data_path.startswith(self._config['data_path']):
             raise ClickhouseBackupError(

@@ -114,7 +114,6 @@ class ClickhouseBackup:
         finally:
             backup_meta.update_end_time()
             self._backup_layout.save_backup_meta(backup_meta)
-            self._ch_ctl.remove_shadow_data()
 
         return (backup_meta.name, None)
 
@@ -180,8 +179,6 @@ class ClickhouseBackup:
 
         backup_meta.add_table(db_name, table_name, table_remote_path)
 
-        self._ch_ctl.remove_shadow_data()
-
         partitions = self._ch_ctl.get_partitions(db_name, table_name)
         for partition in partitions:
 
@@ -205,6 +202,8 @@ class ClickhouseBackup:
 
         logging.debug('Waiting for uploads')
         self._backup_layout.wait()
+
+        self._ch_ctl.remove_freezed_data()
 
     def delete(self, backup_name: str) -> Tuple[Optional[str], Optional[str]]:
         """
