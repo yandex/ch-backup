@@ -3,10 +3,11 @@ config module defines Config class and default values
 """
 
 import copy
-import logging
 import socket
 
 import yaml
+
+from ch_backup import logging
 
 DEFAULT_CONFIG = {
     'clickhouse': {
@@ -83,9 +84,41 @@ DEFAULT_CONFIG = {
         'disable_ssl_warnings': False,
     },
     'logging': {
-        'log_level_root': 'DEBUG',
-        'log_level_aux': 'DEBUG',
-        'log_format': '%(asctime)s [%(levelname)s] %(name)s:\t%(message)s',
+        'version': 1,
+        'formatters': {
+            'ch-backup': {
+                'format': '%(asctime)s [%(levelname)s]: %(message)s',
+            },
+            'boto': {
+                'format': '%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+            },
+        },
+        'handlers': {
+            'ch-backup': {
+                'class': 'logging.FileHandler',
+                'filename': '/var/log/ch-backup/ch-backup.log',
+                'formatter': 'ch-backup',
+            },
+            'boto': {
+                'class': 'logging.FileHandler',
+                'filename': '/var/log/ch-backup/boto.log',
+                'formatter': 'boto',
+            },
+        },
+        'loggers': {
+            'ch-backup': {
+                'handlers': ['ch-backup'],
+                'level': 'DEBUG',
+            },
+            'botocore': {
+                'handlers': ['boto'],
+                'level': 'DEBUG',
+            },
+            'boto3': {
+                'handlers': ['boto'],
+                'level': 'DEBUG',
+            },
+        },
     },
 }
 

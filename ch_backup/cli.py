@@ -3,7 +3,6 @@
 Command-line interface.
 """
 
-import logging
 import re
 import sys
 from functools import wraps
@@ -12,9 +11,10 @@ from click import (Choice, ParamType, Path, argument, group, option,
                    pass_context)
 from tabulate import tabulate
 
+from . import logging
 from .ch_backup import ClickhouseBackup
 from .config import Config
-from .util import drop_privileges, setup_environment, setup_logging
+from .util import drop_privileges, setup_environment
 
 
 @group(context_settings=dict(help_option_names=['-h', '--help']))
@@ -51,7 +51,7 @@ def cli(ctx, config, protocol, port, ca_path, insecure):
     if ca_path is not None:
         cfg['clickhouse']['ca_path'] = ca_path
 
-    setup_logging(cfg['logging'])
+    logging.configure(cfg['logging'])
     setup_environment(cfg['main'])
 
     if not drop_privileges(cfg['main']):

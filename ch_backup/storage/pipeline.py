@@ -4,12 +4,12 @@ Pipeline module
 Pipeline builder, loader and runner
 """
 
-import logging
 from concurrent.futures import ALL_COMPLETED, Future, ProcessPoolExecutor
 from concurrent.futures import wait as executor_wait
 from functools import partial
 from typing import Callable, Dict, List, Sequence, Tuple
 
+from .. import logging
 from .stages.encryption import DecryptStage, EncryptStage
 from .stages.filesystem import (CollectDataStage, ReadDataStage, ReadFileStage,
                                 WriteFileStage)

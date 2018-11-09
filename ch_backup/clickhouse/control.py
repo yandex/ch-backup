@@ -2,7 +2,6 @@
 Clickhouse-control classes module
 """
 
-import logging
 import os
 import shutil
 from hashlib import md5
@@ -10,6 +9,7 @@ from types import SimpleNamespace
 from typing import List, Optional
 from urllib.parse import quote
 
+from ch_backup import logging
 from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.util import chown_dir_contents, strip_query

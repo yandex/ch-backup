@@ -2,12 +2,12 @@
 Clickhouse backup logic
 """
 
-import logging
 from collections import defaultdict
 from copy import copy
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from ch_backup import logging
 from ch_backup.backup.layout import ClickhouseBackupLayout
 from ch_backup.backup.metadata import BackupMetadata, BackupState, PartMetadata
 from ch_backup.clickhouse.control import ClickhouseCTL, FreezedPart

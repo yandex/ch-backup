@@ -2,10 +2,10 @@
 ClickHouse backup layout.
 """
 
-import logging
 import os
 from typing import List, Sequence
 
+from ch_backup import logging
 from ch_backup.backup.metadata import BackupMetadata
 from ch_backup.clickhouse.control import ClickhouseCTL, FreezedPart
 from ch_backup.config import Config

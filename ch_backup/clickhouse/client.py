@@ -2,12 +2,12 @@
 ClickHouse client.
 """
 
-import logging
 from http.client import RemoteDisconnected
 
 import requests
 from requests import HTTPError, Session
 
+from ch_backup import logging
 from ch_backup.util import retry
 
 

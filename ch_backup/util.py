@@ -3,7 +3,6 @@ util module defines various auxiliary functions
 """
 
 import grp
-import logging
 import os
 import pwd
 import re
@@ -13,6 +12,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable, Union
 
 import tenacity
+
+from ch_backup import logging
 
 LOCAL_TZ = timezone(
     timedelta(seconds=-1 * (time.altzone if time.daylight else time.timezone)))
@@ -24,21 +25,6 @@ def chown_dir_contents(user: str, group: str, dir_path: str) -> None:
     """
     for path in os.listdir(dir_path):
         shutil.chown(os.path.join(dir_path, path), user, group)
-
-
-def setup_logging(config: dict) -> None:
-    """
-    Configure logging
-    """
-    root_level = getattr(logging, config['log_level_root'].upper(), None)
-
-    log_file = config.get('log_file', None)
-    logging.basicConfig(
-        level=root_level, format=config['log_format'], filename=log_file)
-
-    aux_level = getattr(logging, config['log_level_aux'].upper(), None)
-    for module_logger in ('boto3', 'botocore', 's3transfer', 'urllib3'):
-        logging.getLogger(module_logger).setLevel(aux_level)
 
 
 def setup_environment(config: dict) -> None:
