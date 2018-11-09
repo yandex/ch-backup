@@ -298,9 +298,9 @@ class ClickhouseBackup:
         if retain_time:
             backup_age_limit = now() - timedelta(**retain_time)
 
-            for backup_meta in self._existing_backups:
-                if backup_meta.end_time < backup_age_limit:
-                    purge_time_backup_names.append(backup_meta.name)
+            for backup in self._existing_backups:
+                if backup.end_time and backup.end_time < backup_age_limit:
+                    purge_time_backup_names.append(backup.name)
 
             logging.debug('Purge backups using retain time policy: %s',
                           purge_time_backup_names)
