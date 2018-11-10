@@ -14,8 +14,8 @@ Feature: SSL support
     Given clickhouse01 has test clickhouse data test1
     When we create clickhouse01 clickhouse backup
     Then ch_backup entries of clickhouse01 are in proper condition
-      | num | state    | data_count | link_count   | title         |
-      | 0   | created  | 4          | 0            | data          |
+      | num | state    | data_count | link_count   |
+      | 0   | created  | 4          | 0            |
 
   Scenario: Restore from backup
     When we restore clickhouse #0 backup to clickhouse02

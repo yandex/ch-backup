@@ -18,8 +18,8 @@ Feature: Backup of MergeTree tables with different configurations
     """
     When we create clickhouse01 clickhouse backup
     Then ch_backup entries of clickhouse01 are in proper condition
-      | num | state    | data_count | link_count   | title         |
-      | 0   | created  | 12         | 0            | data          |
+      | num | state    | data_count | link_count   |
+      | 0   | created  | 12         | 0            |
 
   Scenario: Restore from backup
     Given a working clickhouse on clickhouse02

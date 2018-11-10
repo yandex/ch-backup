@@ -98,6 +98,6 @@ def step_check_backups_conditions(context, node):
             expected_value = row[cond]
             assert_that(
                 current_value, equal_to(expected_value),
-                'Backup #{0} "{1}": {2} expected {3} = {4}, but was {5}'.
-                format(row['num'], row['title'], backup.name, cond,
-                       expected_value, current_value))
+                'Backup #{0}: {1} expected {2} = {3}, but was {4}'.format(
+                    row['num'], backup.name, cond, expected_value,
+                    current_value))
