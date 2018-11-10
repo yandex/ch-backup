@@ -14,7 +14,7 @@ TEMP_FILE_EXT = 'temp~'
 
 
 @env_stage('create', fail=True)
-def render_configs(context):
+def render_configs(context) -> None:
     """
     Render each template in the subtree.
     Each template is rendered in-place. As the framework operates in
@@ -29,7 +29,7 @@ def render_configs(context):
                     _render_file(context, root, basename)
 
 
-def render_template(context, text):
+def render_template(context, text: str) -> str:
     """
     Render template passed as a string.
     """
@@ -37,7 +37,7 @@ def render_template(context, text):
     return template.render(context_to_dict(context))
 
 
-def _render_file(context, directory, basename):
+def _render_file(context, directory: str, basename: str) -> None:
     path = '%s/%s' % (directory, basename)
     temp_file_path = '%s.%s' % (path, TEMP_FILE_EXT)
     loader = FileSystemLoader(directory)
@@ -52,7 +52,7 @@ def _render_file(context, directory, basename):
     os.rename(temp_file_path, path)
 
 
-def _environment(loader=None):
+def _environment(loader=None) -> Environment:
     """
     Create Environment object.
     """

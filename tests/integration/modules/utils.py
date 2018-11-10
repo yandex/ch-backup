@@ -65,14 +65,14 @@ def env_stage(event, fail=False):
     return wrapper
 
 
-def strip_query(query_text):
+def strip_query(query_text: str) -> str:
     """
     Remove query without newlines and duplicate whitespaces.
     """
     return re.sub(r'\s{2,}', ' ', query_text.replace('\n', ' ')).strip()
 
 
-def generate_random_string(length=64):
+def generate_random_string(length=64) -> str:
     """
     Generate random alphanum sequence.
     """
@@ -81,7 +81,7 @@ def generate_random_string(length=64):
         for _ in range(length))
 
 
-def context_to_dict(context):
+def context_to_dict(context) -> dict:
     """
     Convert context to dict representation.
 
@@ -90,7 +90,7 @@ def context_to_dict(context):
     if isinstance(context, SimpleNamespace):
         return context.__dict__
 
-    result = {}
+    result = {}  # type: dict
     for frame in context._stack:  # pylint: disable=protected-access
         for key, value in frame.items():
             if key not in result:

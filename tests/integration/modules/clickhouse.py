@@ -4,6 +4,7 @@ ClickHouse client.
 
 import logging
 from datetime import datetime, timedelta
+from typing import Sequence, Tuple
 from urllib.parse import urljoin
 
 from requests import HTTPError, Session
@@ -71,7 +72,7 @@ class ClickhouseClient:
     ClickHouse Client.
     """
 
-    def __init__(self, context, node_name):
+    def __init__(self, context, node_name: str) -> None:
         protocol = 'http'
 
         host, port = docker.get_exposed_port(
@@ -82,39 +83,39 @@ class ClickhouseClient:
         self._url = '{0}://{1}:{2}'.format(protocol, host, port)
         self._timeout = 30
 
-    def ping(self):
+    def ping(self) -> None:
         """
         Ping ClickHouse server.
         """
         self._query('GET', url='ping')
 
-    def execute(self, query):
+    def execute(self, query: str) -> None:
         """
         Execute arbitrary query.
         """
         self._query('POST', query=query)
 
-    def get_version(self):
+    def get_version(self) -> str:
         """
         Get ClickHouse version.
         """
         return self._query('GET', GET_VERSION_SQL)
 
     @staticmethod
-    def get_test_db_name(db_num):
+    def _get_test_db_name(db_num: int) -> str:
         """
         Get test database name
         """
         return 'test_db_{db_num:02d}'.format(db_num=db_num)
 
     @staticmethod
-    def get_test_table_name(table_num):
+    def _get_test_table_name(table_num: int) -> str:
         """
         Get test table name
         """
         return 'test_table_{table_num:02d}'.format(table_num=table_num)
 
-    def init_schema(self):
+    def init_schema(self) -> None:
         """
         Create test schema.
         """
@@ -133,17 +134,15 @@ class ClickhouseClient:
                         table_name=table_name,
                         table_schema=TEST_TABLE_SCHEMA))
 
-    def init_data(self, mark=None):
+    def init_data(self, mark: str) -> None:
         """
         Fill test schema with data
         """
-        if mark is None:
-            mark = ''
         for db_num in range(1, DB_COUNT + 1):
-            db_name = self.get_test_db_name(db_num)
+            db_name = self._get_test_db_name(db_num)
             for table_num in range(1, TABLE_COUNT + 1):
                 rows = []
-                table_name = self.get_test_table_name(table_num)
+                table_name = self._get_test_table_name(table_num)
                 for row_num in range(1, ROWS_COUNT + 1):
                     rows.append(', '.join(
                         self._gen_record(row_num=row_num, str_prefix=mark)))
@@ -154,7 +153,7 @@ class ClickhouseClient:
                         db_name=db_name, table_name=table_name),
                     data='\n'.join(rows))
 
-    def get_all_user_data(self):
+    def get_all_user_data(self) -> Tuple[int, dict]:
         """
         Retrieve all user data.
         """
@@ -171,7 +170,7 @@ class ClickhouseClient:
             rows_count += table_data['rows']
         return rows_count, user_data
 
-    def get_all_user_schemas(self):
+    def get_all_user_schemas(self) -> dict:
         """
         Retrieve DDL for user schemas.
         """
@@ -184,28 +183,28 @@ class ClickhouseClient:
             all_tables_desc[(db_name, table_name)] = table_data['data']
         return all_tables_desc
 
-    def get_all_user_databases(self):
+    def get_all_user_databases(self) -> Sequence[str]:
         """
         Get user databases.
         """
         all_dbs = self._query('GET', GET_ALL_DATABASES)['data']
         return [r[0] for r in all_dbs]
 
-    def drop_database(self, db_name):
+    def drop_database(self, db_name: str) -> None:
         """
         Drop database.
         """
         self._query('POST', DROP_DATABASE.format(db_name=db_name))
 
-    def drop_test_table(self, db_num, table_num):
+    def drop_test_table(self, db_num: int, table_num: int) -> None:
         """
         Drop test table.
         """
         self._query(
             'POST',
             DROP_TABLE.format(
-                db_name=self.get_test_db_name(db_num),
-                table_name=self.get_test_table_name(table_num)))
+                db_name=self._get_test_db_name(db_num),
+                table_name=self._get_test_table_name(table_num)))
 
     @staticmethod
     def _gen_record(row_num=0, day_diff=None, str_len=5, str_prefix=None):
@@ -229,7 +228,11 @@ class ClickhouseClient:
 
         return row
 
-    def _query(self, method, query=None, url=None, data=None):
+    def _query(self,
+               method: str,
+               query: str = None,
+               url: str = None,
+               data=None):
         if url:
             url = urljoin(self._url, url)
         else:
@@ -242,13 +245,7 @@ class ClickhouseClient:
         try:
             logging.debug('Executing ClickHouse query: %s', query)
             response = self._session.request(
-                method,
-                url,
-                params={
-                    'query': query,
-                },
-                data=data,
-                timeout=self._timeout)
+                method, url, params=params, data=data, timeout=self._timeout)
 
             response.raise_for_status()
         except HTTPError as e:

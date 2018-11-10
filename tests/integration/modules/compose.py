@@ -7,6 +7,7 @@ import os
 import random
 import shlex
 import subprocess
+from typing import cast
 
 import yaml
 
@@ -27,7 +28,7 @@ BASE_CONF = {
 
 
 @utils.env_stage('create', fail=True)
-def build_images(context):
+def build_images(context) -> None:
     """
     Build docker images.
     """
@@ -35,7 +36,7 @@ def build_images(context):
 
 
 @utils.env_stage('start', fail=True)
-def startup_containers(context):
+def startup_containers(context) -> None:
     """
     Start up docker containers.
     """
@@ -43,7 +44,7 @@ def startup_containers(context):
 
 
 @utils.env_stage('stop', fail=False)
-def shutdown_containers(context):
+def shutdown_containers(context) -> None:
     """
     Shutdown and remove docker containers.
     """
@@ -51,29 +52,19 @@ def shutdown_containers(context):
 
 
 @utils.env_stage('create', fail=True)
-def create_config(context):
+def create_config(context) -> None:
     """
     Generate config file and write it.
     """
     compose_conf_path = _get_config_path(context.conf)
     compose_conf = _generate_compose_config(context.conf)
-    return _write_config(compose_conf_path, compose_conf)
+    _write_config(compose_conf_path, compose_conf)
 
 
-def read_config(conf):
-    """
-    Reads compose config into dict.
-    """
-    with open(_get_config_path(conf)) as conf_file:
-        return yaml.load(conf_file)
-
-
-def _write_config(path, compose_conf):
+def _write_config(path: str, compose_conf: dict) -> None:
     """
     Dumps compose config into a file in Yaml format.
     """
-    assert isinstance(compose_conf, dict), 'compose_conf must be a dict'
-
     catalog_name = os.path.dirname(path)
     os.makedirs(catalog_name, exist_ok=True)
     temp_file_path = '{dir}/.docker-compose-conftest-{num}.yaml'.format(
@@ -93,42 +84,36 @@ def _write_config(path, compose_conf):
     except subprocess.CalledProcessError as err:
         raise RuntimeError(
             'unable to write config: validation failed with %s' % err)
+
     # Remove config only if validated ok.
-    _remove_config(temp_file_path)
+    try:
+        os.unlink(temp_file_path)
+    except FileNotFoundError:
+        pass
 
 
-def _get_config_path(conf):
+def _get_config_path(conf: dict) -> str:
     """
     Return file path to docker compose config file.
     """
     return os.path.join(conf['staging_dir'], 'docker-compose.yml')
 
 
-def _remove_config(path):
-    """
-    Removes a config file.
-    """
-    try:
-        os.unlink(path)
-    except FileNotFoundError:
-        pass
-
-
-def _validate_config(config_path):
+def _validate_config(config_path: str) -> None:
     """
     Perform config validation by calling `docker-compose config`
     """
     _call_compose_on_config(config_path, '__config_test', 'config')
 
 
-def _generate_compose_config(config):
+def _generate_compose_config(config: dict) -> dict:
     """
     Create docker compose config.
     """
     projects = config['projects']
     network_name = config['network_name']
 
-    compose_conf = copy.deepcopy(BASE_CONF)
+    compose_conf = cast(dict, copy.deepcopy(BASE_CONF))
     # Set net name at global scope so containers will be able to reference it.
     compose_conf['networks']['test_net']['external']['name'] = network_name
     # Generate service config for each project`s instance
@@ -151,7 +136,8 @@ def _generate_compose_config(config):
     return compose_conf
 
 
-def _generate_service_config(config, name, instance_name, instance_config):
+def _generate_service_config(config: dict, name: str, instance_name: str,
+                             instance_config: dict) -> dict:
     """
     Generates a single service config based on name and
     instance config.
@@ -199,13 +185,10 @@ def _generate_service_config(config, name, instance_name, instance_config):
     return service
 
 
-def _prepare_volumes(volumes, local_basedir):
+def _prepare_volumes(volumes: dict, local_basedir: str) -> list:
     """
-    Form a docker-compose volume list,
-    and create endpoints.
+    Form a docker-compose volume list, and create endpoints.
     """
-    assert isinstance(volumes, dict), 'volumes must be a dict'
-
     volume_list = []
     for props in volumes.values():
         # "local" params are expected to be relative to
@@ -220,19 +203,18 @@ def _prepare_volumes(volumes, local_basedir):
     return volume_list
 
 
-def _call_compose(conf, action):
+def _call_compose(conf: dict, action: str) -> None:
     conf_path = _get_config_path(conf)
     project_name = conf['network_name']
 
     _call_compose_on_config(conf_path, project_name, action)
 
 
-def _call_compose_on_config(conf_path, project_name, action):
+def _call_compose_on_config(conf_path: str, project_name: str,
+                            action: str) -> None:
     """
     Execute docker-compose action by invoking `docker-compose`.
     """
-    assert isinstance(action, str), 'action arg must be a string'
-
     compose_cmd = 'docker-compose --file {conf} -p {name} {action}'.format(
         conf=conf_path,
         name=project_name,

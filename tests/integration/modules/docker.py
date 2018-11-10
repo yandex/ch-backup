@@ -8,15 +8,17 @@ import random
 import subprocess
 import tarfile
 from distutils import dir_util
+from typing import List, Tuple
 
 import docker
+from docker.models.containers import Container
 
 from . import utils
 
 DOCKER_API = docker.from_env()
 
 
-def get_containers(context):
+def get_containers(context) -> List[Container]:
     """
     Get containers.
     """
@@ -29,7 +31,7 @@ def get_containers(context):
     return containers
 
 
-def get_container(context, prefix):
+def get_container(context, prefix: str) -> Container:
     """
     Get container object by prefix.
     """
@@ -37,7 +39,7 @@ def get_container(context, prefix):
         '%s.%s' % (prefix, context.conf['network_name']))
 
 
-def get_exposed_port(container, port):
+def get_exposed_port(container: Container, port: int) -> Tuple[str, int]:
     """
     Get pair of (host, port) for connection to exposed port.
     """
@@ -49,11 +51,14 @@ def get_exposed_port(container, port):
         host = 'localhost'
 
     binding = container.attrs['NetworkSettings']['Ports'].get('%d/tcp' % port)
+    if not binding:
+        raise RuntimeError('Container {0} has no binding for port {1}'.format(
+            container.name, port))
 
-    return (host, binding[0]['HostPort']) if binding else None
+    return host, binding[0]['HostPort']
 
 
-def put_file(container, data, path):
+def put_file(container: Container, data: bytes, path: str) -> None:
     """
     Put provided bytes data to given path
     """
@@ -64,10 +69,11 @@ def put_file(container, data, path):
     tar_data.addfile(tarinfo, io.BytesIO(data))
     tar_data.close()
 
-    return container.put_archive(path='/', data=tarstream.getvalue())
+    container.put_archive(path='/', data=tarstream.getvalue())
 
 
-def copy_container_dir(container, container_dir, local_dir):
+def copy_container_dir(container: Container, container_dir: str,
+                       local_dir: str) -> None:
     """
     Save docker directory.
     """
@@ -77,28 +83,24 @@ def copy_container_dir(container, container_dir, local_dir):
     tar.extractall(path=local_dir)
 
 
-def generate_ipv6(subnet=None):
+def generate_ipv6(subnet: str) -> str:
     """
     Generates a random IPv6 address in the provided subnet.
     """
-    if subnet is None:
-        subnet = 'fd00:dead:beef:%s::/96'
     random_part = ':'.join(['%x' % random.randint(0, 16**4) for _ in range(3)])
     return subnet % random_part
 
 
-def generate_ipv4(subnet=None):
+def generate_ipv4(subnet: str) -> str:
     """
     Generates a random IPv4 address in the provided subnet.
     """
-    if subnet is None:
-        subnet = '10.%s.0/24'
     random_part = '.'.join(['%d' % random.randint(0, 255) for _ in range(2)])
     return subnet % random_part
 
 
 @utils.env_stage('create', fail=True)
-def prep_images(context):
+def prep_images(context) -> None:
     """
     Prepare images.
     """
@@ -109,7 +111,7 @@ def prep_images(context):
 
 
 @utils.env_stage('create', fail=True)
-def create_network(context):
+def create_network(context) -> None:
     """
     Create docker network specified in the config.
     """
@@ -136,7 +138,7 @@ def create_network(context):
 
 
 @utils.env_stage('stop', fail=False)
-def shutdown_network(context):
+def shutdown_network(context) -> None:
     """
     Stop docker network(s)
     """

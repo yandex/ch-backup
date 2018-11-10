@@ -4,6 +4,7 @@ Interface to Minio S3 server.
 import json
 import os
 
+from docker.models.containers import Container
 from tenacity import (retry, retry_if_exception_type, stop_after_attempt,
                       wait_fixed)
 
@@ -15,12 +16,12 @@ class MinioException(Exception):
     Minion exception.
     """
 
-    def __init__(self, response):
+    def __init__(self, response: dict) -> None:
         super().__init__(self._fmt_message(response))
         self.response = response
 
     @staticmethod
-    def _fmt_message(response):
+    def _fmt_message(response: dict) -> str:
         try:
             error = response['error']
             message = '{0} Cause: {1}'.format(error['message'],
@@ -46,7 +47,7 @@ class BucketAlreadyOwnedByYou(MinioException):
     retry=retry_if_exception_type(MinioException),
     wait=wait_fixed(0.5),
     stop=stop_after_attempt(360))
-def configure_s3_credentials(context):
+def configure_s3_credentials(context) -> None:
     """
     Configure S3 credentials in mc (Minio client).
     """
@@ -57,7 +58,7 @@ def configure_s3_credentials(context):
             access_key, secret_key))
 
 
-def create_s3_bucket(context):
+def create_s3_bucket(context) -> None:
     """
     Create S3 bucket specified in the config.
     """
@@ -68,7 +69,7 @@ def create_s3_bucket(context):
         pass
 
 
-def export_s3_data(context, path):
+def export_s3_data(context, path: str) -> None:
     """
     Export S3 data to the specified directory.
     """
@@ -76,11 +77,11 @@ def export_s3_data(context, path):
     copy_container_dir(_container(context), '/export', local_dir)
 
 
-def _container(context):
+def _container(context) -> Container:
     return get_container(context, context.conf['s3']['container'])
 
 
-def _mc_execute(context, command):
+def _mc_execute(context, command: str) -> dict:
     """
     Execute mc (Minio client) command.
     """
