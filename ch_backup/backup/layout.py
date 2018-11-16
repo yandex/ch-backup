@@ -3,7 +3,7 @@ ClickHouse backup layout.
 """
 
 import os
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 from ch_backup import logging
 from ch_backup.backup.metadata import BackupMetadata
@@ -146,7 +146,8 @@ class ClickhouseBackupLayout:
 
         return uploaded_files
 
-    def get_backup_meta(self, backup_name: str = None) -> 'BackupMetadata':
+    def get_backup_meta(self,
+                        backup_name: str = None) -> Optional[BackupMetadata]:
         """
         Download backup meta from storage
         """
@@ -154,6 +155,9 @@ class ClickhouseBackupLayout:
             path = self.backup_meta_path
         else:
             path = self._get_backup_meta_path(backup_name)
+
+        if not self._storage_loader.path_exists(path):
+            return None
 
         try:
             data = self._storage_loader.download_data(path)
@@ -227,7 +231,7 @@ class ClickhouseBackupLayout:
             path, recursive=True, absolute=True)
         self.delete_loaded_files(delete_files)
 
-    def get_existing_backups_names(self) -> list:
+    def get_backup_names(self) -> Sequence[str]:
         """
         Get current backup entries
         """

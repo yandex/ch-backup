@@ -30,8 +30,13 @@ DEFAULT_CONFIG = {
         'min_interval': {
             'minutes': 0,
         },
+        # Retain policy for the purge command that sets the maximum age of
+        # backups to keep.
         'retain_time': {},
+        # Retain policy for the purge command that sets the maximum number of
+        # valid backups to keep.
         'retain_count': None,
+        # User data including into backup metadata.
         'labels': {},
     },
     'storage': {

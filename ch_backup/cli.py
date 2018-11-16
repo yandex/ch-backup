@@ -12,6 +12,7 @@ from click import (Choice, ParamType, Path, argument, group, option,
 from tabulate import tabulate
 
 from . import logging
+from .backup.metadata import BackupState
 from .ch_backup import ClickhouseBackup
 from .config import Config
 from .util import drop_privileges, setup_environment
@@ -127,7 +128,9 @@ class List(ParamType):
 @option('-v', '--verbose', is_flag=True, default=False, help='Verbose output.')
 def list_command(_ctx, ch_backup, verbose, **kwargs):
     """List existing backups."""
-    backups = ch_backup.list(kwargs['all'])
+    state = None if kwargs['all'] else BackupState.CREATED
+
+    backups = ch_backup.list(state)
 
     if not verbose:
         print('\n'.join([b.name for b in backups]))
@@ -229,8 +232,12 @@ def delete(ctx, ch_backup, name):
 @command()
 def purge(_ctx, ch_backup):
     """Purge outdated backups."""
+    names, msg = ch_backup.purge()
 
-    ch_backup.purge()
+    if msg:
+        print(msg, file=sys.stderr, flush=True)
+
+    print('\n'.join(names))
 
 
 def _validate_name(ctx, ch_backup, name):

@@ -6,7 +6,7 @@ import os
 import shutil
 from hashlib import md5
 from types import SimpleNamespace
-from typing import List, Optional
+from typing import List, Optional, Sequence
 from urllib.parse import quote
 
 from ch_backup import logging
@@ -177,8 +177,8 @@ class ClickhouseCTL:
 
         return FreezedPartition(partition, self._get_shadow_increment())
 
-    def get_freezed_parts(self,
-                          fpartition: FreezedPartition) -> List[FreezedPart]:
+    def get_freezed_parts(
+            self, fpartition: FreezedPartition) -> Sequence[FreezedPart]:
         """
         Get parts of freezed partition.
         """
@@ -211,8 +211,8 @@ class ClickhouseCTL:
         logging.debug('Removing shadow data path: %s', self.shadow_data_path)
         shutil.rmtree(self.shadow_data_path, ignore_errors=True)
 
-    def get_all_databases(
-            self, exclude_dbs: Optional[List[str]] = None) -> List[str]:
+    def get_all_databases(self, exclude_dbs: Optional[Sequence[str]] = None) \
+            -> Sequence[str]:
         """
         Get list of all databases
         """
@@ -229,7 +229,7 @@ class ClickhouseCTL:
 
         return result
 
-    def get_all_db_tables(self, db_name: str) -> List[str]:
+    def get_all_db_tables(self, db_name: str) -> Sequence[str]:
         """
         Get unordered list of all database tables
         """
@@ -248,7 +248,8 @@ class ClickhouseCTL:
 
     def get_tables_ordered(self,
                            db_name: str,
-                           tables: Optional[List[str]] = None) -> List[str]:
+                           tables: Optional[Sequence[str]] = None) \
+            -> Sequence[str]:
         """
         Get ordered by mtime list of all database tables
         """
@@ -261,7 +262,7 @@ class ClickhouseCTL:
             result = [row['name'] for row in ch_resp['data']]
         return result
 
-    def get_partitions(self, database: str, table: str) -> List[Partition]:
+    def get_partitions(self, database: str, table: str) -> Sequence[Partition]:
         """
         Get dict with all table parts
         """
