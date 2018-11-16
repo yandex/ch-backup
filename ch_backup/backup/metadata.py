@@ -21,7 +21,6 @@ class BackupState(Enum):
     Backup states.
     """
 
-    NOT_STARTED = 'not_started'
     CREATED = 'created'
     CREATING = 'creating'
     DELETING = 'deleting'
@@ -102,9 +101,9 @@ class BackupMetadata:
         self.path = path
         self.ch_version = ch_version
         self.hostname = hostname or socket.getfqdn()
-        self._state = BackupState.NOT_STARTED
+        self._state = BackupState.CREATING
         self.date_fmt = date_fmt or CBS_DEFAULT_DATE_FMT
-        self.start_time = None  # type: Optional[datetime]
+        self.start_time = now()
         self.end_time = None  # type: Optional[datetime]
         self._databases = {}  # type: Dict[str, dict]
         self.size = 0
@@ -125,12 +124,6 @@ class BackupMetadata:
         if value not in BackupState:
             raise UnknownBackupStateError
         self._state = value
-
-    def update_start_time(self) -> None:
-        """
-        Set start time to the current time.
-        """
-        self.start_time = now()
 
     def update_end_time(self) -> None:
         """
@@ -170,13 +163,13 @@ class BackupMetadata:
             loaded = json.loads(data)
             meta = loaded['meta']
 
-            backup = BackupMetadata(
-                name=meta['name'],
-                path=meta['path'],
-                labels=meta.get('labels'),
-                ch_version=meta.get('ch_version'),
-                hostname=meta['hostname'],
-                date_fmt=meta['date_fmt'])
+            backup = cls.__new__(cls)
+            backup.name = meta['name']
+            backup.path = meta['path']
+            backup.labels = meta.get('labels')
+            backup.ch_version = meta.get('ch_version')
+            backup.hostname = meta['hostname']
+            backup.date_fmt = meta['date_fmt']
             backup._databases = loaded['databases']
             backup.start_time = cls._load_time(meta, 'start_time')
             backup.end_time = cls._load_time(meta, 'end_time')

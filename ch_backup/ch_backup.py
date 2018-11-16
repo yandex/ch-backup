@@ -96,8 +96,6 @@ class ClickhouseBackup:
             labels=backup_labels,
             ch_version=self._ch_ctl.get_version())
 
-        backup_meta.state = BackupState.CREATING
-        backup_meta.update_start_time()
         self._backup_layout.save_backup_meta(backup_meta)
 
         logging.debug('Starting backup "%s" for databases: %s',
