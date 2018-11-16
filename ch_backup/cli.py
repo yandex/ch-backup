@@ -127,13 +127,23 @@ class List(ParamType):
 @option('-v', '--verbose', is_flag=True, default=False, help='Verbose output.')
 def list_command(_ctx, ch_backup, verbose, **kwargs):
     """List existing backups."""
-    fields, backups = ch_backup.list(kwargs['all'])
+    backups = ch_backup.list(kwargs['all'])
 
-    if verbose:
-        print(tabulate(backups, headers=fields))
-    else:
-        name_idx = fields.index('name')
-        print('\n'.join([b[name_idx] for b in backups]))
+    if not verbose:
+        print('\n'.join([b.name for b in backups]))
+        return
+
+    fields = ('name', 'state', 'start_time', 'end_time', 'size', 'real_size',
+              'ch_version')
+
+    report = []
+    state_idx = fields.index('state')
+    for backup in backups:
+        entry_report = [str(getattr(backup, x, None)) for x in fields]
+        entry_report[state_idx] = backup.state.value
+        report.append(entry_report)
+
+    print(tabulate(report, headers=fields))
 
 
 @command()
@@ -145,7 +155,7 @@ def show(ctx, ch_backup, name):
     print(ch_backup.get(name))
 
 
-@command()
+@command(name='backup')
 @option(
     '-d',
     '--databases',
@@ -166,7 +176,7 @@ def show(ctx, ch_backup, name):
     '--label',
     multiple=True,
     help='Custom labels as key-value pairs that represents user metadata.')
-def backup(ctx, ch_backup, databases, tables, force, label):
+def backup_command(ctx, ch_backup, databases, tables, force, label):
     """Perform backup."""
     if databases and tables:
         ctx.fail('Options --databases and --tables are mutually exclusive.')
@@ -211,6 +221,7 @@ def delete(ctx, ch_backup, name):
 
     if msg:
         print(msg, file=sys.stderr, flush=True)
+
     if name:
         print(name)
 
@@ -223,9 +234,7 @@ def purge(_ctx, ch_backup):
 
 
 def _validate_name(ctx, ch_backup, name):
-    fields, backups = ch_backup.list(all_opt=True)
-    name_idx = fields.index('name')
-    backup_names = [b[name_idx] for b in backups]
+    backup_names = set(b.name for b in ch_backup.list())
     if name == 'LAST':
         if not backup_names:
             ctx.fail('There are no backups.')

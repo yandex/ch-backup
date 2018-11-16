@@ -26,7 +26,6 @@ class ClickhouseBackup:
         self._backup_layout = ClickhouseBackupLayout(config, self._ch_ctl)
         self._config = config['backup']
         self._existing_backups = []  # type: List[BackupMetadata]
-        self._dedup_time = None
 
     def get(self, backup_name: str) -> BackupMetadata:
         """
@@ -34,23 +33,12 @@ class ClickhouseBackup:
         """
         return self._get_backup_meta(backup_name)
 
-    def list(self, all_opt=True) -> Tuple[Sequence, Sequence]:
+    def list(self, all_opt=True) -> Sequence[BackupMetadata]:
         """
-        Get list of existing backup names.
+        Get list of existing backups.
         """
         self._load_existing_backups(load_all=all_opt)
-
-        report = []
-        fields = ('name', 'state', 'start_time', 'end_time', 'size',
-                  'real_size', 'ch_version')
-
-        i_state = fields.index('state')
-        for backup_meta in self._existing_backups:
-            entry_report = [str(getattr(backup_meta, x, None)) for x in fields]
-            entry_report[i_state] = backup_meta.state.value
-            report.append(entry_report)
-
-        return fields, report
+        return self._existing_backups
 
     def backup(self, databases=None, tables=None, force=False,
                labels=None) -> Tuple[str, Optional[str]]:
