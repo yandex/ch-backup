@@ -20,40 +20,41 @@ Feature: Min interval between backups
     """
     When we create clickhouse01 clickhouse backup
     Then ch_backup entries of clickhouse01 are in proper condition
-      | num | state    | data_count | link_count   | title         |
-      | 0   | created  | 10         | 0            | data          |
+      | num | state    | data_count | link_count |
+      | 0   | created  | 10         | 0          |
 
-  Scenario: Attempt to create backup results to no new backups
+  Scenario Outline: Attempt to create backup results to no new backups
+    Given metadata of clickhouse01 backup #0 was adjusted with
+    """
+    meta:
+        state: <state>
+    """
     When we create clickhouse01 clickhouse backup
     Then ch_backup entries of clickhouse01 are in proper condition
-      | num | state    | data_count | link_count   | title         |
-      | 0   | created  | 10         | 0            | data          |
+      | num | state    | data_count | link_count |
+      | 0   | <state>  | 10         | 0          |
+
+    Examples:
+      | state             |
+      | created           |
+      | creating          |
+      | deleting          |
+      | partially_deleted |
+      | failed            |
 
   Scenario: Create backup when min interval is passed
     Given metadata of clickhouse01 backup #0 was adjusted with
     """
     meta:
+        state: created
         start_time: {{ backup.start_time | decrease_on('1 hour') }}
         end_time: {{ backup.end_time | decrease_on('1 hour') }}
     """
     When we create clickhouse01 clickhouse backup
     Then ch_backup entries of clickhouse01 are in proper condition
-      | num | state    | data_count | link_count   | title         |
-      | 0   | created  | 0          | 10           | data          |
-      | 1   | created  | 10         | 0            | data          |
-
-  Scenario: Create backup when min interval is passed
-    Given metadata of clickhouse01 backup #0 was adjusted with
-    """
-    meta:
-        state: failed
-    """
-    When we create clickhouse01 clickhouse backup
-    Then ch_backup entries of clickhouse01 are in proper condition
-      | num | state    | data_count | link_count   | title         |
-      | 0   | created  | 0          | 10           | data          |
-      | 1   | failed   | 0          | 10           | data          |
-      | 2   | created  | 10         | 0            | data          |
+      | num | state    | data_count | link_count |
+      | 0   | created  | 0          | 10         |
+      | 1   | created  | 10         | 0          |
 
   Scenario: Create backup bypassing min interval with force option
     When we create clickhouse01 clickhouse backup
@@ -61,8 +62,7 @@ Feature: Min interval between backups
     force: True
     """
     Then ch_backup entries of clickhouse01 are in proper condition
-      | num | state    | data_count | link_count   | title         |
-      | 0   | created  | 0          | 10           | data          |
-      | 1   | created  | 0          | 10           | data          |
-      | 2   | failed   | 0          | 10           | data          |
-      | 3   | created  | 10         | 0            | data          |
+      | num | state    | data_count | link_count |
+      | 0   | created  | 0          | 10         |
+      | 1   | created  | 0          | 10         |
+      | 2   | created  | 10         | 0          |

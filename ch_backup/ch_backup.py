@@ -451,14 +451,12 @@ class ClickhouseBackup:
 
     def _get_last_backup(self) -> Optional[BackupMetadata]:
         """
-        Return the last valid backup.
+        Return the last backup.
         """
         backups = self._get_existing_backup_names()
         for backup in sorted(backups, reverse=True):
             try:
-                backup_meta = self._get_backup_meta(backup)
-                if backup_meta.state == BackupState.CREATED:
-                    return backup_meta
+                return self._get_backup_meta(backup)
             except Exception:
                 logging.warning(
                     'Failed to load metadata for backup %s',
