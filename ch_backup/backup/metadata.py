@@ -55,7 +55,7 @@ class PartMetadata(SimpleNamespace):
                 'table': self.table,
                 'partition': self.partition,
                 'name': self.name,
-                'bytes_on_disk': self.size,
+                'bytes': self.size,
                 'checksum': self.checksum,
             },
             'paths': self.paths,
@@ -74,10 +74,12 @@ class PartMetadata(SimpleNamespace):
         part.table = meta['table']
         part.partition = meta['partition']
         part.name = meta['name']
-        part.size = int(meta['bytes_on_disk'])
-        part.checksum = meta.get('checksum')
         part.link = value['link']
         part.paths = value['paths']
+        # Additional logic for backward-compatibility with earlier versions
+        # of backup metadata format.
+        part.size = int(meta.get('bytes', meta.get('bytes_on_disk')))
+        part.checksum = meta.get('checksum')
 
         return part
 
@@ -166,21 +168,21 @@ class BackupMetadata:
             backup = cls.__new__(cls)
             backup.name = meta['name']
             backup.path = meta['path']
-            backup.labels = meta.get('labels')
-            backup.ch_version = meta.get('ch_version')
             backup.hostname = meta['hostname']
             backup.date_fmt = meta['date_fmt']
             backup._databases = loaded['databases']
             backup.start_time = cls._load_time(meta, 'start_time')
             backup.end_time = cls._load_time(meta, 'end_time')
             backup.size = meta['bytes']
-
-            # TODO: delete in few months
+            # Additional logic for backward-compatibility with earlier versions
+            # of backup metadata format.
             if 'state' in meta:
-                backup.real_size = meta['real_bytes']
                 backup._state = BackupState(meta['state'])
             else:
                 backup._state = BackupState.CREATED
+            backup.real_size = meta.get('real_bytes')
+            backup.ch_version = meta.get('ch_version')
+            backup.labels = meta.get('labels')
 
             return backup
 
@@ -249,8 +251,9 @@ class BackupMetadata:
         self._table_parts(part.database, part.table).pop(part.name)
         self.size -= part.size
         if not part.link:
-            # TODO: delete in few months
-            if hasattr(self, 'real_rows'):
+            # Additional check for backward-compatibility with earlier versions
+            # of backup metadata format.
+            if self.real_size:
                 self.real_size -= part.size
 
     def get_part(self, db_name: str, table_name: str,
