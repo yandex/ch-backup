@@ -498,7 +498,8 @@ class ClickhouseBackup:
     @staticmethod
     def _pop_deleting_paths(
             backup_meta: BackupMetadata,
-            newer_backups: Sequence[BackupMetadata]) -> Tuple[bool, List[str]]:
+            newer_backups: Sequence[BackupMetadata]) \
+            -> Tuple[bool, Sequence[str]]:
         """
         Get backup paths which are safe for delete
         """

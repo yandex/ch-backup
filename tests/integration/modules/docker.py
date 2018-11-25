@@ -8,7 +8,7 @@ import random
 import subprocess
 import tarfile
 from distutils import dir_util
-from typing import List, Tuple
+from typing import Sequence, Tuple
 
 import docker
 from docker.models.containers import Container
@@ -19,7 +19,7 @@ from .typing import ContextT
 DOCKER_API = docker.from_env()
 
 
-def get_containers(context: ContextT) -> List[Container]:
+def get_containers(context: ContextT) -> Sequence[Container]:
     """
     Get containers.
     """

@@ -3,7 +3,7 @@ ClickHouse backup layout.
 """
 
 import os
-from typing import List, Optional, Sequence
+from typing import Optional, Sequence
 
 from ch_backup import logging
 from ch_backup.backup.metadata import BackupMetadata
@@ -115,7 +115,7 @@ class ClickhouseBackupLayout:
         except Exception as e:
             raise StorageError('Failed to upload backup metadata') from e
 
-    def save_part_data(self, fpart: FreezedPart) -> List[str]:
+    def save_part_data(self, fpart: FreezedPart) -> Sequence[str]:
         """
         Backup part files and return storage paths.
         """

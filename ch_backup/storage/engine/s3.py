@@ -5,7 +5,7 @@ S3 storage engine.
 import os
 import time
 from tempfile import TemporaryFile
-from typing import Any, Sequence
+from typing import Sequence
 
 import boto3
 import botocore.vendored.requests.packages.urllib3 as boto_urllib3
@@ -174,7 +174,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
         self._multipart_downloads[download_id] = resp
         return download_id
 
-    def download_part(self, download_id: str, part_len: int = None) -> Any:
+    def download_part(self, download_id: str, part_len: int = None) -> bytes:
         if part_len:
             part_len = DEFAULT_DOWNLOAD_PART_LEN
         return self._multipart_downloads[download_id]['Body'].read(part_len)

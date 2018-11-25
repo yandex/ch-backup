@@ -3,7 +3,7 @@ Interfaces for storage engines.
 """
 
 from abc import ABCMeta, abstractmethod
-from typing import Any, Sequence
+from typing import Sequence
 
 
 class StorageEngine(metaclass=ABCMeta):
@@ -30,7 +30,7 @@ class StorageEngine(metaclass=ABCMeta):
         """
 
     @abstractmethod
-    def download_data(self, remote_path: str) -> Any:
+    def download_data(self, remote_path: str) -> bytes:
         """
         Download file from storage and return its content as a string.
         """

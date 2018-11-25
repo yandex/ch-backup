@@ -13,12 +13,12 @@ class TestStripQuery:
     Tests for strip_query() function.
     """
 
-    def test_query_without_newlines(self):
+    def test_query_without_newlines(self) -> None:
         input_query = 'SELECT 42 FROM {db_name}.{table_name}'
         expected = 'SELECT 42 FROM {db_name}.{table_name}'
         assert strip_query(input_query) == expected
 
-    def test_query_with_newlines(self):
+    def test_query_with_newlines(self) -> None:
         input_query = '''
             SHOW TABLES
             FROM {db_name}
@@ -29,7 +29,7 @@ class TestStripQuery:
 
 
 @retry(ExpectedException, max_attempts=3, max_interval=0.1)
-def unreliable_function(context):
+def unreliable_function(context: dict) -> None:
     context['attempts'] = context.get('attempts', 0) + 1
 
     if context.get('failure_count', 0) >= context['attempts']:
@@ -42,7 +42,7 @@ class TestRetry:
     """
 
     def test_function_succeeds(self):
-        context = {}
+        context = {}  # type: dict
         unreliable_function(context)
         assert context['attempts'] == 1
 

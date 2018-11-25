@@ -2,13 +2,13 @@
 Utility functions.
 """
 
-import collections
 import logging
 import re
 import string
 from functools import wraps
 from random import choice as random_choise
 from types import SimpleNamespace
+from typing import Mapping, MutableMapping, MutableSequence
 
 from .typing import ContextT
 
@@ -20,8 +20,8 @@ def merge(original, update):
     for key in update:
         recurse_conditions = [
             key in original,
-            isinstance(original.get(key), dict),
-            isinstance(update.get(key), collections.Mapping),
+            isinstance(original.get(key), MutableMapping),
+            isinstance(update.get(key), Mapping),
         ]
         if all(recurse_conditions):
             merge(original[key], update[key])
@@ -36,10 +36,10 @@ def format_object(obj, **replacements):
     """
     if isinstance(obj, str):
         obj = obj.format(**replacements)
-    elif isinstance(obj, collections.Mapping):
+    elif isinstance(obj, MutableMapping):
         for key, value in obj.items():
             obj[key] = format_object(value, **replacements)
-    elif isinstance(obj, collections.Iterable):
+    elif isinstance(obj, MutableSequence):
         for idx, val in enumerate(obj):
             obj[idx] = format_object(val, **replacements)
     return obj

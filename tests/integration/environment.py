@@ -32,7 +32,7 @@ def after_step(context, step):
             try:
                 import ipdb as pdb
             except ImportError:
-                import pdb
+                import pdb  # type: ignore
             pdb.post_mortem(step.exc_traceback)
 
 

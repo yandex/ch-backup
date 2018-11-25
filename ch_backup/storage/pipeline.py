@@ -43,6 +43,7 @@ class Pipeline:
 
         # return value from generator
         # https://www.python.org/dev/peps/pep-0380/#id20
+        assert func_part
         try:
             gen = func_part(src_key, dst_key)
             while True:
