@@ -62,7 +62,7 @@ class ReadFileStage(InputStage):
         self._chunk_size = conf['chunk_size']
         self._fobj = None  # type: Optional[IO]
 
-    def _pre_process(self, src_key) -> None:
+    def _pre_process(self, src_key: str) -> None:
         self._fobj = open(src_key, 'br')
 
     def _process(self):

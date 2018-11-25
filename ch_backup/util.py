@@ -98,16 +98,9 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def utc_fromtimestamp(timestamp) -> datetime:
-    """
-    Return UTC datetime with timezone information.
-    """
-    return datetime.fromtimestamp(timestamp, timezone.utc)
-
-
 def retry(exception_types: Union[type, tuple] = Exception,
-          max_attempts=5,
-          max_interval=5) -> Callable:
+          max_attempts: int = 5,
+          max_interval: float = 5) -> Callable:
     """
     Function decorator that retries wrapped function on failures.
     """

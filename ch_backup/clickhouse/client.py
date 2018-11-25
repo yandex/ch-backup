@@ -3,6 +3,7 @@ ClickHouse client.
 """
 
 from http.client import RemoteDisconnected
+from typing import Any
 
 import requests
 from requests import HTTPError, Session
@@ -35,7 +36,7 @@ class ClickhouseClient:
         self._timeout = config['timeout']
 
     @retry(RemoteDisconnected)
-    def query(self, query: str, post_data: dict = None):
+    def query(self, query: str, post_data: dict = None) -> Any:
         """
         Execute query.
         """

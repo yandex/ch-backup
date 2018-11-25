@@ -4,6 +4,7 @@ config module defines Config class and default values
 
 import copy
 import socket
+from typing import Any
 
 import yaml
 
@@ -169,7 +170,7 @@ class Config:
             logging.critical('Config item "%s" was not defined', item)
             raise
 
-    def get(self, key: str, default=None):
+    def get(self, key: str, default: Any = None) -> Any:
         """
         Returns value by key or default
         """

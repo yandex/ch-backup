@@ -10,9 +10,10 @@ from docker.models.containers import Container
 
 from .docker import copy_container_dir, get_containers
 from .minio import export_s3_data
+from .typing import ContextT
 
 
-def save_logs(context) -> None:
+def save_logs(context: ContextT) -> None:
     """
     Save logs and support materials.
     """

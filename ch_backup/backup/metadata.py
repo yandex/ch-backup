@@ -95,9 +95,9 @@ class BackupMetadata:
                  name: str,
                  path: str,
                  ch_version: str,
-                 date_fmt=None,
-                 hostname=None,
-                 labels=None) -> None:
+                 date_fmt: str = None,
+                 hostname: str = None,
+                 labels: dict = None) -> None:
         self.name = name
         self.labels = labels
         self.path = path
@@ -133,7 +133,7 @@ class BackupMetadata:
         """
         self.end_time = now()
 
-    def dump_json(self, indent=4) -> str:
+    def dump_json(self, indent: int = 4) -> str:
         """
         Return json representation of backup metadata.
         """

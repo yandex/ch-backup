@@ -204,7 +204,7 @@ class ClickhouseBackupLayout:
 
         return downloaded_files
 
-    def delete_loaded_files(self, delete_files: List[str]) -> None:
+    def delete_loaded_files(self, delete_files: Sequence[str]) -> None:
         """
         Delete files from backup storage
         """
@@ -218,7 +218,7 @@ class ClickhouseBackupLayout:
                 msg = 'Failed to delete file {0}'.format(remote_path)
                 raise StorageError(msg) from e
 
-    def delete_backup_path(self, backup_name=None) -> None:
+    def delete_backup_path(self, backup_name: str = None) -> None:
         """
         Delete files from backup storage
         """

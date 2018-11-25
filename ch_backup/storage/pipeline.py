@@ -7,7 +7,7 @@ Pipeline builder, loader and runner
 from concurrent.futures import ALL_COMPLETED, Future, ProcessPoolExecutor
 from concurrent.futures import wait as executor_wait
 from functools import partial
-from typing import Callable, Dict, List, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Sequence, Tuple
 
 from .. import logging
 from .stages.encryption import DecryptStage, EncryptStage
@@ -27,7 +27,7 @@ class Pipeline:
     def __init__(self) -> None:
         self._func_list = []  # type: List[Tuple[Callable, Sequence, dict]]
 
-    def append(self, func: Callable, *args, **kwargs) -> None:
+    def append(self, func: Callable, *args: Any, **kwargs: Any) -> None:
         """
         Append stage cmd
         """
@@ -63,13 +63,14 @@ class ExecPool:
         self._futures = {}  # type: Dict[str, Future]
         self._pool = ProcessPoolExecutor(max_workers=worker_count)
 
-    def shutdown(self, graceful=True) -> None:
+    def shutdown(self, graceful: bool = True) -> None:
         """
         Wait workers for complete jobs and shutdown workers
         """
         self._pool.shutdown(wait=graceful)
 
-    def submit(self, future_id: str, func: Callable, *args, **kwargs) -> None:
+    def submit(self, future_id: str, func: Callable, *args: Any,
+               **kwargs: Any) -> None:
         """
         Schedule job for execution
         """
@@ -98,7 +99,8 @@ class ExecPool:
         self._futures = {}
 
 
-def pipeline_wrapper(config: dict, stages, *args, **kwargs):
+def pipeline_wrapper(config: dict, stages: Sequence, *args: Any,
+                     **kwargs: Any) -> Any:
     """
     Build and execute pipeline.
     """
@@ -179,7 +181,7 @@ class PipelineLoader:
         """
         Download file to local filesystem.
         """
-        return self._execute_pipeline(
+        self._execute_pipeline(
             (self.download_file.__name__, *args),
             (DownloadStorageStage, DecryptStage, WriteFileStage), *args,
             **kwargs)

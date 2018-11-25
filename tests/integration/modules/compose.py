@@ -12,6 +12,7 @@ from typing import cast
 import yaml
 
 from . import utils
+from .typing import ContextT
 
 # Default invariant config
 BASE_CONF = {
@@ -28,7 +29,7 @@ BASE_CONF = {
 
 
 @utils.env_stage('create', fail=True)
-def build_images(context) -> None:
+def build_images(context: ContextT) -> None:
     """
     Build docker images.
     """
@@ -36,7 +37,7 @@ def build_images(context) -> None:
 
 
 @utils.env_stage('start', fail=True)
-def startup_containers(context) -> None:
+def startup_containers(context: ContextT) -> None:
     """
     Start up docker containers.
     """
@@ -44,7 +45,7 @@ def startup_containers(context) -> None:
 
 
 @utils.env_stage('stop', fail=False)
-def shutdown_containers(context) -> None:
+def shutdown_containers(context: ContextT) -> None:
     """
     Shutdown and remove docker containers.
     """
@@ -52,7 +53,7 @@ def shutdown_containers(context) -> None:
 
 
 @utils.env_stage('create', fail=True)
-def create_config(context) -> None:
+def create_config(context: ContextT) -> None:
     """
     Generate config file and write it.
     """

@@ -5,7 +5,7 @@ S3 storage engine.
 import os
 import time
 from tempfile import TemporaryFile
-from typing import List
+from typing import Any, Sequence
 
 import boto3
 import botocore.vendored.requests.packages.urllib3 as boto_urllib3
@@ -61,10 +61,10 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
             Body=data, Bucket=self._s3_bucket_name, Key=remote_path)
         return remote_path
 
-    def download_file(self, remote_path: str, local_path: str) -> str:
+    def download_file(self, remote_path: str, local_path: str) -> None:
         remote_path = remote_path.lstrip('/')
-        return self._s3_client.download_file(self._s3_bucket_name, remote_path,
-                                             local_path)
+        self._s3_client.download_file(self._s3_bucket_name, remote_path,
+                                      local_path)
 
     def download_data(self, remote_path):
         remote_path = remote_path.lstrip('/')
@@ -75,14 +75,15 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
             data = fileobj.read()
         return data
 
-    def delete_file(self, remote_path: str) -> str:
+    def delete_file(self, remote_path: str) -> None:
         remote_path = remote_path.lstrip('/')
         self._s3_client.delete_object(
             Bucket=self._s3_bucket_name, Key=remote_path)
-        return remote_path
 
-    def list_dir(self, remote_path: str, recursive=False,
-                 absolute=False) -> List[str]:
+    def list_dir(self,
+                 remote_path: str,
+                 recursive: bool = False,
+                 absolute: bool = False) -> Sequence[str]:
         remote_path = remote_path.lstrip('/')
         contents = []
         paginator = self._s3_client.get_paginator('list_objects')
@@ -173,7 +174,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
         self._multipart_downloads[download_id] = resp
         return download_id
 
-    def download_part(self, download_id: str, part_len: int = None):
+    def download_part(self, download_id: str, part_len: int = None) -> Any:
         if part_len:
             part_len = DEFAULT_DOWNLOAD_PART_LEN
         return self._multipart_downloads[download_id]['Body'].read(part_len)

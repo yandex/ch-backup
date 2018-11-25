@@ -10,6 +10,7 @@ from botocore.client import Config
 from botocore.errorfactory import ClientError
 
 from . import docker
+from .typing import ContextT
 
 
 class S3Client:
@@ -17,7 +18,7 @@ class S3Client:
     S3 client.
     """
 
-    def __init__(self, context) -> None:
+    def __init__(self, context: ContextT) -> None:
         config = context.conf['s3']
         boto_config = config['boto_config']
         self._s3_session = boto3.session.Session(

@@ -44,8 +44,11 @@ class ClickhouseBackup:
 
         return backups
 
-    def backup(self, databases=None, tables=None, force=False,
-               labels=None) -> Tuple[str, Optional[str]]:
+    def backup(self,
+               databases: Sequence[str] = None,
+               tables: Sequence[str] = None,
+               force: bool = False,
+               labels: dict = None) -> Tuple[str, Optional[str]]:
         """
         Perform backup.
 
@@ -122,7 +125,7 @@ class ClickhouseBackup:
     def restore(self,
                 backup_name: str,
                 databases: Sequence[str] = None,
-                schema_only=False) -> None:
+                schema_only: bool = False) -> None:
         """
         Restore specified backup
         """
@@ -154,7 +157,7 @@ class ClickhouseBackup:
 
     def _backup_database(self, backup_meta: BackupMetadata, db_name: str,
                          tables: Sequence[str],
-                         dedup_backups: Sequence[BackupMetadata]):
+                         dedup_backups: Sequence[BackupMetadata]) -> None:
         """
         Backup database.
         """

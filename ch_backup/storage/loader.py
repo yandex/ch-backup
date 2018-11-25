@@ -2,6 +2,8 @@
 Module providing API for storage management (upload and download data, check
 remote path on existence, etc.).
 """
+from typing import Sequence
+
 from .engine import get_storage_engine
 from .pipeline import PipelineLoader
 
@@ -67,12 +69,12 @@ class StorageLoader:
     def download_file(self,
                       remote_path: str,
                       local_path: str,
-                      is_async=False,
-                      encryption=False):
+                      is_async: bool = False,
+                      encryption: bool = False) -> None:
         """
         Download file to local filesystem.
         """
-        return self._ploader.download_file(
+        self._ploader.download_file(
             remote_path, local_path, is_async=is_async, encryption=encryption)
 
     def delete_file(self, remote_path, is_async=False, encryption=False):
@@ -88,7 +90,10 @@ class StorageLoader:
         """
         self._ploader.wait()
 
-    def list_dir(self, remote_path: str, recursive=False, absolute=False):
+    def list_dir(self,
+                 remote_path: str,
+                 recursive: bool = False,
+                 absolute: bool = False) -> Sequence[str]:
         """
         Return list of entries in a remote path.
         """

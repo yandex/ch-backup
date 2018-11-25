@@ -10,6 +10,8 @@ from functools import wraps
 from random import choice as random_choise
 from types import SimpleNamespace
 
+from .typing import ContextT
+
 
 def merge(original, update):
     """
@@ -72,7 +74,7 @@ def strip_query(query_text: str) -> str:
     return re.sub(r'\s{2,}', ' ', query_text.replace('\n', ' ')).strip()
 
 
-def generate_random_string(length=64) -> str:
+def generate_random_string(length: int = 64) -> str:
     """
     Generate random alphanum sequence.
     """
@@ -81,7 +83,7 @@ def generate_random_string(length=64) -> str:
         for _ in range(length))
 
 
-def context_to_dict(context) -> dict:
+def context_to_dict(context: ContextT) -> dict:
     """
     Convert context to dict representation.
 

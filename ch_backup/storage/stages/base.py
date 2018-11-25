@@ -4,7 +4,7 @@ Base pipeline stages module.
 
 import io
 from abc import ABCMeta, abstractmethod
-from typing import Callable, Generator
+from typing import Any, Callable, Generator
 
 
 class InputStage(metaclass=ABCMeta):
@@ -46,7 +46,8 @@ class IterStage(metaclass=ABCMeta):
 
     stype = None  # type: str
 
-    def __call__(self, src_iter: Callable, src_key, dst_key) -> Generator:
+    def __call__(self, src_iter: Callable, src_key: Any,
+                 dst_key: Any) -> Generator:
         self._pre_process(src_key, dst_key)
 
         for data in src_iter(src_key, dst_key):
@@ -78,7 +79,8 @@ class BufferedIterStage(IterStage, metaclass=ABCMeta):
         self._buffer_size = conf['buffer_size']
         self._chunk_size = conf['chunk_size']
 
-    def __call__(self, src_iter: Callable, src_key, dst_key) -> Generator:
+    def __call__(self, src_iter: Callable, src_key: Any,
+                 dst_key: Any) -> Generator:
         """
         Handles incoming data.
         """

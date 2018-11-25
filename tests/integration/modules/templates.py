@@ -3,18 +3,17 @@ Module responsible for template rendering.
 """
 import os
 
-from jinja2 import Environment, FileSystemLoader, StrictUndefined
+from jinja2 import BaseLoader, Environment, FileSystemLoader, StrictUndefined
 
-from tests.integration.modules.datetime import (decrease_time_str,
-                                                increase_time_str)
-
+from .datetime import decrease_time_str, increase_time_str
+from .typing import ContextT
 from .utils import context_to_dict, env_stage
 
 TEMP_FILE_EXT = 'temp~'
 
 
 @env_stage('create', fail=True)
-def render_configs(context) -> None:
+def render_configs(context: ContextT) -> None:
     """
     Render each template in the subtree.
     Each template is rendered in-place. As the framework operates in
@@ -29,7 +28,7 @@ def render_configs(context) -> None:
                     _render_file(context, root, basename)
 
 
-def render_template(context, text: str) -> str:
+def render_template(context: ContextT, text: str) -> str:
     """
     Render template passed as a string.
     """
@@ -37,7 +36,7 @@ def render_template(context, text: str) -> str:
     return template.render(context_to_dict(context))
 
 
-def _render_file(context, directory: str, basename: str) -> None:
+def _render_file(context: ContextT, directory: str, basename: str) -> None:
     path = '%s/%s' % (directory, basename)
     temp_file_path = '%s.%s' % (path, TEMP_FILE_EXT)
     loader = FileSystemLoader(directory)
@@ -52,7 +51,7 @@ def _render_file(context, directory: str, basename: str) -> None:
     os.rename(temp_file_path, path)
 
 
-def _environment(loader=None) -> Environment:
+def _environment(loader: BaseLoader = None) -> Environment:
     """
     Create Environment object.
     """

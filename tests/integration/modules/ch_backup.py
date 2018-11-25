@@ -9,6 +9,7 @@ from typing import Sequence, Union
 import yaml
 
 from . import docker, s3, utils
+from .typing import ContextT
 
 CH_BACKUP_CLI_PATH = '/usr/local/bin/ch-backup'
 CH_BACKUP_CONF_PATH = '/etc/yandex/ch-backup/ch-backup.conf'
@@ -107,7 +108,7 @@ class Backup:
         """
         return os.path.join(self.meta['path'], 'backup_struct.json')
 
-    def update(self, metadata: dict, merge=True) -> None:
+    def update(self, metadata: dict, merge: bool = True) -> None:
         """
         Update metadata.
         """
@@ -141,7 +142,7 @@ class BackupManager:
     Interface to ch-backup command-lime tool.
     """
 
-    def __init__(self, context, node_name: str) -> None:
+    def __init__(self, context: ContextT, node_name: str) -> None:
         self._container = docker.get_container(context, node_name)
         self._s3_client = s3.S3Client(context)
         self._config_path = CH_BACKUP_CONF_PATH
@@ -185,7 +186,7 @@ class BackupManager:
     def update_backup_metadata(self,
                                backup_id: BackupId,
                                metadata: dict,
-                               merge=True) -> None:
+                               merge: bool = True) -> None:
         """
         Update backup metadata.
         """
@@ -221,7 +222,7 @@ class BackupManager:
                 missed.append(path)
         return missed
 
-    def get_backup_ids(self, list_all=True) -> Sequence[str]:
+    def get_backup_ids(self, list_all: bool = True) -> Sequence[str]:
         """
         Get list of existing backup entries / identifiers.
         """
@@ -237,7 +238,7 @@ class BackupManager:
         output = self._exec('show {0}'.format(backup_id))
         return Backup(json.loads(output))
 
-    def restore(self, backup_id: BackupId, schema_only=False):
+    def restore(self, backup_id: BackupId, schema_only: bool = False) -> str:
         """
         Restore backup entry.
         """

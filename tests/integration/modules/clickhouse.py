@@ -4,12 +4,13 @@ ClickHouse client.
 
 import logging
 from datetime import datetime, timedelta
-from typing import Sequence, Tuple
+from typing import Any, Sequence, Tuple, Union
 from urllib.parse import urljoin
 
 from requests import HTTPError, Session
 
 from . import docker
+from .typing import ContextT
 from .utils import generate_random_string, strip_query
 
 DB_COUNT = 2
@@ -72,7 +73,7 @@ class ClickhouseClient:
     ClickHouse Client.
     """
 
-    def __init__(self, context, node_name: str) -> None:
+    def __init__(self, context: ContextT, node_name: str) -> None:
         protocol = 'http'
 
         host, port = docker.get_exposed_port(
@@ -232,11 +233,14 @@ class ClickhouseClient:
                method: str,
                query: str = None,
                url: str = None,
-               data=None):
+               data: Union[bytes, str] = None) -> Any:
         if url:
             url = urljoin(self._url, url)
         else:
             url = self._url
+
+        if isinstance(data, str):
+            data = data.encode()
 
         params = {}
         if query:

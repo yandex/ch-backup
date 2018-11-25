@@ -14,11 +14,12 @@ import docker
 from docker.models.containers import Container
 
 from . import utils
+from .typing import ContextT
 
 DOCKER_API = docker.from_env()
 
 
-def get_containers(context) -> List[Container]:
+def get_containers(context: ContextT) -> List[Container]:
     """
     Get containers.
     """
@@ -31,7 +32,7 @@ def get_containers(context) -> List[Container]:
     return containers
 
 
-def get_container(context, prefix: str) -> Container:
+def get_container(context: ContextT, prefix: str) -> Container:
     """
     Get container object by prefix.
     """
@@ -100,7 +101,7 @@ def generate_ipv4(subnet: str) -> str:
 
 
 @utils.env_stage('create', fail=True)
-def prep_images(context) -> None:
+def prep_images(context: ContextT) -> None:
     """
     Prepare images.
     """
@@ -111,7 +112,7 @@ def prep_images(context) -> None:
 
 
 @utils.env_stage('create', fail=True)
-def create_network(context) -> None:
+def create_network(context: ContextT) -> None:
     """
     Create docker network specified in the config.
     """
@@ -138,9 +139,9 @@ def create_network(context) -> None:
 
 
 @utils.env_stage('stop', fail=False)
-def shutdown_network(context) -> None:
+def shutdown_network(context: ContextT) -> None:
     """
-    Stop docker network(s)
+    Stop docker network(s).
     """
     nets = DOCKER_API.networks.list(names=context.conf['network_name'])
     for net in nets:
