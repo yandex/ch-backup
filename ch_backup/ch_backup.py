@@ -235,7 +235,8 @@ class ClickhouseBackup:
     def _delete(self, backup: BackupMetadata,
                 newer_backups: Sequence[BackupMetadata]) \
             -> Tuple[Optional[str], Optional[str]]:
-        logging.info('Deleting backup %s', backup.name)
+        logging.info('Deleting backup %s, state: %s', backup.name,
+                     backup.state)
 
         is_changed, deleting_paths = self._pop_deleting_paths(
             backup, newer_backups)
@@ -300,23 +301,26 @@ class ClickhouseBackup:
         deleting_backups = []  # type: List[BackupMetadata]
         for name, backup in self._iter_backup_dir():
             if not backup:
-                logging.info('Purging backup without metadata: %s', name)
+                logging.info('Deleting backup without metadata: %s', name)
                 self._backup_layout.delete_backup_path(name)
                 continue
 
             if retain_count and len(retained_backups) < retain_count:
                 if backup.state == BackupState.CREATED:
+                    logging.info(
+                        'Preserving backup per retain count policy:'
+                        ' %s, state %s', name, backup.state)
                     retained_backups.append(backup)
                     continue
 
             if retain_time_limit and backup.start_time >= retain_time_limit:
+                logging.info(
+                    'Preserving backup per retain time policy:'
+                    ' %s, state %s', name, backup.state)
                 retained_backups.append(backup)
                 continue
 
             deleting_backups.append(backup)
-
-        logging.info('Purging backups %s, retained backups: %s',
-                     deleting_backups, retained_backups)
 
         valid_backups = [
             backup for backup in retained_backups
