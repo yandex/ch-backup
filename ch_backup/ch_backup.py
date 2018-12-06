@@ -10,6 +10,7 @@ from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 from ch_backup import logging
 from ch_backup.backup.layout import ClickhouseBackupLayout
 from ch_backup.backup.metadata import BackupMetadata, BackupState, PartMetadata
+from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.control import ClickhouseCTL, FreezedPart
 from ch_backup.config import Config
 from ch_backup.exceptions import BackupNotFound, ClickhouseBackupError
@@ -184,10 +185,19 @@ class ClickhouseBackup:
 
         backup_meta.add_table(db_name, table_name, table_remote_path)
 
-        partitions = self._ch_ctl.get_partitions(db_name, table_name)
-        for partition in partitions:
+        fpartitions = []
+        try:
+            for partition in self._ch_ctl.get_partitions(db_name, table_name):
+                fpartitions.append(self._ch_ctl.freeze_partition(partition))
+        except ClickhouseError:
+            if not self._ch_ctl.does_table_exist(db_name, table_name):
+                logging.warning(
+                    'Table "%s" was removed by a user during backup',
+                    table_name)
+            else:
+                raise
 
-            fpartition = self._ch_ctl.freeze_partition(partition)
+        for fpartition in fpartitions:
             for fpart in self._ch_ctl.get_freezed_parts(fpartition):
                 logging.debug('Working on %s', fpart)
 

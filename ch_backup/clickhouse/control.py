@@ -24,6 +24,12 @@ GET_TABLES_ORDERED_SQL = strip_query("""
     FORMAT JSON
 """)
 
+CHECK_TABLE_SQL = strip_query("""
+    SELECT countIf(database = '{db_name}' AND name = '{table_name}')
+    FROM system.tables
+    FORMAT TSVRaw
+""")
+
 PART_ATTACH_SQL = strip_query("""
     ALTER TABLE `{db_name}`.`{table_name}`
     ATTACH PART '{part_name}'
@@ -54,8 +60,8 @@ GET_TABLE_PARTITIONS_SQL = strip_query("""
     SELECT DISTINCT partition
     FROM system.parts
     WHERE active
-      AND database == '{db_name}'
-      AND table == '{table_name}'
+      AND database = '{db_name}'
+      AND table = '{table_name}'
     FORMAT JSON
 """)
 
@@ -146,10 +152,8 @@ class ClickhouseCTL:
         """
         Attach part to database.table from dettached dir
         """
-        query_sql = PART_ATTACH_SQL\
-            .format(db_name=db_name,
-                    table_name=table_name,
-                    part_name=part_name)
+        query_sql = PART_ATTACH_SQL.format(
+            db_name=db_name, table_name=table_name, part_name=part_name)
 
         logging.debug('Attaching partition: %s', query_sql)
         self._ch_client.query(query_sql)
@@ -237,6 +241,14 @@ class ClickhouseCTL:
         logging.debug('Fetching all %s tables: %s', db_name, query_sql)
         ch_resp = self._ch_client.query(query_sql)
         return [row['name'] for row in ch_resp.get('data', [])]
+
+    def does_table_exist(self, db_name: str, table_name: str) -> bool:
+        """
+        Return True if the specified table exists.
+        """
+        query_sql = CHECK_TABLE_SQL.format(
+            db_name=db_name, table_name=table_name)
+        return bool(int(self._ch_client.query(query_sql)))
 
     def get_table_schema(self, db_name: str, table_name: str) -> str:
         """
