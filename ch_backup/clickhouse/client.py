@@ -2,11 +2,9 @@
 ClickHouse client.
 """
 
-from http.client import RemoteDisconnected
 from typing import Any
 
 import requests
-from requests import HTTPError, Session
 
 from ch_backup import logging
 from ch_backup.util import retry
@@ -28,14 +26,14 @@ class ClickhouseClient:
         protocol = config['protocol']
         port = 8123 if protocol == 'http' else 8443
         ca_path = config.get('ca_path')
-        self._session = Session()
+        self._session = requests.Session()
         self._session.verify = True if ca_path is None else ca_path
         # pylint: disable=no-member
         requests.packages.urllib3.disable_warnings()
         self._url = '{0}://{1}:{2}'.format(protocol, host, port)
         self._timeout = config['timeout']
 
-    @retry(RemoteDisconnected)
+    @retry(requests.exceptions.ConnectionError)
     def query(self, query: str, post_data: dict = None) -> Any:
         """
         Execute query.
@@ -51,7 +49,7 @@ class ClickhouseClient:
                 timeout=self._timeout)
 
             response.raise_for_status()
-        except HTTPError as e:
+        except requests.exceptions.HTTPError as e:
             raise ClickhouseError(e.response.text.strip()) from e
 
         try:
