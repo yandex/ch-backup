@@ -46,7 +46,7 @@ The regression test suite requires:
 python 3.5
 python 3.6
 make
-tox
+tox 3
 docker
 ```
 
