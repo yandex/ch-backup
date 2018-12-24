@@ -5,6 +5,7 @@ import os
 from abc import ABCMeta, abstractmethod
 from math import ceil
 
+from ch_backup.util import retry
 from ..engine import get_storage_engine
 from .base import BufferedIterStage, InputStage
 
@@ -132,3 +133,39 @@ class DeleteStorageStage(InputStage):
 
     def _post_process(self):
         return self._remote_path
+
+
+class DeleteMultipleStorageStage(InputStage):
+    """
+    Delete multiple files from storage
+    """
+
+    stype = STAGE_TYPE
+
+    def __init__(self, conf):
+        self._loader = get_storage_engine(conf)
+        self._bulk_delete_chunk_size = conf['bulk_delete_chunk_size']
+        self._files_iter = None
+
+    def _pre_process(self, src_key):
+        self._files_iter = iter([
+            src_key[i:i + self._bulk_delete_chunk_size]
+            for i in range(0, len(src_key), self._bulk_delete_chunk_size)
+        ])
+
+    def _process(self):
+        @retry()
+        def _delete_files(elem):
+            self._loader.delete_files(elem)
+            return elem
+
+        try:
+            elem = next(self._files_iter)
+        except StopIteration:
+            # Iterator is empty, all needed files are deleted
+            return None
+        else:
+            return _delete_files(elem)
+
+    def _post_process(self):
+        pass

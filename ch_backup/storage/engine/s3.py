@@ -80,6 +80,17 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
         self._s3_client.delete_object(
             Bucket=self._s3_bucket_name, Key=remote_path)
 
+    def delete_files(self, remote_paths: Sequence[str]) -> dict:
+        """
+        Delete multiple files from S3
+        """
+        # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/s3.html#S3.Client.delete_objects
+        delete_objects = list(
+            map(lambda x: {'Key': x.lstrip('/')}, remote_paths))
+
+        return self._s3_client.delete_objects(
+            Bucket=self._s3_bucket_name, Delete={'Objects': delete_objects})
+
     def list_dir(self,
                  remote_path: str,
                  recursive: bool = False,

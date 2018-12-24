@@ -84,6 +84,16 @@ class StorageLoader:
         return self._ploader.delete_file(
             remote_path, is_async=is_async, encryption=encryption)
 
+    def delete_files(self,
+                     remote_paths: Sequence[str],
+                     is_async: bool = False,
+                     encryption: bool = False) -> None:
+        """
+        Delete multiple files from storage.
+        """
+        return self._ploader.delete_files(
+            remote_paths, is_async=is_async, encryption=encryption)
+
     def wait(self) -> None:
         """
         Wait for completion of async operations.

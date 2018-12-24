@@ -208,15 +208,13 @@ class ClickhouseBackupLayout:
         """
         Delete files from backup storage
         """
-        # TODO: use bulk delete
-        for remote_path in delete_files:
-            try:
-                logging.debug('Deleting file: %s', remote_path)
-                self._storage_loader.delete_file(
-                    remote_path=remote_path, is_async=True)
-            except Exception as e:
-                msg = 'Failed to delete file {0}'.format(remote_path)
-                raise StorageError(msg) from e
+        try:
+            logging.debug('Deleting files: %s', ', '.join(delete_files))
+            self._storage_loader.delete_files(
+                remote_paths=delete_files, is_async=True)
+        except Exception as e:
+            msg = 'Failed to delete files {0}'.format(', '.join(delete_files))
+            raise StorageError(msg) from e
 
     def delete_backup_path(self, backup_name: str = None) -> None:
         """

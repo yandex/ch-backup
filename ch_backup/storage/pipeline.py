@@ -13,8 +13,9 @@ from .. import logging
 from .stages.encryption import DecryptStage, EncryptStage
 from .stages.filesystem import (CollectDataStage, ReadDataStage, ReadFileStage,
                                 WriteFileStage)
-from .stages.storage import (DeleteStorageStage, DownloadStorageStage,
-                             UploadDataStorageStage, UploadFileStorageStage)
+from .stages.storage import (DeleteMultipleStorageStage, DeleteStorageStage,
+                             DownloadStorageStage, UploadDataStorageStage,
+                             UploadFileStorageStage)
 
 
 class Pipeline:
@@ -193,6 +194,14 @@ class PipelineLoader:
         """
         return self._execute_pipeline((self.delete_file.__name__, *args),
                                       (DeleteStorageStage, ), *args, **kwargs)
+
+    def delete_files(self, *args, **kwargs):
+        """
+        Delete files from storage.
+        """
+        return self._execute_pipeline((self.delete_files.__name__, *args),
+                                      (DeleteMultipleStorageStage, ), *args,
+                                      **kwargs)
 
     def wait(self) -> None:
         """

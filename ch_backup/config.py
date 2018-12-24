@@ -62,6 +62,8 @@ DEFAULT_CONFIG = {
         # chunk_size will be multiplied on a required number of times
         # to satisfy the limit.
         'max_chunk_count': 10000,
+        # How many files we can delete by bulk delete operation in one call
+        'bulk_delete_chunk_size': 1000,
     },
     'encryption': {
         'type': 'nacl',
