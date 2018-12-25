@@ -30,16 +30,10 @@ RUN echo "root:root" | chpasswd && \
     mkdir /var/run/sshd
 
 RUN mkdir -p ${CH_TMP_DIR}
-COPY ch_backup/ ${CH_TMP_DIR}/ch_backup/
 COPY setup.py requirements.txt ${CH_TMP_DIR}/
 
 RUN cd ${CH_TMP_DIR} && \
-    pip3 install -r requirements.txt && \
-    pip3 install -e . && \
-    mkdir -p /etc/yandex/ch-backup && \
-    ln -s /config/ch-backup.conf /etc/yandex/ch-backup/ch-backup.conf && \
-    rm -rf /etc/supervisor && \
-    ln --force -s /config/supervisor /etc/supervisor
+    pip3 install -r requirements.txt
 
 RUN mkdir -p /etc/apt/sources.list.d && \
     echo $CLICKHOUSE_REPOSITORY | tee /etc/apt/sources.list.d/clickhouse.list && \
@@ -51,6 +45,15 @@ RUN mkdir -p /etc/apt/sources.list.d && \
         clickhouse-client=$CLICKHOUSE_VERSION && \
     rm -rf /var/lib/apt/lists/* /var/cache/debconf && \
     apt-get clean
+
+COPY ch_backup/ ${CH_TMP_DIR}/ch_backup/
+RUN cd ${CH_TMP_DIR} && \
+    pip3 install -e . && \
+    mkdir -p /etc/yandex/ch-backup && \
+    ln -s /config/ch-backup.conf /etc/yandex/ch-backup/ch-backup.conf && \
+    rm -rf /etc/supervisor && \
+    ln --force -s /config/supervisor /etc/supervisor
+
 
 RUN chown -R clickhouse /etc/clickhouse-server/ /usr/bin/clickhouse && \
     openssl req -subj "/CN=localhost" -new -newkey rsa:2048 -days 365 -nodes -x509 \
