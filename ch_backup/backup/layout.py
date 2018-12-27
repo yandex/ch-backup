@@ -11,10 +11,8 @@ from ch_backup.clickhouse.control import ClickhouseCTL, FreezedPart
 from ch_backup.config import Config
 from ch_backup.exceptions import StorageError
 from ch_backup.storage import StorageLoader
-from ch_backup.util import utcnow
 
-CBS_DEFAULT_PNAME_FMT = '%Y%m%dT%H%M%S'
-CBS_DEFAULT_FNAME = 'backup_struct.json'
+BACKUP_META_FNAME = 'backup_struct.json'
 
 
 class ClickhouseBackupLayout:
@@ -27,48 +25,28 @@ class ClickhouseBackupLayout:
         self._ch_ctl = ch_ctl
         self._config = config['backup']
 
-        self._backup_name_fmt = CBS_DEFAULT_PNAME_FMT
-        self._backup_name = utcnow().strftime(self._backup_name_fmt)
-        self._backup_meta_fname = CBS_DEFAULT_FNAME
-
-        self.backup_path = self._get_backup_path(self._backup_name)
-        self.backup_meta_path = os.path.join(self.backup_path,
-                                             self._backup_meta_fname)
-
-    @property
-    def backup_name(self) -> str:
-        """
-        Backup name getter
-        """
-        return self._backup_name
-
-    @backup_name.setter
-    def backup_name(self, value: str) -> None:
-        self._backup_name = value
-        self.backup_path = self._get_backup_path(value)
-        self.backup_meta_path = os.path.join(self.backup_path,
-                                             self._backup_meta_fname)
-
-    def _get_backup_path(self, backup_name):
+    def get_backup_path(self, backup_name: str) -> str:
         """
         Returns storage backup path
         """
         return os.path.join(self._config['path_root'], backup_name)
 
-    def _get_backup_meta_path(self, backup_name):
+    def _get_backup_meta_path(self, backup_name: str) -> str:
         """
         Returns backup meta path
         """
-        return os.path.join(self._config['path_root'], backup_name,
-                            self._backup_meta_fname)
+        return os.path.join(
+            self.get_backup_path(backup_name), BACKUP_META_FNAME)
 
-    def save_table_meta(self, db_name, table_name, metadata):
+    def save_table_meta(self, backup_name: str, db_name: str, table_name: str,
+                        metadata: str) -> str:
         """
         Backup table meta (sql-file)
         """
         table_sql_rel_path = self._ch_ctl.get_table_sql_rel_path(
             db_name, table_name)
-        remote_path = os.path.join(self.backup_path, table_sql_rel_path)
+        remote_path = os.path.join(
+            self.get_backup_path(backup_name), table_sql_rel_path)
         try:
 
             future_id = self._storage_loader.upload_data(
@@ -85,15 +63,16 @@ class ClickhouseBackupLayout:
                 table_sql_rel_path)
             raise StorageError(msg) from e
 
-    def save_database_meta(self, db_name, metadata):
+    def save_database_meta(self, backup_name: str, db_name: str,
+                           metadata: str) -> str:
         """
         Backup database meta (sql-file)
         """
         db_sql_rel_path = self._ch_ctl.get_db_sql_rel_path(db_name)
-        remote_path = os.path.join(self.backup_path, db_sql_rel_path)
+        remote_path = os.path.join(
+            self.get_backup_path(backup_name), db_sql_rel_path)
         try:
-            logging.debug('Saving database sql file "%s": %s', db_sql_rel_path,
-                          self.backup_meta_path)
+            logging.debug('Saving database sql file: %s', remote_path)
             self._storage_loader.upload_data(
                 metadata, remote_path=remote_path, encryption=True)
             return remote_path
@@ -115,12 +94,14 @@ class ClickhouseBackupLayout:
         except Exception as e:
             raise StorageError('Failed to upload backup metadata') from e
 
-    def save_part_data(self, fpart: FreezedPart) -> Sequence[str]:
+    def save_part_data(self, backup_name: str,
+                       fpart: FreezedPart) -> Sequence[str]:
         """
         Backup part files and return storage paths.
         """
-        remote_dir_path = os.path.join(self.backup_path, 'data',
-                                       fpart.database, fpart.table, fpart.name)
+        remote_dir_path = os.path.join(
+            self.get_backup_path(backup_name), 'data', fpart.database,
+            fpart.table, fpart.name)
 
         uploaded_files = []
         part_files = [
@@ -146,15 +127,11 @@ class ClickhouseBackupLayout:
 
         return uploaded_files
 
-    def get_backup_meta(self,
-                        backup_name: str = None) -> Optional[BackupMetadata]:
+    def get_backup_meta(self, backup_name: str) -> Optional[BackupMetadata]:
         """
         Download backup meta from storage
         """
-        if backup_name is None:
-            path = self.backup_meta_path
-        else:
-            path = self._get_backup_meta_path(backup_name)
+        path = self._get_backup_meta_path(backup_name)
 
         if not self._storage_loader.path_exists(path):
             return None
@@ -216,14 +193,11 @@ class ClickhouseBackupLayout:
             msg = 'Failed to delete files {0}'.format(', '.join(delete_files))
             raise StorageError(msg) from e
 
-    def delete_backup_path(self, backup_name: str = None) -> None:
+    def delete_backup_path(self, backup_name: str) -> None:
         """
         Delete files from backup storage
         """
-        if backup_name is None:
-            path = self.backup_path
-        else:
-            path = self._get_backup_path(backup_name)
+        path = self.get_backup_path(backup_name)
 
         delete_files = self._storage_loader.list_dir(
             path, recursive=True, absolute=True)

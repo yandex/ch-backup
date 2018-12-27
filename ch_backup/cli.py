@@ -5,20 +5,28 @@ Command-line interface.
 
 import re
 import sys
+import uuid
 from functools import wraps
 
 from click import (Choice, ParamType, Path, argument, group, option,
                    pass_context)
+from click.types import StringParamType
 from tabulate import tabulate
 
 from . import logging
 from .backup.metadata import BackupState
 from .ch_backup import ClickhouseBackup
 from .config import Config
-from .util import drop_privileges, setup_environment
+from .util import drop_privileges, setup_environment, utcnow
+
+TIMESTAMP = utcnow().strftime('%Y%m%dT%H%M%S')
+UUID = str(uuid.uuid4())
 
 
-@group(context_settings=dict(help_option_names=['-h', '--help']))
+@group(context_settings={
+    'help_option_names': ['-h', '--help'],
+    'terminal_width': 100,
+})
 @option(
     '-c',
     '--config',
@@ -123,6 +131,35 @@ class List(ParamType):
             self.fail(msg, param, ctx)
 
 
+class String(StringParamType):
+    """
+    String type for command-line parameters with support of macros and
+    regexp-based validation.
+    """
+    name = 'string'
+
+    def __init__(self, regexp=None, macros=None):
+        self.regexp_str = regexp
+        self.regexp = re.compile(regexp) if regexp else None
+        self.macros = macros
+
+    def convert(self, value, param, ctx):
+        """
+        Parse input value.
+        """
+        if self.macros:
+            for macro, replacement in self.macros.items():
+                value = value.replace(macro, replacement)
+
+        if self.regexp:
+            if self.regexp.fullmatch(value) is None:
+                msg = '\'%s\' does not match the format: %s' % (
+                    value, self.regexp_str)
+                self.fail(msg, param, ctx)
+
+        return super().convert(value, param, ctx)
+
+
 @command(name='list')
 @option('-a', '--all', is_flag=True, default=False, help='List all backups.')
 @option('-v', '--verbose', is_flag=True, default=False, help='Verbose output.')
@@ -160,6 +197,18 @@ def show(ctx, ch_backup, name):
 
 @command(name='backup')
 @option(
+    '--name',
+    type=String(
+        regexp=r'(?a)[\w-]+',
+        macros={
+            '{timestamp}': TIMESTAMP,
+            '{uuid}': UUID,
+        }),
+    help='Name of creating backup. The value can contain macros:'
+    ' {timestamp} - current time in UTC (' + TIMESTAMP + '),'
+    ' {uuid} - randomly generated UUID value (' + UUID + ').',
+    default='{timestamp}')
+@option(
     '-d',
     '--databases',
     type=List(regexp=r'\w+'),
@@ -179,7 +228,7 @@ def show(ctx, ch_backup, name):
     '--label',
     multiple=True,
     help='Custom labels as key-value pairs that represents user metadata.')
-def backup_command(ctx, ch_backup, databases, tables, force, label):
+def backup_command(ctx, ch_backup, name, databases, tables, force, label):
     """Perform backup."""
     if databases and tables:
         ctx.fail('Options --databases and --tables are mutually exclusive.')
@@ -192,7 +241,7 @@ def backup_command(ctx, ch_backup, databases, tables, force, label):
         labels[key] = value
 
     (name, msg) = ch_backup.backup(
-        databases=databases, tables=tables, force=force, labels=labels)
+        name, databases=databases, tables=tables, force=force, labels=labels)
 
     if msg:
         print(msg, file=sys.stderr, flush=True)

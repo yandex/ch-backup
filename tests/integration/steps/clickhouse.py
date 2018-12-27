@@ -37,6 +37,7 @@ def step_fill_with_test_data(context, node, test_name):
 
 
 @given('test data on {node:w} that was created as follows')
+@when('we execute queries on {node:w}')
 def step_test_data(context, node):
     queries = []
     for string in context.text.split(';'):

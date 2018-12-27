@@ -20,8 +20,13 @@ def step_update_ch_backup_config(context, node):
 @when('we create {node:w} clickhouse backup')
 def step_create_backup(context, node):
     options = yaml.load(context.text or '') or {}
-    backup_id = BackupManager(context, node).backup(**options)
-    assert_that(backup_id, matches_regexp('[0-9]{8}T[0-9]{6}'))
+
+    name = BackupManager(context, node).backup(**options)
+
+    name_regexp = options.get('name', '{timestamp}')
+    name_regexp = name_regexp.replace('{timestamp}', '[0-9]{8}T[0-9]{6}')
+    name_regexp = name_regexp.replace('{uuid}', '[0-9a-f-]{36}')
+    assert_that(name, matches_regexp(name_regexp))
 
 
 @given('metadata of {node:w} backup #{backup_num:d} was adjusted with')
@@ -58,8 +63,7 @@ def step_delete_backup(context, node, backup_num):
 
 @when('we purge {node} clickhouse backups')
 def step_purge_backups(context, node):
-    backup_ids = BackupManager(context, node).purge()
-    assert_that(backup_ids, matches_regexp('^([0-9]{8}T[0-9]{6}\n)*$'))
+    BackupManager(context, node).purge()
 
 
 @then('{node:w} backup #{backup_num:d} metadata contains')

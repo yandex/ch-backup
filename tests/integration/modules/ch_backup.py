@@ -151,6 +151,7 @@ class BackupManager:
             self._config_path)
 
     def backup(self,
+               name: str = None,
                force: bool = None,
                databases: Sequence[str] = None,
                tables: Sequence[str] = None,
@@ -159,6 +160,8 @@ class BackupManager:
         Perform backup.
         """
         options = []
+        if name:
+            options.append('--name {0}'.format(name))
         if force:
             options.append('--force')
         if databases:
@@ -168,7 +171,7 @@ class BackupManager:
         for key, value in (labels or {}).items():
             options.append('--label {0}={1}'.format(key, value))
 
-        return self._exec('backup {0}'.format(' '.join(options)))
+        return self._exec('backup {0}'.format(' '.join(options))).strip()
 
     def delete(self, backup_id: BackupId) -> str:
         """

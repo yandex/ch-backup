@@ -5,7 +5,7 @@ Clickhouse backup logic
 from collections import defaultdict
 from copy import copy
 from datetime import timedelta
-from typing import Dict, Iterator, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ch_backup import logging
 from ch_backup.backup.layout import ClickhouseBackupLayout
@@ -46,6 +46,7 @@ class ClickhouseBackup:
         return backups
 
     def backup(self,
+               name: str,
                databases: Sequence[str] = None,
                tables: Sequence[str] = None,
                force: bool = False,
@@ -55,6 +56,7 @@ class ClickhouseBackup:
 
         If force is True, backup.min_interval config option is ignored.
         """
+        # pylint: disable=too-many-locals
         assert not (databases and tables)
 
         backup_labels = copy(self._config.get('labels'))
@@ -98,8 +100,8 @@ class ClickhouseBackup:
             return (last_backup.name, msg)
 
         backup_meta = BackupMetadata(
-            name=self._backup_layout.backup_name,
-            path=self._backup_layout.backup_path,
+            name=name,
+            path=self._backup_layout.get_backup_path(name),
             labels=backup_labels,
             ch_version=self._ch_ctl.get_version())
 
@@ -164,7 +166,7 @@ class ClickhouseBackup:
         """
         logging.debug('Performing database backup for "%s"', db_name)
 
-        db_remote_path = self._backup_database_meta(db_name)
+        db_remote_path = self._backup_database_meta(backup_meta, db_name)
 
         backup_meta.add_database(db_name, db_remote_path)
 
@@ -181,7 +183,8 @@ class ClickhouseBackup:
         """
         logging.debug('Performing table backup for "%s"', table_name)
 
-        table_remote_path = self._backup_table_meta(db_name, table_name)
+        table_remote_path = self._backup_table_meta(backup_meta, db_name,
+                                                    table_name)
 
         backup_meta.add_table(db_name, table_name, table_remote_path)
 
@@ -210,7 +213,7 @@ class ClickhouseBackup:
                     logging.debug('Backing up part "%s"', fpart.name)
 
                     part_remote_paths = self._backup_layout.save_part_data(
-                        fpart)
+                        backup_meta.name, fpart)
 
                 part = PartMetadata(fpart, link, part_remote_paths)
 
@@ -344,7 +347,8 @@ class ClickhouseBackup:
 
         return deleted_backup_names, None
 
-    def _backup_database_meta(self, db_name: str) -> str:
+    def _backup_database_meta(self, backup_meta: BackupMetadata,
+                              db_name: str) -> str:
         """
         Backup database sql
         """
@@ -355,9 +359,11 @@ class ClickhouseBackup:
         with open(db_sql_abs_path) as file_fd:
             file_contents = file_fd.read()
         metadata = file_contents.replace('ATTACH ', 'CREATE ', 1)
-        return self._backup_layout.save_database_meta(db_name, metadata)
+        return self._backup_layout.save_database_meta(backup_meta.name,
+                                                      db_name, metadata)
 
-    def _backup_table_meta(self, db_name: str, table_name: str) -> str:
+    def _backup_table_meta(self, backup_meta: BackupMetadata, db_name: str,
+                           table_name: str) -> str:
         """
         Backup table schema (CREATE TABLE sql) and return path to saved data
         on remote storage.
@@ -368,7 +374,7 @@ class ClickhouseBackup:
         schema = self._ch_ctl.get_table_schema(db_name, table_name)
 
         remote_path = self._backup_layout.save_table_meta(
-            db_name, table_name, schema)
+            backup_meta.name, db_name, table_name, schema)
         return remote_path
 
     def _restore_database_schema(self, db_name: str,
@@ -476,18 +482,25 @@ class ClickhouseBackup:
         return backup
 
     def _iter_backup_dir(
-            self) -> Iterator[Tuple[str, Optional[BackupMetadata]]]:
+            self) -> Iterable[Tuple[str, Optional[BackupMetadata]]]:
         logging.debug('Collecting existing backups')
 
-        names = sorted(self._backup_layout.get_backup_names(), reverse=True)
-        for name in names:
+        def _sort_key(item: Tuple[str, Optional[BackupMetadata]]) -> str:
+            backup = item[1]
+            return backup.start_time.isoformat() if backup else ''
+
+        result = []
+        for name in self._backup_layout.get_backup_names():
             try:
-                yield name, self._backup_layout.get_backup_meta(name)
+                backup = self._backup_layout.get_backup_meta(name)
+                result.append((name, backup))
             except Exception:
                 logging.exception('Failed to load metadata for backup %s',
                                   name)
 
-    def _iter_backups(self) -> Iterator[BackupMetadata]:
+        return sorted(result, key=_sort_key, reverse=True)
+
+    def _iter_backups(self) -> Iterable[BackupMetadata]:
         for _name, backup in self._iter_backup_dir():
             if backup:
                 yield backup
