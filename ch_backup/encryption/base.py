@@ -16,12 +16,8 @@ class BaseEncryption(metaclass=ABCMeta):
         Encrypt piece of data
         """
 
-        pass
-
     @abstractmethod
     def decrypt(self, data):
         """
         Decrypt piece of data
         """
-
-        pass
