@@ -56,7 +56,7 @@ class ClickhouseBackup:
 
         If force is True, backup.min_interval config option is ignored.
         """
-        # pylint: disable=too-many-locals
+        # pylint: disable=too-many-locals,too-many-branches
         assert not (databases and tables)
 
         backup_labels = copy(self._config.get('labels'))
@@ -122,6 +122,9 @@ class ClickhouseBackup:
         finally:
             backup_meta.update_end_time()
             self._backup_layout.save_backup_meta(backup_meta)
+
+            if not self._config.get('keep_freezed_data_on_failure'):
+                self._ch_ctl.remove_freezed_data()
 
         return (backup_meta.name, None)
 

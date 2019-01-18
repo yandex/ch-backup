@@ -39,6 +39,7 @@ DEFAULT_CONFIG = {
         'retain_count': None,
         # User data including into backup metadata.
         'labels': {},
+        'keep_freezed_data_on_failure': True,
     },
     'storage': {
         'type': 's3',
