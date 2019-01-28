@@ -115,7 +115,7 @@ def pipeline_wrapper(config: dict, stages: Sequence, *args: Any,
 
         return pipeline(*args, **kwargs)
     except Exception as e:
-        raise Exception(str(e)) from e
+        raise Exception(str(e))
 
 
 class PipelineLoader:
