@@ -38,7 +38,6 @@ class PartMetadata(SimpleNamespace):
         super().__init__()
         self.database = fpart.database
         self.table = fpart.table
-        self.partition = fpart.partition
         self.name = fpart.name
         self.size = fpart.size
         self.checksum = fpart.checksum
@@ -53,7 +52,6 @@ class PartMetadata(SimpleNamespace):
             'meta': {
                 'database': self.database,
                 'table': self.table,
-                'partition': self.partition,
                 'name': self.name,
                 'bytes': self.size,
                 'checksum': self.checksum,
@@ -72,7 +70,6 @@ class PartMetadata(SimpleNamespace):
         part = cls.__new__(cls)
         part.database = meta['database']
         part.table = meta['table']
-        part.partition = meta['partition']
         part.name = meta['name']
         part.link = value['link']
         part.paths = value['paths']

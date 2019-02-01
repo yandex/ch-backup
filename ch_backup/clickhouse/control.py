@@ -9,6 +9,8 @@ from types import SimpleNamespace
 from typing import List, Optional, Sequence
 from urllib.parse import quote
 
+from pkg_resources import parse_version
+
 from ch_backup import logging
 from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.exceptions import ClickhouseBackupError
@@ -35,7 +37,12 @@ PART_ATTACH_SQL = strip_query("""
     ATTACH PART '{part_name}'
 """)
 
-PARTITION_FREEZE_SQL = strip_query("""
+FREEZE_TABLE_SQL = strip_query("""
+    ALTER TABLE `{db_name}`.`{table_name}`
+    FREEZE
+""")
+
+FREEZE_PARTITION_SQL = strip_query("""
     ALTER TABLE `{db_name}`.`{table_name}`
     FREEZE PARTITION {partition_name}
 """)
@@ -66,9 +73,7 @@ GET_TABLE_PARTITIONS_SQL = strip_query("""
 """)
 
 GET_VERSION_SQL = strip_query("""
-    SELECT value
-    FROM system.build_options
-    WHERE name = 'VERSION_DESCRIBE'
+    SELECT version()
     FORMAT TSVRaw
 """)
 
@@ -85,30 +90,16 @@ class Partition(SimpleNamespace):
         self.name = name
 
 
-class FreezedPartition(SimpleNamespace):
-    """
-    Freezed table partition.
-    """
-
-    def __init__(self, partition: Partition, shadow_increment: str) -> None:
-        super().__init__()
-        self.database = partition.database
-        self.table = partition.table
-        self.name = partition.name
-        self.shadow_increment = shadow_increment
-
-
 class FreezedPart(SimpleNamespace):
     """
-    Part of freezed table partition.
+    Freezed data part.
     """
 
-    def __init__(self, fpartition: FreezedPartition, name: str, path: str,
+    def __init__(self, database: str, table: str, name: str, path: str,
                  checksum: str, size: int):
         super().__init__()
-        self.database = fpartition.database
-        self.table = fpartition.table
-        self.partition = fpartition.name
+        self.database = database
+        self.table = table
         self.name = name
         self.path = path
         self.checksum = checksum
@@ -117,17 +108,16 @@ class FreezedPart(SimpleNamespace):
 
 class ClickhouseCTL:
     """
-    Clickhouse control tool
+    ClickHouse control tool.
     """
 
     def __init__(self, config: dict) -> None:
         self._config = config
         self._ch_client = ClickhouseClient(config)
-
-        self.root_data_path = config['data_path']
-        self.data_path = os.path.join(self.root_data_path, 'data')
-        self.metadata_path = os.path.join(self.root_data_path, 'metadata')
-        self.shadow_data_path = os.path.join(self.root_data_path, 'shadow')
+        self._root_data_path = config['data_path']
+        self._data_path = os.path.join(self._root_data_path, 'data')
+        self._shadow_data_path = os.path.join(self._root_data_path, 'shadow')
+        self._ch_version = self._ch_client.query(GET_VERSION_SQL)
 
     def chown_attach_part(self, db_name: str, table_name: str,
                           part_name: str) -> None:
@@ -168,52 +158,26 @@ class ClickhouseCTL:
         chown_dir_contents(self._config['user'], self._config['group'],
                            dir_path)
 
-    def freeze_partition(self, partition: Partition) -> FreezedPartition:
+    def freeze_table(self, db_name: str,
+                     table_name: str) -> Sequence[FreezedPart]:
         """
-        Freeze the specified partition.
+        Make snapshot of the specified table.
         """
-        query_sql = PARTITION_FREEZE_SQL.format(
-            db_name=partition.database,
-            table_name=partition.table,
-            partition_name=partition.name)
+        if self._match_ch_version(min_version='18.16.0'):
+            return self._freeze_table(db_name, table_name)
 
-        self._ch_client.query(query_sql)
-
-        return FreezedPartition(partition, self._get_shadow_increment())
-
-    def get_freezed_parts(
-            self, fpartition: FreezedPartition) -> Sequence[FreezedPart]:
-        """
-        Get parts of freezed partition.
-        """
-        path = os.path.join(self.shadow_data_path, fpartition.shadow_increment,
-                            'data', self._quote(fpartition.database),
-                            self._quote(fpartition.table))
-
-        if not os.path.exists(path):
-            logging.debug('Freezed partition %s is empty', fpartition.name)
-            return []
-
-        fparts = []  # type: List[FreezedPart]
-        for part in os.listdir(path):
-            part_path = os.path.join(path, part)
-            checksum = self._get_part_checksum(part_path)
-            size = self._get_part_size(part_path)
-            fparts.append(
-                FreezedPart(fpartition, part, part_path, checksum, size))
-
-        return fparts
+        return self._freeze_table_compat(db_name, table_name)
 
     def remove_freezed_data(self) -> None:
         """
         Remove all freezed partitions.
         """
-        if not self.shadow_data_path.startswith(self._config['data_path']):
+        if not self._shadow_data_path.startswith(self._config['data_path']):
             raise ClickhouseBackupError(
                 'Trying to drop directory outside clickhouse data path')
 
-        logging.debug('Removing shadow data path: %s', self.shadow_data_path)
-        shutil.rmtree(self.shadow_data_path, ignore_errors=True)
+        logging.debug('Removing shadow data path: %s', self._shadow_data_path)
+        shutil.rmtree(self._shadow_data_path, ignore_errors=True)
 
     def get_all_databases(self, exclude_dbs: Optional[Sequence[str]] = None) \
             -> Sequence[str]:
@@ -297,28 +261,28 @@ class ClickhouseCTL:
         """
         Get filesystem absolute path of detached part
         """
-        return os.path.join(self.data_path, self._quote(db_name),
+        return os.path.join(self._data_path, self._quote(db_name),
                             self._quote(table_name), 'detached', part_name)
 
     def get_detached_abs_path(self, db_name: str, table_name: str) -> str:
         """
         Get filesystem absolute path of detached table parts
         """
-        return os.path.join(self.data_path, self._quote(db_name),
+        return os.path.join(self._data_path, self._quote(db_name),
                             self._quote(table_name), 'detached')
 
     def get_db_sql_abs_path(self, db_name: str) -> str:
         """
         Get filesystem absolute path of database meta sql
         """
-        return os.path.join(self.root_data_path,
+        return os.path.join(self._root_data_path,
                             self.get_db_sql_rel_path(db_name))
 
     def get_version(self) -> str:
         """
         Get ClickHouse version
         """
-        return self._ch_client.query(GET_VERSION_SQL)
+        return self._ch_version
 
     @classmethod
     def get_db_sql_rel_path(cls, db_name: str) -> str:
@@ -335,6 +299,61 @@ class ClickhouseCTL:
         return os.path.join('metadata', cls._quote(db_name),
                             cls._quote(table_name) + '.sql')
 
+    def _freeze_table(self, db_name: str,
+                      table_name: str) -> Sequence[FreezedPart]:
+        """
+        Implementation of freeze_table function using FREEZE command syntax for
+        the whole table that is available starting from the version 18.16.
+        """
+        query_sql = FREEZE_TABLE_SQL.format(
+            db_name=db_name, table_name=table_name)
+
+        self._ch_client.query(query_sql)
+
+        return self._get_freezed_parts(db_name, table_name)
+
+    def _freeze_table_compat(self, db_name: str,
+                             table_name: str) -> Sequence[FreezedPart]:
+        """
+        Implementation of freeze_table function for versions prior to 18.16.
+        """
+        freezed_parts = []  # type: List[FreezedPart]
+        for partition in self.get_partitions(db_name, table_name):
+            query_sql = FREEZE_PARTITION_SQL.format(
+                db_name=db_name,
+                table_name=table_name,
+                partition_name=partition.name)
+
+            self._ch_client.query(query_sql)
+
+            freezed_parts.extend(self._get_freezed_parts(db_name, table_name))
+
+        return freezed_parts
+
+    def _get_freezed_parts(self, db_name: str,
+                           table_name: str) -> Sequence[FreezedPart]:
+        path = os.path.join(self._shadow_data_path,
+                            self._get_shadow_increment(), 'data',
+                            self._quote(db_name), self._quote(table_name))
+
+        if not os.path.exists(path):
+            logging.debug('Shadow path %s is empty', path)
+            return []
+
+        freezed_parts = []  # type: List[FreezedPart]
+        for part in os.listdir(path):
+            part_path = os.path.join(path, part)
+            checksum = self._get_part_checksum(part_path)
+            size = self._get_part_size(part_path)
+            freezed_parts.append(
+                FreezedPart(db_name, table_name, part, part_path, checksum,
+                            size))
+
+        return freezed_parts
+
+    def _match_ch_version(self, min_version: str) -> bool:
+        return parse_version(self._ch_version) >= parse_version(min_version)
+
     @staticmethod
     def _quote(value: str) -> str:
         return quote(
@@ -344,7 +363,7 @@ class ClickhouseCTL:
             })
 
     def _get_shadow_increment(self) -> str:
-        file_path = os.path.join(self.shadow_data_path, 'increment.txt')
+        file_path = os.path.join(self._shadow_data_path, 'increment.txt')
         with open(file_path, 'r') as file:
             return file.read().strip()
 

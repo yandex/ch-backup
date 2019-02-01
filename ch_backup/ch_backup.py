@@ -191,36 +191,32 @@ class ClickhouseBackup:
 
         backup_meta.add_table(db_name, table_name, table_remote_path)
 
-        fpartitions = []
         try:
-            for partition in self._ch_ctl.get_partitions(db_name, table_name):
-                fpartitions.append(self._ch_ctl.freeze_partition(partition))
+            freezed_parts = self._ch_ctl.freeze_table(db_name, table_name)
         except ClickhouseError:
-            if not self._ch_ctl.does_table_exist(db_name, table_name):
-                logging.warning(
-                    'Table "%s" was removed by a user during backup',
-                    table_name)
-            else:
+            if self._ch_ctl.does_table_exist(db_name, table_name):
                 raise
 
-        for fpartition in fpartitions:
-            for fpart in self._ch_ctl.get_freezed_parts(fpartition):
-                logging.debug('Working on %s', fpart)
+            logging.warning('Table "%s" was removed by a user during backup',
+                            table_name)
+            return
 
-                # trying to find part in storage
-                link, existing_part = self._deduplicate_part(
-                    fpart, dedup_backups)
-                if link and existing_part:
-                    part_remote_paths = existing_part.paths
-                else:
-                    logging.debug('Backing up part "%s"', fpart.name)
+        for fpart in freezed_parts:
+            logging.debug('Working on %s', fpart)
 
-                    part_remote_paths = self._backup_layout.save_part_data(
-                        backup_meta.name, fpart)
+            # trying to find part in storage
+            link, existing_part = self._deduplicate_part(fpart, dedup_backups)
+            if link and existing_part:
+                part_remote_paths = existing_part.paths
+            else:
+                logging.debug('Backing up part "%s"', fpart.name)
 
-                part = PartMetadata(fpart, link, part_remote_paths)
+                part_remote_paths = self._backup_layout.save_part_data(
+                    backup_meta.name, fpart)
 
-                backup_meta.add_part(part)
+            part = PartMetadata(fpart, link, part_remote_paths)
+
+            backup_meta.add_part(part)
 
         logging.debug('Waiting for uploads')
         self._backup_layout.wait()
