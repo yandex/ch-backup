@@ -1,8 +1,8 @@
 Source: ch-backup
-Section: unknown
+Section: database
 Priority: optional
 Maintainer: DBaaS team <mdb-admin@yandex-team.ru>
-Build-Depends: debhelper (>= 8.0.0)
+Build-Depends: debhelper (>= 8.0.0), python3.6, python3.6-venv, python3-pip
 Standards-Version: 3.9.4
 Homepage: https://github.yandex-team.ru/mdb/ch-backup
 #Vcs-Git: git://github.yandex-team.ru:mdb/ch-backup.git
@@ -10,5 +10,5 @@ Homepage: https://github.yandex-team.ru/mdb/ch-backup
 
 Package: ch-backup
 Architecture: any
-Depends: python3.5
+Depends: python3.6
 Description: DBaaS ClickHouse backup tool

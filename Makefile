@@ -1,4 +1,3 @@
-PY35_VENV=.tox/py35
 PY36_VENV=.tox/py36
 REQUIREMENTS_VENV=.tox/requirements
 TEST_REQUIREMENTS_VENV=.tox/test_requirements
@@ -31,18 +30,18 @@ lint:
 
 .PHONY: unit_test
 unit_test:
-	tox -e py35_unit_test
+	tox -e py36_unit_test
 
 
 .PHONY: integration_test
 integration_test: create_env
-	tox -e py35_integration_test -- -D skip_setup
+	tox -e py36_integration_test -- -D skip_setup
 
 
 .PHONY: integration_test_all
 integration_test_all:
 	@for version in $(CLICKHOUSE_VERSIONS); do \
-		CLICKHOUSE_VERSION=$$version tox -e py35_integration_test; \
+		CLICKHOUSE_VERSION=$$version tox -e py36_integration_test; \
 	done
 
 
@@ -58,7 +57,7 @@ clean_pycache:
 .PHONY: install
 install:
 	@echo "Installing into $(INSTALL_DIR)"
-	python3.5 -m venv $(INSTALL_DIR)
+	python3.6 -m venv $(INSTALL_DIR)
 	$(INSTALL_DIR)/bin/pip install -r requirements.txt
 	$(INSTALL_DIR)/bin/pip install .
 	mkdir -p $(DESTDIR)/usr/bin/
@@ -101,21 +100,21 @@ clean_debuild: clean
 
 
 .PHONY: create_env
-create_env: ${PY35_VENV} ${SESSION_FILE}
+create_env: ${PY36_VENV} ${SESSION_FILE}
 
 ${SESSION_FILE}:
-	PATH=${PY35_VENV}/bin:$$PATH ${PY35_VENV}/bin/python -m tests.integration.env_control create
+	PATH=${PY36_VENV}/bin:$$PATH ${PY36_VENV}/bin/python -m tests.integration.env_control create
 
 
 .PHONY: start_env
 start_env: create_env
-	PATH=${PY35_VENV}/bin:$$PATH ${PY35_VENV}/bin/python -m tests.integration.env_control start
+	PATH=${PY36_VENV}/bin:$$PATH ${PY36_VENV}/bin/python -m tests.integration.env_control start
 
 
 .PHONY: stop_env
 stop_env:
-	test -d ${PY35_VENV}/bin && test -f ${SESSION_FILE} && \
-	PATH=${PY35_VENV}/bin:$$PATH ${PY35_VENV}/bin/python -m tests.integration.env_control stop || true
+	test -d ${PY36_VENV}/bin && test -f ${SESSION_FILE} && \
+	PATH=${PY36_VENV}/bin:$$PATH ${PY36_VENV}/bin/python -m tests.integration.env_control stop || true
 
 
 .PHONY: clean_env
@@ -124,8 +123,8 @@ clean_env: stop_env
 
 
 .PHONY: format
-format: ${PY35_VENV} ${PY36_VENV}
-	${PY35_VENV}/bin/isort --recursive --apply ch_backup tests
+format: ${PY36_VENV}
+	${PY36_VENV}/bin/isort --recursive --apply ch_backup tests
 	${PY36_VENV}/bin/yapf --recursive --parallel --in-place ch_backup tests
 
 
@@ -144,10 +143,8 @@ generate_test_requirements: ${TEST_REQUIREMENTS_VENV}
 .tox/%:
 	tox -r -e $* --notest
 
-${PY35_VENV}:
-	tox -r -e py35_integration_test --notest
-
 ${PY36_VENV}:
+	tox -r -e py36_integration_test --notest
 	tox -r -e yapf --notest
 
 ${REQUIREMENTS_VENV}: requirements.in.txt
