@@ -40,8 +40,9 @@ RUN mkdir -p /etc/apt/sources.list.d && \
     apt-key adv --keyserver keyserver.ubuntu.com --recv-keys $CLICKHOUSE_REPOSITORY_KEY && \
     apt-get update -qq && \
     apt-get install -y \
-        clickhouse-server-common=$CLICKHOUSE_VERSION \
+        clickhouse-common-static=$CLICKHOUSE_VERSION \
         clickhouse-server-base=$CLICKHOUSE_VERSION \
+        clickhouse-server=$CLICKHOUSE_VERSION \
         clickhouse-client=$CLICKHOUSE_VERSION && \
     rm -rf /var/lib/apt/lists/* /var/cache/debconf && \
     apt-get clean
