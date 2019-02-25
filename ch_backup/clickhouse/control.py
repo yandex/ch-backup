@@ -58,6 +58,11 @@ SHOW_TABLES_SQL = strip_query("""
     FORMAT JSON
 """)
 
+SHOW_CREATE_DATABASE_SQL = strip_query("""
+    SHOW CREATE DATABASE `{db_name}`
+    FORMAT TSVRaw
+""")
+
 SHOW_CREATE_TABLE_SQL = strip_query("""
     SHOW CREATE TABLE `{db_name}`.`{table_name}`
     FORMAT TSVRaw
@@ -114,9 +119,9 @@ class ClickhouseCTL:
     def __init__(self, config: dict) -> None:
         self._config = config
         self._ch_client = ClickhouseClient(config)
-        self._root_data_path = config['data_path']
-        self._data_path = os.path.join(self._root_data_path, 'data')
-        self._shadow_data_path = os.path.join(self._root_data_path, 'shadow')
+        root_data_path = config['data_path']
+        self._data_path = os.path.join(root_data_path, 'data')
+        self._shadow_data_path = os.path.join(root_data_path, 'shadow')
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
 
     def chown_attach_part(self, db_name: str, table_name: str,
@@ -214,9 +219,16 @@ class ClickhouseCTL:
             db_name=db_name, table_name=table_name)
         return bool(int(self._ch_client.query(query_sql)))
 
+    def get_database_schema(self, db_name: str) -> str:
+        """
+        Return database schema (CREATE DATABASE query).
+        """
+        query_sql = SHOW_CREATE_DATABASE_SQL.format(db_name=db_name)
+        return self._ch_client.query(query_sql)
+
     def get_table_schema(self, db_name: str, table_name: str) -> str:
         """
-        Return table schema (CREATE TABLE query)
+        Return table schema (CREATE TABLE query).
         """
         query_sql = SHOW_CREATE_TABLE_SQL.format(
             db_name=db_name, table_name=table_name)
@@ -270,13 +282,6 @@ class ClickhouseCTL:
         """
         return os.path.join(self._data_path, self._quote(db_name),
                             self._quote(table_name), 'detached')
-
-    def get_db_sql_abs_path(self, db_name: str) -> str:
-        """
-        Get filesystem absolute path of database meta sql
-        """
-        return os.path.join(self._root_data_path,
-                            self.get_db_sql_rel_path(db_name))
 
     def get_version(self) -> str:
         """

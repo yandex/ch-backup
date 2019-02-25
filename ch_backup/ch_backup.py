@@ -349,17 +349,12 @@ class ClickhouseBackup:
     def _backup_database_meta(self, backup_meta: BackupMetadata,
                               db_name: str) -> str:
         """
-        Backup database sql
+        Backup database schema.
         """
-        db_sql_abs_path = self._ch_ctl.get_db_sql_abs_path(db_name)
-        logging.debug('Making database "%s" sql backup: %s', db_name,
-                      db_sql_abs_path)
-
-        with open(db_sql_abs_path) as file_fd:
-            file_contents = file_fd.read()
-        metadata = file_contents.replace('ATTACH ', 'CREATE ', 1)
+        logging.debug('Making database schema backup for "%s"', db_name)
+        schema = self._ch_ctl.get_database_schema(db_name)
         return self._backup_layout.save_database_meta(backup_meta.name,
-                                                      db_name, metadata)
+                                                      db_name, schema)
 
     def _backup_table_meta(self, backup_meta: BackupMetadata, db_name: str,
                            table_name: str) -> str:
