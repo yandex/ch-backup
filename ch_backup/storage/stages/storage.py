@@ -26,7 +26,6 @@ class UploadStorageStage(BufferedIterStage, metaclass=ABCMeta):
         self._loader = get_storage_engine(conf)
         self._remote_path = None
         self._upload_id = None
-        self._processed = False
 
     def _pre_process(self, src_key, dst_key):
         self._remote_path = dst_key
@@ -45,25 +44,19 @@ class UploadStorageStage(BufferedIterStage, metaclass=ABCMeta):
             self._chunk_size *= multiplier
 
     def _process(self, data):
-        assert not self._processed, 'already processed'
-
         if self._upload_id:
             self._loader.upload_part(
                 data, remote_path=self._remote_path, upload_id=self._upload_id)
-        else:
-            self._loader.upload_data(data, self._remote_path)
-            self._processed = True
 
     def _post_process(self) -> str:
         assert self._remote_path
 
-        if not self._processed:
-            if self._upload_id:
-                self._loader.complete_multipart_upload(
-                    remote_path=self._remote_path, upload_id=self._upload_id)
-            else:
-                self._loader.upload_data(b'', self._remote_path)
-            self._processed = True
+        if self._upload_id:
+            self._loader.complete_multipart_upload(
+                remote_path=self._remote_path, upload_id=self._upload_id)
+        else:
+            self._loader.upload_data(self._buffer.getvalue(),
+                                     self._remote_path)
 
         return self._remote_path
 

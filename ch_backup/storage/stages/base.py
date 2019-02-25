@@ -78,6 +78,7 @@ class BufferedIterStage(IterStage, metaclass=ABCMeta):
     def __init__(self, conf: dict) -> None:
         self._buffer_size = conf['buffer_size']
         self._chunk_size = conf['chunk_size']
+        self._buffer = io.BytesIO()
 
     def __call__(self, src_iter: Callable, src_key: Any,
                  dst_key: Any) -> Generator:
@@ -89,40 +90,39 @@ class BufferedIterStage(IterStage, metaclass=ABCMeta):
         consumed_size = 0
         total_size = 0
         unread_size = 0
-        buffer = io.BytesIO()
 
         for data in src_iter(src_key, dst_key):
             # append new data to the end of buffer stream
-            buffer.seek(total_size)
-            buffer.write(data)
-            total_size = buffer.tell()
+            self._buffer.seek(total_size)
+            self._buffer.write(data)
+            total_size = self._buffer.tell()
 
             # return to unread position
             unread_size = total_size - consumed_size
-            buffer.seek(consumed_size)
+            self._buffer.seek(consumed_size)
 
             while unread_size >= self._chunk_size:
-                chunk = buffer.read(self._chunk_size)
+                chunk = self._buffer.read(self._chunk_size)
                 yield self._process(chunk)
                 unread_size -= self._chunk_size
 
             # truncate stream buffer if limit exceeded
             if total_size > self._buffer_size:
-                chunk = buffer.read()
+                chunk = self._buffer.read()
                 # TODO: mb recreate accumulator
-                buffer.seek(0)
-                buffer.truncate()
-                buffer.write(chunk)
-                total_size = buffer.tell()
+                self._buffer.seek(0)
+                self._buffer.truncate()
+                self._buffer.write(chunk)
+                total_size = self._buffer.tell()
                 consumed_size = 0
                 unread_size = total_size - consumed_size
             else:
-                consumed_size = buffer.tell()
+                consumed_size = self._buffer.tell()
 
         # send unread buffer
         if unread_size:
-            buffer.seek(consumed_size)
-            chunk = buffer.read()
+            self._buffer.seek(consumed_size)
+            chunk = self._buffer.read()
             yield self._process(chunk)
 
         return self._post_process()

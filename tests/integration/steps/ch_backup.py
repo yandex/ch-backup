@@ -1,25 +1,24 @@
 """
 Steps related to ch-backup command-line tool.
 """
-import yaml
 from behave import given, then, when
 from hamcrest import (any_of, assert_that, contains_string, equal_to,
                       has_entries, matches_regexp)
 
 from tests.integration.modules.ch_backup import BackupManager
-from tests.integration.modules.templates import render_template
+from tests.integration.modules.steps import get_step_data
 
 
 @given('ch-backup config on {node:w} was merged with following')
 def step_update_ch_backup_config(context, node):
-    conf = yaml.load(context.text)
+    conf = get_step_data(context)
     BackupManager(context, node).update_config(conf)
 
 
 @given('we have created {node:w} clickhouse backup')
 @when('we create {node:w} clickhouse backup')
 def step_create_backup(context, node):
-    options = yaml.load(context.text or '') or {}
+    options = get_step_data(context)
 
     name = BackupManager(context, node).backup(**options)
 
@@ -33,7 +32,7 @@ def step_create_backup(context, node):
 def step_update_backup_metadata(context, node, backup_num):
     ch_backup = BackupManager(context, node)
     context.backup = ch_backup.get_backup(backup_num)
-    metadata = yaml.load(render_template(context, context.text))
+    metadata = get_step_data(context)
     ch_backup.update_backup_metadata(backup_num, metadata)
 
 
@@ -68,7 +67,7 @@ def step_purge_backups(context, node):
 
 @then('{node:w} backup #{backup_num:d} metadata contains')
 def step_backup_metadata(context, node, backup_num):
-    expected_meta = yaml.load(context.text)
+    expected_meta = get_step_data(context)
 
     backup = BackupManager(context, node).get_backup(backup_num)
     assert_that(backup.meta, has_entries(expected_meta))

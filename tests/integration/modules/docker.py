@@ -84,6 +84,14 @@ def copy_container_dir(container: Container, container_dir: str,
     tar.extractall(path=local_dir)
 
 
+def get_file_size(container: Container, path: str) -> int:
+    """
+    Return size of the specified file inside the container.
+    """
+    output = container.exec_run('stat --format "%s" "{0}"'.format(path))
+    return int(output.decode())
+
+
 def generate_ipv6(subnet: str) -> str:
     """
     Generates a random IPv6 address in the provided subnet.
