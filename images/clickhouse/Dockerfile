@@ -39,11 +39,18 @@ RUN mkdir -p /etc/apt/sources.list.d && \
     echo $CLICKHOUSE_REPOSITORY | tee /etc/apt/sources.list.d/clickhouse.list && \
     apt-key adv --keyserver keyserver.ubuntu.com --recv-keys $CLICKHOUSE_REPOSITORY_KEY && \
     apt-get update -qq && \
-    apt-get install -y \
-        clickhouse-common-static=$CLICKHOUSE_VERSION \
-        clickhouse-server-base=$CLICKHOUSE_VERSION \
-        clickhouse-server=$CLICKHOUSE_VERSION \
-        clickhouse-client=$CLICKHOUSE_VERSION && \
+    if [ "$CLICKHOUSE_VERSION" = "18.14.19" ] || [ "$CLICKHOUSE_VERSION" = "19.1.16" ]; then \
+        apt-get install -y \
+            clickhouse-common-static=$CLICKHOUSE_VERSION \
+            clickhouse-server-base=$CLICKHOUSE_VERSION \
+            clickhouse-server=$CLICKHOUSE_VERSION \
+            clickhouse-client=$CLICKHOUSE_VERSION; \
+    else \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            clickhouse-common-static=$CLICKHOUSE_VERSION \
+            clickhouse-server=$CLICKHOUSE_VERSION \
+            clickhouse-client=$CLICKHOUSE_VERSION; \
+    fi && \
     rm -rf /var/lib/apt/lists/* /var/cache/debconf && \
     apt-get clean
 
