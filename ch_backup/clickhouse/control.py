@@ -14,7 +14,7 @@ from pkg_resources import parse_version
 from ch_backup import logging
 from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.exceptions import ClickhouseBackupError
-from ch_backup.util import chown_dir_contents, strip_query
+from ch_backup.util import chown_dir_contents, retry, strip_query
 
 GET_TABLES_ORDERED_SQL = strip_query("""
     SELECT name
@@ -173,6 +173,7 @@ class ClickhouseCTL:
 
         return self._freeze_table_compat(db_name, table_name)
 
+    @retry(OSError)
     def remove_freezed_data(self) -> None:
         """
         Remove all freezed partitions.
@@ -182,7 +183,10 @@ class ClickhouseCTL:
                 'Trying to drop directory outside clickhouse data path')
 
         logging.debug('Removing shadow data path: %s', self._shadow_data_path)
-        shutil.rmtree(self._shadow_data_path, ignore_errors=True)
+        try:
+            shutil.rmtree(self._shadow_data_path)
+        except FileNotFoundError:
+            pass
 
     def get_all_databases(self, exclude_dbs: Optional[Sequence[str]] = None) \
             -> Sequence[str]:

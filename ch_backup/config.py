@@ -17,7 +17,7 @@ DEFAULT_CONFIG = {
         'protocol': 'http',
         'port': None,
         'ca_path': None,
-        'timeout': 30,
+        'timeout': 90,
         'user': 'clickhouse',
         'group': 'clickhouse',
     },
