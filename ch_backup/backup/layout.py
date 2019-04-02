@@ -117,7 +117,8 @@ class ClickhouseBackupLayout:
                     local_path=local_fname,
                     remote_path=remote_fname,
                     is_async=True,
-                    encryption=True)
+                    encryption=True,
+                    delete=True)
                 uploaded_files.append(remote_fname)
 
             except Exception as e:

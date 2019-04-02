@@ -11,8 +11,8 @@ from typing import Any, Callable, Dict, List, Sequence, Tuple
 
 from .. import logging
 from .stages.encryption import DecryptStage, EncryptStage
-from .stages.filesystem import (CollectDataStage, ReadDataStage, ReadFileStage,
-                                WriteFileStage)
+from .stages.filesystem import (CollectDataStage, DeleteFileStage,
+                                ReadDataStage, ReadFileStage, WriteFileStage)
 from .stages.storage import (DeleteMultipleStorageStage, DeleteStorageStage,
                              DownloadStorageStage, UploadDataStorageStage,
                              UploadFileStorageStage)
@@ -161,14 +161,16 @@ class PipelineLoader:
             (ReadDataStage, EncryptStage, UploadDataStorageStage), data, *args,
             **kwargs)
 
-    def upload_file(self, *args, **kwargs):
+    def upload_file(self, *args, delete, **kwargs):
         """
         Upload file from local filesystem.
         """
-        return self._execute_pipeline(
-            (self.upload_file.__name__, *args),
-            (ReadFileStage, EncryptStage, UploadFileStorageStage), *args,
-            **kwargs)
+        stages = [ReadFileStage, EncryptStage, UploadFileStorageStage]
+        if delete:
+            stages.append(DeleteFileStage)
+
+        self._execute_pipeline((self.upload_file.__name__, *args), stages,
+                               *args, **kwargs)
 
     def download_data(self, *args, **kwargs):
         """

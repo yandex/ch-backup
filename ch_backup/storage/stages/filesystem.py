@@ -3,6 +3,7 @@ Filesystem pipeline stages module
 """
 
 import io
+import os
 from typing import IO, Optional
 
 from .base import BufferedIterStage, InputStage, IterStage
@@ -71,6 +72,26 @@ class ReadFileStage(InputStage):
     def _post_process(self) -> None:
         if self._fobj:
             self._fobj.close()
+
+
+class DeleteFileStage(IterStage):
+    """
+    Delete file from file system
+    """
+
+    stype = STAGE_TYPE
+
+    def __init__(self, _config):
+        self._local_path = None
+
+    def _pre_process(self, src_key, dst_key):
+        self._local_path = src_key
+
+    def _process(self, _data):
+        pass
+
+    def _post_process(self):
+        os.remove(self._local_path)
 
 
 class CollectDataStage(IterStage):

@@ -44,12 +44,20 @@ class StorageLoader:
                     local_path,
                     remote_path,
                     is_async=False,
-                    encryption=False):
+                    encryption=False,
+                    delete=False):
         """
         Upload file from local filesystem.
+
+        If delete is True, the file will be deleted after upload.
         """
-        return self._ploader.upload_file(
-            local_path, remote_path, is_async=is_async, encryption=encryption)
+        self._ploader.upload_file(
+            local_path,
+            remote_path,
+            is_async=is_async,
+            encryption=encryption,
+            delete=delete)
+        return remote_path
 
     def download_data(self,
                       remote_path,
