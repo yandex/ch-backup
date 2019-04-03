@@ -193,7 +193,7 @@ class ClickhouseCTL:
         if not exclude_dbs:
             exclude_dbs = []
 
-        result = []  # type: List[str]
+        result: List[str] = []
         ch_resp = self._ch_client.query(SHOW_DATABASES_SQL)
         if 'data' in ch_resp:
             result = [
@@ -242,7 +242,7 @@ class ClickhouseCTL:
         """
         Get ordered by mtime list of all database tables
         """
-        result = []  # type: List[str]
+        result: List[str] = []
         query_sql = GET_TABLES_ORDERED_SQL.format(
             db_name=db_name, tables=tables or [])
         logging.debug('Fetching all %s tables ordered: %s', db_name, query_sql)
@@ -323,7 +323,7 @@ class ClickhouseCTL:
         """
         Implementation of freeze_table function for versions prior to 18.16.
         """
-        freezed_parts = []  # type: List[FreezedPart]
+        freezed_parts: List[FreezedPart] = []
         for partition in self.get_partitions(db_name, table_name):
             query_sql = FREEZE_PARTITION_SQL.format(
                 db_name=db_name,
@@ -346,7 +346,7 @@ class ClickhouseCTL:
             logging.debug('Shadow path %s is empty', path)
             return []
 
-        freezed_parts = []  # type: List[FreezedPart]
+        freezed_parts: List[FreezedPart] = []
         for part in os.listdir(path):
             part_path = os.path.join(path, part)
             checksum = self._get_part_checksum(part_path)

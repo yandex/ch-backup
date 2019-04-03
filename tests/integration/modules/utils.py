@@ -92,7 +92,7 @@ def context_to_dict(context: ContextT) -> dict:
     if isinstance(context, SimpleNamespace):
         return context.__dict__
 
-    result = {}  # type: dict
+    result: dict = {}
     for frame in context._stack:  # pylint: disable=protected-access
         for key, value in frame.items():
             if key not in result:

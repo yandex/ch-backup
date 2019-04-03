@@ -26,7 +26,7 @@ class Pipeline:
     """
 
     def __init__(self) -> None:
-        self._func_list = []  # type: List[Tuple[Callable, Sequence, dict]]
+        self._func_list: List[Tuple[Callable, Sequence, dict]] = []
 
     def append(self, func: Callable, *args: Any, **kwargs: Any) -> None:
         """
@@ -62,7 +62,7 @@ class ExecPool:
     """
 
     def __init__(self, worker_count: int) -> None:
-        self._futures = {}  # type: Dict[str, Future]
+        self._futures: Dict[str, Future] = {}
         self._pool = ProcessPoolExecutor(max_workers=worker_count)
 
     def shutdown(self, graceful: bool = True) -> None:

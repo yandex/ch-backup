@@ -63,7 +63,7 @@ class ClickhouseBackup:
         if labels:
             backup_labels.update(labels)
 
-        db_tables = defaultdict(list)  # type: Dict[str, list]
+        db_tables: Dict[str, list] = defaultdict(list)
         if tables:
             for table in tables or []:
                 db_name, table_name = table.split('.', 1)
@@ -300,7 +300,7 @@ class ClickhouseBackup:
         retain_time = self._config['retain_time']
         retain_count = self._config['retain_count']
 
-        deleted_backup_names = []  # type: List[str]
+        deleted_backup_names: List[str] = []
 
         if not retain_time and retain_count is None:
             logging.info('Retain policies are not specified')
@@ -310,8 +310,8 @@ class ClickhouseBackup:
         if retain_time:
             retain_time_limit = now() - timedelta(**retain_time)
 
-        retained_backups = []  # type: List[BackupMetadata]
-        deleting_backups = []  # type: List[BackupMetadata]
+        retained_backups: List[BackupMetadata] = []
+        deleting_backups: List[BackupMetadata] = []
         for name, backup in self._iter_backup_dir():
             if not backup:
                 logging.info('Deleting backup without metadata: %s', name)
@@ -538,7 +538,7 @@ class ClickhouseBackup:
                 skip_parts[part_id] = new_backup.name
 
         is_changed = False
-        delete_paths = []  # type: List[str]
+        delete_paths: List[str] = []
         for part in backup_meta.get_parts():
             part_id = (part.database, part.table, part.name)
 

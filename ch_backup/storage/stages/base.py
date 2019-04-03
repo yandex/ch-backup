@@ -4,7 +4,7 @@ Base pipeline stages module.
 
 import io
 from abc import ABCMeta, abstractmethod
-from typing import Any, Callable, Generator
+from typing import Any, Callable, Generator, Optional
 
 
 class InputStage(metaclass=ABCMeta):
@@ -15,7 +15,7 @@ class InputStage(metaclass=ABCMeta):
     - produces collected data.
     """
 
-    stype = None  # type: str
+    stype: Optional[str] = None
 
     def __call__(self, src_key, dst_key):
         self._pre_process(src_key)
@@ -44,7 +44,7 @@ class IterStage(metaclass=ABCMeta):
     Base middleware stage.
     """
 
-    stype = None  # type: str
+    stype: Optional[str] = None
 
     def __call__(self, src_iter: Callable, src_key: Any,
                  dst_key: Any) -> Generator:

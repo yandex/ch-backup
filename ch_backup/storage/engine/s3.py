@@ -42,8 +42,8 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
 
         self._s3_bucket_name = credentials_config['bucket']
 
-        self._multipart_uploads = {}  # type: dict
-        self._multipart_downloads = {}  # type: dict
+        self._multipart_uploads: dict = {}
+        self._multipart_downloads: dict = {}
 
         if config.get('disable_ssl_warnings'):
             self.disable_boto_requests_warnings()

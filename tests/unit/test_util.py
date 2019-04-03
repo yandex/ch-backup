@@ -42,7 +42,7 @@ class TestRetry:
     """
 
     def test_function_succeeds(self):
-        context = {}  # type: dict
+        context: dict = {}
         unreliable_function(context)
         assert context['attempts'] == 1
 

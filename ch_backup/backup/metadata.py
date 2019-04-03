@@ -103,8 +103,8 @@ class BackupMetadata:
         self._state = BackupState.CREATING
         self.date_fmt = date_fmt or CBS_DEFAULT_DATE_FMT
         self.start_time = now()
-        self.end_time = None  # type: Optional[datetime]
-        self._databases = {}  # type: Dict[str, dict]
+        self.end_time: Optional[datetime] = None
+        self._databases: Dict[str, dict] = {}
         self.size = 0
         self.real_size = 0
 
@@ -271,7 +271,7 @@ class BackupMetadata:
 
         databases = [db_name] if db_name else self.get_databases()
 
-        parts = []  # type: List[PartMetadata]
+        parts: List[PartMetadata] = []
         for db in databases:
             parts.extend(self._iter_database_parts(db, table_name))
 
