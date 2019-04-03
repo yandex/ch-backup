@@ -173,20 +173,17 @@ class ClickhouseCTL:
 
         return self._freeze_table_compat(db_name, table_name)
 
-    @retry(OSError)
     def remove_freezed_data(self) -> None:
         """
         Remove all freezed partitions.
         """
-        if not self._shadow_data_path.startswith(self._config['data_path']):
-            raise ClickhouseBackupError(
-                'Trying to drop directory outside clickhouse data path')
+        self._remove_shadow_data(self._shadow_data_path)
 
-        logging.debug('Removing shadow data path: %s', self._shadow_data_path)
-        try:
-            shutil.rmtree(self._shadow_data_path)
-        except FileNotFoundError:
-            pass
+    def remove_freezed_part(self, part: FreezedPart) -> None:
+        """
+        Remove the freezed part.
+        """
+        self._remove_shadow_data(part.path)
 
     def get_all_databases(self, exclude_dbs: Optional[Sequence[str]] = None) \
             -> Sequence[str]:
@@ -359,6 +356,16 @@ class ClickhouseCTL:
                             size))
 
         return freezed_parts
+
+    @retry(OSError)
+    def _remove_shadow_data(self, path: str) -> None:
+        assert path.startswith(self._shadow_data_path)
+
+        logging.debug('Removing shadow data: %s', path)
+        try:
+            shutil.rmtree(path)
+        except FileNotFoundError:
+            pass
 
     def _match_ch_version(self, min_version: str) -> bool:
         return parse_version(self._ch_version) >= parse_version(min_version)

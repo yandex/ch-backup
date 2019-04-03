@@ -207,6 +207,7 @@ class ClickhouseBackup:
             # trying to find part in storage
             link, existing_part = self._deduplicate_part(fpart, dedup_backups)
             if link and existing_part:
+                self._ch_ctl.remove_freezed_part(fpart)
                 part_remote_paths = existing_part.paths
             else:
                 logging.debug('Backing up part "%s"', fpart.name)
