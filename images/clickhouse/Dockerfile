@@ -1,14 +1,14 @@
-FROM ubuntu:xenial
+FROM ubuntu:bionic
 
-ENV CLICKHOUSE_USER clickhouse
-ENV CLICKHOUSE_GROUP clickhouse
+ENV TZ=Europe/Moscow
 ENV CH_TMP_DIR /var/tmp/ch-backup
 
 ARG CLICKHOUSE_REPOSITORY="deb https://repo.yandex.ru/clickhouse/deb/stable/ main/"
 ARG CLICKHOUSE_REPOSITORY_KEY=C8F1E19FE0C56BD4
 ARG CLICKHOUSE_VERSION
 
-RUN apt-get update -qq && \
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && \
+    apt-get update -qq && \
     apt-get install -y \
         apt-transport-https \
         tzdata \
@@ -56,12 +56,12 @@ RUN cd ${CH_TMP_DIR} && \
     ln --force -s /config/supervisor /etc/supervisor
 
 
-RUN chown -R clickhouse /etc/clickhouse-server/ /usr/bin/clickhouse && \
-    openssl req -subj "/CN=localhost" -new -newkey rsa:2048 -days 365 -nodes -x509 \
+RUN openssl req -subj "/CN=localhost" -new -newkey rsa:2048 -days 365 -nodes -x509 \
         -keyout /etc/clickhouse-server/server.key \
         -out /etc/clickhouse-server/server.crt && \
     mkdir -p /etc/clickhouse-server/conf.d && \
-    ln -s /config/clickhouse-server.xml /etc/clickhouse-server/conf.d/
+    ln -s /config/clickhouse-server.xml /etc/clickhouse-server/conf.d/ && \
+    chown -R clickhouse:clickhouse /etc/clickhouse-server/ /usr/bin/clickhouse
 
 EXPOSE 8123 8443 9000 9440
 
