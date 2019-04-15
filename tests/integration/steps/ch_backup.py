@@ -28,32 +28,29 @@ def step_create_backup(context, node):
     assert_that(name, matches_regexp(name_regexp))
 
 
-@given('metadata of {node:w} backup #{backup_num:d} was adjusted with')
-def step_update_backup_metadata(context, node, backup_num):
+@given('metadata of {node:w} backup #{backup_id:d} was adjusted with')
+@given('metadata of {node:w} backup "{backup_id}" was adjusted with')
+def step_update_backup_metadata(context, node, backup_id):
     ch_backup = BackupManager(context, node)
-    context.backup = ch_backup.get_backup(backup_num)
+    context.backup = ch_backup.get_backup(backup_id)
     metadata = get_step_data(context)
-    ch_backup.update_backup_metadata(backup_num, metadata)
+    ch_backup.update_backup_metadata(backup_id, metadata)
 
 
-@when('we restore clickhouse #{backup_num:d} backup to {node:w}')
-def step_restore_backup(context, backup_num, node):
-    backup_id = BackupManager(context, node).restore(backup_num)
-    assert_that(backup_id, matches_regexp('^$'))
+@when('we restore clickhouse backup #{backup_id:d} to {node:w}')
+@when('we restore clickhouse backup "{backup_id}" to {node:w}')
+def step_restore_backup(context, backup_id, node):
+    options = get_step_data(context)
+    result = BackupManager(context, node).restore(backup_id, **options)
+    assert_that(result, matches_regexp('^$'))
 
 
-@when('we restore clickhouse {backup_num:d} backup schema to {node:w}')
-def step_restore_backup_schema_only(context, backup_num, node):
-    backup_id = BackupManager(context, node).restore(
-        backup_num, schema_only=True)
-    assert_that(backup_id, matches_regexp('^$'))
-
-
-@when('we delete {node:w} clickhouse backup #{backup_num:d}')
-def step_delete_backup(context, node, backup_num):
-    backup_id = BackupManager(context, node).delete(backup_num)
+@when('we delete {node:w} clickhouse backup #{backup_id:d}')
+@when('we delete {node:w} clickhouse backup "{backup_id}"')
+def step_delete_backup(context, node, backup_id):
+    result = BackupManager(context, node).delete(backup_id)
     assert_that(
-        backup_id,
+        result,
         any_of(
             matches_regexp('^([0-9]{8}T[0-9]{6}\\s*)*$'),
             contains_string('Backup was not deleted'),
@@ -65,42 +62,42 @@ def step_purge_backups(context, node):
     BackupManager(context, node).purge()
 
 
-@then('{node:w} backup #{backup_num:d} metadata contains')
-def step_backup_metadata(context, node, backup_num):
+@then('metadata of {node:w} backup #{backup_id:d} contains')
+@then('metadata of {node:w} backup "{backup_id}" contains')
+def step_backup_metadata(context, node, backup_id):
     expected_meta = get_step_data(context)
 
-    backup = BackupManager(context, node).get_backup(backup_num)
+    backup = BackupManager(context, node).get_backup(backup_id)
     assert_that(backup.meta, has_entries(expected_meta))
 
 
-@then('ch_backup entries of {node:w} are in proper condition')
+@then('we got the following backups on {node:w}')
 def step_check_backups_conditions(context, node):
     ch_backup = BackupManager(context, node)
     backup_ids = ch_backup.get_backup_ids()
 
-    expected_backups_count = len(context.table.rows)
-    current_backups_count = len(backup_ids)
+    backup_count = len(backup_ids)
+    expected_backup_count = len(context.table.rows)
     assert_that(
-        current_backups_count, equal_to(expected_backups_count),
-        'Backups count = {0}, expected {1}'.format(current_backups_count,
-                                                   expected_backups_count))
+        backup_count, equal_to(expected_backup_count),
+        f'Backup count = {backup_count}, expected {expected_backup_count}')
 
-    for row in context.table:
-        backup = ch_backup.get_backup(backup_ids[int(row['num'])])
+    for i, backup_id in enumerate(backup_ids):
+        backup = ch_backup.get_backup(backup_id)
+        expected_backup = context.table[i]
 
-        # check if all backup's files exists
+        # check that all backup's files exist
         missed_paths = ch_backup.get_missed_paths(backup.name)
         assert_that(missed_paths, equal_to([]),
                     '{0} missed files were found'.format(len(missed_paths)))
 
-        # check given backup properties
-        for cond in context.table.headings:
-            if cond in ('num', 'title'):
+        # check backup properties
+        for attr in context.table.headings:
+            if attr in ('num', 'title'):
                 continue
-            current_value = str(getattr(backup, cond))
-            expected_value = row[cond]
+            current_value = str(getattr(backup, attr))
+            expected_value = expected_backup[attr]
             assert_that(
                 current_value, equal_to(expected_value),
-                'Backup #{0}: {1} expected {2} = {3}, but was {4}'.format(
-                    row['num'], backup.name, cond, expected_value,
-                    current_value))
+                f'Backup #{i}: {backup.name} expected {attr} ='
+                f' {expected_value}, but was {current_value}')

@@ -13,7 +13,7 @@ Feature: Metadata
     labels:
       name: test_backup
     """
-    Then clickhouse01 backup #0 metadata contains
+    Then metadata of clickhouse01 backup #0 contains
     """
     version: {{ version }}
     ch_version: {{ clickhouse_version('clickhouse01') }}

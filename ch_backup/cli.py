@@ -125,9 +125,9 @@ class List(ParamType):
             return result
 
         except ValueError:
-            msg = '\'%s\' is not a valid list of items' % value
+            msg = f'"{value}" is not a valid list of items'
             if self.regexp:
-                msg += ' matching the format: %s' % self.regexp_str
+                msg += f' matching the format: {self.regexp_str}'
 
             self.fail(msg, param, ctx)
 
@@ -154,8 +154,7 @@ class String(StringParamType):
 
         if self.regexp:
             if self.regexp.fullmatch(value) is None:
-                msg = '\'%s\' does not match the format: %s' % (
-                    value, self.regexp_str)
+                msg = f'"{value}" does not match the format: {self.regexp_str}'
                 self.fail(msg, param, ctx)
 
         return super().convert(value, param, ctx)
@@ -206,8 +205,8 @@ def show_command(ctx, ch_backup, name):
             '{uuid}': UUID,
         }),
     help='Name of creating backup. The value can contain macros:'
-    ' {timestamp} - current time in UTC (' + TIMESTAMP + '),'
-    ' {uuid} - randomly generated UUID value (' + UUID + ').',
+    f' {{timestamp}} - current time in UTC ({TIMESTAMP}),'
+    f' {{uuid}} - randomly generated UUID value ({UUID}).',
     default='{timestamp}')
 @option(
     '-d',
@@ -297,13 +296,14 @@ def version_command(_ctx, _ch_backup):
 
 
 def _validate_name(ctx, ch_backup, name):
-    backup_names = set(b.name for b in ch_backup.list())
-    if name == 'LAST':
-        if not backup_names:
-            ctx.fail('There are no backups.')
-        return max(backup_names)
+    backups = ch_backup.list()
 
-    if name not in backup_names:
-        ctx.fail('No backups with name "%s" were found.' % name)
+    if name == 'LAST':
+        if not backups:
+            ctx.fail('There are no backups.')
+        return backups[0].name
+
+    if name not in (b.name for b in backups):
+        ctx.fail(f'No backups with name "{name}" were found.')
 
     return name

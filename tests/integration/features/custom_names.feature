@@ -40,15 +40,19 @@ Feature: Backups with custom names
     name: db1_backup_2
     databases: ["test_db1"]
     """
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | name         | state             | data_count | link_count   |
       | 0   | db1_backup_2 | created           | 1          | 1            |
       | 1   | db2_backup_1 | created           | 2          | 0            |
       | 2   | db1_backup_1 | created           | 2          | 0            |
+    And metadata of clickhouse01 backup "LAST" contains
+    """
+    name: db1_backup_2
+    """
 
   Scenario: Delete backup
     When we delete clickhouse01 clickhouse backup #2
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | name         | state             | data_count | link_count   |
       | 0   | db1_backup_2 | created           | 1          | 1            |
       | 1   | db2_backup_1 | created           | 2          | 0            |
@@ -63,14 +67,14 @@ Feature: Backups with custom names
         retain_count: 1
     """
     When we purge clickhouse01 clickhouse backups
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | name         | state             | data_count | link_count   |
       | 0   | db1_backup_2 | created           | 1          | 1            |
       | 1   | db1_backup_1 | partially_deleted | 1          | 0            |
 
   Scenario: Restore from backup
     Given a working clickhouse on clickhouse02
-    When we restore clickhouse #0 backup to clickhouse02
+    When we restore clickhouse backup #0 to clickhouse02
     And we execute queries on clickhouse01
     """
     DROP DATABASE test_db2;
@@ -82,7 +86,7 @@ Feature: Backups with custom names
     """
     name: '{uuid}'
     """
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state             | data_count | link_count   |
       | 0   | created           | 1          | 1            |
       | 1   | created           | 1          | 1            |

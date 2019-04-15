@@ -14,7 +14,7 @@ Feature: Backup & Clean & Restore
     """
     And clickhouse01 has test clickhouse data test1
     When we create clickhouse01 clickhouse backup
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   | title         |
       | 0   | created  | 4          | 0            | shared        |
 
@@ -26,7 +26,7 @@ Feature: Backup & Clean & Restore
     """
     And clickhouse01 has test clickhouse data test2
     When we create clickhouse01 clickhouse backup
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   | title         |
       | 0   | created  | 4          | 4            | shared+links  |
       | 1   | created  | 4          | 0            | shared        |
@@ -38,7 +38,7 @@ Feature: Backup & Clean & Restore
         deduplicate_parts: True
     """
     When we create clickhouse01 clickhouse backup
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   | title         |
       | 0   | created  | 0          | 8            | links         |
       | 1   | created  | 4          | 4            | shared+links  |
@@ -52,7 +52,7 @@ Feature: Backup & Clean & Restore
     """
     And clickhouse01 has test clickhouse data test4
     When we create clickhouse01 clickhouse backup
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   | title         |
       | 0   | created  | 12         | 0            | shared+data   |
       | 1   | created  | 0          | 8            | links         |
@@ -69,7 +69,7 @@ Feature: Backup & Clean & Restore
     And clickhouse on clickhouse01 has test schema
     And clickhouse01 has test clickhouse data test5
     When we create clickhouse01 clickhouse backup
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   | title         |
       | 0   | created  | 4          | 9            | links+data    |
       | 1   | created  | 12         | 0            | shared+data   |
@@ -84,7 +84,7 @@ Feature: Backup & Clean & Restore
         deduplicate_parts: False
     """
     When we create clickhouse01 clickhouse backup
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   | title         |
       | 0   | created  | 13         | 0            | data          |
       | 1   | created  | 4          | 9            | links+data    |
@@ -95,7 +95,7 @@ Feature: Backup & Clean & Restore
 
   Scenario: Attempt to delete "shared" backup deletes no data
     When we delete clickhouse01 clickhouse backup #5
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   | title         |
       | 0   | created  | 13         | 0            | data          |
       | 1   | created  | 4          | 9            | links+data    |
@@ -106,7 +106,7 @@ Feature: Backup & Clean & Restore
 
   Scenario: Attempt to delete "shared + links" backup deletes links only
     When we delete clickhouse01 clickhouse backup #4
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state             | data_count | link_count   | title        |
       | 0   | created           | 13         | 0            | data         |
       | 1   | created           | 4          | 9            | links+data   |
@@ -117,7 +117,7 @@ Feature: Backup & Clean & Restore
 
   Scenario: Attempt to delete "links" backup succeeds
     When we delete clickhouse01 clickhouse backup #3
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state             | data_count | link_count   | title        |
       | 0   | created           | 13         | 0            | data         |
       | 1   | created           | 4          | 9            | links+data   |
@@ -127,7 +127,7 @@ Feature: Backup & Clean & Restore
 
   Scenario: Attempt to delete "shared + data" backup deletes non-shared data only
     When we delete clickhouse01 clickhouse backup #2
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state             | data_count | link_count   | title        |
       | 0   | created           | 13         | 0            | data         |
       | 1   | created           | 4          | 9            | links+data   |
@@ -137,7 +137,7 @@ Feature: Backup & Clean & Restore
 
   Scenario: Attempt to delete  "links + data" backup succeeds
     When we delete clickhouse01 clickhouse backup #1
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state             | data_count | link_count   | title        |
       | 0   | created           | 13         | 0            | data         |
       | 1   | partially_deleted | 9          | 0            | shared+data  |
@@ -146,7 +146,7 @@ Feature: Backup & Clean & Restore
 
   Scenario: Attempt to delete  "data" backup succeeds
     When we delete clickhouse01 clickhouse backup #0
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state             | data_count | link_count   | title        |
       | 0   | partially_deleted | 9          | 0            | shared+data  |
       | 1   | partially_deleted | 4          | 0            | shared+links |

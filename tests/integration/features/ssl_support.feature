@@ -13,10 +13,10 @@ Feature: SSL support
   Scenario: Create backup
     Given clickhouse01 has test clickhouse data test1
     When we create clickhouse01 clickhouse backup
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   |
       | 0   | created  | 4          | 0            |
 
   Scenario: Restore from backup
-    When we restore clickhouse #0 backup to clickhouse02
+    When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02

@@ -36,7 +36,7 @@ class ClickhouseBackup:
 
     def list(self, state: BackupState = None) -> Sequence[BackupMetadata]:
         """
-        Get list of existing backups.
+        Get list of existing backups sorted by start timestamp.
         """
         backups = []
         for backup in self._iter_backups():

@@ -53,7 +53,7 @@ Feature: Backup & Restore
     And clickhouse01 has test clickhouse data test6
 
     When we create clickhouse01 clickhouse backup
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   | title          |
       | 0   | created  | 4          | 12           | data+links     |
       | 1   | created  | 12         | 0            | shared         |
@@ -71,7 +71,7 @@ Feature: Backup & Restore
         retain_count: 10
     """
     When we purge clickhouse01 clickhouse backups
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   | title          |
       | 0   | created  | 4          | 12           | data+links     |
       | 1   | created  | 12         | 0            | shared         |
@@ -101,7 +101,7 @@ Feature: Backup & Restore
         retain_count: 10
     """
     When we purge clickhouse01 clickhouse backups
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   | title          |
       | 0   | created  | 4          | 12           | data+links     |
       | 1   | created  | 12         | 0            | shared         |
@@ -120,7 +120,7 @@ Feature: Backup & Restore
         retain_count: 1
     """
     When we purge clickhouse01 clickhouse backups
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   | title          |
       | 0   | created  | 4          | 12           | data+links     |
       | 1   | created  | 12         | 0            | shared         |
@@ -139,7 +139,7 @@ Feature: Backup & Restore
       retain_count: 2
   """
   When we purge clickhouse01 clickhouse backups
-  Then ch_backup entries of clickhouse01 are in proper condition
+  Then we got the following backups on clickhouse01
     | num | state    | data_count | link_count   | title          |
     | 0   | created  | 4          | 12           | data+links     |
     | 1   | created  | 12         | 0            | shared         |
@@ -156,7 +156,7 @@ Feature: Backup & Restore
       retain_count: 2
   """
   When we purge clickhouse01 clickhouse backups
-  Then ch_backup entries of clickhouse01 are in proper condition
+  Then we got the following backups on clickhouse01
     | num | state    | data_count | link_count   | title          |
     | 0   | created  | 4          | 12           | data+links     |
     | 1   | created  | 12         | 0            | shared         |

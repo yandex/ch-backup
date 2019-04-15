@@ -18,11 +18,11 @@ Feature: Tests specific to S3 storage engine
         chunk_size: {{ get_file_size('clickhouse01', '/var/lib/clickhouse/data/test_db/table_01/201001_1_1_0/n.bin') }}
     """
     When we create clickhouse01 clickhouse backup
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   |
       | 0   | created  | 1          | 0            |
 
   Scenario: Restore from backup
     Given a working clickhouse on clickhouse02
-    When we restore clickhouse #0 backup to clickhouse02
+    When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02

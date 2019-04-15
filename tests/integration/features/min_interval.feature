@@ -19,7 +19,7 @@ Feature: Min interval between backups
     INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 1000;
     """
     When we create clickhouse01 clickhouse backup
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count |
       | 0   | created  | 10         | 0          |
 
@@ -30,7 +30,7 @@ Feature: Min interval between backups
         state: <state>
     """
     When we create clickhouse01 clickhouse backup
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count |
       | 0   | <state>  | 10         | 0          |
 
@@ -51,7 +51,7 @@ Feature: Min interval between backups
         end_time: {{ backup.end_time | decrease_on('1 hour') }}
     """
     When we create clickhouse01 clickhouse backup
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count |
       | 0   | created  | 0          | 10         |
       | 1   | created  | 10         | 0          |
@@ -61,7 +61,7 @@ Feature: Min interval between backups
     """
     force: True
     """
-    Then ch_backup entries of clickhouse01 are in proper condition
+    Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count |
       | 0   | created  | 0          | 10         |
       | 1   | created  | 0          | 10         |
