@@ -130,7 +130,7 @@ class BackupMetadata:
         """
         self.end_time = now()
 
-    def dump_json(self, indent: int = 4) -> str:
+    def dump_json(self) -> str:
         """
         Return json representation of backup metadata.
         """
@@ -151,7 +151,7 @@ class BackupMetadata:
                 'labels': self.labels,
             },
         }
-        return json.dumps(report, indent=indent)
+        return json.dumps(report, separators=(',', ':'))
 
     @classmethod
     def load_json(cls, data):
