@@ -6,6 +6,7 @@ import os
 from jinja2 import BaseLoader, Environment, FileSystemLoader, StrictUndefined
 
 from . import docker
+from .clickhouse import ClickhouseClient
 from .datetime import decrease_time_str, increase_time_str
 from .typing import ContextT
 from .utils import context_to_dict, env_stage
@@ -61,6 +62,9 @@ def _environment(context: ContextT, loader: BaseLoader = None) -> Environment:
         container = docker.get_container(context, container_name)
         return docker.get_file_size(container, path)
 
+    def _clickhouse_version(container_name):
+        return ClickhouseClient(context, container_name).get_version()
+
     environment = Environment(
         autoescape=False,
         trim_blocks=False,
@@ -72,5 +76,6 @@ def _environment(context: ContextT, loader: BaseLoader = None) -> Environment:
     environment.filters['decrease_on'] = decrease_time_str
 
     environment.globals['get_file_size'] = _get_file_size
+    environment.globals['clickhouse_version'] = _clickhouse_version
 
     return environment

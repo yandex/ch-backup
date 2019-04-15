@@ -34,13 +34,6 @@ class Backup:
         return self._metadata.get('meta', {})
 
     @property
-    def version(self):
-        """
-        ClickHouse version.
-        """
-        return self.meta.get('ch_version')
-
-    @property
     def link_count(self) -> int:
         """
         The number of links (deduplicated parts).
@@ -157,7 +150,7 @@ class BackupManager:
                tables: Sequence[str] = None,
                labels: dict = None) -> str:
         """
-        Perform backup.
+        Execute backup command.
         """
         options = []
         if name:
@@ -175,16 +168,22 @@ class BackupManager:
 
     def delete(self, backup_id: BackupId) -> str:
         """
-        Delete backup entry.
+        Execute delete command.
         """
         backup_id = self._normalize_id(backup_id)
         return self._exec('delete {0}'.format(backup_id))
 
     def purge(self) -> str:
         """
-        Perform purge.
+        Execute purge command.
         """
         return self._exec('purge')
+
+    def version(self) -> str:
+        """
+        Execute version command.
+        """
+        return self._exec('version')
 
     def update_backup_metadata(self,
                                backup_id: BackupId,
@@ -254,9 +253,17 @@ class BackupManager:
 
     def _exec(self, command: str) -> str:
         cmd = '{0} {1}'.format(self._cmd_base, command)
-        return self._container.exec_run(cmd, user='root').decode()
+        return self._container.exec_run(cmd, user='root').decode().strip()
 
     def _normalize_id(self, backup_id: BackupId) -> str:
         if isinstance(backup_id, int):
             return self.get_backup_ids()[backup_id]
         return backup_id
+
+
+def get_version() -> str:
+    """
+    Get ch-backup version.
+    """
+    with open('ch_backup/version.txt') as f:
+        return f.read().strip()

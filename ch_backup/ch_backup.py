@@ -15,6 +15,7 @@ from ch_backup.clickhouse.control import ClickhouseCTL, FreezedPart
 from ch_backup.config import Config
 from ch_backup.exceptions import BackupNotFound, ClickhouseBackupError
 from ch_backup.util import now, utcnow
+from ch_backup.version import get_version
 
 
 class ClickhouseBackup:
@@ -103,6 +104,7 @@ class ClickhouseBackup:
             name=name,
             path=self._backup_layout.get_backup_path(name),
             labels=backup_labels,
+            version=get_version(),
             ch_version=self._ch_ctl.get_version())
 
         self._backup_layout.save_backup_meta(backup_meta)

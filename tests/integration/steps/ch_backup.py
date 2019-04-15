@@ -55,7 +55,7 @@ def step_delete_backup(context, node, backup_num):
     assert_that(
         backup_id,
         any_of(
-            matches_regexp('^([0-9]{8}T[0-9]{6}\n)*$'),
+            matches_regexp('^([0-9]{8}T[0-9]{6}\\s*)*$'),
             contains_string('Backup was not deleted'),
             contains_string('Backup was partially deleted')))
 

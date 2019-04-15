@@ -91,6 +91,7 @@ class BackupMetadata:
     def __init__(self,
                  name: str,
                  path: str,
+                 version: str,
                  ch_version: str,
                  date_fmt: str = None,
                  hostname: str = None,
@@ -98,6 +99,7 @@ class BackupMetadata:
         self.name = name
         self.labels = labels
         self.path = path
+        self.version = version
         self.ch_version = ch_version
         self.hostname = hostname or socket.getfqdn()
         self._state = BackupState.CREATING
@@ -139,6 +141,7 @@ class BackupMetadata:
             'meta': {
                 'name': self.name,
                 'path': self.path,
+                'version': self.version,
                 'ch_version': self.ch_version,
                 'hostname': self.hostname,
                 'date_fmt': self.date_fmt,
@@ -178,6 +181,7 @@ class BackupMetadata:
             else:
                 backup._state = BackupState.CREATED
             backup.real_size = meta.get('real_bytes')
+            backup.version = meta.get('version')
             backup.ch_version = meta.get('ch_version')
             backup.labels = meta.get('labels')
 

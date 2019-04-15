@@ -61,12 +61,6 @@ TEST_TABLE_SCHEMA = strip_query("""
     engine = MergeTree(date, int_num, 8192)
 """)
 
-GET_VERSION_SQL = strip_query("""
-    SELECT value
-    FROM system.build_options
-    WHERE name = 'VERSION_DESCRIBE'
-""")
-
 
 class ClickhouseClient:
     """
@@ -100,7 +94,7 @@ class ClickhouseClient:
         """
         Get ClickHouse version.
         """
-        return self._query('GET', GET_VERSION_SQL)
+        return self._query('GET', 'SELECT version()')
 
     @staticmethod
     def _get_test_db_name(db_num: int) -> str:

@@ -1,3 +1,4 @@
+VERSION=1.0
 TEST_VENV=.tox/py36
 REQUIREMENTS_VENV=.tox/requirements
 TEST_REQUIREMENTS_VENV=.tox/test_requirements
@@ -12,11 +13,11 @@ export PYTHONIOENCODING?=utf8
 
 
 .PHONY: build
-build:
+build: ch_backup/version.txt
 
 
 .PHONY: all
-all: lint unit_test integration_test
+all: build lint unit_test integration_test
 
 
 .PHONY: test
@@ -24,23 +25,23 @@ test: lint unit_test
 
 
 .PHONY: lint
-lint:
+lint: build
 	git --no-pager diff HEAD~1 --check
 	tox -e isort,yapf,flake8,pylint,mypy,bandit
 
 
 .PHONY: unit_test
-unit_test:
+unit_test: build
 	tox -e unit_test
 
 
 .PHONY: integration_test
-integration_test: create_env
+integration_test: build create_env
 	tox -e integration_test -- -D skip_setup
 
 
 .PHONY: integration_test_all
-integration_test_all:
+integration_test_all: build
 	@for version in $(CLICKHOUSE_VERSIONS); do \
 		CLICKHOUSE_VERSION=$$version tox -e integration_test; \
 	done
@@ -48,7 +49,7 @@ integration_test_all:
 
 .PHONY: clean
 clean: clean_env clean_pycache
-	rm -rf .tox .cache *.egg-info htmlcov .coverage* .hypothesis
+	rm -rf .tox .cache *.egg-info htmlcov .coverage* .hypothesis ch_backup/version.txt
 
 .PHONY: clean_pycache
 clean_pycache:
@@ -82,7 +83,7 @@ uninstall:
 
 
 .PHONY: debuild
-debuild: debian_changelog
+debuild: build debian_changelog
 	cd debian && \
 	    debuild --check-dirname-level 0 --no-tgz-check --preserve-env -uc -us
 
@@ -90,7 +91,7 @@ debuild: debian_changelog
 debian_changelog:
 	@rm -f debian/changelog
 	dch --create --package ch-backup --distribution trusty \
-	    -v `git rev-list HEAD --count`-`git rev-parse --short HEAD` \
+	    -v `cat ch_backup/version.txt` \
 	    "Yandex autobuild"
 
 
@@ -101,7 +102,7 @@ clean_debuild: clean
 
 
 .PHONY: create_env
-create_env: ${TEST_VENV} ${SESSION_FILE}
+create_env: build ${TEST_VENV} ${SESSION_FILE}
 
 ${SESSION_FILE}:
 	PATH=${TEST_VENV}/bin:$$PATH ${TEST_VENV}/bin/python -m tests.integration.env_control create
@@ -152,11 +153,15 @@ ${REQUIREMENTS_VENV}: requirements.in.txt
 ${TEST_REQUIREMENTS_VENV}: requirements.txt requirements-test.in.txt
 
 
+ch_backup/version.txt:
+	@echo ${VERSION}.`git rev-list HEAD --count` > ch_backup/version.txt
+
+
 .PHONY: help
 help:
 	@echo "Targets:"
-	@echo "  build (default)            Build project (it's currently no-op)."
-	@echo "  all                        Alias for \"lint unit_test integration_test\"."
+	@echo "  build (default)            Build project (it only generates version.txt for now)."
+	@echo "  all                        Alias for \"build lint unit_test integration_test\"."
 	@echo "  test                       Alias for \"lint unit_test\"."
 	@echo "  lint                       Run linter tools."
 	@echo "  unit_test                  Run unit tests."

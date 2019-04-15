@@ -17,3 +17,4 @@ htmlcov/
 local_configuration.py
 staging/
 venv/
+ch_backup/version.txt

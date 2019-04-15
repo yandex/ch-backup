@@ -5,4 +5,4 @@ features/backup_purge.feature
 features/single_table.feature
 features/min_interval.feature
 features/ssl_support.feature
-features/labels.feature
+features/metadata.feature

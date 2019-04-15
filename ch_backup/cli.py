@@ -18,6 +18,7 @@ from .backup.metadata import BackupState
 from .ch_backup import ClickhouseBackup
 from .config import Config
 from .util import drop_privileges, setup_environment, utcnow
+from .version import get_version
 
 TIMESTAMP = utcnow().strftime('%Y%m%dT%H%M%S')
 UUID = str(uuid.uuid4())
@@ -287,6 +288,12 @@ def purge_command(_ctx, ch_backup):
         print(msg, file=sys.stderr, flush=True)
 
     print('\n'.join(names))
+
+
+@command(name='version')
+def version_command(_ctx, _ch_backup):
+    """Print ch-backup version."""
+    print(get_version())
 
 
 def _validate_name(ctx, ch_backup, name):

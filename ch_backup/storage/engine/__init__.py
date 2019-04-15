@@ -6,6 +6,7 @@ It's currently supported only S3 storage engine.
 """
 
 from ch_backup.exceptions import ConfigurationError
+
 from .s3 import S3StorageEngine
 
 SUPPORTED_STORAGES = {
