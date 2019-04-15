@@ -186,9 +186,9 @@ def list_command(_ctx, ch_backup, verbose, **kwargs):
     print(tabulate(report, headers=fields))
 
 
-@command()
+@command(name='show')
 @argument('name', metavar='BACKUP')
-def show(ctx, ch_backup, name):
+def show_command(ctx, ch_backup, name):
     """Show details for a particular backup."""
     name = _validate_name(ctx, ch_backup, name)
 
@@ -248,7 +248,7 @@ def backup_command(ctx, ch_backup, name, databases, tables, force, label):
     print(name)
 
 
-@command()
+@command(name='restore')
 @argument('name', metavar='BACKUP')
 @option(
     '-d',
@@ -256,16 +256,16 @@ def backup_command(ctx, ch_backup, name, databases, tables, force, label):
     type=List(regexp=r'\w+'),
     help='Comma-separated list of databases to restore.')
 @option('--schema-only', is_flag=True, help='Restore only databases schemas')
-def restore(ctx, ch_backup, name, databases, schema_only):
+def restore_command(ctx, ch_backup, name, databases, schema_only):
     """Restore data from a particular backup."""
     name = _validate_name(ctx, ch_backup, name)
 
     ch_backup.restore(name, databases, schema_only)
 
 
-@command()
+@command(name='delete')
 @argument('name', metavar='BACKUP')
-def delete(ctx, ch_backup, name):
+def delete_command(ctx, ch_backup, name):
     """Delete particular backup."""
     name = _validate_name(ctx, ch_backup, name)
 
@@ -278,8 +278,8 @@ def delete(ctx, ch_backup, name):
         print(name)
 
 
-@command()
-def purge(_ctx, ch_backup):
+@command(name='purge')
+def purge_command(_ctx, ch_backup):
     """Purge outdated backups."""
     names, msg = ch_backup.purge()
 
