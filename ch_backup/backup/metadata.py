@@ -73,10 +73,8 @@ class PartMetadata(SimpleNamespace):
         part.name = meta['name']
         part.link = value['link']
         part.paths = value['paths']
-        # Additional logic for backward-compatibility with earlier versions
-        # of backup metadata format.
-        part.size = int(meta.get('bytes', meta.get('bytes_on_disk')))
-        part.checksum = meta.get('checksum')
+        part.size = meta['bytes']
+        part.checksum = meta['checksum']
 
         return part
 
@@ -174,16 +172,12 @@ class BackupMetadata:
             backup.start_time = cls._load_time(meta, 'start_time')
             backup.end_time = cls._load_time(meta, 'end_time')
             backup.size = meta['bytes']
-            # Additional logic for backward-compatibility with earlier versions
-            # of backup metadata format.
-            if 'state' in meta:
-                backup._state = BackupState(meta['state'])
-            else:
-                backup._state = BackupState.CREATED
-            backup.real_size = meta.get('real_bytes')
+            backup.real_size = meta['real_bytes']
+            backup._state = BackupState(meta['state'])
+            backup.ch_version = meta['ch_version']
+            backup.labels = meta['labels']
+            # get() is used for backward-compatibility with versions prior 1.0
             backup.version = meta.get('version')
-            backup.ch_version = meta.get('ch_version')
-            backup.labels = meta.get('labels')
 
             return backup
 
@@ -252,10 +246,7 @@ class BackupMetadata:
         self._table_parts(part.database, part.table).pop(part.name)
         self.size -= part.size
         if not part.link:
-            # Additional check for backward-compatibility with earlier versions
-            # of backup metadata format.
-            if self.real_size:
-                self.real_size -= part.size
+            self.real_size -= part.size
 
     def get_part(self, db_name: str, table_name: str,
                  part_name: str) -> Optional[PartMetadata]:

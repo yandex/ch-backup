@@ -39,7 +39,9 @@ class TestBackupMetadata:
             'bytes': 0,
             'real_bytes': 0,
             'hostname': 'clickhouse01.test_net_711',
-            'ch_version': 'v18.5.1-testing',
+            'version': '1.0.100',
+            'ch_version': '19.1.16',
+            'labels': None,
             **meta,
         }
         metadata = {
@@ -62,4 +64,6 @@ class TestBackupMetadata:
         assert backup.size == meta['bytes']
         assert backup.real_size == meta['real_bytes']
         assert backup.hostname == meta['hostname']
+        assert backup.version == meta['version']
         assert backup.ch_version == meta['ch_version']
+        assert backup.labels == meta['labels']
