@@ -83,12 +83,12 @@ uninstall:
 
 
 .PHONY: debuild
-debuild: build debian_changelog
+debuild: debian_changelog
 	cd debian && \
 	    debuild --check-dirname-level 0 --no-tgz-check --preserve-env -uc -us
 
 .PHONY: debian_changelog
-debian_changelog:
+debian_changelog: build
 	@rm -f debian/changelog
 	dch --create --package ch-backup --distribution trusty \
 	    -v `cat ch_backup/version.txt` \
