@@ -90,10 +90,9 @@ class ExecPool:
             try:
                 future_result = future.result()
             except Exception:
-                logging.error(
-                    'Future "%s" generated an exception:',
-                    future_id,
-                    exc_info=True)
+                logging.error('Future "%s" generated an exception:',
+                              future_id,
+                              exc_info=True)
                 raise
             else:
                 logging.debug('Future "%s" returned: %s', future_id,
@@ -145,8 +144,9 @@ class PipelineLoader:
                                   *args)
 
         if is_async and self._exec_pool:
-            job_id = "{id}({args})".format(
-                id=id_tuple[0], args=', '.join(map(repr, id_tuple[1:])))
+            job_id = "{id}({args})".format(id=id_tuple[0],
+                                           args=', '.join(
+                                               map(repr, id_tuple[1:])))
 
             return self._exec_pool.submit(job_id, pipeline_runner)
 

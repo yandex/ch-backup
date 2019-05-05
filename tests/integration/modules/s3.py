@@ -48,8 +48,9 @@ class S3Client:
         """
 
         remote_path = remote_path.lstrip('/')
-        self._s3_client.put_object(
-            Body=data, Bucket=self._s3_bucket_name, Key=remote_path)
+        self._s3_client.put_object(Body=data,
+                                   Bucket=self._s3_bucket_name,
+                                   Key=remote_path)
 
     def download_data(self, remote_path: str) -> str:
         """
@@ -69,8 +70,8 @@ class S3Client:
         Check if remote path exists.
         """
         try:
-            self._s3_client.head_object(
-                Bucket=self._s3_bucket_name, Key=remote_path)
+            self._s3_client.head_object(Bucket=self._s3_bucket_name,
+                                        Key=remote_path)
             return True
         except ClientError:
             return False

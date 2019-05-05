@@ -69,12 +69,11 @@ class TestBackupMetadata:
         assert backup.labels == meta['labels']
 
     def test_dump_is_compact(self):
-        backup = BackupMetadata(
-            name='20181017T210300',
-            path='ch_backup/20181017T210300',
-            version='1.0.100',
-            ch_version='19.1.16',
-            date_fmt='%Y-%m-%dT%H:%M:%S%Z',
-            hostname='clickhouse01.test_net_711')
+        backup = BackupMetadata(name='20181017T210300',
+                                path='ch_backup/20181017T210300',
+                                version='1.0.100',
+                                ch_version='19.1.16',
+                                date_fmt='%Y-%m-%dT%H:%M:%S%Z',
+                                hostname='clickhouse01.test_net_711')
 
         assert backup.dump_json().find(' ') == -1

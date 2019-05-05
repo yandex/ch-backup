@@ -172,8 +172,8 @@ class ClickhouseClient:
         dbs_tables = self._query('GET', GET_ALL_USER_TABLES_SQL)['data']
         all_tables_desc = {}
         for db_name, table_name, _ in dbs_tables:
-            query_sql = GET_TEST_TABLE_SCHEMA.format(
-                db_name=db_name, table_name=table_name)
+            query_sql = GET_TEST_TABLE_SCHEMA.format(db_name=db_name,
+                                                     table_name=table_name)
             table_data = self._query('GET', query_sql)
             all_tables_desc[(db_name, table_name)] = table_data['data']
         return all_tables_desc
@@ -197,9 +197,8 @@ class ClickhouseClient:
         """
         self._query(
             'POST',
-            DROP_TABLE.format(
-                db_name=self._get_test_db_name(db_num),
-                table_name=self._get_test_table_name(table_num)))
+            DROP_TABLE.format(db_name=self._get_test_db_name(db_num),
+                              table_name=self._get_test_table_name(table_num)))
 
     @staticmethod
     def _gen_record(row_num=0, day_diff=None, str_len=5, str_prefix=None):
@@ -218,8 +217,8 @@ class ClickhouseClient:
         dt_now = datetime.utcnow() - timedelta(**day_diff)
         row = (dt_now.strftime('%Y-%m-%d'),
                dt_now.strftime('%Y-%m-%d %H:%M:%S'), str(row_num),
-               '{prefix}{rand_str}'.format(
-                   prefix=str_prefix, rand_str=rand_str))
+               '{prefix}{rand_str}'.format(prefix=str_prefix,
+                                           rand_str=rand_str))
 
         return row
 
@@ -242,8 +241,11 @@ class ClickhouseClient:
 
         try:
             logging.debug('Executing ClickHouse query: %s', query)
-            response = self._session.request(
-                method, url, params=params, data=data, timeout=self._timeout)
+            response = self._session.request(method,
+                                             url,
+                                             params=params,
+                                             data=data,
+                                             timeout=self._timeout)
 
             response.raise_for_status()
         except HTTPError as e:

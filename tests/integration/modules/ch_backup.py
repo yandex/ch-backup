@@ -202,16 +202,16 @@ class BackupManager:
         Apply new config to old one
         """
         conf = yaml.load(
-            self._container.exec_run(
-                '/bin/cat {0}'.format(self._config_path),
-                user='root').decode())
+            self._container.exec_run('/bin/cat {0}'.format(self._config_path),
+                                     user='root').decode())
 
         utils.merge(conf, update)
         docker.put_file(
             self._container,
-            yaml.dump(
-                conf, default_flow_style=False, encoding='utf-8', indent=4),
-            self._config_path)
+            yaml.dump(conf,
+                      default_flow_style=False,
+                      encoding='utf-8',
+                      indent=4), self._config_path)
 
     def get_missed_paths(self, backup_id: BackupId) -> Sequence[str]:
         """

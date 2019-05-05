@@ -45,8 +45,9 @@ class UploadStorageStage(BufferedIterStage, metaclass=ABCMeta):
 
     def _process(self, data):
         if self._upload_id:
-            self._loader.upload_part(
-                data, remote_path=self._remote_path, upload_id=self._upload_id)
+            self._loader.upload_part(data,
+                                     remote_path=self._remote_path,
+                                     upload_id=self._upload_id)
 
     def _post_process(self) -> str:
         assert self._remote_path
@@ -100,8 +101,8 @@ class DownloadStorageStage(InputStage):
             remote_path=src_key)
 
     def _process(self):
-        return self._loader.download_part(
-            download_id=self._download_id, part_len=self._chunk_size)
+        return self._loader.download_part(download_id=self._download_id,
+                                          part_len=self._chunk_size)
 
     def _post_process(self):
         self._loader.complete_multipart_download(download_id=self._download_id)

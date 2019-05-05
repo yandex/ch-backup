@@ -65,12 +65,11 @@ def _environment(context: ContextT, loader: BaseLoader = None) -> Environment:
     def _clickhouse_version(container_name):
         return ClickhouseClient(context, container_name).get_version()
 
-    environment = Environment(
-        autoescape=False,
-        trim_blocks=False,
-        undefined=StrictUndefined,
-        keep_trailing_newline=True,
-        loader=loader)
+    environment = Environment(autoescape=False,
+                              trim_blocks=False,
+                              undefined=StrictUndefined,
+                              keep_trailing_newline=True,
+                              loader=loader)
 
     environment.filters['increase_on'] = increase_time_str
     environment.filters['decrease_on'] = decrease_time_str

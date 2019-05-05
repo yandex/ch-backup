@@ -147,8 +147,9 @@ class ClickhouseCTL:
         """
         Attach part to database.table from dettached dir
         """
-        query_sql = PART_ATTACH_SQL.format(
-            db_name=db_name, table_name=table_name, part_name=part_name)
+        query_sql = PART_ATTACH_SQL.format(db_name=db_name,
+                                           table_name=table_name,
+                                           part_name=part_name)
 
         logging.debug('Attaching partition: %s', query_sql)
         self._ch_client.query(query_sql)
@@ -216,8 +217,8 @@ class ClickhouseCTL:
         """
         Return True if the specified table exists.
         """
-        query_sql = CHECK_TABLE_SQL.format(
-            db_name=db_name, table_name=table_name)
+        query_sql = CHECK_TABLE_SQL.format(db_name=db_name,
+                                           table_name=table_name)
         return bool(int(self._ch_client.query(query_sql)))
 
     def get_database_schema(self, db_name: str) -> str:
@@ -231,8 +232,8 @@ class ClickhouseCTL:
         """
         Return table schema (CREATE TABLE query).
         """
-        query_sql = SHOW_CREATE_TABLE_SQL.format(
-            db_name=db_name, table_name=table_name)
+        query_sql = SHOW_CREATE_TABLE_SQL.format(db_name=db_name,
+                                                 table_name=table_name)
         return self._ch_client.query(query_sql)
 
     def get_tables_ordered(self,
@@ -243,8 +244,8 @@ class ClickhouseCTL:
         Get ordered by mtime list of all database tables
         """
         result: List[str] = []
-        query_sql = GET_TABLES_ORDERED_SQL.format(
-            db_name=db_name, tables=tables or [])
+        query_sql = GET_TABLES_ORDERED_SQL.format(db_name=db_name,
+                                                  tables=tables or [])
         logging.debug('Fetching all %s tables ordered: %s', db_name, query_sql)
         ch_resp = self._ch_client.query(query_sql)
         if 'data' in ch_resp:
@@ -255,8 +256,8 @@ class ClickhouseCTL:
         """
         Get dict with all table parts
         """
-        query_sql = GET_TABLE_PARTITIONS_SQL.format(
-            db_name=database, table_name=table)
+        query_sql = GET_TABLE_PARTITIONS_SQL.format(db_name=database,
+                                                    table_name=table)
         logging.debug('Fetching all %s table parts: %s', database, query_sql)
 
         data = self._ch_client.query(query_sql)['data']
@@ -311,8 +312,8 @@ class ClickhouseCTL:
         Implementation of freeze_table function using FREEZE command syntax for
         the whole table that is available starting from the version 18.16.
         """
-        query_sql = FREEZE_TABLE_SQL.format(
-            db_name=db_name, table_name=table_name)
+        query_sql = FREEZE_TABLE_SQL.format(db_name=db_name,
+                                            table_name=table_name)
 
         self._ch_client.query(query_sql)
 
@@ -372,11 +373,10 @@ class ClickhouseCTL:
 
     @staticmethod
     def _quote(value: str) -> str:
-        return quote(
-            value, safe='').translate({
-                ord('.'): '%2E',
-                ord('-'): '%2D',
-            })
+        return quote(value, safe='').translate({
+            ord('.'): '%2E',
+            ord('-'): '%2D',
+        })
 
     def _get_shadow_increment(self) -> str:
         file_path = os.path.join(self._shadow_data_path, 'increment.txt')

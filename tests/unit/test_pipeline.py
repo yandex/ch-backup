@@ -177,15 +177,14 @@ def run_backward_pl(in_file_name, out_file_name, read_conf, encrypt_conf,
 
 @settings(max_examples=ENCRYPT_DECRYPT_TEST_COUNT, deadline=None)
 @example(791, 28, {'buffer_size': 562, 'chunk_size': 211})
-@given(
-    incoming_stream_size=st.integers(1, 1024),
-    incoming_chunk_size=st.integers(1, 1024),
-    conf=st.fixed_dictionaries({
-        'buffer_size': st.integers(1, 1024),
-        'chunk_size': st.integers(1, 1024),
-        'type': st.just('nacl'),
-        'key': st.just(SECRET_KEY),
-    }))
+@given(incoming_stream_size=st.integers(1, 1024),
+       incoming_chunk_size=st.integers(1, 1024),
+       conf=st.fixed_dictionaries({
+           'buffer_size': st.integers(1, 1024),
+           'chunk_size': st.integers(1, 1024),
+           'type': st.just('nacl'),
+           'key': st.just(SECRET_KEY),
+       }))
 def test_nacl_ecrypt_decrypt(incoming_stream_size, incoming_chunk_size, conf):
     """
     Tests encryption stage
@@ -207,8 +206,8 @@ def test_nacl_ecrypt_decrypt(incoming_stream_size, incoming_chunk_size, conf):
         encrypted_stream.write(chunk)
 
     encrypted_stream.seek(0)
-    for chunk in decrypt_cmd(
-            partial(stream_iter, encrypted_stream), None, None):
+    for chunk in decrypt_cmd(partial(stream_iter, encrypted_stream), None,
+                             None):
         decrypted_stream.write(chunk)
 
     test_stream.seek(0)
@@ -219,12 +218,12 @@ def test_nacl_ecrypt_decrypt(incoming_stream_size, incoming_chunk_size, conf):
 
 @settings(max_examples=WRITE_FILE_CMD_TEST_COUNT, deadline=None)
 @example(791, 28, {'buffer_size': 562, 'chunk_size': 211})
-@given(
-    incoming_stream_size=st.integers(1, 1024),
-    incoming_chunk_size=st.integers(1, 1024),
-    conf=st.fixed_dictionaries(
-        {key: st.integers(1, 1024)
-         for key in ('buffer_size', 'chunk_size')}))
+@given(incoming_stream_size=st.integers(1, 1024),
+       incoming_chunk_size=st.integers(1, 1024),
+       conf=st.fixed_dictionaries({
+           key: st.integers(1, 1024)
+           for key in ('buffer_size', 'chunk_size')
+       }))
 def test_write_file_cmd(monkeypatch, incoming_stream_size, incoming_chunk_size,
                         conf):
     """

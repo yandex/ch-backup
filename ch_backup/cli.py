@@ -28,25 +28,21 @@ UUID = str(uuid.uuid4())
     'help_option_names': ['-h', '--help'],
     'terminal_width': 100,
 })
-@option(
-    '-c',
-    '--config',
-    type=Path(exists=True),
-    default='/etc/yandex/ch-backup/ch-backup.conf',
-    help='Configuration file path.')
-@option(
-    '--protocol',
-    type=Choice(['http', 'https']),
-    help='Protocol used to connect to ClickHouse server.')
+@option('-c',
+        '--config',
+        type=Path(exists=True),
+        default='/etc/yandex/ch-backup/ch-backup.conf',
+        help='Configuration file path.')
+@option('--protocol',
+        type=Choice(['http', 'https']),
+        help='Protocol used to connect to ClickHouse server.')
 @option('--port', type=int, help='Port used to connect to ClickHouse server.')
-@option(
-    '--ca-path',
-    type=str,
-    help='Path to custom CA bundle path for https protocol.')
-@option(
-    '--insecure',
-    is_flag=True,
-    help='Disable certificate verification for https protocol.')
+@option('--ca-path',
+        type=str,
+        help='Path to custom CA bundle path for https protocol.')
+@option('--insecure',
+        is_flag=True,
+        help='Disable certificate verification for https protocol.')
 @pass_context
 def cli(ctx, config, protocol, port, ca_path, insecure):
     """Tool for managing ClickHouse backups."""
@@ -196,38 +192,32 @@ def show_command(ctx, ch_backup, name):
 
 
 @command(name='backup')
-@option(
-    '--name',
-    type=String(
-        regexp=r'(?a)[\w-]+',
-        macros={
-            '{timestamp}': TIMESTAMP,
-            '{uuid}': UUID,
-        }),
-    help='Name of creating backup. The value can contain macros:'
-    f' {{timestamp}} - current time in UTC ({TIMESTAMP}),'
-    f' {{uuid}} - randomly generated UUID value ({UUID}).',
-    default='{timestamp}')
-@option(
-    '-d',
-    '--databases',
-    type=List(regexp=r'\w+'),
-    help='Comma-separated list of databases to backup.')
-@option(
-    '-t',
-    '--tables',
-    type=List(regexp=r'[\w.]+'),
-    help='Comma-separated list of tables to backup.')
-@option(
-    '-f',
-    '--force',
-    is_flag=True,
-    help='Enables force mode (backup.min_interval is ignored).')
-@option(
-    '-l',
-    '--label',
-    multiple=True,
-    help='Custom labels as key-value pairs that represents user metadata.')
+@option('--name',
+        type=String(regexp=r'(?a)[\w-]+',
+                    macros={
+                        '{timestamp}': TIMESTAMP,
+                        '{uuid}': UUID,
+                    }),
+        help='Name of creating backup. The value can contain macros:'
+        f' {{timestamp}} - current time in UTC ({TIMESTAMP}),'
+        f' {{uuid}} - randomly generated UUID value ({UUID}).',
+        default='{timestamp}')
+@option('-d',
+        '--databases',
+        type=List(regexp=r'\w+'),
+        help='Comma-separated list of databases to backup.')
+@option('-t',
+        '--tables',
+        type=List(regexp=r'[\w.]+'),
+        help='Comma-separated list of tables to backup.')
+@option('-f',
+        '--force',
+        is_flag=True,
+        help='Enables force mode (backup.min_interval is ignored).')
+@option('-l',
+        '--label',
+        multiple=True,
+        help='Custom labels as key-value pairs that represents user metadata.')
 def backup_command(ctx, ch_backup, name, databases, tables, force, label):
     """Perform backup."""
     if databases and tables:
@@ -240,8 +230,11 @@ def backup_command(ctx, ch_backup, name, databases, tables, force, label):
         value = key_value.pop() if key_value else None
         labels[key] = value
 
-    (name, msg) = ch_backup.backup(
-        name, databases=databases, tables=tables, force=force, labels=labels)
+    (name, msg) = ch_backup.backup(name,
+                                   databases=databases,
+                                   tables=tables,
+                                   force=force,
+                                   labels=labels)
 
     if msg:
         print(msg, file=sys.stderr, flush=True)
@@ -250,11 +243,10 @@ def backup_command(ctx, ch_backup, name, databases, tables, force, label):
 
 @command(name='restore')
 @argument('name', metavar='BACKUP')
-@option(
-    '-d',
-    '--databases',
-    type=List(regexp=r'\w+'),
-    help='Comma-separated list of databases to restore.')
+@option('-d',
+        '--databases',
+        type=List(regexp=r'\w+'),
+        help='Comma-separated list of databases to restore.')
 @option('--schema-only', is_flag=True, help='Restore only databases schemas')
 def restore_command(ctx, ch_backup, name, databases, schema_only):
     """Restore data from a particular backup."""

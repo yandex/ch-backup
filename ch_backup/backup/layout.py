@@ -35,8 +35,8 @@ class ClickhouseBackupLayout:
         """
         Returns backup meta path
         """
-        return os.path.join(
-            self.get_backup_path(backup_name), BACKUP_META_FNAME)
+        return os.path.join(self.get_backup_path(backup_name),
+                            BACKUP_META_FNAME)
 
     def save_table_meta(self, backup_name: str, db_name: str, table_name: str,
                         metadata: str) -> str:
@@ -45,8 +45,8 @@ class ClickhouseBackupLayout:
         """
         table_sql_rel_path = self._ch_ctl.get_table_sql_rel_path(
             db_name, table_name)
-        remote_path = os.path.join(
-            self.get_backup_path(backup_name), table_sql_rel_path)
+        remote_path = os.path.join(self.get_backup_path(backup_name),
+                                   table_sql_rel_path)
         try:
 
             future_id = self._storage_loader.upload_data(
@@ -69,12 +69,13 @@ class ClickhouseBackupLayout:
         Backup database meta (sql-file)
         """
         db_sql_rel_path = self._ch_ctl.get_db_sql_rel_path(db_name)
-        remote_path = os.path.join(
-            self.get_backup_path(backup_name), db_sql_rel_path)
+        remote_path = os.path.join(self.get_backup_path(backup_name),
+                                   db_sql_rel_path)
         try:
             logging.debug('Saving database sql file: %s', remote_path)
-            self._storage_loader.upload_data(
-                metadata, remote_path=remote_path, encryption=True)
+            self._storage_loader.upload_data(metadata,
+                                             remote_path=remote_path,
+                                             encryption=True)
             return remote_path
         except Exception as e:
             msg = 'Failed to upload database sql file to {0}'.format(db_name)
@@ -89,8 +90,8 @@ class ClickhouseBackupLayout:
             json_dump = backup.dump_json()
             logging.debug('Saving backup meta in key %s:\n%s', remote_path,
                           json_dump)
-            self._storage_loader.upload_data(
-                json_dump, remote_path=remote_path)
+            self._storage_loader.upload_data(json_dump,
+                                             remote_path=remote_path)
         except Exception as e:
             raise StorageError('Failed to upload backup metadata') from e
 
@@ -99,9 +100,9 @@ class ClickhouseBackupLayout:
         """
         Backup part files and return storage paths.
         """
-        remote_dir_path = os.path.join(
-            self.get_backup_path(backup_name), 'data', fpart.database,
-            fpart.table, fpart.name)
+        remote_dir_path = os.path.join(self.get_backup_path(backup_name),
+                                       'data', fpart.database, fpart.table,
+                                       fpart.name)
 
         uploaded_files = []
         part_files = [
@@ -113,12 +114,11 @@ class ClickhouseBackupLayout:
             local_fname = os.path.join(fpart.path, part_file)
             remote_fname = os.path.join(remote_dir_path, part_file)
             try:
-                self._storage_loader.upload_file(
-                    local_path=local_fname,
-                    remote_path=remote_fname,
-                    is_async=True,
-                    encryption=True,
-                    delete=True)
+                self._storage_loader.upload_file(local_path=local_fname,
+                                                 remote_path=remote_fname,
+                                                 is_async=True,
+                                                 encryption=True,
+                                                 delete=True)
                 uploaded_files.append(remote_fname)
 
             except Exception as e:
@@ -170,11 +170,10 @@ class ClickhouseBackupLayout:
             try:
                 logging.debug('Downloading part file %s: %s', local_path,
                               remote_path)
-                self._storage_loader.download_file(
-                    remote_path=remote_path,
-                    local_path=local_path,
-                    is_async=True,
-                    encryption=True)
+                self._storage_loader.download_file(remote_path=remote_path,
+                                                   local_path=local_path,
+                                                   is_async=True,
+                                                   encryption=True)
                 downloaded_files.append((remote_path, local_path))
             except Exception as e:
                 msg = 'Failed to download part file {0}'.format(remote_path)
@@ -188,8 +187,8 @@ class ClickhouseBackupLayout:
         """
         try:
             logging.debug('Deleting files: %s', ', '.join(delete_files))
-            self._storage_loader.delete_files(
-                remote_paths=delete_files, is_async=True)
+            self._storage_loader.delete_files(remote_paths=delete_files,
+                                              is_async=True)
         except Exception as e:
             msg = 'Failed to delete files {0}'.format(', '.join(delete_files))
             raise StorageError(msg) from e
@@ -200,16 +199,18 @@ class ClickhouseBackupLayout:
         """
         path = self.get_backup_path(backup_name)
 
-        delete_files = self._storage_loader.list_dir(
-            path, recursive=True, absolute=True)
+        delete_files = self._storage_loader.list_dir(path,
+                                                     recursive=True,
+                                                     absolute=True)
         self.delete_loaded_files(delete_files)
 
     def get_backup_names(self) -> Sequence[str]:
         """
         Get current backup entries
         """
-        return self._storage_loader.list_dir(
-            self._config['path_root'], recursive=False, absolute=False)
+        return self._storage_loader.list_dir(self._config['path_root'],
+                                             recursive=False,
+                                             absolute=False)
 
     def path_exists(self, remote_path: str) -> bool:
         """

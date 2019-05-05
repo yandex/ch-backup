@@ -194,12 +194,11 @@ def _prepare_volumes(volumes: dict, local_basedir: str) -> list:
     for props in volumes.values():
         # "local" params are expected to be relative to
         # docker-compose.yaml, so prepend its location.
-        os.makedirs(
-            '{base}/{dir}'.format(
-                base=local_basedir,
-                dir=props['local'],
-            ),
-            exist_ok=True)
+        os.makedirs('{base}/{dir}'.format(
+            base=local_basedir,
+            dir=props['local'],
+        ),
+                    exist_ok=True)
         volume_list.append('{local}:{remote}:{mode}'.format(**props))
     return volume_list
 

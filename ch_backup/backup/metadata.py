@@ -211,8 +211,8 @@ class BackupMetadata:
         """
         Add table to backup metadata.
         """
-        self._databases[db_name]['tables_sql_paths'].append((table_name,
-                                                             meta_remote_path))
+        self._databases[db_name]['tables_sql_paths'].append(
+            (table_name, meta_remote_path))
 
     def get_tables(self, db_name: str) -> Sequence[str]:
         """

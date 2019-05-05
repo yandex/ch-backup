@@ -44,10 +44,9 @@ class BucketAlreadyOwnedByYou(MinioException):
     """
 
 
-@retry(
-    retry=retry_if_exception_type(MinioException),
-    wait=wait_fixed(0.5),
-    stop=stop_after_attempt(360))
+@retry(retry=retry_if_exception_type(MinioException),
+       wait=wait_fixed(0.5),
+       stop=stop_after_attempt(360))
 def configure_s3_credentials(context: ContextT) -> None:
     """
     Configure S3 credentials in mc (Minio client).

@@ -57,8 +57,9 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
 
     def upload_data(self, data: bytes, remote_path: str) -> str:
         remote_path = remote_path.lstrip('/')
-        self._s3_client.put_object(
-            Body=data, Bucket=self._s3_bucket_name, Key=remote_path)
+        self._s3_client.put_object(Body=data,
+                                   Bucket=self._s3_bucket_name,
+                                   Key=remote_path)
         return remote_path
 
     def download_file(self, remote_path: str, local_path: str) -> None:
@@ -77,8 +78,8 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
 
     def delete_file(self, remote_path: str) -> None:
         remote_path = remote_path.lstrip('/')
-        self._s3_client.delete_object(
-            Bucket=self._s3_bucket_name, Key=remote_path)
+        self._s3_client.delete_object(Bucket=self._s3_bucket_name,
+                                      Key=remote_path)
 
     def delete_files(self, remote_paths: Sequence[str]) -> dict:
         """
@@ -126,8 +127,8 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
         Check if remote path exists.
         """
         try:
-            self._s3_client.head_object(
-                Bucket=self._s3_bucket_name, Key=remote_path)
+            self._s3_client.head_object(Bucket=self._s3_bucket_name,
+                                        Key=remote_path)
             return True
         except ClientError:
             return False
@@ -152,12 +153,11 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
         except IndexError:
             part_num = 1
 
-        s3_resp = self._s3_client.upload_part(
-            Body=data,
-            Bucket=self._s3_bucket_name,
-            Key=remote_path,
-            UploadId=upload_id,
-            PartNumber=part_num)
+        s3_resp = self._s3_client.upload_part(Body=data,
+                                              Bucket=self._s3_bucket_name,
+                                              Key=remote_path,
+                                              UploadId=upload_id,
+                                              PartNumber=part_num)
 
         # save part metadata for complete upload
         upload_parts.append({'ETag': s3_resp['ETag'], 'PartNumber': part_num})
@@ -165,21 +165,20 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
     def complete_multipart_upload(self, remote_path: str,
                                   upload_id: str) -> None:
         parts = self._multipart_uploads[upload_id]['Parts']
-        self._s3_client.complete_multipart_upload(
-            Bucket=self._s3_bucket_name,
-            Key=remote_path,
-            UploadId=upload_id,
-            MultipartUpload={
-                'Parts': parts,
-            })
+        self._s3_client.complete_multipart_upload(Bucket=self._s3_bucket_name,
+                                                  Key=remote_path,
+                                                  UploadId=upload_id,
+                                                  MultipartUpload={
+                                                      'Parts': parts,
+                                                  })
 
         del self._multipart_uploads[upload_id]
 
     def create_multipart_download(self, remote_path: str) -> str:
         remote_path = remote_path.lstrip('/')
 
-        resp = self._s3_client.get_object(
-            Bucket=self._s3_bucket_name, Key=remote_path)
+        resp = self._s3_client.get_object(Bucket=self._s3_bucket_name,
+                                          Key=remote_path)
 
         download_id = '{key}_{time}'.format(key=remote_path, time=time.time())
         self._multipart_downloads[download_id] = resp

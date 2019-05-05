@@ -40,13 +40,12 @@ class ClickhouseClient:
         """
         try:
             logging.debug('Executing query: %s', query)
-            response = self._session.post(
-                self._url,
-                params={
-                    'query': query,
-                },
-                json=post_data,
-                timeout=self._timeout)
+            response = self._session.post(self._url,
+                                          params={
+                                              'query': query,
+                                          },
+                                          json=post_data,
+                                          timeout=self._timeout)
 
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:

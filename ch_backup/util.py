@@ -114,8 +114,8 @@ def retry(exception_types: Union[type, tuple] = Exception,
 
     return tenacity.retry(
         retry=tenacity.retry_if_exception_type(exception_types),
-        wait=tenacity.wait_random_exponential(
-            multiplier=0.5, max=max_interval),
+        wait=tenacity.wait_random_exponential(multiplier=0.5,
+                                              max=max_interval),
         stop=tenacity.stop_after_attempt(max_attempts),
         reraise=True,
         before_sleep=_log_retry)

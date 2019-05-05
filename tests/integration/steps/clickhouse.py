@@ -53,8 +53,8 @@ def step_test_data(context, node):
 @given('we have dropped test table #{table_num:d} in db #{db_num:d} on {node}')
 @when('we drop test table #{table_num:d} in db #{db_num:d} on {node}')
 def step_drop_test_table(context, table_num, db_num, node):
-    ClickhouseClient(context, node).drop_test_table(
-        db_num=db_num, table_num=table_num)
+    ClickhouseClient(context, node).drop_test_table(db_num=db_num,
+                                                    table_num=table_num)
 
 
 @then('we got same clickhouse data at {nodes}')

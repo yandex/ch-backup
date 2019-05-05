@@ -115,8 +115,9 @@ def prep_images(context: ContextT) -> None:
     """
     images_dir = context.conf['images_dir']
     staging_dir = context.conf['staging_dir']
-    dir_util.copy_tree(
-        images_dir, '{0}/images'.format(staging_dir), update=True)
+    dir_util.copy_tree(images_dir,
+                       '{0}/images'.format(staging_dir),
+                       update=True)
 
 
 @utils.env_stage('create', fail=True)
@@ -142,8 +143,10 @@ def create_network(context: ContextT) -> None:
         'com.docker.network.bridge.enable_icc': 'true',
         'com.docker.network.bridge.name': net_name,
     }
-    DOCKER_API.networks.create(
-        net_name, options=net_opts, enable_ipv6=True, ipam=ip_subnet_pool)
+    DOCKER_API.networks.create(net_name,
+                               options=net_opts,
+                               enable_ipv6=True,
+                               ipam=ip_subnet_pool)
 
 
 @utils.env_stage('stop', fail=False)
