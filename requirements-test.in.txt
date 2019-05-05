@@ -13,7 +13,7 @@ pytest
 pyhamcrest
 hypothesis
 behave
-docker < 3
-docker-compose < 1.20
+docker
+docker-compose
 Jinja2
 humanfriendly

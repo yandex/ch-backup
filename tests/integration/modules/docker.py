@@ -5,10 +5,10 @@ Docker interface.
 import io
 import os
 import random
-import subprocess
 import tarfile
 from distutils import dir_util
 from typing import Sequence, Tuple
+from urllib.parse import urlparse
 
 import docker
 from docker.models.containers import Container
@@ -44,12 +44,8 @@ def get_exposed_port(container: Container, port: int) -> Tuple[str, int]:
     """
     Get pair of (host, port) for connection to exposed port.
     """
-    machine_name = os.getenv('DOCKER_MACHINE_NAME')
-    if machine_name:
-        host = subprocess.check_output(
-            ['docker-machine', 'ip', machine_name]).decode('utf-8').rstrip()
-    else:
-        host = 'localhost'
+    host_url = os.getenv('DOCKER_HOST') or ''
+    host = urlparse(host_url.strip()).hostname or 'localhost'
 
     binding = container.attrs['NetworkSettings']['Ports'].get('%d/tcp' % port)
     if not binding:
@@ -79,8 +75,13 @@ def copy_container_dir(container: Container, container_dir: str,
     Save docker directory.
     """
     archive, _ = container.get_archive(container_dir)
-    raw_archive = io.BytesIO(archive.read())
-    tar = tarfile.open(mode='r', fileobj=raw_archive)
+
+    buffer = io.BytesIO()
+    for chunk in archive:
+        buffer.write(chunk)
+    buffer.seek(0)
+
+    tar = tarfile.open(mode='r', fileobj=buffer)
     tar.extractall(path=local_dir)
 
 

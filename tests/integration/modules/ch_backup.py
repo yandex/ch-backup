@@ -203,7 +203,7 @@ class BackupManager:
         """
         conf = yaml.load(
             self._container.exec_run('/bin/cat {0}'.format(self._config_path),
-                                     user='root').decode())
+                                     user='root').output.decode())
 
         utils.merge(conf, update)
         docker.put_file(
@@ -253,7 +253,8 @@ class BackupManager:
 
     def _exec(self, command: str) -> str:
         cmd = '{0} {1}'.format(self._cmd_base, command)
-        return self._container.exec_run(cmd, user='root').decode().strip()
+        result = self._container.exec_run(cmd, user='root')
+        return result.output.decode().strip()
 
     def _normalize_id(self, backup_id: BackupId) -> str:
         if isinstance(backup_id, int):
