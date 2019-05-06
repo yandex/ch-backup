@@ -176,8 +176,7 @@ class BackupMetadata:
             backup._state = BackupState(meta['state'])
             backup.ch_version = meta['ch_version']
             backup.labels = meta['labels']
-            # get() is used for backward-compatibility with versions prior 1.0
-            backup.version = meta.get('version')
+            backup.version = meta['version']
 
             return backup
 
