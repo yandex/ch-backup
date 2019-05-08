@@ -183,13 +183,12 @@ class BackupMetadata:
         except (ValueError, KeyError):
             raise InvalidBackupStruct
 
-    def add_database(self, db_name: str, meta_remote_path: str) -> None:
+    def add_database(self, db_name: str) -> None:
         """
         Add database to backup metadata.
         """
         self._databases[db_name] = {
-            'db_sql_path': meta_remote_path,
-            'tables_sql_paths': [],
+            'tables': {},
             'parts_paths': defaultdict(dict),
         }
 
@@ -199,34 +198,22 @@ class BackupMetadata:
         """
         return tuple(self._databases)
 
-    def get_db_sql_path(self, db_name: str) -> str:
-        """
-        Get database sql path.
-        """
-        return self._databases[db_name]['db_sql_path']
-
-    def add_table(self, db_name: str, table_name: str,
-                  meta_remote_path: str) -> None:
+    def add_table(self, db_name: str, table_name: str) -> None:
         """
         Add table to backup metadata.
         """
-        self._databases[db_name]['tables_sql_paths'].append(
-            (table_name, meta_remote_path))
+        self._databases[db_name]['tables'][table_name] = {}
 
     def get_tables(self, db_name: str) -> Sequence[str]:
         """
         Get tables for the specified database.
         """
-        return tuple(self._databases[db_name]['parts_paths'])
+        # TODO: remove backward-compatibility logic
+        db = self._databases[db_name]
+        if 'tables' in db:
+            return db['tables'].keys()
 
-    def get_tables_sql_paths(self, db_name: str) -> Sequence[str]:
-        """
-        Get sql paths of database tables.
-        """
-        return [
-            sql_path
-            for _, sql_path in self._databases[db_name]['tables_sql_paths']
-        ]
+        return tuple(self._databases[db_name]['parts_paths'])
 
     def add_part(self, part: PartMetadata) -> None:
         """

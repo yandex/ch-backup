@@ -171,9 +171,9 @@ class ClickhouseBackup:
         """
         logging.debug('Performing database backup for "%s"', db_name)
 
-        db_remote_path = self._backup_database_meta(backup_meta, db_name)
+        self._backup_database_meta(backup_meta, db_name)
 
-        backup_meta.add_database(db_name, db_remote_path)
+        backup_meta.add_database(db_name)
 
         # get db objects ordered by mtime
         tables = self._ch_ctl.get_tables_ordered(db_name, tables)
@@ -188,10 +188,9 @@ class ClickhouseBackup:
         """
         logging.debug('Performing table backup for "%s"', table_name)
 
-        table_remote_path = self._backup_table_meta(backup_meta, db_name,
-                                                    table_name)
+        self._backup_table_meta(backup_meta, db_name, table_name)
 
-        backup_meta.add_table(db_name, table_name, table_remote_path)
+        backup_meta.add_table(db_name, table_name)
 
         try:
             freezed_parts = self._ch_ctl.freeze_table(db_name, table_name)
@@ -350,29 +349,27 @@ class ClickhouseBackup:
         return deleted_backup_names, None
 
     def _backup_database_meta(self, backup_meta: BackupMetadata,
-                              db_name: str) -> str:
+                              db_name: str) -> None:
         """
         Backup database schema.
         """
         logging.debug('Making database schema backup for "%s"', db_name)
         schema = self._ch_ctl.get_database_schema(db_name)
-        return self._backup_layout.save_database_meta(backup_meta.name,
-                                                      db_name, schema)
+        self._backup_layout.save_database_meta(backup_meta.name, db_name,
+                                               schema)
 
     def _backup_table_meta(self, backup_meta: BackupMetadata, db_name: str,
-                           table_name: str) -> str:
+                           table_name: str) -> None:
         """
-        Backup table schema (CREATE TABLE sql) and return path to saved data
-        on remote storage.
+        Backup table schema.
         """
         logging.debug('Making table schema backup for "%s"."%s"', db_name,
                       table_name)
 
         schema = self._ch_ctl.get_table_schema(db_name, table_name)
 
-        remote_path = self._backup_layout.save_table_meta(
-            backup_meta.name, db_name, table_name, schema)
-        return remote_path
+        self._backup_layout.save_table_meta(backup_meta.name, db_name,
+                                            table_name, schema)
 
     def _restore_database_schema(self, db_name: str,
                                  backup_meta: BackupMetadata) -> None:
@@ -381,14 +378,13 @@ class ClickhouseBackup:
         """
         logging.debug('Running database schema restore: %s', db_name)
 
-        # restore db sql
-        db_sql = self._backup_layout.download_str(
-            backup_meta.get_db_sql_path(db_name))
+        db_sql = self._backup_layout.download_database_meta(
+            backup_meta, db_name)
         self._ch_ctl.restore_meta(db_sql)
 
-        # restore table sql
-        for table_sql_path in backup_meta.get_tables_sql_paths(db_name):
-            table_sql = self._backup_layout.download_str(table_sql_path)
+        for table_name in backup_meta.get_tables(db_name):
+            table_sql = self._backup_layout.download_table_meta(
+                backup_meta, db_name, table_name)
             self._ch_ctl.restore_meta(table_sql)
 
     def _restore_database_data(self, db_name: str,

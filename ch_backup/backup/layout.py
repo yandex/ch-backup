@@ -39,9 +39,9 @@ class ClickhouseBackupLayout:
                             BACKUP_META_FNAME)
 
     def save_table_meta(self, backup_name: str, db_name: str, table_name: str,
-                        metadata: str) -> str:
+                        metadata: str) -> None:
         """
-        Backup table meta (sql-file)
+        Backup table metadata (create statement).
         """
         table_sql_rel_path = self._ch_ctl.get_table_sql_rel_path(
             db_name, table_name)
@@ -57,16 +57,15 @@ class ClickhouseBackupLayout:
 
             logging.debug('Saving table sql-file "%s": %s', table_sql_rel_path,
                           future_id)
-            return remote_path
         except Exception as e:
             msg = 'Failed to create async upload of {0}'.format(
                 table_sql_rel_path)
             raise StorageError(msg) from e
 
     def save_database_meta(self, backup_name: str, db_name: str,
-                           metadata: str) -> str:
+                           metadata: str) -> None:
         """
-        Backup database meta (sql-file)
+        Backup database metadata (create statement).
         """
         db_sql_rel_path = self._ch_ctl.get_db_sql_rel_path(db_name)
         remote_path = os.path.join(self.get_backup_path(backup_name),
@@ -76,7 +75,6 @@ class ClickhouseBackupLayout:
             self._storage_loader.upload_data(metadata,
                                              remote_path=remote_path,
                                              encryption=True)
-            return remote_path
         except Exception as e:
             msg = 'Failed to upload database sql file to {0}'.format(db_name)
             raise StorageError(msg) from e
@@ -143,10 +141,23 @@ class ClickhouseBackupLayout:
         except Exception as e:
             raise StorageError('Failed to download backup metadata') from e
 
-    def download_str(self, remote_path: str) -> str:
+    def download_database_meta(self, backup_meta: BackupMetadata,
+                               db_name: str) -> str:
         """
-        Downloads data and tries to decode
+        Download database metadata (create statement).
         """
+        db_sql_rel_path = self._ch_ctl.get_db_sql_rel_path(db_name)
+        remote_path = os.path.join(backup_meta.path, db_sql_rel_path)
+        return self._storage_loader.download_data(remote_path, encryption=True)
+
+    def download_table_meta(self, backup_meta: BackupMetadata, db_name: str,
+                            table_name: str) -> str:
+        """
+        Download table metadata (create statement).
+        """
+        table_sql_rel_path = self._ch_ctl.get_table_sql_rel_path(
+            db_name, table_name)
+        remote_path = os.path.join(backup_meta.path, table_sql_rel_path)
         return self._storage_loader.download_data(remote_path, encryption=True)
 
     def download_part_data(self, db_name: str, table_name: str, part_name: str,

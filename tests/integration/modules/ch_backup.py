@@ -4,7 +4,7 @@ Interface to ch-backup command-line tool.
 
 import json
 import os
-from typing import Sequence, Union
+from typing import Sequence, Set, Union
 
 import yaml
 
@@ -120,12 +120,10 @@ class Backup:
         """
         Return all storage paths
         """
-        paths = set()
-        for _, db_contents in self._metadata['databases'].items():
-            for _, table_sql_path in db_contents['tables_sql_paths']:
-                paths.add(table_sql_path)
-            for _, table_contents in db_contents['parts_paths'].items():
-                for _, part_contents in table_contents.items():
+        paths: Set[str] = set()
+        for db_contents in self._metadata['databases'].values():
+            for table_contents in db_contents['parts_paths'].values():
+                for part_contents in table_contents.values():
                     paths.update(part_contents['paths'])
         return tuple(paths)
 
