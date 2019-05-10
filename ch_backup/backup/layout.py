@@ -4,10 +4,11 @@ ClickHouse backup layout.
 
 import os
 from typing import Optional, Sequence
+from urllib.parse import quote
 
 from ch_backup import logging
-from ch_backup.backup.metadata import BackupMetadata
-from ch_backup.clickhouse.control import ClickhouseCTL, FreezedPart
+from ch_backup.backup.metadata import BackupMetadata, PartMetadata
+from ch_backup.clickhouse.control import FreezedPart
 from ch_backup.config import Config
 from ch_backup.exceptions import StorageError
 from ch_backup.storage import StorageLoader
@@ -20,9 +21,8 @@ class ClickhouseBackupLayout:
     Storage layout and transfer
     """
 
-    def __init__(self, config: Config, ch_ctl: ClickhouseCTL) -> None:
+    def __init__(self, config: Config) -> None:
         self._storage_loader = StorageLoader(config)
-        self._ch_ctl = ch_ctl
         self._config = config['backup']
 
     def get_backup_path(self, backup_name: str) -> str:
@@ -43,23 +43,17 @@ class ClickhouseBackupLayout:
         """
         Backup table metadata (create statement).
         """
-        table_sql_rel_path = self._ch_ctl.get_table_sql_rel_path(
-            db_name, table_name)
-        remote_path = os.path.join(self.get_backup_path(backup_name),
-                                   table_sql_rel_path)
+        remote_path = _table_metadata_path(self.get_backup_path(backup_name),
+                                           db_name, table_name)
         try:
+            self._storage_loader.upload_data(metadata,
+                                             remote_path=remote_path,
+                                             is_async=True,
+                                             encryption=True)
 
-            future_id = self._storage_loader.upload_data(
-                metadata,
-                remote_path=remote_path,
-                is_async=True,
-                encryption=True)
-
-            logging.debug('Saving table sql-file "%s": %s', table_sql_rel_path,
-                          future_id)
+            logging.debug('Saving create statement for table: %s', table_name)
         except Exception as e:
-            msg = 'Failed to create async upload of {0}'.format(
-                table_sql_rel_path)
+            msg = f'Failed to create async upload of {remote_path}'
             raise StorageError(msg) from e
 
     def save_database_meta(self, backup_name: str, db_name: str,
@@ -67,16 +61,15 @@ class ClickhouseBackupLayout:
         """
         Backup database metadata (create statement).
         """
-        db_sql_rel_path = self._ch_ctl.get_db_sql_rel_path(db_name)
-        remote_path = os.path.join(self.get_backup_path(backup_name),
-                                   db_sql_rel_path)
+        remote_path = _db_metadata_path(self.get_backup_path(backup_name),
+                                        db_name)
         try:
-            logging.debug('Saving database sql file: %s', remote_path)
+            logging.debug('Saving create statement for database: %s', db_name)
             self._storage_loader.upload_data(metadata,
                                              remote_path=remote_path,
                                              encryption=True)
         except Exception as e:
-            msg = 'Failed to upload database sql file to {0}'.format(db_name)
+            msg = f'Failed to create async upload of {remote_path}'
             raise StorageError(msg) from e
 
     def save_backup_meta(self, backup: BackupMetadata) -> None:
@@ -146,8 +139,7 @@ class ClickhouseBackupLayout:
         """
         Download database metadata (create statement).
         """
-        db_sql_rel_path = self._ch_ctl.get_db_sql_rel_path(db_name)
-        remote_path = os.path.join(backup_meta.path, db_sql_rel_path)
+        remote_path = _db_metadata_path(backup_meta.path, db_name)
         return self._storage_loader.download_data(remote_path, encryption=True)
 
     def download_table_meta(self, backup_meta: BackupMetadata, db_name: str,
@@ -155,27 +147,21 @@ class ClickhouseBackupLayout:
         """
         Download table metadata (create statement).
         """
-        table_sql_rel_path = self._ch_ctl.get_table_sql_rel_path(
-            db_name, table_name)
-        remote_path = os.path.join(backup_meta.path, table_sql_rel_path)
+        remote_path = _table_metadata_path(backup_meta.path, db_name,
+                                           table_name)
         return self._storage_loader.download_data(remote_path, encryption=True)
 
-    def download_part_data(self, db_name: str, table_name: str, part_name: str,
-                           part_files: Sequence[str]) -> list:
+    def download_part_data(self, part: PartMetadata,
+                           fs_part_path: str) -> None:
         """
         Restore part from detached directory
         """
-        logging.debug('Downloading part %s in %s.%s', part_name, db_name,
-                      table_name)
+        logging.debug('Downloading part %s in %s.%s', part.name, part.database,
+                      part.table)
 
-        fs_part_path = self._ch_ctl.get_detached_part_abs_path(
-            db_name, table_name, part_name)
+        os.makedirs(fs_part_path, exist_ok=True)
 
-        if not os.path.exists(fs_part_path):
-            os.makedirs(fs_part_path, exist_ok=True)
-
-        downloaded_files = []
-        for remote_path in part_files:
+        for remote_path in part.paths:
             file_name = os.path.basename(remote_path)
             local_path = os.path.join(fs_part_path, file_name)
             try:
@@ -185,12 +171,9 @@ class ClickhouseBackupLayout:
                                                    local_path=local_path,
                                                    is_async=True,
                                                    encryption=True)
-                downloaded_files.append((remote_path, local_path))
             except Exception as e:
                 msg = 'Failed to download part file {0}'.format(remote_path)
                 raise StorageError(msg) from e
-
-        return downloaded_files
 
     def delete_loaded_files(self, delete_files: Sequence[str]) -> None:
         """
@@ -238,3 +221,25 @@ class ClickhouseBackupLayout:
             self._storage_loader.wait()
         except Exception as e:
             raise StorageError('Failed to complete async jobs') from e
+
+
+def _db_metadata_path(backup_path, db_name):
+    """
+    Return S3 path to database metadata.
+    """
+    return os.path.join(backup_path, 'metadata', _quote(db_name) + '.sql')
+
+
+def _table_metadata_path(backup_path, db_name, table_name):
+    """
+    Return S3 path to table metadata.
+    """
+    return os.path.join(backup_path, 'metadata', _quote(db_name),
+                        _quote(table_name) + '.sql')
+
+
+def _quote(value: str) -> str:
+    return quote(value, safe='').translate({
+        ord('.'): '%2E',
+        ord('-'): '%2D',
+    })

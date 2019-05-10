@@ -25,7 +25,7 @@ class ClickhouseBackup:
 
     def __init__(self, config: Config) -> None:
         self._ch_ctl = ClickhouseCTL(config['clickhouse'])
-        self._backup_layout = ClickhouseBackupLayout(config, self._ch_ctl)
+        self._backup_layout = ClickhouseBackupLayout(config)
         self._config = config['backup']
 
     def get(self, backup_name: str) -> BackupMetadata:
@@ -401,9 +401,9 @@ class ClickhouseBackup:
             for part in backup_meta.get_parts(db_name, table_name):
                 logging.debug('Fetching "%s.%s" part: %s', db_name, table_name,
                               part.name)
-
-                self._backup_layout.download_part_data(db_name, table_name,
-                                                       part.name, part.paths)
+                fs_part_path = self._ch_ctl.get_detached_part_abs_path(
+                    db_name, table_name, part.name)
+                self._backup_layout.download_part_data(part, fs_part_path)
                 attach_parts.append(part.name)
 
             logging.debug('Waiting for downloads')
