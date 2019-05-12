@@ -401,7 +401,7 @@ class ClickhouseBackup:
             for part in backup_meta.get_parts(db_name, table_name):
                 logging.debug('Fetching "%s.%s" part: %s', db_name, table_name,
                               part.name)
-                fs_part_path = self._ch_ctl.get_detached_part_abs_path(
+                fs_part_path = self._ch_ctl.get_detached_part_path(
                     db_name, table_name, part.name)
                 self._backup_layout.download_part_data(part, fs_part_path)
                 attach_parts.append(part.name)

@@ -7,7 +7,6 @@ import shutil
 from hashlib import md5
 from types import SimpleNamespace
 from typing import List, Optional, Sequence
-from urllib.parse import quote
 
 from pkg_resources import parse_version
 
@@ -77,6 +76,14 @@ GET_TABLE_PARTITIONS_SQL = strip_query("""
     FORMAT JSON
 """)
 
+GET_TABLE_DATA_PATH_SQL = strip_query("""
+    SELECT data_path
+    FROM system.tables
+    WHERE database = '{db_name}'
+      AND name = '{table_name}'
+    FORMAT TSVRaw
+""")
+
 GET_VERSION_SQL = strip_query("""
     SELECT version()
     FORMAT TSVRaw
@@ -129,8 +136,7 @@ class ClickhouseCTL:
         """
         Chown detached part files
         """
-        part_path = self.get_detached_part_abs_path(db_name, table_name,
-                                                    part_name)
+        part_path = self.get_detached_part_path(db_name, table_name, part_name)
         self.chown_dir_contents(part_path)
         self.attach_part(db_name, table_name, part_name)
 
@@ -139,7 +145,7 @@ class ClickhouseCTL:
         """
         Chown detached table files
         """
-        dettached_path = self.get_detached_abs_path(db_name, table_name)
+        dettached_path = self._get_table_detached_path(db_name, table_name)
         self.chown_dir_contents(dettached_path)
 
     def attach_part(self, db_name: str, table_name: str,
@@ -270,41 +276,19 @@ class ClickhouseCTL:
         logging.debug('Restoring meta sql: %s', query_sql)
         self._ch_client.query(query_sql)
 
-    def get_detached_part_abs_path(self, db_name: str, table_name: str,
-                                   part_name: str) -> str:
+    def get_detached_part_path(self, db_name: str, table_name: str,
+                               part_name: str) -> str:
         """
-        Get filesystem absolute path of detached part
+        Get filesystem absolute path to detached data part.
         """
-        return os.path.join(self._data_path, self._quote(db_name),
-                            self._quote(table_name), 'detached', part_name)
-
-    def get_detached_abs_path(self, db_name: str, table_name: str) -> str:
-        """
-        Get filesystem absolute path of detached table parts
-        """
-        return os.path.join(self._data_path, self._quote(db_name),
-                            self._quote(table_name), 'detached')
+        return os.path.join(self._get_table_detached_path(db_name, table_name),
+                            part_name)
 
     def get_version(self) -> str:
         """
-        Get ClickHouse version
+        Get ClickHouse version.
         """
         return self._ch_version
-
-    @classmethod
-    def get_db_sql_rel_path(cls, db_name: str) -> str:
-        """
-        Get filesystem relative path of database meta sql
-        """
-        return os.path.join('metadata', cls._quote(db_name) + '.sql')
-
-    @classmethod
-    def get_table_sql_rel_path(cls, db_name: str, table_name: str) -> str:
-        """
-        Get filesystem relative path of database.table meta sql
-        """
-        return os.path.join('metadata', cls._quote(db_name),
-                            cls._quote(table_name) + '.sql')
 
     def _freeze_table(self, db_name: str,
                       table_name: str) -> Sequence[FreezedPart]:
@@ -339,9 +323,10 @@ class ClickhouseCTL:
 
     def _get_freezed_parts(self, db_name: str,
                            table_name: str) -> Sequence[FreezedPart]:
+
         path = os.path.join(self._shadow_data_path,
                             self._get_shadow_increment(), 'data',
-                            self._quote(db_name), self._quote(table_name))
+                            self._get_table_data_relpath(db_name, table_name))
 
         if not os.path.exists(path):
             logging.debug('Shadow path %s is empty', path)
@@ -358,6 +343,19 @@ class ClickhouseCTL:
 
         return freezed_parts
 
+    def _get_table_data_path(self, db_name: str, table_name: str) -> str:
+        query_sql = GET_TABLE_DATA_PATH_SQL.format(db_name=db_name,
+                                                   table_name=table_name)
+        return self._ch_client.query(query_sql)
+
+    def _get_table_data_relpath(self, db_name: str, table_name: str) -> str:
+        return os.path.relpath(self._get_table_data_path(db_name, table_name),
+                               self._data_path)
+
+    def _get_table_detached_path(self, db_name: str, table_name: str) -> str:
+        return os.path.join(self._get_table_data_path(db_name, table_name),
+                            'detached')
+
     @retry(OSError)
     def _remove_shadow_data(self, path: str) -> None:
         assert path.startswith(self._shadow_data_path)
@@ -370,13 +368,6 @@ class ClickhouseCTL:
 
     def _match_ch_version(self, min_version: str) -> bool:
         return parse_version(self._ch_version) >= parse_version(min_version)
-
-    @staticmethod
-    def _quote(value: str) -> str:
-        return quote(value, safe='').translate({
-            ord('.'): '%2E',
-            ord('-'): '%2D',
-        })
 
     def _get_shadow_increment(self) -> str:
         file_path = os.path.join(self._shadow_data_path, 'increment.txt')
