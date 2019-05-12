@@ -408,7 +408,7 @@ class ClickhouseBackup:
 
             logging.debug('Waiting for downloads')
             self._backup_layout.wait()
-            self._ch_ctl.chown_dettached_table_parts(db_name, table_name)
+            self._ch_ctl.chown_detached_table_parts(db_name, table_name)
             for part_name in attach_parts:
                 logging.debug('Attaching "%s.%s" part: %s', db_name,
                               table_name, part_name)

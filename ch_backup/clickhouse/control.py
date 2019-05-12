@@ -12,7 +12,6 @@ from pkg_resources import parse_version
 
 from ch_backup import logging
 from ch_backup.clickhouse.client import ClickhouseClient
-from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.util import chown_dir_contents, retry, strip_query
 
 GET_TABLES_ORDERED_SQL = strip_query("""
@@ -131,27 +130,19 @@ class ClickhouseCTL:
         self._shadow_data_path = os.path.join(root_data_path, 'shadow')
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
 
-    def chown_attach_part(self, db_name: str, table_name: str,
-                          part_name: str) -> None:
+    def chown_detached_table_parts(self, db_name: str,
+                                   table_name: str) -> None:
         """
-        Chown detached part files
+        Change permissions (owner and group) of detached data parts for the
+        specified table. New values for permissions are taken from the config.
         """
-        part_path = self.get_detached_part_path(db_name, table_name, part_name)
-        self.chown_dir_contents(part_path)
-        self.attach_part(db_name, table_name, part_name)
-
-    def chown_dettached_table_parts(self, db_name: str,
-                                    table_name: str) -> None:
-        """
-        Chown detached table files
-        """
-        dettached_path = self._get_table_detached_path(db_name, table_name)
-        self.chown_dir_contents(dettached_path)
+        detached_path = self._get_table_detached_path(db_name, table_name)
+        self._chown_dir(detached_path)
 
     def attach_part(self, db_name: str, table_name: str,
                     part_name: str) -> None:
         """
-        Attach part to database.table from dettached dir
+        Attach data part to the specified table.
         """
         query_sql = PART_ATTACH_SQL.format(db_name=db_name,
                                            table_name=table_name,
@@ -159,16 +150,6 @@ class ClickhouseCTL:
 
         logging.debug('Attaching partition: %s', query_sql)
         self._ch_client.query(query_sql)
-
-    def chown_dir_contents(self, dir_path: str) -> None:
-        """
-        Chown directory contents to configured owner:group
-        """
-        if not dir_path.startswith(self._config['data_path']):
-            raise ClickhouseBackupError(
-                'Trying to chown directory outside clickhouse data path')
-        chown_dir_contents(self._config['user'], self._config['group'],
-                           dir_path)
 
     def freeze_table(self, db_name: str,
                      table_name: str) -> Sequence[FreezedPart]:
@@ -355,6 +336,12 @@ class ClickhouseCTL:
     def _get_table_detached_path(self, db_name: str, table_name: str) -> str:
         return os.path.join(self._get_table_data_path(db_name, table_name),
                             'detached')
+
+    def _chown_dir(self, dir_path: str) -> None:
+        assert dir_path.startswith(self._data_path)
+
+        chown_dir_contents(self._config['user'], self._config['group'],
+                           dir_path)
 
     @retry(OSError)
     def _remove_shadow_data(self, path: str) -> None:
