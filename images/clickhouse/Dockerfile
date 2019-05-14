@@ -39,7 +39,7 @@ RUN mkdir -p /etc/apt/sources.list.d && \
     echo $CLICKHOUSE_REPOSITORY | tee /etc/apt/sources.list.d/clickhouse.list && \
     apt-key adv --keyserver keyserver.ubuntu.com --recv-keys $CLICKHOUSE_REPOSITORY_KEY && \
     apt-get update -qq && \
-    if [ "$CLICKHOUSE_VERSION" = "18.14.19" ] || [ "$CLICKHOUSE_VERSION" = "19.1.16" ]; then \
+    if [ "$CLICKHOUSE_VERSION" = "19.1.16" ]; then \
         apt-get install -y \
             clickhouse-common-static=$CLICKHOUSE_VERSION \
             clickhouse-server-base=$CLICKHOUSE_VERSION \
