@@ -3,7 +3,7 @@ ClickHouse backup layout.
 """
 
 import os
-from typing import Optional, Sequence
+from typing import List, Optional, Sequence
 from urllib.parse import quote
 
 from ch_backup import logging
@@ -27,21 +27,14 @@ class ClickhouseBackupLayout:
 
     def get_backup_path(self, backup_name: str) -> str:
         """
-        Returns storage backup path
+        Return path to backup.
         """
         return os.path.join(self._config['path_root'], backup_name)
-
-    def _get_backup_meta_path(self, backup_name: str) -> str:
-        """
-        Returns backup meta path
-        """
-        return os.path.join(self.get_backup_path(backup_name),
-                            BACKUP_META_FNAME)
 
     def save_table_meta(self, backup_name: str, db_name: str, table_name: str,
                         metadata: str) -> None:
         """
-        Backup table metadata (create statement).
+        Upload table metadata (create statement).
         """
         remote_path = _table_metadata_path(self.get_backup_path(backup_name),
                                            db_name, table_name)
@@ -59,7 +52,7 @@ class ClickhouseBackupLayout:
     def save_database_meta(self, backup_name: str, db_name: str,
                            metadata: str) -> None:
         """
-        Backup database metadata (create statement).
+        Upload database metadata (create statement).
         """
         remote_path = _db_metadata_path(self.get_backup_path(backup_name),
                                         db_name)
@@ -74,9 +67,9 @@ class ClickhouseBackupLayout:
 
     def save_backup_meta(self, backup: BackupMetadata) -> None:
         """
-        Upload backup meta file into storage
+        Upload backup metadata.
         """
-        remote_path = self._get_backup_meta_path(backup.name)
+        remote_path = self._backup_metadata_path(backup.name)
         try:
             json_dump = backup.dump_json()
             logging.debug('Saving backup meta in key %s:\n%s', remote_path,
@@ -86,44 +79,40 @@ class ClickhouseBackupLayout:
         except Exception as e:
             raise StorageError('Failed to upload backup metadata') from e
 
-    def save_part_data(self, backup_name: str,
-                       fpart: FreezedPart) -> Sequence[str]:
+    def save_data_part(self, backup_name: str,
+                       fpart: FreezedPart) -> PartMetadata:
         """
-        Backup part files and return storage paths.
+        Upload part data.
         """
-        remote_dir_path = os.path.join(self.get_backup_path(backup_name),
-                                       'data', fpart.database, fpart.table,
-                                       fpart.name)
+        remote_dir_path = _part_path(self.get_backup_path(backup_name),
+                                     fpart.database, fpart.table, fpart.name)
 
-        uploaded_files = []
-        part_files = [
-            f for f in os.listdir(fpart.path)
-            if os.path.isfile(os.path.join(fpart.path, f))
-        ]
-
-        for part_file in part_files:
-            local_fname = os.path.join(fpart.path, part_file)
-            remote_fname = os.path.join(remote_dir_path, part_file)
+        filenames = os.listdir(fpart.path)
+        for filename in filenames:
+            local_path = os.path.join(fpart.path, filename)
+            remote_path = os.path.join(remote_dir_path, filename)
             try:
-                self._storage_loader.upload_file(local_path=local_fname,
-                                                 remote_path=remote_fname,
+                self._storage_loader.upload_file(local_path=local_path,
+                                                 remote_path=remote_path,
                                                  is_async=True,
                                                  encryption=True,
                                                  delete=True)
-                uploaded_files.append(remote_fname)
-
             except Exception as e:
-                msg = 'Failed to create async upload of {0}'.format(
-                    remote_fname)
+                msg = f'Failed to create async upload of {remote_path}'
                 raise StorageError(msg) from e
 
-        return uploaded_files
+        return PartMetadata(database=fpart.database,
+                            table=fpart.table,
+                            name=fpart.name,
+                            checksum=fpart.checksum,
+                            size=fpart.size,
+                            files=filenames)
 
     def get_backup_meta(self, backup_name: str) -> Optional[BackupMetadata]:
         """
-        Download backup meta from storage
+        Download backup metadata.
         """
-        path = self._get_backup_meta_path(backup_name)
+        path = self._backup_metadata_path(backup_name)
 
         if not self._storage_loader.path_exists(path):
             return None
@@ -151,52 +140,73 @@ class ClickhouseBackupLayout:
                                            table_name)
         return self._storage_loader.download_data(remote_path, encryption=True)
 
-    def download_part_data(self, part: PartMetadata,
-                           fs_part_path: str) -> None:
+    def download_data_part(self, backup_meta: BackupMetadata,
+                           part: PartMetadata, fs_part_path: str) -> None:
         """
-        Restore part from detached directory
+        Download part data to the specified directory.
         """
         logging.debug('Downloading part %s in %s.%s', part.name, part.database,
                       part.table)
 
         os.makedirs(fs_part_path, exist_ok=True)
 
-        for remote_path in part.paths:
-            file_name = os.path.basename(remote_path)
-            local_path = os.path.join(fs_part_path, file_name)
+        remote_dir_path = _part_path(part.link or backup_meta.path,
+                                     part.database, part.table, part.name)
+
+        for filename in part.files:
+            local_path = os.path.join(fs_part_path, filename)
+            remote_path = os.path.join(remote_dir_path, filename)
             try:
-                logging.debug('Downloading part file %s: %s', local_path,
-                              remote_path)
+                logging.debug('Downloading part file: %s', remote_path)
                 self._storage_loader.download_file(remote_path=remote_path,
                                                    local_path=local_path,
                                                    is_async=True,
                                                    encryption=True)
             except Exception as e:
-                msg = 'Failed to download part file {0}'.format(remote_path)
+                msg = f'Failed to download part file {remote_path}'
                 raise StorageError(msg) from e
 
-    def delete_loaded_files(self, delete_files: Sequence[str]) -> None:
+    def check_data_part(self, backup_meta: BackupMetadata,
+                        part: PartMetadata) -> bool:
         """
-        Delete files from backup storage
+        Check availability of part data in storage.
         """
-        try:
-            logging.debug('Deleting files: %s', ', '.join(delete_files))
-            self._storage_loader.delete_files(remote_paths=delete_files,
-                                              is_async=True)
-        except Exception as e:
-            msg = 'Failed to delete files {0}'.format(', '.join(delete_files))
-            raise StorageError(msg) from e
+        remote_dir_path = _part_path(part.link or backup_meta.path,
+                                     part.database, part.table, part.name)
+        notfound_files = []
+        for filename in part.files:
+            remote_path = os.path.join(remote_dir_path, filename)
+            if not self._storage_loader.path_exists(remote_path):
+                notfound_files.append(filename)
 
-    def delete_backup_path(self, backup_name: str) -> None:
-        """
-        Delete files from backup storage
-        """
-        path = self.get_backup_path(backup_name)
+        if notfound_files:
+            logging.error('Some part files were not found in %s: %s',
+                          remote_dir_path, ', '.join(notfound_files))
+            return False
 
-        delete_files = self._storage_loader.list_dir(path,
-                                                     recursive=True,
-                                                     absolute=True)
-        self.delete_loaded_files(delete_files)
+        return True
+
+    def delete_backup(self, backup_name: str) -> None:
+        """
+        Delete backup data and metadata from storage.
+        """
+        deleting_files = self._storage_loader.list_dir(
+            self.get_backup_path(backup_name), recursive=True, absolute=True)
+        self._delete_files(deleting_files)
+
+    def delete_data_parts(self, backup_meta: BackupMetadata,
+                          parts: Sequence[PartMetadata]) -> None:
+        """
+        Delete backup data parts from storage.
+        """
+        deleting_files: List[str] = []
+        for part in parts:
+            part_path = _part_path(part.link or backup_meta.path,
+                                   part.database, part.table, part.name)
+            deleting_files.extend(
+                os.path.join(part_path, f) for f in part.files)
+
+        self._delete_files(deleting_files)
 
     def get_backup_names(self) -> Sequence[str]:
         """
@@ -205,12 +215,6 @@ class ClickhouseBackupLayout:
         return self._storage_loader.list_dir(self._config['path_root'],
                                              recursive=False,
                                              absolute=False)
-
-    def path_exists(self, remote_path: str) -> bool:
-        """
-        Check whether storage path exists or not.
-        """
-        return self._storage_loader.path_exists(remote_path)
 
     def wait(self) -> None:
         """
@@ -221,6 +225,22 @@ class ClickhouseBackupLayout:
             self._storage_loader.wait()
         except Exception as e:
             raise StorageError('Failed to complete async jobs') from e
+
+    def _delete_files(self, remote_paths: Sequence[str]) -> None:
+        """
+        Delete files from storage.
+        """
+        try:
+            logging.debug('Deleting files: %s', ', '.join(remote_paths))
+            self._storage_loader.delete_files(remote_paths=remote_paths,
+                                              is_async=True)
+        except Exception as e:
+            msg = 'Failed to delete files {0}'.format(', '.join(remote_paths))
+            raise StorageError(msg) from e
+
+    def _backup_metadata_path(self, backup_name: str) -> str:
+        return os.path.join(self.get_backup_path(backup_name),
+                            BACKUP_META_FNAME)
 
 
 def _db_metadata_path(backup_path, db_name):
@@ -236,6 +256,14 @@ def _table_metadata_path(backup_path, db_name, table_name):
     """
     return os.path.join(backup_path, 'metadata', _quote(db_name),
                         _quote(table_name) + '.sql')
+
+
+def _part_path(backup_path: str, db_name: str, table_name: str,
+               part_name: str) -> str:
+    """
+    Return S3 path to data part.
+    """
+    return os.path.join(backup_path, 'data', db_name, table_name, part_name)
 
 
 def _quote(value: str) -> str:

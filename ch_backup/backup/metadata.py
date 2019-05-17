@@ -2,14 +2,13 @@
 Backup metadata.
 """
 import json
+import os
 import socket
-from collections.__init__ import defaultdict
 from datetime import datetime, timezone
 from enum import Enum
 from types import SimpleNamespace
 from typing import Dict, Iterable, List, Optional, Sequence
 
-from ch_backup.clickhouse.control import FreezedPart
 from ch_backup.exceptions import InvalidBackupStruct, UnknownBackupStateError
 from ch_backup.util import now
 
@@ -33,50 +32,22 @@ class PartMetadata(SimpleNamespace):
     Backup metadata for ClickHouse data part.
     """
 
-    def __init__(self, fpart: FreezedPart, link: Optional[str],
-                 paths: Sequence[str]) -> None:
+    def __init__(self,
+                 database: str,
+                 table: str,
+                 name: str,
+                 checksum: str,
+                 size: int,
+                 files: Sequence[str],
+                 link: str = None) -> None:
         super().__init__()
-        self.database = fpart.database
-        self.table = fpart.table
-        self.name = fpart.name
-        self.size = fpart.size
-        self.checksum = fpart.checksum
+        self.database = database
+        self.table = table
+        self.name = name
+        self.size = size
+        self.checksum = checksum
+        self.files = files
         self.link = link
-        self.paths = paths
-
-    def dump(self) -> dict:
-        """
-        Convert data part metadata to dict representation.
-        """
-        return {
-            'meta': {
-                'database': self.database,
-                'table': self.table,
-                'name': self.name,
-                'bytes': self.size,
-                'checksum': self.checksum,
-            },
-            'paths': self.paths,
-            'link': self.link,
-        }
-
-    @classmethod
-    def load(cls, value: dict) -> 'PartMetadata':
-        """
-        Create PartMetadata object from a dict.
-        """
-        meta = value['meta']
-
-        part = cls.__new__(cls)
-        part.database = meta['database']
-        part.table = meta['table']
-        part.name = meta['name']
-        part.link = value['link']
-        part.paths = value['paths']
-        part.size = meta['bytes']
-        part.checksum = meta['checksum']
-
-        return part
 
 
 class BackupMetadata:
@@ -187,22 +158,29 @@ class BackupMetadata:
         """
         Add database to backup metadata.
         """
+        assert db_name not in self._databases
+
         self._databases[db_name] = {
             'tables': {},
-            'parts_paths': defaultdict(dict),
         }
 
     def get_databases(self) -> Sequence[str]:
         """
         Get databases.
         """
-        return tuple(self._databases)
+        return tuple(self._databases.keys())
 
     def add_table(self, db_name: str, table_name: str) -> None:
         """
         Add table to backup metadata.
         """
-        self._databases[db_name]['tables'][table_name] = {}
+        tables = self._databases[db_name]['tables']
+
+        assert table_name not in tables
+
+        tables[table_name] = {
+            'parts': {},
+        }
 
     def get_tables(self, db_name: str) -> Sequence[str]:
         """
@@ -211,16 +189,25 @@ class BackupMetadata:
         # TODO: remove backward-compatibility logic
         db = self._databases[db_name]
         if 'tables' in db:
-            return db['tables'].keys()
+            return tuple(db['tables'].keys())
 
-        return tuple(self._databases[db_name]['parts_paths'])
+        return tuple(db['parts_paths'].keys())
 
     def add_part(self, part: PartMetadata) -> None:
         """
         Add data part to backup metadata.
         """
-        self._databases[part.database]['parts_paths'][part.table][
-            part.name] = part.dump()
+        parts = self._databases[part.database]['tables'][part.table]['parts']
+
+        assert part.name not in parts
+
+        parts[part.name] = {
+            'checksum': part.checksum,
+            'bytes': part.size,
+            'files': part.files,
+            'link': part.link,
+        }
+
         self.size += part.size
         if not part.link:
             self.real_size += part.size
@@ -229,7 +216,15 @@ class BackupMetadata:
         """
         Remove data part from backup metadata.
         """
-        self._table_parts(part.database, part.table).pop(part.name)
+        # TODO: remove backward-compatibility logic
+        db = self._databases[part.database]
+        try:
+            parts = db['tables'][part.table]['parts']
+        except KeyError:
+            parts = db['parts_paths'][part.table]
+
+        del parts[part.name]
+
         self.size -= part.size
         if not part.link:
             self.real_size -= part.size
@@ -239,8 +234,20 @@ class BackupMetadata:
         """
         Get data part.
         """
-        raw_part = self._table_parts(db_name, table_name).get(part_name)
-        return PartMetadata.load(raw_part) if raw_part else None
+        db = self._databases.get(db_name)
+        if not db:
+            return None
+
+        # TODO: remove backward-compatibility logic
+        try:
+            if 'parts_paths' in db:
+                part = db['parts_paths'][table_name][part_name]
+            else:
+                part = db['tables'][table_name]['parts'][part_name]
+        except KeyError:
+            return None
+
+        return self._load_part(db_name, table_name, part_name, part)
 
     def get_parts(self, db_name: str = None,
                   table_name: str = None) -> Sequence[PartMetadata]:
@@ -264,18 +271,45 @@ class BackupMetadata:
         """
         return self.size == 0
 
-    def _table_parts(self, db_name: str, table_name: str) -> dict:
-        try:
-            return self._databases[db_name]['parts_paths'][table_name]
-        except KeyError:
-            return {}
-
     def _iter_database_parts(self, db_name: str,
                              table_name: str = None) -> Iterable[PartMetadata]:
         tables = [table_name] if table_name else self.get_tables(db_name)
         for table in tables:
-            for raw_part in self._table_parts(db_name, table).values():
-                yield PartMetadata.load(raw_part)
+            yield from self._iter_table_parts(db_name, table)
+
+    def _iter_table_parts(self, db_name: str,
+                          table_name: str) -> Iterable[PartMetadata]:
+        db = self._databases[db_name]
+        # TODO: remove backward-compatibility logic
+        if 'parts_paths' in db:
+            parts = db['parts_paths'][table_name]
+        else:
+            parts = db['tables'][table_name]['parts']
+
+        for part_name, metadata in parts.items():
+            yield self._load_part(db_name, table_name, part_name, metadata)
+
+    def _load_part(self, db_name: str, table_name: str, part_name: str,
+                   metadata: dict) -> PartMetadata:
+        # TODO: remove backward-compatibility logic
+        if 'meta' in metadata:
+            meta = metadata['meta']
+            return PartMetadata(
+                database=db_name,
+                table=table_name,
+                name=part_name,
+                checksum=meta['checksum'],
+                size=meta['bytes'],
+                files=[os.path.basename(p) for p in metadata['paths']],
+                link=metadata['link'])
+
+        return PartMetadata(database=db_name,
+                            table=table_name,
+                            name=part_name,
+                            checksum=metadata['checksum'],
+                            size=metadata['bytes'],
+                            files=metadata['files'],
+                            link=metadata['link'])
 
     def _format_time(self, value: Optional[datetime]) -> Optional[str]:
         return value.strftime(self.date_fmt) if value else None

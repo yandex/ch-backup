@@ -39,10 +39,10 @@ class Backup:
         The number of links (deduplicated parts).
         """
         count = 0
-        for _, db_contents in self._metadata['databases'].items():
-            for _, table_contents in db_contents['parts_paths'].items():
-                for _, part_contents in table_contents.items():
-                    if part_contents['link']:
+        for db_obj in self._metadata['databases'].values():
+            for table_obj in db_obj['tables'].values():
+                for part_obj in table_obj['parts'].values():
+                    if part_obj['link']:
                         count += 1
         return count
 
@@ -52,10 +52,10 @@ class Backup:
         The number of data parts (not deduplicated).
         """
         count = 0
-        for _, db_contents in self._metadata['databases'].items():
-            for _, table_contents in db_contents['parts_paths'].items():
-                for _, part_contents in table_contents.items():
-                    if not part_contents['link']:
+        for db_obj in self._metadata['databases'].values():
+            for table_obj in db_obj['tables'].values():
+                for part_obj in table_obj['parts'].values():
+                    if not part_obj['link']:
                         count += 1
         return count
 
@@ -120,12 +120,18 @@ class Backup:
         """
         Return all storage paths
         """
-        paths: Set[str] = set()
-        for db_contents in self._metadata['databases'].values():
-            for table_contents in db_contents['parts_paths'].values():
-                for part_contents in table_contents.values():
-                    paths.update(part_contents['paths'])
-        return tuple(paths)
+        backup_path = self.meta['path']
+        file_paths: Set[str] = set()
+        for db_name, db_obj in self._metadata['databases'].items():
+            for table_name, table_obj in db_obj['tables'].items():
+                for part_name, part_obj in table_obj['parts'].items():
+                    part_path = os.path.join(
+                        part_obj.get('link') or backup_path, 'data', db_name,
+                        table_name, part_name)
+                    file_paths.update(
+                        os.path.join(part_path, f) for f in part_obj['files'])
+
+        return tuple(file_paths)
 
 
 class BackupManager:

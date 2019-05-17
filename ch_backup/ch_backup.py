@@ -206,17 +206,13 @@ class ClickhouseBackup:
             logging.debug('Working on %s', fpart)
 
             # trying to find part in storage
-            link, existing_part = self._deduplicate_part(fpart, dedup_backups)
-            if link and existing_part:
-                self._ch_ctl.remove_freezed_part(fpart)
-                part_remote_paths = existing_part.paths
-            else:
+            part = self._deduplicate_part(fpart, dedup_backups)
+            if not part:
                 logging.debug('Backing up part "%s"', fpart.name)
-
-                part_remote_paths = self._backup_layout.save_part_data(
+                part = self._backup_layout.save_data_part(
                     backup_meta.name, fpart)
-
-            part = PartMetadata(fpart, link, part_remote_paths)
+            else:
+                self._ch_ctl.remove_freezed_part(fpart)
 
             backup_meta.add_part(part)
 
@@ -252,7 +248,7 @@ class ClickhouseBackup:
         logging.info('Deleting backup %s, state: %s', backup.name,
                      backup.state)
 
-        is_changed, deleting_paths = self._pop_deleting_paths(
+        is_changed, deleting_parts = self._pop_deleting_parts(
             backup, newer_backups)
         is_empty = backup.is_empty()
 
@@ -269,15 +265,15 @@ class ClickhouseBackup:
             # delete whole backup prefix if backup entry is empty
             if is_empty:
                 logging.info('Removing backup data entirely')
-                self._backup_layout.delete_backup_path(backup.name)
+                self._backup_layout.delete_backup(backup.name)
                 return backup.name, None
 
             backup.state = BackupState.PARTIALLY_DELETED
 
             # some data (not linked) parts were deleted
-            if deleting_paths:
+            if deleting_parts:
                 logging.info('Removing non-linked backup data parts')
-                self._backup_layout.delete_loaded_files(deleting_paths)
+                self._backup_layout.delete_data_parts(backup, deleting_parts)
 
             return None, 'Backup was partially deleted as its data is ' \
                          'in use by subsequent backups per ' \
@@ -316,7 +312,7 @@ class ClickhouseBackup:
         for name, backup in self._iter_backup_dir():
             if not backup:
                 logging.info('Deleting backup without metadata: %s', name)
-                self._backup_layout.delete_backup_path(name)
+                self._backup_layout.delete_backup(name)
                 continue
 
             if retain_count and len(retained_backups) < retain_count:
@@ -403,7 +399,8 @@ class ClickhouseBackup:
                               part.name)
                 fs_part_path = self._ch_ctl.get_detached_part_path(
                     db_name, table_name, part.name)
-                self._backup_layout.download_part_data(part, fs_part_path)
+                self._backup_layout.download_data_part(backup_meta, part,
+                                                       fs_part_path)
                 attach_parts.append(part.name)
 
             logging.debug('Waiting for downloads')
@@ -417,55 +414,52 @@ class ClickhouseBackup:
 
     def _deduplicate_part(self, fpart: FreezedPart,
                           dedup_backups: Sequence[BackupMetadata]) \
-            -> Tuple[Optional[str], Optional[PartMetadata]]:
+            -> Optional[PartMetadata]:
         """
         Deduplicate part if it's possible
         """
         logging.debug('Looking for deduplication of part "%s"', fpart.name)
 
+        db_name = fpart.database
+        table_name = fpart.table
+        part_name = fpart.name
         for backup_meta in dedup_backups:
-            existing_part = backup_meta.get_part(fpart.database, fpart.table,
-                                                 fpart.name)
+            existing_part = backup_meta.get_part(db_name, table_name,
+                                                 part_name)
 
             if not existing_part:
                 logging.debug('Part "%s" was not found in backup "%s", skip',
-                              fpart.name, backup_meta.name)
+                              part_name, backup_meta.name)
                 continue
 
             if existing_part.link:
                 logging.debug('Part "%s" in backup "%s" is link, skip',
-                              fpart.name, backup_meta.name)
+                              part_name, backup_meta.name)
                 continue
 
             if existing_part.checksum != fpart.checksum:
                 logging.debug(
                     'Part "%s" in backup "%s" has mismatched checksum, skip',
-                    fpart.name, backup_meta.name)
+                    part_name, backup_meta.name)
                 continue
 
-            #  check if part files exist in storage
-            if self._check_part_availability(existing_part):
-                logging.info('Deduplicating part "%s" based on %s', fpart.name,
-                             backup_meta.name)
-                return backup_meta.path, existing_part
+            if not self._backup_layout.check_data_part(backup_meta,
+                                                       existing_part):
+                logging.debug('Part "%s" in backup "%s" is invalid, skip',
+                              part_name, backup_meta.name)
+                continue
 
-        return None, None
+            logging.info('Deduplicating part "%s" based on %s', part_name,
+                         backup_meta.name)
+            return PartMetadata(database=db_name,
+                                table=table_name,
+                                name=part_name,
+                                checksum=existing_part.checksum,
+                                size=existing_part.size,
+                                link=backup_meta.path,
+                                files=existing_part.files)
 
-    def _check_part_availability(self, part: PartMetadata) -> bool:
-        """
-        Check if part files exist in storage
-        """
-        failed_part_files = [
-            path for path in part.paths
-            if not self._backup_layout.path_exists(path)
-        ]
-
-        if failed_part_files:
-            logging.error('Some part files were not found in storage: %s',
-                          ', '.join(failed_part_files))
-            return False
-
-        return True
+        return None
 
     def _get_backup(self, backup_name: str) -> BackupMetadata:
         backup = self._backup_layout.get_backup_meta(backup_name)
@@ -516,12 +510,12 @@ class ClickhouseBackup:
         return False
 
     @staticmethod
-    def _pop_deleting_paths(
+    def _pop_deleting_parts(
             backup_meta: BackupMetadata,
             newer_backups: Sequence[BackupMetadata]) \
-            -> Tuple[bool, Sequence[str]]:
+            -> Tuple[bool, Sequence[PartMetadata]]:
         """
-        Get backup paths which are safe for delete
+        Get backup parts which are safe to delete.
         """
         skip_parts = {}
         for new_backup in newer_backups:
@@ -536,7 +530,7 @@ class ClickhouseBackup:
                 skip_parts[part_id] = new_backup.name
 
         is_changed = False
-        delete_paths: List[str] = []
+        deleting_parts: List[PartMetadata] = []
         for part in backup_meta.get_parts():
             part_id = (part.database, part.table, part.name)
 
@@ -552,9 +546,9 @@ class ClickhouseBackup:
             if not part.link:
                 logging.debug('Scheduling deletion of part files "%s"',
                               part.name)
-                delete_paths.extend(part.paths)
+                deleting_parts.append(part)
 
             backup_meta.remove_part(part)
             is_changed = True
 
-        return is_changed, delete_paths
+        return is_changed, deleting_parts
