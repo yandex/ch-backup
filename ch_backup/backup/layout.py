@@ -32,54 +32,41 @@ class BackupLayout:
         remote_path = self._backup_metadata_path(backup.name)
         try:
             json_dump = backup.dump_json()
-            logging.debug('Saving backup meta in key %s:\n%s', remote_path,
-                          json_dump)
-            self._storage_loader.upload_data(json_dump,
-                                             remote_path=remote_path)
+            logging.debug('Saving backup meta in key %s:\n%s', remote_path, json_dump)
+            self._storage_loader.upload_data(json_dump, remote_path=remote_path)
         except Exception as e:
             raise StorageError('Failed to upload backup metadata') from e
 
-    def upload_database_metadata(self, backup_name: str, db_name: str,
-                                 metadata: str) -> None:
+    def upload_database_metadata(self, backup_name: str, db_name: str, metadata: str) -> None:
         """
         Upload database metadata (create statement).
         """
-        remote_path = _db_metadata_path(self.get_backup_path(backup_name),
-                                        db_name)
+        remote_path = _db_metadata_path(self.get_backup_path(backup_name), db_name)
         try:
             logging.debug('Saving create statement for database: %s', db_name)
-            self._storage_loader.upload_data(metadata,
-                                             remote_path=remote_path,
-                                             encryption=True)
+            self._storage_loader.upload_data(metadata, remote_path=remote_path, encryption=True)
         except Exception as e:
             msg = f'Failed to create async upload of {remote_path}'
             raise StorageError(msg) from e
 
-    def upload_table_metadata(self, backup_name: str, db_name: str,
-                              table_name: str, metadata: str) -> None:
+    def upload_table_metadata(self, backup_name: str, db_name: str, table_name: str, metadata: str) -> None:
         """
         Upload table metadata (create statement).
         """
-        remote_path = _table_metadata_path(self.get_backup_path(backup_name),
-                                           db_name, table_name)
+        remote_path = _table_metadata_path(self.get_backup_path(backup_name), db_name, table_name)
         try:
-            self._storage_loader.upload_data(metadata,
-                                             remote_path=remote_path,
-                                             is_async=True,
-                                             encryption=True)
+            self._storage_loader.upload_data(metadata, remote_path=remote_path, is_async=True, encryption=True)
 
             logging.debug('Saving create statement for table: %s', table_name)
         except Exception as e:
             msg = f'Failed to create async upload of {remote_path}'
             raise StorageError(msg) from e
 
-    def upload_data_part(self, backup_name: str,
-                         fpart: FreezedPart) -> PartMetadata:
+    def upload_data_part(self, backup_name: str, fpart: FreezedPart) -> PartMetadata:
         """
         Upload part data.
         """
-        remote_dir_path = _part_path(self.get_backup_path(backup_name),
-                                     fpart.database, fpart.table, fpart.name)
+        remote_dir_path = _part_path(self.get_backup_path(backup_name), fpart.database, fpart.table, fpart.name)
 
         filenames = os.listdir(fpart.path)
         for filename in filenames:
@@ -106,12 +93,9 @@ class BackupLayout:
         """
         Get names of existing backups.
         """
-        return self._storage_loader.list_dir(self._config['path_root'],
-                                             recursive=False,
-                                             absolute=False)
+        return self._storage_loader.list_dir(self._config['path_root'], recursive=False, absolute=False)
 
-    def get_backup_metadata(self,
-                            backup_name: str) -> Optional[BackupMetadata]:
+    def get_backup_metadata(self, backup_name: str) -> Optional[BackupMetadata]:
         """
         Download and return backup metadata.
         """
@@ -126,35 +110,29 @@ class BackupLayout:
         except Exception as e:
             raise StorageError('Failed to download backup metadata') from e
 
-    def get_database_metadata(self, backup_meta: BackupMetadata,
-                              db_name: str) -> str:
+    def get_database_metadata(self, backup_meta: BackupMetadata, db_name: str) -> str:
         """
         Download and return database metadata (create statement).
         """
         remote_path = _db_metadata_path(backup_meta.path, db_name)
         return self._storage_loader.download_data(remote_path, encryption=True)
 
-    def get_table_metadata(self, backup_meta: BackupMetadata, db_name: str,
-                           table_name: str) -> str:
+    def get_table_metadata(self, backup_meta: BackupMetadata, db_name: str, table_name: str) -> str:
         """
         Download and return table metadata (create statement).
         """
-        remote_path = _table_metadata_path(backup_meta.path, db_name,
-                                           table_name)
+        remote_path = _table_metadata_path(backup_meta.path, db_name, table_name)
         return self._storage_loader.download_data(remote_path, encryption=True)
 
-    def download_data_part(self, backup_meta: BackupMetadata,
-                           part: PartMetadata, fs_part_path: str) -> None:
+    def download_data_part(self, backup_meta: BackupMetadata, part: PartMetadata, fs_part_path: str) -> None:
         """
         Download part data to the specified directory.
         """
-        logging.debug('Downloading part %s in %s.%s', part.name, part.database,
-                      part.table)
+        logging.debug('Downloading part %s in %s.%s', part.name, part.database, part.table)
 
         os.makedirs(fs_part_path, exist_ok=True)
 
-        remote_dir_path = _part_path(part.link or backup_meta.path,
-                                     part.database, part.table, part.name)
+        remote_dir_path = _part_path(part.link or backup_meta.path, part.database, part.table, part.name)
 
         for filename in part.files:
             local_path = os.path.join(fs_part_path, filename)
@@ -169,13 +147,11 @@ class BackupLayout:
                 msg = f'Failed to download part file {remote_path}'
                 raise StorageError(msg) from e
 
-    def check_data_part(self, backup_meta: BackupMetadata,
-                        part: PartMetadata) -> bool:
+    def check_data_part(self, backup_meta: BackupMetadata, part: PartMetadata) -> bool:
         """
         Check availability of part data in storage.
         """
-        remote_dir_path = _part_path(part.link or backup_meta.path,
-                                     part.database, part.table, part.name)
+        remote_dir_path = _part_path(part.link or backup_meta.path, part.database, part.table, part.name)
         notfound_files = []
         for filename in part.files:
             remote_path = os.path.join(remote_dir_path, filename)
@@ -183,8 +159,7 @@ class BackupLayout:
                 notfound_files.append(filename)
 
         if notfound_files:
-            logging.error('Some part files were not found in %s: %s',
-                          remote_dir_path, ', '.join(notfound_files))
+            logging.error('Some part files were not found in %s: %s', remote_dir_path, ', '.join(notfound_files))
             return False
 
         return True
@@ -193,21 +168,19 @@ class BackupLayout:
         """
         Delete backup data and metadata from storage.
         """
-        deleting_files = self._storage_loader.list_dir(
-            self.get_backup_path(backup_name), recursive=True, absolute=True)
+        deleting_files = self._storage_loader.list_dir(self.get_backup_path(backup_name),
+                                                       recursive=True,
+                                                       absolute=True)
         self._delete_files(deleting_files)
 
-    def delete_data_parts(self, backup_meta: BackupMetadata,
-                          parts: Sequence[PartMetadata]) -> None:
+    def delete_data_parts(self, backup_meta: BackupMetadata, parts: Sequence[PartMetadata]) -> None:
         """
         Delete backup data parts from storage.
         """
         deleting_files: List[str] = []
         for part in parts:
-            part_path = _part_path(part.link or backup_meta.path,
-                                   part.database, part.table, part.name)
-            deleting_files.extend(
-                os.path.join(part_path, f) for f in part.files)
+            part_path = _part_path(part.link or backup_meta.path, part.database, part.table, part.name)
+            deleting_files.extend(os.path.join(part_path, f) for f in part.files)
 
         self._delete_files(deleting_files)
 
@@ -233,15 +206,13 @@ class BackupLayout:
         """
         try:
             logging.debug('Deleting files: %s', ', '.join(remote_paths))
-            self._storage_loader.delete_files(remote_paths=remote_paths,
-                                              is_async=True)
+            self._storage_loader.delete_files(remote_paths=remote_paths, is_async=True)
         except Exception as e:
             msg = 'Failed to delete files {0}'.format(', '.join(remote_paths))
             raise StorageError(msg) from e
 
     def _backup_metadata_path(self, backup_name: str) -> str:
-        return os.path.join(self.get_backup_path(backup_name),
-                            BACKUP_META_FNAME)
+        return os.path.join(self.get_backup_path(backup_name), BACKUP_META_FNAME)
 
 
 def _db_metadata_path(backup_path: str, db_name: str) -> str:
@@ -251,17 +222,14 @@ def _db_metadata_path(backup_path: str, db_name: str) -> str:
     return os.path.join(backup_path, 'metadata', _quote(db_name) + '.sql')
 
 
-def _table_metadata_path(backup_path: str, db_name: str,
-                         table_name: str) -> str:
+def _table_metadata_path(backup_path: str, db_name: str, table_name: str) -> str:
     """
     Return S3 path to table metadata.
     """
-    return os.path.join(backup_path, 'metadata', _quote(db_name),
-                        _quote(table_name) + '.sql')
+    return os.path.join(backup_path, 'metadata', _quote(db_name), _quote(table_name) + '.sql')
 
 
-def _part_path(backup_path: str, db_name: str, table_name: str,
-               part_name: str) -> str:
+def _part_path(backup_path: str, db_name: str, table_name: str, part_name: str) -> str:
     """
     Return S3 path to data part.
     """

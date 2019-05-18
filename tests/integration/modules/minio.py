@@ -5,8 +5,7 @@ import json
 import os
 
 from docker.models.containers import Container
-from tenacity import (retry, retry_if_exception_type, stop_after_attempt,
-                      wait_fixed)
+from tenacity import (retry, retry_if_exception_type, stop_after_attempt, wait_fixed)
 
 from .docker import copy_container_dir, get_container
 from .typing import ContextT
@@ -25,8 +24,7 @@ class MinioException(Exception):
     def _fmt_message(response: dict) -> str:
         try:
             error = response['error']
-            message = '{0} Cause: {1}'.format(error['message'],
-                                              error['cause']['message'])
+            message = '{0} Cause: {1}'.format(error['message'], error['cause']['message'])
 
             code = error['cause']['error'].get('Code')
             if code:
@@ -44,18 +42,14 @@ class BucketAlreadyOwnedByYou(MinioException):
     """
 
 
-@retry(retry=retry_if_exception_type(MinioException),
-       wait=wait_fixed(0.5),
-       stop=stop_after_attempt(360))
+@retry(retry=retry_if_exception_type(MinioException), wait=wait_fixed(0.5), stop=stop_after_attempt(360))
 def configure_s3_credentials(context: ContextT) -> None:
     """
     Configure S3 credentials in mc (Minio client).
     """
     access_key = context.conf['s3']['access_key_id']
     secret_key = context.conf['s3']['access_secret_key']
-    _mc_execute(
-        context, 'config host add local http://localhost:9000 {0} {1}'.format(
-            access_key, secret_key))
+    _mc_execute(context, 'config host add local http://localhost:9000 {0} {1}'.format(access_key, secret_key))
 
 
 def create_s3_bucket(context: ContextT) -> None:
@@ -85,8 +79,7 @@ def _mc_execute(context: ContextT, command: str) -> dict:
     """
     Execute mc (Minio client) command.
     """
-    output = _container(context).exec_run(
-        'mc --json {0}'.format(command)).output.decode()
+    output = _container(context).exec_run('mc --json {0}'.format(command)).output.decode()
 
     response = json.loads(output)
     if response['status'] == 'success':

@@ -70,9 +70,8 @@ class ClickhouseClient:
     def __init__(self, context: ContextT, node_name: str) -> None:
         protocol = 'http'
 
-        host, port = docker.get_exposed_port(
-            docker.get_container(context, node_name),
-            context.conf['projects']['clickhouse']['expose'][protocol])
+        host, port = docker.get_exposed_port(docker.get_container(context, node_name),
+                                             context.conf['projects']['clickhouse']['expose'][protocol])
 
         self._session = Session()
         self._url = '{0}://{1}:{2}'.format(protocol, host, port)
@@ -116,18 +115,10 @@ class ClickhouseClient:
         """
         for db_num in range(1, DB_COUNT + 1):
             db_name = 'test_db_{db_num:02d}'.format(db_num=db_num)
-            self._query(
-                'POST', 'CREATE DATABASE IF NOT EXISTS {db_name}'.format(
-                    db_name=db_name))
+            self._query('POST', f'CREATE DATABASE IF NOT EXISTS {db_name}')
             for table_num in range(1, TABLE_COUNT + 1):
-                table_name = 'test_table_{table_num:02d}'. \
-                    format(table_num=table_num)
-                self._query(
-                    'POST', 'CREATE TABLE IF NOT EXISTS '
-                    '{db_name}.{table_name} {table_schema}'.format(
-                        db_name=db_name,
-                        table_name=table_name,
-                        table_schema=TEST_TABLE_SCHEMA))
+                table_name = 'test_table_{table_num:02d}'.format(table_num=table_num)
+                self._query('POST', f'CREATE TABLE IF NOT EXISTS {db_name}.{table_name} {TEST_TABLE_SCHEMA}')
 
     def init_data(self, mark: str) -> None:
         """
@@ -139,14 +130,9 @@ class ClickhouseClient:
                 rows = []
                 table_name = self._get_test_table_name(table_num)
                 for row_num in range(1, ROWS_COUNT + 1):
-                    rows.append(', '.join(
-                        self._gen_record(row_num=row_num, str_prefix=mark)))
+                    rows.append(', '.join(self._gen_record(row_num=row_num, str_prefix=mark)))
 
-                self._query(
-                    'POST',
-                    'INSERT INTO {db_name}.{table_name} FORMAT CSV'.format(
-                        db_name=db_name, table_name=table_name),
-                    data='\n'.join(rows))
+                self._query('POST', f'INSERT INTO {db_name}.{table_name} FORMAT CSV', data='\n'.join(rows))
 
     def get_all_user_data(self) -> Tuple[int, dict]:
         """
@@ -156,10 +142,9 @@ class ClickhouseClient:
         user_data = {}
         rows_count = 0
         for db_name, table_name, columns in dbs_tables:
-            query_sql = GET_TEST_TABLE_DATA_SQL.format(
-                db_name=db_name,
-                table_name=table_name,
-                order_by=','.join(columns))
+            query_sql = GET_TEST_TABLE_DATA_SQL.format(db_name=db_name,
+                                                       table_name=table_name,
+                                                       order_by=','.join(columns))
             table_data = self._query('GET', query_sql)
             user_data['.'.join([db_name, table_name])] = table_data['data']
             rows_count += table_data['rows']
@@ -172,8 +157,7 @@ class ClickhouseClient:
         dbs_tables = self._query('GET', GET_ALL_USER_TABLES_SQL)['data']
         all_tables_desc = {}
         for db_name, table_name, _ in dbs_tables:
-            query_sql = GET_TEST_TABLE_SCHEMA.format(db_name=db_name,
-                                                     table_name=table_name)
+            query_sql = GET_TEST_TABLE_SCHEMA.format(db_name=db_name, table_name=table_name)
             table_data = self._query('GET', query_sql)
             all_tables_desc[(db_name, table_name)] = table_data['data']
         return all_tables_desc
@@ -197,8 +181,7 @@ class ClickhouseClient:
         """
         self._query(
             'POST',
-            DROP_TABLE.format(db_name=self._get_test_db_name(db_num),
-                              table_name=self._get_test_table_name(table_num)))
+            DROP_TABLE.format(db_name=self._get_test_db_name(db_num), table_name=self._get_test_table_name(table_num)))
 
     @staticmethod
     def _gen_record(row_num=0, day_diff=None, str_len=5, str_prefix=None):
@@ -215,18 +198,12 @@ class ClickhouseClient:
         rand_str = generate_random_string(str_len)
 
         dt_now = datetime.utcnow() - timedelta(**day_diff)
-        row = (dt_now.strftime('%Y-%m-%d'),
-               dt_now.strftime('%Y-%m-%d %H:%M:%S'), str(row_num),
-               '{prefix}{rand_str}'.format(prefix=str_prefix,
-                                           rand_str=rand_str))
+        row = (dt_now.strftime('%Y-%m-%d'), dt_now.strftime('%Y-%m-%d %H:%M:%S'), str(row_num),
+               '{prefix}{rand_str}'.format(prefix=str_prefix, rand_str=rand_str))
 
         return row
 
-    def _query(self,
-               method: str,
-               query: str = None,
-               url: str = None,
-               data: Union[bytes, str] = None) -> Any:
+    def _query(self, method: str, query: str = None, url: str = None, data: Union[bytes, str] = None) -> Any:
         if url:
             url = urljoin(self._url, url)
         else:
@@ -241,16 +218,11 @@ class ClickhouseClient:
 
         try:
             logging.debug('Executing ClickHouse query: %s', query)
-            response = self._session.request(method,
-                                             url,
-                                             params=params,
-                                             data=data,
-                                             timeout=self._timeout)
+            response = self._session.request(method, url, params=params, data=data, timeout=self._timeout)
 
             response.raise_for_status()
         except HTTPError as e:
-            logging.critical('Error while performing request: %s',
-                             e.response.text)
+            logging.critical('Error while performing request: %s', e.response.text)
             raise
 
         try:

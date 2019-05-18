@@ -2,8 +2,7 @@
 Steps related to ch-backup command-line tool.
 """
 from behave import given, then, when
-from hamcrest import (any_of, assert_that, contains_string, equal_to,
-                      has_entries, matches_regexp)
+from hamcrest import (any_of, assert_that, contains_string, equal_to, has_entries, matches_regexp)
 
 from tests.integration.modules.ch_backup import BackupManager
 from tests.integration.modules.steps import get_step_data
@@ -51,8 +50,7 @@ def step_delete_backup(context, node, backup_id):
     result = BackupManager(context, node).delete(backup_id)
     assert_that(
         result,
-        any_of(matches_regexp('^([0-9]{8}T[0-9]{6}\\s*)*$'),
-               contains_string('Backup was not deleted'),
+        any_of(matches_regexp('^([0-9]{8}T[0-9]{6}\\s*)*$'), contains_string('Backup was not deleted'),
                contains_string('Backup was partially deleted')))
 
 
@@ -77,9 +75,8 @@ def step_check_backups_conditions(context, node):
 
     backup_count = len(backup_ids)
     expected_backup_count = len(context.table.rows)
-    assert_that(
-        backup_count, equal_to(expected_backup_count),
-        f'Backup count = {backup_count}, expected {expected_backup_count}')
+    assert_that(backup_count, equal_to(expected_backup_count),
+                f'Backup count = {backup_count}, expected {expected_backup_count}')
 
     for i, backup_id in enumerate(backup_ids):
         backup = ch_backup.get_backup(backup_id)
@@ -87,8 +84,7 @@ def step_check_backups_conditions(context, node):
 
         # check that all backup's files exist
         missed_paths = ch_backup.get_missed_paths(backup.name)
-        assert_that(missed_paths, equal_to([]),
-                    '{0} missed files were found'.format(len(missed_paths)))
+        assert_that(missed_paths, equal_to([]), '{0} missed files were found'.format(len(missed_paths)))
 
         # check backup properties
         for attr in context.table.headings:
@@ -96,7 +92,5 @@ def step_check_backups_conditions(context, node):
                 continue
             current_value = str(getattr(backup, attr))
             expected_value = expected_backup[attr]
-            assert_that(
-                current_value, equal_to(expected_value),
-                f'Backup #{i}: {backup.name} expected {attr} ='
-                f' {expected_value}, but was {current_value}')
+            assert_that(current_value, equal_to(expected_value), f'Backup #{i}: {backup.name} expected {attr} ='
+                        f' {expected_value}, but was {current_value}')

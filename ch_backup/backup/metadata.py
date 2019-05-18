@@ -229,8 +229,7 @@ class BackupMetadata:
         if not part.link:
             self.real_size -= part.size
 
-    def get_part(self, db_name: str, table_name: str,
-                 part_name: str) -> Optional[PartMetadata]:
+    def get_part(self, db_name: str, table_name: str, part_name: str) -> Optional[PartMetadata]:
         """
         Get data part.
         """
@@ -249,8 +248,7 @@ class BackupMetadata:
 
         return self._load_part(db_name, table_name, part_name, part)
 
-    def get_parts(self, db_name: str = None,
-                  table_name: str = None) -> Sequence[PartMetadata]:
+    def get_parts(self, db_name: str = None, table_name: str = None) -> Sequence[PartMetadata]:
         """
         Get data parts.
         """
@@ -271,14 +269,12 @@ class BackupMetadata:
         """
         return self.size == 0
 
-    def _iter_database_parts(self, db_name: str,
-                             table_name: str = None) -> Iterable[PartMetadata]:
+    def _iter_database_parts(self, db_name: str, table_name: str = None) -> Iterable[PartMetadata]:
         tables = [table_name] if table_name else self.get_tables(db_name)
         for table in tables:
             yield from self._iter_table_parts(db_name, table)
 
-    def _iter_table_parts(self, db_name: str,
-                          table_name: str) -> Iterable[PartMetadata]:
+    def _iter_table_parts(self, db_name: str, table_name: str) -> Iterable[PartMetadata]:
         db = self._databases[db_name]
         # TODO: remove backward-compatibility logic
         if 'parts_paths' in db:
@@ -289,19 +285,17 @@ class BackupMetadata:
         for part_name, metadata in parts.items():
             yield self._load_part(db_name, table_name, part_name, metadata)
 
-    def _load_part(self, db_name: str, table_name: str, part_name: str,
-                   metadata: dict) -> PartMetadata:
+    def _load_part(self, db_name: str, table_name: str, part_name: str, metadata: dict) -> PartMetadata:
         # TODO: remove backward-compatibility logic
         if 'meta' in metadata:
             meta = metadata['meta']
-            return PartMetadata(
-                database=db_name,
-                table=table_name,
-                name=part_name,
-                checksum=meta['checksum'],
-                size=meta['bytes'],
-                files=[os.path.basename(p) for p in metadata['paths']],
-                link=metadata['link'])
+            return PartMetadata(database=db_name,
+                                table=table_name,
+                                name=part_name,
+                                checksum=meta['checksum'],
+                                size=meta['bytes'],
+                                files=[os.path.basename(p) for p in metadata['paths']],
+                                link=metadata['link'])
 
         return PartMetadata(database=db_name,
                             table=table_name,

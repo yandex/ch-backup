@@ -46,8 +46,7 @@ class IterStage(metaclass=ABCMeta):
 
     stype: Optional[str] = None
 
-    def __call__(self, src_iter: Callable, src_key: Any,
-                 dst_key: Any) -> Generator:
+    def __call__(self, src_iter: Callable, src_key: Any, dst_key: Any) -> Generator:
         self._pre_process(src_key, dst_key)
 
         for data in src_iter(src_key, dst_key):
@@ -80,8 +79,7 @@ class BufferedIterStage(IterStage, metaclass=ABCMeta):
         self._chunk_size = conf['chunk_size']
         self._buffer = io.BytesIO()
 
-    def __call__(self, src_iter: Callable, src_key: Any,
-                 dst_key: Any) -> Generator:
+    def __call__(self, src_iter: Callable, src_key: Any, dst_key: Any) -> Generator:
         """
         Handles incoming data.
         """

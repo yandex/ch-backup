@@ -34,8 +34,7 @@ class UploadStorageStage(BufferedIterStage, metaclass=ABCMeta):
 
         # use multi-part upload if source data size > chunk_size
         if src_size > self._chunk_size:
-            self._upload_id = self._loader.create_multipart_upload(
-                remote_path=dst_key)
+            self._upload_id = self._loader.create_multipart_upload(remote_path=dst_key)
 
         chunk_count = src_size / self._chunk_size
         if chunk_count > self._max_chunk_count:
@@ -45,19 +44,15 @@ class UploadStorageStage(BufferedIterStage, metaclass=ABCMeta):
 
     def _process(self, data):
         if self._upload_id:
-            self._loader.upload_part(data,
-                                     remote_path=self._remote_path,
-                                     upload_id=self._upload_id)
+            self._loader.upload_part(data, remote_path=self._remote_path, upload_id=self._upload_id)
 
     def _post_process(self) -> str:
         assert self._remote_path
 
         if self._upload_id:
-            self._loader.complete_multipart_upload(
-                remote_path=self._remote_path, upload_id=self._upload_id)
+            self._loader.complete_multipart_upload(remote_path=self._remote_path, upload_id=self._upload_id)
         else:
-            self._loader.upload_data(self._buffer.getvalue(),
-                                     self._remote_path)
+            self._loader.upload_data(self._buffer.getvalue(), self._remote_path)
 
         return self._remote_path
 
@@ -97,12 +92,10 @@ class DownloadStorageStage(InputStage):
         self._download_id = None
 
     def _pre_process(self, src_key):
-        self._download_id = self._loader.create_multipart_download(
-            remote_path=src_key)
+        self._download_id = self._loader.create_multipart_download(remote_path=src_key)
 
     def _process(self):
-        return self._loader.download_part(download_id=self._download_id,
-                                          part_len=self._chunk_size)
+        return self._loader.download_part(download_id=self._download_id, part_len=self._chunk_size)
 
     def _post_process(self):
         self._loader.complete_multipart_download(download_id=self._download_id)
@@ -144,8 +137,7 @@ class DeleteMultipleStorageStage(InputStage):
 
     def _pre_process(self, src_key):
         self._files_iter = iter([
-            src_key[i:i + self._bulk_delete_chunk_size]
-            for i in range(0, len(src_key), self._bulk_delete_chunk_size)
+            src_key[i:i + self._bulk_delete_chunk_size] for i in range(0, len(src_key), self._bulk_delete_chunk_size)
         ])
 
     def _process(self):

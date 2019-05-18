@@ -135,9 +135,7 @@ def _parse_args(commands):
     arg = argparse.ArgumentParser(description="""
         DBaaS testing environment initializer script
         """)
-    arg.add_argument('command',
-                     choices=list(commands),
-                     help='command to perform')
+    arg.add_argument('command', choices=list(commands), help='command to perform')
     arg.add_argument('-s',
                      '--state-file',
                      dest='state_file',

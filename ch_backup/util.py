@@ -15,8 +15,7 @@ import tenacity
 
 from ch_backup import logging
 
-LOCAL_TZ = timezone(
-    timedelta(seconds=-1 * (time.altzone if time.daylight else time.timezone)))
+LOCAL_TZ = timezone(timedelta(seconds=-1 * (time.altzone if time.daylight else time.timezone)))
 
 
 def chown_dir_contents(user: str, group: str, dir_path: str) -> None:
@@ -98,24 +97,18 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def retry(exception_types: Union[type, tuple] = Exception,
-          max_attempts: int = 5,
-          max_interval: float = 5) -> Callable:
+def retry(exception_types: Union[type, tuple] = Exception, max_attempts: int = 5, max_interval: float = 5) -> Callable:
     """
     Function decorator that retries wrapped function on failures.
     """
 
     def _log_retry(retry_state):
-        logging.debug("Retrying %s.%s in %.2fs, attempt: %s, reason: %r",
-                      retry_state.fn.__module__, retry_state.fn.__qualname__,
-                      retry_state.next_action.sleep,
-                      retry_state.attempt_number,
+        logging.debug("Retrying %s.%s in %.2fs, attempt: %s, reason: %r", retry_state.fn.__module__,
+                      retry_state.fn.__qualname__, retry_state.next_action.sleep, retry_state.attempt_number,
                       retry_state.outcome.exception())
 
-    return tenacity.retry(
-        retry=tenacity.retry_if_exception_type(exception_types),
-        wait=tenacity.wait_random_exponential(multiplier=0.5,
-                                              max=max_interval),
-        stop=tenacity.stop_after_attempt(max_attempts),
-        reraise=True,
-        before_sleep=_log_retry)
+    return tenacity.retry(retry=tenacity.retry_if_exception_type(exception_types),
+                          wait=tenacity.wait_random_exponential(multiplier=0.5, max=max_interval),
+                          stop=tenacity.stop_after_attempt(max_attempts),
+                          reraise=True,
+                          before_sleep=_log_retry)

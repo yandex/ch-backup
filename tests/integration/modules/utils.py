@@ -78,9 +78,7 @@ def generate_random_string(length: int = 64) -> str:
     """
     Generate random alphanum sequence.
     """
-    return ''.join(
-        random_choise(string.ascii_letters + string.digits)
-        for _ in range(length))
+    return ''.join(random_choise(string.ascii_letters + string.digits) for _ in range(length))
 
 
 def context_to_dict(context: ContextT) -> dict:

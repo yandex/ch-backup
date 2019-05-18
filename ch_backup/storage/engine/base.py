@@ -41,10 +41,7 @@ class StorageEngine(metaclass=ABCMeta):
         """
 
     @abstractmethod
-    def list_dir(self,
-                 remote_path: str,
-                 recursive: bool = False,
-                 absolute: bool = False) -> Sequence[str]:
+    def list_dir(self, remote_path: str, recursive: bool = False, absolute: bool = False) -> Sequence[str]:
         """
         Get directory listing.
         """

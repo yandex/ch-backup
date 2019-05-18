@@ -83,8 +83,7 @@ def _write_config(path: str, compose_conf: dict) -> None:
         _validate_config(temp_file_path)
         os.rename(temp_file_path, path)
     except subprocess.CalledProcessError as err:
-        raise RuntimeError(
-            'unable to write config: validation failed with %s' % err)
+        raise RuntimeError('unable to write config: validation failed with %s' % err)
 
     # Remove config only if validated ok.
     try:
@@ -127,8 +126,7 @@ def _generate_compose_config(config: dict) -> dict:
         # generate_service_dict()
         for num in range(1, instances + 1):
             instance_name = '{name}{num:02d}'.format(name=name, num=num)
-            service_conf = _generate_service_config(config, name,
-                                                    instance_name, props)
+            service_conf = _generate_service_config(config, name, instance_name, props)
             # Fill in local placeholders with own context.
             # Useful when we need to reference stuff like
             # hostname or domainname inside of the other config value.
@@ -137,8 +135,7 @@ def _generate_compose_config(config: dict) -> dict:
     return compose_conf
 
 
-def _generate_service_config(config: dict, name: str, instance_name: str,
-                             instance_config: dict) -> dict:
+def _generate_service_config(config: dict, name: str, instance_name: str, instance_config: dict) -> dict:
     """
     Generates a single service config based on name and
     instance config.
@@ -157,12 +154,9 @@ def _generate_service_config(config: dict, name: str, instance_name: str,
 
     service = {
         'build': {
-            'context':
-                '..',
-            'dockerfile':
-                '{0}/images/{1}/Dockerfile'.format(staging_dir, name),
-            'args':
-                instance_config.get('args', []),
+            'context': '..',
+            'dockerfile': '{0}/images/{1}/Dockerfile'.format(staging_dir, name),
+            'args': instance_config.get('args', []),
         },
         'image': '{0}:{1}'.format(name, network_name),
         'hostname': instance_name,
@@ -197,8 +191,7 @@ def _prepare_volumes(volumes: dict, local_basedir: str) -> list:
         os.makedirs('{base}/{dir}'.format(
             base=local_basedir,
             dir=props['local'],
-        ),
-                    exist_ok=True)
+        ), exist_ok=True)
         volume_list.append('{local}:{remote}:{mode}'.format(**props))
     return volume_list
 
@@ -210,8 +203,7 @@ def _call_compose(conf: dict, action: str) -> None:
     _call_compose_on_config(conf_path, project_name, action)
 
 
-def _call_compose_on_config(conf_path: str, project_name: str,
-                            action: str) -> None:
+def _call_compose_on_config(conf_path: str, project_name: str, action: str) -> None:
     """
     Execute docker-compose action by invoking `docker-compose`.
     """

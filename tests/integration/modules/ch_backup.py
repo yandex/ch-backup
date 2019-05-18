@@ -126,10 +126,8 @@ class Backup:
             for table_name, table_obj in db_obj['tables'].items():
                 for part_name, part_obj in table_obj['parts'].items():
                     part_path = os.path.join(
-                        part_obj.get('link') or backup_path, 'data', db_name,
-                        table_name, part_name)
-                    file_paths.update(
-                        os.path.join(part_path, f) for f in part_obj['files'])
+                        part_obj.get('link') or backup_path, 'data', db_name, table_name, part_name)
+                    file_paths.update(os.path.join(part_path, f) for f in part_obj['files'])
 
         return tuple(file_paths)
 
@@ -144,8 +142,7 @@ class BackupManager:
         self._s3_client = s3.S3Client(context)
         self._config_path = CH_BACKUP_CONF_PATH
         self._cmd_base = '{0} --protocol {1} --insecure  --config {2}'.format(
-            CH_BACKUP_CLI_PATH, context.ch_backup['protocol'],
-            self._config_path)
+            CH_BACKUP_CLI_PATH, context.ch_backup['protocol'], self._config_path)
 
     def backup(self,
                name: str = None,
@@ -189,33 +186,24 @@ class BackupManager:
         """
         return self._exec('version')
 
-    def update_backup_metadata(self,
-                               backup_id: BackupId,
-                               metadata: dict,
-                               merge: bool = True) -> None:
+    def update_backup_metadata(self, backup_id: BackupId, metadata: dict, merge: bool = True) -> None:
         """
         Update backup metadata.
         """
         backup = self.get_backup(backup_id)
         backup.update(metadata, merge)
-        self._s3_client.upload_data(backup.dump_json().encode('utf-8'),
-                                    backup.path)
+        self._s3_client.upload_data(backup.dump_json().encode('utf-8'), backup.path)
 
     def update_config(self, update: dict) -> None:
         """
         Apply new config to old one
         """
-        output = self._container.exec_run(f'/bin/cat {self._config_path}',
-                                          user='root').output.decode()
+        output = self._container.exec_run(f'/bin/cat {self._config_path}', user='root').output.decode()
         conf = yaml.load(output, yaml.SafeLoader)
 
         utils.merge(conf, update)
-        docker.put_file(
-            self._container,
-            yaml.dump(conf,
-                      default_flow_style=False,
-                      encoding='utf-8',
-                      indent=4), self._config_path)
+        docker.put_file(self._container, yaml.dump(conf, default_flow_style=False, encoding='utf-8', indent=4),
+                        self._config_path)
 
     def get_missed_paths(self, backup_id: BackupId) -> Sequence[str]:
         """
@@ -252,8 +240,7 @@ class BackupManager:
         options = []
         if schema_only:
             options.append('--schema-only')
-        return self._exec('restore {0} {1}'.format(' '.join(options),
-                                                   backup_id))
+        return self._exec('restore {0} {1}'.format(' '.join(options), backup_id))
 
     def _exec(self, command: str) -> str:
         cmd = '{0} {1}'.format(self._cmd_base, command)

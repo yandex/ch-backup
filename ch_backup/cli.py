@@ -8,8 +8,7 @@ import sys
 import uuid
 from functools import wraps
 
-from click import (Choice, ParamType, Path, argument, group, option,
-                   pass_context)
+from click import (Choice, ParamType, Path, argument, group, option, pass_context)
 from click.types import StringParamType
 from tabulate import tabulate
 
@@ -33,16 +32,10 @@ UUID = str(uuid.uuid4())
         type=Path(exists=True),
         default='/etc/yandex/ch-backup/ch-backup.conf',
         help='Configuration file path.')
-@option('--protocol',
-        type=Choice(['http', 'https']),
-        help='Protocol used to connect to ClickHouse server.')
+@option('--protocol', type=Choice(['http', 'https']), help='Protocol used to connect to ClickHouse server.')
 @option('--port', type=int, help='Port used to connect to ClickHouse server.')
-@option('--ca-path',
-        type=str,
-        help='Path to custom CA bundle path for https protocol.')
-@option('--insecure',
-        is_flag=True,
-        help='Disable certificate verification for https protocol.')
+@option('--ca-path', type=str, help='Path to custom CA bundle path for https protocol.')
+@option('--insecure', is_flag=True, help='Disable certificate verification for https protocol.')
 @pass_context
 def cli(ctx, config, protocol, port, ca_path, insecure):
     """Tool for managing ClickHouse backups."""
@@ -78,11 +71,10 @@ def command(*args, **kwargs):
         @wraps(f)
         def wrapper(ctx, *args, **kwargs):
             try:
-                logging.info('Executing command \'%s\', params: %s, args %s',
-                             ctx.command.name, {
-                                 **ctx.parent.params,
-                                 **ctx.params,
-                             }, ctx.args)
+                logging.info('Executing command \'%s\', params: %s, args %s', ctx.command.name, {
+                    **ctx.parent.params,
+                    **ctx.params,
+                }, ctx.args)
                 result = ctx.invoke(f, ctx, ctx.obj['backup'], *args, **kwargs)
                 logging.info('Command \'%s\' completed', ctx.command.name)
                 return result
@@ -169,8 +161,7 @@ def list_command(_ctx, ch_backup, verbose, **kwargs):
         print('\n'.join([b.name for b in backups]))
         return
 
-    fields = ('name', 'state', 'start_time', 'end_time', 'size', 'real_size',
-              'ch_version')
+    fields = ('name', 'state', 'start_time', 'end_time', 'size', 'real_size', 'ch_version')
 
     report = []
     state_idx = fields.index('state')
@@ -193,31 +184,18 @@ def show_command(ctx, ch_backup, name):
 
 @command(name='backup')
 @option('--name',
-        type=String(regexp=r'(?a)[\w-]+',
-                    macros={
-                        '{timestamp}': TIMESTAMP,
-                        '{uuid}': UUID,
-                    }),
+        type=String(regexp=r'(?a)[\w-]+', macros={
+            '{timestamp}': TIMESTAMP,
+            '{uuid}': UUID,
+        }),
         help='Name of creating backup. The value can contain macros:'
         f' {{timestamp}} - current time in UTC ({TIMESTAMP}),'
         f' {{uuid}} - randomly generated UUID value ({UUID}).',
         default='{timestamp}')
-@option('-d',
-        '--databases',
-        type=List(regexp=r'\w+'),
-        help='Comma-separated list of databases to backup.')
-@option('-t',
-        '--tables',
-        type=List(regexp=r'[\w.]+'),
-        help='Comma-separated list of tables to backup.')
-@option('-f',
-        '--force',
-        is_flag=True,
-        help='Enables force mode (backup.min_interval is ignored).')
-@option('-l',
-        '--label',
-        multiple=True,
-        help='Custom labels as key-value pairs that represents user metadata.')
+@option('-d', '--databases', type=List(regexp=r'\w+'), help='Comma-separated list of databases to backup.')
+@option('-t', '--tables', type=List(regexp=r'[\w.]+'), help='Comma-separated list of tables to backup.')
+@option('-f', '--force', is_flag=True, help='Enables force mode (backup.min_interval is ignored).')
+@option('-l', '--label', multiple=True, help='Custom labels as key-value pairs that represents user metadata.')
 def backup_command(ctx, ch_backup, name, databases, tables, force, label):
     """Perform backup."""
     if databases and tables:
@@ -230,11 +208,7 @@ def backup_command(ctx, ch_backup, name, databases, tables, force, label):
         value = key_value.pop() if key_value else None
         labels[key] = value
 
-    (name, msg) = ch_backup.backup(name,
-                                   databases=databases,
-                                   tables=tables,
-                                   force=force,
-                                   labels=labels)
+    (name, msg) = ch_backup.backup(name, databases=databases, tables=tables, force=force, labels=labels)
 
     if msg:
         print(msg, file=sys.stderr, flush=True)
@@ -243,10 +217,7 @@ def backup_command(ctx, ch_backup, name, databases, tables, force, label):
 
 @command(name='restore')
 @argument('name', metavar='BACKUP')
-@option('-d',
-        '--databases',
-        type=List(regexp=r'\w+'),
-        help='Comma-separated list of databases to restore.')
+@option('-d', '--databases', type=List(regexp=r'\w+'), help='Comma-separated list of databases to restore.')
 @option('--schema-only', is_flag=True, help='Restore only databases schemas')
 def restore_command(ctx, ch_backup, name, databases, schema_only):
     """Restore data from a particular backup."""

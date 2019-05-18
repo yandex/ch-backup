@@ -4,8 +4,7 @@ Steps for interacting with S3.
 
 from behave import given
 
-from tests.integration.modules.minio import (configure_s3_credentials,
-                                             create_s3_bucket)
+from tests.integration.modules.minio import (configure_s3_credentials, create_s3_bucket)
 
 
 @given('a working s3')

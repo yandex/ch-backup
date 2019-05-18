@@ -11,11 +11,9 @@ from typing import Any, Callable, Dict, List, Sequence, Tuple
 
 from .. import logging
 from .stages.encryption import DecryptStage, EncryptStage
-from .stages.filesystem import (CollectDataStage, DeleteFileStage,
-                                ReadDataStage, ReadFileStage, WriteFileStage)
-from .stages.storage import (DeleteMultipleStorageStage, DeleteStorageStage,
-                             DownloadStorageStage, UploadDataStorageStage,
-                             UploadFileStorageStage)
+from .stages.filesystem import (CollectDataStage, DeleteFileStage, ReadDataStage, ReadFileStage, WriteFileStage)
+from .stages.storage import (DeleteMultipleStorageStage, DeleteStorageStage, DownloadStorageStage,
+                             UploadDataStorageStage, UploadFileStorageStage)
 
 
 class Pipeline:
@@ -71,13 +69,11 @@ class ExecPool:
         """
         self._pool.shutdown(wait=graceful)
 
-    def submit(self, future_id: str, func: Callable, *args: Any,
-               **kwargs: Any) -> None:
+    def submit(self, future_id: str, func: Callable, *args: Any, **kwargs: Any) -> None:
         """
         Schedule job for execution
         """
-        self._futures[future_id] = \
-            self._pool.submit(func, *args, **kwargs)
+        self._futures[future_id] = self._pool.submit(func, *args, **kwargs)
 
     def wait_all(self) -> None:
         """
@@ -90,18 +86,14 @@ class ExecPool:
             try:
                 future_result = future.result()
             except Exception:
-                logging.error('Future "%s" generated an exception:',
-                              future_id,
-                              exc_info=True)
+                logging.error('Future "%s" generated an exception:', future_id, exc_info=True)
                 raise
             else:
-                logging.debug('Future "%s" returned: %s', future_id,
-                              future_result)
+                logging.debug('Future "%s" returned: %s', future_id, future_result)
         self._futures = {}
 
 
-def pipeline_wrapper(config: dict, stages: Sequence, *args: Any,
-                     **kwargs: Any) -> Any:
+def pipeline_wrapper(config: dict, stages: Sequence, *args: Any, **kwargs: Any) -> Any:
     """
     Build and execute pipeline.
     """
@@ -140,13 +132,10 @@ class PipelineLoader:
         # we have to create pipelines inside running job, because
         # multiproc futures must be pickable, but boto3 is not pickable
         # https://github.com/boto/botocore/issues/636
-        pipeline_runner = partial(pipeline_wrapper, self._config, stages,
-                                  *args)
+        pipeline_runner = partial(pipeline_wrapper, self._config, stages, *args)
 
         if is_async and self._exec_pool:
-            job_id = "{id}({args})".format(id=id_tuple[0],
-                                           args=', '.join(
-                                               map(repr, id_tuple[1:])))
+            job_id = "{id}({args})".format(id=id_tuple[0], args=', '.join(map(repr, id_tuple[1:])))
 
             return self._exec_pool.submit(job_id, pipeline_runner)
 
@@ -156,10 +145,8 @@ class PipelineLoader:
         """
         Upload given bytes or file-like object.
         """
-        return self._execute_pipeline(
-            (self.upload_data.__name__, '<data>', *args),
-            (ReadDataStage, EncryptStage, UploadDataStorageStage), data, *args,
-            **kwargs)
+        return self._execute_pipeline((self.upload_data.__name__, '<data>', *args),
+                                      (ReadDataStage, EncryptStage, UploadDataStorageStage), data, *args, **kwargs)
 
     def upload_file(self, *args, delete, **kwargs):
         """
@@ -169,40 +156,33 @@ class PipelineLoader:
         if delete:
             stages.append(DeleteFileStage)
 
-        self._execute_pipeline((self.upload_file.__name__, *args), stages,
-                               *args, **kwargs)
+        self._execute_pipeline((self.upload_file.__name__, *args), stages, *args, **kwargs)
 
     def download_data(self, *args, **kwargs):
         """
         Download file from storage and return its content as a string.
         """
-        return self._execute_pipeline(
-            (self.download_data.__name__, *args),
-            (DownloadStorageStage, DecryptStage, CollectDataStage), *args,
-            **kwargs)
+        return self._execute_pipeline((self.download_data.__name__, *args),
+                                      (DownloadStorageStage, DecryptStage, CollectDataStage), *args, **kwargs)
 
     def download_file(self, *args, **kwargs):
         """
         Download file to local filesystem.
         """
-        self._execute_pipeline(
-            (self.download_file.__name__, *args),
-            (DownloadStorageStage, DecryptStage, WriteFileStage), *args,
-            **kwargs)
+        self._execute_pipeline((self.download_file.__name__, *args),
+                               (DownloadStorageStage, DecryptStage, WriteFileStage), *args, **kwargs)
 
     def delete_file(self, *args, **kwargs):
         """
         Delete file from storage.
         """
-        return self._execute_pipeline((self.delete_file.__name__, *args),
-                                      (DeleteStorageStage, ), *args, **kwargs)
+        return self._execute_pipeline((self.delete_file.__name__, *args), (DeleteStorageStage, ), *args, **kwargs)
 
     def delete_files(self, *args, **kwargs):
         """
         Delete files from storage.
         """
-        return self._execute_pipeline((self.delete_files.__name__, *args),
-                                      (DeleteMultipleStorageStage, ), *args,
+        return self._execute_pipeline((self.delete_files.__name__, *args), (DeleteMultipleStorageStage, ), *args,
                                       **kwargs)
 
     def wait(self) -> None:

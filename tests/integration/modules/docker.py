@@ -36,8 +36,7 @@ def get_container(context: ContextT, prefix: str) -> Container:
     """
     Get container object by prefix.
     """
-    return DOCKER_API.containers.get(
-        '%s.%s' % (prefix, context.conf['network_name']))
+    return DOCKER_API.containers.get('%s.%s' % (prefix, context.conf['network_name']))
 
 
 def get_exposed_port(container: Container, port: int) -> Tuple[str, int]:
@@ -49,8 +48,7 @@ def get_exposed_port(container: Container, port: int) -> Tuple[str, int]:
 
     binding = container.attrs['NetworkSettings']['Ports'].get('%d/tcp' % port)
     if not binding:
-        raise RuntimeError('Container {0} has no binding for port {1}'.format(
-            container.name, port))
+        raise RuntimeError('Container {0} has no binding for port {1}'.format(container.name, port))
 
     return host, binding[0]['HostPort']
 
@@ -69,8 +67,7 @@ def put_file(container: Container, data: bytes, path: str) -> None:
     container.put_archive(path='/', data=tarstream.getvalue())
 
 
-def copy_container_dir(container: Container, container_dir: str,
-                       local_dir: str) -> None:
+def copy_container_dir(container: Container, container_dir: str, local_dir: str) -> None:
     """
     Save docker directory.
     """
@@ -116,9 +113,7 @@ def prep_images(context: ContextT) -> None:
     """
     images_dir = context.conf['images_dir']
     staging_dir = context.conf['staging_dir']
-    dir_util.copy_tree(images_dir,
-                       '{0}/images'.format(staging_dir),
-                       update=True)
+    dir_util.copy_tree(images_dir, '{0}/images'.format(staging_dir), update=True)
 
 
 @utils.env_stage('create', fail=True)
@@ -133,10 +128,8 @@ def create_network(context: ContextT) -> None:
     if DOCKER_API.networks.list(names='^%s$' % conf['network_name']):
         return
     ip_subnet_pool = docker.types.IPAMConfig(pool_configs=[
-        docker.types.IPAMPool(
-            subnet=generate_ipv4(conf.get('docker_ip4_subnet'))),
-        docker.types.IPAMPool(
-            subnet=generate_ipv6(conf.get('docker_ip6_subnet'))),
+        docker.types.IPAMPool(subnet=generate_ipv4(conf.get('docker_ip4_subnet'))),
+        docker.types.IPAMPool(subnet=generate_ipv6(conf.get('docker_ip6_subnet'))),
     ])
     net_name = conf['network_name']
     net_opts = {
@@ -144,10 +137,7 @@ def create_network(context: ContextT) -> None:
         'com.docker.network.bridge.enable_icc': 'true',
         'com.docker.network.bridge.name': net_name,
     }
-    DOCKER_API.networks.create(net_name,
-                               options=net_opts,
-                               enable_ipv6=True,
-                               ipam=ip_subnet_pool)
+    DOCKER_API.networks.create(net_name, options=net_opts, enable_ipv6=True, ipam=ip_subnet_pool)
 
 
 @utils.env_stage('stop', fail=False)

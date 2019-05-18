@@ -106,8 +106,7 @@ class FreezedPart(SimpleNamespace):
     Freezed data part.
     """
 
-    def __init__(self, database: str, table: str, name: str, path: str,
-                 checksum: str, size: int):
+    def __init__(self, database: str, table: str, name: str, path: str, checksum: str, size: int):
         super().__init__()
         self.database = database
         self.table = table
@@ -130,8 +129,7 @@ class ClickhouseCTL:
         self._shadow_data_path = os.path.join(root_data_path, 'shadow')
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
 
-    def chown_detached_table_parts(self, db_name: str,
-                                   table_name: str) -> None:
+    def chown_detached_table_parts(self, db_name: str, table_name: str) -> None:
         """
         Change permissions (owner and group) of detached data parts for the
         specified table. New values for permissions are taken from the config.
@@ -139,20 +137,16 @@ class ClickhouseCTL:
         detached_path = self._get_table_detached_path(db_name, table_name)
         self._chown_dir(detached_path)
 
-    def attach_part(self, db_name: str, table_name: str,
-                    part_name: str) -> None:
+    def attach_part(self, db_name: str, table_name: str, part_name: str) -> None:
         """
         Attach data part to the specified table.
         """
-        query_sql = PART_ATTACH_SQL.format(db_name=db_name,
-                                           table_name=table_name,
-                                           part_name=part_name)
+        query_sql = PART_ATTACH_SQL.format(db_name=db_name, table_name=table_name, part_name=part_name)
 
         logging.debug('Attaching partition: %s', query_sql)
         self._ch_client.query(query_sql)
 
-    def freeze_table(self, db_name: str,
-                     table_name: str) -> Sequence[FreezedPart]:
+    def freeze_table(self, db_name: str, table_name: str) -> Sequence[FreezedPart]:
         """
         Make snapshot of the specified table.
         """
@@ -173,8 +167,7 @@ class ClickhouseCTL:
         """
         self._remove_shadow_data(part.path)
 
-    def get_all_databases(self, exclude_dbs: Optional[Sequence[str]] = None) \
-            -> Sequence[str]:
+    def get_all_databases(self, exclude_dbs: Optional[Sequence[str]] = None) -> Sequence[str]:
         """
         Get list of all databases
         """
@@ -184,10 +177,7 @@ class ClickhouseCTL:
         result: List[str] = []
         ch_resp = self._ch_client.query(SHOW_DATABASES_SQL)
         if 'data' in ch_resp:
-            result = [
-                row['name'] for row in ch_resp['data']
-                if row['name'] not in exclude_dbs
-            ]
+            result = [row['name'] for row in ch_resp['data'] if row['name'] not in exclude_dbs]
 
         return result
 
@@ -204,8 +194,7 @@ class ClickhouseCTL:
         """
         Return True if the specified table exists.
         """
-        query_sql = CHECK_TABLE_SQL.format(db_name=db_name,
-                                           table_name=table_name)
+        query_sql = CHECK_TABLE_SQL.format(db_name=db_name, table_name=table_name)
         return bool(int(self._ch_client.query(query_sql)))
 
     def get_database_schema(self, db_name: str) -> str:
@@ -219,20 +208,15 @@ class ClickhouseCTL:
         """
         Return table schema (CREATE TABLE query).
         """
-        query_sql = SHOW_CREATE_TABLE_SQL.format(db_name=db_name,
-                                                 table_name=table_name)
+        query_sql = SHOW_CREATE_TABLE_SQL.format(db_name=db_name, table_name=table_name)
         return self._ch_client.query(query_sql)
 
-    def get_tables_ordered(self,
-                           db_name: str,
-                           tables: Optional[Sequence[str]] = None) \
-            -> Sequence[str]:
+    def get_tables_ordered(self, db_name: str, tables: Optional[Sequence[str]] = None) -> Sequence[str]:
         """
         Get ordered by mtime list of all database tables
         """
         result: List[str] = []
-        query_sql = GET_TABLES_ORDERED_SQL.format(db_name=db_name,
-                                                  tables=tables or [])
+        query_sql = GET_TABLES_ORDERED_SQL.format(db_name=db_name, tables=tables or [])
         logging.debug('Fetching all %s tables ordered: %s', db_name, query_sql)
         ch_resp = self._ch_client.query(query_sql)
         if 'data' in ch_resp:
@@ -243,8 +227,7 @@ class ClickhouseCTL:
         """
         Get dict with all table parts
         """
-        query_sql = GET_TABLE_PARTITIONS_SQL.format(db_name=database,
-                                                    table_name=table)
+        query_sql = GET_TABLE_PARTITIONS_SQL.format(db_name=database, table_name=table)
         logging.debug('Fetching all %s table parts: %s', database, query_sql)
 
         data = self._ch_client.query(query_sql)['data']
@@ -257,13 +240,11 @@ class ClickhouseCTL:
         logging.debug('Restoring meta sql: %s', query_sql)
         self._ch_client.query(query_sql)
 
-    def get_detached_part_path(self, db_name: str, table_name: str,
-                               part_name: str) -> str:
+    def get_detached_part_path(self, db_name: str, table_name: str, part_name: str) -> str:
         """
         Get filesystem absolute path to detached data part.
         """
-        return os.path.join(self._get_table_detached_path(db_name, table_name),
-                            part_name)
+        return os.path.join(self._get_table_detached_path(db_name, table_name), part_name)
 
     def get_version(self) -> str:
         """
@@ -271,30 +252,26 @@ class ClickhouseCTL:
         """
         return self._ch_version
 
-    def _freeze_table(self, db_name: str,
-                      table_name: str) -> Sequence[FreezedPart]:
+    def _freeze_table(self, db_name: str, table_name: str) -> Sequence[FreezedPart]:
         """
         Implementation of freeze_table function using FREEZE command syntax for
         the whole table that is available starting from the version 18.16.
         """
-        query_sql = FREEZE_TABLE_SQL.format(db_name=db_name,
-                                            table_name=table_name)
+        query_sql = FREEZE_TABLE_SQL.format(db_name=db_name, table_name=table_name)
 
         self._ch_client.query(query_sql)
 
         return self._get_freezed_parts(db_name, table_name)
 
-    def _freeze_table_compat(self, db_name: str,
-                             table_name: str) -> Sequence[FreezedPart]:
+    def _freeze_table_compat(self, db_name: str, table_name: str) -> Sequence[FreezedPart]:
         """
         Implementation of freeze_table function for versions prior to 18.16.
         """
         freezed_parts: List[FreezedPart] = []
         for partition in self.get_partitions(db_name, table_name):
-            query_sql = FREEZE_PARTITION_SQL.format(
-                db_name=db_name,
-                table_name=table_name,
-                partition_name=partition.name)
+            query_sql = FREEZE_PARTITION_SQL.format(db_name=db_name,
+                                                    table_name=table_name,
+                                                    partition_name=partition.name)
 
             self._ch_client.query(query_sql)
 
@@ -302,11 +279,9 @@ class ClickhouseCTL:
 
         return freezed_parts
 
-    def _get_freezed_parts(self, db_name: str,
-                           table_name: str) -> Sequence[FreezedPart]:
+    def _get_freezed_parts(self, db_name: str, table_name: str) -> Sequence[FreezedPart]:
 
-        path = os.path.join(self._shadow_data_path,
-                            self._get_shadow_increment(), 'data',
+        path = os.path.join(self._shadow_data_path, self._get_shadow_increment(), 'data',
                             self._get_table_data_relpath(db_name, table_name))
 
         if not os.path.exists(path):
@@ -318,30 +293,24 @@ class ClickhouseCTL:
             part_path = os.path.join(path, part)
             checksum = self._get_part_checksum(part_path)
             size = self._get_part_size(part_path)
-            freezed_parts.append(
-                FreezedPart(db_name, table_name, part, part_path, checksum,
-                            size))
+            freezed_parts.append(FreezedPart(db_name, table_name, part, part_path, checksum, size))
 
         return freezed_parts
 
     def _get_table_data_path(self, db_name: str, table_name: str) -> str:
-        query_sql = GET_TABLE_DATA_PATH_SQL.format(db_name=db_name,
-                                                   table_name=table_name)
+        query_sql = GET_TABLE_DATA_PATH_SQL.format(db_name=db_name, table_name=table_name)
         return self._ch_client.query(query_sql)
 
     def _get_table_data_relpath(self, db_name: str, table_name: str) -> str:
-        return os.path.relpath(self._get_table_data_path(db_name, table_name),
-                               self._data_path)
+        return os.path.relpath(self._get_table_data_path(db_name, table_name), self._data_path)
 
     def _get_table_detached_path(self, db_name: str, table_name: str) -> str:
-        return os.path.join(self._get_table_data_path(db_name, table_name),
-                            'detached')
+        return os.path.join(self._get_table_data_path(db_name, table_name), 'detached')
 
     def _chown_dir(self, dir_path: str) -> None:
         assert dir_path.startswith(self._data_path)
 
-        chown_dir_contents(self._config['user'], self._config['group'],
-                           dir_path)
+        chown_dir_contents(self._config['user'], self._config['group'], dir_path)
 
     @retry(OSError)
     def _remove_shadow_data(self, path: str) -> None:

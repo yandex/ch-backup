@@ -55,11 +55,9 @@ class TestBackupMetadata:
         assert backup.state == BackupState(meta['state'])
         date_fmt = meta['date_fmt']
         assert backup.date_fmt == date_fmt
-        assert backup.start_time == datetime.strptime(meta['start_time'],
-                                                      date_fmt)
+        assert backup.start_time == datetime.strptime(meta['start_time'], date_fmt)
         end_time_str = meta['end_time']
-        end_time = datetime.strptime(end_time_str,
-                                     date_fmt) if end_time_str else None
+        end_time = datetime.strptime(end_time_str, date_fmt) if end_time_str else None
         assert backup.end_time == end_time
         assert backup.size == meta['bytes']
         assert backup.real_size == meta['real_bytes']

@@ -83,9 +83,8 @@ def tmp_dir_path(dir_path=None):
         'type': st.just('nacl'),
         'key': st.just(SECRET_KEY),
     }),
-    write_conf=st.fixed_dictionaries(
-        {key: st.integers(1, 1024)
-         for key in ('buffer_size', 'chunk_size')}),
+    write_conf=st.fixed_dictionaries({key: st.integers(1, 1024)
+                                      for key in ('buffer_size', 'chunk_size')}),
 )
 @example(
     file_size=1024,
@@ -110,14 +109,11 @@ def tmp_dir_path(dir_path=None):
         'chunk_size': 256,
     },
 )
-def test_pipeline_roundtrip(tmp_dir_path, file_size, read_conf, encrypt_conf,
-                            write_conf):
+def test_pipeline_roundtrip(tmp_dir_path, file_size, read_conf, encrypt_conf, write_conf):
     """
     Pipeline
     """
-    with tempfile.NamedTemporaryFile(
-        mode='wb', prefix='test_file_', dir=tmp_dir_path, delete=False)\
-            as orig_fobj:
+    with tempfile.NamedTemporaryFile(mode='wb', prefix='test_file_', dir=tmp_dir_path, delete=False) as orig_fobj:
         test_stream = get_test_stream(file_size)
         test_stream.seek(0)
         orig_fobj.write(test_stream.read())
@@ -126,18 +122,14 @@ def test_pipeline_roundtrip(tmp_dir_path, file_size, read_conf, encrypt_conf,
     forward_file_path = original_file_path + '-forward'
     backward_file_name = original_file_path + '-backward'
 
-    run_forward_pl(original_file_path, forward_file_path, read_conf,
-                   encrypt_conf, write_conf)
-    run_backward_pl(forward_file_path, backward_file_name, read_conf,
-                    encrypt_conf, write_conf)
+    run_forward_pl(original_file_path, forward_file_path, read_conf, encrypt_conf, write_conf)
+    run_backward_pl(forward_file_path, backward_file_name, read_conf, encrypt_conf, write_conf)
 
-    with open(original_file_path, 'rb') as orig_fobj,\
-            open(backward_file_name, 'rb') as res_fobj:
+    with open(original_file_path, 'rb') as orig_fobj, open(backward_file_name, 'rb') as res_fobj:
         orig_contents = orig_fobj.read()
         res_contents = res_fobj.read()
 
-        assert orig_contents.decode() == res_contents.decode(),\
-            'Equal contents expected'
+        assert orig_contents.decode() == res_contents.decode(), 'Equal contents expected'
 
         orig_md5sum = hashlib.md5(orig_contents).digest()
         res_md5sum = hashlib.md5(res_contents).digest()
@@ -145,8 +137,7 @@ def test_pipeline_roundtrip(tmp_dir_path, file_size, read_conf, encrypt_conf,
         assert orig_md5sum == res_md5sum, 'Equal md5sum of contents expected'
 
 
-def run_forward_pl(in_file_name, out_file_name, read_conf, encrypt_conf,
-                   write_conf):
+def run_forward_pl(in_file_name, out_file_name, read_conf, encrypt_conf, write_conf):
     """
     Creates and executes forward pipeline
     """
@@ -160,8 +151,7 @@ def run_forward_pl(in_file_name, out_file_name, read_conf, encrypt_conf,
     return pipeline(in_file_name, out_file_name)
 
 
-def run_backward_pl(in_file_name, out_file_name, read_conf, encrypt_conf,
-                    write_conf):
+def run_backward_pl(in_file_name, out_file_name, read_conf, encrypt_conf, write_conf):
     """
     Creates and executes backward pipeline
     """
@@ -206,8 +196,7 @@ def test_nacl_ecrypt_decrypt(incoming_stream_size, incoming_chunk_size, conf):
         encrypted_stream.write(chunk)
 
     encrypted_stream.seek(0)
-    for chunk in decrypt_cmd(partial(stream_iter, encrypted_stream), None,
-                             None):
+    for chunk in decrypt_cmd(partial(stream_iter, encrypted_stream), None, None):
         decrypted_stream.write(chunk)
 
     test_stream.seek(0)
@@ -220,12 +209,9 @@ def test_nacl_ecrypt_decrypt(incoming_stream_size, incoming_chunk_size, conf):
 @example(791, 28, {'buffer_size': 562, 'chunk_size': 211})
 @given(incoming_stream_size=st.integers(1, 1024),
        incoming_chunk_size=st.integers(1, 1024),
-       conf=st.fixed_dictionaries({
-           key: st.integers(1, 1024)
-           for key in ('buffer_size', 'chunk_size')
-       }))
-def test_write_file_cmd(monkeypatch, incoming_stream_size, incoming_chunk_size,
-                        conf):
+       conf=st.fixed_dictionaries({key: st.integers(1, 1024)
+                                   for key in ('buffer_size', 'chunk_size')}))
+def test_write_file_cmd(monkeypatch, incoming_stream_size, incoming_chunk_size, conf):
     """
     Tests write file stage
     """
