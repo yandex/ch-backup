@@ -8,7 +8,7 @@ from datetime import timedelta
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ch_backup import logging
-from ch_backup.backup.layout import ClickhouseBackupLayout
+from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, BackupState, PartMetadata
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.control import ClickhouseCTL, FreezedPart
@@ -25,7 +25,7 @@ class ClickhouseBackup:
 
     def __init__(self, config: Config) -> None:
         self._ch_ctl = ClickhouseCTL(config['clickhouse'])
-        self._backup_layout = ClickhouseBackupLayout(config)
+        self._backup_layout = BackupLayout(config)
         self._config = config['backup']
 
     def get(self, backup_name: str) -> BackupMetadata:
@@ -107,7 +107,7 @@ class ClickhouseBackup:
             version=get_version(),
             ch_version=self._ch_ctl.get_version())
 
-        self._backup_layout.save_backup_meta(backup_meta)
+        self._backup_layout.upload_backup_metadata(backup_meta)
 
         logging.debug('Starting backup "%s" for databases: %s',
                       backup_meta.name, ', '.join(databases))
@@ -123,7 +123,7 @@ class ClickhouseBackup:
             raise
         finally:
             backup_meta.update_end_time()
-            self._backup_layout.save_backup_meta(backup_meta)
+            self._backup_layout.upload_backup_metadata(backup_meta)
 
             if not self._config.get('keep_freezed_data_on_failure'):
                 self._ch_ctl.remove_freezed_data()
@@ -209,7 +209,7 @@ class ClickhouseBackup:
             part = self._deduplicate_part(fpart, dedup_backups)
             if not part:
                 logging.debug('Backing up part "%s"', fpart.name)
-                part = self._backup_layout.save_data_part(
+                part = self._backup_layout.upload_data_part(
                     backup_meta.name, fpart)
             else:
                 self._ch_ctl.remove_freezed_part(fpart)
@@ -259,7 +259,7 @@ class ClickhouseBackup:
                          'settings.'
 
         backup.state = BackupState.DELETING
-        self._backup_layout.save_backup_meta(backup)
+        self._backup_layout.upload_backup_metadata(backup)
 
         try:
             # delete whole backup prefix if backup entry is empty
@@ -288,7 +288,7 @@ class ClickhouseBackup:
             logging.debug('Waiting for completion of storage operations')
             self._backup_layout.wait()
             if not is_empty:
-                self._backup_layout.save_backup_meta(backup)
+                self._backup_layout.upload_backup_metadata(backup)
 
     def purge(self) -> Tuple[Sequence[str], Optional[str]]:
         """
@@ -351,8 +351,8 @@ class ClickhouseBackup:
         """
         logging.debug('Making database schema backup for "%s"', db_name)
         schema = self._ch_ctl.get_database_schema(db_name)
-        self._backup_layout.save_database_meta(backup_meta.name, db_name,
-                                               schema)
+        self._backup_layout.upload_database_metadata(backup_meta.name, db_name,
+                                                     schema)
 
     def _backup_table_meta(self, backup_meta: BackupMetadata, db_name: str,
                            table_name: str) -> None:
@@ -364,8 +364,8 @@ class ClickhouseBackup:
 
         schema = self._ch_ctl.get_table_schema(db_name, table_name)
 
-        self._backup_layout.save_table_meta(backup_meta.name, db_name,
-                                            table_name, schema)
+        self._backup_layout.upload_table_metadata(backup_meta.name, db_name,
+                                                  table_name, schema)
 
     def _restore_database_schema(self, db_name: str,
                                  backup_meta: BackupMetadata) -> None:
@@ -374,12 +374,12 @@ class ClickhouseBackup:
         """
         logging.debug('Running database schema restore: %s', db_name)
 
-        db_sql = self._backup_layout.download_database_meta(
+        db_sql = self._backup_layout.get_database_metadata(
             backup_meta, db_name)
         self._ch_ctl.restore_meta(db_sql)
 
         for table_name in backup_meta.get_tables(db_name):
-            table_sql = self._backup_layout.download_table_meta(
+            table_sql = self._backup_layout.get_table_metadata(
                 backup_meta, db_name, table_name)
             self._ch_ctl.restore_meta(table_sql)
 
@@ -462,7 +462,7 @@ class ClickhouseBackup:
         return None
 
     def _get_backup(self, backup_name: str) -> BackupMetadata:
-        backup = self._backup_layout.get_backup_meta(backup_name)
+        backup = self._backup_layout.get_backup_metadata(backup_name)
         if not backup:
             raise BackupNotFound(backup_name)
 
@@ -479,7 +479,7 @@ class ClickhouseBackup:
         result = []
         for name in self._backup_layout.get_backup_names():
             try:
-                backup = self._backup_layout.get_backup_meta(name)
+                backup = self._backup_layout.get_backup_metadata(name)
                 result.append((name, backup))
             except Exception:
                 logging.exception('Failed to load metadata for backup %s',
