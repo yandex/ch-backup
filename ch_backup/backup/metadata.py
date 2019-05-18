@@ -282,7 +282,7 @@ class BackupMetadata:
         db = self._databases[db_name]
         # TODO: remove backward-compatibility logic
         if 'parts_paths' in db:
-            parts = db['parts_paths'][table_name]
+            parts = db['parts_paths'].get(table_name, {})
         else:
             parts = db['tables'][table_name]['parts']
 
