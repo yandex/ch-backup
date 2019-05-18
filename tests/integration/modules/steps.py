@@ -15,5 +15,7 @@ def get_step_data(context: ContextT) -> Any:
     Return step data deserialized from YAML representation and processed by
     template engine.
     """
-    return yaml.load(render_template(context,
-                                     context.text)) if context.text else {}
+    if not context.text:
+        return {}
+
+    return yaml.load(render_template(context, context.text), yaml.SafeLoader)

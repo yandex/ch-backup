@@ -205,9 +205,9 @@ class BackupManager:
         """
         Apply new config to old one
         """
-        conf = yaml.load(
-            self._container.exec_run('/bin/cat {0}'.format(self._config_path),
-                                     user='root').output.decode())
+        output = self._container.exec_run(f'/bin/cat {self._config_path}',
+                                          user='root').output.decode()
+        conf = yaml.load(output, yaml.SafeLoader)
 
         utils.merge(conf, update)
         docker.put_file(

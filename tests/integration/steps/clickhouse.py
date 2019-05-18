@@ -73,7 +73,7 @@ def step_same_clickhouse_data(context, nodes):
 
 @then('{node1:w} has the subset of {node2:w} data')
 def step_has_subset_data(context, node1, node2):
-    options = yaml.load(context.text)
+    options = yaml.load(context.text, yaml.SafeLoader)
     tables = options['tables']
 
     node_data = {}
