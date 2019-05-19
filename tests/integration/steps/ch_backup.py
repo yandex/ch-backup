@@ -84,7 +84,7 @@ def step_check_backups_conditions(context, node):
 
         # check that all backup's files exist
         missed_paths = ch_backup.get_missed_paths(backup.name)
-        assert_that(missed_paths, equal_to([]), '{0} missed files were found'.format(len(missed_paths)))
+        assert_that(missed_paths, equal_to([]), f'{len(missed_paths)} missed files were found')
 
         # check backup properties
         for attr in context.table.headings:

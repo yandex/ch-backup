@@ -17,11 +17,12 @@ def create():
     Create test configuration (non-idempotent function).
     """
     # Docker network name. Also used as a project and domain name.
-    network_name = 'test_net_{0}'.format(random.randint(0, 4096))
+    network_suffix = random.randint(0, 4096)
+    network_name = f'test_net_{network_suffix}'
 
     s3 = {
         'container': 'minio01',
-        'host': 'minio01.{0}'.format(network_name),
+        'host': f'minio01.{network_name}',
         'bucket': 'ch-backup',
         'port': 9000,
         'endpoint': 'http://minio:9000',
@@ -36,8 +37,6 @@ def create():
     config = {
         'images_dir': 'images',
         'staging_dir': 'staging',
-        'docker_ip4_subnet': '10.%s.0/24',
-        'docker_ip6_subnet': 'fd00:dead:beef:%s::/96',
         'network_name': network_name,
         's3': s3,
         'ch_backup': {
@@ -59,7 +58,7 @@ def create():
                 },
                 'volumes': ['../:/code:rw'],
                 'docker_instances': 2,
-                'external_links': ['{0}:minio'.format(s3['host'])],
+                'external_links': [f'{s3["host"]}:minio'],
                 'args': {
                     'CLICKHOUSE_VERSION': '$CLICKHOUSE_VERSION',
                 },

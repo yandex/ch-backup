@@ -87,7 +87,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
         remote_path = remote_path.lstrip('/')
         contents = []
         paginator = self._s3_client.get_paginator('list_objects')
-        list_object_kwargs = dict(Bucket=self._s3_bucket_name, Prefix='{s3_path}/'.format(s3_path=remote_path))
+        list_object_kwargs = dict(Bucket=self._s3_bucket_name, Prefix=f'{remote_path}/')
         if not recursive:
             list_object_kwargs['Delimiter'] = '/'
 
@@ -166,7 +166,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
 
         resp = self._s3_client.get_object(Bucket=self._s3_bucket_name, Key=remote_path)
 
-        download_id = '{key}_{time}'.format(key=remote_path, time=time.time())
+        download_id = f'{remote_path}_{time.time()}'
         self._multipart_downloads[download_id] = resp
         return download_id
 

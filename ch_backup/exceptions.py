@@ -33,7 +33,7 @@ class BackupNotFound(ClickhouseBackupError):
     """
 
     def __init__(self, name):
-        super().__init__('Backup {0} not found.'.format(name))
+        super().__init__(f'Backup {name} not found.')
 
 
 class InvalidBackupStruct(ClickhouseBackupError):

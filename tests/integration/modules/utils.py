@@ -3,7 +3,6 @@ Utility functions.
 """
 
 import logging
-import re
 import string
 from functools import wraps
 from random import choice as random_choise
@@ -53,7 +52,7 @@ def env_stage(event, fail=False):
     def wrapper(fun):
         @wraps(fun)
         def _wrapped_fun(*args, **kwargs):
-            stage_name = '{0}.{1}'.format(fun.__module__, fun.__name__)
+            stage_name = f'{fun.__module__}.{fun.__name__}'
             logging.info('initiating %s stage %s', event, stage_name)
             try:
                 return fun(*args, **kwargs)
@@ -65,13 +64,6 @@ def env_stage(event, fail=False):
         return _wrapped_fun
 
     return wrapper
-
-
-def strip_query(query_text: str) -> str:
-    """
-    Remove query without newlines and duplicate whitespaces.
-    """
-    return re.sub(r'\s{2,}', ' ', query_text.replace('\n', ' ')).strip()
 
 
 def generate_random_string(length: int = 64) -> str:

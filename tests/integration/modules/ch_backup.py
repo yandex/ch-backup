@@ -141,8 +141,8 @@ class BackupManager:
         self._container = docker.get_container(context, node_name)
         self._s3_client = s3.S3Client(context)
         self._config_path = CH_BACKUP_CONF_PATH
-        self._cmd_base = '{0} --protocol {1} --insecure  --config {2}'.format(
-            CH_BACKUP_CLI_PATH, context.ch_backup['protocol'], self._config_path)
+        protocol = context.ch_backup['protocol']
+        self._cmd_base = f'{CH_BACKUP_CLI_PATH} --protocol {protocol} --insecure  --config {self._config_path}'
 
     def backup(self,
                name: str = None,
@@ -155,24 +155,24 @@ class BackupManager:
         """
         options = []
         if name:
-            options.append('--name {0}'.format(name))
+            options.append(f'--name {name}')
         if force:
             options.append('--force')
         if databases:
-            options.append('--databases {0}'.format(','.join(databases or [])))
+            options.append(f'--databases {",".join(databases or [])}')
         if tables:
-            options.append('--tables {0}'.format(','.join(tables or [])))
+            options.append(f'--tables {",".join(tables or [])}')
         for key, value in (labels or {}).items():
-            options.append('--label {0}={1}'.format(key, value))
+            options.append(f'--label {key}={value}')
 
-        return self._exec('backup {0}'.format(' '.join(options))).strip()
+        return self._exec(f'backup {" ".join(options)}').strip()
 
     def delete(self, backup_id: BackupId) -> str:
         """
         Execute delete command.
         """
         backup_id = self._normalize_id(backup_id)
-        return self._exec('delete {0}'.format(backup_id))
+        return self._exec(f'delete {backup_id}')
 
     def purge(self) -> str:
         """
@@ -229,7 +229,7 @@ class BackupManager:
         Get backup entry metadata.
         """
         backup_id = self._normalize_id(backup_id)
-        output = self._exec('show {0}'.format(backup_id))
+        output = self._exec(f'show {backup_id}')
         return Backup(json.loads(output))
 
     def restore(self, backup_id: BackupId, schema_only: bool = False) -> str:
@@ -240,10 +240,10 @@ class BackupManager:
         options = []
         if schema_only:
             options.append('--schema-only')
-        return self._exec('restore {0} {1}'.format(' '.join(options), backup_id))
+        return self._exec(f'restore {" ".join(options)} {backup_id}')
 
     def _exec(self, command: str) -> str:
-        cmd = '{0} {1}'.format(self._cmd_base, command)
+        cmd = f'{self._cmd_base} {command}'
         result = self._container.exec_run(cmd, user='root')
         return result.output.decode().strip()
 

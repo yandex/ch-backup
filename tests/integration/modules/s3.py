@@ -27,7 +27,7 @@ class S3Client:
         host, port = docker.get_exposed_port(docker.get_container(context, context.conf['s3']['container']),
                                              context.conf['s3']['port'])
 
-        endpoint_url = 'http://{0}:{1}'.format(host, port)
+        endpoint_url = f'http://{host}:{port}'
         self._s3_client = self._s3_session.client(
             service_name='s3',
             endpoint_url=endpoint_url,

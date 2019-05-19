@@ -26,4 +26,4 @@ def get_storage_engine(config):
     try:
         return SUPPORTED_STORAGES[engine_id](config)
     except KeyError:
-        raise ConfigurationError('Unknown storage "{0}"'.format(engine_id))
+        raise ConfigurationError(f'Unknown storage "{engine_id}"')

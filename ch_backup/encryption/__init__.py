@@ -17,4 +17,4 @@ def get_encryption(type_id, config):
     try:
         return SUPPORTED_CRYPTO[type_id](config)
     except KeyError:
-        raise UnknownEncryptionError('Unknown encryption type "{type_id}"'.format(type_id=type_id))
+        raise UnknownEncryptionError(f'Unknown encryption type "{type_id}"')

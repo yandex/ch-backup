@@ -135,7 +135,8 @@ class PipelineLoader:
         pipeline_runner = partial(pipeline_wrapper, self._config, stages, *args)
 
         if is_async and self._exec_pool:
-            job_id = "{id}({args})".format(id=id_tuple[0], args=', '.join(map(repr, id_tuple[1:])))
+            job_args = ', '.join(map(repr, id_tuple[1:]))
+            job_id = f'{id_tuple[0]}({job_args})'
 
             return self._exec_pool.submit(job_id, pipeline_runner)
 

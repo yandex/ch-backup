@@ -30,7 +30,7 @@ class ClickhouseClient:
         self._session.verify = True if ca_path is None else ca_path
         # pylint: disable=no-member
         requests.packages.urllib3.disable_warnings()
-        self._url = '{0}://{1}:{2}'.format(protocol, host, port)
+        self._url = f'{protocol}://{host}:{port}'
         self._timeout = config['timeout']
 
     @retry(requests.exceptions.ConnectionError)

@@ -68,22 +68,14 @@ def _write_config(path: str, compose_conf: dict) -> None:
     """
     catalog_name = os.path.dirname(path)
     os.makedirs(catalog_name, exist_ok=True)
-    temp_file_path = '{dir}/.docker-compose-conftest-{num}.yaml'.format(
-        dir=catalog_name,
-        num=random.randint(0, 100),
-    )
+    temp_file_path = f'{catalog_name}/.docker-compose-conftest-{random.randint(0, 100)}.yaml'
     with open(temp_file_path, 'w') as conf_file:
-        yaml.dump(
-            compose_conf,
-            stream=conf_file,
-            default_flow_style=False,
-            indent=4,
-        )
+        yaml.dump(compose_conf, stream=conf_file, default_flow_style=False, indent=4)
     try:
         _validate_config(temp_file_path)
         os.rename(temp_file_path, path)
     except subprocess.CalledProcessError as err:
-        raise RuntimeError('unable to write config: validation failed with %s' % err)
+        raise RuntimeError(f'Unable to write config: validation failed with {err}')
 
     # Remove config only if validated ok.
     try:
@@ -125,7 +117,7 @@ def _generate_compose_config(config: dict) -> dict:
         # This num is also used in hostnames, later in
         # generate_service_dict()
         for num in range(1, instances + 1):
-            instance_name = '{name}{num:02d}'.format(name=name, num=num)
+            instance_name = f'{name}{num:02d}'
             service_conf = _generate_service_config(config, name, instance_name, props)
             # Fill in local placeholders with own context.
             # Useful when we need to reference stuff like
@@ -146,7 +138,7 @@ def _generate_service_config(config: dict, name: str, instance_name: str, instan
     staging_dir = config['staging_dir']
     network_name = config['network_name']
 
-    volumes = ['./images/{0}/config:/config:rw'.format(name)]
+    volumes = [f'./images/{name}/config:/config:rw']
     # Take care of port forwarding
     ports_list = []
     for port in instance_config.get('expose', {}).values():
@@ -155,10 +147,10 @@ def _generate_service_config(config: dict, name: str, instance_name: str, instan
     service = {
         'build': {
             'context': '..',
-            'dockerfile': '{0}/images/{1}/Dockerfile'.format(staging_dir, name),
+            'dockerfile': f'{staging_dir}/images/{name}/Dockerfile',
             'args': instance_config.get('args', []),
         },
-        'image': '{0}:{1}'.format(name, network_name),
+        'image': f'{name}:{network_name}',
         'hostname': instance_name,
         'domainname': network_name,
         # Networks. We use external anyway.
@@ -168,7 +160,7 @@ def _generate_service_config(config: dict, name: str, instance_name: str, instan
         # This results, however, in a strange rdns name:
         # the domain part will end up there twice.
         # Does not affect A or AAAA, though.
-        'container_name': '{0}.{1}'.format(instance_name, network_name),
+        'container_name': f'{instance_name}.{network_name}',
         # Ports exposure
         'ports': ports_list,
         'volumes': volumes + instance_config.get('volumes', []),
@@ -186,12 +178,8 @@ def _prepare_volumes(volumes: dict, local_basedir: str) -> list:
     """
     volume_list = []
     for props in volumes.values():
-        # "local" params are expected to be relative to
-        # docker-compose.yaml, so prepend its location.
-        os.makedirs('{base}/{dir}'.format(
-            base=local_basedir,
-            dir=props['local'],
-        ), exist_ok=True)
+        # "local" params are expected to be relative to docker-compose.yaml, so prepend its location.
+        os.makedirs(f'{local_basedir}/{props["local"]}', exist_ok=True)
         volume_list.append('{local}:{remote}:{mode}'.format(**props))
     return volume_list
 
@@ -207,10 +195,6 @@ def _call_compose_on_config(conf_path: str, project_name: str, action: str) -> N
     """
     Execute docker-compose action by invoking `docker-compose`.
     """
-    compose_cmd = 'docker-compose --file {conf} -p {name} {action}'.format(
-        conf=conf_path,
-        name=project_name,
-        action=action,
-    )
+    compose_cmd = f'docker-compose --file {conf_path} -p {project_name} {action}'
     # Note: build paths are resolved relative to config file location.
     subprocess.check_call(shlex.split(compose_cmd))

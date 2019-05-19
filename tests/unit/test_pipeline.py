@@ -32,12 +32,12 @@ def get_test_stream(total_size):
     """
 
     data = io.BytesIO()
-    i = 0
+    line_num = 0
     while True:
-        data.write('{line_num}\n'.format(line_num=i).encode())
+        data.write(f'{line_num}\n'.encode())
         if data.tell() >= total_size:
             break
-        i += 1
+        line_num += 1
     data.seek(0)
     return data
 

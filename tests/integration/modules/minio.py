@@ -24,16 +24,16 @@ class MinioException(Exception):
     def _fmt_message(response: dict) -> str:
         try:
             error = response['error']
-            message = '{0} Cause: {1}'.format(error['message'], error['cause']['message'])
+            message = f'{error["message"]} Cause: {error["cause"]["message"]}'
 
             code = error['cause']['error'].get('Code')
             if code:
-                message = '{0} [{1}]'.format(message, code)
+                message = f'{message} [{code}]'
 
             return message
 
         except Exception:
-            return 'Failed with response: {0}'.format(response)
+            return f'Failed with response: {response}'
 
 
 class BucketAlreadyOwnedByYou(MinioException):
@@ -49,7 +49,7 @@ def configure_s3_credentials(context: ContextT) -> None:
     """
     access_key = context.conf['s3']['access_key_id']
     secret_key = context.conf['s3']['access_secret_key']
-    _mc_execute(context, 'config host add local http://localhost:9000 {0} {1}'.format(access_key, secret_key))
+    _mc_execute(context, f'config host add local http://localhost:9000 {access_key} {secret_key}')
 
 
 def create_s3_bucket(context: ContextT) -> None:
@@ -58,7 +58,7 @@ def create_s3_bucket(context: ContextT) -> None:
     """
     bucket = context.conf['s3']['bucket']
     try:
-        _mc_execute(context, 'mb local/{0}'.format(bucket))
+        _mc_execute(context, f'mb local/{bucket}')
     except BucketAlreadyOwnedByYou:
         pass
 
@@ -79,7 +79,7 @@ def _mc_execute(context: ContextT, command: str) -> dict:
     """
     Execute mc (Minio client) command.
     """
-    output = _container(context).exec_run('mc --json {0}'.format(command)).output.decode()
+    output = _container(context).exec_run(f'mc --json {command}').output.decode()
 
     response = json.loads(output)
     if response['status'] == 'success':

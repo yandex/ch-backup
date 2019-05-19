@@ -208,7 +208,7 @@ class BackupLayout:
             logging.debug('Deleting files: %s', ', '.join(remote_paths))
             self._storage_loader.delete_files(remote_paths=remote_paths, is_async=True)
         except Exception as e:
-            msg = 'Failed to delete files {0}'.format(', '.join(remote_paths))
+            msg = f'Failed to delete files {", ".join(remote_paths)}'
             raise StorageError(msg) from e
 
     def _backup_metadata_path(self, backup_name: str) -> str:

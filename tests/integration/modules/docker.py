@@ -36,7 +36,8 @@ def get_container(context: ContextT, prefix: str) -> Container:
     """
     Get container object by prefix.
     """
-    return DOCKER_API.containers.get('%s.%s' % (prefix, context.conf['network_name']))
+    network_name = context.conf['network_name']
+    return DOCKER_API.containers.get(f'{prefix}.{network_name}')
 
 
 def get_exposed_port(container: Container, port: int) -> Tuple[str, int]:
@@ -46,9 +47,9 @@ def get_exposed_port(container: Container, port: int) -> Tuple[str, int]:
     host_url = os.getenv('DOCKER_HOST') or ''
     host = urlparse(host_url.strip()).hostname or 'localhost'
 
-    binding = container.attrs['NetworkSettings']['Ports'].get('%d/tcp' % port)
+    binding = container.attrs['NetworkSettings']['Ports'].get(f'{port}/tcp')
     if not binding:
-        raise RuntimeError('Container {0} has no binding for port {1}'.format(container.name, port))
+        raise RuntimeError(f'Container {container.name} has no binding for port {port}')
 
     return host, binding[0]['HostPort']
 
@@ -86,24 +87,8 @@ def get_file_size(container: Container, path: str) -> int:
     """
     Return size of the specified file inside the container.
     """
-    output = container.exec_run('stat --format "%s" "{0}"'.format(path))
+    output = container.exec_run(f'stat --format "%s" "{path}"')
     return int(output.decode())
-
-
-def generate_ipv6(subnet: str) -> str:
-    """
-    Generates a random IPv6 address in the provided subnet.
-    """
-    random_part = ':'.join(['%x' % random.randint(0, 16**4) for _ in range(3)])
-    return subnet % random_part
-
-
-def generate_ipv4(subnet: str) -> str:
-    """
-    Generates a random IPv4 address in the provided subnet.
-    """
-    random_part = '.'.join(['%d' % random.randint(0, 255) for _ in range(2)])
-    return subnet % random_part
 
 
 @utils.env_stage('create', fail=True)
@@ -113,7 +98,7 @@ def prep_images(context: ContextT) -> None:
     """
     images_dir = context.conf['images_dir']
     staging_dir = context.conf['staging_dir']
-    dir_util.copy_tree(images_dir, '{0}/images'.format(staging_dir), update=True)
+    dir_util.copy_tree(images_dir, f'{staging_dir}/images', update=True)
 
 
 @utils.env_stage('create', fail=True)
@@ -122,16 +107,16 @@ def create_network(context: ContextT) -> None:
     Create docker network specified in the config.
     """
     conf = context.conf
+    net_name = conf['network_name']
     # Unfortunately docker is retarded and not able to create
     # ipv6-only network (see https://github.com/docker/libnetwork/issues/1192)
     # Do not create new network if there is an another net with the same name.
-    if DOCKER_API.networks.list(names='^%s$' % conf['network_name']):
+    if DOCKER_API.networks.list(names=f'^{net_name}$'):
         return
     ip_subnet_pool = docker.types.IPAMConfig(pool_configs=[
-        docker.types.IPAMPool(subnet=generate_ipv4(conf.get('docker_ip4_subnet'))),
-        docker.types.IPAMPool(subnet=generate_ipv6(conf.get('docker_ip6_subnet'))),
+        docker.types.IPAMPool(subnet=_generate_ipv4_subnet()),
+        docker.types.IPAMPool(subnet=_generate_ipv6_subnet()),
     ])
-    net_name = conf['network_name']
     net_opts = {
         'com.docker.network.bridge.enable_ip_masquerade': 'true',
         'com.docker.network.bridge.enable_icc': 'true',
@@ -148,3 +133,19 @@ def shutdown_network(context: ContextT) -> None:
     nets = DOCKER_API.networks.list(names=context.conf['network_name'])
     for net in nets:
         net.remove()
+
+
+def _generate_ipv6_subnet() -> str:
+    """
+    Generates a random IPv6 address in the provided subnet.
+    """
+    random_part = ':'.join([f'{random.randint(0, 16**4):x}' for _ in range(3)])
+    return f'fd00:dead:beef:{random_part}::/96'
+
+
+def _generate_ipv4_subnet() -> str:
+    """
+    Generates a random IPv4 address in the provided subnet.
+    """
+    random_part = '.'.join([str(random.randint(0, 255)) for _ in range(2)])
+    return f'10.{random_part}.0/24'
