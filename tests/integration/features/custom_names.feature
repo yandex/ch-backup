@@ -1,3 +1,4 @@
+@dependent-scenarios
 Feature: Backups with custom names
 
   Background:

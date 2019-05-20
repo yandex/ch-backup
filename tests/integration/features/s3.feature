@@ -4,6 +4,7 @@ Feature: Tests specific to S3 storage engine
     Given default configuration
     And a working s3
     And a working clickhouse on clickhouse01
+    And a working clickhouse on clickhouse02
 
   Scenario: Create backup with chunk_size that equals to size of an uploading file
     Given test data on clickhouse01 that was created as follows
@@ -21,8 +22,5 @@ Feature: Tests specific to S3 storage engine
     Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   |
       | 0   | created  | 1          | 0            |
-
-  Scenario: Restore from backup
-    Given a working clickhouse on clickhouse02
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02

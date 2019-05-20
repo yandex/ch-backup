@@ -1,3 +1,4 @@
+@dependent-scenarios
 Feature: Min interval between backups
 
   Background:

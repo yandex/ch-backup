@@ -19,7 +19,16 @@ def before_feature(context, _feature):
     """
     Cleanup function executing per feature.
     """
-    env_control.restart(context)
+    if 'dependent-scenarios' in _feature.tags:
+        env_control.restart(context)
+
+
+def before_scenario(context, _scenario):
+    """
+    Cleanup function executing per scenario.
+    """
+    if 'dependent-scenarios' not in context.feature.tags:
+        env_control.restart(context)
 
 
 def after_step(context, step):

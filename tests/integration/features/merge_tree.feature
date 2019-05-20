@@ -4,6 +4,7 @@ Feature: Backup of MergeTree tables with different configurations
     Given default configuration
     And a working s3
     And a working clickhouse on clickhouse01
+    And a working clickhouse on clickhouse02
 
   Scenario: Create backup
     Given test data on clickhouse01 that was created as follows
@@ -20,8 +21,5 @@ Feature: Backup of MergeTree tables with different configurations
     Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   |
       | 0   | created  | 12         | 0            |
-
-  Scenario: Restore from backup
-    Given a working clickhouse on clickhouse02
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02

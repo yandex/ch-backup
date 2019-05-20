@@ -1,3 +1,4 @@
+@dependent-scenarios
 Feature: Backup & Clean & Restore
 
   Background:
