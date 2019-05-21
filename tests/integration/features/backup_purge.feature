@@ -8,7 +8,7 @@ Feature: Backup & Restore
     And clickhouse on clickhouse01 has test schema
 
   Scenario: Create backups
-    Given ch-backup config on clickhouse01 was merged with following
+    Given ch-backup configuration on clickhouse01
     """
     backup:
         deduplicate_parts: True
@@ -16,7 +16,7 @@ Feature: Backup & Restore
     And clickhouse01 has test clickhouse data test1
     And we have created clickhouse01 clickhouse backup
 
-    Given ch-backup config on clickhouse01 was merged with following
+    Given ch-backup configuration on clickhouse01
     """
     backup:
         deduplicate_parts: True
@@ -24,14 +24,14 @@ Feature: Backup & Restore
     And clickhouse01 has test clickhouse data test2
     And we have created clickhouse01 clickhouse backup
 
-    Given ch-backup config on clickhouse01 was merged with following
+    Given ch-backup configuration on clickhouse01
     """
     backup:
         deduplicate_parts: False
     """
     And we have created clickhouse01 clickhouse backup
 
-    Given ch-backup config on clickhouse01 was merged with following
+    Given ch-backup configuration on clickhouse01
     """
     backup:
         deduplicate_parts: True
@@ -39,14 +39,14 @@ Feature: Backup & Restore
     And clickhouse01 has test clickhouse data test4
     And we have created clickhouse01 clickhouse backup
 
-    Given ch-backup config on clickhouse01 was merged with following
+    Given ch-backup configuration on clickhouse01
     """
     backup:
         deduplicate_parts: False
     """
     And we have created clickhouse01 clickhouse backup
 
-    Given ch-backup config on clickhouse01 was merged with following
+    Given ch-backup configuration on clickhouse01
     """
     backup:
         deduplicate_parts: True
@@ -64,7 +64,7 @@ Feature: Backup & Restore
       | 5   | created  | 4          | 0            | shared         |
 
   Scenario: Purge with count removal = 0 and time removal = 0 leads to 0 deletes
-    Given ch-backup config on clickhouse01 was merged with following
+    Given ch-backup configuration on clickhouse01
     """
     backup:
         retain_time:
@@ -94,7 +94,7 @@ Feature: Backup & Restore
         start_time: {{ backup.meta.start_time | decrease_on('1 week') }}
         end_time: {{ backup.meta.end_time | decrease_on('1 week') }}
     """
-    And ch-backup config on clickhouse01 was merged with following
+    And ch-backup configuration on clickhouse01
     """
     backup:
         retain_time:
@@ -112,7 +112,7 @@ Feature: Backup & Restore
       | 5   | created  | 4          | 0            | shared         |
 
   Scenario: Purge with count removal >=1 and time removal = 0 leads to 0 deletes
-    Given ch-backup config on clickhouse01 was merged with following
+    Given ch-backup configuration on clickhouse01
     """
     backup:
         retain_time:
@@ -131,7 +131,7 @@ Feature: Backup & Restore
       | 5   | created  | 4          | 0            | shared         |
 
   Scenario: Purge with count removal = 4 and time removal = 2 leads to 2 deletes
-  Given ch-backup config on clickhouse01 was merged with following
+  Given ch-backup configuration on clickhouse01
   """
   backup:
       retain_time:
@@ -148,7 +148,7 @@ Feature: Backup & Restore
     | 3   | created  | 8          | 0            | shared         |
 
   Scenario: Purge with count removal = 2 and time removal = 4 leads to 2 deletes
-  Given ch-backup config on clickhouse01 was merged with following
+  Given ch-backup configuration on clickhouse01
   """
   backup:
       retain_time:

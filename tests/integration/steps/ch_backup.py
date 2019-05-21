@@ -8,7 +8,7 @@ from tests.integration.modules.ch_backup import BackupManager
 from tests.integration.modules.steps import get_step_data
 
 
-@given('ch-backup config on {node:w} was merged with following')
+@given('ch-backup configuration on {node:w}')
 def step_update_ch_backup_config(context, node):
     conf = get_step_data(context)
     BackupManager(context, node).update_config(conf)
@@ -34,6 +34,13 @@ def step_update_backup_metadata(context, node, backup_id):
     context.backup = ch_backup.get_backup(backup_id)
     metadata = get_step_data(context)
     ch_backup.update_backup_metadata(backup_id, metadata)
+
+
+@given('file "{path}" was deleted from {node:w} backup #{backup_id:d}')
+@given('file "{path}" was deleted from {node:w} backup "{backup_id:d}"')
+def step_delete_backup_file(context, path, node, backup_id):
+    ch_backup = BackupManager(context, node)
+    ch_backup.delete_backup_file(backup_id, path)
 
 
 @when('we restore clickhouse backup #{backup_id:d} to {node:w}')
@@ -82,11 +89,10 @@ def step_check_backups_conditions(context, node):
         backup = ch_backup.get_backup(backup_id)
         expected_backup = context.table[i]
 
-        # check that all backup's files exist
-        missed_paths = ch_backup.get_missed_paths(backup.name)
-        assert_that(missed_paths, equal_to([]), f'{len(missed_paths)} missed files were found')
+        if backup.state in ('created', 'partially_deleted'):
+            missed_paths = ch_backup.get_missed_paths(backup.name)
+            assert_that(missed_paths, equal_to([]), f'{len(missed_paths)} missed files were found')
 
-        # check backup properties
         for attr in context.table.headings:
             if attr in ('num', 'title'):
                 continue

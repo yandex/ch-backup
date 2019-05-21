@@ -60,7 +60,7 @@ Feature: Backups with custom names
       | 2   | db1_backup_1 | partially_deleted | 1          | 0            |
 
   Scenario: Purge backup
-    Given ch-backup config on clickhouse01 was merged with following
+    Given ch-backup configuration on clickhouse01
     """
     backup:
         retain_time:

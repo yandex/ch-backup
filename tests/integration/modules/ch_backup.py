@@ -134,7 +134,7 @@ class Backup:
 
 class BackupManager:
     """
-    Interface to ch-backup command-lime tool.
+    Backup manager.
     """
 
     def __init__(self, context: ContextT, node_name: str) -> None:
@@ -184,14 +184,6 @@ class BackupManager:
         """
         return self._exec('version')
 
-    def update_backup_metadata(self, backup_id: BackupId, metadata: dict, merge: bool = True) -> None:
-        """
-        Update backup metadata.
-        """
-        backup = self.get_backup(backup_id)
-        backup.update(metadata, merge)
-        self._s3_client.upload_data(backup.dump_json().encode('utf-8'), backup.path)
-
     def update_config(self, update: dict) -> None:
         """
         Apply new config to old one
@@ -202,17 +194,6 @@ class BackupManager:
         utils.merge(conf, update)
         docker.put_file(self._container, yaml.dump(conf, default_flow_style=False, encoding='utf-8', indent=4),
                         self._config_path)
-
-    def get_missed_paths(self, backup_id: BackupId) -> Sequence[str]:
-        """
-        Get backup entry metadata.
-        """
-        backup = self.get_backup(backup_id)
-        missed = []
-        for path in backup.get_file_paths():
-            if not self._s3_client.path_exists(path):
-                missed.append(path)
-        return missed
 
     def get_backup_ids(self, list_all: bool = True) -> Sequence[str]:
         """
@@ -239,6 +220,32 @@ class BackupManager:
         if schema_only:
             options.append('--schema-only')
         return self._exec(f'restore {" ".join(options)} {backup_id}')
+
+    def update_backup_metadata(self, backup_id: BackupId, metadata: dict, merge: bool = True) -> None:
+        """
+        Update backup metadata.
+        """
+        backup = self.get_backup(backup_id)
+        backup.update(metadata, merge)
+        self._s3_client.upload_data(backup.dump_json().encode('utf-8'), backup.path)
+
+    def delete_backup_file(self, backup_id: BackupId, path: str) -> None:
+        """
+        Delete particular file from backup (useful for fault injection).
+        """
+        backup = self.get_backup(backup_id)
+        self._s3_client.delete_data(os.path.join(backup.meta['path'], path))
+
+    def get_missed_paths(self, backup_id: BackupId) -> Sequence[str]:
+        """
+        Get backup entry metadata.
+        """
+        backup = self.get_backup(backup_id)
+        missed = []
+        for path in backup.get_file_paths():
+            if not self._s3_client.path_exists(path):
+                missed.append(path)
+        return missed
 
     def _exec(self, command: str) -> str:
         cmd = f'{self._cmd_base} {command}'

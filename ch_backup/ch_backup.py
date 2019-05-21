@@ -88,7 +88,7 @@ class ClickhouseBackup:
             if not backup_age_limit or backup.start_time < backup_age_limit:
                 break
 
-            if backup.state != BackupState.CREATED:
+            if backup.state in (BackupState.DELETING, BackupState.PARTIALLY_DELETED):
                 continue
 
             dedup_backups.append(backup)
@@ -197,6 +197,8 @@ class ClickhouseBackup:
 
             backup_meta.add_part(part)
 
+        self._backup_layout.upload_backup_metadata(backup_meta)
+
         logging.debug('Waiting for uploads')
         self._backup_layout.wait()
 
@@ -213,7 +215,7 @@ class ClickhouseBackup:
                 deleting_backup = backup
                 break
 
-            if backup.state != BackupState.CREATED:
+            if backup.state in (BackupState.DELETING, BackupState.PARTIALLY_DELETED):
                 continue
 
             newer_backups.append(backup)
@@ -304,10 +306,13 @@ class ClickhouseBackup:
 
             deleting_backups.append(backup)
 
-        valid_backups = [backup for backup in retained_backups if backup.state == BackupState.CREATED]
+        deduplicatable_backups = [
+            backup for backup in retained_backups
+            if backup.state not in (BackupState.DELETING, BackupState.PARTIALLY_DELETED)
+        ]
 
         for backup in deleting_backups:
-            backup_name, _ = self._delete(backup, valid_backups)
+            backup_name, _ = self._delete(backup, deduplicatable_backups)
             if backup_name:
                 deleted_backup_names.append(backup_name)
 

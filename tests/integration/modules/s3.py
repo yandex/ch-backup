@@ -43,7 +43,6 @@ class S3Client:
         """
         Upload given bytes or file-like object.
         """
-
         remote_path = remote_path.lstrip('/')
         self._s3_client.put_object(Body=data, Bucket=self._s3_bucket_name, Key=remote_path)
 
@@ -51,13 +50,19 @@ class S3Client:
         """
         Download file from storage and return its content as a string.
         """
-
         remote_path = remote_path.lstrip('/')
         with TemporaryFile() as fileobj:
             self._s3_client.download_fileobj(self._s3_bucket_name, remote_path, fileobj)
             fileobj.seek(0)
             data = fileobj.read()
         return data
+
+    def delete_data(self, remote_path: str) -> None:
+        """
+        Delete file from storage.
+        """
+        remote_path = remote_path.lstrip('/')
+        self._s3_client.delete_object(Bucket=self._s3_bucket_name, Key=remote_path)
 
     def path_exists(self, remote_path: str) -> bool:
         """

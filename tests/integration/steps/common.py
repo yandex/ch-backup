@@ -1,6 +1,7 @@
 """
 Common steps.
 """
+import time
 
 import yaml
 from behave import given
@@ -18,3 +19,8 @@ def step_configuration(context):
         context.__setattr__(key, value)
 
     context.version = get_version()
+
+
+@given('we have waited for {seconds:d} seconds')
+def step_wait(_context, seconds):
+    time.sleep(seconds)

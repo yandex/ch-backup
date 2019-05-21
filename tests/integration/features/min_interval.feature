@@ -5,7 +5,7 @@ Feature: Min interval between backups
     Given default configuration
     And a working s3
     And a working clickhouse on clickhouse01
-    And ch-backup config on clickhouse01 was merged with following
+    And ch-backup configuration on clickhouse01
     """
     backup:
         min_interval:
@@ -13,7 +13,7 @@ Feature: Min interval between backups
     """
 
   Scenario: Create backup
-    Given test data on clickhouse01 that was created as follows
+    Given we have executed queries on clickhouse01
     """
     CREATE DATABASE test_db;
     CREATE TABLE test_db.table_01 (n Int32) ENGINE = MergeTree() PARTITION BY n % 10 ORDER BY n;

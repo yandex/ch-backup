@@ -36,7 +36,7 @@ def step_fill_with_test_data(context, node, test_name):
     ClickhouseClient(context, node).init_data(mark=test_name)
 
 
-@given('test data on {node:w} that was created as follows')
+@given('we have executed queries on {node:w}')
 @when('we execute queries on {node:w}')
 def step_test_data(context, node):
     queries = []

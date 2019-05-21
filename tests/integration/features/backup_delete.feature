@@ -8,7 +8,7 @@ Feature: Backup & Clean & Restore
     And clickhouse on clickhouse01 has test schema
 
   Scenario: Create "shared" backup
-    Given ch-backup config on clickhouse01 was merged with following
+    Given ch-backup configuration on clickhouse01
     """
     backup:
         deduplicate_parts: True
@@ -20,7 +20,7 @@ Feature: Backup & Clean & Restore
       | 0   | created  | 4          | 0            | shared        |
 
   Scenario: Create "shared + links" backup
-    Given ch-backup config on clickhouse01 was merged with following
+    Given ch-backup configuration on clickhouse01
     """
     backup:
         deduplicate_parts: True
@@ -33,7 +33,7 @@ Feature: Backup & Clean & Restore
       | 1   | created  | 4          | 0            | shared        |
 
   Scenario: Create "links" backup
-    Given ch-backup config on clickhouse01 was merged with following
+    Given ch-backup configuration on clickhouse01
     """
     backup:
         deduplicate_parts: True
@@ -46,7 +46,7 @@ Feature: Backup & Clean & Restore
       | 2   | created  | 4          | 0            | shared        |
 
   Scenario: Create "shared + data" backup
-    Given ch-backup config on clickhouse01 was merged with following
+    Given ch-backup configuration on clickhouse01
     """
     backup:
         deduplicate_parts: False
@@ -61,7 +61,7 @@ Feature: Backup & Clean & Restore
       | 3   | created  | 4          | 0            | shared        |
 
   Scenario: Create "links + data" backup
-    Given ch-backup config on clickhouse01 was merged with following
+    Given ch-backup configuration on clickhouse01
     """
     backup:
         deduplicate_parts: True
@@ -79,7 +79,7 @@ Feature: Backup & Clean & Restore
       | 4   | created  | 4          | 0            | shared        |
 
   Scenario: Create "data" backup
-    Given ch-backup config on clickhouse01 was merged with following
+    Given ch-backup configuration on clickhouse01
     """
     backup:
         deduplicate_parts: False
