@@ -145,7 +145,7 @@ class BackupManager:
         self._cmd_base = f'{CH_BACKUP_CLI_PATH} --protocol {protocol} --insecure  --config {self._config_path}'
 
     def backup(self,
-               name: str = None,
+               name: str = '{uuid}',
                force: bool = None,
                databases: Sequence[str] = None,
                tables: Sequence[str] = None,
@@ -153,9 +153,7 @@ class BackupManager:
         """
         Execute backup command.
         """
-        options = []
-        if name:
-            options.append(f'--name {name}')
+        options = [f'--name {name}']
         if force:
             options.append('--force')
         if databases:
