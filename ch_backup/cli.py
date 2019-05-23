@@ -7,8 +7,9 @@ import re
 import sys
 import uuid
 from functools import wraps
+from typing import Union
 
-from click import (Choice, ParamType, Path, argument, group, option, pass_context)
+from click import (Choice, Context, ParamType, Path, argument, group, option, pass_context)
 from click.types import StringParamType
 from tabulate import tabulate
 
@@ -37,7 +38,7 @@ UUID = str(uuid.uuid4())
 @option('--ca-path', type=str, help='Path to custom CA bundle path for https protocol.')
 @option('--insecure', is_flag=True, help='Disable certificate verification for https protocol.')
 @pass_context
-def cli(ctx, config, protocol, port, ca_path, insecure):
+def cli(ctx: Context, config: str, protocol: str, port: int, ca_path: Union[str, bool], insecure: bool) -> None:
     """Tool for managing ClickHouse backups."""
     if insecure:
         ca_path = False
@@ -149,9 +150,13 @@ class String(StringParamType):
 
 
 @command(name='list')
-@option('-a', '--all', is_flag=True, default=False, help='List all backups.')
+@option('-a',
+        '--all',
+        is_flag=True,
+        default=False,
+        help='List all backups. The default is to show only successfully created backups.')
 @option('-v', '--verbose', is_flag=True, default=False, help='Verbose output.')
-def list_command(_ctx, ch_backup, verbose, **kwargs):
+def list_command(_ctx: Context, ch_backup: ClickhouseBackup, verbose: bool, **kwargs: dict) -> None:
     """List existing backups."""
     state = None if kwargs['all'] else BackupState.CREATED
 
@@ -175,7 +180,7 @@ def list_command(_ctx, ch_backup, verbose, **kwargs):
 
 @command(name='show')
 @argument('name', metavar='BACKUP')
-def show_command(ctx, ch_backup, name):
+def show_command(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> None:
     """Show details for a particular backup."""
     name = _validate_name(ctx, ch_backup, name)
 
@@ -196,7 +201,8 @@ def show_command(ctx, ch_backup, name):
 @option('-t', '--tables', type=List(regexp=r'[\w.]+'), help='Comma-separated list of tables to backup.')
 @option('-f', '--force', is_flag=True, help='Enables force mode (backup.min_interval is ignored).')
 @option('-l', '--label', multiple=True, help='Custom labels as key-value pairs that represents user metadata.')
-def backup_command(ctx, ch_backup, name, databases, tables, force, label):
+def backup_command(ctx: Context, ch_backup: ClickhouseBackup, name: str, databases: list, tables: list, force: bool,
+                   label: list) -> None:
     """Perform backup."""
     if databases and tables:
         ctx.fail('Options --databases and --tables are mutually exclusive.')
@@ -219,7 +225,7 @@ def backup_command(ctx, ch_backup, name, databases, tables, force, label):
 @argument('name', metavar='BACKUP')
 @option('-d', '--databases', type=List(regexp=r'\w+'), help='Comma-separated list of databases to restore.')
 @option('--schema-only', is_flag=True, help='Restore only databases schemas')
-def restore_command(ctx, ch_backup, name, databases, schema_only):
+def restore_command(ctx: Context, ch_backup: ClickhouseBackup, name: str, databases: list, schema_only: bool) -> None:
     """Restore data from a particular backup."""
     name = _validate_name(ctx, ch_backup, name)
 
@@ -228,21 +234,21 @@ def restore_command(ctx, ch_backup, name, databases, schema_only):
 
 @command(name='delete')
 @argument('name', metavar='BACKUP')
-def delete_command(ctx, ch_backup, name):
+def delete_command(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> None:
     """Delete particular backup."""
     name = _validate_name(ctx, ch_backup, name)
 
-    name, msg = ch_backup.delete(name)
+    deleted_backup_name, msg = ch_backup.delete(name)
 
     if msg:
         print(msg, file=sys.stderr, flush=True)
 
-    if name:
-        print(name)
+    if deleted_backup_name:
+        print(deleted_backup_name)
 
 
 @command(name='purge')
-def purge_command(_ctx, ch_backup):
+def purge_command(_ctx: Context, ch_backup: ClickhouseBackup) -> None:
     """Purge outdated backups."""
     names, msg = ch_backup.purge()
 
@@ -253,12 +259,12 @@ def purge_command(_ctx, ch_backup):
 
 
 @command(name='version')
-def version_command(_ctx, _ch_backup):
+def version_command(_ctx: Context, _ch_backup: ClickhouseBackup) -> None:
     """Print ch-backup version."""
     print(get_version())
 
 
-def _validate_name(ctx, ch_backup, name):
+def _validate_name(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> str:
     backups = ch_backup.list()
 
     if name == 'LAST':
