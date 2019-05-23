@@ -95,6 +95,20 @@ class BackupMetadata:
             raise UnknownBackupStateError
         self._state = value
 
+    @property
+    def start_time_str(self) -> str:
+        """
+        String representation of backup start time.
+        """
+        return self._format_time(self.start_time)
+
+    @property
+    def end_time_str(self) -> Optional[str]:
+        """
+        String representation of backup end time.
+        """
+        return self._format_time(self.end_time) if self.end_time else None
+
     def update_end_time(self) -> None:
         """
         Set end time to the current time.
@@ -114,8 +128,8 @@ class BackupMetadata:
                 'ch_version': self.ch_version,
                 'hostname': self.hostname,
                 'date_fmt': self.date_fmt,
-                'start_time': self._format_time(self.start_time),
-                'end_time': self._format_time(self.end_time),
+                'start_time': self.start_time_str,
+                'end_time': self.end_time_str,
                 'bytes': self.size,
                 'real_bytes': self.real_size,
                 'state': self._state.value,
@@ -305,8 +319,8 @@ class BackupMetadata:
                             files=metadata['files'],
                             link=metadata['link'])
 
-    def _format_time(self, value: Optional[datetime]) -> Optional[str]:
-        return value.strftime(self.date_fmt) if value else None
+    def _format_time(self, value: datetime) -> str:
+        return value.strftime(self.date_fmt)
 
     @staticmethod
     def _load_time(meta: dict, attr: str) -> Optional[datetime]:

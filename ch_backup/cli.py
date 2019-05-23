@@ -2,10 +2,11 @@
 """
 Command-line interface.
 """
-
+import json
 import re
 import sys
 import uuid
+from collections import OrderedDict
 from functools import wraps
 from typing import Union
 
@@ -156,6 +157,10 @@ class String(StringParamType):
         default=False,
         help='List all backups. The default is to show only successfully created backups.')
 @option('-v', '--verbose', is_flag=True, default=False, help='Verbose output.')
+@option('--format',
+        type=Choice(['table', 'json']),
+        default='table',
+        help='Output format. The default is "table" format.')
 def list_command(_ctx: Context, ch_backup: ClickhouseBackup, verbose: bool, **kwargs: dict) -> None:
     """List existing backups."""
     state = None if kwargs['all'] else BackupState.CREATED
@@ -166,16 +171,24 @@ def list_command(_ctx: Context, ch_backup: ClickhouseBackup, verbose: bool, **kw
         print('\n'.join([b.name for b in backups]))
         return
 
-    fields = ('name', 'state', 'start_time', 'end_time', 'size', 'real_size', 'ch_version')
-
-    report = []
-    state_idx = fields.index('state')
+    records = []
     for backup in backups:
-        entry_report = [str(getattr(backup, x, None)) for x in fields]
-        entry_report[state_idx] = backup.state.value
-        report.append(entry_report)
+        records.append(
+            OrderedDict((
+                ('name', backup.name),
+                ('state', backup.state.value),
+                ('start_time', backup.start_time_str),
+                ('end_time', backup.end_time_str),
+                ('size', backup.size),
+                ('real_size', backup.real_size),
+                ('ch_version', backup.ch_version),
+            )))
 
-    print(tabulate(report, headers=fields))
+    if kwargs['format'] == 'json':
+        json.dump(records, sys.stdout, indent=2)
+        print()
+    else:
+        print(tabulate(records, headers='keys'))
 
 
 @command(name='show')
