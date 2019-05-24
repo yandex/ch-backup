@@ -11,7 +11,7 @@ from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, BackupState, PartMetadata
 from ch_backup.clickhouse.client import ClickhouseError
-from ch_backup.clickhouse.control import ClickhouseCTL, FreezedPart
+from ch_backup.clickhouse.control import ClickhouseCTL, FreezedPart, Table
 from ch_backup.config import Config
 from ch_backup.exceptions import BackupNotFound, ClickhouseBackupError
 from ch_backup.util import now, utcnow
@@ -73,7 +73,7 @@ class ClickhouseBackup:
             databases = list(db_tables.keys())
 
         if databases is None:
-            databases = self._ch_ctl.get_all_databases(self._config['exclude_dbs'])
+            databases = self._ch_ctl.get_databases(self._config['exclude_dbs'])
 
         backup_age_limit = None
         if self._config.get('deduplicate_parts'):
@@ -159,29 +159,27 @@ class ClickhouseBackup:
 
         backup_meta.add_database(db_name)
 
-        # get db objects ordered by mtime
-        tables = self._ch_ctl.get_tables_ordered(db_name, tables)
-        for table_name in tables:
-            self._backup_table(backup_meta, db_name, table_name, dedup_backups)
+        for table in self._ch_ctl.get_tables_ordered(db_name, tables):
+            self._backup_table(backup_meta, table, dedup_backups)
 
-    def _backup_table(self, backup_meta: BackupMetadata, db_name: str, table_name: str,
+    def _backup_table(self, backup_meta: BackupMetadata, table: Table,
                       dedup_backups: Sequence[BackupMetadata]) -> None:
         """
         Backup table.
         """
-        logging.debug('Performing table backup for "%s"', table_name)
+        logging.debug('Performing table backup for "%s"', table.name)
 
-        self._backup_table_meta(backup_meta, db_name, table_name)
+        self._backup_table_meta(backup_meta, table)
 
-        backup_meta.add_table(db_name, table_name)
+        backup_meta.add_table(table.database, table.name)
 
         try:
-            freezed_parts = self._ch_ctl.freeze_table(db_name, table_name)
+            freezed_parts = self._ch_ctl.freeze_table(table.database, table.name)
         except ClickhouseError:
-            if self._ch_ctl.does_table_exist(db_name, table_name):
+            if self._ch_ctl.does_table_exist(table.database, table.name):
                 raise
 
-            logging.warning('Table "%s" was removed by a user during backup', table_name)
+            logging.warning('Table "%s" was removed by a user during backup', table.name)
             return
 
         for fpart in freezed_parts:
@@ -326,15 +324,13 @@ class ClickhouseBackup:
         schema = self._ch_ctl.get_database_schema(db_name)
         self._backup_layout.upload_database_metadata(backup_meta.name, db_name, schema)
 
-    def _backup_table_meta(self, backup_meta: BackupMetadata, db_name: str, table_name: str) -> None:
+    def _backup_table_meta(self, backup_meta: BackupMetadata, table: Table) -> None:
         """
         Backup table schema.
         """
-        logging.debug('Making table schema backup for "%s"."%s"', db_name, table_name)
+        logging.debug('Making table schema backup for "%s"."%s"', table.database, table.name)
 
-        schema = self._ch_ctl.get_table_schema(db_name, table_name)
-
-        self._backup_layout.upload_table_metadata(backup_meta.name, db_name, table_name, schema)
+        self._backup_layout.upload_table_metadata(backup_meta.name, table.database, table.name, table.create_statement)
 
     def _restore_database_schema(self, db_name: str, backup_meta: BackupMetadata) -> None:
         """

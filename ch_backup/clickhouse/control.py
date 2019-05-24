@@ -15,7 +15,7 @@ from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.util import chown_dir_contents, retry, strip_query
 
 GET_TABLES_ORDERED_SQL = strip_query("""
-    SELECT name
+    SELECT name, create_table_query
     FROM system.tables
     WHERE engine like '%MergeTree%'
       AND database = '{db_name}'
@@ -50,19 +50,8 @@ SHOW_DATABASES_SQL = strip_query("""
     FORMAT JSON
 """)
 
-SHOW_TABLES_SQL = strip_query("""
-    SHOW TABLES
-    FROM {db_name}
-    FORMAT JSON
-""")
-
 SHOW_CREATE_DATABASE_SQL = strip_query("""
     SHOW CREATE DATABASE `{db_name}`
-    FORMAT TSVRaw
-""")
-
-SHOW_CREATE_TABLE_SQL = strip_query("""
-    SHOW CREATE TABLE `{db_name}`.`{table_name}`
     FORMAT TSVRaw
 """)
 
@@ -87,6 +76,18 @@ GET_VERSION_SQL = strip_query("""
     SELECT version()
     FORMAT TSVRaw
 """)
+
+
+class Table(SimpleNamespace):
+    """
+    Table.
+    """
+
+    def __init__(self, database: str, name: str, create_statement: str) -> None:
+        super().__init__()
+        self.database = database
+        self.name = name
+        self.create_statement = create_statement
 
 
 class Partition(SimpleNamespace):
@@ -167,7 +168,7 @@ class ClickhouseCTL:
         """
         self._remove_shadow_data(part.path)
 
-    def get_all_databases(self, exclude_dbs: Optional[Sequence[str]] = None) -> Sequence[str]:
+    def get_databases(self, exclude_dbs: Optional[Sequence[str]] = None) -> Sequence[str]:
         """
         Get list of all databases
         """
@@ -180,15 +181,6 @@ class ClickhouseCTL:
             result = [row['name'] for row in ch_resp['data'] if row['name'] not in exclude_dbs]
 
         return result
-
-    def get_all_db_tables(self, db_name: str) -> Sequence[str]:
-        """
-        Get unordered list of all database tables
-        """
-        query_sql = SHOW_TABLES_SQL.format(db_name=db_name)
-        logging.debug('Fetching all %s tables: %s', db_name, query_sql)
-        ch_resp = self._ch_client.query(query_sql)
-        return [row['name'] for row in ch_resp.get('data', [])]
 
     def does_table_exist(self, db_name: str, table_name: str) -> bool:
         """
@@ -204,23 +196,16 @@ class ClickhouseCTL:
         query_sql = SHOW_CREATE_DATABASE_SQL.format(db_name=db_name)
         return self._ch_client.query(query_sql)
 
-    def get_table_schema(self, db_name: str, table_name: str) -> str:
-        """
-        Return table schema (CREATE TABLE query).
-        """
-        query_sql = SHOW_CREATE_TABLE_SQL.format(db_name=db_name, table_name=table_name)
-        return self._ch_client.query(query_sql)
-
-    def get_tables_ordered(self, db_name: str, tables: Optional[Sequence[str]] = None) -> Sequence[str]:
+    def get_tables_ordered(self, db_name: str, tables: Optional[Sequence[str]] = None) -> Sequence[Table]:
         """
         Get ordered by mtime list of all database tables
         """
-        result: List[str] = []
         query_sql = GET_TABLES_ORDERED_SQL.format(db_name=db_name, tables=tables or [])
-        logging.debug('Fetching all %s tables ordered: %s', db_name, query_sql)
-        ch_resp = self._ch_client.query(query_sql)
-        if 'data' in ch_resp:
-            result = [row['name'] for row in ch_resp['data']]
+
+        result: List[Table] = []
+        for row in self._ch_client.query(query_sql)['data']:
+            result.append(Table(db_name, row['name'], row['create_table_query']))
+
         return result
 
     def get_partitions(self, database: str, table: str) -> Sequence[Partition]:
