@@ -15,12 +15,25 @@ from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.util import chown_dir_contents, retry, strip_query
 
 GET_TABLES_ORDERED_SQL = strip_query("""
-    SELECT name, create_table_query
+    SELECT
+        name,
+        data_path,
+        create_table_query
     FROM system.tables
     WHERE engine like '%MergeTree%'
       AND database = '{db_name}'
       AND (empty({tables}) OR has(cast({tables}, 'Array(String)'), name))
     ORDER BY metadata_modification_time
+    FORMAT JSON
+""")
+
+GET_TABLE_SQL = strip_query("""
+    SELECT
+        name,
+        data_path,
+        create_table_query
+    FROM system.tables
+    WHERE database = '{db_name}' AND name = '{table_name}'
     FORMAT JSON
 """)
 
@@ -64,14 +77,6 @@ GET_TABLE_PARTITIONS_SQL = strip_query("""
     FORMAT JSON
 """)
 
-GET_TABLE_DATA_PATH_SQL = strip_query("""
-    SELECT data_path
-    FROM system.tables
-    WHERE database = '{db_name}'
-      AND name = '{table_name}'
-    FORMAT TSVRaw
-""")
-
 GET_VERSION_SQL = strip_query("""
     SELECT version()
     FORMAT TSVRaw
@@ -83,10 +88,11 @@ class Table(SimpleNamespace):
     Table.
     """
 
-    def __init__(self, database: str, name: str, create_statement: str) -> None:
+    def __init__(self, database: str, name: str, data_path: str, create_statement: str) -> None:
         super().__init__()
         self.database = database
         self.name = name
+        self.data_path = data_path
         self.create_statement = create_statement
 
 
@@ -130,30 +136,30 @@ class ClickhouseCTL:
         self._shadow_data_path = os.path.join(root_data_path, 'shadow')
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
 
-    def chown_detached_table_parts(self, db_name: str, table_name: str) -> None:
+    def chown_detached_table_parts(self, table: Table) -> None:
         """
         Change permissions (owner and group) of detached data parts for the
         specified table. New values for permissions are taken from the config.
         """
-        detached_path = self._get_table_detached_path(db_name, table_name)
+        detached_path = self._get_table_detached_path(table)
         self._chown_dir(detached_path)
 
-    def attach_part(self, db_name: str, table_name: str, part_name: str) -> None:
+    def attach_part(self, table: Table, part_name: str) -> None:
         """
         Attach data part to the specified table.
         """
-        query_sql = PART_ATTACH_SQL.format(db_name=db_name, table_name=table_name, part_name=part_name)
+        query_sql = PART_ATTACH_SQL.format(db_name=table.database, table_name=table.name, part_name=part_name)
 
         self._ch_client.query(query_sql)
 
-    def freeze_table(self, db_name: str, table_name: str) -> Sequence[FreezedPart]:
+    def freeze_table(self, table: Table) -> Sequence[FreezedPart]:
         """
         Make snapshot of the specified table.
         """
         if self._match_ch_version(min_version='18.16.0'):
-            return self._freeze_table(db_name, table_name)
+            return self._freeze_table(table)
 
-        return self._freeze_table_compat(db_name, table_name)
+        return self._freeze_table_compat(table)
 
     def remove_freezed_data(self) -> None:
         """
@@ -181,13 +187,6 @@ class ClickhouseCTL:
 
         return result
 
-    def does_table_exist(self, db_name: str, table_name: str) -> bool:
-        """
-        Return True if the specified table exists.
-        """
-        query_sql = CHECK_TABLE_SQL.format(db_name=db_name, table_name=table_name)
-        return bool(int(self._ch_client.query(query_sql)))
-
     def get_database_schema(self, db_name: str) -> str:
         """
         Return database schema (CREATE DATABASE query).
@@ -203,32 +202,46 @@ class ClickhouseCTL:
 
         result: List[Table] = []
         for row in self._ch_client.query(query_sql)['data']:
-            result.append(Table(db_name, row['name'], row['create_table_query']))
+            result.append(Table(db_name, row['name'], row['data_path'], row['create_table_query']))
 
         return result
 
-    def get_partitions(self, database: str, table: str) -> Sequence[Partition]:
+    def get_table(self, db_name: str, table_name: str) -> Table:
+        """
+        Get ordered by mtime list of all database tables
+        """
+        query_sql = GET_TABLE_SQL.format(db_name=db_name, table_name=table_name)
+
+        data = self._ch_client.query(query_sql)['data'][0]
+        return Table(db_name, data['name'], data['data_path'], data['create_table_query'])
+
+    def does_table_exist(self, db_name: str, table_name: str) -> bool:
+        """
+        Return True if the specified table exists.
+        """
+        query_sql = CHECK_TABLE_SQL.format(db_name=db_name, table_name=table_name)
+        return bool(int(self._ch_client.query(query_sql)))
+
+    def get_partitions(self, table: Table) -> Sequence[Partition]:
         """
         Get dict with all table parts
         """
-        query_sql = GET_TABLE_PARTITIONS_SQL.format(db_name=database, table_name=table)
-        logging.debug('Fetching all %s table parts: %s', database, query_sql)
+        query_sql = GET_TABLE_PARTITIONS_SQL.format(db_name=table.database, table_name=table.name)
 
         data = self._ch_client.query(query_sql)['data']
-        return [Partition(database, table, item['partition']) for item in data]
+        return [Partition(table.database, table.name, item['partition']) for item in data]
 
     def restore_meta(self, query_sql: str) -> None:
         """
         Restore database or table meta sql
         """
-        logging.debug('Restoring meta sql: %s', query_sql)
         self._ch_client.query(query_sql)
 
-    def get_detached_part_path(self, db_name: str, table_name: str, part_name: str) -> str:
+    def get_detached_part_path(self, table: Table, part_name: str) -> str:
         """
         Get filesystem absolute path to detached data part.
         """
-        return os.path.join(self._get_table_detached_path(db_name, table_name), part_name)
+        return os.path.join(self._get_table_detached_path(table), part_name)
 
     def get_version(self) -> str:
         """
@@ -236,37 +249,37 @@ class ClickhouseCTL:
         """
         return self._ch_version
 
-    def _freeze_table(self, db_name: str, table_name: str) -> Sequence[FreezedPart]:
+    def _freeze_table(self, table: Table) -> Sequence[FreezedPart]:
         """
         Implementation of freeze_table function using FREEZE command syntax for
         the whole table that is available starting from the version 18.16.
         """
-        query_sql = FREEZE_TABLE_SQL.format(db_name=db_name, table_name=table_name)
+        query_sql = FREEZE_TABLE_SQL.format(db_name=table.database, table_name=table.name)
 
         self._ch_client.query(query_sql)
 
-        return self._get_freezed_parts(db_name, table_name)
+        return self._get_freezed_parts(table)
 
-    def _freeze_table_compat(self, db_name: str, table_name: str) -> Sequence[FreezedPart]:
+    def _freeze_table_compat(self, table: Table) -> Sequence[FreezedPart]:
         """
         Implementation of freeze_table function for versions prior to 18.16.
         """
         freezed_parts: List[FreezedPart] = []
-        for partition in self.get_partitions(db_name, table_name):
-            query_sql = FREEZE_PARTITION_SQL.format(db_name=db_name,
-                                                    table_name=table_name,
+        for partition in self.get_partitions(table):
+            query_sql = FREEZE_PARTITION_SQL.format(db_name=table.database,
+                                                    table_name=table.name,
                                                     partition_name=partition.name)
 
             self._ch_client.query(query_sql)
 
-            freezed_parts.extend(self._get_freezed_parts(db_name, table_name))
+            freezed_parts.extend(self._get_freezed_parts(table))
 
         return freezed_parts
 
-    def _get_freezed_parts(self, db_name: str, table_name: str) -> Sequence[FreezedPart]:
+    def _get_freezed_parts(self, table: Table) -> Sequence[FreezedPart]:
 
         path = os.path.join(self._shadow_data_path, self._get_shadow_increment(), 'data',
-                            self._get_table_data_relpath(db_name, table_name))
+                            self._get_table_data_relpath(table))
 
         if not os.path.exists(path):
             logging.debug('Shadow path %s is empty', path)
@@ -277,19 +290,15 @@ class ClickhouseCTL:
             part_path = os.path.join(path, part)
             checksum = self._get_part_checksum(part_path)
             size = self._get_part_size(part_path)
-            freezed_parts.append(FreezedPart(db_name, table_name, part, part_path, checksum, size))
+            freezed_parts.append(FreezedPart(table.database, table.name, part, part_path, checksum, size))
 
         return freezed_parts
 
-    def _get_table_data_path(self, db_name: str, table_name: str) -> str:
-        query_sql = GET_TABLE_DATA_PATH_SQL.format(db_name=db_name, table_name=table_name)
-        return self._ch_client.query(query_sql)
+    def _get_table_data_relpath(self, table: Table) -> str:
+        return os.path.relpath(table.data_path, self._data_path)
 
-    def _get_table_data_relpath(self, db_name: str, table_name: str) -> str:
-        return os.path.relpath(self._get_table_data_path(db_name, table_name), self._data_path)
-
-    def _get_table_detached_path(self, db_name: str, table_name: str) -> str:
-        return os.path.join(self._get_table_data_path(db_name, table_name), 'detached')
+    def _get_table_detached_path(self, table: Table) -> str:
+        return os.path.join(table.data_path, 'detached')
 
     def _chown_dir(self, dir_path: str) -> None:
         assert dir_path.startswith(self._data_path)

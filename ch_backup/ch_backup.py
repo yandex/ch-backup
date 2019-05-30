@@ -175,7 +175,7 @@ class ClickhouseBackup:
         backup_meta.add_table(table.database, table.name)
 
         try:
-            freezed_parts = self._ch_ctl.freeze_table(table.database, table.name)
+            freezed_parts = self._ch_ctl.freeze_table(table)
         except ClickhouseError:
             if self._ch_ctl.does_table_exist(table.database, table.name):
                 raise
@@ -335,18 +335,20 @@ class ClickhouseBackup:
         for table_name in backup_meta.get_tables(db_name):
             logging.debug('Running table "%s.%s" data restore', db_name, table_name)
 
+            table = self._ch_ctl.get_table(db_name, table_name)
+
             attach_parts = []
             for part in backup_meta.get_parts(db_name, table_name):
-                fs_part_path = self._ch_ctl.get_detached_part_path(db_name, table_name, part.name)
+                fs_part_path = self._ch_ctl.get_detached_part_path(table, part.name)
                 self._backup_layout.download_data_part(backup_meta, part, fs_part_path)
                 attach_parts.append(part.name)
 
             self._backup_layout.wait()
 
-            self._ch_ctl.chown_detached_table_parts(db_name, table_name)
+            self._ch_ctl.chown_detached_table_parts(table)
             for part_name in attach_parts:
                 logging.debug('Attaching "%s.%s" part: %s', db_name, table_name, part_name)
-                self._ch_ctl.attach_part(db_name, table_name, part_name)
+                self._ch_ctl.attach_part(table, part_name)
 
     def _deduplicate_part(self, fpart: FreezedPart, dedup_backups: Sequence[BackupMetadata]) -> Optional[PartMetadata]:
         """
