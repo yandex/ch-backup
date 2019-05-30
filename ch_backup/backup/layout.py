@@ -31,9 +31,8 @@ class BackupLayout:
         """
         remote_path = self._backup_metadata_path(backup.name)
         try:
-            json_dump = backup.dump_json()
-            logging.debug('Saving backup meta in key %s:\n%s', remote_path, json_dump)
-            self._storage_loader.upload_data(json_dump, remote_path=remote_path)
+            logging.debug('Saving backup metadata in %s', remote_path)
+            self._storage_loader.upload_data(backup.dump_json(), remote_path=remote_path)
         except Exception as e:
             raise StorageError('Failed to upload backup metadata') from e
 
@@ -43,7 +42,7 @@ class BackupLayout:
         """
         remote_path = _db_metadata_path(self.get_backup_path(backup_name), db_name)
         try:
-            logging.debug('Saving create statement for database: %s', db_name)
+            logging.debug('Uploading metadata (create statement) for database "%s"', db_name)
             self._storage_loader.upload_data(metadata, remote_path=remote_path, encryption=True)
         except Exception as e:
             msg = f'Failed to create async upload of {remote_path}'
@@ -55,9 +54,8 @@ class BackupLayout:
         """
         remote_path = _table_metadata_path(self.get_backup_path(backup_name), db_name, table_name)
         try:
+            logging.debug('Uploading metadata (create statement) for table "%s"."%s"', db_name, table_name)
             self._storage_loader.upload_data(metadata, remote_path=remote_path, is_async=True, encryption=True)
-
-            logging.debug('Saving create statement for table: %s', table_name)
         except Exception as e:
             msg = f'Failed to create async upload of {remote_path}'
             raise StorageError(msg) from e
@@ -66,6 +64,8 @@ class BackupLayout:
         """
         Upload part data.
         """
+        logging.debug('Uploading data part %s of "%s"."%s"', fpart.name, fpart.database, fpart.table)
+
         remote_dir_path = _part_path(self.get_backup_path(backup_name), fpart.database, fpart.table, fpart.name)
 
         filenames = os.listdir(fpart.path)
@@ -128,7 +128,7 @@ class BackupLayout:
         """
         Download part data to the specified directory.
         """
-        logging.debug('Downloading part %s in %s.%s', part.name, part.database, part.table)
+        logging.debug('Downloading data part %s of "%s"."%s"', part.name, part.database, part.table)
 
         os.makedirs(fs_part_path, exist_ok=True)
 
@@ -168,9 +168,11 @@ class BackupLayout:
         """
         Delete backup data and metadata from storage.
         """
-        deleting_files = self._storage_loader.list_dir(self.get_backup_path(backup_name),
-                                                       recursive=True,
-                                                       absolute=True)
+        backup_path = self.get_backup_path(backup_name)
+
+        logging.debug('Deleting data in %s', backup_path)
+
+        deleting_files = self._storage_loader.list_dir(backup_path, recursive=True, absolute=True)
         self._delete_files(deleting_files)
 
     def delete_data_parts(self, backup_meta: BackupMetadata, parts: Sequence[PartMetadata]) -> None:
@@ -180,6 +182,7 @@ class BackupLayout:
         deleting_files: List[str] = []
         for part in parts:
             part_path = _part_path(part.link or backup_meta.path, part.database, part.table, part.name)
+            logging.debug('Deleting data part %s', part_path)
             deleting_files.extend(os.path.join(part_path, f) for f in part.files)
 
         self._delete_files(deleting_files)
@@ -189,10 +192,10 @@ class BackupLayout:
         Wait for completion of data upload and download.
         """
         try:
-            logging.debug('Collecting async jobs')
+            logging.debug('Waiting for completion of async operations')
             self._storage_loader.wait()
         except Exception as e:
-            raise StorageError('Failed to complete async jobs') from e
+            raise StorageError('Failed to complete async operations') from e
 
     def get_backup_path(self, backup_name: str) -> str:
         """
@@ -205,7 +208,6 @@ class BackupLayout:
         Delete files from storage.
         """
         try:
-            logging.debug('Deleting files: %s', ', '.join(remote_paths))
             self._storage_loader.delete_files(remote_paths=remote_paths, is_async=True)
         except Exception as e:
             msg = f'Failed to delete files {", ".join(remote_paths)}'

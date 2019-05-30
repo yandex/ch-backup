@@ -155,7 +155,8 @@ class ClickhouseBackup:
         """
         logging.debug('Performing database backup for "%s"', db_name)
 
-        self._backup_database_meta(backup_meta, db_name)
+        schema = self._ch_ctl.get_database_schema(db_name)
+        self._backup_layout.upload_database_metadata(backup_meta.name, db_name, schema)
 
         backup_meta.add_database(db_name)
 
@@ -167,9 +168,9 @@ class ClickhouseBackup:
         """
         Backup table.
         """
-        logging.debug('Performing table backup for "%s"', table.name)
+        logging.debug('Performing table backup for "%s"."%s"', table.database, table.name)
 
-        self._backup_table_meta(backup_meta, table)
+        self._backup_layout.upload_table_metadata(backup_meta.name, table.database, table.name, table.create_statement)
 
         backup_meta.add_table(table.database, table.name)
 
@@ -179,7 +180,7 @@ class ClickhouseBackup:
             if self._ch_ctl.does_table_exist(table.database, table.name):
                 raise
 
-            logging.warning('Table "%s" was removed by a user during backup', table.name)
+            logging.warning('Table "%s"."%s" was removed by a user during backup', table.database, table.name)
             return
 
         for fpart in freezed_parts:
@@ -188,7 +189,6 @@ class ClickhouseBackup:
             # trying to find part in storage
             part = self._deduplicate_part(fpart, dedup_backups)
             if not part:
-                logging.debug('Backing up part "%s"', fpart.name)
                 part = self._backup_layout.upload_data_part(backup_meta.name, fpart)
             else:
                 self._ch_ctl.remove_freezed_part(fpart)
@@ -197,7 +197,6 @@ class ClickhouseBackup:
 
         self._backup_layout.upload_backup_metadata(backup_meta)
 
-        logging.debug('Waiting for uploads')
         self._backup_layout.wait()
 
         self._ch_ctl.remove_freezed_data()
@@ -261,7 +260,6 @@ class ClickhouseBackup:
             raise
 
         finally:
-            logging.debug('Waiting for completion of storage operations')
             self._backup_layout.wait()
             if not is_empty:
                 self._backup_layout.upload_backup_metadata(backup)
@@ -316,22 +314,6 @@ class ClickhouseBackup:
 
         return deleted_backup_names, None
 
-    def _backup_database_meta(self, backup_meta: BackupMetadata, db_name: str) -> None:
-        """
-        Backup database schema.
-        """
-        logging.debug('Making database schema backup for "%s"', db_name)
-        schema = self._ch_ctl.get_database_schema(db_name)
-        self._backup_layout.upload_database_metadata(backup_meta.name, db_name, schema)
-
-    def _backup_table_meta(self, backup_meta: BackupMetadata, table: Table) -> None:
-        """
-        Backup table schema.
-        """
-        logging.debug('Making table schema backup for "%s"."%s"', table.database, table.name)
-
-        self._backup_layout.upload_table_metadata(backup_meta.name, table.database, table.name, table.create_statement)
-
     def _restore_database_schema(self, db_name: str, backup_meta: BackupMetadata) -> None:
         """
         Restore database schema
@@ -355,17 +337,15 @@ class ClickhouseBackup:
 
             attach_parts = []
             for part in backup_meta.get_parts(db_name, table_name):
-                logging.debug('Fetching "%s.%s" part: %s', db_name, table_name, part.name)
                 fs_part_path = self._ch_ctl.get_detached_part_path(db_name, table_name, part.name)
                 self._backup_layout.download_data_part(backup_meta, part, fs_part_path)
                 attach_parts.append(part.name)
 
-            logging.debug('Waiting for downloads')
             self._backup_layout.wait()
+
             self._ch_ctl.chown_detached_table_parts(db_name, table_name)
             for part_name in attach_parts:
                 logging.debug('Attaching "%s.%s" part: %s', db_name, table_name, part_name)
-
                 self._ch_ctl.attach_part(db_name, table_name, part_name)
 
     def _deduplicate_part(self, fpart: FreezedPart, dedup_backups: Sequence[BackupMetadata]) -> Optional[PartMetadata]:

@@ -144,7 +144,6 @@ class ClickhouseCTL:
         """
         query_sql = PART_ATTACH_SQL.format(db_name=db_name, table_name=table_name, part_name=part_name)
 
-        logging.debug('Attaching partition: %s', query_sql)
         self._ch_client.query(query_sql)
 
     def freeze_table(self, db_name: str, table_name: str) -> Sequence[FreezedPart]:
