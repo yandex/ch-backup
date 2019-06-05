@@ -11,6 +11,15 @@ export CLICKHOUSE_VERSION
 
 export PYTHONIOENCODING?=utf8
 
+ENV_CONTROL=env -i \
+    PATH=${TEST_VENV}/bin:$$PATH \
+    PYTHONIOENCODING=${PYTHONIOENCODING} \
+    CLICKHOUSE_VERSION=${CLICKHOUSE_VERSION} \
+    DOCKER_HOST=$$DOCKER_HOST \
+    DOCKER_TLS_VERIFY=$$DOCKER_TLS_VERIFY \
+    DOCKER_CERT_PATH=$$DOCKER_CERT_PATH \
+    ${TEST_VENV}/bin/python -m tests.integration.env_control
+
 
 .PHONY: build
 build: ch_backup/version.txt
@@ -105,18 +114,17 @@ clean_debuild: clean
 create_env: build ${TEST_VENV} ${SESSION_FILE}
 
 ${SESSION_FILE}:
-	PATH=${TEST_VENV}/bin:$$PATH ${TEST_VENV}/bin/python -m tests.integration.env_control create
+	${ENV_CONTROL} create
 
 
 .PHONY: start_env
 start_env: create_env
-	PATH=${TEST_VENV}/bin:$$PATH ${TEST_VENV}/bin/python -m tests.integration.env_control start
+	${ENV_CONTROL} start
 
 
 .PHONY: stop_env
 stop_env:
-	test -d ${TEST_VENV}/bin && test -f ${SESSION_FILE} && \
-	PATH=${TEST_VENV}/bin:$$PATH ${TEST_VENV}/bin/python -m tests.integration.env_control stop || true
+	test -d ${TEST_VENV}/bin && test -f ${SESSION_FILE} && ${ENV_CONTROL} stop || true
 
 
 .PHONY: clean_env
