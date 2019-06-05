@@ -152,14 +152,11 @@ class BackupLayout:
         Check availability of part data in storage.
         """
         remote_dir_path = _part_path(part.link or backup_meta.path, part.database, part.table, part.name)
-        notfound_files = []
-        for filename in part.files:
-            remote_path = os.path.join(remote_dir_path, filename)
-            if not self._storage_loader.path_exists(remote_path):
-                notfound_files.append(filename)
+        remote_files = self._storage_loader.list_dir(remote_dir_path)
 
+        notfound_files = set(part.files) - set(remote_files)
         if notfound_files:
-            logging.error('Some part files were not found in %s: %s', remote_dir_path, ', '.join(notfound_files))
+            logging.warning('Some part files were not found in %s: %s', remote_dir_path, ', '.join(notfound_files))
             return False
 
         return True
