@@ -167,6 +167,12 @@ class BackupMetadata:
         except (ValueError, KeyError):
             raise InvalidBackupStruct
 
+    def get_databases(self) -> Sequence[str]:
+        """
+        Get databases.
+        """
+        return tuple(self._databases.keys())
+
     def add_database(self, db_name: str) -> None:
         """
         Add database to backup metadata.
@@ -177,11 +183,11 @@ class BackupMetadata:
             'tables': {},
         }
 
-    def get_databases(self) -> Sequence[str]:
+    def get_tables(self, db_name: str) -> Sequence[str]:
         """
-        Get databases.
+        Get tables for the specified database.
         """
-        return tuple(self._databases.keys())
+        return tuple(self._databases[db_name]['tables'].keys())
 
     def add_table(self, db_name: str, table_name: str) -> None:
         """
@@ -195,11 +201,31 @@ class BackupMetadata:
             'parts': {},
         }
 
-    def get_tables(self, db_name: str) -> Sequence[str]:
+    def get_parts(self, db_name: str = None, table_name: str = None) -> Sequence[PartMetadata]:
         """
-        Get tables for the specified database.
+        Get data parts.
         """
-        return tuple(self._databases[db_name]['tables'].keys())
+        if table_name:
+            assert db_name
+
+        databases = [db_name] if db_name else self.get_databases()
+
+        parts: List[PartMetadata] = []
+        for db in databases:
+            parts.extend(self._iter_database_parts(db, table_name))
+
+        return parts
+
+    def get_part(self, db_name: str, table_name: str, part_name: str) -> Optional[PartMetadata]:
+        """
+        Get data part.
+        """
+        try:
+            part = self._databases[db_name]['tables'][table_name]['parts'][part_name]
+            return self._load_part(db_name, table_name, part_name, part)
+
+        except KeyError:
+            return None
 
     def add_part(self, part: PartMetadata) -> None:
         """
@@ -229,32 +255,6 @@ class BackupMetadata:
         self.size -= part.size
         if not part.link:
             self.real_size -= part.size
-
-    def get_part(self, db_name: str, table_name: str, part_name: str) -> Optional[PartMetadata]:
-        """
-        Get data part.
-        """
-        try:
-            part = self._databases[db_name]['tables'][table_name]['parts'][part_name]
-            return self._load_part(db_name, table_name, part_name, part)
-
-        except KeyError:
-            return None
-
-    def get_parts(self, db_name: str = None, table_name: str = None) -> Sequence[PartMetadata]:
-        """
-        Get data parts.
-        """
-        if table_name:
-            assert db_name
-
-        databases = [db_name] if db_name else self.get_databases()
-
-        parts: List[PartMetadata] = []
-        for db in databases:
-            parts.extend(self._iter_database_parts(db, table_name))
-
-        return parts
 
     def is_empty(self) -> bool:
         """
