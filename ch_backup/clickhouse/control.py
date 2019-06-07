@@ -17,6 +17,7 @@ from ch_backup.util import chown_dir_contents, retry, strip_query
 GET_TABLES_ORDERED_SQL = strip_query("""
     SELECT
         name,
+        engine,
         data_path,
         create_table_query
     FROM system.tables
@@ -30,6 +31,7 @@ GET_TABLES_ORDERED_SQL = strip_query("""
 GET_TABLE_SQL = strip_query("""
     SELECT
         name,
+        engine,
         data_path,
         create_table_query
     FROM system.tables
@@ -88,10 +90,11 @@ class Table(SimpleNamespace):
     Table.
     """
 
-    def __init__(self, database: str, name: str, data_path: str, create_statement: str) -> None:
+    def __init__(self, database: str, name: str, engine: str, data_path: str, create_statement: str) -> None:
         super().__init__()
         self.database = database
         self.name = name
+        self.engine = engine
         self.data_path = data_path
         self.create_statement = create_statement
 
@@ -202,7 +205,7 @@ class ClickhouseCTL:
 
         result: List[Table] = []
         for row in self._ch_client.query(query_sql)['data']:
-            result.append(Table(db_name, row['name'], row['data_path'], row['create_table_query']))
+            result.append(Table(db_name, row['name'], row['engine'], row['data_path'], row['create_table_query']))
 
         return result
 
@@ -213,7 +216,7 @@ class ClickhouseCTL:
         query_sql = GET_TABLE_SQL.format(db_name=db_name, table_name=table_name)
 
         data = self._ch_client.query(query_sql)['data'][0]
-        return Table(db_name, data['name'], data['data_path'], data['create_table_query'])
+        return Table(db_name, data['name'], data['engine'], data['data_path'], data['create_table_query'])
 
     def does_table_exist(self, db_name: str, table_name: str) -> bool:
         """

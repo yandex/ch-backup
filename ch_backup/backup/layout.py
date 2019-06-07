@@ -36,9 +36,9 @@ class BackupLayout:
         except Exception as e:
             raise StorageError('Failed to upload backup metadata') from e
 
-    def upload_database_metadata(self, backup_name: str, db_name: str, metadata: str) -> None:
+    def upload_database_create_statement(self, backup_name: str, db_name: str, metadata: str) -> None:
         """
-        Upload database metadata (create statement).
+        Upload database create statement.
         """
         remote_path = _db_metadata_path(self.get_backup_path(backup_name), db_name)
         try:
@@ -48,9 +48,9 @@ class BackupLayout:
             msg = f'Failed to create async upload of {remote_path}'
             raise StorageError(msg) from e
 
-    def upload_table_metadata(self, backup_name: str, db_name: str, table_name: str, metadata: str) -> None:
+    def upload_table_create_statement(self, backup_name: str, db_name: str, table_name: str, metadata: str) -> None:
         """
-        Upload table metadata (create statement).
+        Upload table create statement.
         """
         remote_path = _table_metadata_path(self.get_backup_path(backup_name), db_name, table_name)
         try:
@@ -110,16 +110,16 @@ class BackupLayout:
         except Exception as e:
             raise StorageError('Failed to download backup metadata') from e
 
-    def get_database_metadata(self, backup_meta: BackupMetadata, db_name: str) -> str:
+    def get_database_create_statement(self, backup_meta: BackupMetadata, db_name: str) -> str:
         """
-        Download and return database metadata (create statement).
+        Download and return database create statement.
         """
         remote_path = _db_metadata_path(backup_meta.path, db_name)
         return self._storage_loader.download_data(remote_path, encryption=True)
 
-    def get_table_metadata(self, backup_meta: BackupMetadata, db_name: str, table_name: str) -> str:
+    def get_table_create_statement(self, backup_meta: BackupMetadata, db_name: str, table_name: str) -> str:
         """
-        Download and return table metadata (create statement).
+        Download and return table create statement.
         """
         remote_path = _table_metadata_path(backup_meta.path, db_name, table_name)
         return self._storage_loader.download_data(remote_path, encryption=True)

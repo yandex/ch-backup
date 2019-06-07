@@ -9,7 +9,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
-from ch_backup.backup.metadata import BackupMetadata, BackupState, PartMetadata
+from ch_backup.backup.metadata import (BackupMetadata, BackupState, PartMetadata, TableMetadata)
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.control import ClickhouseCTL, FreezedPart, Table
 from ch_backup.config import Config
@@ -156,7 +156,7 @@ class ClickhouseBackup:
         logging.debug('Performing database backup for "%s"', db_name)
 
         schema = self._ch_ctl.get_database_schema(db_name)
-        self._backup_layout.upload_database_metadata(backup_meta.name, db_name, schema)
+        self._backup_layout.upload_database_create_statement(backup_meta.name, db_name, schema)
 
         backup_meta.add_database(db_name)
 
@@ -170,9 +170,10 @@ class ClickhouseBackup:
         """
         logging.debug('Performing table backup for "%s"."%s"', table.database, table.name)
 
-        self._backup_layout.upload_table_metadata(backup_meta.name, table.database, table.name, table.create_statement)
+        self._backup_layout.upload_table_create_statement(backup_meta.name, table.database, table.name,
+                                                          table.create_statement)
 
-        backup_meta.add_table(table.database, table.name)
+        table_meta = TableMetadata(table.database, table.name, table.engine)
 
         try:
             freezed_parts = self._ch_ctl.freeze_table(table)
@@ -193,7 +194,9 @@ class ClickhouseBackup:
             else:
                 self._ch_ctl.remove_freezed_part(fpart)
 
-            backup_meta.add_part(part)
+            table_meta.add_part(part)
+
+        backup_meta.add_table(table_meta)
 
         self._backup_layout.upload_backup_metadata(backup_meta)
 
@@ -320,11 +323,11 @@ class ClickhouseBackup:
         """
         logging.debug('Running database schema restore: %s', db_name)
 
-        db_sql = self._backup_layout.get_database_metadata(backup_meta, db_name)
+        db_sql = self._backup_layout.get_database_create_statement(backup_meta, db_name)
         self._ch_ctl.restore_meta(db_sql)
 
-        for table_name in backup_meta.get_tables(db_name):
-            table_sql = self._backup_layout.get_table_metadata(backup_meta, db_name, table_name)
+        for table_meta in backup_meta.get_tables(db_name):
+            table_sql = self._backup_layout.get_table_create_statement(backup_meta, db_name, table_meta.name)
             self._ch_ctl.restore_meta(table_sql)
 
     def _restore_database_data(self, db_name: str, backup_meta: BackupMetadata) -> None:
@@ -332,13 +335,13 @@ class ClickhouseBackup:
         Restore database data
         """
         # restore table data (download and attach parts)
-        for table_name in backup_meta.get_tables(db_name):
-            logging.debug('Running table "%s.%s" data restore', db_name, table_name)
+        for table_meta in backup_meta.get_tables(db_name):
+            logging.debug('Running table "%s.%s" data restore', db_name, table_meta.name)
 
-            table = self._ch_ctl.get_table(db_name, table_name)
+            table = self._ch_ctl.get_table(db_name, table_meta.name)
 
             attach_parts = []
-            for part in backup_meta.get_parts(db_name, table_name):
+            for part in table_meta.get_parts():
                 fs_part_path = self._ch_ctl.get_detached_part_path(table, part.name)
                 self._backup_layout.download_data_part(backup_meta, part, fs_part_path)
                 attach_parts.append(part.name)
@@ -347,7 +350,7 @@ class ClickhouseBackup:
 
             self._ch_ctl.chown_detached_table_parts(table)
             for part_name in attach_parts:
-                logging.debug('Attaching "%s.%s" part: %s', db_name, table_name, part_name)
+                logging.debug('Attaching "%s.%s" part: %s', db_name, table.name, part_name)
                 self._ch_ctl.attach_part(table, part_name)
 
     def _deduplicate_part(self, fpart: FreezedPart, dedup_backups: Sequence[BackupMetadata]) -> Optional[PartMetadata]:
@@ -360,7 +363,7 @@ class ClickhouseBackup:
         table_name = fpart.table
         part_name = fpart.name
         for backup_meta in dedup_backups:
-            existing_part = backup_meta.get_part(db_name, table_name, part_name)
+            existing_part = backup_meta.find_part(db_name, table_name, part_name)
 
             if not existing_part:
                 logging.debug('Part "%s" was not found in backup "%s", skip', part_name, backup_meta.name)
