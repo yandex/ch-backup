@@ -2,7 +2,6 @@
 Backup metadata.
 """
 import json
-import os
 import socket
 from datetime import datetime, timezone
 from enum import Enum
@@ -200,12 +199,7 @@ class BackupMetadata:
         """
         Get tables for the specified database.
         """
-        # TODO: remove backward-compatibility logic
-        db = self._databases[db_name]
-        if 'tables' in db:
-            return tuple(db['tables'].keys())
-
-        return tuple(db['parts_paths'].keys())
+        return tuple(self._databases[db_name]['tables'].keys())
 
     def add_part(self, part: PartMetadata) -> None:
         """
@@ -230,14 +224,7 @@ class BackupMetadata:
         """
         Remove data part from backup metadata.
         """
-        # TODO: remove backward-compatibility logic
-        db = self._databases[part.database]
-        try:
-            parts = db['tables'][part.table]['parts']
-        except KeyError:
-            parts = db['parts_paths'][part.table]
-
-        del parts[part.name]
+        del self._databases[part.database]['tables'][part.table]['parts'][part.name]
 
         self.size -= part.size
         if not part.link:
@@ -247,20 +234,12 @@ class BackupMetadata:
         """
         Get data part.
         """
-        db = self._databases.get(db_name)
-        if not db:
-            return None
-
-        # TODO: remove backward-compatibility logic
         try:
-            if 'parts_paths' in db:
-                part = db['parts_paths'][table_name][part_name]
-            else:
-                part = db['tables'][table_name]['parts'][part_name]
+            part = self._databases[db_name]['tables'][table_name]['parts'][part_name]
+            return self._load_part(db_name, table_name, part_name, part)
+
         except KeyError:
             return None
-
-        return self._load_part(db_name, table_name, part_name, part)
 
     def get_parts(self, db_name: str = None, table_name: str = None) -> Sequence[PartMetadata]:
         """
@@ -289,28 +268,11 @@ class BackupMetadata:
             yield from self._iter_table_parts(db_name, table)
 
     def _iter_table_parts(self, db_name: str, table_name: str) -> Iterable[PartMetadata]:
-        db = self._databases[db_name]
-        # TODO: remove backward-compatibility logic
-        if 'parts_paths' in db:
-            parts = db['parts_paths'].get(table_name, {})
-        else:
-            parts = db['tables'][table_name]['parts']
-
+        parts = self._databases[db_name]['tables'][table_name]['parts']
         for part_name, metadata in parts.items():
             yield self._load_part(db_name, table_name, part_name, metadata)
 
     def _load_part(self, db_name: str, table_name: str, part_name: str, metadata: dict) -> PartMetadata:
-        # TODO: remove backward-compatibility logic
-        if 'meta' in metadata:
-            meta = metadata['meta']
-            return PartMetadata(database=db_name,
-                                table=table_name,
-                                name=part_name,
-                                checksum=meta['checksum'],
-                                size=meta['bytes'],
-                                files=[os.path.basename(p) for p in metadata['paths']],
-                                link=metadata['link'])
-
         return PartMetadata(database=db_name,
                             table=table_name,
                             name=part_name,
