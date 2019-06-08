@@ -21,7 +21,7 @@ def decrease_time_str(time_str: str, timespan_str: str) -> str:
 
 
 def _shift_time_str(time_str: str, timespan_seconds: float) -> str:
-    time_fmt = '%Y-%m-%d %H:%M:%S %z'
+    time_fmt = '%Y-%m-%d %H:%M:%S.%f %z'
 
     in_time = datetime.strptime(time_str, time_fmt)
 

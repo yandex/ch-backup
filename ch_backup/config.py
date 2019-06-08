@@ -31,7 +31,7 @@ DEFAULT_CONFIG = {
         'min_interval': {
             'minutes': 0,
         },
-        'time_format': '%Y-%m-%d %H:%M:%S %z',
+        'time_format': '%Y-%m-%d %H:%M:%S.%f %z',
         # Retain policy for the purge command that sets the maximum age of
         # backups to keep.
         'retain_time': {},
