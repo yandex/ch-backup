@@ -88,11 +88,11 @@ class Backup:
         return self.meta.get('end_time')
 
     @property
-    def date_fmt(self):
+    def time_format(self):
         """
-        Backup date format
+        Backup time format
         """
-        return self.meta.get('date_fmt')
+        return self.meta.get('time_format')
 
     @property
     def path(self) -> str:

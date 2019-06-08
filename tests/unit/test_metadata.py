@@ -53,11 +53,11 @@ class TestBackupMetadata:
         assert backup.name == meta['name']
         assert backup.path == meta['path']
         assert backup.state == BackupState(meta['state'])
-        date_fmt = meta['date_fmt']
-        assert backup.date_fmt == date_fmt
-        assert backup.start_time == datetime.strptime(meta['start_time'], date_fmt)
+        time_format = meta['date_fmt']
+        assert backup.time_format == time_format
+        assert backup.start_time == datetime.strptime(meta['start_time'], time_format)
         end_time_str = meta['end_time']
-        end_time = datetime.strptime(end_time_str, date_fmt) if end_time_str else None
+        end_time = datetime.strptime(end_time_str, time_format) if end_time_str else None
         assert backup.end_time == end_time
         assert backup.size == meta['bytes']
         assert backup.real_size == meta['real_bytes']
@@ -71,7 +71,7 @@ class TestBackupMetadata:
                                 path='ch_backup/20181017T210300',
                                 version='1.0.100',
                                 ch_version='19.1.16',
-                                date_fmt='%Y-%m-%dT%H:%M:%S%Z',
+                                time_format='%Y-%m-%dT%H:%M:%S%Z',
                                 hostname='clickhouse01.test_net_711')
 
         assert backup.dump_json().find(' ') == -1

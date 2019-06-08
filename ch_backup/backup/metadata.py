@@ -11,8 +11,6 @@ from typing import Dict, List, Optional, Sequence
 from ch_backup.exceptions import InvalidBackupStruct, UnknownBackupStateError
 from ch_backup.util import now
 
-CBS_DEFAULT_DATE_FMT = '%Y-%m-%d %H:%M:%S %z'
-
 
 class BackupState(Enum):
     """
@@ -169,7 +167,7 @@ class BackupMetadata:
                  path: str,
                  version: str,
                  ch_version: str,
-                 date_fmt: str = None,
+                 time_format: str,
                  hostname: str = None,
                  labels: dict = None) -> None:
         self.name = name
@@ -179,7 +177,7 @@ class BackupMetadata:
         self.ch_version = ch_version
         self.hostname = hostname or socket.getfqdn()
         self._state = BackupState.CREATING
-        self.date_fmt = date_fmt or CBS_DEFAULT_DATE_FMT
+        self.time_format = time_format
         self.start_time = now()
         self.end_time: Optional[datetime] = None
         self._databases: Dict[str, dict] = {}
@@ -234,13 +232,15 @@ class BackupMetadata:
                 'version': self.version,
                 'ch_version': self.ch_version,
                 'hostname': self.hostname,
-                'date_fmt': self.date_fmt,
+                'time_format': self.time_format,
                 'start_time': self.start_time_str,
                 'end_time': self.end_time_str,
                 'bytes': self.size,
                 'real_bytes': self.real_size,
                 'state': self._state.value,
                 'labels': self.labels,
+                # TODO: clean up backward-compatibility logic (delete 'date_fmt')
+                'date_fmt': self.time_format,
             },
         }
         return json.dumps(report, separators=(',', ':'))
@@ -259,7 +259,7 @@ class BackupMetadata:
             backup.name = meta['name']
             backup.path = meta['path']
             backup.hostname = meta['hostname']
-            backup.date_fmt = meta['date_fmt']
+            backup.time_format = meta['date_fmt']
             backup._databases = loaded['databases']
             backup.start_time = cls._load_time(meta, 'start_time')
             backup.end_time = cls._load_time(meta, 'end_time')
@@ -379,7 +379,7 @@ class BackupMetadata:
         return self.size == 0
 
     def _format_time(self, value: datetime) -> str:
-        return value.strftime(self.date_fmt)
+        return value.strftime(self.time_format)
 
     @staticmethod
     def _load_time(meta: dict, attr: str) -> Optional[datetime]:

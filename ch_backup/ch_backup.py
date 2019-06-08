@@ -102,7 +102,8 @@ class ClickhouseBackup:
                                      path=self._backup_layout.get_backup_path(name),
                                      labels=backup_labels,
                                      version=get_version(),
-                                     ch_version=self._ch_ctl.get_version())
+                                     ch_version=self._ch_ctl.get_version(),
+                                     time_format=self._config['time_format'])
 
         self._backup_layout.upload_backup_metadata(backup_meta)
 
