@@ -149,6 +149,77 @@ class ClickhouseBackup:
             else:
                 self._restore_database_data(db_name, backup_meta)
 
+    def delete(self, backup_name: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Delete the specified backup.
+        """
+        deleting_backup = None
+        newer_backups = []
+        for backup in self._iter_backups():
+            if backup.name == backup_name:
+                deleting_backup = backup
+                break
+
+            if backup.state in (BackupState.DELETING, BackupState.PARTIALLY_DELETED):
+                continue
+
+            newer_backups.append(backup)
+
+        if not deleting_backup:
+            raise BackupNotFound(backup_name)
+
+        return self._delete(deleting_backup, newer_backups)
+
+    def purge(self) -> Tuple[Sequence[str], Optional[str]]:
+        """
+        Purge backups.
+        """
+        retain_time = self._config['retain_time']
+        retain_count = self._config['retain_count']
+
+        deleted_backup_names: List[str] = []
+
+        if not retain_time and retain_count is None:
+            logging.info('Retain policies are not specified')
+            return deleted_backup_names, 'Retain policies are not specified.'
+
+        retain_time_limit = None
+        if retain_time:
+            retain_time_limit = now() - timedelta(**retain_time)
+
+        retained_backups: List[BackupMetadata] = []
+        deleting_backups: List[BackupMetadata] = []
+        for name, backup in self._iter_backup_dir():
+            if not backup:
+                logging.info('Deleting backup without metadata: %s', name)
+                self._backup_layout.delete_backup(name)
+                continue
+
+            if retain_count and len(retained_backups) < retain_count:
+                if backup.state == BackupState.CREATED:
+                    logging.info('Preserving backup per retain count policy: %s, state %s', name, backup.state)
+                    retained_backups.append(backup)
+                    continue
+
+            if retain_time_limit and backup.start_time >= retain_time_limit:
+                logging.info('Preserving backup per retain time policy: %s, state %s', name, backup.state)
+                retained_backups.append(backup)
+                continue
+
+            deleting_backups.append(backup)
+
+        deduplicatable_backups = [
+            backup for backup in retained_backups
+            if backup.state not in (BackupState.DELETING, BackupState.PARTIALLY_DELETED)
+        ]
+
+        for backup in deleting_backups:
+            backup_name, _ = self._delete(backup, deduplicatable_backups)
+            if backup_name:
+                deleted_backup_names.append(backup_name)
+
+        return deleted_backup_names, None
+
     def _backup_database(self, backup_meta: BackupMetadata, db_name: str, tables: Sequence[str],
                          dedup_backups: Sequence[BackupMetadata]) -> None:
         """
@@ -205,27 +276,6 @@ class ClickhouseBackup:
 
         self._ch_ctl.remove_freezed_data()
 
-    def delete(self, backup_name: str) -> Tuple[Optional[str], Optional[str]]:
-        """
-        Delete the specified backup.
-        """
-        deleting_backup = None
-        newer_backups = []
-        for backup in self._iter_backups():
-            if backup.name == backup_name:
-                deleting_backup = backup
-                break
-
-            if backup.state in (BackupState.DELETING, BackupState.PARTIALLY_DELETED):
-                continue
-
-            newer_backups.append(backup)
-
-        if not deleting_backup:
-            raise BackupNotFound(backup_name)
-
-        return self._delete(deleting_backup, newer_backups)
-
     def _delete(self, backup: BackupMetadata,
                 newer_backups: Sequence[BackupMetadata]) -> Tuple[Optional[str], Optional[str]]:
         logging.info('Deleting backup %s, state: %s', backup.name, backup.state)
@@ -267,56 +317,6 @@ class ClickhouseBackup:
             self._backup_layout.wait()
             if not is_empty:
                 self._backup_layout.upload_backup_metadata(backup)
-
-    def purge(self) -> Tuple[Sequence[str], Optional[str]]:
-        """
-        Purge backups.
-        """
-        retain_time = self._config['retain_time']
-        retain_count = self._config['retain_count']
-
-        deleted_backup_names: List[str] = []
-
-        if not retain_time and retain_count is None:
-            logging.info('Retain policies are not specified')
-            return deleted_backup_names, 'Retain policies are not specified.'
-
-        retain_time_limit = None
-        if retain_time:
-            retain_time_limit = now() - timedelta(**retain_time)
-
-        retained_backups: List[BackupMetadata] = []
-        deleting_backups: List[BackupMetadata] = []
-        for name, backup in self._iter_backup_dir():
-            if not backup:
-                logging.info('Deleting backup without metadata: %s', name)
-                self._backup_layout.delete_backup(name)
-                continue
-
-            if retain_count and len(retained_backups) < retain_count:
-                if backup.state == BackupState.CREATED:
-                    logging.info('Preserving backup per retain count policy: %s, state %s', name, backup.state)
-                    retained_backups.append(backup)
-                    continue
-
-            if retain_time_limit and backup.start_time >= retain_time_limit:
-                logging.info('Preserving backup per retain time policy: %s, state %s', name, backup.state)
-                retained_backups.append(backup)
-                continue
-
-            deleting_backups.append(backup)
-
-        deduplicatable_backups = [
-            backup for backup in retained_backups
-            if backup.state not in (BackupState.DELETING, BackupState.PARTIALLY_DELETED)
-        ]
-
-        for backup in deleting_backups:
-            backup_name, _ = self._delete(backup, deduplicatable_backups)
-            if backup_name:
-                deleted_backup_names.append(backup_name)
-
-        return deleted_backup_names, None
 
     def _restore_database_schema(self, db_name: str, backup_meta: BackupMetadata) -> None:
         """
