@@ -4,10 +4,14 @@ Feature: Metadata
     Given default configuration
     And a working s3
     And a working clickhouse on clickhouse01
-    And clickhouse on clickhouse01 has test schema
 
   Scenario: Create backup
-    Given clickhouse01 has test clickhouse data test1
+    Given ch-backup configuration on clickhouse01
+    """
+    backup:
+      labels:
+        environment: testing
+    """
     When we create clickhouse01 clickhouse backup
     """
     labels:
