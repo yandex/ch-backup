@@ -1,4 +1,3 @@
-@dependent-scenarios
 Feature: Min interval between backups
 
   Background:
@@ -11,20 +10,15 @@ Feature: Min interval between backups
         min_interval:
             hours: 1
     """
-
-  Scenario: Create backup
-    Given we have executed queries on clickhouse01
+    And we have executed queries on clickhouse01
     """
     CREATE DATABASE test_db;
     CREATE TABLE test_db.table_01 (n Int32) ENGINE = MergeTree() PARTITION BY n % 10 ORDER BY n;
     INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 1000;
     """
-    When we create clickhouse01 clickhouse backup
-    Then we got the following backups on clickhouse01
-      | num | state    | data_count | link_count |
-      | 0   | created  | 10         | 0          |
+    And we have created clickhouse01 clickhouse backup
 
-  Scenario Outline: Attempt to create backup results to no new backups
+  Scenario Outline: Attempt to create backup when min interval is not passed
     Given metadata of clickhouse01 backup #0 was adjusted with
     """
     meta:
@@ -65,5 +59,4 @@ Feature: Min interval between backups
     Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count |
       | 0   | created  | 0          | 10         |
-      | 1   | created  | 0          | 10         |
-      | 2   | created  | 10         | 0          |
+      | 1   | created  | 10         | 0          |
