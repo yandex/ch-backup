@@ -1,4 +1,4 @@
-features/merge_tree.feature
+features/table_engines.feature
 features/backup_restore.feature
 features/backup_delete.feature
 features/backup_purge.feature

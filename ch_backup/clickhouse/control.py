@@ -3,10 +3,11 @@ Clickhouse-control classes module
 """
 
 import os
+import re
 import shutil
 from hashlib import md5
 from types import SimpleNamespace
-from typing import List, Optional, Sequence
+from typing import Any, List, Match, Optional, Sequence
 
 from pkg_resources import parse_version
 
@@ -16,13 +17,14 @@ from ch_backup.util import chown_dir_contents, retry, strip_query
 
 GET_TABLES_ORDERED_SQL = strip_query("""
     SELECT
+        database,
         name,
         engine,
-        data_path,
-        create_table_query
+        engine_full,
+        create_table_query,
+        data_path
     FROM system.tables
-    WHERE engine like '%MergeTree%'
-      AND database = '{db_name}'
+    WHERE database = '{db_name}'
       AND (empty({tables}) OR has(cast({tables}, 'Array(String)'), name))
     ORDER BY metadata_modification_time
     FORMAT JSON
@@ -30,10 +32,12 @@ GET_TABLES_ORDERED_SQL = strip_query("""
 
 GET_TABLE_SQL = strip_query("""
     SELECT
+        database,
         name,
         engine,
-        data_path,
-        create_table_query
+        engine_full,
+        create_table_query,
+        data_path
     FROM system.tables
     WHERE database = '{db_name}' AND name = '{table_name}'
     FORMAT JSON
@@ -205,7 +209,7 @@ class ClickhouseCTL:
 
         result: List[Table] = []
         for row in self._ch_client.query(query_sql)['data']:
-            result.append(Table(db_name, row['name'], row['engine'], row['data_path'], row['create_table_query']))
+            result.append(_make_table(row))
 
         return result
 
@@ -215,8 +219,7 @@ class ClickhouseCTL:
         """
         query_sql = GET_TABLE_SQL.format(db_name=db_name, table_name=table_name)
 
-        data = self._ch_client.query(query_sql)['data'][0]
-        return Table(db_name, data['name'], data['engine'], data['data_path'], data['create_table_query'])
+        return _make_table(self._ch_client.query(query_sql)['data'][0])
 
     def does_table_exist(self, db_name: str, table_name: str) -> bool:
         """
@@ -291,8 +294,8 @@ class ClickhouseCTL:
         freezed_parts: List[FreezedPart] = []
         for part in os.listdir(path):
             part_path = os.path.join(path, part)
-            checksum = self._get_part_checksum(part_path)
-            size = self._get_part_size(part_path)
+            checksum = _get_part_checksum(part_path)
+            size = _get_part_size(part_path)
             freezed_parts.append(FreezedPart(table.database, table.name, part, part_path, checksum, size))
 
         return freezed_parts
@@ -326,14 +329,46 @@ class ClickhouseCTL:
         with open(file_path, 'r') as file:
             return file.read().strip()
 
-    @staticmethod
-    def _get_part_checksum(part_path: str) -> str:
-        with open(os.path.join(part_path, 'checksums.txt'), 'rb') as f:
-            return md5(f.read()).hexdigest()  # nosec
 
-    @staticmethod
-    def _get_part_size(part_path: str) -> int:
-        size = 0
-        for file in os.listdir(part_path):
-            size += os.path.getsize(os.path.join(part_path, file))
-        return size
+def _make_table(record: dict) -> Table:
+    create_statement = _normalize_create_statement(record)
+    return Table(record['database'], record['name'], record['engine'], record['data_path'], create_statement)
+
+
+def _normalize_create_statement(record):
+    engine = record['engine']
+    engine_full = record['engine_full']
+    create_statement = record['create_table_query']
+    if engine == 'MaterializedView' and engine_full:
+        db = record['database']
+        table = record['name']
+        try:
+            prefix, suffix = create_statement.split(engine_full, 1)
+            match = _fullmatch_strict(f'CREATE MATERIALIZED VIEW `?{db}`?.`?{table}`? (.*) ENGINE = ', prefix)
+            columns = match.group(1)
+            create_statement = f'CREATE MATERIALIZED VIEW `{db}`.`{table}` TO `{db}`.`.inner.{table}` {columns}{suffix}'
+
+        except Exception:
+            logging.exception('Failed to normalize table create statement: %s', create_statement)
+
+    return create_statement
+
+
+def _fullmatch_strict(pattern: str, string: str) -> Match[Any]:
+    match = re.fullmatch(pattern, string)
+    if not match:
+        raise ValueError(f'"{string}" does not match "{pattern}"')
+
+    return match
+
+
+def _get_part_checksum(part_path: str) -> str:
+    with open(os.path.join(part_path, 'checksums.txt'), 'rb') as f:
+        return md5(f.read()).hexdigest()  # nosec
+
+
+def _get_part_size(part_path: str) -> int:
+    size = 0
+    for file in os.listdir(part_path):
+        size += os.path.getsize(os.path.join(part_path, file))
+    return size

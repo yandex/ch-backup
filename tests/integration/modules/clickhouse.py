@@ -60,7 +60,7 @@ class ClickhouseClient:
             for table_num in range(1, TABLE_COUNT + 1):
                 table_name = f'test_table_{table_num:02d}'
                 query = f"""
-                    CREATE TABLE IF NOT EXISTS {db_name}.{table_name} (
+                    CREATE TABLE IF NOT EXISTS `{db_name}`.`{table_name}` (
                         date Date,
                         datetime DateTime,
                         int_num UInt32,
@@ -93,7 +93,7 @@ class ClickhouseClient:
         for db_name, table_name, columns in self._get_all_user_tables():
             query = f"""
                 SELECT *
-                FROM {db_name}.{table_name}
+                FROM `{db_name}`.`{table_name}`
                 ORDER BY {','.join(columns)}
                 FORMAT JSONCompact
                 """
@@ -109,7 +109,7 @@ class ClickhouseClient:
         all_tables_desc = {}
         for db_name, table_name, _ in self._get_all_user_tables():
             query = f"""
-                DESCRIBE {db_name}.{table_name}
+                DESCRIBE `{db_name}`.`{table_name}`
                 FORMAT JSONCompact
                 """
             table_data = self._query('GET', query)

@@ -2,10 +2,11 @@
 Clickhouse backup logic
 """
 
-from collections import defaultdict
+from collections import defaultdict, deque
 from copy import copy
 from datetime import timedelta
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from itertools import chain
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
@@ -138,16 +139,11 @@ class ClickhouseBackup:
             # check all required databases exists in backup meta
             missed_databases = [db_name for db_name in databases if db_name not in backup_meta.get_databases()]
             if missed_databases:
-                logging.critical('Required databases %s were not found in backup meta: %s',
+                logging.critical('Required databases %s were not found in backup metadata: %s',
                                  ', '.join(missed_databases), backup_meta.path)
-                raise ClickhouseBackupError('Required databases were not found in backup struct')
+                raise ClickhouseBackupError('Required databases were not found in backup metadata')
 
-        for db_name in databases:
-            self._restore_database_schema(db_name, backup_meta)
-            if schema_only:
-                logging.debug('Don\'t restore %s data, cause schema_only is set %r', db_name, schema_only)
-            else:
-                self._restore_database_data(db_name, backup_meta)
+        self._restore(backup_meta, databases, schema_only)
 
     def delete(self, backup_name: str) -> Tuple[Optional[str], Optional[str]]:
         """
@@ -247,34 +243,36 @@ class ClickhouseBackup:
 
         table_meta = TableMetadata(table.database, table.name, table.engine)
 
-        try:
-            freezed_parts = self._ch_ctl.freeze_table(table)
-        except ClickhouseError:
-            if self._ch_ctl.does_table_exist(table.database, table.name):
-                raise
+        if _is_merge_tree(table):
+            try:
+                freezed_parts = self._ch_ctl.freeze_table(table)
+            except ClickhouseError:
+                if self._ch_ctl.does_table_exist(table.database, table.name):
+                    raise
 
-            logging.warning('Table "%s"."%s" was removed by a user during backup', table.database, table.name)
-            return
+                logging.warning('Table "%s"."%s" was removed by a user during backup', table.database, table.name)
+                return
 
-        for fpart in freezed_parts:
-            logging.debug('Working on %s', fpart)
+            for fpart in freezed_parts:
+                logging.debug('Working on %s', fpart)
 
-            # trying to find part in storage
-            part = self._deduplicate_part(fpart, dedup_backups)
-            if not part:
-                part = self._backup_layout.upload_data_part(backup_meta.name, fpart)
-            else:
-                self._ch_ctl.remove_freezed_part(fpart)
+                # trying to find part in storage
+                part = self._deduplicate_part(fpart, dedup_backups)
+                if not part:
+                    part = self._backup_layout.upload_data_part(backup_meta.name, fpart)
+                else:
+                    self._ch_ctl.remove_freezed_part(fpart)
 
-            table_meta.add_part(part)
+                table_meta.add_part(part)
 
         backup_meta.add_table(table_meta)
 
         self._backup_layout.upload_backup_metadata(backup_meta)
 
-        self._backup_layout.wait()
+        if _is_merge_tree(table):
+            self._backup_layout.wait()
 
-        self._ch_ctl.remove_freezed_data()
+            self._ch_ctl.remove_freezed_data()
 
     def _delete(self, backup: BackupMetadata,
                 newer_backups: Sequence[BackupMetadata]) -> Tuple[Optional[str], Optional[str]]:
@@ -318,28 +316,74 @@ class ClickhouseBackup:
             if not is_empty:
                 self._backup_layout.upload_backup_metadata(backup)
 
-    def _restore_database_schema(self, db_name: str, backup_meta: BackupMetadata) -> None:
-        """
-        Restore database schema
-        """
-        logging.debug('Running database schema restore: %s', db_name)
+    def _restore(self, backup_meta: BackupMetadata, databases: Sequence[str], schema_only: bool) -> None:
+        logging.debug('Restoring database: %s', ', '.join(databases))
 
-        db_sql = self._backup_layout.get_database_create_statement(backup_meta, db_name)
-        self._ch_ctl.restore_meta(db_sql)
+        self._restore_database_objects(backup_meta, databases)
 
-        for table_meta in backup_meta.get_tables(db_name):
-            table_sql = self._backup_layout.get_table_create_statement(backup_meta, db_name, table_meta.name)
+        merge_tree_tables = []
+        distributed_tables = []
+        view_tables = []
+        other_tables = []
+        for db_name in databases:
+            for table_meta in backup_meta.get_tables(db_name):
+                if _is_merge_tree(table_meta):
+                    merge_tree_tables.append(table_meta)
+                elif _is_distributed(table_meta):
+                    distributed_tables.append(table_meta)
+                elif _is_view(table_meta):
+                    view_tables.append(table_meta)
+                else:
+                    other_tables.append(table_meta)
+
+        self._restore_table_objects(backup_meta, chain(merge_tree_tables, other_tables, distributed_tables))
+
+        self._restore_view_objects(backup_meta, view_tables)
+
+        if not schema_only:
+            self._restore_data(backup_meta, merge_tree_tables)
+
+    def _restore_database_objects(self, backup_meta: BackupMetadata, databases: Iterable[str]) -> None:
+        for db_name in databases:
+            db_sql = self._backup_layout.get_database_create_statement(backup_meta, db_name)
+            self._ch_ctl.restore_meta(db_sql)
+
+    def _restore_table_objects(self, backup_meta: BackupMetadata, tables: Iterable[TableMetadata]) -> None:
+        for table_meta in tables:
+            table_sql = self._backup_layout.get_table_create_statement(backup_meta, table_meta.database,
+                                                                       table_meta.name)
             self._ch_ctl.restore_meta(table_sql)
 
-    def _restore_database_data(self, db_name: str, backup_meta: BackupMetadata) -> None:
-        """
-        Restore database data
-        """
-        # restore table data (download and attach parts)
-        for table_meta in backup_meta.get_tables(db_name):
-            logging.debug('Running table "%s.%s" data restore', db_name, table_meta.name)
+    def _restore_view_objects(self, backup_meta: BackupMetadata, views: Iterable[TableMetadata]) -> None:
+        errors: List[Tuple[TableMetadata, Exception]] = []
+        unprocessed = deque(
+            (v, self._backup_layout.get_table_create_statement(backup_meta, v.database, v.name)) for v in views)
+        while unprocessed:
+            view_meta, view_sql = unprocessed.popleft()
+            try:
+                self._ch_ctl.restore_meta(view_sql)
 
-            table = self._ch_ctl.get_table(db_name, table_meta.name)
+            except Exception as e:
+                if len(errors) > len(unprocessed):
+                    break
+
+                errors.append((view_meta, e))
+                unprocessed.append((view_meta, view_sql))
+
+            else:
+                errors.clear()
+
+        if errors:
+            logging.error('Failed to restore database views:\n%s',
+                          '\n'.join(f'"{v.database}"."{v.name}": {e!r}' for v, e in errors))
+            failed_views_str = ', '.join(f'"{v.database}"."{v.name}"' for v, e in errors)
+            raise ClickhouseBackupError(f'Failed to restore database views: {failed_views_str}')
+
+    def _restore_data(self, backup_meta: BackupMetadata, tables: Iterable[TableMetadata]) -> None:
+        for table_meta in tables:
+            logging.debug('Running table "%s.%s" data restore', table_meta.database, table_meta.name)
+
+            table = self._ch_ctl.get_table(table_meta.database, table_meta.name)
 
             attach_parts = []
             for part in table_meta.get_parts():
@@ -351,7 +395,7 @@ class ClickhouseBackup:
 
             self._ch_ctl.chown_detached_table_parts(table)
             for part_name in attach_parts:
-                logging.debug('Attaching "%s.%s" part: %s', db_name, table.name, part_name)
+                logging.debug('Attaching "%s.%s" part: %s', table_meta.database, table.name, part_name)
                 self._ch_ctl.attach_part(table, part_name)
 
     def _deduplicate_part(self, fpart: FreezedPart, dedup_backups: Sequence[BackupMetadata]) -> Optional[PartMetadata]:
@@ -476,3 +520,25 @@ class ClickhouseBackup:
             is_changed = True
 
         return is_changed, deleting_parts
+
+
+def _is_merge_tree(table: Union[Table, TableMetadata]) -> bool:
+    """
+    Return True if table belongs to merge tree table engine family, or False otherwise.
+    """
+    # TODO: clean up backward-compatibility logic (engine must not be optional)
+    return table.engine is None or table.engine.find('MergeTree') != -1
+
+
+def _is_distributed(table: Union[Table, TableMetadata]) -> bool:
+    """
+    Return True if table has distributed engine, or False otherwise.
+    """
+    return table.engine == 'Distributed'
+
+
+def _is_view(table: Union[Table, TableMetadata]) -> bool:
+    """
+    Return True if table is a view, or False otherwise.
+    """
+    return table.engine in ('View', 'MaterializedView')
