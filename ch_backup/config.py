@@ -97,10 +97,10 @@ DEFAULT_CONFIG = {
         'version': 1,
         'formatters': {
             'ch-backup': {
-                'format': '%(asctime)s [%(levelname)s]: %(message)s',
+                'format': '%(asctime)s %(processName)-11s %(process)-5d [%(levelname)-8s] %(name)s: %(message)s',
             },
             'boto': {
-                'format': '%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+                'format': '%(asctime)s %(processName)-11s %(process)-5d [%(levelname)-8s] %(name)s: %(message)s',
             },
         },
         'handlers': {
@@ -122,10 +122,15 @@ DEFAULT_CONFIG = {
             },
             'botocore': {
                 'handlers': ['boto'],
+                'level': 'INFO',
+            },
+            'botocore.endpoint': {
                 'level': 'DEBUG',
             },
-            'boto3': {
-                'handlers': ['boto'],
+            'botocore.vendored.requests': {
+                'level': 'DEBUG',
+            },
+            'botocore.parsers': {
                 'level': 'DEBUG',
             },
         },
