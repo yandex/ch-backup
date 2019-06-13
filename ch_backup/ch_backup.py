@@ -6,7 +6,7 @@ from collections import defaultdict, deque
 from copy import copy
 from datetime import timedelta
 from itertools import chain
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
@@ -241,7 +241,7 @@ class ClickhouseBackup:
         self._backup_layout.upload_table_create_statement(backup_meta.name, table.database, table.name,
                                                           table.create_statement)
 
-        table_meta = TableMetadata(table.database, table.name, table.engine)
+        table_meta = TableMetadata(table.database, table.name, table.engine, table.inner_table)
 
         if _is_merge_tree(table):
             try:
@@ -325,6 +325,7 @@ class ClickhouseBackup:
         distributed_tables = []
         view_tables = []
         other_tables = []
+        inner_table_ids = set()
         for db_name in databases:
             for table_meta in backup_meta.get_tables(db_name):
                 if _is_merge_tree(table_meta):
@@ -332,11 +333,14 @@ class ClickhouseBackup:
                 elif _is_distributed(table_meta):
                     distributed_tables.append(table_meta)
                 elif _is_view(table_meta):
+                    if table_meta.inner_table:
+                        inner_table_ids.add((table_meta.database, table_meta.inner_table))
                     view_tables.append(table_meta)
                 else:
                     other_tables.append(table_meta)
 
-        self._restore_table_objects(backup_meta, chain(merge_tree_tables, other_tables, distributed_tables))
+        self._restore_table_objects(backup_meta, chain(merge_tree_tables, other_tables, distributed_tables),
+                                    inner_table_ids)
 
         self._restore_view_objects(backup_meta, view_tables)
 
@@ -348,8 +352,13 @@ class ClickhouseBackup:
             db_sql = self._backup_layout.get_database_create_statement(backup_meta, db_name)
             self._ch_ctl.restore_meta(db_sql)
 
-    def _restore_table_objects(self, backup_meta: BackupMetadata, tables: Iterable[TableMetadata]) -> None:
+    def _restore_table_objects(self, backup_meta: BackupMetadata, tables: Iterable[TableMetadata],
+                               inner_table_ids: Set[Tuple[str, str]]) -> None:
         for table_meta in tables:
+            # inner table is restored implicitly with corresponding materialized view
+            if (table_meta.database, table_meta.name) in inner_table_ids:
+                continue
+
             table_sql = self._backup_layout.get_table_create_statement(backup_meta, table_meta.database,
                                                                        table_meta.name)
             self._ch_ctl.restore_meta(table_sql)

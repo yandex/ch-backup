@@ -96,22 +96,31 @@ class TableMetadata(SimpleNamespace):
     """
 
     # TODO: clean up backward-compatibility logic (engine must not be optional)
-    def __init__(self, database: str, name: str, engine: Optional[str]) -> None:
+    def __init__(self, database: str, name: str, engine: Optional[str], inner_table: Optional[str]) -> None:
         super().__init__()
         self.database: str = database
         self.name: str = name
         self.raw_metadata: dict = {
             'engine': engine,
+            'inner_table': inner_table,
             'parts': {},
         }
 
     @property
+    # TODO: clean up backward-compatibility logic (engine must not be optional)
     def engine(self) -> Optional[str]:
         """
         Return table engine.
         """
-        # TODO: clean up backward-compatibility logic (engine must not be optional)
-        return self.raw_metadata.get('engine')
+        return self.raw_metadata['engine']
+
+    @property
+    def inner_table(self) -> Optional[str]:
+        """
+        Return name of the associated inner table if exists, or None otherwise. Inner tables are applicable for
+        some materialized views only.
+        """
+        return self.raw_metadata['inner_table']
 
     def get_parts(self) -> Sequence[PartMetadata]:
         """
@@ -149,8 +158,8 @@ class TableMetadata(SimpleNamespace):
         """
         Deserialize table metadata.
         """
-        # TODO: clean up backward-compatibility logic (engine must not be optional)
-        table = cls(database, name, raw_metadata.get('engine'))
+        # TODO: clean up backward-compatibility logic (engine and inner_table must not be optional)
+        table = cls(database, name, raw_metadata.get('engine'), raw_metadata.get('inner_table'))
         table.raw_metadata['parts'] = raw_metadata['parts']
         return table
 

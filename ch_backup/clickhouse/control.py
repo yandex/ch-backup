@@ -3,11 +3,10 @@ Clickhouse-control classes module
 """
 
 import os
-import re
 import shutil
 from hashlib import md5
 from types import SimpleNamespace
-from typing import Any, List, Match, Optional, Sequence
+from typing import List, Optional, Sequence
 
 from pkg_resources import parse_version
 
@@ -94,13 +93,15 @@ class Table(SimpleNamespace):
     Table.
     """
 
-    def __init__(self, database: str, name: str, engine: str, data_path: str, create_statement: str) -> None:
+    def __init__(self, database: str, name: str, engine: str, data_path: str, create_statement: str,
+                 inner_table: Optional[str]) -> None:
         super().__init__()
         self.database = database
         self.name = name
         self.engine = engine
         self.data_path = data_path
         self.create_statement = create_statement
+        self.inner_table = inner_table
 
 
 class Partition(SimpleNamespace):
@@ -331,35 +332,17 @@ class ClickhouseCTL:
 
 
 def _make_table(record: dict) -> Table:
-    create_statement = _normalize_create_statement(record)
-    return Table(record['database'], record['name'], record['engine'], record['data_path'], create_statement)
+    if record['engine'] == 'MaterializedView' and record['engine_full']:
+        inner_table = '.inner.' + record['name']
+    else:
+        inner_table = None
 
-
-def _normalize_create_statement(record):
-    engine = record['engine']
-    engine_full = record['engine_full']
-    create_statement = record['create_table_query']
-    if engine == 'MaterializedView' and engine_full:
-        db = record['database']
-        table = record['name']
-        try:
-            prefix, suffix = create_statement.split(engine_full, 1)
-            match = _fullmatch_strict(f'CREATE MATERIALIZED VIEW `?{db}`?.`?{table}`? (.*) ENGINE = ', prefix)
-            columns = match.group(1)
-            create_statement = f'CREATE MATERIALIZED VIEW `{db}`.`{table}` TO `{db}`.`.inner.{table}` {columns}{suffix}'
-
-        except Exception:
-            logging.exception('Failed to normalize table create statement: %s', create_statement)
-
-    return create_statement
-
-
-def _fullmatch_strict(pattern: str, string: str) -> Match[Any]:
-    match = re.fullmatch(pattern, string)
-    if not match:
-        raise ValueError(f'"{string}" does not match "{pattern}"')
-
-    return match
+    return Table(database=record['database'],
+                 name=record['name'],
+                 engine=record['engine'],
+                 create_statement=record['create_table_query'],
+                 data_path=record['data_path'],
+                 inner_table=inner_table)
 
 
 def _get_part_checksum(part_path: str) -> str:
