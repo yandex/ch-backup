@@ -385,8 +385,9 @@ class ClickhouseBackup:
         if errors:
             logging.error('Failed to restore database views:\n%s',
                           '\n'.join(f'"{v.database}"."{v.name}": {e!r}' for v, e in errors))
-            failed_views_str = ', '.join(f'"{v.database}"."{v.name}"' for v, e in errors)
-            raise ClickhouseBackupError(f'Failed to restore database views: {failed_views_str}')
+            # TODO: uncomment with cleanup of backward-compatibility logic for inner_table field
+            # failed_views_str = ', '.join(f'"{v.database}"."{v.name}"' for v, e in errors)
+            # raise ClickhouseBackupError(f'Failed to restore database views: {failed_views_str}')
 
     def _restore_data(self, backup_meta: BackupMetadata, tables: Iterable[TableMetadata]) -> None:
         for table_meta in tables:
