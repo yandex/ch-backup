@@ -6,8 +6,6 @@ import logging
 import logging.config
 import os
 
-LOGGER = logging.getLogger('ch-backup')
-
 
 def configure(config: dict) -> None:
     """
@@ -25,39 +23,43 @@ def critical(msg, *args, **kwargs):
     """
     Log a message with severity 'CRITICAL'.
     """
-    LOGGER.critical(msg, *args, **kwargs)
+    _get_logger().critical(msg, *args, **kwargs)
 
 
 def error(msg, *args, **kwargs):
     """
     Log a message with severity 'ERROR'.
     """
-    LOGGER.error(msg, *args, **kwargs)
+    _get_logger().error(msg, *args, **kwargs)
 
 
 def exception(msg, *args, **kwargs):
     """
     Log a message with severity 'ERROR' with exception information.
     """
-    LOGGER.exception(msg, *args, **kwargs)
+    _get_logger().exception(msg, *args, **kwargs)
 
 
 def warning(msg, *args, **kwargs):
     """
     Log a message with severity 'WARNING'.
     """
-    LOGGER.warning(msg, *args, **kwargs)
+    _get_logger().warning(msg, *args, **kwargs)
 
 
 def info(msg, *args, **kwargs):
     """
     Log a message with severity 'INFO'.
     """
-    LOGGER.info(msg, *args, **kwargs)
+    _get_logger().info(msg, *args, **kwargs)
 
 
 def debug(msg, *args, **kwargs):
     """
     Log a message with severity 'DEBUG'.
     """
-    LOGGER.debug(msg, *args, **kwargs)
+    _get_logger().debug(msg, *args, **kwargs)
+
+
+def _get_logger() -> logging.Logger:
+    return logging.getLogger('ch-backup')
