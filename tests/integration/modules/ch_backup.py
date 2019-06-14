@@ -13,7 +13,6 @@ from .typing import ContextT
 
 CH_BACKUP_CLI_PATH = '/usr/local/bin/ch-backup'
 CH_BACKUP_CONF_PATH = '/etc/yandex/ch-backup/ch-backup.conf'
-CBS_DEFAULT_JSON_INDENT = 4
 
 BackupId = Union[int, str]
 
@@ -110,11 +109,11 @@ class Backup:
         else:
             self._metadata = metadata
 
-    def dump_json(self) -> str:
+    def dump_json(self, indent: int = 4) -> str:
         """
         Dump struct to json data
         """
-        return json.dumps(self._metadata, indent=CBS_DEFAULT_JSON_INDENT)
+        return json.dumps(self._metadata, indent=indent)
 
     def get_file_paths(self) -> Sequence[str]:
         """
@@ -137,12 +136,13 @@ class BackupManager:
     Backup manager.
     """
 
-    def __init__(self, context: ContextT, node_name: str) -> None:
+    def __init__(self, context: ContextT, node_name: str, timeout: int = 300) -> None:
         self._container = docker.get_container(context, node_name)
         self._s3_client = s3.S3Client(context)
         self._config_path = CH_BACKUP_CONF_PATH
         protocol = context.ch_backup['protocol']
-        self._cmd_base = f'{CH_BACKUP_CLI_PATH} --protocol {protocol} --insecure  --config {self._config_path}'
+        self._cmd_base = \
+            f'timeout {timeout} {CH_BACKUP_CLI_PATH} --protocol {protocol} --insecure  --config {self._config_path}'
 
     def backup(self,
                name: str = '{uuid}',
@@ -250,6 +250,8 @@ class BackupManager:
     def _exec(self, command: str) -> str:
         cmd = f'{self._cmd_base} {command}'
         result = self._container.exec_run(cmd, user='root')
+        assert result.exit_code == 0
+
         return result.output.decode().strip()
 
     def _normalize_id(self, backup_id: BackupId) -> str:
