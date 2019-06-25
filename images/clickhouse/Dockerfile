@@ -30,15 +30,15 @@ RUN echo "root:root" | chpasswd && \
     mkdir /var/run/sshd
 
 RUN mkdir -p ${CH_TMP_DIR}
-COPY setup.py requirements.txt ${CH_TMP_DIR}/
+COPY setup.py requirements.txt staging/images/clickhouse/clickhouse.gpg ${CH_TMP_DIR}/
 
 RUN cd ${CH_TMP_DIR} && \
-    pip3 install -r requirements.txt
-
-RUN mkdir -p /etc/apt/sources.list.d && \
+    pip3 install -r requirements.txt && \
+    mkdir -p /etc/apt/sources.list.d && \
     echo $CLICKHOUSE_REPOSITORY | tee /etc/apt/sources.list.d/clickhouse.list && \
-    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys $CLICKHOUSE_REPOSITORY_KEY && \
-    apt-get update -qq && \
+    apt-key add clickhouse.gpg
+
+RUN apt-get update -qq && \
     if [ "$CLICKHOUSE_VERSION" = "19.1.16" ]; then \
         apt-get install -y \
             clickhouse-common-static=$CLICKHOUSE_VERSION \
