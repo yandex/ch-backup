@@ -214,8 +214,9 @@ def show_command(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> None:
 @option('-t', '--tables', type=List(regexp=r'[\w.]+'), help='Comma-separated list of tables to backup.')
 @option('-f', '--force', is_flag=True, help='Enables force mode (backup.min_interval is ignored).')
 @option('-l', '--label', multiple=True, help='Custom labels as key-value pairs that represents user metadata.')
+@option('--schema-only', is_flag=True, help='Backup only databases schemas')
 def backup_command(ctx: Context, ch_backup: ClickhouseBackup, name: str, databases: list, tables: list, force: bool,
-                   label: list) -> None:
+                   label: list, schema_only: bool) -> None:
     """Perform backup."""
     if databases and tables:
         ctx.fail('Options --databases and --tables are mutually exclusive.')
@@ -227,7 +228,12 @@ def backup_command(ctx: Context, ch_backup: ClickhouseBackup, name: str, databas
         value = key_value.pop() if key_value else None
         labels[key] = value
 
-    (name, msg) = ch_backup.backup(name, databases=databases, tables=tables, force=force, labels=labels)
+    (name, msg) = ch_backup.backup(name,
+                                   databases=databases,
+                                   tables=tables,
+                                   force=force,
+                                   labels=labels,
+                                   schema_only=schema_only)
 
     if msg:
         print(msg, file=sys.stderr, flush=True)

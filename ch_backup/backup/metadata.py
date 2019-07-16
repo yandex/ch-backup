@@ -170,6 +170,7 @@ class BackupMetadata:
     """
 
     # pylint: disable=too-many-instance-attributes
+    # pylint: disable=too-many-arguments
 
     def __init__(self,
                  name: str,
@@ -178,7 +179,8 @@ class BackupMetadata:
                  ch_version: str,
                  time_format: str,
                  hostname: str = None,
-                 labels: dict = None) -> None:
+                 labels: dict = None,
+                 schema_only: bool = False) -> None:
         self.name = name
         self.labels = labels
         self.path = path
@@ -192,6 +194,7 @@ class BackupMetadata:
         self._databases: Dict[str, dict] = {}
         self.size = 0
         self.real_size = 0
+        self.schema_only = schema_only
 
     def __str__(self) -> str:
         return self.dump_json()
@@ -250,6 +253,7 @@ class BackupMetadata:
                 'labels': self.labels,
                 # TODO: clean up backward-compatibility logic (delete 'date_fmt')
                 'date_fmt': self.time_format,
+                'schema_only': self.schema_only,
             },
         }
         return json.dumps(report, separators=(',', ':'))
@@ -278,6 +282,7 @@ class BackupMetadata:
             backup.ch_version = meta['ch_version']
             backup.labels = meta['labels']
             backup.version = meta['version']
+            backup.schema_only = meta.get('schema_only', False)
 
             return backup
 

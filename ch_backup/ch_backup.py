@@ -52,7 +52,8 @@ class ClickhouseBackup:
                databases: Sequence[str] = None,
                tables: Sequence[str] = None,
                force: bool = False,
-               labels: dict = None) -> Tuple[str, Optional[str]]:
+               labels: dict = None,
+               schema_only: bool = False) -> Tuple[str, Optional[str]]:
         """
         Perform backup.
 
@@ -76,23 +77,7 @@ class ClickhouseBackup:
         if databases is None:
             databases = self._ch_ctl.get_databases(self._config['exclude_dbs'])
 
-        backup_age_limit = None
-        if self._config.get('deduplicate_parts'):
-            backup_age_limit = utcnow() - timedelta(**self._config['deduplication_age_limit'])
-
-        last_backup = None
-        dedup_backups = []
-        for backup in self._iter_backups():
-            if not last_backup:
-                last_backup = backup
-
-            if not backup_age_limit or backup.start_time < backup_age_limit:
-                break
-
-            if backup.state in (BackupState.DELETING, BackupState.PARTIALLY_DELETED):
-                continue
-
-            dedup_backups.append(backup)
+        last_backup = next(iter(self._iter_backups()), None)
 
         if last_backup and not self._check_min_interval(last_backup, force):
             msg = 'Backup is skipped per backup.min_interval config option.'
@@ -104,15 +89,17 @@ class ClickhouseBackup:
                                      labels=backup_labels,
                                      version=get_version(),
                                      ch_version=self._ch_ctl.get_version(),
-                                     time_format=self._config['time_format'])
+                                     time_format=self._config['time_format'],
+                                     schema_only=schema_only)
 
         self._backup_layout.upload_backup_metadata(backup_meta)
 
         logging.debug('Starting backup "%s" for databases: %s', backup_meta.name, ', '.join(databases))
 
         try:
+            dedup_backups = [] if schema_only else self._get_backup_dedup_list()
             for db_name in databases:
-                self._backup_database(backup_meta, db_name, db_tables[db_name], dedup_backups)
+                self._backup_database(backup_meta, db_name, db_tables[db_name], dedup_backups, schema_only)
             backup_meta.state = BackupState.CREATED
         except Exception:
             logging.critical('Backup failed', exc_info=True)
@@ -216,8 +203,33 @@ class ClickhouseBackup:
 
         return deleted_backup_names, None
 
-    def _backup_database(self, backup_meta: BackupMetadata, db_name: str, tables: Sequence[str],
-                         dedup_backups: Sequence[BackupMetadata]) -> None:
+    def _get_backup_dedup_list(self):
+        """
+        Get list of backup deduplication candidates.
+        """
+        backup_age_limit = None
+        if self._config.get('deduplicate_parts'):
+            backup_age_limit = utcnow() - timedelta(**self._config['deduplication_age_limit'])
+
+        dedup_backups = []
+        for backup in self._iter_backups():
+
+            if not backup_age_limit or backup.start_time < backup_age_limit:
+                break
+
+            if backup.state in (BackupState.DELETING, BackupState.PARTIALLY_DELETED):
+                continue
+
+            dedup_backups.append(backup)
+
+        return dedup_backups
+
+    def _backup_database(self,
+                         backup_meta: BackupMetadata,
+                         db_name: str,
+                         tables: Sequence[str],
+                         dedup_backups: Sequence[BackupMetadata],
+                         schema_only: bool = False) -> None:
         """
         Backup database.
         """
@@ -229,19 +241,31 @@ class ClickhouseBackup:
         backup_meta.add_database(db_name)
 
         for table in self._ch_ctl.get_tables_ordered(db_name, tables):
-            self._backup_table(backup_meta, table, dedup_backups)
+            table_meta = TableMetadata(table.database, table.name, table.engine, table.inner_table)
+            self._backup_table_schema(backup_meta, table)
+            if not schema_only:
+                # table_meta will be populated with parts info
+                self._backup_table_data(backup_meta, table, table_meta, dedup_backups)
 
-    def _backup_table(self, backup_meta: BackupMetadata, table: Table,
-                      dedup_backups: Sequence[BackupMetadata]) -> None:
+            backup_meta.add_table(table_meta)
+
+        self._backup_layout.upload_backup_metadata(backup_meta)
+
+    def _backup_table_schema(self, backup_meta: BackupMetadata, table: Table) -> None:
         """
-        Backup table.
+        Backup table object.
         """
-        logging.debug('Performing table backup for "%s"."%s"', table.database, table.name)
+        logging.debug('Uploading table schema for "%s"."%s"', table.database, table.name)
 
         self._backup_layout.upload_table_create_statement(backup_meta.name, table.database, table.name,
                                                           table.create_statement)
 
-        table_meta = TableMetadata(table.database, table.name, table.engine, table.inner_table)
+    def _backup_table_data(self, backup_meta: BackupMetadata, table: Table, table_meta: TableMetadata,
+                           dedup_backups: Sequence[BackupMetadata]) -> None:
+        """
+        Backup table with data opposed to schema only.
+        """
+        logging.debug('Performing table backup for "%s"."%s"', table.database, table.name)
 
         if _is_merge_tree(table):
             try:
@@ -264,10 +288,6 @@ class ClickhouseBackup:
                     self._ch_ctl.remove_freezed_part(fpart)
 
                 table_meta.add_part(part)
-
-        backup_meta.add_table(table_meta)
-
-        self._backup_layout.upload_backup_metadata(backup_meta)
 
         if _is_merge_tree(table):
             self._backup_layout.wait()
