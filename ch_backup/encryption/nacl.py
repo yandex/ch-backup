@@ -14,7 +14,6 @@ class NaClEncryption(BaseEncryption):
 
     https://pynacl.readthedocs.io/en/latest/secret/
     """
-
     def __init__(self, conf):
         self._box = SecretBox(conf['key'].encode('utf-8'))
 

@@ -22,7 +22,6 @@ class ClickhouseClient:
     """
     ClickHouse Client.
     """
-
     def __init__(self, context: ContextT, node_name: str) -> None:
         protocol = 'http'
         port = context.conf['projects']['clickhouse']['expose'][protocol]

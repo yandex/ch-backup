@@ -20,7 +20,6 @@ class BackupLayout:
     """
     Class responsible for management of backup data layout.
     """
-
     def __init__(self, config: Config) -> None:
         self._storage_loader = StorageLoader(config)
         self._config = config['backup']

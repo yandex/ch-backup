@@ -14,7 +14,6 @@ class TestBackupMetadata:
     """
     Tests for ClickhouseBackupStructure.
     """
-
     @pytest.mark.parametrize('meta', [
         {
             'state': 'created',

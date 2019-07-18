@@ -21,7 +21,6 @@ class Backup:
     """
     Class representing backup metadata.
     """
-
     def __init__(self, metadata: dict) -> None:
         self._metadata = metadata
 
@@ -135,7 +134,6 @@ class BackupManager:
     """
     Backup manager.
     """
-
     def __init__(self, context: ContextT, node_name: str, timeout: int = 300) -> None:
         self._container = docker.get_container(context, node_name)
         self._s3_client = s3.S3Client(context)

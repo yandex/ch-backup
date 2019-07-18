@@ -22,7 +22,6 @@ class Pipeline:
 
     stores and runs pipe stages
     """
-
     def __init__(self) -> None:
         self._func_list: List[Tuple[Callable, Sequence, dict]] = []
 
@@ -58,7 +57,6 @@ class ExecPool:
     runs
     uses concurrent.futures.ProcessPoolExecutor
     """
-
     def __init__(self, worker_count: int) -> None:
         self._futures: Dict[str, Future] = {}
         self._pool = ProcessPoolExecutor(max_workers=worker_count)
@@ -113,7 +111,6 @@ class PipelineLoader:
     """
     Pipeline-based storage loader
     """
-
     def __init__(self, config: dict) -> None:
         self._config = config
         self._exec_pool = None

@@ -65,7 +65,6 @@ class UploadDataStorageStage(UploadStorageStage):
     """
     UploadStorageStage for uploading data objects.
     """
-
     def _source_size(self, source: str) -> int:
         return len(source)
 
@@ -74,7 +73,6 @@ class UploadFileStorageStage(UploadStorageStage):
     """
     UploadStorageStage for uploading local files.
     """
-
     def _source_size(self, source: str) -> int:
         return os.path.getsize(source)
 

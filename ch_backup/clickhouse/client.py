@@ -20,7 +20,6 @@ class ClickhouseClient:
     """
     ClickHouse client.
     """
-
     def __init__(self, config: dict) -> None:
         host = config['host']
         protocol = config['protocol']

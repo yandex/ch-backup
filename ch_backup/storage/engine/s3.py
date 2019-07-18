@@ -21,7 +21,6 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
     """
     Engine for S3-compatible storage services.
     """
-
     def __init__(self, config: dict) -> None:
         credentials_config = config['credentials']
         boto_config = config['boto_config']

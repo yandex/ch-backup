@@ -67,7 +67,6 @@ def command(*args, **kwargs):
     """
     Decorator for ch-backup cli commands.
     """
-
     def decorator(f):
         @pass_context
         @wraps(f)

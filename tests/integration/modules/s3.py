@@ -17,7 +17,6 @@ class S3Client:
     """
     S3 client.
     """
-
     def __init__(self, context: ContextT) -> None:
         config = context.conf['s3']
         boto_config = config['boto_config']

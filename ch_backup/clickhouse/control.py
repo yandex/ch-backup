@@ -92,7 +92,6 @@ class Table(SimpleNamespace):
     """
     Table.
     """
-
     def __init__(self, database: str, name: str, engine: str, data_path: str, create_statement: str,
                  inner_table: Optional[str]) -> None:
         super().__init__()
@@ -108,7 +107,6 @@ class Partition(SimpleNamespace):
     """
     Table partition.
     """
-
     def __init__(self, database: str, table: str, name: str) -> None:
         super().__init__()
         self.database = database
@@ -120,7 +118,6 @@ class FreezedPart(SimpleNamespace):
     """
     Freezed data part.
     """
-
     def __init__(self, database: str, table: str, name: str, path: str, checksum: str, size: int):
         super().__init__()
         self.database = database
@@ -135,7 +132,6 @@ class ClickhouseCTL:
     """
     ClickHouse control tool.
     """
-
     def __init__(self, config: dict) -> None:
         self._config = config
         self._ch_client = ClickhouseClient(config)

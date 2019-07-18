@@ -23,7 +23,6 @@ class ClickhouseBackup:
     """
     Clickhouse backup logic
     """
-
     def __init__(self, config: Config) -> None:
         self._ch_ctl = ClickhouseCTL(config['clickhouse'])
         self._backup_layout = BackupLayout(config)

@@ -46,7 +46,6 @@ class StreamInter:
     """
     Iterate stream
     """
-
     def __init__(self, chunk_size):
         self._chunk_size = chunk_size
 

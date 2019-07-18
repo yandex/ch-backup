@@ -73,7 +73,6 @@ class BufferedIterStage(IterStage, metaclass=ABCMeta):
     - collects chunk of desired size in memory buffer.
     - produces processed data.
     """
-
     def __init__(self, conf: dict) -> None:
         self._buffer_size = conf['buffer_size']
         self._chunk_size = conf['chunk_size']

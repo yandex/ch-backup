@@ -57,7 +57,6 @@ def _environment(context: ContextT, loader: BaseLoader = None) -> Environment:
     """
     Create Environment object.
     """
-
     def _get_file_size(container_name, path):
         container = docker.get_container(context, container_name)
         return docker.get_file_size(container, path)

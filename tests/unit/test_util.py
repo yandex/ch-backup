@@ -12,7 +12,6 @@ class TestStripQuery:
     """
     Tests for strip_query() function.
     """
-
     def test_query_without_newlines(self) -> None:
         input_query = 'SELECT 42 FROM {db_name}.{table_name}'
         expected = 'SELECT 42 FROM {db_name}.{table_name}'
@@ -40,7 +39,6 @@ class TestRetry:
     """
     Tests for retry() function.
     """
-
     def test_function_succeeds(self):
         context: dict = {}
         unreliable_function(context)

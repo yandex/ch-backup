@@ -48,7 +48,6 @@ def env_stage(event, fail=False):
     """
     Nicely logs env stage.
     """
-
     def wrapper(fun):
         @wraps(fun)
         def _wrapped_fun(*args, **kwargs):

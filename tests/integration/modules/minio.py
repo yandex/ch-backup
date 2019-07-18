@@ -15,7 +15,6 @@ class MinioException(Exception):
     """
     Minion exception.
     """
-
     def __init__(self, response: dict) -> None:
         super().__init__(self._fmt_message(response))
         self.response = response
@@ -40,6 +39,7 @@ class BucketAlreadyOwnedByYou(MinioException):
     """
     BucketAlreadyOwnedByYou Minion exception.
     """
+    pass
 
 
 @retry(retry=retry_if_exception_type(MinioException), wait=wait_fixed(0.5), stop=stop_after_attempt(360))

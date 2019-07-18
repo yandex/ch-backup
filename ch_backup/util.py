@@ -101,7 +101,6 @@ def retry(exception_types: Union[type, tuple] = Exception, max_attempts: int = 5
     """
     Function decorator that retries wrapped function on failures.
     """
-
     def _log_retry(retry_state):
         logging.debug("Retrying %s.%s in %.2fs, attempt: %s, reason: %r", retry_state.fn.__module__,
                       retry_state.fn.__qualname__, retry_state.next_action.sleep, retry_state.attempt_number,

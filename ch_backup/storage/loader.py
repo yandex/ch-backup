@@ -16,7 +16,6 @@ class StorageLoader:
     technologies and execution pool to provide capabilities for parallel
     execution.
     """
-
     def __init__(self, config):
         self._config = config
         self._engine = get_storage_engine(config['storage'])

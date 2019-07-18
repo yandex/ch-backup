@@ -28,7 +28,6 @@ class PartMetadata(SimpleNamespace):
     """
     Backup metadata for ClickHouse data part.
     """
-
     def __init__(self,
                  database: str,
                  table: str,
