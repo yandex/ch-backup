@@ -25,3 +25,19 @@ Feature: Metadata
       environment: testing
       name: test_backup
     """
+    And metadata of clickhouse01 backup #0 contains no
+    """
+    schema_only: true
+    """
+
+  Scenario: Create "schema-only" backup
+    When we create clickhouse01 clickhouse backup
+    """
+    schema_only: true
+    """
+    Then metadata of clickhouse01 backup #0 contains
+    """
+    version: {{ version }}
+    ch_version: {{ clickhouse_version('clickhouse01') }}
+    schema_only: true
+    """

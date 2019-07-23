@@ -94,8 +94,35 @@ Feature: Backup & Clean & Restore
       | 4   | created  | 4          | 4            | shared+links  |
       | 5   | created  | 4          | 0            | shared        |
 
+  Scenario: Create "schema-only" backup
+    When we create clickhouse01 clickhouse backup
+    """
+    schema_only: True
+    """
+    Then we got the following backups on clickhouse01
+      | num | state    | data_count | link_count   | title         |
+      | 0   | created  | 0          | 0            | schema-only   |
+      | 1   | created  | 13         | 0            | data          |
+      | 2   | created  | 4          | 9            | links+data    |
+      | 3   | created  | 12         | 0            | shared+data   |
+      | 4   | created  | 0          | 8            | links         |
+      | 5   | created  | 4          | 4            | shared+links  |
+      | 6   | created  | 4          | 0            | shared        |
+
   Scenario: Attempt to delete "shared" backup deletes no data
-    When we delete clickhouse01 clickhouse backup #5
+    When we delete clickhouse01 clickhouse backup #6
+    Then we got the following backups on clickhouse01
+      | num | state    | data_count | link_count   | title         |
+      | 0   | created  | 0          | 0            | schema-only   |
+      | 1   | created  | 13         | 0            | data          |
+      | 2   | created  | 4          | 9            | links+data    |
+      | 3   | created  | 12         | 0            | shared+data   |
+      | 4   | created  | 0          | 8            | links         |
+      | 5   | created  | 4          | 4            | shared+links  |
+      | 6   | created  | 4          | 0            | shared        |
+
+  Scenario: Attempt to delete "schema-only" backup succeeds
+    When we delete clickhouse01 clickhouse backup #0
     Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   | title         |
       | 0   | created  | 13         | 0            | data          |

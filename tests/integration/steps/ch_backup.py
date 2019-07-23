@@ -75,6 +75,15 @@ def step_backup_metadata(context, node, backup_id):
     assert_that(backup.meta, has_entries(expected_meta))
 
 
+@then('metadata of {node:w} backup #{backup_id:d} contains no')
+@then('metadata of {node:w} backup "{backup_id}" contains no')
+def step_backup_metadata_absent(context, node, backup_id):
+    expected_meta = get_step_data(context)
+
+    backup = BackupManager(context, node).get_backup(backup_id)
+    assert_that(backup.meta, not has_entries(expected_meta))
+
+
 @then('we got the following backups on {node:w}')
 def step_check_backups_conditions(context, node):
     ch_backup = BackupManager(context, node)

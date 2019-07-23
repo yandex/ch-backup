@@ -147,7 +147,8 @@ class BackupManager:
                force: bool = None,
                databases: Sequence[str] = None,
                tables: Sequence[str] = None,
-               labels: dict = None) -> str:
+               labels: dict = None,
+               schema_only: bool = False) -> str:
         """
         Execute backup command.
         """
@@ -160,7 +161,8 @@ class BackupManager:
             options.append(f'--tables {",".join(tables or [])}')
         for key, value in (labels or {}).items():
             options.append(f'--label {key}={value}')
-
+        if schema_only:
+            options.append('--schema-only')
         return self._exec(f'backup {" ".join(options)}').strip()
 
     def delete(self, backup_id: BackupId) -> str:

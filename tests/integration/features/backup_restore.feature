@@ -34,4 +34,30 @@ Feature: Backup & Restore
     """
     Then clickhouse02 has same schema as clickhouse01
     But on clickhouse02 tables are empty
+
+  Scenario: Create a "schema-only"
+    When we create clickhouse01 clickhouse backup
+    """
+    schema_only: True
+    """
+    Then we got the following backups on clickhouse01
+      | num | state    | data_count | link_count   | title         |
+      | 0   | created  | 0          | 0            | schema-only   |
+      | 1   | created  | 4          | 4            | data+links    |
+      | 2   | created  | 4          | 0            | shared        |
+
+  Scenario: Restore from "schema-only" backup
+    When we drop all databases at clickhouse02
+    And we restore clickhouse backup #0 to clickhouse02
+    Then clickhouse02 has same schema as clickhouse01
+    But on clickhouse02 tables are empty
+
+  Scenario: Restore from "schema-only" backup without data
+    When we drop all databases at clickhouse02
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    schema_only: true
+    """
+    Then clickhouse02 has same schema as clickhouse01
+    But on clickhouse02 tables are empty
 # TODO: check deduplication with overdue backups
