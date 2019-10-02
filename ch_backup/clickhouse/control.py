@@ -14,7 +14,35 @@ from ch_backup import logging
 from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.util import chown_dir_contents, retry, strip_query
 
-GET_TABLES_ORDERED_SQL = strip_query("""
+GET_TABLES_SQL = strip_query("""
+    SELECT
+        database,
+        name,
+        engine,
+        engine_full,
+        create_table_query,
+        data_paths[1] "data_path"
+    FROM system.tables
+    WHERE database = '{db_name}'
+      AND (empty({tables}) OR has(cast({tables}, 'Array(String)'), name))
+    ORDER BY metadata_modification_time
+    FORMAT JSON
+""")
+
+GET_TABLE_SQL = strip_query("""
+    SELECT
+        database,
+        name,
+        engine,
+        engine_full,
+        create_table_query,
+        data_paths[1] "data_path"
+    FROM system.tables
+    WHERE database = '{db_name}' AND name = '{table_name}'
+    FORMAT JSON
+""")
+
+GET_TABLES_COMPAT_SQL = strip_query("""
     SELECT
         database,
         name,
@@ -29,7 +57,7 @@ GET_TABLES_ORDERED_SQL = strip_query("""
     FORMAT JSON
 """)
 
-GET_TABLE_SQL = strip_query("""
+GET_TABLE_COMPAT_SQL = strip_query("""
     SELECT
         database,
         name,
@@ -202,7 +230,10 @@ class ClickhouseCTL:
         """
         Get ordered by mtime list of all database tables
         """
-        query_sql = GET_TABLES_ORDERED_SQL.format(db_name=db_name, tables=tables or [])
+        if self._match_ch_version(min_version='19.15'):
+            query_sql = GET_TABLES_SQL.format(db_name=db_name, tables=tables or [])
+        else:
+            query_sql = GET_TABLES_COMPAT_SQL.format(db_name=db_name, tables=tables or [])
 
         result: List[Table] = []
         for row in self._ch_client.query(query_sql)['data']:
@@ -214,7 +245,10 @@ class ClickhouseCTL:
         """
         Get ordered by mtime list of all database tables
         """
-        query_sql = GET_TABLE_SQL.format(db_name=db_name, table_name=table_name)
+        if self._match_ch_version(min_version='19.15'):
+            query_sql = GET_TABLE_SQL.format(db_name=db_name, table_name=table_name)
+        else:
+            query_sql = GET_TABLE_COMPAT_SQL.format(db_name=db_name, table_name=table_name)
 
         return _make_table(self._ch_client.query(query_sql)['data'][0])
 
