@@ -34,7 +34,7 @@ class TestBackupMetadata:
         meta = {
             'name': '20181017T210300',
             'path': 'ch_backup/20181017T210300',
-            'date_fmt': '%Y-%m-%d %H:%M:%S %z',
+            'time_format': '%Y-%m-%d %H:%M:%S %z',
             'bytes': 0,
             'real_bytes': 0,
             'hostname': 'clickhouse01.test_net_711',
@@ -52,7 +52,7 @@ class TestBackupMetadata:
         assert backup.name == meta['name']
         assert backup.path == meta['path']
         assert backup.state == BackupState(meta['state'])
-        time_format = meta['date_fmt']
+        time_format = meta['time_format']
         assert backup.time_format == time_format
         assert backup.start_time == datetime.strptime(meta['start_time'], time_format)
         end_time_str = meta['end_time']

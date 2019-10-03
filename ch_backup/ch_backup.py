@@ -555,8 +555,7 @@ def _is_merge_tree(table: Union[Table, TableMetadata]) -> bool:
     """
     Return True if table belongs to merge tree table engine family, or False otherwise.
     """
-    # TODO: clean up backward-compatibility logic (engine must not be optional)
-    return table.engine is None or table.engine.find('MergeTree') != -1
+    return table.engine.find('MergeTree') != -1
 
 
 def _is_distributed(table: Union[Table, TableMetadata]) -> bool:

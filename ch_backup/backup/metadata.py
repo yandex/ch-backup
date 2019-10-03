@@ -93,9 +93,7 @@ class TableMetadata(SimpleNamespace):
     """
     Backup metadata for ClickHouse table.
     """
-
-    # TODO: clean up backward-compatibility logic (engine must not be optional)
-    def __init__(self, database: str, name: str, engine: Optional[str], inner_table: Optional[str]) -> None:
+    def __init__(self, database: str, name: str, engine: str, inner_table: Optional[str]) -> None:
         super().__init__()
         self.database: str = database
         self.name: str = name
@@ -106,8 +104,7 @@ class TableMetadata(SimpleNamespace):
         }
 
     @property
-    # TODO: clean up backward-compatibility logic (engine must not be optional)
-    def engine(self) -> Optional[str]:
+    def engine(self) -> str:
         """
         Return table engine.
         """
@@ -157,8 +154,7 @@ class TableMetadata(SimpleNamespace):
         """
         Deserialize table metadata.
         """
-        # TODO: clean up backward-compatibility logic (engine and inner_table must not be optional)
-        table = cls(database, name, raw_metadata.get('engine'), raw_metadata.get('inner_table'))
+        table = cls(database, name, raw_metadata['engine'], raw_metadata['inner_table'])
         table.raw_metadata['parts'] = raw_metadata['parts']
         return table
 
@@ -271,7 +267,7 @@ class BackupMetadata:
             backup.name = meta['name']
             backup.path = meta['path']
             backup.hostname = meta['hostname']
-            backup.time_format = meta['date_fmt']
+            backup.time_format = meta['time_format']
             backup._databases = loaded['databases']
             backup.start_time = cls._load_time(meta, 'start_time')
             backup.end_time = cls._load_time(meta, 'end_time')
@@ -400,7 +396,7 @@ class BackupMetadata:
         if not attr_value:
             return None
 
-        result = datetime.strptime(attr_value, meta['date_fmt'])
+        result = datetime.strptime(attr_value, meta['time_format'])
         if result.tzinfo is None:
             result = result.replace(tzinfo=timezone.utc)
 
