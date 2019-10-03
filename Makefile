@@ -5,11 +5,8 @@ TEST_REQUIREMENTS_VENV=.tox/test_requirements
 SESSION_FILE=.session_conf.sav
 INSTALL_DIR=$(DESTDIR)/opt/yandex/ch-backup
 
-CLICKHOUSE_VERSIONS?=19.1.16 19.3.9 19.4.5.35 19.5.4.22 19.6.2.11 19.7.5.29 19.8.3.8 19.9.5.36 19.10.1.5 19.11.3.11
-CLICKHOUSE_VERSION?=$(lastword $(CLICKHOUSE_VERSIONS))
-export CLICKHOUSE_VERSION
-
 export PYTHONIOENCODING?=utf8
+export CLICKHOUSE_VERSION?=19.14.7.15
 
 ENV_CONTROL=env -i \
     PATH=${TEST_VENV}/bin:$$PATH \
@@ -47,13 +44,6 @@ unit_test: build
 .PHONY: integration_test
 integration_test: build create_env
 	tox -e integration_test -- -D skip_setup
-
-
-.PHONY: integration_test_all
-integration_test_all: build
-	@for version in $(CLICKHOUSE_VERSIONS); do \
-		CLICKHOUSE_VERSION=$$version tox -e integration_test; \
-	done
 
 
 .PHONY: clean
@@ -174,7 +164,6 @@ help:
 	@echo "  lint                       Run linter tools."
 	@echo "  unit_test                  Run unit tests."
 	@echo "  integration_test           Run integration tests."
-	@echo "  integration_test_all       Run integration tests against all supported versions of ClickHouse."
 	@echo "  clean                      Clean up build and test artifacts."
 	@echo "  create_env                 Create test environment."
 	@echo "  start_env                  Start test environment runtime."
@@ -190,5 +179,3 @@ help:
 	@echo
 	@echo "Environment Variables:"
 	@echo "  CLICKHOUSE_VERSION         ClickHouse version to use in integration_test target (default: \"$(CLICKHOUSE_VERSION)\")."
-	@echo "  CLICKHOUSE_VERSIONS        List of ClickHouse versions to use in integration_test_all target"
-	@echo "                             (default: \"$(CLICKHOUSE_VERSIONS)\")."
