@@ -139,6 +139,8 @@ class DeleteMultipleStorageStage(InputStage):
         ])
 
     def _process(self):
+        assert self._files_iter
+
         @retry()
         def _delete_files(elem):
             self._loader.delete_files(elem)

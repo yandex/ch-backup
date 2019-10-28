@@ -2,7 +2,6 @@
 S3 client.
 """
 import logging
-from tempfile import TemporaryFile
 
 import boto3
 import botocore.vendored.requests.packages.urllib3 as boto_urllib3
@@ -44,17 +43,6 @@ class S3Client:
         """
         remote_path = remote_path.lstrip('/')
         self._s3_client.put_object(Body=data, Bucket=self._s3_bucket_name, Key=remote_path)
-
-    def download_data(self, remote_path: str) -> str:
-        """
-        Download file from storage and return its content as a string.
-        """
-        remote_path = remote_path.lstrip('/')
-        with TemporaryFile() as fileobj:
-            self._s3_client.download_fileobj(self._s3_bucket_name, remote_path, fileobj)
-            fileobj.seek(0)
-            data = fileobj.read()
-        return data
 
     def delete_data(self, remote_path: str) -> None:
         """

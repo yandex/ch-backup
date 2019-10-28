@@ -6,6 +6,11 @@ import logging
 from tests.integration import env_control
 from tests.integration.modules.logs import save_logs
 
+try:
+    import ipdb as pdb
+except ImportError:
+    import pdb  # type: ignore
+
 
 def before_all(context):
     """
@@ -38,10 +43,6 @@ def after_step(context, step):
     if step.status == 'failed':
         save_logs(context)
         if context.config.userdata.getbool('debug'):
-            try:
-                import ipdb as pdb
-            except ImportError:
-                import pdb  # type: ignore
             pdb.post_mortem(step.exc_traceback)
 
 

@@ -46,10 +46,12 @@ class WriteFileStage(BufferedIterStage):
         self._fobj = open(dst_key, 'bw', 0)
 
     def _process(self, data):
+        assert self._fobj
         self._fobj.write(data)
 
     def _post_process(self):
-        self._fobj.close()
+        if self._fobj:
+            self._fobj.close()
 
 
 class ReadFileStage(InputStage):
@@ -67,6 +69,7 @@ class ReadFileStage(InputStage):
         self._fobj = open(src_key, 'br')
 
     def _process(self):
+        assert self._fobj
         return self._fobj.read(self._chunk_size)
 
     def _post_process(self) -> None:
@@ -91,6 +94,7 @@ class DeleteFileStage(IterStage):
         pass
 
     def _post_process(self):
+        assert self._local_path
         os.remove(self._local_path)
 
 
