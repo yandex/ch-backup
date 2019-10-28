@@ -26,7 +26,7 @@ ENV LC_ALL en_US.UTF-8
 
 # setup ssh for debugging
 RUN echo "root:root" | chpasswd && \
-    sed -i -e '/PermitRootLogin/ s/ .*/ yes/' /etc/ssh/sshd_config && \
+    sed -i -e '/PermitRootLogin/ s/.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
     mkdir /var/run/sshd
 
 RUN mkdir -p ${CH_TMP_DIR}
