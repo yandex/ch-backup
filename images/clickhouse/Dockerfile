@@ -3,8 +3,6 @@ FROM ubuntu:bionic
 ENV TZ=Europe/Moscow
 ENV CH_TMP_DIR /var/tmp/ch-backup
 
-ARG CLICKHOUSE_REPOSITORY="deb https://repo.yandex.ru/clickhouse/deb/stable/ main/"
-ARG CLICKHOUSE_REPOSITORY_KEY=C8F1E19FE0C56BD4
 ARG CLICKHOUSE_VERSION
 
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && \
@@ -35,7 +33,9 @@ COPY setup.py requirements.txt staging/images/clickhouse/clickhouse.gpg ${CH_TMP
 RUN cd ${CH_TMP_DIR} && \
     pip3 install -r requirements.txt && \
     mkdir -p /etc/apt/sources.list.d && \
-    echo $CLICKHOUSE_REPOSITORY | tee /etc/apt/sources.list.d/clickhouse.list && \
+    echo "deb https://repo.yandex.ru/clickhouse/deb/testing/ main/" | tee /etc/apt/sources.list.d/clickhouse-testing.list && \
+    echo "deb https://repo.yandex.ru/clickhouse/deb/prestable/ main/" | tee /etc/apt/sources.list.d/clickhouse-prestable.list && \
+    echo "deb https://repo.yandex.ru/clickhouse/deb/stable/ main/" | tee /etc/apt/sources.list.d/clickhouse-stable.list && \
     apt-key add clickhouse.gpg
 
 RUN apt-get update -qq && \
