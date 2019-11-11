@@ -1,4 +1,4 @@
-FROM ubuntu:bionic
+FROM registry.yandex.net/ubuntu:bionic
 
 ENV TZ=Europe/Moscow
 ENV CH_TMP_DIR /var/tmp/ch-backup
@@ -39,6 +39,7 @@ RUN cd ${CH_TMP_DIR} && \
     apt-key add clickhouse.gpg
 
 RUN apt-get update -qq && \
+    apt-get upgrade -y && \
     if [ "$CLICKHOUSE_VERSION" = "19.1.16" ]; then \
         apt-get install -y \
             clickhouse-common-static=$CLICKHOUSE_VERSION \
