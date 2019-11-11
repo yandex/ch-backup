@@ -108,7 +108,7 @@ Feature: Backup of tables with different engines and configurations
 
     CREATE TABLE test_db2.table_02 (n Int32, n2 Int32)
     ENGINE = MergeTree() PARTITION BY n % 10 ORDER BY n;
-    INSERT INTO test_db.table_01 SELECT number, number * number FROM system.numbers LIMIT 1000;
+    INSERT INTO test_db2.table_02 SELECT number, number * number FROM system.numbers LIMIT 1000;
 
     CREATE VIEW test_db.view_01
     AS SELECT n, n * n AS "n2"
