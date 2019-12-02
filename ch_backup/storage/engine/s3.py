@@ -5,6 +5,7 @@ S3 storage engine.
 import os
 import socket
 import time
+from functools import wraps
 from tempfile import TemporaryFile
 from typing import Sequence
 
@@ -19,18 +20,44 @@ from .base import PipeLineCompatibleStorageEngine
 DEFAULT_DOWNLOAD_PART_LEN = 8 * 1024 * 1024
 
 
-class S3StorageEngine(PipeLineCompatibleStorageEngine):
+class S3Client:
     """
-    Engine for S3-compatible storage services.
+    Wrapper for S3 client that contain retry logic
     """
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict):
         credentials_config = config['credentials']
-        boto_config = config['boto_config']
         self._s3_session = boto3.session.Session(
             aws_access_key_id=credentials_config['access_key_id'],
             aws_secret_access_key=credentials_config['secret_access_key'],
         )
 
+        self._config = config
+        self._s3_client = None
+
+    def __getattr__(self, attr):
+        if not attr.startswith('_'):
+            self._ensure_s3_client()
+            return getattr(self._s3_client, attr)
+
+    def _ensure_s3_client(self):
+        if self._s3_client is not None:
+            return
+
+        def _retry_if(exception: ClientError) -> bool:
+            return exception.response.get('Error', {'Error': {}}).get('Code') == '429'
+
+        def _retry_wrapper(method):
+            @wraps(method)
+            @retry(exception_types=ClientError, retry_if=_retry_if)
+            def _wrapper(*args, **kwargs):
+                try:
+                    return method(*args, **kwargs)
+                except ClientError:
+                    self._s3_client = None
+                    raise
+
+        credentials_config = self._config['credentials']
+        boto_config = self._config['boto_config']
         self._s3_client = self._s3_session.client(
             service_name='s3',
             endpoint_url=credentials_config['endpoint_url'],
@@ -39,21 +66,17 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
                 'region_name': boto_config['region_name'],
             },
                           proxies=self._resolve_proxies(
-                              config.get('proxy_resolver', {}).get('uri'),
-                              config.get('proxy_resolver', {}).get('proxy_port'))),
+                              self._config.get('proxy_resolver', {}).get('uri'),
+                              self._config.get('proxy_resolver', {}).get('proxy_port'))),
         )
 
-        self._s3_bucket_name = credentials_config['bucket']
-
-        self._multipart_uploads: dict = {}
-        self._multipart_downloads: dict = {}
-
-        if config.get('disable_ssl_warnings'):
-            requests.packages.urllib3.disable_warnings()  # pylint: disable=no-member
+        for attr in self._s3_client.__dict__:
+            if callable(getattr(self._s3_client, attr)) and attr[0] != '_':
+                setattr(self._s3_client, attr, _retry_wrapper(getattr(self._s3_client, attr)))
 
     @staticmethod
     @retry((ValueError, requests.RequestException), max_interval=60, max_attempts=10000)
-    def _resolve_proxies(resolver_path, proxy_port):
+    def _resolve_proxies(resolver_path: str, proxy_port: int) -> dict:
         """
         Get proxy host name via a special handler
         """
@@ -71,6 +94,23 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
             'http': f'{host}:{proxy_port}',
             'https': f'{host}:{proxy_port}',
         }
+
+
+class S3StorageEngine(PipeLineCompatibleStorageEngine):
+    """
+    Engine for S3-compatible storage services.
+    """
+    def __init__(self, config: dict) -> None:
+        credentials_config = config['credentials']
+
+        self._s3_client = S3Client(config)
+        self._s3_bucket_name = credentials_config['bucket']
+
+        self._multipart_uploads: dict = {}
+        self._multipart_downloads: dict = {}
+
+        if config.get('disable_ssl_warnings'):
+            requests.packages.urllib3.disable_warnings()  # pylint: disable=no-member
 
     def upload_file(self, local_path: str, remote_path: str) -> str:
         remote_path = remote_path.lstrip('/')

@@ -97,7 +97,10 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def retry(exception_types: Union[type, tuple] = Exception, max_attempts: int = 5, max_interval: float = 5) -> Callable:
+def retry(exception_types: Union[type, tuple] = Exception,
+          max_attempts: int = 5,
+          max_interval: float = 5,
+          retry_if: Callable = tenacity.retry_always) -> Callable:
     """
     Function decorator that retries wrapped function on failures.
     """
@@ -106,7 +109,7 @@ def retry(exception_types: Union[type, tuple] = Exception, max_attempts: int = 5
                       retry_state.fn.__qualname__, retry_state.next_action.sleep, retry_state.attempt_number,
                       retry_state.outcome.exception())
 
-    return tenacity.retry(retry=tenacity.retry_if_exception_type(exception_types),
+    return tenacity.retry(retry=tenacity.retry_all(tenacity.retry_if_exception_type(exception_types), retry_if),
                           wait=tenacity.wait_random_exponential(multiplier=0.5, max=max_interval),
                           stop=tenacity.stop_after_attempt(max_attempts),
                           reraise=True,
