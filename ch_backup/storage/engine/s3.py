@@ -3,15 +3,18 @@ S3 storage engine.
 """
 
 import os
+import socket
 import time
 from tempfile import TemporaryFile
 from typing import Sequence
 
 import boto3
 import botocore.vendored.requests.packages.urllib3 as boto_urllib3
+import requests
 from botocore.client import Config
 from botocore.errorfactory import ClientError
 
+from ...util import retry
 from .base import PipeLineCompatibleStorageEngine
 
 DEFAULT_DOWNLOAD_PART_LEN = 8 * 1024 * 1024
@@ -35,7 +38,10 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
             config=Config(s3={
                 'addressing_style': boto_config['addressing_style'],
                 'region_name': boto_config['region_name'],
-            }),
+            },
+                          proxies=self._resolve_proxies(
+                              config.get('proxy_resolver', {}).get('uri'),
+                              config.get('proxy_resolver', {}).get('proxy_port'))),
         )
 
         self._s3_bucket_name = credentials_config['bucket']
@@ -45,6 +51,27 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
 
         if config.get('disable_ssl_warnings'):
             self.disable_boto_requests_warnings()
+
+    @staticmethod
+    @retry((ValueError, requests.RequestException), max_interval=60, max_attempts=10000)
+    def _resolve_proxies(resolver_path, proxy_port):
+        """
+        Get proxy host name via a special handler
+        """
+        if resolver_path is None:
+            return None
+        req = requests.get(resolver_path)
+        req.raise_for_status()
+        host = req.text
+        # Try to resolve hostname to check the output
+        try:
+            socket.getaddrinfo(host, 0)
+        except socket.gaierror:
+            raise ValueError(f'{resolver_path} returned unknown hostname: "{host}"')
+        return {
+            'http': f'{host}:{proxy_port}',
+            'https': f'{host}:{proxy_port}',
+        }
 
     def upload_file(self, local_path: str, remote_path: str) -> str:
         remote_path = remote_path.lstrip('/')

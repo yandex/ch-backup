@@ -24,7 +24,6 @@ class S3Client:
 
         host, port = docker.get_exposed_port(docker.get_container(context, context.conf['s3']['container']),
                                              context.conf['s3']['port'])
-
         endpoint_url = f'http://{host}:{port}'
         self._s3_client = self._s3_session.client(
             service_name='s3',
@@ -33,7 +32,6 @@ class S3Client:
                 'addressing_style': boto_config['addressing_style'],
                 'region_name': boto_config['region_name'],
             }))
-
         self._s3_bucket_name = config['bucket']
         self._disable_boto_requests_warnings()
 

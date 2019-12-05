@@ -25,9 +25,13 @@ def create():
         'host': f'minio01.{network_name}',
         'bucket': 'ch-backup',
         'port': 9000,
-        'endpoint': 'http://minio:9000',
+        'endpoint': 'http://minio01:9000',
         'access_secret_key': generate_random_string(40),
         'access_key_id': generate_random_string(20),
+        'proxy_resolver': {
+            'uri': f'http://proxy-api01.{network_name}:8080',
+            'proxy_port': 4080,
+        },
         'boto_config': {
             'addressing_style': 'auto',
             'region_name': 'us-east-1',
@@ -67,6 +71,18 @@ def create():
                 'expose': {
                     'http': s3['port'],
                 },
+            },
+            'proxy': {
+                'container': 'proxy01',
+                'expose': {
+                    'tcp': 4080,
+                },
+            },
+            'proxy-api': {
+                'expose': {
+                    'http': 8080,
+                },
+                'environment': [f'PROXY_HOST=proxy01.{network_name}'],
             },
         },
     }
