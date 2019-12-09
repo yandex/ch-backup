@@ -2,6 +2,7 @@
 Clickhouse backup logic
 """
 
+import re
 from collections import defaultdict, deque
 from copy import copy
 from datetime import timedelta
@@ -113,11 +114,17 @@ class ClickhouseBackup:
 
         return (backup_meta.name, None)
 
-    def restore(self, backup_name: str, databases: Sequence[str] = None, schema_only: bool = False) -> None:
+    def restore(self,
+                backup_name: str,
+                databases: Sequence[str] = None,
+                schema_only: bool = False,
+                override_replica_name: str = None) -> None:
         """
         Restore specified backup
         """
         backup_meta = self._get_backup(backup_name)
+
+        self._config['override_replica_name'] = override_replica_name or self._config.get('override_replica_name')
 
         if databases is None:
             databases = backup_meta.get_databases()
@@ -380,6 +387,11 @@ class ClickhouseBackup:
 
             table_sql = self._backup_layout.get_table_create_statement(backup_meta, table_meta.database,
                                                                        table_meta.name)
+            if self._config['override_replica_name']:
+                match = re.search(R"""Replicated[a-zA-Z]{0,20}MergeTree\(\'.*.\', (?P<replica>\'.*.\')\)""", table_sql)
+                if match:
+                    table_sql = table_sql.replace(match.group('replica'), f"'{self._config['override_replica_name']}'")
+
             self._ch_ctl.restore_meta(table_sql)
 
     def _restore_view_objects(self, backup_meta: BackupMetadata, views: Iterable[TableMetadata]) -> None:

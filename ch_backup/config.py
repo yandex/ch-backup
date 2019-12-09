@@ -41,6 +41,7 @@ DEFAULT_CONFIG = {
         # User data including into backup metadata.
         'labels': {},
         'keep_freezed_data_on_failure': True,
+        'override_replica_name': None,
     },
     'storage': {
         'type': 's3',

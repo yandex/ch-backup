@@ -36,6 +36,12 @@ def step_fill_with_test_data(context, node, test_name):
     ClickhouseClient(context, node).init_data(mark=test_name)
 
 
+@when('we execute query on {node:w}')
+def step_test_request(context, node):
+    ch_client = ClickhouseClient(context, node)
+    context.response = ch_client.get_response(context.text)
+
+
 @given('we have executed queries on {node:w}')
 @when('we execute queries on {node:w}')
 def step_test_data(context, node):
@@ -54,6 +60,11 @@ def step_test_data(context, node):
 @when('we drop test table #{table_num:d} in db #{db_num:d} on {node}')
 def step_drop_test_table(context, table_num, db_num, node):
     ClickhouseClient(context, node).drop_test_table(db_num=db_num, table_num=table_num)
+
+
+@then('we get response')
+def step_get_response(context):
+    assert_that(context.response, equal_to(context.text))
 
 
 @then('we got same clickhouse data at {nodes}')

@@ -43,6 +43,12 @@ class ClickhouseClient:
         """
         self._query('POST', query=query)
 
+    def get_response(self, query: str) -> str:
+        """
+        Execute arbitrary query and return result
+        """
+        return str(self._query('POST', query=query))
+
     def get_version(self) -> str:
         """
         Get ClickHouse version.
