@@ -28,7 +28,7 @@ RUN echo "root:root" | chpasswd && \
     mkdir /var/run/sshd
 
 RUN mkdir -p ${CH_TMP_DIR}
-COPY setup.py requirements.txt staging/images/clickhouse/clickhouse.gpg ${CH_TMP_DIR}/
+COPY setup.py requirements.txt staging/images/{{instance_name}}/clickhouse.gpg ${CH_TMP_DIR}/
 
 RUN cd ${CH_TMP_DIR} && \
     pip3 install -r requirements.txt && \

@@ -1,5 +1,5 @@
 <yandex>
-    <listen_host>::</listen_host>
+    <listen_host>0.0.0.0</listen_host>
     <https_port>8443</https_port>
     <tcp_ssl_port>9440</tcp_ssl_port>
     <openSSL>
@@ -14,6 +14,17 @@
             <preferServerCiphers>true</preferServerCiphers>
         </server>
     </openSSL>
+     <zookeeper>
+         <node index="1">
+             <host>{{conf.zk.uri}}</host>
+             <port>{{conf.zk.port}}</port>
+         </node>
+         <session_timeout_ms>3000</session_timeout_ms>
+         <root>/{{instance_name}}</root>
+     </zookeeper>
+    <macros>
+        <replica>{{instance_name}}</replica>
+    </macros>
     <logger>
         <console>1</console>
     </logger>

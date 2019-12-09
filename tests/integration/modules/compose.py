@@ -138,7 +138,7 @@ def _generate_service_config(config: dict, name: str, instance_name: str, instan
     staging_dir = config['staging_dir']
     network_name = config['network_name']
 
-    volumes = [f'./images/{name}/config:/config:rw']
+    volumes = [f'./images/{instance_name}/config:/config:rw']
     # Take care of port forwarding
     ports_list = []
     for port in instance_config.get('expose', {}).values():
@@ -147,7 +147,7 @@ def _generate_service_config(config: dict, name: str, instance_name: str, instan
     service = {
         'build': {
             'context': '..',
-            'dockerfile': f'{staging_dir}/images/{name}/Dockerfile',
+            'dockerfile': f'{staging_dir}/images/{instance_name}/Dockerfile',
             'args': instance_config.get('args', []),
         },
         'image': f'{name}:{network_name}',

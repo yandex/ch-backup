@@ -38,11 +38,17 @@ def create():
         },
     }
 
+    zk = {
+        'uri': f'zookeeper01.{network_name}',
+        'port': 2181,
+    }
+
     config = {
         'images_dir': 'images',
         'staging_dir': 'staging',
         'network_name': network_name,
         's3': s3,
+        'zk': zk,
         'ch_backup': {
             'encrypt_key': generate_random_string(32),
         },
@@ -62,7 +68,7 @@ def create():
                 },
                 'volumes': ['../:/code:rw'],
                 'docker_instances': 2,
-                'external_links': [f'{s3["host"]}:minio'],
+                'external_links': [f'{s3["host"]}:minio', f'{zk["uri"]}:zookeeper'],
                 'args': {
                     'CLICKHOUSE_VERSION': '$CLICKHOUSE_VERSION',
                 },
@@ -83,6 +89,11 @@ def create():
                     'http': 8080,
                 },
                 'environment': [f'PROXY_HOST=proxy01.{network_name}'],
+            },
+            'zookeeper': {
+                'expose': {
+                    'tcp': 2181,
+                },
             },
         },
     }

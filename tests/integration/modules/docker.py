@@ -98,7 +98,9 @@ def prep_images(context: ContextT) -> None:
     """
     images_dir = context.conf['images_dir']
     staging_dir = context.conf['staging_dir']
-    dir_util.copy_tree(images_dir, f'{staging_dir}/images', update=True)
+    for name, conf in context.conf['projects'].items():
+        for i in range(1, conf.get('docker_instances', 1) + 1):
+            dir_util.copy_tree(f'{images_dir}/{name}', f'{staging_dir}/images/{name}{i:02d}', update=True)
 
 
 @utils.env_stage('create', fail=True)
@@ -115,14 +117,14 @@ def create_network(context: ContextT) -> None:
         return
     ip_subnet_pool = docker.types.IPAMConfig(pool_configs=[
         docker.types.IPAMPool(subnet=_generate_ipv4_subnet()),
-        docker.types.IPAMPool(subnet=_generate_ipv6_subnet()),
+        # docker.types.IPAMPool(subnet=_generate_ipv6_subnet()),
     ])
     net_opts = {
         'com.docker.network.bridge.enable_ip_masquerade': 'true',
         'com.docker.network.bridge.enable_icc': 'true',
         'com.docker.network.bridge.name': net_name,
     }
-    DOCKER_API.networks.create(net_name, options=net_opts, enable_ipv6=True, ipam=ip_subnet_pool)
+    DOCKER_API.networks.create(net_name, options=net_opts, enable_ipv6=False, ipam=ip_subnet_pool)
 
 
 @utils.env_stage('stop', fail=False)

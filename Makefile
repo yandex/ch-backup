@@ -175,6 +175,7 @@ help:
 	@echo "  format                     Re-format source code to conform style settings enforced by"
 	@echo "                             isort and yapf tools."
 	@echo "  generate_requirements      Re-generate requirements.txt from requirements.in.txt."
+	@echo "  generate_test_requirements Re-generate requirements-test.txt from requirements-test.in.txt."
 	@echo "  help                       Show this help message."
 	@echo
 	@echo "Environment Variables:"

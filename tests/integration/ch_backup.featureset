@@ -8,3 +8,4 @@ features/min_interval.feature
 features/ssl_support.feature
 features/metadata.feature
 features/ddl_dictionary.feature
+features/backup_replicated.feature
