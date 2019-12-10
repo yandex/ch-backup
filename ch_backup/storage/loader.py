@@ -52,7 +52,10 @@ class StorageLoader:
         data = self._ploader.download_data(remote_path, is_async=is_async, encryption=encryption)
         return data.decode(encoding) if encoding else data
 
-    def download_file(self, remote_path: str, local_path: str, is_async: bool = False,
+    def download_file(self,
+                      remote_path: str,
+                      local_path: str,
+                      is_async: bool = False,
                       encryption: bool = False) -> None:
         """
         Download file to local filesystem.

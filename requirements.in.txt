@@ -1,6 +1,6 @@
 requests
-boto3==1.4.8
-botocore==1.8.50
+boto3
+botocore
 PyYAML
 PyNaCl==1.2.1
 click

@@ -4,7 +4,6 @@ S3 client.
 import logging
 
 import boto3
-import botocore.vendored.requests.packages.urllib3 as boto_urllib3
 from botocore.client import Config
 from botocore.errorfactory import ClientError
 
@@ -33,7 +32,9 @@ class S3Client:
                 'region_name': boto_config['region_name'],
             }))
         self._s3_bucket_name = config['bucket']
-        self._disable_boto_requests_warnings()
+
+        for module_logger in ('boto3', 'botocore', 's3transfer', 'urllib3'):
+            logging.getLogger(module_logger).setLevel(logging.CRITICAL)
 
     def upload_data(self, data: bytes, remote_path: str) -> None:
         """
@@ -58,10 +59,3 @@ class S3Client:
             return True
         except ClientError:
             return False
-
-    @staticmethod
-    def _disable_boto_requests_warnings() -> None:
-        boto_urllib3.disable_warnings(boto_urllib3.exceptions.InsecureRequestWarning)
-
-        for module_logger in ('boto3', 'botocore', 's3transfer', 'urllib3'):
-            logging.getLogger(module_logger).setLevel(logging.CRITICAL)

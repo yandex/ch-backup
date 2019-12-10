@@ -9,7 +9,6 @@ from tempfile import TemporaryFile
 from typing import Sequence
 
 import boto3
-import botocore.vendored.requests.packages.urllib3 as boto_urllib3
 import requests
 from botocore.client import Config
 from botocore.errorfactory import ClientError
@@ -50,7 +49,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
         self._multipart_downloads: dict = {}
 
         if config.get('disable_ssl_warnings'):
-            self.disable_boto_requests_warnings()
+            requests.packages.urllib3.disable_warnings()  # pylint: disable=no-member
 
     @staticmethod
     @retry((ValueError, requests.RequestException), max_interval=60, max_attempts=10000)
@@ -204,10 +203,3 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
     def complete_multipart_download(self, download_id):
         self._multipart_downloads[download_id]['Body'].close()
         del self._multipart_downloads[download_id]
-
-    @staticmethod
-    def disable_boto_requests_warnings() -> None:
-        """
-        Disable urllib warnings (annoys with self-signed ca)
-        """
-        boto_urllib3.disable_warnings(boto_urllib3.exceptions.InsecureRequestWarning)
