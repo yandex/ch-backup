@@ -22,11 +22,11 @@ def render_configs(context: ContextT) -> None:
     staging dir, this is easily reset by `make clean`, or `rm -fr staging`.
     """
     staging_dir = context.conf['staging_dir']
-    for instance, conf in context.conf['projects'].items():
+    for service, conf in context.conf['services'].items():
         for i in range(1, conf.get('docker_instances', 1) + 1):
-            project_dir = f'{staging_dir}/images/{instance}{i:02d}'
-            context.instance_name = f'{instance}{i:02d}'
-            for root, _, files in os.walk(project_dir):
+            instance_dir = f'{staging_dir}/images/{service}{i:02d}'
+            context.instance_name = f'{service}{i:02d}'
+            for root, _, files in os.walk(instance_dir):
                 for basename in files:
                     if not basename.endswith(TEMP_FILE_EXT):
                         _render_file(context, root, basename)

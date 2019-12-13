@@ -102,15 +102,15 @@ def _generate_compose_config(config: dict) -> dict:
     """
     Create docker compose config.
     """
-    projects = config['projects']
+    services = config['services']
     network_name = config['network_name']
 
     compose_conf = cast(dict, copy.deepcopy(BASE_CONF))
     # Set net name at global scope so containers will be able to reference it.
     compose_conf['networks']['test_net']['external']['name'] = network_name
-    # Generate service config for each project`s instance
+    # Generate service config for each image`s instance
     # Also relative to config file location.
-    for name, props in projects.items():
+    for name, props in services.items():
         instances = props.get('docker_instances', 1)
         if not instances:
             continue

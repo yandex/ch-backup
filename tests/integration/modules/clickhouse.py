@@ -24,7 +24,7 @@ class ClickhouseClient:
     """
     def __init__(self, context: ContextT, node_name: str) -> None:
         protocol = 'http'
-        port = context.conf['projects']['clickhouse']['expose'][protocol]
+        port = context.conf['services']['clickhouse']['expose'][protocol]
         host, exposed_port = docker.get_exposed_port(docker.get_container(context, node_name), port)
 
         self._session = Session()

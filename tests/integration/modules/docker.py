@@ -98,7 +98,7 @@ def prep_images(context: ContextT) -> None:
     """
     images_dir = context.conf['images_dir']
     staging_dir = context.conf['staging_dir']
-    for name, conf in context.conf['projects'].items():
+    for name, conf in context.conf['services'].items():
         for i in range(1, conf.get('docker_instances', 1) + 1):
             dir_util.copy_tree(f'{images_dir}/{name}', f'{staging_dir}/images/{name}{i:02d}', update=True)
 

@@ -16,7 +16,7 @@ def create():
     """
     Create test configuration (non-idempotent function).
     """
-    # Docker network name. Also used as a project and domain name.
+    # Docker network name. Also used as an instance and domain name.
     network_suffix = random.randint(0, 4096)
     network_name = f'test_net_{network_suffix}'
 
@@ -53,9 +53,9 @@ def create():
             'encrypt_key': generate_random_string(32),
         },
 
-        # A dict with all projects that are going to interact in this
+        # A dict with all services that are going to interact in this
         # testing environment.
-        'projects': {
+        'services': {
             'clickhouse': {
                 'db': {
                     'user': 'reader',

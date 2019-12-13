@@ -15,7 +15,7 @@ def initialize_zookeeper_roots(context: ContextT, node: str = 'zookeeper01') -> 
     """
     zk = _get_zookeeper_client(context, node)
     zk.start()
-    instance_count = context.conf.get('projects', {}).get('clickhouse', {}).get('docker_instances', 1)
+    instance_count = context.conf.get('services', {}).get('clickhouse', {}).get('docker_instances', 1)
     for i in range(1, instance_count + 1):
         zk.create(f'/clickhouse{i:02d}')
     zk.stop()
