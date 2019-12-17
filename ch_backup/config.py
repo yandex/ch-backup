@@ -55,11 +55,9 @@ DEFAULT_CONFIG = {
             'addressing_style': 'auto',
             'region_name': 'us-east-1',
         },
-        # https://wiki.yandex-team.ru/mds/s3-api/faq/#kakzalivatdannyeminujabalanser
-        # Infrastructure to facilitate direct access to backend S3 proxies
         'proxy_resolver': {
-            'uri': 'http://s3.mds.yandex.net/hostname',
-            'proxy_port': 4080,
+            'uri': None,
+            'proxy_port': None,
         },
         'disable_ssl_warnings': True,
         # Chunk size used when uploading / downloading data, in bytes.
