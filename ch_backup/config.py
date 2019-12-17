@@ -55,6 +55,8 @@ DEFAULT_CONFIG = {
             'addressing_style': 'auto',
             'region_name': 'us-east-1',
         },
+        # Service that provides proxy connection settings at runtime. For example, it can be used
+        # to facilitate direct access to S3 servers bypassing balancer.
         'proxy_resolver': {
             'uri': None,
             'proxy_port': None,
@@ -89,6 +91,8 @@ DEFAULT_CONFIG = {
         'buffer_size': 128 * 1024 * 1024,
     },
     'multiprocessing': {
+        # The number of processes allocating for data processing. If set to 0, all processing will be performed
+        # in the main process.
         'workers': 4,
     },
     'main': {
