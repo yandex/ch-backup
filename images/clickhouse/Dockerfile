@@ -36,6 +36,7 @@ RUN cd ${CH_TMP_DIR} && \
     echo "deb https://repo.yandex.ru/clickhouse/deb/testing/ main/" | tee /etc/apt/sources.list.d/clickhouse-testing.list && \
     echo "deb https://repo.yandex.ru/clickhouse/deb/prestable/ main/" | tee /etc/apt/sources.list.d/clickhouse-prestable.list && \
     echo "deb https://repo.yandex.ru/clickhouse/deb/stable/ main/" | tee /etc/apt/sources.list.d/clickhouse-stable.list && \
+    echo "deb https://repo.yandex.ru/clickhouse/deb/lts/ main/" | tee /etc/apt/sources.list.d/clickhouse-lts.list && \
     apt-key add clickhouse.gpg
 
 RUN apt-get update -qq && \
