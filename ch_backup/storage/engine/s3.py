@@ -7,7 +7,7 @@ import socket
 import time
 from functools import wraps
 from tempfile import TemporaryFile
-from typing import Sequence
+from typing import Sequence, Union
 
 import boto3
 import requests
@@ -18,6 +18,12 @@ from ...util import retry
 from .base import PipeLineCompatibleStorageEngine
 
 DEFAULT_DOWNLOAD_PART_LEN = 8 * 1024 * 1024
+
+
+class S3BalancerUnknownHost(ValueError):
+    """
+    Used in case S3 balancer implementation returned an unknown host
+    """
 
 
 class S3Client:
@@ -75,8 +81,8 @@ class S3Client:
                 setattr(self._s3_client, attr, _retry_wrapper(getattr(self._s3_client, attr)))
 
     @staticmethod
-    @retry((ValueError, requests.RequestException), max_interval=60, max_attempts=10000)
-    def _resolve_proxies(resolver_path: str, proxy_port: int) -> dict:
+    @retry((S3BalancerUnknownHost, requests.RequestException))
+    def _resolve_proxies(resolver_path: str, proxy_port: int) -> Union[dict, None]:
         """
         Get proxy host name via a special handler
         """
@@ -89,7 +95,7 @@ class S3Client:
         try:
             socket.getaddrinfo(host, 0)
         except socket.gaierror:
-            raise ValueError(f'{resolver_path} returned unknown hostname: "{host}"')
+            raise S3BalancerUnknownHost(f'{resolver_path} returned unknown hostname: "{host}"')
         return {
             'http': f'{host}:{proxy_port}',
             'https': f'{host}:{proxy_port}',
