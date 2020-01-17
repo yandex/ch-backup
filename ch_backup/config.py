@@ -42,6 +42,7 @@ DEFAULT_CONFIG = {
         'labels': {},
         'keep_freezed_data_on_failure': True,
         'override_replica_name': None,
+        'force_non_replicated': False,
     },
     'storage': {
         'type': 's3',

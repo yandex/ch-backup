@@ -211,7 +211,11 @@ class BackupManager:
         output = self._exec(f'show {backup_id}')
         return Backup(json.loads(output))
 
-    def restore(self, backup_id: BackupId, schema_only: bool = False, override_replica_name: str = None) -> str:
+    def restore(self,
+                backup_id: BackupId,
+                schema_only: bool = False,
+                override_replica_name: str = None,
+                force_non_replicated: bool = False) -> str:
         """
         Restore backup entry.
         """
@@ -221,6 +225,8 @@ class BackupManager:
             options.append('--schema-only')
         if override_replica_name:
             options.append(f'--override-replica-name {override_replica_name}')
+        if force_non_replicated:
+            options.append('--force-non-replicated')
         return self._exec(f'restore {" ".join(options)} {backup_id}')
 
     def update_backup_metadata(self, backup_id: BackupId, metadata: dict, merge: bool = True) -> None:
@@ -252,7 +258,7 @@ class BackupManager:
     def _exec(self, command: str) -> str:
         cmd = f'{self._cmd_base} {command}'
         result = self._container.exec_run(cmd, user='root')
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output.decode()
 
         return result.output.decode().strip()
 

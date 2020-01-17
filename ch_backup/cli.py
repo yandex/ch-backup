@@ -248,16 +248,18 @@ def backup_command(ctx: Context, ch_backup: ClickhouseBackup, name: str, databas
 @option('-d', '--databases', type=List(regexp=r'\w+'), help='Comma-separated list of databases to restore.')
 @option('--schema-only', is_flag=True, help='Restore only databases schemas')
 @option('--override-replica-name', type=str, help='Override replica name to value from config')
+@option('--force-non-replicated', is_flag=True, help='Override ReplicatedMergeTree family tables to MergeTree')
 def restore_command(ctx: Context,
                     ch_backup: ClickhouseBackup,
                     name: str,
                     databases: list,
                     schema_only: bool,
-                    override_replica_name: str = None) -> None:
+                    override_replica_name: str = None,
+                    force_non_replicated: bool = False) -> None:
     """Restore data from a particular backup."""
     name = _validate_name(ctx, ch_backup, name)
 
-    ch_backup.restore(name, databases, schema_only, override_replica_name)
+    ch_backup.restore(name, databases, schema_only, override_replica_name, force_non_replicated)
 
 
 @command(name='delete')

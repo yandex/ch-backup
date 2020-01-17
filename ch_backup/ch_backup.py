@@ -118,13 +118,15 @@ class ClickhouseBackup:
                 backup_name: str,
                 databases: Sequence[str] = None,
                 schema_only: bool = False,
-                override_replica_name: str = None) -> None:
+                override_replica_name: str = None,
+                force_non_replicated: bool = False) -> None:
         """
         Restore specified backup
         """
         backup_meta = self._get_backup(backup_name)
 
         self._config['override_replica_name'] = override_replica_name or self._config.get('override_replica_name')
+        self._config['force_non_replicated'] = force_non_replicated
 
         if databases is None:
             databases = backup_meta.get_databases()
@@ -387,8 +389,18 @@ class ClickhouseBackup:
 
             table_sql = self._backup_layout.get_table_create_statement(backup_meta, table_meta.database,
                                                                        table_meta.name)
+
+            if self._config['force_non_replicated']:
+                match = re.search(
+                    R"""(?P<replicated>Replicated)[a-zA-Z]{0,20}MergeTree\((?P<params>'.*.', '.*.'(, |\)))""",
+                    table_sql)
+                if match:
+                    table_sql = table_sql.replace(match.group('params'),
+                                                  ')' if match.group('params')[-1] == ')' else '').replace(
+                                                      match.group('replicated'), '')
+
             if self._config['override_replica_name']:
-                match = re.search(R"""Replicated[a-zA-Z]{0,20}MergeTree\(\'.*.\', (?P<replica>\'.*.\')\)""", table_sql)
+                match = re.search(R"""Replicated[a-zA-Z]{0,20}MergeTree\(\'.*.\', (?P<replica>\'.*.\')""", table_sql)
                 if match:
                     table_sql = table_sql.replace(match.group('replica'), f"'{self._config['override_replica_name']}'")
 

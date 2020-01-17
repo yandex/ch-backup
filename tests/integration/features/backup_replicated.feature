@@ -57,10 +57,21 @@ Feature: Backup replicated merge tree table
     SAMPLE BY intHash32(UserID);
     INSERT INTO test_db.table_02 SELECT now(), number, rand() FROM system.numbers LIMIT 10
     """
+    And we have executed queries on clickhouse01
+    """
+    CREATE TABLE test_db.legacy_table
+    (
+        EventDate Date,
+        CounterID UInt32,
+        UserID UInt32
+    ) ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.legacy_table', 'static_name',
+    EventDate, intHash32(UserID), (CounterID, EventDate, intHash32(UserID)), 8192);
+    INSERT INTO test_db.legacy_table SELECT now(), number, rand() FROM system.numbers LIMIT 10
+    """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   |
-      | 0   | created  | 2          | 0            |
+      | 0   | created  | 3          | 0            |
     When we restore clickhouse backup #0 to clickhouse02
     """
     override_replica_name: '{replica}'
@@ -74,3 +85,61 @@ Feature: Backup replicated merge tree table
     clickhouse02
     """
     And we got same clickhouse data at clickhouse01 clickhouse02
+
+  Scenario: Override replicated table to single-node on restore
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (
+        EventDate DateTime,
+        CounterID UInt32,
+        UserID UInt32
+    )
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_01', '{replica}')
+    PARTITION BY toYYYYMM(EventDate)
+    ORDER BY (CounterID, EventDate, intHash32(UserID))
+    SAMPLE BY intHash32(UserID);
+    INSERT INTO test_db.table_01 SELECT now(), number, rand() FROM system.numbers LIMIT 10
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE TABLE test_db.table_02 (
+        EventDate DateTime,
+        CounterID UInt32,
+        UserID UInt32
+    )
+    ENGINE = ReplicatedSummingMergeTree('/clickhouse/tables/shard_01/test_db.table_02', '{replica}')
+    PARTITION BY toYYYYMM(EventDate)
+    ORDER BY (CounterID, EventDate, intHash32(UserID))
+    SAMPLE BY intHash32(UserID);
+    INSERT INTO test_db.table_02 SELECT now(), number, rand() FROM system.numbers LIMIT 10
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE TABLE test_db.legacy_table
+    (
+        EventDate Date,
+        CounterID UInt32,
+        UserID UInt32
+    ) ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.legacy_table', '{replica}}',
+    EventDate, intHash32(UserID), (CounterID, EventDate, intHash32(UserID)), 8192);
+    INSERT INTO test_db.legacy_table SELECT now(), number, rand() FROM system.numbers LIMIT 10
+    """
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state    | data_count | link_count   |
+      | 0   | created  | 3          | 0            |
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    force_non_replicated: true
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT DISTINCT engine FROM system.tables WHERE database = 'test_db'
+    """
+    Then we get response
+    """
+    MergeTree
+    SummingMergeTree
+    """
+    Then we got same clickhouse data at clickhouse01 clickhouse02
