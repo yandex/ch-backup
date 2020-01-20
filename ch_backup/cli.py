@@ -35,16 +35,20 @@ UUID = str(uuid.uuid4())
         default='/etc/yandex/ch-backup/ch-backup.conf',
         help='Configuration file path.')
 @option('--protocol', type=Choice(['http', 'https']), help='Protocol used to connect to ClickHouse server.')
+@option('--host', type=str, help='Host used to connect to ClickHouse server.')
 @option('--port', type=int, help='Port used to connect to ClickHouse server.')
 @option('--ca-path', type=str, help='Path to custom CA bundle path for https protocol.')
 @option('--insecure', is_flag=True, help='Disable certificate verification for https protocol.')
 @pass_context
-def cli(ctx: Context, config: str, protocol: str, port: int, ca_path: Union[str, bool], insecure: bool) -> None:
+def cli(ctx: Context, config: str, protocol: str, host: str, port: int, ca_path: Union[str, bool],
+        insecure: bool) -> None:
     """Tool for managing ClickHouse backups."""
     if insecure:
         ca_path = False
 
     cfg = Config(config)
+    if host is not None:
+        cfg['clickhouse']['host'] = host
     if protocol is not None:
         cfg['clickhouse']['protocol'] = protocol
     if port is not None:
