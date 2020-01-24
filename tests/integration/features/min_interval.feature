@@ -3,6 +3,7 @@ Feature: Min interval between backups
   Background:
     Given default configuration
     And a working s3
+    And a working zookeeper on zookeeper01
     And a working clickhouse on clickhouse01
     And ch-backup configuration on clickhouse01
     """

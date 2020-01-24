@@ -4,6 +4,7 @@ Feature: Backups with custom names
   Background:
     Given default configuration
     And a working s3
+    And a working zookeeper on zookeeper01
     And a working clickhouse on clickhouse01
 
   Scenario: Create backups with explicit names

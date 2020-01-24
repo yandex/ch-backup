@@ -17,7 +17,8 @@ def initialize_zookeeper_roots(context: ContextT, node: str = 'zookeeper01') -> 
     zk.start()
     instance_count = context.conf.get('services', {}).get('clickhouse', {}).get('docker_instances', 1)
     for i in range(1, instance_count + 1):
-        zk.create(f'/clickhouse{i:02d}')
+        if not zk.exists(f'/clickhouse{i:02d}'):
+            zk.create(f'/clickhouse{i:02d}')
     zk.stop()
 
 

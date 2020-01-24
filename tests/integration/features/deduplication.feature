@@ -3,6 +3,7 @@ Feature: Deduplication
   Background:
     Given default configuration
     And a working s3
+    And a working zookeeper on zookeeper01
     And a working clickhouse on clickhouse01
     And a working clickhouse on clickhouse02
     And we have executed queries on clickhouse01

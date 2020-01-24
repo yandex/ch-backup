@@ -3,9 +3,9 @@ Feature: Backup replicated merge tree table
   Background:
     Given default configuration
     And a working s3
+    And a working zookeeper on zookeeper01
     And a working clickhouse on clickhouse01
     And a working clickhouse on clickhouse02
-    And a working zookeeper on zookeeper01
 
   Scenario: Backup replicated table
     Given we have executed queries on clickhouse01

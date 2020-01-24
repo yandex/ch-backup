@@ -7,6 +7,7 @@ Feature: SSL support
       protocol: https
     """
     And a working s3
+    And a working zookeeper on zookeeper01
     And a working clickhouse on clickhouse01
     And a working clickhouse on clickhouse02
     And clickhouse on clickhouse01 has test schema
