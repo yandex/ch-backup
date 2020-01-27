@@ -68,6 +68,7 @@ def create():
                 },
                 'volumes': ['../:/code:rw'],
                 'docker_instances': 2,
+                'depends_on': ['minio', 'proxy', 'proxy-api', 'zookeeper'],
                 'external_links': [f'{s3["host"]}:minio', f'{zk["uri"]}:zookeeper'],
                 'args': {
                     'CLICKHOUSE_VERSION': '$CLICKHOUSE_VERSION',

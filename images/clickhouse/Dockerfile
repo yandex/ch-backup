@@ -15,6 +15,7 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone &
         openssh-server \
         supervisor && \
     pip3 install --upgrade pip && \
+    pip3 install kazoo && \
     echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen && \
     locale-gen
 
@@ -28,7 +29,7 @@ RUN echo "root:root" | chpasswd && \
     mkdir /var/run/sshd
 
 RUN mkdir -p ${CH_TMP_DIR}
-COPY setup.py requirements.txt staging/images/{{instance_name}}/clickhouse.gpg ${CH_TMP_DIR}/
+COPY setup.py requirements.txt images/clickhouse/clickhouse.gpg ${CH_TMP_DIR}/
 
 RUN cd ${CH_TMP_DIR} && \
     pip3 install -r requirements.txt && \
@@ -72,6 +73,8 @@ RUN openssl req -subj "/CN=localhost" -new -newkey rsa:2048 -days 365 -nodes -x5
     ln -s /config/clickhouse-server.xml /etc/clickhouse-server/conf.d/ && \
     chown -R clickhouse:clickhouse /etc/clickhouse-server/ /usr/bin/clickhouse
 
+COPY staging/images/{{instance_name}}/entrypoint.py /entrypoint.py
+
 EXPOSE 8123 8443 9000 9440
 
-CMD ["supervisord", "-c", "/etc/supervisor/supervisord.conf"]
+CMD ["python3", "/entrypoint.py"]

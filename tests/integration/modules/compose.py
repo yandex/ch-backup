@@ -118,7 +118,7 @@ def _generate_compose_config(config: dict) -> dict:
         # generate_service_dict()
         for num in range(1, instances + 1):
             instance_name = f'{name}{num:02d}'
-            service_conf = _generate_service_config(config, name, instance_name, props)
+            service_conf = _generate_service_config(config, instance_name, props)
             # Fill in local placeholders with own context.
             # Useful when we need to reference stuff like
             # hostname or domainname inside of the other config value.
@@ -127,7 +127,7 @@ def _generate_compose_config(config: dict) -> dict:
     return compose_conf
 
 
-def _generate_service_config(config: dict, name: str, instance_name: str, instance_config: dict) -> dict:
+def _generate_service_config(config: dict, instance_name: str, instance_config: dict) -> dict:
     """
     Generates a single service config based on name and
     instance config.
@@ -144,15 +144,21 @@ def _generate_service_config(config: dict, name: str, instance_name: str, instan
     for port in instance_config.get('expose', {}).values():
         ports_list.append(port)
 
+    dependency_list = []
+    for dependency in instance_config.get('depends_on', {}):
+        for num in range(1, config['services'][dependency].get('docker_instances', 1) + 1):
+            dependency_list.append(f'{dependency}{num:02d}')
+
     service = {
         'build': {
             'context': '..',
             'dockerfile': f'{staging_dir}/images/{instance_name}/Dockerfile',
             'args': instance_config.get('args', []),
         },
-        'image': f'{name}:{network_name}',
+        'image': f'{instance_name}:{network_name}',
         'hostname': instance_name,
         'domainname': network_name,
+        'depends_on': dependency_list,
         # Networks. We use external anyway.
         'networks': instance_config.get('networks', ['test_net']),
         'environment': instance_config.get('environment', []),
