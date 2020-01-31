@@ -126,7 +126,7 @@ class ClickhouseBackup:
         backup_meta = self._get_backup(backup_name)
 
         self._config['override_replica_name'] = override_replica_name or self._config.get('override_replica_name')
-        self._config['force_non_replicated'] = force_non_replicated
+        self._config['force_non_replicated'] = force_non_replicated or self._config['force_non_replicated']
 
         if databases is None:
             databases = backup_meta.get_databases()
