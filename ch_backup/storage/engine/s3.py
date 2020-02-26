@@ -185,10 +185,10 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryHelper):
         return self._s3_client.delete_objects(Bucket=self._s3_bucket_name, Delete={'Objects': delete_objects})
 
     def list_dir(self, remote_path: str, recursive: bool = False, absolute: bool = False) -> Sequence[str]:
-        remote_path = remote_path.lstrip('/')
+        remote_path = remote_path.strip('/') + '/'
         contents = []
         paginator = self._s3_client.get_paginator('list_objects')
-        list_object_kwargs = dict(Bucket=self._s3_bucket_name, Prefix=f'{remote_path}/')
+        list_object_kwargs = dict(Bucket=self._s3_bucket_name, Prefix=remote_path)
         if not recursive:
             list_object_kwargs['Delimiter'] = '/'
 
