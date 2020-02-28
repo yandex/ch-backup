@@ -42,18 +42,10 @@ RUN cd ${CH_TMP_DIR} && \
 
 RUN apt-get update -qq && \
     apt-get upgrade -y && \
-    if [ "$CLICKHOUSE_VERSION" = "19.1.16" ]; then \
-        apt-get install -y \
-            clickhouse-common-static=$CLICKHOUSE_VERSION \
-            clickhouse-server-base=$CLICKHOUSE_VERSION \
-            clickhouse-server=$CLICKHOUSE_VERSION \
-            clickhouse-client=$CLICKHOUSE_VERSION; \
-    else \
-        DEBIAN_FRONTEND=noninteractive apt-get install -y \
-            clickhouse-common-static=$CLICKHOUSE_VERSION \
-            clickhouse-server=$CLICKHOUSE_VERSION \
-            clickhouse-client=$CLICKHOUSE_VERSION; \
-    fi && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        clickhouse-common-static=$CLICKHOUSE_VERSION \
+        clickhouse-server=$CLICKHOUSE_VERSION \
+        clickhouse-client=$CLICKHOUSE_VERSION && \
     rm -rf /var/lib/apt/lists/* /var/cache/debconf && \
     apt-get clean
 
