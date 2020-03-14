@@ -120,10 +120,12 @@ Feature: Backup of tables with different engines and configurations
     FROM (
         SELECT n, s
         FROM test_db.table_01
-        ) ALL LEFT JOIN (
+    ) subquery1
+    ALL LEFT JOIN (
         SELECT n, n2
         FROM test_db2.table_02
-        ) USING n;
+    ) subquery2
+    USING n;
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
