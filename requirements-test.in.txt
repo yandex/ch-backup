@@ -10,7 +10,7 @@ pylint
 mypy
 bandit
 pytest
-pyhamcrest
+PyHamcrest==2.0.0
 hypothesis
 behave
 docker
