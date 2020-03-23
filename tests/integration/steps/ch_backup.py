@@ -109,3 +109,9 @@ def step_check_backups_conditions(context, node):
             expected_value = expected_backup[attr]
             assert_that(current_value, equal_to(expected_value), f'Backup #{i}: {backup.name} expected {attr} ='
                         f' {expected_value}, but was {current_value}')
+
+
+@when('we restore clickhouse schema from {node1:w} to {node2:w}')
+def step_restore_schema(context, node1, node2):
+    result = BackupManager(context, node2).restore_metadata(node1)
+    assert_that(result, matches_regexp('^$'))

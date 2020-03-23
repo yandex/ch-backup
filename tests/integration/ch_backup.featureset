@@ -5,6 +5,7 @@ features/backup_purge.feature
 features/deduplication.feature
 features/single_table.feature
 features/min_interval.feature
+features/restore_metadata.feature
 features/ssl_support.feature
 features/metadata.feature
 features/ddl_dictionary.feature

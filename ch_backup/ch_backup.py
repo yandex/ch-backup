@@ -25,7 +25,8 @@ class ClickhouseBackup:
     Clickhouse backup logic
     """
     def __init__(self, config: Config) -> None:
-        self._ch_ctl = ClickhouseCTL(config['clickhouse'])
+        self._ch_ctl_conf = config['clickhouse']
+        self._ch_ctl = ClickhouseCTL(self._ch_ctl_conf)
         self._backup_layout = BackupLayout(config)
         self._config = config['backup']
 
@@ -210,6 +211,22 @@ class ClickhouseBackup:
                 deleted_backup_names.append(backup_name)
 
         return deleted_backup_names, None
+
+    def restore_schema(self, source_host: str, source_port: int, exclude_dbs: str) -> None:
+        """
+        Restore ClickHouse schema from replica, without s3.
+        """
+        source_conf = self._ch_ctl_conf.copy()
+        source_conf.update(dict(host=source_host, port=source_port))
+        source_ch_ctl = ClickhouseCTL(config=source_conf)
+        databases = source_ch_ctl.get_databases(exclude_dbs if exclude_dbs else self._config['exclude_dbs'])
+        for database in databases:
+            logging.debug('Restoring database "%s"', database)
+            db_sql = source_ch_ctl.get_database_schema(database)
+            self._ch_ctl.restore_meta(db_sql)
+            for table in source_ch_ctl.get_tables_ordered(database):
+                logging.debug('Restoring table "%s.%s"', database, table.name)
+                self._ch_ctl.restore_meta(table.create_statement)
 
     def _get_backup_dedup_list(self):
         """

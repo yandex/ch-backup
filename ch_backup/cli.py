@@ -262,6 +262,16 @@ def restore_command(ctx: Context,
     ch_backup.restore(name, databases, schema_only, override_replica_name, force_non_replicated)
 
 
+@command(name='restore-schema')
+@option('--source-host', type=str, help='Host used to connect to source ClickHouse server.')
+@option('--source-port', type=int, help='Port used to connect to source ClickHouse server.')
+@option('--exclude-dbs', type=str, help='Databases that will be excluded from restore process.')
+def restore_schema_command(_ctx: Context, _ch_backup: ClickhouseBackup, source_host: str, source_port: int,
+                           exclude_dbs: str) -> None:
+    """Restore ClickHouse schema from replica, without s3."""
+    _ch_backup.restore_schema(source_host, source_port, exclude_dbs)
+
+
 @command(name='delete')
 @argument('name', metavar='BACKUP')
 def delete_command(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> None:

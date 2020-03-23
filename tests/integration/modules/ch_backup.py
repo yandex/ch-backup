@@ -229,6 +229,13 @@ class BackupManager:
             options.append('--force-non-replicated')
         return self._exec(f'restore {" ".join(options)} {backup_id}')
 
+    def restore_metadata(self, node):
+        """
+        Restore metadata from another host.
+        """
+        options = ['--source-host', node, '--source-port', '8123']
+        return self._exec(f'restore-schema {" ".join(options)}')
+
     def update_backup_metadata(self, backup_id: BackupId, metadata: dict, merge: bool = True) -> None:
         """
         Update backup metadata.
