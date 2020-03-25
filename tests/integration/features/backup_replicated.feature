@@ -24,12 +24,12 @@ Feature: Backup replicated merge tree table
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
-      | num | state    | data_count | link_count   |
-      | 0   | created  | 1          | 0            |
+      | num | state   | data_count | link_count |
+      | 0   | created | 1          | 0          |
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
-  Scenario: Backup ReplicatedMergeTree table with static name
+  Scenario: Backup ReplicatedMergeTree table with static replica name
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE test_db;
@@ -70,8 +70,8 @@ Feature: Backup replicated merge tree table
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
-      | num | state    | data_count | link_count   |
-      | 0   | created  | 3          | 0            |
+      | num | state   | data_count | link_count |
+      | 0   | created | 3          | 0          |
     When we restore clickhouse backup #0 to clickhouse02
     """
     override_replica_name: '{replica}'
@@ -127,8 +127,8 @@ Feature: Backup replicated merge tree table
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
-      | num | state    | data_count | link_count   |
-      | 0   | created  | 3          | 0            |
+      | num | state   | data_count | link_count |
+      | 0   | created | 3          | 0          |
     When we restore clickhouse backup #0 to clickhouse02
     """
     force_non_replicated: true
@@ -166,8 +166,8 @@ Feature: Backup replicated merge tree table
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
-      | num | state    | data_count | link_count   |
-      | 0   | created  | 1          | 0            |
+      | num | state   | data_count | link_count |
+      | 0   | created | 1          | 0          |
     When we restore clickhouse backup #0 to clickhouse02
     And we execute query on clickhouse02
     """
@@ -176,5 +176,79 @@ Feature: Backup replicated merge tree table
     Then we get response
     """
     MergeTree
+    """
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
+  Scenario: Backup ReplicatedMergeTree materialized view with static replica name
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE MATERIALIZED VIEW test_db.view_01 (`n` Int32)
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_01', 'static_name')
+    PARTITION BY tuple() ORDER BY n SETTINGS index_granularity = 8192
+    AS
+    SELECT number FROM system.numbers LIMIT 10
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE MATERIALIZED VIEW test_db.view_02 (`n` Int32)
+    ENGINE = ReplicatedSummingMergeTree('/clickhouse/tables/shard_01/test_db.table_02', 'static_name')
+    PARTITION BY tuple() ORDER BY n SETTINGS index_granularity = 8192
+    AS
+    SELECT number FROM system.numbers LIMIT 10
+    """
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 0          | 0          |
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    override_replica_name: '{replica}'
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT DISTINCT replica_name FROM system.replicas WHERE database = 'test_db'
+    """
+    Then we get response
+    """
+    clickhouse02
+    """
+    And we got same clickhouse data at clickhouse01 clickhouse02
+
+  Scenario: Override replicated view to single-node on restore
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE MATERIALIZED VIEW test_db.view_01 (`n` Int32)
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_01', 'static_name')
+    PARTITION BY tuple() ORDER BY n SETTINGS index_granularity = 8192
+    AS
+    SELECT number FROM system.numbers LIMIT 10
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE MATERIALIZED VIEW test_db.view_02 (`n` Int32)
+    ENGINE = ReplicatedSummingMergeTree('/clickhouse/tables/shard_01/test_db.table_02', 'static_name')
+    PARTITION BY tuple() ORDER BY n SETTINGS index_granularity = 8192
+    AS
+    SELECT number FROM system.numbers LIMIT 10
+    """
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 0          | 0          |
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    force_non_replicated: true
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT DISTINCT engine FROM system.tables WHERE database = 'test_db'
+    """
+    Then we get response
+    """
+    MergeTree
+    SummingMergeTree
+    MaterializedView
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02

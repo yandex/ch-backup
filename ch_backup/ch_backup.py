@@ -406,21 +406,7 @@ class ClickhouseBackup:
 
             table_sql = self._backup_layout.get_table_create_statement(backup_meta, table_meta.database,
                                                                        table_meta.name)
-
-            if self._config['force_non_replicated']:
-                match = re.search(
-                    R"""(?P<replicated>Replicated)[a-zA-Z]{0,20}MergeTree\((?P<params>'.*.', '.*.'(, |\)))""",
-                    table_sql)
-                if match:
-                    table_sql = table_sql.replace(match.group('params'),
-                                                  ')' if match.group('params')[-1] == ')' else '').replace(
-                                                      match.group('replicated'), '')
-
-            if self._config['override_replica_name']:
-                match = re.search(R"""Replicated[a-zA-Z]{0,20}MergeTree\(\'.*.\', (?P<replica>\'.*.\')""", table_sql)
-                if match:
-                    table_sql = table_sql.replace(match.group('replica'), f"'{self._config['override_replica_name']}'")
-
+            table_sql = self._rewrite_merge_tree_object(table_sql)
             self._ch_ctl.restore_meta(table_sql)
 
     def _restore_view_objects(self, backup_meta: BackupMetadata, views: Iterable[TableMetadata]) -> None:
@@ -429,6 +415,7 @@ class ClickhouseBackup:
             (v, self._backup_layout.get_table_create_statement(backup_meta, v.database, v.name)) for v in views)
         while unprocessed:
             view_meta, view_sql = unprocessed.popleft()
+            view_sql = self._rewrite_merge_tree_object(view_sql)
             try:
                 self._ch_ctl.restore_meta(view_sql)
 
@@ -551,6 +538,22 @@ class ClickhouseBackup:
             return True
 
         return False
+
+    def _rewrite_merge_tree_object(self, table_sql):
+        if self._config['force_non_replicated']:
+            match = re.search(R"""(?P<replicated>Replicated)\S{0,20}MergeTree\((?P<params>'\S+', '\S+'(, |\)))""",
+                              table_sql)
+            if match:
+                table_sql = table_sql.replace(match.group('params'),
+                                              ')' if match.group('params')[-1] == ')' else '').replace(
+                                                  match.group('replicated'), '')
+
+        if self._config['override_replica_name']:
+            match = re.search(R"""Replicated\S{0,20}MergeTree\(\'\S+\', (?P<replica>\'\S+\')""", table_sql)
+            if match:
+                table_sql = table_sql.replace(match.group('replica'), f"'{self._config['override_replica_name']}'")
+
+        return table_sql
 
     @staticmethod
     def _pop_deleting_parts(backup_meta: BackupMetadata,
