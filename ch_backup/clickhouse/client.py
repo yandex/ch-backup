@@ -23,7 +23,7 @@ class ClickhouseClient:
     def __init__(self, config: dict) -> None:
         host = config['host']
         protocol = config['protocol']
-        port = 8123 if protocol == 'http' else 8443
+        port = config['port'] or (8123 if protocol == 'http' else 8443)
         ca_path = config.get('ca_path')
         self._session = requests.Session()
         self._session.verify = True if ca_path is None else ca_path
