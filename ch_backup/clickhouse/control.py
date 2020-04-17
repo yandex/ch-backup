@@ -86,11 +86,6 @@ FREEZE_TABLE_SQL = strip_query("""
     FREEZE
 """)
 
-FREEZE_PARTITION_SQL = strip_query("""
-    ALTER TABLE `{db_name}`.`{table_name}`
-    FREEZE PARTITION {partition_name}
-""")
-
 SHOW_DATABASES_SQL = strip_query("""
     SHOW DATABASES
     FORMAT JSON
@@ -188,10 +183,11 @@ class ClickhouseCTL:
         """
         Make snapshot of the specified table.
         """
-        if self._match_ch_version(min_version='18.16.0'):
-            return self._freeze_table(table)
+        query_sql = FREEZE_TABLE_SQL.format(db_name=table.database, table_name=table.name)
 
-        return self._freeze_table_compat(table)
+        self._ch_client.query(query_sql)
+
+        return self._get_freezed_parts(table)
 
     def remove_freezed_data(self) -> None:
         """
@@ -285,33 +281,6 @@ class ClickhouseCTL:
         Get ClickHouse version.
         """
         return self._ch_version
-
-    def _freeze_table(self, table: Table) -> Sequence[FreezedPart]:
-        """
-        Implementation of freeze_table function using FREEZE command syntax for
-        the whole table that is available starting from the version 18.16.
-        """
-        query_sql = FREEZE_TABLE_SQL.format(db_name=table.database, table_name=table.name)
-
-        self._ch_client.query(query_sql)
-
-        return self._get_freezed_parts(table)
-
-    def _freeze_table_compat(self, table: Table) -> Sequence[FreezedPart]:
-        """
-        Implementation of freeze_table function for versions prior to 18.16.
-        """
-        freezed_parts: List[FreezedPart] = []
-        for partition in self.get_partitions(table):
-            query_sql = FREEZE_PARTITION_SQL.format(db_name=table.database,
-                                                    table_name=table.name,
-                                                    partition_name=partition.name)
-
-            self._ch_client.query(query_sql)
-
-            freezed_parts.extend(self._get_freezed_parts(table))
-
-        return freezed_parts
 
     def _get_freezed_parts(self, table: Table) -> Sequence[FreezedPart]:
 
