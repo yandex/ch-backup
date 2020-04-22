@@ -143,6 +143,10 @@ DEFAULT_CONFIG = {
             'botocore.parsers': {
                 'level': 'DEBUG',
             },
+            'urllib3.connectionpool': {
+                'handlers': ['boto'],
+                'level': 'DEBUG',
+            },
         },
     },
 }
