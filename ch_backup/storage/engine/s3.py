@@ -50,7 +50,13 @@ class S3Client:
             return
 
         def _retry_if(exception: ClientError) -> bool:
-            return exception.response.get('Error', {'Error': {}}).get('Code') == '429'
+            response_code = exception.response.get('Error', {'Error': {}}).get('Code')
+            if not response_code or not response_code.isnumeric():
+                return False
+            code = int(response_code)
+            # 429 - When proxy is overloaded.
+            # 5xx - When proxy is under maintenance.
+            return code == 429 or 500 <= code < 600
 
         def _retry_wrapper(method):
             @wraps(method)
