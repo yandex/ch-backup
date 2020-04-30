@@ -222,7 +222,7 @@ class ClickhouseBackup:
         databases = source_ch_ctl.get_databases(exclude_dbs if exclude_dbs else self._config['exclude_dbs'])
         for database in databases:
             logging.debug('Restoring database "%s"', database)
-            if database not in ['system', 'default']:
+            if database not in ['system', '_temporary_and_external_tables', 'default']:
                 db_sql = source_ch_ctl.get_database_schema(database)
                 self._ch_ctl.restore_meta(db_sql)
             for table in source_ch_ctl.get_tables_ordered(database):
