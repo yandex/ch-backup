@@ -22,7 +22,7 @@ DEFAULT_CONFIG = {
         'group': 'clickhouse',
     },
     'backup': {
-        'exclude_dbs': ['system', '_temporary_and_external_tables', 'default'],
+        'exclude_dbs': ['default'],
         'path_root': None,
         'deduplicate_parts': True,
         'deduplication_age_limit': {

@@ -86,8 +86,11 @@ FREEZE_TABLE_SQL = strip_query("""
     FREEZE
 """)
 
-SHOW_DATABASES_SQL = strip_query("""
-    SHOW DATABASES
+GET_DATABASES_SQL = strip_query("""
+    SELECT
+        name
+    FROM system.databases
+    WHERE name NOT IN ('system', '_temporary_and_external_tables')
     FORMAT JSON
 """)
 
@@ -209,7 +212,7 @@ class ClickhouseCTL:
             exclude_dbs = []
 
         result: List[str] = []
-        ch_resp = self._ch_client.query(SHOW_DATABASES_SQL)
+        ch_resp = self._ch_client.query(GET_DATABASES_SQL)
         if 'data' in ch_resp:
             result = [row['name'] for row in ch_resp['data'] if row['name'] not in exclude_dbs]
 
