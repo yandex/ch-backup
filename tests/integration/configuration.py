@@ -85,11 +85,16 @@ def create():
                     'tcp': 4080,
                 },
             },
+            'broken-proxy': {
+                'expose': {
+                    'http': 4080,
+                },
+            },
             'proxy-api': {
                 'expose': {
                     'http': 8080,
                 },
-                'environment': [f'PROXY_HOST=proxy01.{network_name}'],
+                'environment': [f'NETWORK={network_name}'],
             },
             'zookeeper': {
                 'expose': {

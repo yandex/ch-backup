@@ -5,30 +5,33 @@ S3 storage engine.
 import os
 import socket
 import time
+import types
+from abc import ABCMeta
 from functools import wraps
 from tempfile import TemporaryFile
 from typing import Sequence, Union
 
 import boto3
+import botocore
 import requests
 from botocore.client import Config
-from botocore.errorfactory import ClientError
+from botocore.exceptions import ClientError
+from tenacity import retry_if_exception
 
+from ... import logging
 from ...util import retry
 from .base import PipeLineCompatibleStorageEngine
-
-DEFAULT_DOWNLOAD_PART_LEN = 8 * 1024 * 1024
 
 
 class S3BalancerUnknownHost(ValueError):
     """
-    Used in case S3 balancer implementation returned an unknown host
+    Used in case S3 balancer implementation returned an unknown host.
     """
 
 
-class S3Client:
+class S3ClientFactory:
     """
-    Wrapper for S3 client that contain retry logic
+    Factory to create S3 client instances.
     """
     def __init__(self, config: dict):
         credentials_config = config['credentials']
@@ -36,59 +39,10 @@ class S3Client:
             aws_access_key_id=credentials_config['access_key_id'],
             aws_secret_access_key=credentials_config['secret_access_key'],
         )
-
         self._config = config
-        self._s3_client = None
 
-    def __getattr__(self, attr):
-        if not attr.startswith('_'):
-            self._ensure_s3_client()
-            return getattr(self._s3_client, attr)
-
-    def _ensure_s3_client(self):
-        if self._s3_client is not None:
-            return
-
-        def _retry_if(exception: ClientError) -> bool:
-            response_code = exception.response.get('Error', {'Error': {}}).get('Code')
-            if not response_code or not response_code.isnumeric():
-                return False
-            code = int(response_code)
-            # 429 - When proxy is overloaded.
-            # 5xx - When proxy is under maintenance.
-            return code == 429 or 500 <= code < 600
-
-        def _retry_wrapper(method):
-            @wraps(method)
-            @retry(exception_types=ClientError, retry_if=_retry_if)
-            def _wrapper(*args, **kwargs):
-                try:
-                    return method(*args, **kwargs)
-                except ClientError:
-                    self._s3_client = None
-                    raise
-
-        credentials_config = self._config['credentials']
-        boto_config = self._config['boto_config']
-        self._s3_client = self._s3_session.client(
-            service_name='s3',
-            endpoint_url=credentials_config['endpoint_url'],
-            config=Config(s3={
-                'addressing_style': boto_config['addressing_style'],
-                'region_name': boto_config['region_name'],
-            },
-                          proxies=self._resolve_proxies(
-                              self._config.get('proxy_resolver', {}).get('uri'),
-                              self._config.get('proxy_resolver', {}).get('proxy_port'))),
-        )
-
-        for attr in self._s3_client.__dict__:
-            if callable(getattr(self._s3_client, attr)) and attr[0] != '_':
-                setattr(self._s3_client, attr, _retry_wrapper(getattr(self._s3_client, attr)))
-
-    @staticmethod
     @retry((S3BalancerUnknownHost, requests.RequestException))
-    def _resolve_proxies(resolver_path: str, proxy_port: int) -> Union[dict, None]:
+    def _resolve_proxies(self, resolver_path: str, proxy_port: int) -> Union[dict, None]:
         """
         Get proxy host name via a special handler
         """
@@ -107,22 +61,99 @@ class S3Client:
             'https': f'{host}:{proxy_port}',
         }
 
+    def create_s3_client(self) -> botocore.client.BaseClient:
+        """
+        Creates S3 client.
+        """
+        credentials_config = self._config['credentials']
+        boto_config = self._config['boto_config']
 
-class S3StorageEngine(PipeLineCompatibleStorageEngine):
+        return self._s3_session.client(
+            service_name='s3',
+            endpoint_url=credentials_config['endpoint_url'],
+            config=Config(
+                s3={
+                    'addressing_style': boto_config['addressing_style'],
+                    'region_name': boto_config['region_name'],
+                },
+                proxies=self._resolve_proxies(
+                    self._config.get('proxy_resolver', {}).get('uri'),
+                    self._config.get('proxy_resolver', {}).get('proxy_port'),
+                ),
+                retries={'max_attempts': 0},  # Disable internal retrying mechanism.
+            ),
+        )
+
+
+class S3RetryHelper(ABCMeta):
+    """
+    Metaclass to wrap all methods of S3StorageEngine with retry mechanism in case of S3 endpoint errors.
+    S3 client instance is recreated in case of some errors.
+    """
+    def __new__(mcs, name, bases, attrs):  # pylint: disable=arguments-differ
+        new_attrs = {}
+        for attr_name, attr_value in attrs.items():
+            if not attr_name.startswith('_') and isinstance(attr_value, types.FunctionType):
+                attr_value = mcs.retry_wrapper(attr_value)
+            new_attrs[attr_name] = attr_value
+
+        return super(S3RetryHelper, mcs).__new__(mcs, name, bases, new_attrs)
+
+    @classmethod
+    def retry_if(mcs, exception: ClientError) -> bool:
+        """
+        Makes decision for retrying based on given exception.
+        """
+        code = exception.response.get('ResponseMetadata', {}).get('HTTPStatusCode')
+        if not isinstance(code, int):
+            logging.warning("Unable to get response code to make retry decision: %s", str(exception.response))
+            return False
+        # 429 - When proxy is overloaded.
+        # 5xx - When proxy is under maintenance.
+        return code == 429 or 500 <= code < 600
+
+    @classmethod
+    def retry_wrapper(mcs, func):
+        """
+        Generates retry-wrapper for given function.
+        """
+        @wraps(func)
+        @retry(max_attempts=10, exception_types=ClientError, retry_if=retry_if_exception(mcs.retry_if))
+        def wrapper(*args, **kwargs):
+            self: S3StorageEngine = args[0]
+            self._ensure_s3_client()  # pylint: disable=protected-access
+            try:
+                return func(*args, **kwargs)
+            except ClientError as ce:
+                self._s3_client = None  # pylint: disable=protected-access
+                raise ce
+
+        return wrapper
+
+
+class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryHelper):
     """
     Engine for S3-compatible storage services.
     """
-    def __init__(self, config: dict) -> None:
-        credentials_config = config['credentials']
 
-        self._s3_client = S3Client(config)
-        self._s3_bucket_name = credentials_config['bucket']
+    DEFAULT_DOWNLOAD_PART_LEN = 8 * 1024 * 1024
+
+    def __init__(self, config: dict) -> None:
+        self._s3_client_factory = S3ClientFactory(config)
+        self._s3_client = self._s3_client_factory.create_s3_client()
+        self._s3_bucket_name = config['credentials']['bucket']
 
         self._multipart_uploads: dict = {}
         self._multipart_downloads: dict = {}
 
         if config.get('disable_ssl_warnings'):
             requests.packages.urllib3.disable_warnings()  # pylint: disable=no-member
+
+    def _ensure_s3_client(self):
+        if self._s3_client is not None:
+            return
+
+        self._s3_client = self._s3_client_factory.create_s3_client()
 
     def upload_file(self, local_path: str, remote_path: str) -> str:
         remote_path = remote_path.lstrip('/')
@@ -196,8 +227,10 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
         try:
             self._s3_client.head_object(Bucket=self._s3_bucket_name, Key=remote_path)
             return True
-        except ClientError:
-            return False
+        except ClientError as ce:
+            if ce.response['Error']['Code'] == "404":
+                return False
+            raise ce
 
     def create_multipart_upload(self, remote_path: str) -> str:
         s3_resp = self._s3_client.create_multipart_upload(Bucket=self._s3_bucket_name, Key=remote_path)
@@ -249,7 +282,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine):
 
     def download_part(self, download_id: str, part_len: int = None) -> bytes:
         if part_len:
-            part_len = DEFAULT_DOWNLOAD_PART_LEN
+            part_len = self.DEFAULT_DOWNLOAD_PART_LEN
         return self._multipart_downloads[download_id]['Body'].read(part_len)
 
     def complete_multipart_download(self, download_id):

@@ -1,8 +1,17 @@
+import random
+
 import bottle
 import os
 
+
 @bottle.route('/')
 def index():
-    return os.environ.get('PROXY_HOST', 'minio01')
+    network = str(os.environ.get('NETWORK'))
+    # 10% chance to get broken proxy.
+    if random.randint(0, 9) > 0:
+        return 'proxy01.' + network
+    else:
+        return 'broken-proxy01.' + network
+
 
 bottle.run(host='0.0.0.0', port=8080)
