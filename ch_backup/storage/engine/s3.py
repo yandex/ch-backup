@@ -228,7 +228,8 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryHelper):
             self._s3_client.head_object(Bucket=self._s3_bucket_name, Key=remote_path)
             return True
         except ClientError as ce:
-            if ce.response['Error']['Code'] == "404":
+            code = ce.response.get('ResponseMetadata', {}).get('HTTPStatusCode')
+            if code == 404:
                 return False
             raise ce
 
