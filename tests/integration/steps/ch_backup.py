@@ -113,5 +113,5 @@ def step_check_backups_conditions(context, node):
 
 @when('we restore clickhouse schema from {node1:w} to {node2:w}')
 def step_restore_schema(context, node1, node2):
-    result = BackupManager(context, node2).restore_metadata(node1)
+    result = BackupManager(context, node2).restore_metadata(node1, node2)
     assert_that(result, matches_regexp('^$'))

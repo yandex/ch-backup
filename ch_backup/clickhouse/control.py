@@ -70,6 +70,13 @@ GET_TABLE_COMPAT_SQL = strip_query("""
     FORMAT JSON
 """)
 
+GET_TABLES_ZK_PATH_SQL = strip_query("""
+    SELECT
+        zookeeper_path
+    FROM system.replicas
+    FORMAT JSON
+""")
+
 CHECK_TABLE_SQL = strip_query("""
     SELECT countIf(database = '{db_name}' AND name = '{table_name}')
     FROM system.tables
@@ -250,6 +257,12 @@ class ClickhouseCTL:
             query_sql = GET_TABLE_COMPAT_SQL.format(db_name=db_name, table_name=table_name)
 
         return _make_table(self._ch_client.query(query_sql)['data'][0])
+
+    def get_tables_zk_path(self) -> List[str]:
+        """
+        Get zookeeper path for all replicated tables.
+        """
+        return [row['zookeeper_path'] for row in self._ch_client.query(GET_TABLES_ZK_PATH_SQL)['data']]
 
     def does_table_exist(self, db_name: str, table_name: str) -> bool:
         """

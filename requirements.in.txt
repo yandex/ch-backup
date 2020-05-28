@@ -6,3 +6,4 @@ PyNaCl==1.2.1
 click
 tabulate
 tenacity
+kazoo

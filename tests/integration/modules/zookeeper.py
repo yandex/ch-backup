@@ -22,13 +22,14 @@ def initialize_zookeeper_roots(context: ContextT, node: str = 'zookeeper01') -> 
     zk.stop()
 
 
-def write_znode(context: ContextT, node: str, znode: str, data: str) -> None:
+def write_znode(context: ContextT, node: str, znode: str, data: bytes) -> None:
     """
     create specified zookeeper node
     """
     zk = _get_zookeeper_client(context, node)
     zk.start()
-    zk.create(znode, data)
+
+    zk.create(znode, data, makepath=True)
     zk.stop()
 
 

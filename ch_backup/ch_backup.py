@@ -7,7 +7,7 @@ from collections import defaultdict, deque
 from copy import copy
 from datetime import timedelta
 from itertools import chain
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
+from typing import (Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union)
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
@@ -18,6 +18,7 @@ from ch_backup.config import Config
 from ch_backup.exceptions import BackupNotFound, ClickhouseBackupError
 from ch_backup.util import now, utcnow
 from ch_backup.version import get_version
+from ch_backup.zookeeper.zookeeper import ZookeeperCTL
 
 
 class ClickhouseBackup:
@@ -29,6 +30,7 @@ class ClickhouseBackup:
         self._ch_ctl = ClickhouseCTL(self._ch_ctl_conf)
         self._backup_layout = BackupLayout(config)
         self._config = config['backup']
+        self._zk_config = config.get('zookeeper')
 
     def get(self, backup_name: str) -> BackupMetadata:
         """
@@ -212,7 +214,8 @@ class ClickhouseBackup:
 
         return deleted_backup_names, None
 
-    def restore_schema(self, source_host: str, source_port: int, exclude_dbs: List[str]) -> None:
+    def restore_schema(self, source_host: str, source_port: int, exclude_dbs: List[str],
+                       replica_name: Optional[str]) -> None:
         """
         Restore ClickHouse schema from replica, without s3.
         """
@@ -220,14 +223,18 @@ class ClickhouseBackup:
         source_conf.update(dict(host=source_host, port=source_port))
         source_ch_ctl = ClickhouseCTL(config=source_conf)
         databases = source_ch_ctl.get_databases(exclude_dbs if exclude_dbs else self._config['exclude_dbs'])
+
+        zk_ctl = ZookeeperCTL(self._zk_config)
+        zk_ctl.delete_replica_metadata(source_ch_ctl.get_tables_zk_path(), replica_name)
+
+        tables: List[Table] = []
         for database in databases:
             logging.debug('Restoring database "%s"', database)
             if database not in ['system', '_temporary_and_external_tables', 'default']:
                 db_sql = source_ch_ctl.get_database_schema(database)
                 self._ch_ctl.restore_meta(db_sql)
-            for table in source_ch_ctl.get_tables_ordered(database):
-                logging.debug('Restoring table "%s.%s"', database, table.name)
-                self._ch_ctl.restore_meta(table.create_statement)
+            tables.extend(source_ch_ctl.get_tables_ordered(database))
+        self._restore_tables(tables, lambda table: table.create_statement)
 
     def _get_backup_dedup_list(self):
         """
@@ -364,56 +371,58 @@ class ClickhouseBackup:
 
     def _restore(self, backup_meta: BackupMetadata, databases: Sequence[str], schema_only: bool) -> None:
         logging.debug('Restoring database: %s', ', '.join(databases))
-
+        tables = list(chain(*[backup_meta.get_tables(db_name) for db_name in databases]))
         self._restore_database_objects(backup_meta, databases)
+        self._restore_tables(
+            tables, lambda meta: self._backup_layout.get_table_create_statement(backup_meta, meta.database, meta.name))
+        if not schema_only:
+            self._restore_data(backup_meta, filter(_is_merge_tree, tables))
 
+    def _restore_tables(self, tables: Iterable[Union[Table, TableMetadata]],
+                        create_statement_getter: Callable[[Union[Table, TableMetadata]], str]) -> None:
         merge_tree_tables = []
         distributed_tables = []
         view_tables = []
         other_tables = []
         inner_table_ids = set()
-        for db_name in databases:
-            for table_meta in backup_meta.get_tables(db_name):
-                if _is_merge_tree(table_meta):
-                    merge_tree_tables.append(table_meta)
-                elif _is_distributed(table_meta):
-                    distributed_tables.append(table_meta)
-                elif _is_view(table_meta):
-                    if table_meta.inner_table:
-                        inner_table_ids.add((table_meta.database, table_meta.inner_table))
-                    view_tables.append(table_meta)
-                else:
-                    other_tables.append(table_meta)
+        for table in tables:
+            if _is_merge_tree(table):
+                merge_tree_tables.append(table)
+            elif _is_distributed(table):
+                distributed_tables.append(table)
+            elif _is_view(table):
+                if table.inner_table:
+                    inner_table_ids.add((table.database, table.inner_table))
+                view_tables.append(table)
+            else:
+                other_tables.append(table)
 
-        self._restore_table_objects(backup_meta, chain(merge_tree_tables, other_tables, distributed_tables),
-                                    inner_table_ids)
+        self._restore_table_objects(chain(merge_tree_tables, other_tables, distributed_tables), inner_table_ids,
+                                    create_statement_getter)
 
-        self._restore_view_objects(backup_meta, view_tables)
-
-        if not schema_only:
-            self._restore_data(backup_meta, merge_tree_tables)
+        self._restore_view_objects(view_tables, create_statement_getter)
 
     def _restore_database_objects(self, backup_meta: BackupMetadata, databases: Iterable[str]) -> None:
         for db_name in databases:
             db_sql = self._backup_layout.get_database_create_statement(backup_meta, db_name)
             self._ch_ctl.restore_meta(db_sql)
 
-    def _restore_table_objects(self, backup_meta: BackupMetadata, tables: Iterable[TableMetadata],
-                               inner_table_ids: Set[Tuple[str, str]]) -> None:
+    def _restore_table_objects(self, tables: Iterable[Union[Table, TableMetadata]], inner_table_ids: Set[Tuple[str,
+                                                                                                               str]],
+                               create_statement_getter: Callable[[Union[Table, TableMetadata]], str]) -> None:
         for table_meta in tables:
             # inner table is restored implicitly with corresponding materialized view
             if (table_meta.database, table_meta.name) in inner_table_ids:
                 continue
 
-            table_sql = self._backup_layout.get_table_create_statement(backup_meta, table_meta.database,
-                                                                       table_meta.name)
+            table_sql = create_statement_getter(table_meta)
             table_sql = self._rewrite_merge_tree_object(table_sql)
             self._ch_ctl.restore_meta(table_sql)
 
-    def _restore_view_objects(self, backup_meta: BackupMetadata, views: Iterable[TableMetadata]) -> None:
-        errors: List[Tuple[TableMetadata, Exception]] = []
-        unprocessed = deque(
-            (v, self._backup_layout.get_table_create_statement(backup_meta, v.database, v.name)) for v in views)
+    def _restore_view_objects(self, views: Iterable[Union[Table, TableMetadata]],
+                              create_statement_getter: Callable[[Union[Table, TableMetadata]], str]) -> None:
+        errors: List[Tuple[Union[Table, TableMetadata], Exception]] = []
+        unprocessed = deque((v, create_statement_getter(v)) for v in views)
         while unprocessed:
             view_meta, view_sql = unprocessed.popleft()
             view_sql = self._rewrite_merge_tree_object(view_sql)
