@@ -95,16 +95,13 @@ def pipeline_wrapper(config: dict, stages: Sequence, *args: Any, **kwargs: Any) 
     """
     Build and execute pipeline.
     """
-    try:
-        pipeline = Pipeline()
+    pipeline = Pipeline()
 
-        for stage in stages:
-            stage_conf = config[stage.stype]
-            pipeline.append(stage(stage_conf))
+    for stage in stages:
+        stage_conf = config[stage.stype]
+        pipeline.append(stage(stage_conf))
 
-        return pipeline(*args, **kwargs)
-    except Exception as e:
-        raise Exception(str(e))
+    return pipeline(*args, **kwargs)
 
 
 class PipelineLoader:

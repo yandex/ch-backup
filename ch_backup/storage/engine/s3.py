@@ -15,10 +15,8 @@ import boto3
 import botocore
 import requests
 from botocore.client import Config
-from botocore.exceptions import ClientError
-from tenacity import retry_if_exception
+from botocore.exceptions import BotoCoreError, ClientError
 
-from ... import logging
 from ...util import retry
 from .base import PipeLineCompatibleStorageEngine
 
@@ -85,6 +83,12 @@ class S3ClientFactory:
         )
 
 
+class S3RetryingError(Exception):
+    """
+    Exception indicates that interaction with S3 can be retried.
+    """
+
+
 class S3RetryHelper(ABCMeta):
     """
     Metaclass to wrap all methods of S3StorageEngine with retry mechanism in case of S3 endpoint errors.
@@ -100,33 +104,20 @@ class S3RetryHelper(ABCMeta):
         return super(S3RetryHelper, mcs).__new__(mcs, name, bases, new_attrs)
 
     @classmethod
-    def retry_if(mcs, exception: ClientError) -> bool:
-        """
-        Makes decision for retrying based on given exception.
-        """
-        code = exception.response.get('ResponseMetadata', {}).get('HTTPStatusCode')
-        if not isinstance(code, int):
-            logging.warning("Unable to get response code to make retry decision: %s", str(exception.response))
-            return False
-        # 429 - When proxy is overloaded.
-        # 5xx - When proxy is under maintenance.
-        return code == 429 or 500 <= code < 600
-
-    @classmethod
     def retry_wrapper(mcs, func):
         """
         Generates retry-wrapper for given function.
         """
         @wraps(func)
-        @retry(max_attempts=10, exception_types=ClientError, retry_if=retry_if_exception(mcs.retry_if))
+        @retry(max_attempts=10, max_interval=1, exception_types=S3RetryingError)
         def wrapper(*args, **kwargs):
             self: S3StorageEngine = args[0]
             self._ensure_s3_client()  # pylint: disable=protected-access
             try:
                 return func(*args, **kwargs)
-            except ClientError as ce:
+            except (ClientError, BotoCoreError) as e:
                 self._s3_client = None  # pylint: disable=protected-access
-                raise ce
+                raise S3RetryingError(f'Failed to make S3 operation: {str(e)}') from e
 
         return wrapper
 
