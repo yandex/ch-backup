@@ -109,7 +109,7 @@ class S3RetryHelper(ABCMeta):
         Generates retry-wrapper for given function.
         """
         @wraps(func)
-        @retry(max_attempts=10, max_interval=1, exception_types=S3RetryingError)
+        @retry(max_attempts=30, max_interval=10, exception_types=S3RetryingError)
         def wrapper(*args, **kwargs):
             self: S3StorageEngine = args[0]
             self._ensure_s3_client()  # pylint: disable=protected-access
