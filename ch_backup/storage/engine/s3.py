@@ -8,8 +8,9 @@ import time
 import types
 from abc import ABCMeta
 from functools import wraps
+from http.client import HTTPException
 from tempfile import TemporaryFile
-from typing import Sequence, Union
+from typing import Optional, Sequence, Union
 
 import boto3
 import botocore
@@ -115,7 +116,7 @@ class S3RetryHelper(ABCMeta):
             self._ensure_s3_client()  # pylint: disable=protected-access
             try:
                 return func(*args, **kwargs)
-            except (ClientError, BotoCoreError) as e:
+            except (ClientError, BotoCoreError, HTTPException) as e:
                 self._s3_client = None  # pylint: disable=protected-access
                 raise S3RetryingError(f'Failed to make S3 operation: {str(e)}') from e
 
@@ -127,7 +128,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryHelper):
     Engine for S3-compatible storage services.
     """
 
-    DEFAULT_DOWNLOAD_PART_LEN = 8 * 1024 * 1024
+    DEFAULT_DOWNLOAD_PART_LEN = 128 * 1024 * 1024
 
     def __init__(self, config: dict) -> None:
         self._s3_client_factory = S3ClientFactory(config)
@@ -267,16 +268,31 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryHelper):
         remote_path = remote_path.lstrip('/')
 
         resp = self._s3_client.get_object(Bucket=self._s3_bucket_name, Key=remote_path)
-
         download_id = f'{remote_path}_{time.time()}'
-        self._multipart_downloads[download_id] = resp
+        self._multipart_downloads[download_id] = {
+            'path': remote_path,
+            'range_start': 0,
+            'total_size': resp['ContentLength'],
+        }
+
         return download_id
 
-    def download_part(self, download_id: str, part_len: int = None) -> bytes:
+    def download_part(self, download_id: str, part_len: int = None) -> Optional[bytes]:
         if part_len:
             part_len = self.DEFAULT_DOWNLOAD_PART_LEN
-        return self._multipart_downloads[download_id]['Body'].read(part_len)
+
+        download = self._multipart_downloads[download_id]
+
+        if download['range_start'] == download['total_size']:
+            return None
+
+        range_end = min(download['range_start'] + part_len, download['total_size'])
+        part = self._s3_client.get_object(Bucket=self._s3_bucket_name,
+                                          Key=download['path'],
+                                          Range=f'bytes={download["range_start"]}-{range_end - 1}')
+        buffer = part['Body'].read()
+        download['range_start'] = range_end
+        return buffer
 
     def complete_multipart_download(self, download_id):
-        self._multipart_downloads[download_id]['Body'].close()
         del self._multipart_downloads[download_id]
