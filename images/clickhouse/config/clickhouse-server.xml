@@ -24,6 +24,7 @@
      </zookeeper>
     <macros>
         <replica>{{instance_name}}</replica>
+        <shard>shard1</shard>
     </macros>
     <logger>
         <console>1</console>

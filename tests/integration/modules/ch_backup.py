@@ -215,7 +215,9 @@ class BackupManager:
                 backup_id: BackupId,
                 schema_only: bool = False,
                 override_replica_name: str = None,
-                force_non_replicated: bool = False) -> str:
+                force_non_replicated: bool = False,
+                clean_zookeeper: bool = False,
+                replica_name: str = None) -> str:
         """
         Restore backup entry.
         """
@@ -227,6 +229,10 @@ class BackupManager:
             options.append(f'--override-replica-name {override_replica_name}')
         if force_non_replicated:
             options.append('--force-non-replicated')
+        if clean_zookeeper:
+            options.append('--clean-zookeeper')
+        if replica_name:
+            options.append(f'--replica-name {replica_name}')
         return self._exec(f'restore {" ".join(options)} {backup_id}')
 
     def restore_metadata(self, node, replica_name):

@@ -9,11 +9,12 @@ import re
 import shutil
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Union
+from typing import Callable, Iterable, Union
 
 import tenacity
 
 from ch_backup import logging
+from ch_backup.exceptions import ClickhouseBackupError
 
 LOCAL_TZ = timezone(timedelta(seconds=-1 * (time.altzone if time.daylight else time.timezone)))
 
@@ -114,3 +115,17 @@ def retry(exception_types: Union[type, tuple] = Exception,
                           stop=tenacity.stop_after_attempt(max_attempts),
                           reraise=True,
                           before_sleep=_log_retry)
+
+
+def get_zookeeper_paths(tables: Iterable, create_getter: Callable) -> Iterable[str]:
+    """
+    Parse ZooKeeper path from create statement.
+    """
+    paths = []
+    for table in tables:
+        create_sql = create_getter(table)
+        match = re.search(R"""Replicated\S{0,20}MergeTree\(\'(?P<zk_path>\S+)\',""", create_sql)
+        if not match:
+            raise ClickhouseBackupError(f'Couldn`t parse create statement for zk path: "{create_sql}')
+        paths.append(match.group('zk_path'))
+    return paths

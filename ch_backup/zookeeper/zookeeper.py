@@ -4,7 +4,7 @@ ZooKeeper-control classes module
 
 import os
 import socket
-from typing import List, Optional
+from typing import Dict, Iterable, Optional
 
 from kazoo.client import KazooClient
 from kazoo.exceptions import KazooException, NoNodeError
@@ -27,15 +27,22 @@ class ZookeeperCTL:
         self._zk_root_path = config['root_path']
 
     @KAZOO_RETRIES
-    def delete_replica_metadata(self, table_paths: List[str], replica: Optional[str] = None) -> None:
+    def delete_replica_metadata(self,
+                                table_paths: Iterable[str],
+                                replica: Optional[str] = None,
+                                macros: Dict = None) -> None:
         """
         Remove replica metadata from zookeeper for all tables from args.
         """
+        if macros is None:
+            macros = {}
         if not replica:
             replica = socket.getfqdn()
+
         self._zk_client.start()
         for table in table_paths:
-            path = os.path.join(self._zk_root_path, table[1:], 'replicas', replica)  # remove leading '/'
+            path = os.path.join(self._zk_root_path, table[1:].format(**macros), 'replicas',
+                                replica)  # remove leading '/'
             debug(f'Deleting zk node: "{path}"')
             try:
                 self._zk_client.delete(path, recursive=True)

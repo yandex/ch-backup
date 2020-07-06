@@ -6,7 +6,7 @@ import os
 import shutil
 from hashlib import md5
 from types import SimpleNamespace
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 from pkg_resources import parse_version
 
@@ -70,13 +70,6 @@ GET_TABLE_COMPAT_SQL = strip_query("""
     FORMAT JSON
 """)
 
-GET_TABLES_ZK_PATH_SQL = strip_query("""
-    SELECT
-        zookeeper_path
-    FROM system.replicas
-    FORMAT JSON
-""")
-
 CHECK_TABLE_SQL = strip_query("""
     SELECT countIf(database = '{db_name}' AND name = '{table_name}')
     FROM system.tables
@@ -118,6 +111,11 @@ GET_TABLE_PARTITIONS_SQL = strip_query("""
 GET_VERSION_SQL = strip_query("""
     SELECT version()
     FORMAT TSVRaw
+""")
+
+GET_MACROS_SQL = strip_query("""
+    SELECT macro, substitution FROM system.macros
+    FORMAT JSON
 """)
 
 
@@ -258,12 +256,6 @@ class ClickhouseCTL:
 
         return _make_table(self._ch_client.query(query_sql)['data'][0])
 
-    def get_tables_zk_path(self) -> List[str]:
-        """
-        Get zookeeper path for all replicated tables.
-        """
-        return [row['zookeeper_path'] for row in self._ch_client.query(GET_TABLES_ZK_PATH_SQL)['data']]
-
     def does_table_exist(self, db_name: str, table_name: str) -> bool:
         """
         Return True if the specified table exists.
@@ -344,6 +336,13 @@ class ClickhouseCTL:
         file_path = os.path.join(self._shadow_data_path, 'increment.txt')
         with open(file_path, 'r') as file:
             return file.read().strip()
+
+    def get_macros(self) -> Dict:
+        """
+        Get ClickHouse macros.
+        """
+        ch_resp = self._ch_client.query(GET_MACROS_SQL)
+        return {row['macro']: row['substitution'] for row in ch_resp.get('data', [])}
 
 
 def _make_table(record: dict) -> Table:

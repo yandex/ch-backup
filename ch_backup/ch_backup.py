@@ -16,7 +16,7 @@ from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.control import ClickhouseCTL, FreezedPart, Table
 from ch_backup.config import Config
 from ch_backup.exceptions import BackupNotFound, ClickhouseBackupError
-from ch_backup.util import now, utcnow
+from ch_backup.util import get_zookeeper_paths, now, utcnow
 from ch_backup.version import get_version
 from ch_backup.zookeeper.zookeeper import ZookeeperCTL
 
@@ -122,7 +122,9 @@ class ClickhouseBackup:
                 databases: Sequence[str] = None,
                 schema_only: bool = False,
                 override_replica_name: str = None,
-                force_non_replicated: bool = False) -> None:
+                force_non_replicated: bool = False,
+                clean_zookeeper: bool = False,
+                replica_name: Optional[str] = None) -> None:
         """
         Restore specified backup
         """
@@ -141,7 +143,7 @@ class ClickhouseBackup:
                                  ', '.join(missed_databases), backup_meta.path)
                 raise ClickhouseBackupError('Required databases were not found in backup metadata')
 
-        self._restore(backup_meta, databases, schema_only)
+        self._restore(backup_meta, databases, schema_only, clean_zookeeper, replica_name)
 
     def delete(self, backup_name: str) -> Tuple[Optional[str], Optional[str]]:
         """
@@ -224,9 +226,6 @@ class ClickhouseBackup:
         source_ch_ctl = ClickhouseCTL(config=source_conf)
         databases = source_ch_ctl.get_databases(exclude_dbs if exclude_dbs else self._config['exclude_dbs'])
 
-        zk_ctl = ZookeeperCTL(self._zk_config)
-        zk_ctl.delete_replica_metadata(source_ch_ctl.get_tables_zk_path(), replica_name)
-
         tables: List[Table] = []
         for database in databases:
             logging.debug('Restoring database "%s"', database)
@@ -234,7 +233,10 @@ class ClickhouseBackup:
                 db_sql = source_ch_ctl.get_database_schema(database)
                 self._ch_ctl.restore_meta(db_sql)
             tables.extend(source_ch_ctl.get_tables_ordered(database))
-        self._restore_tables(tables, lambda table: table.create_statement)
+        self._restore_tables(tables,
+                             lambda table: table.create_statement,
+                             clean_zookeeper=True,
+                             replica_name=replica_name)
 
     def _get_backup_dedup_list(self):
         """
@@ -369,17 +371,26 @@ class ClickhouseBackup:
             if not is_empty:
                 self._backup_layout.upload_backup_metadata(backup)
 
-    def _restore(self, backup_meta: BackupMetadata, databases: Sequence[str], schema_only: bool) -> None:
+    def _restore(self,
+                 backup_meta: BackupMetadata,
+                 databases: Sequence[str],
+                 schema_only: bool,
+                 clean_zookeeper: bool = False,
+                 replica_name: Optional[str] = None) -> None:
         logging.debug('Restoring database: %s', ', '.join(databases))
         tables = list(chain(*[backup_meta.get_tables(db_name) for db_name in databases]))
         self._restore_database_objects(backup_meta, databases)
         self._restore_tables(
-            tables, lambda meta: self._backup_layout.get_table_create_statement(backup_meta, meta.database, meta.name))
+            tables, lambda meta: self._backup_layout.get_table_create_statement(backup_meta, meta.database, meta.name),
+            clean_zookeeper, replica_name)
         if not schema_only:
             self._restore_data(backup_meta, filter(_is_merge_tree, tables))
 
-    def _restore_tables(self, tables: Iterable[Union[Table, TableMetadata]],
-                        create_statement_getter: Callable[[Union[Table, TableMetadata]], str]) -> None:
+    def _restore_tables(self,
+                        tables: Iterable[Union[Table, TableMetadata]],
+                        create_statement_getter: Callable[[Union[Table, TableMetadata]], str],
+                        clean_zookeeper: bool = False,
+                        replica_name: Optional[str] = None) -> None:
         merge_tree_tables = []
         distributed_tables = []
         view_tables = []
@@ -396,6 +407,12 @@ class ClickhouseBackup:
                 view_tables.append(table)
             else:
                 other_tables.append(table)
+
+        if clean_zookeeper:
+            zk_ctl = ZookeeperCTL(self._zk_config)
+            zk_ctl.delete_replica_metadata(
+                get_zookeeper_paths(filter(_is_replicated, merge_tree_tables), create_statement_getter), replica_name,
+                self._ch_ctl.get_macros())
 
         self._restore_table_objects(chain(merge_tree_tables, other_tables, distributed_tables), inner_table_ids,
                                     create_statement_getter)
@@ -610,6 +627,13 @@ def _is_merge_tree(table: Union[Table, TableMetadata]) -> bool:
     Return True if table belongs to merge tree table engine family, or False otherwise.
     """
     return table.engine.find('MergeTree') != -1
+
+
+def _is_replicated(table: Union[Table, TableMetadata]) -> bool:
+    """
+    Return True if table belongs to replicated merge tree table engine family, or False otherwise.
+    """
+    return table.engine.find('Replicated') != -1
 
 
 def _is_distributed(table: Union[Table, TableMetadata]) -> bool:
