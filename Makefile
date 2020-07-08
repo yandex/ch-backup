@@ -89,7 +89,7 @@ debuild: debian_changelog
 .PHONY: debian_changelog
 debian_changelog: build
 	@rm -f debian/changelog
-	dch --create --package ch-backup --distribution trusty \
+	dch --create --package ch-backup --distribution stable \
 	    -v `cat ch_backup/version.txt` \
 	    "Yandex autobuild"
 
