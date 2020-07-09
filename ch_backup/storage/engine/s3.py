@@ -17,6 +17,7 @@ import botocore
 import requests
 from botocore.client import Config
 from botocore.exceptions import BotoCoreError, ClientError
+from urllib3.exceptions import HTTPError
 
 from ...util import retry
 from .base import PipeLineCompatibleStorageEngine
@@ -116,7 +117,7 @@ class S3RetryHelper(ABCMeta):
             self._ensure_s3_client()  # pylint: disable=protected-access
             try:
                 return func(*args, **kwargs)
-            except (ClientError, BotoCoreError, HTTPException) as e:
+            except (ClientError, BotoCoreError, HTTPException, HTTPError) as e:
                 self._s3_client = None  # pylint: disable=protected-access
                 raise S3RetryingError(f'Failed to make S3 operation: {str(e)}') from e
 
