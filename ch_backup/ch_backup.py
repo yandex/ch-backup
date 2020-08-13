@@ -191,11 +191,12 @@ class ClickhouseBackup:
                 self._backup_layout.delete_backup(name)
                 continue
 
-            if retain_count and len(retained_backups) < retain_count:
+            if retain_count > 0:
+                logging.info('Preserving backup per retain count policy: %s, state %s', name, backup.state)
+                retained_backups.append(backup)
                 if backup.state == BackupState.CREATED:
-                    logging.info('Preserving backup per retain count policy: %s, state %s', name, backup.state)
-                    retained_backups.append(backup)
-                    continue
+                    retain_count -= 1
+                continue
 
             if retain_time_limit and backup.start_time >= retain_time_limit:
                 logging.info('Preserving backup per retain time policy: %s, state %s', name, backup.state)

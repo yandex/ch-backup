@@ -71,7 +71,9 @@ class ExecPool:
         """
         Schedule job for execution
         """
-        self._futures[future_id] = self._pool.submit(func, *args, **kwargs)
+        future = self._pool.submit(func, *args, **kwargs)
+        future.add_done_callback(logging.debug('Future "%s" completed', future_id))
+        self._futures[future_id] = future
 
     def wait_all(self) -> None:
         """
@@ -82,12 +84,10 @@ class ExecPool:
 
         for future_id, future in self._futures.items():
             try:
-                future_result = future.result()
+                future.result()
             except Exception:
                 logging.error('Future "%s" generated an exception:', future_id, exc_info=True)
                 raise
-            else:
-                logging.debug('Future "%s" returned: %s', future_id, future_result)
         self._futures = {}
 
 

@@ -4,6 +4,7 @@ Command-line interface.
 """
 import json
 import re
+import signal
 import sys
 import uuid
 from collections import OrderedDict
@@ -23,6 +24,21 @@ from .version import get_version
 
 TIMESTAMP = utcnow().strftime('%Y%m%dT%H%M%S')
 UUID = str(uuid.uuid4())
+
+
+# pylint: disable=unused-argument
+def signal_handler(signum, frame):
+    """
+    Logs received signal. Useful for troubleshooting.
+    """
+    logging.info('Received signal %d', signum)
+
+
+signal.signal(signal.SIGTERM, signal_handler)
+# SIGKILL can't be handled.
+# signal.signal(signal.SIGKILL, signal_handler)
+signal.signal(signal.SIGHUP, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
 
 
 @group(context_settings={
