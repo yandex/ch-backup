@@ -16,7 +16,7 @@ Feature: Backup dictionary created by ddl
     INSERT INTO test_db.table_01 SELECT number, rand() FROM system.numbers LIMIT 3;
     CREATE DICTIONARY test_db.test_dictionary (n1 UInt32, n2 UInt32)
     PRIMARY KEY n1 LAYOUT(hashed()) LIFETIME(MIN 1 MAX 10)
-    SOURCE(CLICKHOUSE(HOST 'localhost' PORT 9000 TABLE 'test_db.table_01' USER 'default'))
+    SOURCE(CLICKHOUSE(HOST 'localhost' PORT 9000 DB 'test_db' TABLE 'table_01' USER 'default'))
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
