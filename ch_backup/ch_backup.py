@@ -271,8 +271,9 @@ class ClickhouseBackup:
         """
         logging.debug('Performing database backup for "%s"', db_name)
 
-        schema = self._ch_ctl.get_database_schema(db_name)
-        self._backup_layout.upload_database_create_statement(backup_meta.name, db_name, schema)
+        if not _is_default_db(db_name):
+            schema = self._ch_ctl.get_database_schema(db_name)
+            self._backup_layout.upload_database_create_statement(backup_meta.name, db_name, schema)
 
         backup_meta.add_database(db_name)
 
@@ -422,8 +423,9 @@ class ClickhouseBackup:
 
     def _restore_database_objects(self, backup_meta: BackupMetadata, databases: Iterable[str]) -> None:
         for db_name in databases:
-            db_sql = self._backup_layout.get_database_create_statement(backup_meta, db_name)
-            self._ch_ctl.restore_meta(db_sql)
+            if not _is_default_db(db_name):
+                db_sql = self._backup_layout.get_database_create_statement(backup_meta, db_name)
+                self._ch_ctl.restore_meta(db_sql)
 
     def _restore_table_objects(self, tables: Iterable[Union[Table, TableMetadata]], inner_table_ids: Set[Tuple[str,
                                                                                                                str]],
@@ -621,6 +623,13 @@ class ClickhouseBackup:
             is_changed = True
 
         return is_changed, deleting_parts
+
+
+def _is_default_db(db_name: str) -> bool:
+    """
+    Return True if db create statement shouldn't be uploaded and applied with restore.
+    """
+    return db_name in ['default']
 
 
 def _is_merge_tree(table: Union[Table, TableMetadata]) -> bool:
