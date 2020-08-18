@@ -8,6 +8,7 @@ from tenacity import retry, stop_after_attempt, wait_fixed
 
 from tests.integration.modules.clickhouse import ClickhouseClient
 from tests.integration.modules.docker import get_container
+from tests.integration.modules.steps import get_step_data
 
 
 @given('a working clickhouse on {node:w}')
@@ -70,9 +71,10 @@ def step_get_response(context):
 
 @then('we got same clickhouse data at {nodes}')
 def step_same_clickhouse_data(context, nodes):
+    options = get_step_data(context)
     user_data = []
     for node in nodes.split():
-        ch_client = ClickhouseClient(context, node)
+        ch_client = ClickhouseClient(context, node, **options)
         _, rows_data = ch_client.get_all_user_data()
         user_data.append(rows_data)
 
@@ -109,6 +111,15 @@ def step_has_same_schema(context, node1, node2):
     def _get_ddl(node):
         ch_client = ClickhouseClient(context, node)
         return ch_client.get_all_user_schemas()
+
+    assert_that(_get_ddl(node1), equal_to(_get_ddl(node2)))
+
+
+@then('{node1:w} has same access control objects as {node2:w}')
+def step_has_same_access(context, node1, node2):
+    def _get_ddl(node):
+        ch_client = ClickhouseClient(context, node)
+        return ch_client.get_all_access_objects()
 
     assert_that(_get_ddl(node1), equal_to(_get_ddl(node2)))
 

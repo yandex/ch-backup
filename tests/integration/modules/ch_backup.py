@@ -148,7 +148,8 @@ class BackupManager:
                databases: Sequence[str] = None,
                tables: Sequence[str] = None,
                labels: dict = None,
-               schema_only: bool = False) -> str:
+               schema_only: bool = False,
+               backup_access_control: bool = None) -> str:
         """
         Execute backup command.
         """
@@ -163,6 +164,8 @@ class BackupManager:
             options.append(f'--label {key}={value}')
         if schema_only:
             options.append('--schema-only')
+        if backup_access_control:
+            options.append('--backup-access-control')
         return self._exec(f'backup {" ".join(options)}').strip()
 
     def delete(self, backup_id: BackupId) -> str:
@@ -241,6 +244,13 @@ class BackupManager:
         """
         options = ['--source-host', node, '--source-port', '8123', '--replica-name', replica_name]
         return self._exec(f'restore-schema {" ".join(options)}')
+
+    def restore_access_control(self, backup_id: BackupId) -> str:
+        """
+        Restore access control metadata from backup.
+        """
+        backup = self.get_backup(backup_id)
+        return self._exec(f'restore-access-control {backup.name}')
 
     def update_backup_metadata(self, backup_id: BackupId, metadata: dict, merge: bool = True) -> None:
         """

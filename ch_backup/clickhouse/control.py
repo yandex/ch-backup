@@ -118,6 +118,11 @@ GET_MACROS_SQL = strip_query("""
     FORMAT JSON
 """)
 
+GET_ACCESS_CONTROL_OBJECTS_SQL = strip_query("""
+    SELECT id FROM system.{type} WHERE storage = 'disk'
+    FORMAT JSON
+""")
+
 
 class Table(SimpleNamespace):
     """
@@ -289,6 +294,18 @@ class ClickhouseCTL:
         Get ClickHouse version.
         """
         return self._ch_version
+
+    def get_access_control_objects(self) -> Sequence[str]:
+        """
+        Returns all access control objects.
+        """
+        result: List[str] = []
+
+        for obj_type in ['users', 'roles', 'quotas', 'row_policies', 'settings_profiles']:
+            ch_resp = self._ch_client.query(GET_ACCESS_CONTROL_OBJECTS_SQL.format(type=obj_type))
+            result.extend(map(lambda row: row['id'], ch_resp.get('data', [])))
+
+        return result
 
     def _get_freezed_parts(self, table: Table) -> Sequence[FreezedPart]:
 

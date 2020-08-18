@@ -7,6 +7,8 @@ from collections import defaultdict, deque
 from copy import copy
 from datetime import timedelta
 from itertools import chain
+from os.path import exists, join
+from time import sleep
 from typing import (Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union)
 
 from ch_backup import logging
@@ -56,7 +58,8 @@ class ClickhouseBackup:
                tables: Sequence[str] = None,
                force: bool = False,
                labels: dict = None,
-               schema_only: bool = False) -> Tuple[str, Optional[str]]:
+               schema_only: bool = False,
+               backup_access_control: bool = False) -> Tuple[str, Optional[str]]:
         """
         Perform backup.
 
@@ -100,6 +103,8 @@ class ClickhouseBackup:
         logging.debug('Starting backup "%s" for databases: %s', backup_meta.name, ', '.join(databases))
 
         try:
+            if backup_access_control or self._config.get('backup_access_control'):
+                self._backup_access_control(backup_meta)
             dedup_backups = [] if schema_only else self._get_backup_dedup_list()
             for db_name in databases:
                 self._backup_database(backup_meta, db_name, db_tables[db_name], dedup_backups, schema_only)
@@ -117,6 +122,7 @@ class ClickhouseBackup:
 
         return (backup_meta.name, None)
 
+    # pylint: disable=too-many-arguments
     def restore(self,
                 backup_name: str,
                 databases: Sequence[str] = None,
@@ -239,6 +245,13 @@ class ClickhouseBackup:
                              clean_zookeeper=True,
                              replica_name=replica_name)
 
+    def restore_access_control(self, backup_name: str) -> None:
+        """Restore ClickHouse access control metadata."""
+        backup_meta = self._get_backup(backup_name)
+        objects = backup_meta.get_access_control()
+        for name in _get_access_control_files(objects):
+            self._backup_layout.download_access_control_file(backup_meta.name, name)
+
     def _get_backup_dedup_list(self):
         """
         Get list of backup deduplication candidates.
@@ -259,6 +272,20 @@ class ClickhouseBackup:
             dedup_backups.append(backup)
 
         return dedup_backups
+
+    def _backup_access_control(self, backup_meta):
+        objects = self._ch_ctl.get_access_control_objects()
+        backup_meta.set_access_control(objects)
+
+        # ClickHouse creates file need_rebuild_lists.mark after access management objects modification
+        # to show that lists should be updated.
+        mark_file = join(self._ch_ctl_conf['access_control_path'], 'need_rebuild_lists.mark')
+        while exists(mark_file):
+            logging.debug(f'Waiting for clickhouse rebuild access control lists. File "{mark_file}".')
+            sleep(1)
+
+        for name in _get_access_control_files(objects):
+            self._backup_layout.upload_access_control_file(backup_meta.name, name)
 
     def _backup_database(self,
                          backup_meta: BackupMetadata,
@@ -569,7 +596,7 @@ class ClickhouseBackup:
 
         return False
 
-    def _rewrite_merge_tree_object(self, table_sql):
+    def _rewrite_merge_tree_object(self, table_sql: str) -> str:
         if self._config['force_non_replicated']:
             match = re.search(R"""(?P<replicated>Replicated)\S{0,20}MergeTree\((?P<params>'\S+', '\S+'(, |\)))""",
                               table_sql)
@@ -623,6 +650,14 @@ class ClickhouseBackup:
             is_changed = True
 
         return is_changed, deleting_parts
+
+
+def _get_access_control_files(objects: Sequence[str]) -> chain:
+    """
+    Return list of file to be backuped/restored .
+    """
+    lists = ['users.list', 'roles.list', 'quotas.list', 'row_policies.list', 'settings_profiles.list']
+    return chain(lists, map(lambda obj: f'{obj}.sql', objects))
 
 
 def _is_default_db(db_name: str) -> bool:

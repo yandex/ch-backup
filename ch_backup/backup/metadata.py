@@ -187,6 +187,7 @@ class BackupMetadata:
         self.start_time = now()
         self.end_time: Optional[datetime] = None
         self._databases: Dict[str, dict] = {}
+        self._access_control: List[str] = []
         self.size = 0
         self.real_size = 0
         self.schema_only = schema_only
@@ -233,6 +234,7 @@ class BackupMetadata:
         """
         report = {
             'databases': self._databases,
+            'access_control': self._access_control,
             'meta': {
                 'name': self.name,
                 'path': self.path,
@@ -269,6 +271,7 @@ class BackupMetadata:
             backup.hostname = meta['hostname']
             backup.time_format = meta['time_format']
             backup._databases = loaded['databases']
+            backup._access_control = loaded.get('access_control', [])
             backup.start_time = cls._load_time(meta, 'start_time')
             backup.end_time = cls._load_time(meta, 'end_time')
             backup.size = meta['bytes']
@@ -386,6 +389,18 @@ class BackupMetadata:
         Return True if backup has no data.
         """
         return self.size == 0
+
+    def get_access_control(self) -> Sequence[str]:
+        """
+        Get access control objects.
+        """
+        return self._access_control
+
+    def set_access_control(self, objects: List[str]) -> None:
+        """
+        Add access control objects to backup metadata.
+        """
+        self._access_control = objects
 
     def _format_time(self, value: datetime) -> str:
         return value.strftime(self.time_format)

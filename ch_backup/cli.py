@@ -234,9 +234,11 @@ def show_command(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> None:
 @option('-f', '--force', is_flag=True, help='Enables force mode (backup.min_interval is ignored).')
 @option('-l', '--label', multiple=True, help='Custom labels as key-value pairs that represents user metadata.')
 @option('--schema-only', is_flag=True, help='Backup only databases schemas')
+@option('--backup-access-control', is_flag=True, help='Backup users, roles, etc. created by SQL.')
 def backup_command(ctx: Context, ch_backup: ClickhouseBackup, name: str, databases: list, tables: list, force: bool,
-                   label: list, schema_only: bool) -> None:
+                   label: list, schema_only: bool, backup_access_control: bool) -> None:
     """Perform backup."""
+    # pylint: disable=too-many-arguments
     if databases and tables:
         ctx.fail('Options --databases and --tables are mutually exclusive.')
 
@@ -252,7 +254,8 @@ def backup_command(ctx: Context, ch_backup: ClickhouseBackup, name: str, databas
                                    tables=tables,
                                    force=force,
                                    labels=labels,
-                                   schema_only=schema_only)
+                                   schema_only=schema_only,
+                                   backup_access_control=backup_access_control)
 
     if msg:
         print(msg, file=sys.stderr, flush=True)
@@ -295,6 +298,13 @@ def restore_schema_command(ctx: Context, _ch_backup: ClickhouseBackup, source_ho
     if not source_host:
         ctx.fail(f'Clickhouse source host not specified.')
     _ch_backup.restore_schema(source_host, source_port, exclude_dbs, replica_name)
+
+
+@command(name='restore-access-control')
+@argument('name', metavar='BACKUP')
+def restore_access_control_command(_ctx: Context, _ch_backup: ClickhouseBackup, name: str) -> None:
+    """Restore ClickHouse access control metadata."""
+    _ch_backup.restore_access_control(name)
 
 
 @command(name='delete')

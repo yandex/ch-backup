@@ -1,3 +1,4 @@
+features/access_control_backup.feature
 features/table_engines.feature
 features/backup_restore.feature
 features/backup_delete.feature

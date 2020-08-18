@@ -23,6 +23,7 @@ class BackupLayout:
     def __init__(self, config: Config) -> None:
         self._storage_loader = StorageLoader(config)
         self._config = config['backup']
+        self._access_control_path = config['clickhouse']['access_control_path']
 
     def upload_backup_metadata(self, backup: BackupMetadata) -> None:
         """
@@ -57,6 +58,19 @@ class BackupLayout:
             self._storage_loader.upload_data(metadata, remote_path=remote_path, is_async=True, encryption=True)
         except Exception as e:
             msg = f'Failed to create async upload of {remote_path}'
+            raise StorageError(msg) from e
+
+    def upload_access_control_file(self, backup_name: str, file_name: str) -> None:
+        """
+        Upload access control list.
+        """
+        local_path = os.path.join(self._access_control_path, file_name)
+        remote_path = _access_control_data_path(self.get_backup_path(backup_name), file_name)
+        try:
+            logging.debug('Uploading access control data "%s"', local_path)
+            self._storage_loader.upload_file(local_path=local_path, remote_path=remote_path, encryption=True)
+        except Exception as e:
+            msg = f'Failed to upload access control metadata file "{remote_path}"'
             raise StorageError(msg) from e
 
     def upload_data_part(self, backup_name: str, fpart: FreezedPart) -> PartMetadata:
@@ -122,6 +136,19 @@ class BackupLayout:
         """
         remote_path = _table_metadata_path(backup_meta.path, db_name, table_name)
         return self._storage_loader.download_data(remote_path, encryption=True)
+
+    def download_access_control_file(self, backup_name: str, file_name: str) -> None:
+        """
+        Download access control object metadata and save on disk.
+        """
+        remote_path = _access_control_data_path(self.get_backup_path(backup_name), file_name)
+        local_path = os.path.join(self._access_control_path, file_name)
+        logging.debug('Downloading access control metadata "%s" to "%s', remote_path, local_path)
+        try:
+            self._storage_loader.download_file(remote_path, local_path, encryption=True)
+        except Exception as e:
+            msg = f'Failed to download access control metadata file {remote_path}'
+            raise StorageError(msg) from e
 
     def download_data_part(self, backup_meta: BackupMetadata, part: PartMetadata, fs_part_path: str) -> None:
         """
@@ -211,6 +238,13 @@ class BackupLayout:
 
     def _backup_metadata_path(self, backup_name: str) -> str:
         return os.path.join(self.get_backup_path(backup_name), BACKUP_META_FNAME)
+
+
+def _access_control_data_path(backup_path: str, file_name: str) -> str:
+    """
+    Return S3 path to access control data.
+    """
+    return os.path.join(backup_path, 'access_control', file_name)
 
 
 def _db_metadata_path(backup_path: str, db_name: str) -> str:

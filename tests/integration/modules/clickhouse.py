@@ -22,7 +22,7 @@ class ClickhouseClient:
     """
     ClickHouse Client.
     """
-    def __init__(self, context: ContextT, node_name: str) -> None:
+    def __init__(self, context: ContextT, node_name: str, user: str = None, password: str = None) -> None:
         protocol = 'http'
         port = context.conf['services']['clickhouse']['expose'][protocol]
         host, exposed_port = docker.get_exposed_port(docker.get_container(context, node_name), port)
@@ -30,6 +30,8 @@ class ClickhouseClient:
         self._session = Session()
         self._url = f'{protocol}://{host}:{exposed_port}'
         self._timeout = 30
+        self._user = user
+        self._password = password
 
     def ping(self) -> None:
         """
@@ -135,6 +137,22 @@ class ClickhouseClient:
         databases = self._query('GET', query)['data']
         return [db[0] for db in databases]
 
+    def get_all_access_objects(self) -> set:
+        """
+        Retrieve DDL for users, roles, etc
+        """
+        list_query = """SELECT name FROM system.{type} WHERE storage = 'disk' FORMAT JSON"""
+        types = [('users', 'USER'), ('roles', 'ROLE'), ('quotas', 'QUOTA'), ('row_policies', 'ROW POLICY'),
+                 ('settings_profiles', 'SETTINGS PROFILE')]
+
+        result = set()
+        for table_name, uppercase_name in types:
+            ch_resp = self._query('GET', query=list_query.format(type=table_name))
+            for row in ch_resp.get('data', []):
+                result.add(self._query('GET', query=f"SHOW CREATE {uppercase_name} {row['name']}"))
+
+        return result
+
     def drop_database(self, db_name: str) -> None:
         """
         Drop database.
@@ -175,6 +193,10 @@ class ClickhouseClient:
         params = {}
         if query:
             params['query'] = query
+        if self._user:
+            params['user'] = self._user
+        if self._password:
+            params['password'] = self._password
 
         try:
             logging.debug('Executing ClickHouse query: %s', query)

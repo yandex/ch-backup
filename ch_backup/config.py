@@ -13,6 +13,7 @@ from ch_backup import logging
 DEFAULT_CONFIG = {
     'clickhouse': {
         'data_path': '/var/lib/clickhouse',
+        'access_control_path': '/var/lib/clickhouse/access',
         'host': socket.gethostname(),
         'protocol': 'http',
         'port': None,
@@ -43,6 +44,7 @@ DEFAULT_CONFIG = {
         'keep_freezed_data_on_failure': True,
         'override_replica_name': None,
         'force_non_replicated': False,
+        'backup_access_control': False,
     },
     'storage': {
         'type': 's3',

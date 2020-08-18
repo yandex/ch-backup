@@ -63,6 +63,7 @@ RUN openssl req -subj "/CN=localhost" -new -newkey rsa:2048 -days 365 -nodes -x5
         -out /etc/clickhouse-server/server.crt && \
     mkdir -p /etc/clickhouse-server/conf.d && \
     ln -s /config/clickhouse-server.xml /etc/clickhouse-server/conf.d/ && \
+    ln -s /config/users.xml /etc/clickhouse-server/users.d/ && \
     chown -R clickhouse:clickhouse /etc/clickhouse-server/ /usr/bin/clickhouse
 
 COPY staging/images/{{instance_name}}/entrypoint.py /entrypoint.py

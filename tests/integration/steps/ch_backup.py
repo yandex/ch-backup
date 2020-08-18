@@ -5,6 +5,7 @@ from behave import given, then, when
 from hamcrest import (any_of, assert_that, contains_string, equal_to, has_entries, matches_regexp)
 
 from tests.integration.modules.ch_backup import BackupManager
+from tests.integration.modules.docker import get_container
 from tests.integration.modules.steps import get_step_data
 
 
@@ -115,3 +116,12 @@ def step_check_backups_conditions(context, node):
 def step_restore_schema(context, node1, node2):
     result = BackupManager(context, node2).restore_metadata(node1, node2)
     assert_that(result, matches_regexp('^$'))
+
+
+@when('we restore clickhouse access control metadata backup #{backup_id:d} to {node:w} with restart')
+@when('we restore clickhouse access control metadata backup "{backup_id}" to {node:w} with restart')
+def step_restore_access_control_backup(context, backup_id, node):
+    result = BackupManager(context, node).restore_access_control(backup_id)
+    assert_that(result, matches_regexp('^$'))
+    container = get_container(context, node)
+    assert container.exec_run('supervisorctl restart clickhouse').exit_code == 0
