@@ -21,6 +21,8 @@ DEFAULT_CONFIG = {
         'timeout': 90,
         'user': 'clickhouse',
         'group': 'clickhouse',
+        'clickhouse_user': None,
+        'clickhouse_password': None,
     },
     'backup': {
         'exclude_dbs': ['_temporary_and_external_tables'],
