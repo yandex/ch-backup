@@ -124,7 +124,7 @@ def get_zookeeper_paths(tables: Iterable, create_getter: Callable) -> Iterable[s
     paths = []
     for table in tables:
         create_sql = create_getter(table)
-        match = re.search(R"""Replicated\S{0,20}MergeTree\(\'(?P<zk_path>\S+)\',""", create_sql)
+        match = re.search(R"""Replicated\S{0,20}MergeTree\(\'(?P<zk_path>[^']+)\',""", create_sql)
         if not match:
             raise ClickhouseBackupError(f'Couldn`t parse create statement for zk path: "{create_sql}')
         paths.append(match.group('zk_path'))

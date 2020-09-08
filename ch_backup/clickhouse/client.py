@@ -25,8 +25,8 @@ class ClickhouseClient:
         protocol = config['protocol']
         port = config['port'] or (8123 if protocol == 'http' else 8443)
         ca_path = config.get('ca_path')
-        self._user = config['clickhouse_user']
-        self._password = config['clickhouse_password']
+        self._user = config.get('clickhouse_user', None)
+        self._password = config.get('clickhouse_password', None)
         self._session = requests.Session()
         self._session.verify = True if ca_path is None else ca_path
         # pylint: disable=no-member
@@ -41,12 +41,12 @@ class ClickhouseClient:
         """
         try:
             logging.debug('Executing query: %s', query)
-            params = {'query': query}
+            params = {}
             if self._user:
                 params['user'] = self._user
             if self._password:
                 params['password'] = self._password
-            response = self._session.post(self._url, params=params, json=post_data, timeout=self._timeout)
+            response = self._session.post(self._url, params=params, json=post_data, timeout=self._timeout, data=query)
 
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:

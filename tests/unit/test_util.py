@@ -70,14 +70,18 @@ _test_tables = {
     'valid_legacy': "CREATE TABLE legacy_test (id Date) ENGINE"
                     "ReplicatedMergeTree('/clickhouse/tables/shard1/legacy_test', '{replica}', id, id, id, 8192)",
     'valid_summing_test': "CREATE TABLE valid_summing_test (id Int32)"
-                          "ENGINE ReplicatedMergeTree('/clickhouse/tables/shard1/valid_test', '{replica}') "
+                          "ENGINE ReplicatedMergeTree('/clickhouse/tables/shard1/valid_summing_test', '{replica}') "
                           "PARTITION BY (id) ORDER BY (id)",
     'valid_summing_legacy': "CREATE TABLE legacy_summing_test (id Date) ENGINE ReplicatedSummingMergeTree("
-                            "'/clickhouse/tables/shard1/legacy_test', '{replica}', id, id, id, 8192)",
-    'valid_with_quotes_test': "CREATE TABLE valid_test (id Int32)"
-                              "ENGINE ReplicatedMergeTree('/clickhouse/tables/sh\'a\'rd1/valid_test', '{replica}') "
-                              "PARTITION BY (id) ORDER BY (id)",
+                            "'/clickhouse/tables/shard1/legacy_summing_test', '{replica}', id, id, id, 8192)",
+    'valid_with_spaces': "CREATE TABLE valid_test (id Int32)"
+                         "ENGINE ReplicatedMergeTree('/clickhouse/tables/shard1/valid_test ', '{replica}') "
+                         "PARTITION BY (id) ORDER BY (id)",
     'invalid_test': "CREATE TABLE invalid_test (id Int32) ENGINE MergeTree() PARTITION BY (id) ORDER BY (id)",
+    # valid path for clickhouse
+    'invalid_with_quotes_test': "CREATE TABLE valid_test (id Int32)"
+                                "ENGINE ReplicatedMergeTree('/clickhouse/tables/sh\'a\'rd1/valid_test', '{replica}') "
+                                "PARTITION BY (id) ORDER BY (id)",
 }
 
 
@@ -90,13 +94,14 @@ class TestGetZooKeeperPath:
     Tests for get_zookeeper_paths() function.
     """
     def test_valid_sql(self):
-        actual = set(get_zookeeper_paths(filter(lambda name: name.startswith('valid'), _test_tables.keys()),
-                                         get_table))
-        assert actual == {
+        actual = get_zookeeper_paths(filter(lambda name: name.startswith('valid'), _test_tables.keys()), get_table)
+        assert actual == [
             '/clickhouse/tables/shard1/valid_test',
             '/clickhouse/tables/shard1/legacy_test',
-            '/clickhouse/tables/sh\'a\'rd1/valid_test',
-        }
+            '/clickhouse/tables/shard1/valid_summing_test',
+            '/clickhouse/tables/shard1/legacy_summing_test',
+            '/clickhouse/tables/shard1/valid_test ',
+        ]
 
     def test_invalid_sql(self):
         with pytest.raises(ClickhouseBackupError):
