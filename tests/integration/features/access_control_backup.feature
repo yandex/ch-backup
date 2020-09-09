@@ -16,6 +16,8 @@ Feature: Backup users, roles, etc. created by SQL
     GRANT SELECT ON test_db.* TO test_role;
     CREATE ROW POLICY filter ON test_db.table_01 FOR SELECT USING CounterID < 5 TO test_role;
     CREATE ROW POLICY filter2 ON test_db.table_01 FOR SELECT USING CounterID > 2 TO test_role, test_user;
+    CREATE QUOTA test_quota FOR INTERVAL 1 DAY MAX QUERIES 10 TO test_role;
+    CREATE SETTINGS PROFILE memory_profile SETTINGS max_memory_usage = 100000001 MIN 90000000 MAX 110000000 TO test_role;
     """
     And we have executed queries on clickhouse01
     """

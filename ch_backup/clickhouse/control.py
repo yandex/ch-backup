@@ -119,7 +119,7 @@ GET_MACROS_SQL = strip_query("""
 """)
 
 GET_ACCESS_CONTROL_OBJECTS_SQL = strip_query("""
-    SELECT id FROM system.{type} WHERE storage = 'disk'
+    SELECT id FROM system.{type} WHERE storage='disk' or storage='local directory'
     FORMAT JSON
 """)
 

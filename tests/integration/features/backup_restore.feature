@@ -6,6 +6,7 @@ Feature: Backup & Restore
     And a working s3
     And a working zookeeper on zookeeper01
     And a working clickhouse on clickhouse01
+    And a working clickhouse on clickhouse02
     And clickhouse on clickhouse01 has test schema
 
   Scenario: Create backup
@@ -61,4 +62,17 @@ Feature: Backup & Restore
     """
     Then clickhouse02 has same schema as clickhouse01
     But on clickhouse02 tables are empty
+
+  Scenario: Backup & Restore with multipart upload/download
+    When we drop all databases at clickhouse01
+    And we drop all databases at clickhouse02
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (n Int32) ENGINE = MergeTree() PARTITION BY n % 1 ORDER BY n;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10000000;
+    """
+    When we create clickhouse01 clickhouse backup
+    And we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
 # TODO: check deduplication with overdue backups
