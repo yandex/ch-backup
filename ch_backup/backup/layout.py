@@ -14,6 +14,7 @@ from ch_backup.exceptions import StorageError
 from ch_backup.storage import StorageLoader
 
 BACKUP_META_FNAME = 'backup_struct.json'
+BACKUP_LIGHT_META_FNAME = 'backup_light_struct.json'
 
 
 class BackupLayout:
@@ -30,9 +31,12 @@ class BackupLayout:
         Upload backup metadata.
         """
         remote_path = self._backup_metadata_path(backup.name)
+        remote_light_path = self._backup_light_metadata_path(backup.name)
         try:
             logging.debug('Saving backup metadata in %s', remote_path)
-            self._storage_loader.upload_data(backup.dump_json(), remote_path=remote_path)
+            self._storage_loader.upload_data(backup.dump_json(light=False), remote_path=remote_path)
+            logging.debug('Saving backup light metadata in %s', remote_light_path)
+            self._storage_loader.upload_data(backup.dump_json(light=True), remote_path=remote_light_path)
         except Exception as e:
             raise StorageError('Failed to upload backup metadata') from e
 
@@ -238,6 +242,9 @@ class BackupLayout:
 
     def _backup_metadata_path(self, backup_name: str) -> str:
         return os.path.join(self.get_backup_path(backup_name), BACKUP_META_FNAME)
+
+    def _backup_light_metadata_path(self, backup_name: str) -> str:
+        return os.path.join(self.get_backup_path(backup_name), BACKUP_LIGHT_META_FNAME)
 
 
 def _access_control_data_path(backup_path: str, file_name: str) -> str:

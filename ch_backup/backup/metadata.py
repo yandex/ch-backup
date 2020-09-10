@@ -228,13 +228,13 @@ class BackupMetadata:
         """
         self.end_time = now()
 
-    def dump_json(self) -> str:
+    def dump_json(self, light: bool = False) -> str:
         """
         Return json representation of backup metadata.
         """
         report = {
-            'databases': self._databases,
-            'access_control': self._access_control,
+            'databases': self._databases if not light else {},
+            'access_control': self._access_control if not light else [],
             'meta': {
                 'name': self.name,
                 'path': self.path,
