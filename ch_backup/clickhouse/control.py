@@ -6,11 +6,12 @@ import os
 import shutil
 from hashlib import md5
 from types import SimpleNamespace
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Union
 
 from pkg_resources import parse_version
 
 from ch_backup import logging
+from ch_backup.backup.metadata import TableMetadata
 from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.util import chown_dir_contents, retry, strip_query
 
@@ -21,7 +22,8 @@ GET_TABLES_SQL = strip_query("""
         engine,
         engine_full,
         create_table_query,
-        data_paths[1] "data_path"
+        data_paths[1] "data_path",
+        uuid
     FROM system.tables
     WHERE database = '{db_name}'
       AND (empty({tables}) OR has(cast({tables}, 'Array(String)'), name))
@@ -29,27 +31,15 @@ GET_TABLES_SQL = strip_query("""
     FORMAT JSON
 """)
 
-GET_TABLE_SQL = strip_query("""
+GET_TABLES_COMPAT_20_3_SQL = strip_query("""
     SELECT
         database,
         name,
         engine,
         engine_full,
         create_table_query,
-        data_paths[1] "data_path"
-    FROM system.tables
-    WHERE database = '{db_name}' AND name = '{table_name}'
-    FORMAT JSON
-""")
-
-GET_TABLES_COMPAT_SQL = strip_query("""
-    SELECT
-        database,
-        name,
-        engine,
-        engine_full,
-        create_table_query,
-        data_path
+        data_paths[1] "data_path",
+        NULL "uuid"
     FROM system.tables
     WHERE database = '{db_name}'
       AND (empty({tables}) OR has(cast({tables}, 'Array(String)'), name))
@@ -57,16 +47,19 @@ GET_TABLES_COMPAT_SQL = strip_query("""
     FORMAT JSON
 """)
 
-GET_TABLE_COMPAT_SQL = strip_query("""
+GET_TABLES_COMPAT_19_14_SQL = strip_query("""
     SELECT
         database,
         name,
         engine,
         engine_full,
         create_table_query,
-        data_path
+        data_path,
+        NULL "uuid"
     FROM system.tables
-    WHERE database = '{db_name}' AND name = '{table_name}'
+    WHERE database = '{db_name}'
+      AND (empty({tables}) OR has(cast({tables}, 'Array(String)'), name))
+    ORDER BY metadata_modification_time
     FORMAT JSON
 """)
 
@@ -79,6 +72,10 @@ CHECK_TABLE_SQL = strip_query("""
 PART_ATTACH_SQL = strip_query("""
     ALTER TABLE `{db_name}`.`{table_name}`
     ATTACH PART '{part_name}'
+""")
+
+TABLE_ATTACH_SQL = strip_query("""
+    ATTACH TABLE `{database}`.`{table}`
 """)
 
 FREEZE_TABLE_SQL = strip_query("""
@@ -96,6 +93,11 @@ GET_DATABASES_SQL = strip_query("""
 
 SHOW_CREATE_DATABASE_SQL = strip_query("""
     SHOW CREATE DATABASE `{db_name}`
+    FORMAT TSVRaw
+""")
+
+GET_DATABASE_ENGINE = strip_query("""
+    SELECT engine FROM system.databases WHERE name='{db_name}'
     FORMAT TSVRaw
 """)
 
@@ -129,14 +131,14 @@ class Table(SimpleNamespace):
     Table.
     """
     def __init__(self, database: str, name: str, engine: str, data_path: str, create_statement: str,
-                 inner_table: Optional[str]) -> None:
+                 uuid: str) -> None:
         super().__init__()
         self.database = database
         self.name = name
         self.engine = engine
         self.data_path = data_path
         self.create_statement = create_statement
-        self.inner_table = inner_table
+        self.uuid = uuid
 
 
 class Partition(SimpleNamespace):
@@ -171,9 +173,8 @@ class ClickhouseCTL:
     def __init__(self, config: dict) -> None:
         self._config = config
         self._ch_client = ClickhouseClient(config)
-        root_data_path = config['data_path']
-        self._data_path = os.path.join(root_data_path, 'data')
-        self._shadow_data_path = os.path.join(root_data_path, 'shadow')
+        self._root_data_path = config['data_path']
+        self._shadow_data_path = os.path.join(self._root_data_path, 'shadow')
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
 
     def chown_detached_table_parts(self, table: Table) -> None:
@@ -182,13 +183,21 @@ class ClickhouseCTL:
         specified table. New values for permissions are taken from the config.
         """
         detached_path = self._get_table_detached_path(table)
-        self._chown_dir(detached_path)
+        self.chown_dir(detached_path)
 
     def attach_part(self, table: Table, part_name: str) -> None:
         """
         Attach data part to the specified table.
         """
         query_sql = PART_ATTACH_SQL.format(db_name=table.database, table_name=table.name, part_name=part_name)
+
+        self._ch_client.query(query_sql)
+
+    def attach_table(self, table: Union[TableMetadata, Table]) -> None:
+        """
+        Attach data part to the specified table.
+        """
+        query_sql = TABLE_ATTACH_SQL.format(database=table.database, table=table.name)
 
         self._ch_client.query(query_sql)
 
@@ -239,11 +248,15 @@ class ClickhouseCTL:
         """
         Get ordered by mtime list of all database tables
         """
-        if self._match_ch_version(min_version='19.15'):
-            query_sql = GET_TABLES_SQL.format(db_name=db_name, tables=tables or [])
+        query_sql: str
+        if self._match_ch_version(min_version='20.4'):
+            query_sql = GET_TABLES_SQL
+        elif self._match_ch_version(min_version='19.15'):
+            query_sql = GET_TABLES_COMPAT_20_3_SQL
         else:
-            query_sql = GET_TABLES_COMPAT_SQL.format(db_name=db_name, tables=tables or [])
+            query_sql = GET_TABLES_COMPAT_19_14_SQL
 
+        query_sql = query_sql.format(db_name=db_name, tables=tables or [])
         result: List[Table] = []
         for row in self._ch_client.query(query_sql)['data']:
             result.append(_make_table(row))
@@ -254,11 +267,15 @@ class ClickhouseCTL:
         """
         Get ordered by mtime list of all database tables
         """
-        if self._match_ch_version(min_version='19.15'):
-            query_sql = GET_TABLE_SQL.format(db_name=db_name, table_name=table_name)
+        query_sql: str
+        if self._match_ch_version(min_version='20.4'):
+            query_sql = GET_TABLES_SQL
+        elif self._match_ch_version(min_version='19.15'):
+            query_sql = GET_TABLES_COMPAT_20_3_SQL
         else:
-            query_sql = GET_TABLE_COMPAT_SQL.format(db_name=db_name, table_name=table_name)
+            query_sql = GET_TABLES_COMPAT_19_14_SQL
 
+        query_sql = query_sql.format(db_name=db_name, tables=[table_name])
         return _make_table(self._ch_client.query(query_sql)['data'][0])
 
     def does_table_exist(self, db_name: str, table_name: str) -> bool:
@@ -282,6 +299,12 @@ class ClickhouseCTL:
         Restore database or table meta sql
         """
         self._ch_client.query(query_sql)
+
+    def get_database_metadata_path(self, database: str) -> str:
+        """
+        Get filesystem absolute path to databse metadata.
+        """
+        return os.path.join(self._root_data_path, 'metadata', database)
 
     def get_detached_part_path(self, table: Table, part_name: str) -> str:
         """
@@ -309,8 +332,7 @@ class ClickhouseCTL:
 
     def _get_freezed_parts(self, table: Table) -> Sequence[FreezedPart]:
 
-        path = os.path.join(self._shadow_data_path, self._get_shadow_increment(), 'data',
-                            self._get_table_data_relpath(table))
+        path = os.path.join(self._shadow_data_path, self._get_shadow_increment(), self._get_table_data_relpath(table))
 
         if not os.path.exists(path):
             logging.debug('Shadow path %s is empty', path)
@@ -326,13 +348,16 @@ class ClickhouseCTL:
         return freezed_parts
 
     def _get_table_data_relpath(self, table: Table) -> str:
-        return os.path.relpath(table.data_path, self._data_path)
+        return os.path.relpath(table.data_path, self._root_data_path)
 
     def _get_table_detached_path(self, table: Table) -> str:
         return os.path.join(table.data_path, 'detached')
 
-    def _chown_dir(self, dir_path: str) -> None:
-        assert dir_path.startswith(self._data_path)
+    def chown_dir(self, dir_path: str) -> None:
+        """
+        Change owner and group for all files in folder.
+        """
+        assert dir_path.startswith(self._root_data_path)
 
         chown_dir_contents(self._config['user'], self._config['group'], dir_path)
 
@@ -363,17 +388,12 @@ class ClickhouseCTL:
 
 
 def _make_table(record: dict) -> Table:
-    if record['engine'] == 'MaterializedView' and record['engine_full']:
-        inner_table = '.inner.' + record['name']
-    else:
-        inner_table = None
-
     return Table(database=record['database'],
                  name=record['name'],
                  engine=record['engine'],
                  create_statement=record['create_table_query'],
                  data_path=record['data_path'],
-                 inner_table=inner_table)
+                 uuid=record.get('uuid', None))
 
 
 def _get_part_checksum(part_path: str) -> str:

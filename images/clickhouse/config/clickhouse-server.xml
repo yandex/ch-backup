@@ -14,6 +14,16 @@
             <preferServerCiphers>true</preferServerCiphers>
         </server>
     </openSSL>
+    <remote_servers>
+        <cluster_name>
+            <shard>
+                <replica>
+                    <host>{{instance_name}}.{{conf.network_name}}</host>
+                    <port>9000</port>
+                </replica>
+            </shard>
+        </cluster_name>
+    </remote_servers>
      <zookeeper>
          <node index="1">
              <host>{{conf.zk.uri}}</host>

@@ -93,13 +93,13 @@ class TableMetadata(SimpleNamespace):
     """
     Backup metadata for ClickHouse table.
     """
-    def __init__(self, database: str, name: str, engine: str, inner_table: Optional[str]) -> None:
+    def __init__(self, database: str, name: str, engine: str, uuid: Optional[str]) -> None:
         super().__init__()
         self.database: str = database
         self.name: str = name
         self.raw_metadata: dict = {
             'engine': engine,
-            'inner_table': inner_table,
+            'uuid': uuid,
             'parts': {},
         }
 
@@ -111,12 +111,11 @@ class TableMetadata(SimpleNamespace):
         return self.raw_metadata['engine']
 
     @property
-    def inner_table(self) -> Optional[str]:
+    def uuid(self) -> Optional[str]:
         """
-        Return name of the associated inner table if exists, or None otherwise. Inner tables are applicable for
-        some materialized views only.
+        Return uuid of the table if not zero. Used for view restore in ch > 20.10
         """
-        return self.raw_metadata['inner_table']
+        return self.raw_metadata['uuid']
 
     def get_parts(self) -> Sequence[PartMetadata]:
         """
@@ -154,7 +153,7 @@ class TableMetadata(SimpleNamespace):
         """
         Deserialize table metadata.
         """
-        table = cls(database, name, raw_metadata['engine'], raw_metadata['inner_table'])
+        table = cls(database, name, raw_metadata['engine'], raw_metadata.get('uuid', None))
         table.raw_metadata['parts'] = raw_metadata['parts']
         return table
 

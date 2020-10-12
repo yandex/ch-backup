@@ -3,13 +3,14 @@ Clickhouse backup logic
 """
 
 import re
-from collections import defaultdict, deque
+from collections import defaultdict
 from copy import copy
 from datetime import timedelta
 from itertools import chain
+from os import remove
 from os.path import exists, join
 from time import sleep
-from typing import (Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union)
+from typing import (Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union)
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
@@ -305,7 +306,7 @@ class ClickhouseBackup:
         backup_meta.add_database(db_name)
 
         for table in self._ch_ctl.get_tables_ordered(db_name, tables):
-            table_meta = TableMetadata(table.database, table.name, table.engine, table.inner_table)
+            table_meta = TableMetadata(table.database, table.name, table.engine, table.uuid)
             self._backup_table_schema(backup_meta, table)
             if not schema_only:
                 # table_meta will be populated with parts info
@@ -353,9 +354,7 @@ class ClickhouseBackup:
 
                 table_meta.add_part(part)
 
-        if _is_merge_tree(table):
             self._backup_layout.wait()
-
             self._ch_ctl.remove_freezed_data()
 
     def _delete(self, backup: BackupMetadata,
@@ -424,15 +423,12 @@ class ClickhouseBackup:
         distributed_tables = []
         view_tables = []
         other_tables = []
-        inner_table_ids = set()
         for table in tables:
             if _is_merge_tree(table):
                 merge_tree_tables.append(table)
             elif _is_distributed(table):
                 distributed_tables.append(table)
             elif _is_view(table):
-                if table.inner_table:
-                    inner_table_ids.add((table.database, table.inner_table))
                 view_tables.append(table)
             else:
                 other_tables.append(table)
@@ -443,9 +439,8 @@ class ClickhouseBackup:
                 get_zookeeper_paths(filter(_is_replicated, merge_tree_tables), create_statement_getter), replica_name,
                 self._ch_ctl.get_macros())
 
-        self._restore_table_objects(chain(merge_tree_tables, other_tables, distributed_tables), inner_table_ids,
+        self._restore_table_objects(chain(merge_tree_tables, other_tables, distributed_tables),
                                     create_statement_getter)
-
         self._restore_view_objects(view_tables, create_statement_getter)
 
     def _restore_database_objects(self, backup_meta: BackupMetadata, databases: Iterable[str]) -> None:
@@ -454,44 +449,30 @@ class ClickhouseBackup:
                 db_sql = self._backup_layout.get_database_create_statement(backup_meta, db_name)
                 self._ch_ctl.restore_meta(db_sql)
 
-    def _restore_table_objects(self, tables: Iterable[Union[Table, TableMetadata]], inner_table_ids: Set[Tuple[str,
-                                                                                                               str]],
+    def _restore_table_objects(self, tables: Iterable[Union[Table, TableMetadata]],
                                create_statement_getter: Callable[[Union[Table, TableMetadata]], str]) -> None:
         for table_meta in tables:
-            # inner table is restored implicitly with corresponding materialized view
-            if (table_meta.database, table_meta.name) in inner_table_ids:
-                continue
-
             table_sql = create_statement_getter(table_meta)
             table_sql = self._rewrite_merge_tree_object(table_sql)
             self._ch_ctl.restore_meta(table_sql)
 
     def _restore_view_objects(self, views: Iterable[Union[Table, TableMetadata]],
                               create_statement_getter: Callable[[Union[Table, TableMetadata]], str]) -> None:
-        errors: List[Tuple[Union[Table, TableMetadata], Exception]] = []
-        unprocessed = deque((v, create_statement_getter(v)) for v in views)
-        while unprocessed:
-            view_meta, view_sql = unprocessed.popleft()
-            view_sql = self._rewrite_merge_tree_object(view_sql)
+        # Create view through attach to omit checks.
+        for view in views:
+            database_meta = self._ch_ctl.get_database_metadata_path(view.database)
+            table_meta = join(database_meta, f'{view.name}.sql')
             try:
-                self._ch_ctl.restore_meta(view_sql)
-
+                create_sql = self._rewrite_view_object(view, create_statement_getter(view))
+                with open(table_meta, 'w') as f:
+                    f.write(create_sql)
+                self._ch_ctl.chown_dir(database_meta)
+                self._ch_ctl.attach_table(view)
             except Exception as e:
-                if len(errors) > len(unprocessed):
-                    break
-
-                errors.append((view_meta, e))
-                unprocessed.append((view_meta, view_sql))
-
-            else:
-                errors.clear()
-
-        if errors:
-            logging.error('Failed to restore database views:\n%s',
-                          '\n'.join(f'"{v.database}"."{v.name}": {e!r}' for v, e in errors))
-            # TODO: uncomment with cleanup of backward-compatibility logic for inner_table field
-            # failed_views_str = ', '.join(f'"{v.database}"."{v.name}"' for v, e in errors)
-            # raise ClickhouseBackupError(f'Failed to restore database views: {failed_views_str}')
+                if exists(table_meta):
+                    remove(table_meta)
+                logging.debug(f'Failed to restore view via metadata attach, error: "{repr(e)}", fallback to create')
+                self._ch_ctl.restore_meta(self._rewrite_merge_tree_object(create_statement_getter(view)))
 
     def _restore_data(self, backup_meta: BackupMetadata, tables: Iterable[TableMetadata]) -> None:
         for table_meta in tables:
@@ -598,19 +579,28 @@ class ClickhouseBackup:
 
     def _rewrite_merge_tree_object(self, table_sql: str) -> str:
         if self._config['force_non_replicated']:
-            match = re.search(R"""(?P<replicated>Replicated)\S{0,20}MergeTree\((?P<params>'\S+', '\S+'(, |\)))""",
+            match = re.search(r"(?P<replicated>Replicated)\S{0,20}MergeTree\((?P<params>('[^']+', '[^']+'(, |\)))|)",
                               table_sql)
             if match:
-                table_sql = table_sql.replace(match.group('params'),
-                                              ')' if match.group('params')[-1] == ')' else '').replace(
-                                                  match.group('replicated'), '')
+                params = match.group('params')
+                if len(params) > 0:
+                    table_sql = table_sql.replace(params, params[-1]).replace(match.group('replicated'), '')
 
         if self._config['override_replica_name']:
-            match = re.search(R"""Replicated\S{0,20}MergeTree\(\'\S+\', (?P<replica>\'\S+\')""", table_sql)
+            match = re.search(r"Replicated\S{0,20}MergeTree\('[^']+', (?P<replica>\'\S+\')", table_sql)
             if match:
                 table_sql = table_sql.replace(match.group('replica'), f"'{self._config['override_replica_name']}'")
 
         return table_sql
+
+    def _rewrite_view_object(self, table: Union[Table, TableMetadata], table_sql: str) -> str:
+        if table.uuid and self._ch_ctl.get_database_schema(table.database).find('ENGINE = Atomic') != -1:
+            table_sql = re.sub(f'^CREATE (?P<mat>(MATERIALIZED )?)VIEW (?P<table_name>{table.database}.{table.name}) ',
+                               f"ATTACH \\g<mat>VIEW _ UUID '{table.uuid}' ", table_sql)
+        else:
+            table_sql = re.sub(r'^CREATE (?P<mat>(MATERIALIZED )?)VIEW', r'ATTACH \g<mat>VIEW', table_sql)
+
+        return self._rewrite_merge_tree_object(table_sql)
 
     @staticmethod
     def _pop_deleting_parts(backup_meta: BackupMetadata,
