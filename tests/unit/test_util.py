@@ -94,7 +94,7 @@ class TestGetZooKeeperPath:
     Tests for get_zookeeper_paths() function.
     """
     def test_valid_sql(self):
-        actual = get_zookeeper_paths(filter(lambda name: name.startswith('valid'), _test_tables.keys()), get_table)
+        actual = get_zookeeper_paths(value for name, value in _test_tables.items() if name.startswith('valid_'))
         assert actual == [
             '/clickhouse/tables/shard1/valid_test',
             '/clickhouse/tables/shard1/legacy_test',
@@ -105,4 +105,4 @@ class TestGetZooKeeperPath:
 
     def test_invalid_sql(self):
         with pytest.raises(ClickhouseBackupError):
-            get_zookeeper_paths(['invalid_test'], get_table)
+            get_zookeeper_paths(['invalid_test'])

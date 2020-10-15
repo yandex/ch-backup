@@ -47,6 +47,7 @@ DEFAULT_CONFIG = {
         'override_replica_name': None,
         'force_non_replicated': False,
         'backup_access_control': False,
+        'restore_context_path': '/tmp/ch_backup_restore_state.json',  # nosec
     },
     'storage': {
         'type': 's3',

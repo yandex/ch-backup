@@ -10,11 +10,12 @@ from itertools import chain
 from os import remove
 from os.path import exists, join
 from time import sleep
-from typing import (Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union)
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import (BackupMetadata, BackupState, PartMetadata, TableMetadata)
+from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.control import ClickhouseCTL, FreezedPart, Table
 from ch_backup.config import Config
@@ -34,6 +35,7 @@ class ClickhouseBackup:
         self._backup_layout = BackupLayout(config)
         self._config = config['backup']
         self._zk_config = config.get('zookeeper')
+        self._restore_context = RestoreContext(self._config)
 
     def get(self, backup_name: str) -> BackupMetadata:
         """
@@ -241,10 +243,7 @@ class ClickhouseBackup:
                 db_sql = source_ch_ctl.get_database_schema(database)
                 self._ch_ctl.restore_meta(db_sql)
             tables.extend(source_ch_ctl.get_tables_ordered(database))
-        self._restore_tables(tables,
-                             lambda table: table.create_statement,
-                             clean_zookeeper=True,
-                             replica_name=replica_name)
+        self._restore_tables(tables, clean_zookeeper=True, replica_name=replica_name)
 
     def restore_access_control(self, backup_name: str) -> None:
         """Restore ClickHouse access control metadata."""
@@ -406,17 +405,15 @@ class ClickhouseBackup:
                  clean_zookeeper: bool = False,
                  replica_name: Optional[str] = None) -> None:
         logging.debug('Restoring database: %s', ', '.join(databases))
-        tables = list(chain(*[backup_meta.get_tables(db_name) for db_name in databases]))
+        tables_meta = list(chain(*[backup_meta.get_tables(db_name) for db_name in databases]))
+        tables = list(map(lambda meta: self._get_table_from_meta(backup_meta, meta), tables_meta))
         self._restore_database_objects(backup_meta, databases)
-        self._restore_tables(
-            tables, lambda meta: self._backup_layout.get_table_create_statement(backup_meta, meta.database, meta.name),
-            clean_zookeeper, replica_name)
+        self._restore_tables(self._filter_present_tables(databases, tables), clean_zookeeper, replica_name)
         if not schema_only:
-            self._restore_data(backup_meta, filter(_is_merge_tree, tables))
+            self._restore_data(backup_meta, filter(_is_merge_tree, tables_meta))
 
     def _restore_tables(self,
-                        tables: Iterable[Union[Table, TableMetadata]],
-                        create_statement_getter: Callable[[Union[Table, TableMetadata]], str],
+                        tables: Iterable[Table],
                         clean_zookeeper: bool = False,
                         replica_name: Optional[str] = None) -> None:
         merge_tree_tables = []
@@ -436,34 +433,33 @@ class ClickhouseBackup:
         if clean_zookeeper:
             zk_ctl = ZookeeperCTL(self._zk_config)
             zk_ctl.delete_replica_metadata(
-                get_zookeeper_paths(filter(_is_replicated, merge_tree_tables), create_statement_getter), replica_name,
-                self._ch_ctl.get_macros())
+                get_zookeeper_paths(
+                    map(lambda table: table.create_statement, filter(_is_replicated, merge_tree_tables))),
+                replica_name, self._ch_ctl.get_macros())
 
-        self._restore_table_objects(chain(merge_tree_tables, other_tables, distributed_tables),
-                                    create_statement_getter)
-        self._restore_view_objects(view_tables, create_statement_getter)
+        self._restore_table_objects(chain(merge_tree_tables, other_tables, distributed_tables))
+        self._restore_view_objects(view_tables)
 
     def _restore_database_objects(self, backup_meta: BackupMetadata, databases: Iterable[str]) -> None:
+        present_databases = self._ch_ctl.get_databases()
+
         for db_name in databases:
-            if not _is_default_db(db_name):
+            if not _is_default_db(db_name) and db_name not in present_databases:
                 db_sql = self._backup_layout.get_database_create_statement(backup_meta, db_name)
                 self._ch_ctl.restore_meta(db_sql)
 
-    def _restore_table_objects(self, tables: Iterable[Union[Table, TableMetadata]],
-                               create_statement_getter: Callable[[Union[Table, TableMetadata]], str]) -> None:
-        for table_meta in tables:
-            table_sql = create_statement_getter(table_meta)
-            table_sql = self._rewrite_merge_tree_object(table_sql)
+    def _restore_table_objects(self, tables: Iterable[Table]) -> None:
+        for table in tables:
+            table_sql = self._rewrite_merge_tree_object(table.create_statement)
             self._ch_ctl.restore_meta(table_sql)
 
-    def _restore_view_objects(self, views: Iterable[Union[Table, TableMetadata]],
-                              create_statement_getter: Callable[[Union[Table, TableMetadata]], str]) -> None:
+    def _restore_view_objects(self, views: Iterable[Table]) -> None:
         # Create view through attach to omit checks.
         for view in views:
             database_meta = self._ch_ctl.get_database_metadata_path(view.database)
             table_meta = join(database_meta, f'{view.name}.sql')
             try:
-                create_sql = self._rewrite_view_object(view, create_statement_getter(view))
+                create_sql = self._rewrite_view_object(view)
                 with open(table_meta, 'w') as f:
                     f.write(create_sql)
                 self._ch_ctl.chown_dir(database_meta)
@@ -472,26 +468,56 @@ class ClickhouseBackup:
                 if exists(table_meta):
                     remove(table_meta)
                 logging.debug(f'Failed to restore view via metadata attach, error: "{repr(e)}", fallback to create')
-                self._ch_ctl.restore_meta(self._rewrite_merge_tree_object(create_statement_getter(view)))
+                self._ch_ctl.restore_meta(self._rewrite_merge_tree_object(view.create_statement))
 
     def _restore_data(self, backup_meta: BackupMetadata, tables: Iterable[TableMetadata]) -> None:
         for table_meta in tables:
-            logging.debug('Running table "%s.%s" data restore', table_meta.database, table_meta.name)
+            try:
+                logging.debug('Running table "%s.%s" data restore', table_meta.database, table_meta.name)
 
-            table = self._ch_ctl.get_table(table_meta.database, table_meta.name)
+                self._restore_context.add_table(table_meta)
+                table = self._ch_ctl.get_table(table_meta.database, table_meta.name)
+                attach_parts = []
+                for part in table_meta.get_parts():
+                    if self._restore_context.part_restored(part):
+                        logging.debug(f'{table.database}.{table.name} part {part.name} already restored, skipping it')
+                        continue
 
-            attach_parts = []
-            for part in table_meta.get_parts():
-                fs_part_path = self._ch_ctl.get_detached_part_path(table, part.name)
-                self._backup_layout.download_data_part(backup_meta, part, fs_part_path)
-                attach_parts.append(part.name)
+                    fs_part_path = self._ch_ctl.get_detached_part_path(table, part.name)
+                    self._backup_layout.download_data_part(backup_meta, part, fs_part_path)
+                    attach_parts.append(part)
 
-            self._backup_layout.wait()
+                self._backup_layout.wait()
 
-            self._ch_ctl.chown_detached_table_parts(table)
-            for part_name in attach_parts:
-                logging.debug('Attaching "%s.%s" part: %s', table_meta.database, table.name, part_name)
-                self._ch_ctl.attach_part(table, part_name)
+                self._ch_ctl.chown_detached_table_parts(table)
+                for part in attach_parts:
+                    logging.debug('Attaching "%s.%s" part: %s', table_meta.database, table.name, part.name)
+                    self._ch_ctl.attach_part(table, part.name)
+                    self._restore_context.add_part(part)
+            finally:
+                self._restore_context.dump_state()
+
+    def _get_table_from_meta(self, backup_meta: BackupMetadata, table: TableMetadata) -> Table:
+        return Table(table.database,
+                     table.name,
+                     table.engine,
+                     str(),
+                     self._backup_layout.get_table_create_statement(backup_meta, table.database, table.name),
+                     uuid=table.uuid)
+
+    def _filter_present_tables(self, databases: Iterable[str], tables: Iterable[Table]) -> Iterable[Table]:
+        present_tables = {}
+        for database in databases:
+            for table in self._ch_ctl.get_tables_ordered(database):
+                present_tables[(table.database, table.name)] = table
+
+        for table in tables:
+            key = (table.database, table.name)
+            if key not in present_tables:
+                yield table
+            elif present_tables[key].create_statement != table.create_statement:
+                raise ClickhouseBackupError(f'Table {key} has different schema with backup "{table.create_statement}" '
+                                            f'!= "{present_tables[key].create_statement}"')
 
     def _deduplicate_part(self, fpart: FreezedPart, dedup_backups: Sequence[BackupMetadata]) -> Optional[PartMetadata]:
         """
@@ -593,12 +619,12 @@ class ClickhouseBackup:
 
         return table_sql
 
-    def _rewrite_view_object(self, table: Union[Table, TableMetadata], table_sql: str) -> str:
+    def _rewrite_view_object(self, table: Table) -> str:
         if table.uuid and self._ch_ctl.get_database_schema(table.database).find('ENGINE = Atomic') != -1:
             table_sql = re.sub(f'^CREATE (?P<mat>(MATERIALIZED )?)VIEW (?P<table_name>{table.database}.{table.name}) ',
-                               f"ATTACH \\g<mat>VIEW _ UUID '{table.uuid}' ", table_sql)
+                               f"ATTACH \\g<mat>VIEW _ UUID '{table.uuid}' ", table.create_statement)
         else:
-            table_sql = re.sub(r'^CREATE (?P<mat>(MATERIALIZED )?)VIEW', r'ATTACH \g<mat>VIEW', table_sql)
+            table_sql = re.sub(r'^CREATE (?P<mat>(MATERIALIZED )?)VIEW', r'ATTACH \g<mat>VIEW', table.create_statement)
 
         return self._rewrite_merge_tree_object(table_sql)
 

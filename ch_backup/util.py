@@ -117,15 +117,14 @@ def retry(exception_types: Union[type, tuple] = Exception,
                           before_sleep=_log_retry)
 
 
-def get_zookeeper_paths(tables: Iterable, create_getter: Callable) -> Iterable[str]:
+def get_zookeeper_paths(create_statements: Iterable[str]) -> Iterable[str]:
     """
     Parse ZooKeeper path from create statement.
     """
     paths = []
-    for table in tables:
-        create_sql = create_getter(table)
-        match = re.search(R"""Replicated\S{0,20}MergeTree\(\'(?P<zk_path>[^']+)\',""", create_sql)
+    for table in create_statements:
+        match = re.search(R"""Replicated\S{0,20}MergeTree\(\'(?P<zk_path>[^']+)\',""", table)
         if not match:
-            raise ClickhouseBackupError(f'Couldn`t parse create statement for zk path: "{create_sql}')
+            raise ClickhouseBackupError(f'Couldn`t parse create statement for zk path: "{table}')
         paths.append(match.group('zk_path'))
     return paths

@@ -131,7 +131,7 @@ class Table(SimpleNamespace):
     Table.
     """
     def __init__(self, database: str, name: str, engine: str, data_path: str, create_statement: str,
-                 uuid: str) -> None:
+                 uuid: Optional[str]) -> None:
         super().__init__()
         self.database = database
         self.name = name
