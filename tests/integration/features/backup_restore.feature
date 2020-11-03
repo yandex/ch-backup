@@ -10,7 +10,18 @@ Feature: Backup & Restore
     And clickhouse on clickhouse01 has test schema
 
   Scenario: Create backup
-    Given clickhouse01 has test clickhouse data test1
+    Given we have executed queries on clickhouse01
+    """
+    CREATE TABLE test_db_01.table_rus (
+        EventDate DateTime,
+        CounterID UInt32,
+        `Пользователь` UInt32
+    )
+    ENGINE = MergeTree()
+    PARTITION BY CounterID % 10
+    ORDER BY (CounterID, EventDate)
+    """
+    And clickhouse01 has test clickhouse data test1
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   | title         |

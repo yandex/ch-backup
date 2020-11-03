@@ -450,8 +450,7 @@ class ClickhouseBackup:
 
     def _restore_table_objects(self, tables: Iterable[Table]) -> None:
         for table in tables:
-            table_sql = self._rewrite_merge_tree_object(table.create_statement)
-            self._ch_ctl.restore_meta(table_sql)
+            self._ch_ctl.restore_meta(table.create_statement)
 
     def _restore_view_objects(self, views: Iterable[Table]) -> None:
         # Create view through attach to omit checks.
@@ -497,13 +496,15 @@ class ClickhouseBackup:
             finally:
                 self._restore_context.dump_state()
 
-    def _get_table_from_meta(self, backup_meta: BackupMetadata, table: TableMetadata) -> Table:
-        return Table(table.database,
-                     table.name,
-                     table.engine,
-                     str(),
-                     self._backup_layout.get_table_create_statement(backup_meta, table.database, table.name),
-                     uuid=table.uuid)
+    def _get_table_from_meta(self, backup_meta: BackupMetadata, meta: TableMetadata) -> Table:
+        table = Table(meta.database,
+                      meta.name,
+                      meta.engine,
+                      str(),
+                      self._backup_layout.get_table_create_statement(backup_meta, meta.database, meta.name),
+                      uuid=meta.uuid)
+        table.create_statement = self._rewrite_merge_tree_object(table.create_statement)
+        return table
 
     def _filter_present_tables(self, databases: Iterable[str], tables: Iterable[Table]) -> Iterable[Table]:
         present_tables = {}
@@ -605,12 +606,12 @@ class ClickhouseBackup:
 
     def _rewrite_merge_tree_object(self, table_sql: str) -> str:
         if self._config['force_non_replicated']:
-            match = re.search(r"(?P<replicated>Replicated)\S{0,20}MergeTree\((?P<params>('[^']+', '[^']+'(, |\)))|)",
+            match = re.search(r"(?P<replicated>Replicated)\S{0,20}MergeTree\((?P<params>('[^']+', '[^']+'(,\s*|))|)",
                               table_sql)
             if match:
                 params = match.group('params')
                 if len(params) > 0:
-                    table_sql = table_sql.replace(params, params[-1]).replace(match.group('replicated'), '')
+                    table_sql = table_sql.replace(params, '').replace(match.group('replicated'), '')
 
         if self._config['override_replica_name']:
             match = re.search(r"Replicated\S{0,20}MergeTree\('[^']+', (?P<replica>\'\S+\')", table_sql)

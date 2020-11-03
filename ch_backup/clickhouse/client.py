@@ -46,7 +46,11 @@ class ClickhouseClient:
                 params['user'] = self._user
             if self._password:
                 params['password'] = self._password
-            response = self._session.post(self._url, params=params, json=post_data, timeout=self._timeout, data=query)
+            response = self._session.post(self._url,
+                                          params=params,
+                                          json=post_data,
+                                          timeout=self._timeout,
+                                          data=query.encode('utf-8'))
 
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:

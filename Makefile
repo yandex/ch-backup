@@ -1,5 +1,5 @@
 VERSION=1.0
-TEST_VENV=.tox/py36
+TEST_VENV=.tox/py
 REQUIREMENTS_VENV=.tox/requirements
 TEST_REQUIREMENTS_VENV=.tox/test_requirements
 SESSION_FILE=.session_conf.sav
@@ -58,7 +58,7 @@ clean_pycache:
 .PHONY: install
 install:
 	@echo "Installing into $(INSTALL_DIR)"
-	python3.6 -m venv $(INSTALL_DIR)
+	python3 -m venv $(INSTALL_DIR)
 	$(INSTALL_DIR)/bin/pip install -r requirements.txt
 	$(INSTALL_DIR)/bin/pip install .
 	mkdir -p $(DESTDIR)/usr/bin/

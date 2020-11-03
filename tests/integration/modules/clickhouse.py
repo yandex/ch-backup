@@ -101,10 +101,10 @@ class ClickhouseClient:
             query = f"""
                 SELECT *
                 FROM `{db_name}`.`{table_name}`
-                ORDER BY {','.join(columns)}
+                ORDER BY {','.join(map(lambda column: f"`{column}`", columns))}
                 FORMAT JSONCompact
                 """
-            table_data = self._query('GET', query)
+            table_data = self._query('POST', data=query.encode('utf-8'))
             user_data['.'.join([db_name, table_name])] = table_data['data']
             rows_count += table_data['rows']
         return rows_count, user_data
