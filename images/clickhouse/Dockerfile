@@ -61,8 +61,9 @@ RUN cd ${CH_TMP_DIR} && \
 RUN openssl req -subj "/CN=localhost" -new -newkey rsa:2048 -days 365 -nodes -x509 \
         -keyout /etc/clickhouse-server/server.key \
         -out /etc/clickhouse-server/server.crt && \
-    mkdir -p /etc/clickhouse-server/conf.d && \
+    mkdir -p /etc/clickhouse-server/conf.d/ && \
     ln -s /config/clickhouse-server.xml /etc/clickhouse-server/conf.d/ && \
+    mkdir -p /etc/clickhouse-server/users.d/ && \
     ln -s /config/users.xml /etc/clickhouse-server/users.d/ && \
     chown -R clickhouse:clickhouse /etc/clickhouse-server/ /usr/bin/clickhouse
 
