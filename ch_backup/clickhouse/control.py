@@ -215,12 +215,14 @@ class ClickhouseCTL:
         """
         Remove all freezed partitions.
         """
+        logging.debug('Removing shadow data: %s', self._shadow_data_path)
         self._remove_shadow_data(self._shadow_data_path)
 
     def remove_freezed_part(self, part: FreezedPart) -> None:
         """
         Remove the freezed part.
         """
+        logging.debug('Removing freezed part: %s', part.path)
         self._remove_shadow_data(part.path)
 
     def get_databases(self, exclude_dbs: Optional[Sequence[str]] = None) -> Sequence[str]:
@@ -365,11 +367,8 @@ class ClickhouseCTL:
     def _remove_shadow_data(self, path: str) -> None:
         assert path.startswith(self._shadow_data_path)
 
-        logging.debug('Removing shadow data: %s', path)
-        try:
+        if os.path.exists(path):
             shutil.rmtree(path)
-        except FileNotFoundError:
-            pass
 
     def _match_ch_version(self, min_version: str) -> bool:
         return parse_version(self._ch_version) >= parse_version(min_version)
