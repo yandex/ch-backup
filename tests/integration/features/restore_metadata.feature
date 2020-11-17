@@ -21,7 +21,9 @@ Feature: Restore metadata from another host without s3
     INSERT INTO test_db.table_01 SELECT now(), number, rand() FROM system.numbers LIMIT 10
     """
 
-  Scenario: Restore metadata from another host without s3
+  Scenario: Restore metadata from another host without s3, restart success
+    When we restore clickhouse schema from clickhouse01 to clickhouse02
+    Then clickhouse01 has same schema as clickhouse02
     When we restore clickhouse schema from clickhouse01 to clickhouse02
     Then clickhouse01 has same schema as clickhouse02
 

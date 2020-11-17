@@ -237,13 +237,16 @@ class ClickhouseBackup:
         databases = source_ch_ctl.get_databases(exclude_dbs if exclude_dbs else self._config['exclude_dbs'])
 
         tables: List[Table] = []
+        present_databases = self._ch_ctl.get_databases()
         for database in databases:
             logging.debug('Restoring database "%s"', database)
-            if database not in ['system', '_temporary_and_external_tables', 'default']:
+            if not _has_embedded_metadata(database) and database not in present_databases:
                 db_sql = source_ch_ctl.get_database_schema(database)
                 self._ch_ctl.restore_meta(db_sql)
             tables.extend(source_ch_ctl.get_tables_ordered(database))
-        self._restore_tables(tables, clean_zookeeper=True, replica_name=replica_name)
+        self._restore_tables(self._filter_present_tables(databases, tables),
+                             clean_zookeeper=True,
+                             replica_name=replica_name)
 
     def restore_access_control(self, backup_name: str) -> None:
         """Restore ClickHouse access control metadata."""
@@ -298,7 +301,7 @@ class ClickhouseBackup:
         """
         logging.debug('Performing database backup for "%s"', db_name)
 
-        if not _is_default_db(db_name):
+        if not _has_embedded_metadata(db_name):
             schema = self._ch_ctl.get_database_schema(db_name)
             self._backup_layout.upload_database_create_statement(backup_meta.name, db_name, schema)
 
@@ -444,7 +447,7 @@ class ClickhouseBackup:
         present_databases = self._ch_ctl.get_databases()
 
         for db_name in databases:
-            if not _is_default_db(db_name) and db_name not in present_databases:
+            if not _has_embedded_metadata(db_name) and db_name not in present_databases:
                 db_sql = self._backup_layout.get_database_create_statement(backup_meta, db_name)
                 self._ch_ctl.restore_meta(db_sql)
 
@@ -677,11 +680,11 @@ def _get_access_control_files(objects: Sequence[str]) -> chain:
     return chain(lists, map(lambda obj: f'{obj}.sql', objects))
 
 
-def _is_default_db(db_name: str) -> bool:
+def _has_embedded_metadata(db_name: str) -> bool:
     """
     Return True if db create statement shouldn't be uploaded and applied with restore.
     """
-    return db_name in ['default']
+    return db_name in ['system', '_temporary_and_external_tables', 'default']
 
 
 def _is_merge_tree(table: Union[Table, TableMetadata]) -> bool:
