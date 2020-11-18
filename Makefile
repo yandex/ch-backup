@@ -1,4 +1,4 @@
-VERSION=1.0
+VERSION?=1.0
 TEST_VENV=.tox/py36
 REQUIREMENTS_VENV=.tox/requirements
 TEST_REQUIREMENTS_VENV=.tox/test_requirements
