@@ -84,27 +84,26 @@ class BackupLayout:
         logging.debug('Uploading data part %s of "%s"."%s"', fpart.name, fpart.database, fpart.table)
 
         remote_dir_path = _part_path(self.get_backup_path(backup_name), fpart.database, fpart.table, fpart.name)
-
+        remote_path = os.path.join(remote_dir_path, fpart.name + '.tar')
         filenames = os.listdir(fpart.path)
-        for filename in filenames:
-            local_path = os.path.join(fpart.path, filename)
-            remote_path = os.path.join(remote_dir_path, filename)
-            try:
-                self._storage_loader.upload_file(local_path=local_path,
-                                                 remote_path=remote_path,
-                                                 is_async=True,
-                                                 encryption=True,
-                                                 delete=True)
-            except Exception as e:
-                msg = f'Failed to create async upload of {remote_path}'
-                raise StorageError(msg) from e
+        try:
+            self._storage_loader.upload_files_tarball(dir_path=fpart.path,
+                                                      files=filenames,
+                                                      remote_path=remote_path,
+                                                      is_async=True,
+                                                      encryption=True,
+                                                      delete=True)
+        except Exception as e:
+            msg = f'Failed to create async upload of {remote_path}'
+            raise StorageError(msg) from e
 
         return PartMetadata(database=fpart.database,
                             table=fpart.table,
                             name=fpart.name,
                             checksum=fpart.checksum,
                             size=fpart.size,
-                            files=filenames)
+                            files=filenames,
+                            tarball=True)
 
     def get_backup_names(self) -> Sequence[str]:
         """
@@ -164,18 +163,30 @@ class BackupLayout:
 
         remote_dir_path = _part_path(part.link or backup_meta.path, part.database, part.table, part.name)
 
-        for filename in part.files:
-            local_path = os.path.join(fs_part_path, filename)
-            remote_path = os.path.join(remote_dir_path, filename)
+        if part.tarball:
+            remote_path = os.path.join(remote_dir_path, f'{part.name}.tar')
+            logging.debug('Downloading part tarball file: %s', remote_path)
             try:
-                logging.debug('Downloading part file: %s', remote_path)
-                self._storage_loader.download_file(remote_path=remote_path,
-                                                   local_path=local_path,
-                                                   is_async=True,
-                                                   encryption=True)
+                self._storage_loader.download_files(remote_path=remote_path,
+                                                    local_path=fs_part_path,
+                                                    is_async=True,
+                                                    encryption=True)
             except Exception as e:
-                msg = f'Failed to download part file {remote_path}'
+                msg = f'Failed to download part tarball file {remote_path}'
                 raise StorageError(msg) from e
+        else:
+            for filename in part.files:
+                local_path = os.path.join(fs_part_path, filename)
+                remote_path = os.path.join(remote_dir_path, filename)
+                try:
+                    logging.debug('Downloading part file: %s', remote_path)
+                    self._storage_loader.download_file(remote_path=remote_path,
+                                                       local_path=local_path,
+                                                       is_async=True,
+                                                       encryption=True)
+                except Exception as e:
+                    msg = f'Failed to download part file {remote_path}'
+                    raise StorageError(msg) from e
 
     def check_data_part(self, backup_meta: BackupMetadata, part: PartMetadata) -> bool:
         """
@@ -183,6 +194,10 @@ class BackupLayout:
         """
         remote_dir_path = _part_path(part.link or backup_meta.path, part.database, part.table, part.name)
         remote_files = self._storage_loader.list_dir(remote_dir_path)
+
+        if remote_files == [f'{part.name}.tar']:
+            logging.info('Part files stored in tarball, assume data not corrupted')
+            return True
 
         notfound_files = set(part.files) - set(remote_files)
         if notfound_files:

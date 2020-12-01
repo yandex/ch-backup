@@ -11,7 +11,8 @@ from typing import Any, Callable, Dict, List, Sequence, Tuple
 
 from .. import logging
 from .stages.encryption import DecryptStage, EncryptStage
-from .stages.filesystem import (CollectDataStage, DeleteFileStage, ReadDataStage, ReadFileStage, WriteFileStage)
+from .stages.filesystem import (CollectDataStage, DeleteFilesStage, DeleteFileStage, ReadDataStage, ReadFilesStage,
+                                ReadFileStage, WriteFilesStage, WriteFileStage)
 from .stages.storage import (DeleteMultipleStorageStage, DeleteStorageStage, DownloadStorageStage,
                              UploadDataStorageStage, UploadFileStorageStage)
 
@@ -153,6 +154,16 @@ class PipelineLoader:
 
         self._execute_pipeline((self.upload_file.__name__, *args), stages, *args, **kwargs)
 
+    def upload_files_tarball(self, dir_path, files, *args, delete, **kwargs):
+        """
+        Upload file from local filesystem.
+        """
+        stages = [ReadFilesStage, EncryptStage, UploadFileStorageStage]
+        if delete:
+            stages.append(DeleteFilesStage)
+
+        self._execute_pipeline((self.upload_files_tarball.__name__, *args), stages, (dir_path, files), *args, **kwargs)
+
     def download_data(self, *args, **kwargs):
         """
         Download file from storage and return its content as a string.
@@ -166,6 +177,13 @@ class PipelineLoader:
         """
         self._execute_pipeline((self.download_file.__name__, *args),
                                (DownloadStorageStage, DecryptStage, WriteFileStage), *args, **kwargs)
+
+    def download_files(self, *args, **kwargs):
+        """
+        Download file to local filesystem.
+        """
+        self._execute_pipeline((self.download_files.__name__, *args),
+                               (DownloadStorageStage, DecryptStage, WriteFilesStage), *args, **kwargs)
 
     def delete_file(self, *args, **kwargs):
         """

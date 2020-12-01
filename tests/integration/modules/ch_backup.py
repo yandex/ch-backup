@@ -125,7 +125,10 @@ class Backup:
                 for part_name, part_obj in table_obj['parts'].items():
                     part_path = os.path.join(
                         part_obj.get('link') or backup_path, 'data', db_name, table_name, part_name)
-                    file_paths.update(os.path.join(part_path, f) for f in part_obj['files'])
+                    if part_obj.get('tarball', False):
+                        file_paths.add(os.path.join(part_path, f'{part_name}.tar'))
+                    else:
+                        file_paths.update(os.path.join(part_path, f) for f in part_obj['files'])
 
         return tuple(file_paths)
 

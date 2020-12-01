@@ -558,7 +558,8 @@ class ClickhouseBackup:
                                 checksum=existing_part.checksum,
                                 size=existing_part.size,
                                 link=backup_meta.path,
-                                files=existing_part.files)
+                                files=existing_part.files,
+                                tarball=existing_part.tarball)
 
         return None
 

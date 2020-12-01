@@ -59,7 +59,7 @@ Feature: Deduplication
     meta:
         state: <state>
     """
-    And file "data/test_db1/test_table1/0_1_1_0/n.bin" was deleted from clickhouse01 backup #0
+    And file "data/test_db1/test_table1/0_1_1_0/0_1_1_0.tar" was deleted from clickhouse01 backup #0
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   |
@@ -89,7 +89,7 @@ Feature: Deduplication
     meta:
         state: <state>
     """
-    And file "data/test_db1/test_table3/0_1_1_0/n.bin" was deleted from clickhouse01 backup #0
+    And file "data/test_db1/test_table3/0_1_1_0/0_1_1_0.tar" was deleted from clickhouse01 backup #0
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   |

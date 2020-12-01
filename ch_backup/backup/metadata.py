@@ -28,6 +28,8 @@ class PartMetadata(SimpleNamespace):
     """
     Backup metadata for ClickHouse data part.
     """
+
+    # pylint: disable=too-many-arguments
     def __init__(self,
                  database: str,
                  table: str,
@@ -35,6 +37,7 @@ class PartMetadata(SimpleNamespace):
                  checksum: str,
                  size: int,
                  files: Sequence[str],
+                 tarball: bool,
                  link: str = None) -> None:
         super().__init__()
         self.database: str = database
@@ -44,6 +47,7 @@ class PartMetadata(SimpleNamespace):
             'checksum': checksum,
             'size': size,
             'files': files,
+            'tarball': tarball,
             'link': link,
         }
 
@@ -75,6 +79,13 @@ class PartMetadata(SimpleNamespace):
         """
         return self.raw_metadata['link']
 
+    @property
+    def tarball(self) -> bool:
+        """
+        Returns true if part files stored as single tarball.
+        """
+        return self.raw_metadata['tarball']
+
     @classmethod
     def load(cls, db_name: str, table_name: str, part_name: str, raw_metadata: dict) -> 'PartMetadata':
         """
@@ -86,6 +97,7 @@ class PartMetadata(SimpleNamespace):
                    checksum=raw_metadata['checksum'],
                    size=raw_metadata['bytes'],
                    files=raw_metadata['files'],
+                   tarball=raw_metadata.get('tarball', False),
                    link=raw_metadata['link'])
 
 
@@ -140,6 +152,7 @@ class TableMetadata(SimpleNamespace):
             'bytes': part.size,
             'files': part.files,
             'link': part.link,
+            'tarball': part.tarball,
         }
 
     def remove_part(self, part_name: str) -> None:

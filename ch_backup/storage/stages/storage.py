@@ -4,6 +4,7 @@ Storage pipeline stages module
 import os
 from abc import ABCMeta, abstractmethod
 from math import ceil
+from typing import List, Tuple, Union
 
 from ch_backup.util import retry
 
@@ -73,8 +74,10 @@ class UploadFileStorageStage(UploadStorageStage):
     """
     UploadStorageStage for uploading local files.
     """
-    def _source_size(self, source: str) -> int:
-        return os.path.getsize(source)
+    def _source_size(self, source: Union[str, Tuple[str, List[str]]]) -> int:
+        if isinstance(source, str):
+            return os.path.getsize(source)
+        return sum(os.path.getsize(os.path.join(source[0], file)) for file in source[1])
 
 
 class DownloadStorageStage(InputStage):

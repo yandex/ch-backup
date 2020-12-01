@@ -2,7 +2,7 @@
 Module providing API for storage management (upload and download data, check
 remote path on existence, etc.).
 """
-from typing import Sequence
+from typing import List, Sequence
 
 from .engine import get_storage_engine
 from .pipeline import PipelineLoader
@@ -42,6 +42,26 @@ class StorageLoader:
         self._ploader.upload_file(local_path, remote_path, is_async=is_async, encryption=encryption, delete=delete)
         return remote_path
 
+    def upload_files_tarball(self,
+                             dir_path: str,
+                             files: List[str],
+                             remote_path: str,
+                             is_async: bool = False,
+                             encryption: bool = False,
+                             delete: bool = False) -> str:
+        """
+        Upload multiple files as tarball.
+
+        If delete is True, the file will be deleted after upload.
+        """
+        self._ploader.upload_files_tarball(dir_path,
+                                           files,
+                                           remote_path,
+                                           is_async=is_async,
+                                           encryption=encryption,
+                                           delete=delete)
+        return remote_path
+
     def download_data(self, remote_path, is_async=False, encryption=False, encoding='utf-8'):
         """
         Download file from storage and return its content.
@@ -61,6 +81,16 @@ class StorageLoader:
         Download file to local filesystem.
         """
         self._ploader.download_file(remote_path, local_path, is_async=is_async, encryption=encryption)
+
+    def download_files(self,
+                       remote_path: str,
+                       local_path: str,
+                       is_async: bool = False,
+                       encryption: bool = False) -> None:
+        """
+        Download file to local filesystem.
+        """
+        self._ploader.download_files(remote_path, local_path, is_async=is_async, encryption=encryption)
 
     def delete_file(self, remote_path, is_async=False, encryption=False):
         """
