@@ -616,6 +616,7 @@ class ClickhouseBackup:
                 params = match.group('params')
                 if len(params) > 0:
                     table_sql = table_sql.replace(params, '').replace(match.group('replicated'), '')
+                    table_sql = table_sql.replace('MergeTree()', 'MergeTree')
 
         if self._config['override_replica_name']:
             match = re.search(r"Replicated\S{0,20}MergeTree\('[^']+', (?P<replica>\'\S+\')", table_sql)
