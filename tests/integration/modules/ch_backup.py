@@ -270,6 +270,13 @@ class BackupManager:
         backup = self.get_backup(backup_id)
         self._s3_client.delete_data(os.path.join(backup.meta['path'], path))
 
+    def truncate_backup_file(self, backup_id: BackupId, path: str) -> None:
+        """
+        Truncate particular file in backup (useful for fault injection).
+        """
+        backup = self.get_backup(backup_id)
+        self._s3_client.upload_data(b'', os.path.join(backup.meta['path'], path))
+
     def get_missed_paths(self, backup_id: BackupId) -> Sequence[str]:
         """
         Get backup entry metadata.

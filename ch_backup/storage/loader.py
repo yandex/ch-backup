@@ -121,3 +121,9 @@ class StorageLoader:
         Check whether a remote path exists or not.
         """
         return self._engine.path_exists(remote_path)
+
+    def get_file_size(self, remote_path: str) -> int:
+        """
+        Return actual size of the remote file in bytes.
+        """
+        return self._engine.get_object_size(remote_path)

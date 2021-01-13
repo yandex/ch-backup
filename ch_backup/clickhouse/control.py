@@ -5,6 +5,7 @@ Clickhouse-control classes module
 import os
 import shutil
 from hashlib import md5
+from tarfile import BLOCKSIZE  # type: ignore
 from types import SimpleNamespace
 from typing import Dict, List, Optional, Sequence, Union
 
@@ -403,5 +404,9 @@ def _get_part_checksum(part_path: str) -> str:
 def _get_part_size(part_path: str) -> int:
     size = 0
     for file in os.listdir(part_path):
-        size += os.path.getsize(os.path.join(part_path, file))
+        filesize = os.path.getsize(os.path.join(part_path, file))
+        remainder = filesize % BLOCKSIZE
+        if remainder > 0:
+            filesize += BLOCKSIZE - remainder
+        size += filesize
     return size

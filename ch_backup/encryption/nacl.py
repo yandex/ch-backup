@@ -23,13 +23,14 @@ class NaClEncryption(BaseEncryption):
     def decrypt(self, data):
         return self._box.decrypt(data)
 
-    def metadata_size(self):
+    @staticmethod
+    def metadata_size():
         """
         Computes NaCl metadata size
         """
 
         # https://pynacl.readthedocs.io/en/latest/secret/#example
-        return self._box.NONCE_SIZE + 16
+        return SecretBox.NONCE_SIZE + 16  # TODO use SecretBox.MACBYTES after PyNaCl update
 
     @staticmethod
     def gen_secret_key(size=None):

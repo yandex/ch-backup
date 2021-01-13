@@ -344,6 +344,7 @@ class ClickhouseBackup:
                 logging.warning('Table "%s"."%s" was removed by a user during backup', table.database, table.name)
                 return
 
+            uploaded_parts = []
             for fpart in freezed_parts:
                 logging.debug('Working on %s', fpart)
 
@@ -351,12 +352,19 @@ class ClickhouseBackup:
                 part = self._deduplicate_part(fpart, dedup_backups)
                 if not part:
                     part = self._backup_layout.upload_data_part(backup_meta.name, fpart)
+                    uploaded_parts.append(part)
                 else:
                     self._ch_ctl.remove_freezed_part(fpart)
 
                 table_meta.add_part(part)
 
             self._backup_layout.wait()
+            failed = list(filter(lambda p: not self._backup_layout.check_data_part(backup_meta, p), uploaded_parts))
+            if failed:
+                for part in failed:
+                    logging.error(f'Uploaded part is broken, {part.database}.{part.table}: {part.name}')
+                raise RuntimeError(f'Uploaded parts are broken, {", ".join(map(lambda p: p.name, failed))}')
+
             self._ch_ctl.remove_freezed_data()
 
     def _delete(self, backup: BackupMetadata,

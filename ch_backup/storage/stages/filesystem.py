@@ -5,7 +5,8 @@ Filesystem pipeline stages module
 import io
 import os
 import tarfile
-from tarfile import BLOCKSIZE, NUL  # type: ignore
+from enum import Enum
+from tarfile import BLOCKSIZE, GNUTYPE_LONGNAME, NUL  # type: ignore
 from typing import IO, Iterator, List, Optional, Tuple
 
 from .base import BufferedIterStage, InputStage, IterStage
@@ -102,6 +103,19 @@ class WriteFileStage(BufferedIterStage):
             self._fobj.close()
 
 
+class State(Enum):
+    """
+    WriteFilesStage state representation.
+    """
+    READ_HEADER = 1
+    # If filename longer than 100 chars special entry created
+    # Header with special type L and name @LongLink
+    # Several data blocks containing actual name
+    READ_LONG_NAME = 2
+    READ_DATA = 3
+    SKIP_BYTES = 4
+
+
 class WriteFilesStage(BufferedIterStage):
     """
     Decompresses tarball into multiple files.
@@ -115,55 +129,85 @@ class WriteFilesStage(BufferedIterStage):
         self._tarstream = FileStream()
         self._tarinfo: Optional[tarfile.TarInfo] = None
         self._fobj: Optional[IO] = None
-        self._bytes_read: int = 0
-        self._bytes_to_skip: int = 0
+        self._state: State = State.READ_HEADER
+        self._bytes_to_process: int = 0
+        self._name_from_buffer: Optional[bytes] = None
 
     def _pre_process(self, src_key, dst_key):
         self._dir = dst_key
 
     def _process(self, data):
         self._tarstream.write(data)
-        while self._process_buffer():
+        actions = {
+            State.READ_HEADER: self._read_header,
+            State.READ_LONG_NAME: self._process_long_name,
+            State.READ_DATA: self._process_data,
+            State.SKIP_BYTES: self._skip_bytes,
+        }
+
+        while actions[self._state]():
             pass
 
-    def _process_buffer(self):
-        if self._bytes_to_skip > 0:
-            buf = self._tarstream.read(self._bytes_to_skip)
-            self._bytes_to_skip -= len(buf)
-            if self._bytes_to_skip > 0:
-                return False
-
-        if not self._tarinfo:
-            if not self._next_file():
-                return False
-
-        assert self._tarinfo
-        assert self._fobj
-
-        buf = self._tarstream.read(self._tarinfo.size - self._bytes_read)
-        self._fobj.write(buf)
-        self._bytes_read += len(buf)
-
-        if self._bytes_read == self._tarinfo.size:
-            self._bytes_to_skip = 0
-            if self._tarinfo.size % BLOCKSIZE > 0:
-                self._bytes_to_skip += BLOCKSIZE - self._tarinfo.size % BLOCKSIZE
-            self._tarinfo = None
-            return True
-
-        return False
-
-    def _next_file(self) -> bool:
+    def _read_header(self) -> bool:
         if self._fobj:
             self._fobj.close()
         if self._tarstream.len() < BLOCKSIZE:
             return False
         buf = self._tarstream.read(BLOCKSIZE)
         self._tarinfo = tarfile.TarInfo.frombuf(buf, tarfile.ENCODING, "surrogateescape")
-        self._bytes_read = 0
         assert self._tarinfo
         assert self._dir
-        self._fobj = open(os.path.join(self._dir, self._tarinfo.name), 'wb')
+        self._bytes_to_process = self._tarinfo.size
+        if self._tarinfo.type == GNUTYPE_LONGNAME:
+            self._state = State.READ_LONG_NAME
+            self._name_from_buffer = b''
+        else:
+            self._state = State.READ_DATA
+            if self._name_from_buffer:
+                self._tarinfo.name = self._name_from_buffer[:-1].decode()  # ignore string null terminator
+                self._name_from_buffer = None
+            self._fobj = open(os.path.join(self._dir, self._tarinfo.name), 'wb')
+        return True
+
+    def _process_long_name(self) -> bool:
+        assert self._tarinfo
+        buf = self._tarstream.read(self._bytes_to_process)
+        self._name_from_buffer += buf
+        self._bytes_to_process -= len(buf)
+
+        if self._bytes_to_process > 0:
+            return False
+
+        self._state = State.SKIP_BYTES
+        if self._tarinfo.size % BLOCKSIZE > 0:
+            self._bytes_to_process = BLOCKSIZE - (self._tarinfo.size % BLOCKSIZE)
+
+        return True
+
+    def _process_data(self) -> bool:
+        assert self._tarinfo
+        assert self._fobj
+
+        buf = self._tarstream.read(self._bytes_to_process)
+        self._fobj.write(buf)
+        self._bytes_to_process -= len(buf)
+
+        if self._bytes_to_process > 0:
+            return False
+
+        self._state = State.SKIP_BYTES
+        if self._tarinfo.size % BLOCKSIZE > 0:
+            self._bytes_to_process = BLOCKSIZE - (self._tarinfo.size % BLOCKSIZE)
+        return True
+
+    def _skip_bytes(self) -> bool:
+        buf = self._tarstream.read(self._bytes_to_process)
+        assert buf.count(NUL) == len(buf), buf
+        self._bytes_to_process -= len(buf)
+        if self._bytes_to_process > 0:
+            return False
+
+        self._state = State.READ_HEADER
         return True
 
     def _post_process(self):
@@ -206,7 +250,6 @@ class ReadFilesStage(InputStage):
     def __init__(self, conf: dict) -> None:
         self._chunk_size = conf['chunk_size']
         self._tarstream = FileStream()
-        self._tarobj = tarfile.open(fileobj=self._tarstream, mode='w')  # type: ignore
         self._file_iter: Iterator[str] = iter([])
         self._fobj: Optional[IO] = None
         self._dir_path: Optional[str] = None
@@ -222,7 +265,8 @@ class ReadFilesStage(InputStage):
             buf = self._tarstream.read(self._chunk_size)
             if buf:
                 return buf
-            self._read_file_data()
+            if not self._read_file_data():
+                self._open_next_file()
             return self._process()
         except StopIteration:
             return None
@@ -238,29 +282,24 @@ class ReadFilesStage(InputStage):
         self._tarinfo = tarfile.TarInfo(filename)
         assert self._tarinfo
         self._tarinfo.mtime, self._tarinfo.size = int(stat.st_mtime), stat.st_size
-        self._tarobj.addfile(self._tarinfo)
+        self._tarstream.write(self._tarinfo.tobuf())
 
-    def _read_file_data(self):
+    def _read_file_data(self) -> bool:
         assert self._fobj
         filedata = self._fobj.read(self._chunk_size)
         if filedata:
-            assert self._tarobj.fileobj
-            self._tarobj.fileobj.write(filedata)
+            assert self._tarstream
+            self._tarstream.write(filedata)
             if len(filedata) < self._chunk_size:
                 assert self._tarinfo
-                blocks, remainder = divmod(self._tarinfo.size, BLOCKSIZE)
+                remainder = self._tarinfo.size % BLOCKSIZE
                 if remainder > 0:
-                    self._tarobj.fileobj.write(NUL * (BLOCKSIZE - remainder))
-                    blocks += 1
-                self._tarobj.offset += blocks * BLOCKSIZE  # type: ignore
-        else:
-            self._open_next_file()
-            self._read_file_data()
+                    self._tarstream.write(NUL * (BLOCKSIZE - remainder))
+        return filedata
 
     def _post_process(self) -> None:
         if self._fobj:
             self._fobj.close()
-        self._tarobj.close()
         self._tarstream.close()
 
 

@@ -297,3 +297,9 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryHelper):
 
     def complete_multipart_download(self, download_id):
         del self._multipart_downloads[download_id]
+
+    def get_object_size(self, remote_path: str) -> int:
+        """
+        Returns remote object size in bytes.
+        """
+        return self._s3_client.get_object(Bucket=self._s3_bucket_name, Key=remote_path)['ContentLength']

@@ -2,7 +2,9 @@
 Management of backup data layout.
 """
 
+import math
 import os
+from tarfile import BLOCKSIZE, LENGTH_NAME  # type: ignore
 from typing import List, Optional, Sequence
 from urllib.parse import quote
 
@@ -10,6 +12,7 @@ from ch_backup import logging
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
 from ch_backup.clickhouse.control import FreezedPart
 from ch_backup.config import Config
+from ch_backup.encryption import get_encryption
 from ch_backup.exceptions import StorageError
 from ch_backup.storage import StorageLoader
 
@@ -25,6 +28,9 @@ class BackupLayout:
         self._storage_loader = StorageLoader(config)
         self._config = config['backup']
         self._access_control_path = config['clickhouse']['access_control_path']
+        enc_conf = config['encryption']
+        self._encryption_chunk_size = enc_conf['chunk_size']
+        self._encryption_metadata_size = get_encryption(enc_conf['type'], enc_conf).metadata_size()
 
     def upload_backup_metadata(self, backup: BackupMetadata) -> None:
         """
@@ -196,7 +202,11 @@ class BackupLayout:
         remote_files = self._storage_loader.list_dir(remote_dir_path)
 
         if remote_files == [f'{part.name}.tar']:
-            logging.info('Part files stored in tarball, assume data not corrupted')
+            actual_size = self._storage_loader.get_file_size(os.path.join(remote_dir_path, f'{part.name}.tar'))
+            target_size = self._target_part_size(part)
+            if target_size != actual_size:
+                logging.warning(f'Part {part.name} files stored in tar, size not match {target_size} != {actual_size}')
+                return False
             return True
 
         notfound_files = set(part.files) - set(remote_files)
@@ -260,6 +270,19 @@ class BackupLayout:
 
     def _backup_light_metadata_path(self, backup_name: str) -> str:
         return os.path.join(self.get_backup_path(backup_name), BACKUP_LIGHT_META_FNAME)
+
+    def _target_part_size(self, part: PartMetadata) -> int:
+        """
+        Predicts tar archive size after encryption.
+        """
+        result = part.size
+        for f in part.raw_metadata['files']:
+            if len(f) < LENGTH_NAME:
+                result += BLOCKSIZE  # file header
+            else:
+                result += (math.ceil(len(f) / BLOCKSIZE) + 2) * BLOCKSIZE  # long name header + name data + file header
+        result += math.ceil(result / self._encryption_chunk_size) * self._encryption_metadata_size
+        return result
 
 
 def _access_control_data_path(backup_path: str, file_name: str) -> str:

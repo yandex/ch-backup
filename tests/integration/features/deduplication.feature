@@ -104,6 +104,37 @@ Feature: Deduplication
       | creating          |
       | failed            |
 
+  @require_version_20.3
+  Scenario Outline: Broken parts are not used in deduplication
+    Given we have executed queries on clickhouse01
+    """
+    CREATE TABLE test_db1.test_table3 (partition_id Int32, n Int32)
+    ENGINE = MergeTree() PARTITION BY partition_id ORDER BY (partition_id, n)
+    SETTINGS min_bytes_for_wide_part=0;
+
+    INSERT INTO test_db1.test_table3 SELECT number % 2, number FROM system.numbers LIMIT 100;
+    """
+    When we create clickhouse01 clickhouse backup
+    Given metadata of clickhouse01 backup #0 was adjusted with
+    """
+    meta:
+        state: <state>
+    """
+    And file "data/test_db1/test_table3/0_1_1_0/0_1_1_0.tar" in clickhouse01 backup #0 is empty
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state    | data_count | link_count   |
+      | 0   | created  | 1          | 6            |
+      | 1   | <state>  | 5          | 2            |
+      | 2   | created  | 2          | 0            |
+    When we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
+    Examples:
+      | state             |
+      | creating          |
+      | failed            |
+
   Scenario Outline: Deleting or partially deletded backups are not used in deduplication
     Given metadata of clickhouse01 backup #0 was adjusted with
     """
