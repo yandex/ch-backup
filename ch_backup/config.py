@@ -48,6 +48,7 @@ DEFAULT_CONFIG = {
         'force_non_replicated': False,
         'backup_access_control': False,
         'restore_context_path': '/tmp/ch_backup_restore_state.json',  # nosec
+        'validate_part_after_upload': False,
     },
     'storage': {
         'type': 's3',

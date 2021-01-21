@@ -359,11 +359,13 @@ class ClickhouseBackup:
                 table_meta.add_part(part)
 
             self._backup_layout.wait()
-            failed = list(filter(lambda p: not self._backup_layout.check_data_part(backup_meta, p), uploaded_parts))
-            if failed:
-                for part in failed:
-                    logging.error(f'Uploaded part is broken, {part.database}.{part.table}: {part.name}')
-                raise RuntimeError(f'Uploaded parts are broken, {", ".join(map(lambda p: p.name, failed))}')
+            if self._config['validate_part_after_upload']:
+                failed = list(filter(lambda p: not self._backup_layout.check_data_part(backup_meta, p),
+                                     uploaded_parts))
+                if failed:
+                    for part in failed:
+                        logging.error(f'Uploaded part is broken, {part.database}.{part.table}: {part.name}')
+                    raise RuntimeError(f'Uploaded parts are broken, {", ".join(map(lambda p: p.name, failed))}')
 
             self._ch_ctl.remove_freezed_data()
 
