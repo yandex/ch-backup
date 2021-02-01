@@ -443,7 +443,7 @@ class ClickhouseBackup:
             else:
                 other_tables.append(table)
 
-        if clean_zookeeper:
+        if clean_zookeeper and len(self._zk_config.get('hosts')) > 0:
             zk_ctl = ZookeeperCTL(self._zk_config)
             zk_ctl.delete_replica_metadata(
                 get_zookeeper_paths(

@@ -155,6 +155,9 @@ DEFAULT_CONFIG = {
             },
         },
     },
+    'zookeeper': {
+        'hosts': [],
+    },
 }
 
 
