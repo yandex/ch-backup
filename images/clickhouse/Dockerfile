@@ -34,10 +34,14 @@ COPY setup.py requirements.txt images/clickhouse/clickhouse.gpg ${CH_TMP_DIR}/
 RUN cd ${CH_TMP_DIR} && \
     pip3 install -r requirements.txt && \
     mkdir -p /etc/apt/sources.list.d && \
-    echo "deb https://repo.yandex.ru/clickhouse/deb/testing/ main/" | tee /etc/apt/sources.list.d/clickhouse-testing.list && \
-    echo "deb https://repo.yandex.ru/clickhouse/deb/prestable/ main/" | tee /etc/apt/sources.list.d/clickhouse-prestable.list && \
-    echo "deb https://repo.yandex.ru/clickhouse/deb/stable/ main/" | tee /etc/apt/sources.list.d/clickhouse-stable.list && \
-    echo "deb https://repo.yandex.ru/clickhouse/deb/lts/ main/" | tee /etc/apt/sources.list.d/clickhouse-lts.list && \
+    echo "deb https://repo.yandex.ru/clickhouse/deb/testing/ main/"     | tee /etc/apt/sources.list.d/clickhouse-testing.list && \
+    echo "deb https://repo.yandex.ru/clickhouse/deb/prestable/ main/"   | tee /etc/apt/sources.list.d/clickhouse-prestable.list && \
+    echo "deb https://repo.yandex.ru/clickhouse/deb/stable/ main/"      | tee /etc/apt/sources.list.d/clickhouse-stable.list && \
+    echo "deb https://repo.yandex.ru/clickhouse/deb/lts/ main/"         | tee /etc/apt/sources.list.d/clickhouse-lts.list && \
+    echo "deb http://dist.yandex.ru/mdb-bionic-secure testing/all/"     | tee /etc/apt/sources.list.d/mdb-bionic-secure-testing.list && \
+    echo "deb http://dist.yandex.ru/mdb-bionic-secure testing/\$(ARCH)/" | tee -a /etc/apt/sources.list.d/mdb-bionic-secure-testing.list && \
+    echo "deb http://dist.yandex.ru/mdb-bionic-secure stable/all/"      | tee /etc/apt/sources.list.d/mdb-bionic-secure-stable.list && \
+    echo "deb http://dist.yandex.ru/mdb-bionic-secure stable/\$(ARCH)/"  | tee -a /etc/apt/sources.list.d/mdb-bionic-secure-stable.list && \
     apt-key add clickhouse.gpg
 
 RUN apt-get update -qq && \
