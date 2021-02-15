@@ -10,7 +10,7 @@ import tempfile
 from functools import partial
 
 import pytest
-from hypothesis import example, given, settings
+from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
 from ch_backup.storage.pipeline import Pipeline
@@ -204,7 +204,9 @@ def test_nacl_ecrypt_decrypt(incoming_stream_size, incoming_chunk_size, conf):
     assert test_stream.read().decode() == decrypted_stream.read().decode()
 
 
-@settings(max_examples=WRITE_FILE_CMD_TEST_COUNT, deadline=None)
+@settings(max_examples=WRITE_FILE_CMD_TEST_COUNT,
+          suppress_health_check=[HealthCheck.function_scoped_fixture],
+          deadline=None)
 @example(791, 28, {'buffer_size': 562, 'chunk_size': 211})
 @given(incoming_stream_size=st.integers(1, 1024),
        incoming_chunk_size=st.integers(1, 1024),

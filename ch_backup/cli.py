@@ -296,7 +296,7 @@ def restore_schema_command(ctx: Context, _ch_backup: ClickhouseBackup, source_ho
                            exclude_dbs: list, replica_name: str) -> None:
     """Restore ClickHouse schema from replica, without s3."""
     if not source_host:
-        ctx.fail(f'Clickhouse source host not specified.')
+        ctx.fail('Clickhouse source host not specified.')
     _ch_backup.restore_schema(source_host, source_port, exclude_dbs, replica_name)
 
 

@@ -22,7 +22,7 @@ class ZookeeperCTL:
     """
     def __init__(self, config: dict) -> None:
         if not config:
-            raise RuntimeError(f'No zookeeper config provided, ZookeeperCTL unavailable')
+            raise RuntimeError('No zookeeper config provided, ZookeeperCTL unavailable')
         self._zk_client = KazooClient(config['hosts'])
         self._zk_root_path = config['root_path']
 

@@ -14,7 +14,7 @@ PyHamcrest==2.0.0
 hypothesis
 behave
 docker
-docker-compose
+docker-compose<1.28
 Jinja2
 humanfriendly
 kazoo

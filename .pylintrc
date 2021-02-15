@@ -65,7 +65,8 @@ confidence=
 # --enable=similarities". If you want to run only the classes checker, but have
 # no Warning level messages displayed, use"--disable=all --enable=classes
 # --disable=W"
-disable=broad-except,no-self-use,bad-continuation,too-few-public-methods,inconsistent-return-statements,fixme,unnecessary-pass
+disable=broad-except,no-self-use,bad-continuation,too-few-public-methods,inconsistent-return-statements,
+        fixme,unnecessary-pass,raise-missing-from
 
 
 [REPORTS]

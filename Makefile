@@ -6,7 +6,7 @@ SESSION_FILE=.session_conf.sav
 INSTALL_DIR=$(DESTDIR)/opt/yandex/ch-backup
 
 export PYTHONIOENCODING?=utf8
-export CLICKHOUSE_VERSION?=20.3.2.1
+export CLICKHOUSE_VERSION?=20.8.12.2
 
 ENV_CONTROL=env -i \
     PATH=${TEST_VENV}/bin:$$PATH \
@@ -124,7 +124,7 @@ clean_env: stop_env
 
 .PHONY: format
 format: ${TEST_VENV}
-	${TEST_VENV}/bin/isort --recursive --apply ch_backup tests
+	${TEST_VENV}/bin/isort ch_backup tests
 	${TEST_VENV}/bin/yapf --recursive --parallel --in-place ch_backup tests
 
 
