@@ -7,7 +7,7 @@ import shutil
 from hashlib import md5
 from tarfile import BLOCKSIZE  # type: ignore
 from types import SimpleNamespace
-from typing import Dict, List, Optional, Sequence, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 from pkg_resources import parse_version
 
@@ -23,7 +23,7 @@ GET_TABLES_SQL = strip_query("""
         engine,
         engine_full,
         create_table_query,
-        data_paths[1] "data_path",
+        data_paths,
         uuid
     FROM system.tables
     WHERE database = '{db_name}'
@@ -39,7 +39,7 @@ GET_TABLES_COMPAT_20_3_SQL = strip_query("""
         engine,
         engine_full,
         create_table_query,
-        data_paths[1] "data_path",
+        data_paths,
         NULL "uuid"
     FROM system.tables
     WHERE database = '{db_name}'
@@ -55,7 +55,7 @@ GET_TABLES_COMPAT_19_14_SQL = strip_query("""
         engine,
         engine_full,
         create_table_query,
-        data_path,
+        array(data_path) "data_paths",
         NULL "uuid"
     FROM system.tables
     WHERE database = '{db_name}'
@@ -126,20 +126,50 @@ GET_ACCESS_CONTROL_OBJECTS_SQL = strip_query("""
     FORMAT JSON
 """)
 
+GET_DISKS_SQL = strip_query("""
+    SELECT name, path, type FROM system.disks
+    ORDER BY length(path) DESC
+    FORMAT JSON
+""")
+
+
+class Disk(SimpleNamespace):
+    """
+    Disk representation.
+    """
+    def __init__(self, name: str, path: str, disk_type: str):
+        super().__init__()
+        self.name = name
+        self.path = path
+        self.type = disk_type
+
 
 class Table(SimpleNamespace):
     """
     Table.
     """
-    def __init__(self, database: str, name: str, engine: str, data_path: str, create_statement: str,
-                 uuid: Optional[str]) -> None:
+    def __init__(self, database: str, name: str, engine: str, disks: List[Disk], data_paths: List[str],
+                 create_statement: str, uuid: Optional[str]) -> None:
         super().__init__()
         self.database = database
         self.name = name
         self.engine = engine
-        self.data_path = data_path
         self.create_statement = create_statement
         self.uuid = uuid
+        # Only MergeTree tables have data paths.
+        if engine.find('MergeTree') != -1:
+            self.paths_with_disks = self._map_paths_to_disks(disks, data_paths)
+
+    def _map_paths_to_disks(self, disks: List[Disk], data_paths: List[str]) -> List[Tuple[str, Disk]]:
+        return list(map(lambda data_path: (data_path, self._map_path_to_disk(disks, data_path)), data_paths))
+
+    @staticmethod
+    def _map_path_to_disk(disks: List[Disk], data_path: str) -> Disk:
+        matched_disks = list(filter(lambda disk: data_path.startswith(disk.path), disks))
+
+        # Disks are sorted by their length of path.
+        # We return disk with longest path matched to given data_path here.
+        return matched_disks[0]
 
 
 class Partition(SimpleNamespace):
@@ -157,11 +187,12 @@ class FreezedPart(SimpleNamespace):
     """
     Freezed data part.
     """
-    def __init__(self, database: str, table: str, name: str, path: str, checksum: str, size: int):
+    def __init__(self, database: str, table: str, name: str, disk_name: str, path: str, checksum: str, size: int):
         super().__init__()
         self.database = database
         self.table = table
         self.name = name
+        self.disk_name = disk_name
         self.path = path
         self.checksum = checksum
         self.size = size
@@ -174,17 +205,20 @@ class ClickhouseCTL:
     def __init__(self, config: dict) -> None:
         self._config = config
         self._ch_client = ClickhouseClient(config)
+        self._ch_version = self._ch_client.query(GET_VERSION_SQL)
         self._root_data_path = config['data_path']
         self._shadow_data_path = os.path.join(self._root_data_path, 'shadow')
-        self._ch_version = self._ch_client.query(GET_VERSION_SQL)
+        self._disks = self._get_disks()
 
     def chown_detached_table_parts(self, table: Table) -> None:
         """
         Change permissions (owner and group) of detached data parts for the
         specified table. New values for permissions are taken from the config.
         """
-        detached_path = self._get_table_detached_path(table)
-        self.chown_dir(detached_path)
+        for _, disk in table.paths_with_disks:
+            if disk.type == 'local':
+                detached_path = self._get_table_detached_path(table, disk.name)
+                self.chown_dir(detached_path)
 
     def attach_part(self, table: Table, part_name: str) -> None:
         """
@@ -202,7 +236,7 @@ class ClickhouseCTL:
 
         self._ch_client.query(query_sql)
 
-    def freeze_table(self, table: Table) -> Sequence[FreezedPart]:
+    def freeze_table(self, table: Table) -> str:
         """
         Make snapshot of the specified table.
         """
@@ -210,14 +244,17 @@ class ClickhouseCTL:
 
         self._ch_client.query(query_sql)
 
-        return self._get_freezed_parts(table)
+        return self._get_shadow_increment()
 
     def remove_freezed_data(self) -> None:
         """
-        Remove all freezed partitions.
+        Remove all freezed partitions from all local disks.
         """
-        logging.debug('Removing shadow data: %s', self._shadow_data_path)
-        self._remove_shadow_data(self._shadow_data_path)
+        for disk in self._disks.values():
+            if disk.type == 'local':
+                shadow_path = os.path.join(disk.path, 'shadow')
+                logging.debug('Removing shadow data: %s', shadow_path)
+                self._remove_shadow_data(shadow_path)
 
     def remove_freezed_part(self, part: FreezedPart) -> None:
         """
@@ -262,7 +299,7 @@ class ClickhouseCTL:
         query_sql = query_sql.format(db_name=db_name, tables=tables or [])
         result: List[Table] = []
         for row in self._ch_client.query(query_sql)['data']:
-            result.append(_make_table(row))
+            result.append(self._make_table(row))
 
         return result
 
@@ -279,7 +316,7 @@ class ClickhouseCTL:
             query_sql = GET_TABLES_COMPAT_19_14_SQL
 
         query_sql = query_sql.format(db_name=db_name, tables=[table_name])
-        return _make_table(self._ch_client.query(query_sql)['data'][0])
+        return self._make_table(self._ch_client.query(query_sql)['data'][0])
 
     def does_table_exist(self, db_name: str, table_name: str) -> bool:
         """
@@ -309,11 +346,11 @@ class ClickhouseCTL:
         """
         return os.path.join(self._root_data_path, 'metadata', database)
 
-    def get_detached_part_path(self, table: Table, part_name: str) -> str:
+    def get_detached_part_path(self, table: Table, disk_name: str, part_name: str) -> str:
         """
         Get filesystem absolute path to detached data part.
         """
-        return os.path.join(self._get_table_detached_path(table), part_name)
+        return os.path.join(self._get_table_detached_path(table, disk_name), part_name)
 
     def get_version(self) -> str:
         """
@@ -333,9 +370,14 @@ class ClickhouseCTL:
 
         return result
 
-    def _get_freezed_parts(self, table: Table) -> Sequence[FreezedPart]:
+    def list_freezed_parts(self, table: Table, disk: Disk, data_path: str, shadow_dir: str) -> Sequence[FreezedPart]:
+        """
+        List freezed parts from specific disk and path.
+        """
+        assert disk.type == 'local', 'Listing freezed parts is allowed only for local disks'
 
-        path = os.path.join(self._shadow_data_path, self._get_shadow_increment(), self._get_table_data_relpath(table))
+        table_relative_path = os.path.relpath(data_path, disk.path)
+        path = os.path.join(disk.path, 'shadow', shadow_dir, table_relative_path)
 
         if not os.path.exists(path):
             logging.debug('Shadow path %s is empty', path)
@@ -346,27 +388,26 @@ class ClickhouseCTL:
             part_path = os.path.join(path, part)
             checksum = _get_part_checksum(part_path)
             size = _get_part_size(part_path)
-            freezed_parts.append(FreezedPart(table.database, table.name, part, part_path, checksum, size))
+            freezed_parts.append(FreezedPart(table.database, table.name, part, disk.name, part_path, checksum, size))
 
         return freezed_parts
 
-    def _get_table_data_relpath(self, table: Table) -> str:
-        return os.path.relpath(table.data_path, self._root_data_path)
-
-    def _get_table_detached_path(self, table: Table) -> str:
-        return os.path.join(table.data_path, 'detached')
+    @staticmethod
+    def _get_table_detached_path(table: Table, disk_name: str) -> str:
+        for data_path, disk in table.paths_with_disks:
+            if disk.name == disk_name:
+                return os.path.join(data_path, 'detached')
+        raise Exception("Disk not found: " + disk_name)
 
     def chown_dir(self, dir_path: str) -> None:
         """
         Change owner and group for all files in folder.
         """
-        assert dir_path.startswith(self._root_data_path)
-
         chown_dir_contents(self._config['user'], self._config['group'], dir_path)
 
     @retry(OSError)
     def _remove_shadow_data(self, path: str) -> None:
-        assert path.startswith(self._shadow_data_path)
+        assert path.find('/shadow') != -1, path
 
         if os.path.exists(path):
             shutil.rmtree(path)
@@ -386,14 +427,22 @@ class ClickhouseCTL:
         ch_resp = self._ch_client.query(GET_MACROS_SQL)
         return {row['macro']: row['substitution'] for row in ch_resp.get('data', [])}
 
+    def _get_disks(self) -> Dict[str, Disk]:
+        if self._match_ch_version(min_version='20.8'):
+            disks_resp = self._ch_client.query(GET_DISKS_SQL)
+            return {row['name']: Disk(row['name'], row['path'], row['type']) for row in disks_resp.get('data', [])}
 
-def _make_table(record: dict) -> Table:
-    return Table(database=record['database'],
-                 name=record['name'],
-                 engine=record['engine'],
-                 create_statement=record['create_table_query'],
-                 data_path=record['data_path'],
-                 uuid=record.get('uuid', None))
+        # In case if system.disks doesn't exist.
+        return {'default': Disk('default', self._root_data_path, 'local')}
+
+    def _make_table(self, record: dict) -> Table:
+        return Table(database=record['database'],
+                     name=record['name'],
+                     engine=record['engine'],
+                     disks=list(self._disks.values()),
+                     data_paths=record['data_paths'],
+                     create_statement=record['create_table_query'],
+                     uuid=record.get('uuid', None))
 
 
 def _get_part_checksum(part_path: str) -> str:

@@ -109,7 +109,8 @@ class BackupLayout:
                             checksum=fpart.checksum,
                             size=fpart.size,
                             files=filenames,
-                            tarball=True)
+                            tarball=True,
+                            disk_name=fpart.disk_name)
 
     def get_backup_names(self) -> Sequence[str]:
         """

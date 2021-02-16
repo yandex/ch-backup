@@ -38,7 +38,8 @@ class PartMetadata(SimpleNamespace):
                  size: int,
                  files: Sequence[str],
                  tarball: bool,
-                 link: str = None) -> None:
+                 link: str = None,
+                 disk_name: str = None) -> None:
         super().__init__()
         self.database: str = database
         self.table: str = table
@@ -49,6 +50,7 @@ class PartMetadata(SimpleNamespace):
             'files': files,
             'tarball': tarball,
             'link': link,
+            'disk_name': disk_name,
         }
 
     @property
@@ -80,6 +82,13 @@ class PartMetadata(SimpleNamespace):
         return self.raw_metadata['link']
 
     @property
+    def disk_name(self) -> str:
+        """
+        Return disk name where part is stored.
+        """
+        return self.raw_metadata.get('disk_name', 'default')
+
+    @property
     def tarball(self) -> bool:
         """
         Returns true if part files stored as single tarball.
@@ -98,7 +107,8 @@ class PartMetadata(SimpleNamespace):
                    size=raw_metadata['bytes'],
                    files=raw_metadata['files'],
                    tarball=raw_metadata.get('tarball', False),
-                   link=raw_metadata['link'])
+                   link=raw_metadata['link'],
+                   disk_name=raw_metadata.get('disk_name', 'default'))
 
 
 class TableMetadata(SimpleNamespace):
@@ -153,6 +163,7 @@ class TableMetadata(SimpleNamespace):
             'files': part.files,
             'link': part.link,
             'tarball': part.tarball,
+            'disk_name': part.disk_name,
         }
 
     def remove_part(self, part_name: str) -> None:
@@ -203,6 +214,8 @@ class BackupMetadata:
         self.size = 0
         self.real_size = 0
         self.schema_only = schema_only
+        # S3 disk name -> revision counter.
+        self.s3_revisions: Dict[str, int] = {}
 
     def __str__(self) -> str:
         return self.dump_json()
@@ -263,6 +276,7 @@ class BackupMetadata:
                 # TODO: clean up backward-compatibility logic (delete 'date_fmt')
                 'date_fmt': self.time_format,
                 'schema_only': self.schema_only,
+                's3_revisions': self.s3_revisions,
             },
         }
         return json.dumps(report, separators=(',', ':'))
@@ -293,6 +307,7 @@ class BackupMetadata:
             backup.labels = meta['labels']
             backup.version = meta['version']
             backup.schema_only = meta.get('schema_only', False)
+            backup.s3_revisions = meta.get('s3_revisions', {})
 
             return backup
 
@@ -356,15 +371,6 @@ class BackupMetadata:
                 parts.extend(table.get_parts())
 
         return parts
-
-    def get_part(self, db_name: str, table_name: str, part_name: str) -> PartMetadata:
-        """
-        Get data part.
-        """
-        part = self.find_part(db_name, table_name, part_name)
-        assert part
-
-        return part
 
     def find_part(self, db_name: str, table_name: str, part_name: str) -> Optional[PartMetadata]:
         """

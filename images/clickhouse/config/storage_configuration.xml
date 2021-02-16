@@ -1,0 +1,56 @@
+<yandex>
+	<storage_configuration>
+		<disks>
+			<hdd1>
+				<path>/hdd1/</path>
+			</hdd1>
+			<hdd2>
+				<path>/hdd2/</path>
+			</hdd2>
+			<s3>
+				<type>s3</type>
+				<endpoint>{{conf.s3.endpoint}}/{{conf.s3.bucket}}/data/</endpoint>
+				<access_key_id>{{conf.s3.access_key_id}}</access_key_id>
+				<secret_access_key>{{conf.s3.access_secret_key}}</secret_access_key>
+			</s3>
+		</disks>
+
+		<policies>
+			<multiple_disks>
+				<volumes>
+					<main>
+						<disk>default</disk>
+					</main>
+					<hdd1>
+						<disk>hdd1</disk>
+					</hdd1>
+					<hdd2>
+						<disk>hdd2</disk>
+					</hdd2>
+				</volumes>
+			</multiple_disks>
+
+			<s3>
+				<volumes>
+					<main>
+						<disk>s3</disk>
+					</main>
+					<external>
+						<disk>default</disk>
+					</external>
+				</volumes>
+			</s3>
+
+			<s3_cold>
+				<volumes>
+					<main>
+						<disk>default</disk>
+					</main>
+					<external>
+						<disk>s3</disk>
+					</external>
+				</volumes>
+			</s3_cold>
+		</policies>
+	</storage_configuration>
+</yandex>

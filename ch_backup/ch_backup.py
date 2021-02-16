@@ -334,17 +334,27 @@ class ClickhouseBackup:
         """
         logging.debug('Performing table backup for "%s"."%s"', table.database, table.name)
 
-        if _is_merge_tree(table):
-            try:
-                freezed_parts = self._ch_ctl.freeze_table(table)
-            except ClickhouseError:
-                if self._ch_ctl.does_table_exist(table.database, table.name):
-                    raise
+        if not _is_merge_tree(table):
+            logging.info('Skipping table backup for non MergeTree table "%s"."%s"', table.database, table.name)
+            return
 
-                logging.warning('Table "%s"."%s" was removed by a user during backup', table.database, table.name)
-                return
+        try:
+            shadow_dir = self._ch_ctl.freeze_table(table)
+        except ClickhouseError:
+            if self._ch_ctl.does_table_exist(table.database, table.name):
+                raise
 
-            uploaded_parts = []
+            logging.warning('Table "%s"."%s" was removed by a user during backup', table.database, table.name)
+            return
+
+        uploaded_parts = []
+        for data_path, disk in table.paths_with_disks:
+            if disk.type == 's3':
+                backup_meta.s3_revisions[disk.name] = 1  # TODO: Get revision from revision.txt under shadow folder.
+                continue
+
+            freezed_parts = self._ch_ctl.list_freezed_parts(table, disk, data_path, shadow_dir)
+
             for fpart in freezed_parts:
                 logging.debug('Working on %s', fpart)
 
@@ -358,16 +368,16 @@ class ClickhouseBackup:
 
                 table_meta.add_part(part)
 
-            self._backup_layout.wait()
-            if self._config['validate_part_after_upload']:
-                failed = list(filter(lambda p: not self._backup_layout.check_data_part(backup_meta, p),
-                                     uploaded_parts))
-                if failed:
-                    for part in failed:
-                        logging.error(f'Uploaded part is broken, {part.database}.{part.table}: {part.name}')
-                    raise RuntimeError(f'Uploaded parts are broken, {", ".join(map(lambda p: p.name, failed))}')
+        self._backup_layout.wait()
 
-            self._ch_ctl.remove_freezed_data()
+        if self._config['validate_part_after_upload']:
+            failed = list(filter(lambda p: not self._backup_layout.check_data_part(backup_meta, p), uploaded_parts))
+            if failed:
+                for part in failed:
+                    logging.error(f'Uploaded part is broken, {part.database}.{part.table}: {part.name}')
+                raise RuntimeError(f'Uploaded parts are broken, {", ".join(map(lambda p: p.name, failed))}')
+
+        self._ch_ctl.remove_freezed_data()
 
     def _delete(self, backup: BackupMetadata,
                 newer_backups: Sequence[BackupMetadata]) -> Tuple[Optional[str], Optional[str]]:
@@ -495,7 +505,7 @@ class ClickhouseBackup:
                         logging.debug(f'{table.database}.{table.name} part {part.name} already restored, skipping it')
                         continue
 
-                    fs_part_path = self._ch_ctl.get_detached_part_path(table, part.name)
+                    fs_part_path = self._ch_ctl.get_detached_part_path(table, part.disk_name, part.name)
                     self._backup_layout.download_data_part(backup_meta, part, fs_part_path)
                     attach_parts.append(part)
 
@@ -510,12 +520,8 @@ class ClickhouseBackup:
                 self._restore_context.dump_state()
 
     def _get_table_from_meta(self, backup_meta: BackupMetadata, meta: TableMetadata) -> Table:
-        table = Table(meta.database,
-                      meta.name,
-                      meta.engine,
-                      str(),
-                      self._backup_layout.get_table_create_statement(backup_meta, meta.database, meta.name),
-                      uuid=meta.uuid)
+        table = Table(meta.database, meta.name, meta.engine, [], [],
+                      self._backup_layout.get_table_create_statement(backup_meta, meta.database, meta.name), meta.uuid)
         table.create_statement = self._rewrite_merge_tree_object(table.create_statement)
         return table
 
@@ -569,7 +575,8 @@ class ClickhouseBackup:
                                 size=existing_part.size,
                                 link=backup_meta.path,
                                 files=existing_part.files,
-                                tarball=existing_part.tarball)
+                                tarball=existing_part.tarball,
+                                disk_name=existing_part.disk_name)
 
         return None
 

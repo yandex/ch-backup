@@ -71,6 +71,16 @@ RUN openssl req -subj "/CN=localhost" -new -newkey rsa:2048 -days 365 -nodes -x5
     ln -s /config/users.xml /etc/clickhouse-server/users.d/ && \
     chown -R clickhouse:clickhouse /etc/clickhouse-server/ /usr/bin/clickhouse
 
+COPY staging/images/{{instance_name}}/version_cmp.py /version_cmp.py
+
+# Add storage policies to CH configuration (multiple disks, S3) for versions >= 20.8.
+RUN if [ "$(python3 /version_cmp.py $CLICKHOUSE_VERSION 20.8)" = "1" ] ; then \
+    ln -s /config/storage_configuration.xml /etc/clickhouse-server/conf.d/ ; \
+    mkdir /hdd1/ ; \
+    mkdir /hdd2/ ; \
+    chown -R clickhouse:clickhouse /hdd1/ /hdd2/ ; \
+    fi
+
 COPY staging/images/{{instance_name}}/entrypoint.py /entrypoint.py
 
 EXPOSE 8123 8443 9000 9440
