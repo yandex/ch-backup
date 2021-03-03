@@ -236,7 +236,10 @@ class BackupLayout:
         for part in parts:
             part_path = _part_path(part.link or backup_meta.path, part.database, part.table, part.name)
             logging.debug('Deleting data part %s', part_path)
-            deleting_files.extend(os.path.join(part_path, f) for f in part.files)
+            if part.tarball:
+                deleting_files.append(os.path.join(part_path, f'{part.name}.tar'))
+            else:
+                deleting_files.extend(os.path.join(part_path, f) for f in part.files)
 
         self._delete_files(deleting_files)
 

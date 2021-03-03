@@ -2,6 +2,7 @@
 S3 client.
 """
 import logging
+from typing import List
 
 import boto3
 from botocore.client import Config
@@ -59,3 +60,22 @@ class S3Client:
             return True
         except ClientError:
             return False
+
+    def list_objects(self, prefix: str) -> List[str]:
+        """
+        List all objects with given prefix.
+        """
+        contents = []
+        paginator = self._s3_client.get_paginator('list_objects')
+        list_object_kwargs = dict(Bucket=self._s3_bucket_name, Prefix=prefix)
+
+        for result in paginator.paginate(**list_object_kwargs):
+            if result.get('CommonPrefixes') is not None:
+                for dir_prefix in result.get('CommonPrefixes'):
+                    contents.append(dir_prefix.get('Prefix'))
+
+            if result.get('Contents') is not None:
+                for file_key in result.get('Contents'):
+                    contents.append(file_key.get('Key'))
+
+        return contents
