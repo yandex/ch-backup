@@ -24,6 +24,7 @@ def create():
         'container': 'minio01',
         'host': f'minio01.{network_name}',
         'bucket': 'ch-backup',
+        'cloud_storage_bucket': 'cloud-storage',
         'port': 9000,
         'endpoint': 'http://minio01:9000',
         'access_secret_key': generate_random_string(40),

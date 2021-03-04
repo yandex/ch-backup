@@ -223,7 +223,8 @@ class BackupManager:
                 override_replica_name: str = None,
                 force_non_replicated: bool = False,
                 clean_zookeeper: bool = False,
-                replica_name: str = None) -> str:
+                replica_name: str = None,
+                cloud_storage_source_bucket: str = None) -> str:
         """
         Restore backup entry.
         """
@@ -239,6 +240,8 @@ class BackupManager:
             options.append('--clean-zookeeper')
         if replica_name:
             options.append(f'--replica-name {replica_name}')
+        if cloud_storage_source_bucket:
+            options.append(f'--cloud-storage-source-bucket {cloud_storage_source_bucket}')
         return self._exec(f'restore {" ".join(options)} {backup_id}')
 
     def restore_metadata(self, node, replica_name):

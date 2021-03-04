@@ -133,11 +133,15 @@ class ClickhouseBackup:
                 override_replica_name: str = None,
                 force_non_replicated: bool = False,
                 clean_zookeeper: bool = False,
-                replica_name: Optional[str] = None) -> None:
+                replica_name: Optional[str] = None,
+                cloud_storage_source_bucket: str = None) -> None:
         """
         Restore specified backup
         """
         backup_meta = self._get_backup(backup_name)
+
+        if backup_meta.has_s3_data() and cloud_storage_source_bucket is None and not schema_only:
+            raise ClickhouseBackupError('Cloud storage source bucket must be set if backup has data on S3 disks')
 
         self._config['override_replica_name'] = override_replica_name or self._config.get('override_replica_name')
         self._config['force_non_replicated'] = force_non_replicated or self._config['force_non_replicated']
@@ -152,7 +156,7 @@ class ClickhouseBackup:
                                  ', '.join(missed_databases), backup_meta.path)
                 raise ClickhouseBackupError('Required databases were not found in backup metadata')
 
-        self._restore(backup_meta, databases, schema_only, clean_zookeeper, replica_name)
+        self._restore(backup_meta, databases, schema_only, clean_zookeeper, replica_name, cloud_storage_source_bucket)
 
     def delete(self, backup_name: str) -> Tuple[Optional[str], Optional[str]]:
         """
@@ -338,8 +342,12 @@ class ClickhouseBackup:
             logging.info('Skipping table backup for non MergeTree table "%s"."%s"', table.database, table.name)
             return
 
+        # ClickHouse will place shadow data under this directory.
+        # '-' character is replaced to '_' to avoid unnecessary escaping on CH side.
+        backup_name = backup_meta.name.replace('-', '_')
+
         try:
-            shadow_dir = self._ch_ctl.freeze_table(table)
+            self._ch_ctl.freeze_table(backup_name, table)
         except ClickhouseError:
             if self._ch_ctl.does_table_exist(table.database, table.name):
                 raise
@@ -350,10 +358,12 @@ class ClickhouseBackup:
         uploaded_parts = []
         for data_path, disk in table.paths_with_disks:
             if disk.type == 's3':
-                backup_meta.s3_revisions[disk.name] = 1  # TODO: Get revision from revision.txt under shadow folder.
+                # For S3 we need only revision number to restore it's data.
+                backup_meta.s3_revisions[disk.name] = self._ch_ctl.read_s3_disk_revision(disk.name, backup_name)
+                logging.debug('Save revision %d for disk %s', backup_meta.s3_revisions[disk.name], disk.name)
                 continue
 
-            freezed_parts = self._ch_ctl.list_freezed_parts(table, disk, data_path, shadow_dir)
+            freezed_parts = self._ch_ctl.list_freezed_parts(table, disk, data_path, backup_name)
 
             for fpart in freezed_parts:
                 logging.debug('Working on %s', fpart)
@@ -426,13 +436,16 @@ class ClickhouseBackup:
                  databases: Sequence[str],
                  schema_only: bool,
                  clean_zookeeper: bool = False,
-                 replica_name: Optional[str] = None) -> None:
-        logging.debug('Restoring database: %s', ', '.join(databases))
+                 replica_name: Optional[str] = None,
+                 cloud_storage_source_bucket: str = None) -> None:
+        logging.debug('Restoring databases: %s', ', '.join(databases))
         tables_meta = list(chain(*[backup_meta.get_tables(db_name) for db_name in databases]))
         tables = list(map(lambda meta: self._get_table_from_meta(backup_meta, meta), tables_meta))
         self._restore_database_objects(backup_meta, databases)
         self._restore_tables(self._filter_present_tables(databases, tables), clean_zookeeper, replica_name)
         if not schema_only:
+            if backup_meta.has_s3_data():
+                self._restore_cloud_storage_data(backup_meta, cloud_storage_source_bucket)
             self._restore_data(backup_meta, filter(_is_merge_tree, tables_meta))
 
     def _restore_tables(self,
@@ -473,7 +486,7 @@ class ClickhouseBackup:
 
     def _restore_table_objects(self, tables: Iterable[Table]) -> None:
         for table in tables:
-            self._ch_ctl.restore_meta(table.create_statement)
+            self._ch_ctl.restore_meta(self._rewrite_with_explicit_uuid(table))
 
     def _restore_view_objects(self, views: Iterable[Table]) -> None:
         # Create view through attach to omit checks.
@@ -491,6 +504,16 @@ class ClickhouseBackup:
                     remove(table_meta)
                 logging.debug(f'Failed to restore view via metadata attach, error: "{repr(e)}", fallback to create')
                 self._ch_ctl.restore_meta(self._rewrite_merge_tree_object(view.create_statement))
+
+    def _restore_cloud_storage_data(self,
+                                    backup_meta: BackupMetadata,
+                                    source_cloud_storage_bucket: str = None) -> None:
+        for disk_name, revision in backup_meta.s3_revisions.items():
+            logging.debug(f'Restore disk {disk_name} to revision {revision}')
+            self._ch_ctl.create_s3_disk_restore_file(disk_name, revision, source_cloud_storage_bucket)
+        # Restart ClickHouse to restore S3 data.
+        logging.debug('Restarting ClickHouse to restore S3 data...')
+        self._ch_ctl.restart_clickhouse()
 
     def _restore_data(self, backup_meta: BackupMetadata, tables: Iterable[TableMetadata]) -> None:
         for table_meta in tables:
@@ -650,6 +673,18 @@ class ClickhouseBackup:
             table_sql = re.sub(r'^CREATE (?P<mat>(MATERIALIZED )?)VIEW', r'ATTACH \g<mat>VIEW', table.create_statement)
 
         return self._rewrite_merge_tree_object(table_sql)
+
+    def _rewrite_with_explicit_uuid(self, table: Table) -> str:
+        table_sql = table.create_statement
+        # Rewrite create statement with explicit table UUID (as was in backup).
+        if table.uuid and self._ch_ctl.get_database_schema(table.database).find('ENGINE = Atomic') != -1:
+            # CREATE TABLE <db-name>.<table-name> $ (...)
+            # UUID clause is inserted to $ place.
+            index = table.create_statement.find('(')
+            assert index != -1, f'Unable to find UUID insertion point for the following create table statement: ' \
+                                f'{table_sql} '
+            return table_sql[:index] + f"UUID '{table.uuid}' " + table_sql[index:]
+        return table_sql
 
     @staticmethod
     def _pop_deleting_parts(backup_meta: BackupMetadata,

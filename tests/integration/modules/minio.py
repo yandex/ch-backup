@@ -52,15 +52,17 @@ def configure_s3_credentials(context: ContextT) -> None:
     _mc_execute(context, f'config host add local http://localhost:9000 {access_key} {secret_key}')
 
 
-def create_s3_bucket(context: ContextT) -> None:
+def create_s3_buckets(context: ContextT) -> None:
     """
-    Create S3 bucket specified in the config.
+    Create S3 buckets specified in the config.
     """
-    bucket = context.conf['s3']['bucket']
-    try:
-        _mc_execute(context, f'mb local/{bucket}')
-    except BucketAlreadyOwnedByYou:
-        pass
+    s3_conf = context.conf['s3']
+    buckets = [s3_conf['bucket'], f"{s3_conf['cloud_storage_bucket']}-01", f"{s3_conf['cloud_storage_bucket']}-02"]
+    for bucket in buckets:
+        try:
+            _mc_execute(context, f'mb local/{bucket}')
+        except BucketAlreadyOwnedByYou:
+            pass
 
 
 def export_s3_data(context: ContextT, path: str) -> None:

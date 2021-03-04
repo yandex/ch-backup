@@ -214,8 +214,7 @@ class BackupMetadata:
         self.size = 0
         self.real_size = 0
         self.schema_only = schema_only
-        # S3 disk name -> revision counter.
-        self.s3_revisions: Dict[str, int] = {}
+        self.s3_revisions: Dict[str, int] = {}  # S3 disk name -> revision counter.
 
     def __str__(self) -> str:
         return self.dump_json()
@@ -419,6 +418,12 @@ class BackupMetadata:
         Add access control objects to backup metadata.
         """
         self._access_control = objects
+
+    def has_s3_data(self) -> bool:
+        """
+        Return True if backup has data on S3 disks.
+        """
+        return len(self.s3_revisions) > 0
 
     def _format_time(self, value: datetime) -> str:
         return value.strftime(self.time_format)

@@ -31,7 +31,7 @@ STAGES = {
         docker.create_network,
         compose.startup_containers,
         minio.configure_s3_credentials,
-        minio.create_s3_bucket,
+        minio.create_s3_buckets,
     ],
     'restart': [
         compose.shutdown_containers,

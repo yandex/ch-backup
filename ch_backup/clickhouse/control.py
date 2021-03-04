@@ -81,7 +81,7 @@ TABLE_ATTACH_SQL = strip_query("""
 
 FREEZE_TABLE_SQL = strip_query("""
     ALTER TABLE `{db_name}`.`{table_name}`
-    FREEZE
+    FREEZE WITH NAME '{backup_name}'
 """)
 
 GET_DATABASES_SQL = strip_query("""
@@ -132,6 +132,8 @@ GET_DISKS_SQL = strip_query("""
     FORMAT JSON
 """)
 
+PING_SQL = strip_query("SELECT 1")
+
 
 class Disk(SimpleNamespace):
     """
@@ -156,9 +158,7 @@ class Table(SimpleNamespace):
         self.engine = engine
         self.create_statement = create_statement
         self.uuid = uuid
-        # Only MergeTree tables have data paths.
-        if engine.find('MergeTree') != -1:
-            self.paths_with_disks = self._map_paths_to_disks(disks, data_paths)
+        self.paths_with_disks = self._map_paths_to_disks(disks, data_paths)
 
     def _map_paths_to_disks(self, disks: List[Disk], data_paths: List[str]) -> List[Tuple[str, Disk]]:
         return list(map(lambda data_path: (data_path, self._map_path_to_disk(disks, data_path)), data_paths))
@@ -236,15 +236,13 @@ class ClickhouseCTL:
 
         self._ch_client.query(query_sql)
 
-    def freeze_table(self, table: Table) -> str:
+    def freeze_table(self, backup_name: str, table: Table) -> None:
         """
         Make snapshot of the specified table.
         """
-        query_sql = FREEZE_TABLE_SQL.format(db_name=table.database, table_name=table.name)
+        query_sql = FREEZE_TABLE_SQL.format(db_name=table.database, table_name=table.name, backup_name=backup_name)
 
         self._ch_client.query(query_sql)
-
-        return self._get_shadow_increment()
 
     def remove_freezed_data(self) -> None:
         """
@@ -370,14 +368,15 @@ class ClickhouseCTL:
 
         return result
 
-    def list_freezed_parts(self, table: Table, disk: Disk, data_path: str, shadow_dir: str) -> Sequence[FreezedPart]:
+    @staticmethod
+    def list_freezed_parts(table: Table, disk: Disk, data_path: str, backup_name: str) -> Sequence[FreezedPart]:
         """
         List freezed parts from specific disk and path.
         """
         assert disk.type == 'local', 'Listing freezed parts is allowed only for local disks'
 
         table_relative_path = os.path.relpath(data_path, disk.path)
-        path = os.path.join(disk.path, 'shadow', shadow_dir, table_relative_path)
+        path = os.path.join(disk.path, 'shadow', backup_name, table_relative_path)
 
         if not os.path.exists(path):
             logging.debug('Shadow path %s is empty', path)
@@ -415,11 +414,6 @@ class ClickhouseCTL:
     def _match_ch_version(self, min_version: str) -> bool:
         return parse_version(self._ch_version) >= parse_version(min_version)
 
-    def _get_shadow_increment(self) -> str:
-        file_path = os.path.join(self._shadow_data_path, 'increment.txt')
-        with open(file_path, 'r') as file:
-            return file.read().strip()
-
     def get_macros(self) -> Dict:
         """
         Get ClickHouse macros.
@@ -440,9 +434,33 @@ class ClickhouseCTL:
                      name=record['name'],
                      engine=record['engine'],
                      disks=list(self._disks.values()),
-                     data_paths=record['data_paths'],
+                     data_paths=record['data_paths'] if record['engine'].find('MergeTree') != -1 else [],
                      create_statement=record['create_table_query'],
                      uuid=record.get('uuid', None))
+
+    def read_s3_disk_revision(self, disk_name: str, backup_name: str) -> int:
+        """
+        Reads S3 disk revision counter.
+        """
+        file_path = os.path.join(self._disks[disk_name].path, 'shadow', backup_name, 'revision.txt')
+        with open(file_path, 'r') as file:
+            return int(file.read().strip())
+
+    def create_s3_disk_restore_file(self, disk_name: str, revision: int, source_bucket: str = None) -> None:
+        """
+        Creates file with restore information for S3 disk.
+        """
+        file_path = os.path.join(self._disks[disk_name].path, 'restore')
+        with open(file_path, 'w') as file:
+            file.write(f'{revision}{os.linesep}')
+            file.write(f'{source_bucket}{os.linesep}')
+
+    def restart_clickhouse(self) -> None:
+        """
+        Restarts ClickHouse and waits till it can process queries.
+        """
+        os.system(self._config['restart_command'])
+        self._ch_client.query(PING_SQL)
 
 
 def _get_part_checksum(part_path: str) -> str:

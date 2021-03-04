@@ -11,7 +11,7 @@ Feature: Backup & Restore multiple disks and S3
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE IF NOT EXISTS test_db;
-    CREATE TABLE test_db.table_01 ON CLUSTER 'cluster_name' (
+    CREATE TABLE test_db.table_01 (
         CounterID UInt32,
         UserID UInt32
     )
@@ -31,20 +31,15 @@ Feature: Backup & Restore multiple disks and S3
     Then we got the following backups on clickhouse01
       | num | state   | data_count | link_count |
       | 0   | created | 3          | 0          |
-    And metadata of clickhouse01 backup #0 contains no
-    """
-    s3_revisions:
-      s3: 1
-    """
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
-  @require_version_21.1
+  @require_version_21.3
   Scenario: Backup table with S3 storage policy
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE IF NOT EXISTS test_db;
-    CREATE TABLE test_db.table_02 ON CLUSTER 'cluster_name' (
+    CREATE TABLE test_db.table_01 (
         CounterID UInt32,
         UserID UInt32
     )
@@ -53,22 +48,30 @@ Feature: Backup & Restore multiple disks and S3
     ORDER BY UserID
     SETTINGS storage_policy = 's3';
 
-    INSERT INTO test_db.table_02 SELECT 0, number FROM system.numbers LIMIT 10;
-    INSERT INTO test_db.table_02 SELECT 1, number FROM system.numbers LIMIT 10;
+    INSERT INTO test_db.table_01 SELECT 0, number FROM system.numbers LIMIT 10;
+    INSERT INTO test_db.table_01 SELECT 1, number FROM system.numbers LIMIT 10;
     """
     When we create clickhouse01 clickhouse backup
-    Then metadata of clickhouse01 backup #0 contains
+    And we restore clickhouse backup #0 to clickhouse02
     """
-    s3_revisions:
-      s3: 1
+    cloud_storage_source_bucket: 'cloud-storage-01'
     """
+    And we execute query on clickhouse02
+    """
+    SELECT count(*) cnt FROM system.parts WHERE table = 'table_01' and disk_name = 's3'
+    """
+    Then we get response
+    """
+    2
+    """
+    Then we got same clickhouse data at clickhouse01 clickhouse02
 
-  @require_version_21.1
+  @require_version_21.3
   Scenario: Backup table with S3-cold storage policy
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE IF NOT EXISTS test_db;
-    CREATE TABLE test_db.table_03 ON CLUSTER 'cluster_name' (
+    CREATE TABLE test_db.table_01 (
         CounterID UInt32,
         UserID UInt32
     )
@@ -77,14 +80,103 @@ Feature: Backup & Restore multiple disks and S3
     ORDER BY UserID
     SETTINGS storage_policy = 's3_cold';
 
-    INSERT INTO test_db.table_03 SELECT 0, number FROM system.numbers LIMIT 10;
-    INSERT INTO test_db.table_03 SELECT 1, number FROM system.numbers LIMIT 10;
+    INSERT INTO test_db.table_01 SELECT 0, number FROM system.numbers LIMIT 10;
+    INSERT INTO test_db.table_01 SELECT 1, number FROM system.numbers LIMIT 10;
 
-    ALTER TABLE test_db.table_03 MOVE PARTITION '1' TO DISK 's3';
+    ALTER TABLE test_db.table_01 MOVE PARTITION '1' TO DISK 's3';
     """
     When we create clickhouse01 clickhouse backup
-    Then metadata of clickhouse01 backup #0 contains
+    And we restore clickhouse backup #0 to clickhouse02
     """
-    s3_revisions:
-      s3: 1
+    cloud_storage_source_bucket: 'cloud-storage-01'
     """
+    And we execute query on clickhouse02
+    """
+    SELECT count(*) cnt FROM system.parts WHERE table = 'table_01' and disk_name = 's3'
+    """
+    Then we get response
+    """
+    1
+    """
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
+  @require_version_21.3
+  Scenario: Backup multiple tables with S3 storage policy
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+
+    CREATE TABLE test_db.table_01 (CounterID UInt32, UserID UInt32)
+    ENGINE = MergeTree() ORDER BY UserID SETTINGS storage_policy = 's3';
+
+    CREATE TABLE test_db.table_02 (CounterID UInt32, UserID UInt32)
+    ENGINE = MergeTree() ORDER BY UserID SETTINGS storage_policy = 's3';
+
+    CREATE TABLE test_db.table_03 (CounterID UInt32, UserID UInt32)
+    ENGINE = MergeTree() ORDER BY UserID SETTINGS storage_policy = 's3';
+
+    CREATE MATERIALIZED VIEW test_db.mview_01
+    ENGINE = MergeTree() PARTITION BY CounterID % 10 ORDER BY CounterID SETTINGS storage_policy = 's3'
+    AS SELECT CounterID, CounterID * CounterID AS "CounterID2"
+    FROM test_db.table_01;
+
+    INSERT INTO test_db.table_01 SELECT 0, number FROM system.numbers LIMIT 1000;
+    INSERT INTO test_db.table_01 SELECT 1, number FROM system.numbers LIMIT 1000;
+    INSERT INTO test_db.table_02 SELECT 0, number FROM system.numbers LIMIT 1000;
+    INSERT INTO test_db.table_03 SELECT 0, number FROM system.numbers LIMIT 1000;
+    """
+    When we create clickhouse01 clickhouse backup
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    cloud_storage_source_bucket: 'cloud-storage-01'
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT count(*) cnt FROM system.parts WHERE disk_name = 's3'
+    """
+    Then we get response
+    """
+    6
+    """
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
+  @require_version_21.3
+  Scenario: Multiple backups with S3 storage policy
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+
+    CREATE TABLE test_db.table_01 (
+        CounterID UInt32,
+        UserID UInt32
+    )
+    ENGINE = MergeTree()
+    PARTITION BY CounterID % 3
+    ORDER BY UserID
+    SETTINGS storage_policy = 's3';
+    """
+    And we execute query on clickhouse01
+    """
+    INSERT INTO test_db.table_01 SELECT 0, number FROM system.numbers LIMIT 1000;
+    """
+    And we create clickhouse01 clickhouse backup
+    And we execute query on clickhouse01
+    """
+    INSERT INTO test_db.table_01 SELECT 1, number FROM system.numbers LIMIT 1000;
+    """
+    And we create clickhouse01 clickhouse backup
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    cloud_storage_source_bucket: 'cloud-storage-01'
+    """
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+    When we execute query on clickhouse01
+    """
+    ALTER TABLE test_db.table_01 DROP PARTITION '1';
+    """
+    And we drop all databases at clickhouse02
+    And we restore clickhouse backup #1 to clickhouse02
+    """
+    cloud_storage_source_bucket: 'cloud-storage-01'
+    """
+    Then we got same clickhouse data at clickhouse01 clickhouse02

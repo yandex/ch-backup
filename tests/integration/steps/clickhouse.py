@@ -136,5 +136,7 @@ def step_check_tables_are_empty(context, node):
 def step_dirty_remove_data(context, node):
     container = get_container(context, node)
     assert container.exec_run('supervisorctl stop clickhouse').exit_code == 0
-    assert container.exec_run('rm -rf /var/lib/clickhouse/data /var/lib/clickhouse/metadata').exit_code == 0
+    assert container.exec_run('rm -rf /var/lib/clickhouse/data').exit_code == 0
+    assert container.exec_run('rm -rf /var/lib/clickhouse/metadata').exit_code == 0
+    assert container.exec_run('rm -rf /var/lib/clickhouse/store').exit_code == 0
     assert container.exec_run('supervisorctl start clickhouse').exit_code == 0

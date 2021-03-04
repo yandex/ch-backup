@@ -7,7 +7,7 @@ from hamcrest import assert_that, equal_to
 
 from tests.integration.modules import s3
 
-from tests.integration.modules.minio import (configure_s3_credentials, create_s3_bucket)
+from tests.integration.modules.minio import (configure_s3_credentials, create_s3_buckets)
 
 
 @given('a working s3')
@@ -17,7 +17,7 @@ def step_wait_for_s3_alive(context):
     the bucket specified in the config is created.
     """
     configure_s3_credentials(context)
-    create_s3_bucket(context)
+    create_s3_buckets(context)
 
 
 @then('s3 contains {count:d} objects')
