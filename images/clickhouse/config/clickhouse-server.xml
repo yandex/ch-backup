@@ -31,6 +31,7 @@
          </node>
          <session_timeout_ms>3000</session_timeout_ms>
          <root>/{{instance_name}}</root>
+         <identity>{{conf.zk.user}}:{{conf.zk.password}}</identity>
      </zookeeper>
     <macros>
         <replica>{{instance_name}}</replica>

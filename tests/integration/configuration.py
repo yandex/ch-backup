@@ -42,6 +42,9 @@ def create():
     zk = {
         'uri': f'zookeeper01.{network_name}',
         'port': 2181,
+        'secure': False,
+        'user': 'clickhouse',
+        'password': 'password.password.password',
     }
 
     config = {
