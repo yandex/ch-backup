@@ -201,3 +201,17 @@ Feature: Backup of tables with different engines and configurations
     When we restore clickhouse backup #0 to clickhouse02
     Then clickhouse02 has same schema as clickhouse01
     And we got same clickhouse data at clickhouse01 clickhouse02
+
+  @require_version_21.1
+  Scenario: Create backup containing tables with EmbeddedRocksDB table engine family
+    Given we have executed queries on clickhouse01
+    """
+    CREATE TABLE test_db.table_01 (key String, value UInt32) ENGINE = EmbeddedRocksDB PRIMARY KEY key
+    """
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state    | data_count | link_count   |
+      | 0   | created  | 0          | 0            |
+    When we restore clickhouse backup #0 to clickhouse02
+    Then clickhouse02 has same schema as clickhouse01
+    But on clickhouse02 tables are empty
