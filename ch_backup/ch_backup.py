@@ -521,7 +521,10 @@ class ClickhouseBackup:
                 logging.debug('Running table "%s.%s" data restore', table_meta.database, table_meta.name)
 
                 self._restore_context.add_table(table_meta)
-                table = self._ch_ctl.get_table(table_meta.database, table_meta.name)
+                maybe_table = self._ch_ctl.get_table(table_meta.database, table_meta.name)
+                assert maybe_table is not None, f'Table not found {table_meta.database}.{table_meta.name}'
+                table: Table = maybe_table
+
                 attach_parts = []
                 for part in table_meta.get_parts():
                     if self._restore_context.part_restored(part):
@@ -667,8 +670,16 @@ class ClickhouseBackup:
 
     def _rewrite_view_object(self, table: Table) -> str:
         if table.uuid and self._ch_ctl.get_database_schema(table.database).find('ENGINE = Atomic') != -1:
+            # For 21.4 it's required to explicitly set inner table UUID for MV.
+            inner_uuid_clause = ''
+            if _is_materialized_view(table) and self._ch_ctl.match_ch_version('21.4'):
+                mv_inner_table = self._ch_ctl.get_table(table.database, f'.inner_id.{table.uuid}')
+                if mv_inner_table:
+                    inner_uuid_clause = f"TO INNER UUID '{mv_inner_table.uuid}'"
+
             table_sql = re.sub(f'^CREATE (?P<mat>(MATERIALIZED )?)VIEW (?P<table_name>{table.database}.{table.name}) ',
-                               f"ATTACH \\g<mat>VIEW _ UUID '{table.uuid}' ", table.create_statement)
+                               f"ATTACH \\g<mat>VIEW \\g<table_name> UUID '{table.uuid}' {inner_uuid_clause} ",
+                               table.create_statement)
         else:
             table_sql = re.sub(r'^CREATE (?P<mat>(MATERIALIZED )?)VIEW', r'ATTACH \g<mat>VIEW', table.create_statement)
 
@@ -767,3 +778,10 @@ def _is_view(table: Union[Table, TableMetadata]) -> bool:
     Return True if table is a view, or False otherwise.
     """
     return table.engine in ('View', 'MaterializedView')
+
+
+def _is_materialized_view(table: Union[Table, TableMetadata]) -> bool:
+    """
+    Return True if table is a view, or False otherwise.
+    """
+    return table.engine == 'MaterializedView'

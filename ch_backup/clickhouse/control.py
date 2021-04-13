@@ -287,9 +287,9 @@ class ClickhouseCTL:
         Get ordered by mtime list of all database tables
         """
         query_sql: str
-        if self._match_ch_version(min_version='20.4'):
+        if self.match_ch_version(min_version='20.4'):
             query_sql = GET_TABLES_SQL
-        elif self._match_ch_version(min_version='19.15'):
+        elif self.match_ch_version(min_version='19.15'):
             query_sql = GET_TABLES_COMPAT_20_3_SQL
         else:
             query_sql = GET_TABLES_COMPAT_19_14_SQL
@@ -301,20 +301,25 @@ class ClickhouseCTL:
 
         return result
 
-    def get_table(self, db_name: str, table_name: str) -> Table:
+    def get_table(self, db_name: str, table_name: str) -> Optional[Table]:
         """
-        Get ordered by mtime list of all database tables
+        Get table by name, returns None if no table has found.
         """
         query_sql: str
-        if self._match_ch_version(min_version='20.4'):
+        if self.match_ch_version(min_version='20.4'):
             query_sql = GET_TABLES_SQL
-        elif self._match_ch_version(min_version='19.15'):
+        elif self.match_ch_version(min_version='19.15'):
             query_sql = GET_TABLES_COMPAT_20_3_SQL
         else:
             query_sql = GET_TABLES_COMPAT_19_14_SQL
 
         query_sql = query_sql.format(db_name=db_name, tables=[table_name])
-        return self._make_table(self._ch_client.query(query_sql)['data'][0])
+        tables_raw = self._ch_client.query(query_sql)['data']
+
+        if tables_raw:
+            return self._make_table(tables_raw[0])
+
+        return None
 
     def does_table_exist(self, db_name: str, table_name: str) -> bool:
         """
@@ -411,7 +416,10 @@ class ClickhouseCTL:
         if os.path.exists(path):
             shutil.rmtree(path)
 
-    def _match_ch_version(self, min_version: str) -> bool:
+    def match_ch_version(self, min_version: str) -> bool:
+        """
+        Returns True if ClickHouse version >= min_version.
+        """
         return parse_version(self._ch_version) >= parse_version(min_version)
 
     def get_macros(self) -> Dict:
@@ -422,7 +430,7 @@ class ClickhouseCTL:
         return {row['macro']: row['substitution'] for row in ch_resp.get('data', [])}
 
     def _get_disks(self) -> Dict[str, Disk]:
-        if self._match_ch_version(min_version='20.8'):
+        if self.match_ch_version(min_version='20.8'):
             disks_resp = self._ch_client.query(GET_DISKS_SQL)
             return {row['name']: Disk(row['name'], row['path'], row['type']) for row in disks_resp.get('data', [])}
 
