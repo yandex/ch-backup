@@ -140,3 +140,9 @@ def step_dirty_remove_data(context, node):
     assert container.exec_run('rm -rf /var/lib/clickhouse/metadata').exit_code == 0
     assert container.exec_run('rm -rf /var/lib/clickhouse/store').exit_code == 0
     assert container.exec_run('supervisorctl start clickhouse').exit_code == 0
+
+
+@when('we drop restore context at {node:w}')
+def step_drop_restore_context(context, node):
+    container = get_container(context, node)
+    assert container.exec_run('rm -rf /tmp/ch_backup_restore_state.json').exit_code == 0

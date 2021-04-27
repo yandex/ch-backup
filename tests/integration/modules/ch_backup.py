@@ -123,6 +123,9 @@ class Backup:
         for db_name, db_obj in self._metadata['databases'].items():
             for table_name, table_obj in db_obj['tables'].items():
                 for part_name, part_obj in table_obj['parts'].items():
+                    # Skip S3 parts.
+                    if part_obj.get('disk_name') in self.meta.get('s3_revisions', {}).keys():
+                        continue
                     part_path = os.path.join(
                         part_obj.get('link') or backup_path, 'data', db_name, table_name, part_name)
                     if part_obj.get('tarball', False):
@@ -224,7 +227,8 @@ class BackupManager:
                 force_non_replicated: bool = False,
                 clean_zookeeper: bool = False,
                 replica_name: str = None,
-                cloud_storage_source_bucket: str = None) -> str:
+                cloud_storage_source_bucket: str = None,
+                cloud_storage_source_path: str = None) -> str:
         """
         Restore backup entry.
         """
@@ -242,6 +246,8 @@ class BackupManager:
             options.append(f'--replica-name {replica_name}')
         if cloud_storage_source_bucket:
             options.append(f'--cloud-storage-source-bucket {cloud_storage_source_bucket}')
+        if cloud_storage_source_path:
+            options.append(f'--cloud-storage-source-path {cloud_storage_source_path}')
         return self._exec(f'restore {" ".join(options)} {backup_id}')
 
     def restore_metadata(self, node, replica_name):

@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Sequence, Tuple, Union
 from pkg_resources import parse_version
 
 from ch_backup import logging
-from ch_backup.backup.metadata import TableMetadata
+from ch_backup.backup.metadata import PartMetadata, TableMetadata
 from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.util import chown_dir_contents, retry, strip_query
 
@@ -187,7 +187,8 @@ class FreezedPart(SimpleNamespace):
     """
     Freezed data part.
     """
-    def __init__(self, database: str, table: str, name: str, disk_name: str, path: str, checksum: str, size: int):
+    def __init__(self, database: str, table: str, name: str, disk_name: str, path: str, checksum: str, size: int,
+                 files: List[str]):
         super().__init__()
         self.database = database
         self.table = table
@@ -196,6 +197,20 @@ class FreezedPart(SimpleNamespace):
         self.path = path
         self.checksum = checksum
         self.size = size
+        self.files = files
+
+    def to_part_metadata(self) -> PartMetadata:
+        """
+        Converts to PartMetadata.
+        """
+        return PartMetadata(database=self.database,
+                            table=self.table,
+                            name=self.name,
+                            checksum=self.checksum,
+                            size=self.size,
+                            files=self.files,
+                            tarball=True,
+                            disk_name=self.disk_name)
 
 
 class ClickhouseCTL:
@@ -208,7 +223,7 @@ class ClickhouseCTL:
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
         self._root_data_path = config['data_path']
         self._shadow_data_path = os.path.join(self._root_data_path, 'shadow')
-        self._disks = self._get_disks()
+        self._disks = self.get_disks()
 
     def chown_detached_table_parts(self, table: Table) -> None:
         """
@@ -216,9 +231,8 @@ class ClickhouseCTL:
         specified table. New values for permissions are taken from the config.
         """
         for _, disk in table.paths_with_disks:
-            if disk.type == 'local':
-                detached_path = self._get_table_detached_path(table, disk.name)
-                self.chown_dir(detached_path)
+            detached_path = self._get_table_detached_path(table, disk.name)
+            self.chown_dir(detached_path)
 
     def attach_part(self, table: Table, part_name: str) -> None:
         """
@@ -378,8 +392,6 @@ class ClickhouseCTL:
         """
         List freezed parts from specific disk and path.
         """
-        assert disk.type == 'local', 'Listing freezed parts is allowed only for local disks'
-
         table_relative_path = os.path.relpath(data_path, disk.path)
         path = os.path.join(disk.path, 'shadow', backup_name, table_relative_path)
 
@@ -392,7 +404,9 @@ class ClickhouseCTL:
             part_path = os.path.join(path, part)
             checksum = _get_part_checksum(part_path)
             size = _get_part_size(part_path)
-            freezed_parts.append(FreezedPart(table.database, table.name, part, disk.name, part_path, checksum, size))
+            files = os.listdir(part_path)
+            freezed_parts.append(
+                FreezedPart(table.database, table.name, part, disk.name, part_path, checksum, size, files))
 
         return freezed_parts
 
@@ -429,7 +443,10 @@ class ClickhouseCTL:
         ch_resp = self._ch_client.query(GET_MACROS_SQL)
         return {row['macro']: row['substitution'] for row in ch_resp.get('data', [])}
 
-    def _get_disks(self) -> Dict[str, Disk]:
+    def get_disks(self) -> Dict[str, Disk]:
+        """
+        Get all configured disks.
+        """
         if self.match_ch_version(min_version='20.8'):
             disks_resp = self._ch_client.query(GET_DISKS_SQL)
             return {row['name']: Disk(row['name'], row['path'], row['type']) for row in disks_resp.get('data', [])}
@@ -446,22 +463,27 @@ class ClickhouseCTL:
                      create_statement=record['create_table_query'],
                      uuid=record.get('uuid', None))
 
-    def read_s3_disk_revision(self, disk_name: str, backup_name: str) -> int:
+    def read_s3_disk_revision(self, disk_name: str, backup_name: str) -> Optional[int]:
         """
         Reads S3 disk revision counter.
         """
         file_path = os.path.join(self._disks[disk_name].path, 'shadow', backup_name, 'revision.txt')
+        if not os.path.exists(file_path):
+            return None
+
         with open(file_path, 'r') as file:
             return int(file.read().strip())
 
-    def create_s3_disk_restore_file(self, disk_name: str, revision: int, source_bucket: str = None) -> None:
+    def create_s3_disk_restore_file(self, disk_name: str, revision: int, source_bucket: str, source_path: str) -> None:
         """
         Creates file with restore information for S3 disk.
         """
         file_path = os.path.join(self._disks[disk_name].path, 'restore')
         with open(file_path, 'w') as file:
-            file.write(f'{revision}{os.linesep}')
-            file.write(f'{source_bucket}{os.linesep}')
+            file.write(f'revision={revision}{os.linesep}')
+            file.write(f'source_bucket={source_bucket}{os.linesep}')
+            file.write(f'source_path={source_path}{os.linesep}')
+            file.write(f'detached=true{os.linesep}')
 
     def restart_clickhouse(self) -> None:
         """

@@ -83,7 +83,7 @@ class BackupLayout:
             msg = f'Failed to upload access control metadata file "{remote_path}"'
             raise StorageError(msg) from e
 
-    def upload_data_part(self, backup_name: str, fpart: FreezedPart) -> PartMetadata:
+    def upload_data_part(self, backup_name: str, fpart: FreezedPart) -> None:
         """
         Upload part data.
         """
@@ -91,10 +91,9 @@ class BackupLayout:
 
         remote_dir_path = _part_path(self.get_backup_path(backup_name), fpart.database, fpart.table, fpart.name)
         remote_path = os.path.join(remote_dir_path, fpart.name + '.tar')
-        filenames = os.listdir(fpart.path)
         try:
             self._storage_loader.upload_files_tarball(dir_path=fpart.path,
-                                                      files=filenames,
+                                                      files=fpart.files,
                                                       remote_path=remote_path,
                                                       is_async=True,
                                                       encryption=True,
@@ -102,15 +101,6 @@ class BackupLayout:
         except Exception as e:
             msg = f'Failed to create async upload of {remote_path}'
             raise StorageError(msg) from e
-
-        return PartMetadata(database=fpart.database,
-                            table=fpart.table,
-                            name=fpart.name,
-                            checksum=fpart.checksum,
-                            size=fpart.size,
-                            files=filenames,
-                            tarball=True,
-                            disk_name=fpart.disk_name)
 
     def get_backup_names(self) -> Sequence[str]:
         """

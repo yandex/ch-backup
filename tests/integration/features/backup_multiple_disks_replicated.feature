@@ -1,8 +1,9 @@
-Feature: Backup & Restore multiple disks and S3
+Feature: Backup & Restore multiple disks and S3 with replication
 
   Background:
     Given default configuration
     And a working s3
+    And a working zookeeper on zookeeper01
     And a working clickhouse on clickhouse01
     And a working clickhouse on clickhouse02
 
@@ -15,7 +16,7 @@ Feature: Backup & Restore multiple disks and S3
         CounterID UInt32,
         UserID UInt32
     )
-    ENGINE = MergeTree()
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_01', '{replica}')
     PARTITION BY CounterID % 3
     ORDER BY UserID
     SETTINGS storage_policy = 'multiple_disks';
@@ -43,7 +44,7 @@ Feature: Backup & Restore multiple disks and S3
         CounterID UInt32,
         UserID UInt32
     )
-    ENGINE = MergeTree()
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_01', '{replica}')
     PARTITION BY CounterID % 3
     ORDER BY UserID
     SETTINGS storage_policy = 's3';
@@ -79,7 +80,7 @@ Feature: Backup & Restore multiple disks and S3
         CounterID UInt32,
         UserID UInt32
     )
-    ENGINE = MergeTree()
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_01', '{replica}')
     PARTITION BY CounterID % 3
     ORDER BY UserID
     SETTINGS storage_policy = 's3_cold';
@@ -115,16 +116,25 @@ Feature: Backup & Restore multiple disks and S3
     CREATE DATABASE IF NOT EXISTS test_db;
 
     CREATE TABLE test_db.table_01 (CounterID UInt32, UserID UInt32)
-    ENGINE = MergeTree() ORDER BY UserID SETTINGS storage_policy = 's3';
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_01', '{replica}')
+    ORDER BY UserID
+    SETTINGS storage_policy = 's3';
 
     CREATE TABLE test_db.table_02 (CounterID UInt32, UserID UInt32)
-    ENGINE = MergeTree() ORDER BY UserID SETTINGS storage_policy = 's3';
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_02', '{replica}')
+    ORDER BY UserID
+    SETTINGS storage_policy = 's3';
 
     CREATE TABLE test_db.table_03 (CounterID UInt32, UserID UInt32)
-    ENGINE = MergeTree() ORDER BY UserID SETTINGS storage_policy = 's3';
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_03', '{replica}')
+    ORDER BY UserID
+    SETTINGS storage_policy = 's3';
 
     CREATE MATERIALIZED VIEW test_db.mview_01
-    ENGINE = MergeTree() PARTITION BY CounterID % 10 ORDER BY CounterID SETTINGS storage_policy = 's3'
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.mview_01', '{replica}')
+    PARTITION BY CounterID % 10
+    ORDER BY CounterID
+    SETTINGS storage_policy = 's3'
     AS SELECT CounterID, CounterID * CounterID AS "CounterID2"
     FROM test_db.table_01;
 
@@ -162,7 +172,7 @@ Feature: Backup & Restore multiple disks and S3
         CounterID UInt32,
         UserID UInt32
     )
-    ENGINE = MergeTree()
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_01', '{replica}')
     PARTITION BY CounterID % 3
     ORDER BY UserID
     SETTINGS storage_policy = 's3';

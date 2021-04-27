@@ -1,4 +1,5 @@
 features/backup_multiple_disks.feature
+features/backup_multiple_disks_replicated.feature
 features/access_control_backup.feature
 features/table_engines.feature
 features/backup_restore.feature

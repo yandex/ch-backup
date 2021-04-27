@@ -134,7 +134,8 @@ class ClickhouseBackup:
                 force_non_replicated: bool = False,
                 clean_zookeeper: bool = False,
                 replica_name: Optional[str] = None,
-                cloud_storage_source_bucket: str = None) -> None:
+                cloud_storage_source_bucket: str = None,
+                cloud_storage_source_path: str = None) -> None:
         """
         Restore specified backup
         """
@@ -156,7 +157,8 @@ class ClickhouseBackup:
                                  ', '.join(missed_databases), backup_meta.path)
                 raise ClickhouseBackupError('Required databases were not found in backup metadata')
 
-        self._restore(backup_meta, databases, schema_only, clean_zookeeper, replica_name, cloud_storage_source_bucket)
+        self._restore(backup_meta, databases, schema_only, clean_zookeeper, replica_name, cloud_storage_source_bucket,
+                      cloud_storage_source_path)
 
     def delete(self, backup_name: str) -> Tuple[Optional[str], Optional[str]]:
         """
@@ -355,26 +357,33 @@ class ClickhouseBackup:
             logging.warning('Table "%s"."%s" was removed by a user during backup', table.database, table.name)
             return
 
+        for disk in self._ch_ctl.get_disks().values():
+            if disk.type == 's3':
+                # Save revision for S3 disks.
+                revision = self._ch_ctl.read_s3_disk_revision(disk.name, backup_name)
+                if revision:
+                    backup_meta.s3_revisions[disk.name] = revision
+                    logging.debug('Save revision %d for disk %s', revision, disk.name)
+
         uploaded_parts = []
         for data_path, disk in table.paths_with_disks:
-            if disk.type == 's3':
-                # For S3 we need only revision number to restore it's data.
-                backup_meta.s3_revisions[disk.name] = self._ch_ctl.read_s3_disk_revision(disk.name, backup_name)
-                logging.debug('Save revision %d for disk %s', backup_meta.s3_revisions[disk.name], disk.name)
-                continue
-
             freezed_parts = self._ch_ctl.list_freezed_parts(table, disk, data_path, backup_name)
 
             for fpart in freezed_parts:
                 logging.debug('Working on %s', fpart)
 
+                if disk.type == 's3':
+                    table_meta.add_part(fpart.to_part_metadata())
+                    continue
+
                 # trying to find part in storage
                 part = self._deduplicate_part(fpart, dedup_backups)
-                if not part:
-                    part = self._backup_layout.upload_data_part(backup_meta.name, fpart)
-                    uploaded_parts.append(part)
-                else:
+                if part:
                     self._ch_ctl.remove_freezed_part(fpart)
+                else:
+                    self._backup_layout.upload_data_part(backup_meta.name, fpart)
+                    part = fpart.to_part_metadata()
+                    uploaded_parts.append(part)
 
                 table_meta.add_part(part)
 
@@ -437,7 +446,8 @@ class ClickhouseBackup:
                  schema_only: bool,
                  clean_zookeeper: bool = False,
                  replica_name: Optional[str] = None,
-                 cloud_storage_source_bucket: str = None) -> None:
+                 cloud_storage_source_bucket: str = None,
+                 cloud_storage_source_path: str = None) -> None:
         logging.debug('Restoring databases: %s', ', '.join(databases))
         tables_meta = list(chain(*[backup_meta.get_tables(db_name) for db_name in databases]))
         tables = list(map(lambda meta: self._get_table_from_meta(backup_meta, meta), tables_meta))
@@ -445,7 +455,11 @@ class ClickhouseBackup:
         self._restore_tables(self._filter_present_tables(databases, tables), clean_zookeeper, replica_name)
         if not schema_only:
             if backup_meta.has_s3_data():
-                self._restore_cloud_storage_data(backup_meta, cloud_storage_source_bucket)
+                assert cloud_storage_source_bucket is not None, "Cloud storage source bucket is not set"
+                assert cloud_storage_source_path is not None, "Cloud storage source path is not set"
+                source_bucket: str = cloud_storage_source_bucket
+                source_path: str = cloud_storage_source_path
+                self._restore_cloud_storage_data(backup_meta, source_bucket, source_path)
             self._restore_data(backup_meta, filter(_is_merge_tree, tables_meta))
 
     def _restore_tables(self,
@@ -505,13 +519,12 @@ class ClickhouseBackup:
                 logging.debug(f'Failed to restore view via metadata attach, error: "{repr(e)}", fallback to create')
                 self._ch_ctl.restore_meta(self._rewrite_merge_tree_object(view.create_statement))
 
-    def _restore_cloud_storage_data(self,
-                                    backup_meta: BackupMetadata,
-                                    source_cloud_storage_bucket: str = None) -> None:
+    def _restore_cloud_storage_data(self, backup_meta: BackupMetadata, source_bucket: str, source_path: str) -> None:
         for disk_name, revision in backup_meta.s3_revisions.items():
             logging.debug(f'Restore disk {disk_name} to revision {revision}')
-            self._ch_ctl.create_s3_disk_restore_file(disk_name, revision, source_cloud_storage_bucket)
+            self._ch_ctl.create_s3_disk_restore_file(disk_name, revision, source_bucket, source_path)
         # Restart ClickHouse to restore S3 data.
+        # TODO: Use SYSTEM RESTART DISK (https://github.com/ClickHouse/ClickHouse/pull/23429)
         logging.debug('Restarting ClickHouse to restore S3 data...')
         self._ch_ctl.restart_clickhouse()
 
@@ -531,8 +544,10 @@ class ClickhouseBackup:
                         logging.debug(f'{table.database}.{table.name} part {part.name} already restored, skipping it')
                         continue
 
-                    fs_part_path = self._ch_ctl.get_detached_part_path(table, part.disk_name, part.name)
-                    self._backup_layout.download_data_part(backup_meta, part, fs_part_path)
+                    if part.disk_name not in backup_meta.s3_revisions.keys():
+                        fs_part_path = self._ch_ctl.get_detached_part_path(table, part.disk_name, part.name)
+                        self._backup_layout.download_data_part(backup_meta, part, fs_part_path)
+
                     attach_parts.append(part)
 
                 self._backup_layout.wait()

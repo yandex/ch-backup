@@ -29,6 +29,7 @@
 						<disk>hdd2</disk>
 					</hdd2>
 				</volumes>
+				<move_factor>0.0</move_factor> <!-- Disable automatic moves -->
 			</multiple_disks>
 
 			<s3>
@@ -40,6 +41,7 @@
 						<disk>default</disk>
 					</external>
 				</volumes>
+				<move_factor>0.0</move_factor> <!-- Disable automatic moves -->
 			</s3>
 
 			<s3_cold>
@@ -51,6 +53,7 @@
 						<disk>s3</disk>
 					</external>
 				</volumes>
+				<move_factor>0.0</move_factor> <!-- Disable automatic moves -->
 			</s3_cold>
 		</policies>
 	</storage_configuration>
