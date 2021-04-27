@@ -20,7 +20,7 @@ from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.control import ClickhouseCTL, FreezedPart, Table
 from ch_backup.config import Config
 from ch_backup.exceptions import BackupNotFound, ClickhouseBackupError
-from ch_backup.util import get_zookeeper_paths, now, utcnow
+from ch_backup.util import get_zookeeper_paths, normalize_schema, now, utcnow
 from ch_backup.version import get_version
 from ch_backup.zookeeper.zookeeper import ZookeeperCTL
 
@@ -576,7 +576,7 @@ class ClickhouseBackup:
             key = (table.database, table.name)
             if key not in present_tables:
                 yield table
-            elif present_tables[key].create_statement != table.create_statement:
+            elif normalize_schema(present_tables[key].create_statement) != normalize_schema(table.create_statement):
                 raise ClickhouseBackupError(f'Table {key} has different schema with backup "{table.create_statement}" '
                                             f'!= "{present_tables[key].create_statement}"')
 

@@ -4,7 +4,7 @@ Unit test for util module.
 import pytest
 
 from ch_backup.exceptions import ClickhouseBackupError
-from ch_backup.util import get_zookeeper_paths, retry, strip_query
+from ch_backup.util import (get_zookeeper_paths, normalize_schema, retry, strip_query)
 
 from . import ExpectedException, UnexpectedException
 
@@ -106,3 +106,79 @@ class TestGetZooKeeperPath:
     def test_invalid_sql(self):
         with pytest.raises(ClickhouseBackupError):
             get_zookeeper_paths(['invalid_test'])
+
+
+class TestNormalizeSchema:
+    """
+    Test _normailze_schema method
+    """
+
+    schemas = [
+        [
+            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "ENGINE = MergeTree() ORDER BY date",
+            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "ENGINE = MergeTree() ORDER BY date",
+            True,
+        ],
+        [
+            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "ENGINE = MergeTree() ORDER BY date",
+            "CREATE TABLE database.test (`date` Date, `value` UInt64) "
+            "ENGINE = MergeTree() ORDER BY date",
+            False,
+        ],
+        [
+            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "ENGINE = Distributed('foo-foo', 'database_bar', 'table_biz')",
+            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "ENGINE = Distributed('foo-foo', 'database_bar', 'table_biz')",
+            True,
+        ],
+        [
+            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "ENGINE = Distributed('foo-foo', 'database_bar', 'table_biz')",
+            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "ENGINE = Distributed('foo-foo', database_bar, table_biz)",
+            True,
+        ],
+        [
+            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "ENGINE = Distributed('foo-foo', 'database_bar', 'table_biz')",
+            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "ENGINE = Distributed('foo-foo', database_biz, table_biz)",
+            False,
+        ],
+        [
+            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "ENGINE = Distributed('foo-foo', 'database_bar', 'table_biz')",
+            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "ENGINE = Distributed('bar-bar', database_bar, table_biz)",
+            False,
+        ],
+        [
+            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "ENGINE = Distributed('foo-foo', 'database_bar', 'table_biz', shard_key, policy_name)",
+            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "ENGINE = Distributed('foo-foo', database_bar, table_biz, shard_key, policy_name)",
+            True,
+        ],
+        [
+            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "ENGINE = Distributed('foo-foo', 'database_bar', 'table_biz', shard_key, policy_name) SETTINGS a=b",
+            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "ENGINE = Distributed('foo-foo', database_bar, table_biz, shard_key, policy_name) SETTINGS a=b",
+            True,
+        ],
+        [
+            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "ENGINE = Distributed('foo-foo', 'database_bar', 'table_biz', shard_key, policy_name) SETTINGS a=b",
+            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "ENGINE = Distributed('foo-foo', database_bar, table_biz, shard_key, policy_name) SETTINGS c=b",
+            False,
+        ],
+    ]
+
+    def test_normalize_schema(self):
+        for schema in self.schemas:
+            assert (normalize_schema(str(schema[0])) == normalize_schema(str(schema[1]))) == schema[2]

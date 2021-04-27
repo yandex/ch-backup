@@ -128,3 +128,13 @@ def get_zookeeper_paths(create_statements: Iterable[str]) -> Iterable[str]:
             raise ClickhouseBackupError(f'Couldn`t parse create statement for zk path: "{table}')
         paths.append(match.group('zk_path'))
     return paths
+
+
+def normalize_schema(schema: str) -> str:
+    """
+    Normalize table schema for comparison.
+    `... ENGINE = Distributed('aaa', bbb, ccc, xxx) ...` may be in ver. before 19.16, 20.1
+    `... ENGINE = Distributed('aaa', 'bbb', 'ccc', xxx) ...` in ver. 19.16+, 20.1+
+    """
+    return re.sub(r"ENGINE = Distributed\('([^']+)', ('?)(\w+)\2, ('?)(\w+)\4(, .*)?\)",
+                  r"ENGINE = Distributed('\1', '\3', '\5'\6)", schema)
