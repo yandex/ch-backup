@@ -135,24 +135,34 @@ Feature: Deduplication
       | creating          |
       | failed            |
 
-  Scenario Outline: Deleting or partially deletded backups are not used in deduplication
-    Given metadata of clickhouse01 backup #0 was adjusted with
+  Scenario Outline: Deleting or partially deleted backups are used in deduplication
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state    | data_count | link_count   |
+      | 0   | created  | 3          | 2            |
+      | 1   | created  | 2          | 0            |
+    When metadata of clickhouse01 backup #1 was adjusted with
     """
     meta:
         state: <state>
     """
+    Then we got the following backups on clickhouse01
+      | num | state    | data_count | link_count   |
+      | 0   | created  | 3          | 2            |
+      | 1   | <state>  | 2          | 0            |
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   |
-      | 0   | created  | 5          | 0            |
-      | 1   | <state>  | 2          | 0            |
+      | 0   | created  | 0          | 5            |
+      | 1   | created  | 3          | 2            |
+      | 2   | <state>  | 2          | 0            |
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
     Examples:
       | state             |
-      | deleting          |
       | partially_deleted |
+      | deleting          |
 
   Scenario: Backups mismatched age policy are not used in deduplication
     Given ch-backup configuration on clickhouse01

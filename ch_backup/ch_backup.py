@@ -275,9 +275,6 @@ class ClickhouseBackup:
             if not backup_age_limit or backup.start_time < backup_age_limit:
                 break
 
-            if backup.state in (BackupState.DELETING, BackupState.PARTIALLY_DELETED):
-                continue
-
             dedup_backups.append(backup)
 
         return dedup_backups

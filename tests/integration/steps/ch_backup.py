@@ -29,7 +29,9 @@ def step_create_backup(context, node):
 
 
 @given('metadata of {node:w} backup #{backup_id:d} was adjusted with')
+@when('metadata of {node:w} backup #{backup_id:d} was adjusted with')
 @given('metadata of {node:w} backup "{backup_id}" was adjusted with')
+@when('metadata of {node:w} backup "{backup_id}" was adjusted with')
 def step_update_backup_metadata(context, node, backup_id):
     ch_backup = BackupManager(context, node)
     context.backup = ch_backup.get_backup(backup_id)
