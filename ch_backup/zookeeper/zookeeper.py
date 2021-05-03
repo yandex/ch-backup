@@ -25,7 +25,11 @@ class ZookeeperCTL:
             raise RuntimeError('No zookeeper config provided, ZookeeperCTL unavailable')
         self._zk_secure = config['secure'] if 'secure' in config else False
         self._zk_cert = config['cert'] if 'cert' in config else None
-        self._zk_client = KazooClient(config['hosts'], use_ssl=self._zk_secure, certfile=self._zk_cert)
+        self._zk_key = config['key'] if 'key' in config else None
+        self._zk_client = KazooClient(config['hosts'],
+                                      use_ssl=self._zk_secure,
+                                      certfile=self._zk_cert,
+                                      keyfile=self._zk_key)
         self._zk_root_path = config['root_path']
         self._zk_user = config['user'] if 'user' in config else None
         self._zk_password = config['password'] if 'password' in config else None
