@@ -13,6 +13,20 @@
             <disableProtocols>sslv2,sslv3</disableProtocols>
             <preferServerCiphers>true</preferServerCiphers>
         </server>
+{% if conf.zk.secure %}
+        <client>
+            <certificateFile>/etc/clickhouse-server/server.crt</certificateFile>
+            <privateKeyFile>/etc/clickhouse-server/server.key</privateKeyFile>
+            <loadDefaultCAFile>true</loadDefaultCAFile>
+            <caConfig>/etc/clickhouse-server/allCAs.pem</caConfig>
+            <cacheSessions>true</cacheSessions>
+            <disableProtocols>sslv2,sslv3,tlsv1,tlsv1_1</disableProtocols>
+            <preferServerCiphers>true</preferServerCiphers>
+            <invalidCertificateHandler>
+                <name>RejectCertificateHandler</name>
+            </invalidCertificateHandler>
+        </client>
+{% endif %}
     </openSSL>
     <remote_servers>
         <cluster_name>
@@ -27,7 +41,12 @@
      <zookeeper>
          <node index="1">
              <host>{{conf.zk.uri}}</host>
+{% if conf.zk.secure %}
+             <port>{{conf.zk.secure_port}}</port>
+             <secure>1</secure>
+{% else %}
              <port>{{conf.zk.port}}</port>
+{% endif %}
          </node>
          <session_timeout_ms>3000</session_timeout_ms>
          <root>/{{instance_name}}</root>

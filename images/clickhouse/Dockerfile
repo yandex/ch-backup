@@ -61,10 +61,22 @@ RUN cd ${CH_TMP_DIR} && \
     rm -rf /etc/supervisor && \
     ln --force -s /config/supervisor /etc/supervisor
 
-
-RUN openssl req -subj "/CN=localhost" -new -newkey rsa:2048 -days 365 -nodes -x509 \
-        -keyout /etc/clickhouse-server/server.key \
-        -out /etc/clickhouse-server/server.crt && \
+COPY staging/images/{{instance_name}}/ssl/ ${CH_TMP_DIR}/ssl/
+RUN openssl genrsa -out ${CH_TMP_DIR}/ssl/server.key 2048 && \
+    openssl req -new -key ${CH_TMP_DIR}/ssl/server.key -out ${CH_TMP_DIR}/ssl/server.csr \
+        -subj "/CN=localhost" -days 365 -nodes -x509 && \
+    openssl x509 -x509toreq -days 365 -in ${CH_TMP_DIR}/ssl/server.csr \
+        -signkey ${CH_TMP_DIR}/ssl/server.key -out ${CH_TMP_DIR}/ssl/server.req && \
+    openssl x509 -req -in ${CH_TMP_DIR}/ssl/server.req -CA ${CH_TMP_DIR}/ssl/rootCACert.pem \
+        -CAkey ${CH_TMP_DIR}/ssl/rootCAKey.pem -CAcreateserial -out ${CH_TMP_DIR}/ssl/server.crt \
+        -days 365 -sha256 -extfile ${CH_TMP_DIR}/ssl/server.ext && \
+    mkdir -p /usr/share/ca-certificates/extra && \
+    cp ${CH_TMP_DIR}/ssl/rootCACert.pem /usr/share/ca-certificates/extra/ && \
+    dpkg-reconfigure ca-certificates && \
+    update-ca-certificates && \
+    cp ${CH_TMP_DIR}/ssl/server.key /etc/clickhouse-server/ && \
+    cp ${CH_TMP_DIR}/ssl/server.crt /etc/clickhouse-server/ && \
+    cp ${CH_TMP_DIR}/ssl/rootCACert.pem /etc/clickhouse-server/allCAs.pem && \
     mkdir -p /etc/clickhouse-server/conf.d/ && \
     ln -s /config/clickhouse-server.xml /etc/clickhouse-server/conf.d/ && \
     mkdir -p /etc/clickhouse-server/users.d/ && \

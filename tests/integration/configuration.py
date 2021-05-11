@@ -2,6 +2,7 @@
 Variables that influence testing behavior are defined here.
 """
 
+import os
 import random
 
 from tests.integration.modules.utils import generate_random_string, merge
@@ -42,10 +43,18 @@ def create():
     zk = {
         'uri': f'zookeeper01.{network_name}',
         'port': 2181,
-        'secure': False,
+        'secure_port': 2281,
+        'secure': True,
         'user': 'clickhouse',
         'password': 'password.password.password',
     }
+
+    version_parts = os.getenv("CLICKHOUSE_VERSION", "0.0").split('.')
+    assert len(version_parts) >= 2, "Invalid version string"
+    if int(version_parts[0]) > 20 or (int(version_parts[0]) == 20 and int(version_parts[1]) >= 4):
+        zk['secure'] = True
+    else:
+        zk['secure'] = False
 
     config = {
         'images_dir': 'images',
@@ -103,6 +112,7 @@ def create():
             'zookeeper': {
                 'expose': {
                     'tcp': 2181,
+                    'tls': 2281,
                 },
             },
         },
