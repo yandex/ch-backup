@@ -132,7 +132,9 @@ GET_DISKS_SQL = strip_query("""
     FORMAT JSON
 """)
 
-PING_SQL = strip_query("SELECT 1")
+RESTART_DISK_SQL = strip_query("""
+    SYSTEM RESTART DISK {disk_name}
+""")
 
 
 class Disk(SimpleNamespace):
@@ -485,12 +487,11 @@ class ClickhouseCTL:
             file.write(f'source_path={source_path}{os.linesep}')
             file.write(f'detached=true{os.linesep}')
 
-    def restart_clickhouse(self) -> None:
+    def restart_disk(self, disk_name: str) -> None:
         """
         Restarts ClickHouse and waits till it can process queries.
         """
-        os.system(self._config['restart_command'])
-        self._ch_client.query(PING_SQL)
+        self._ch_client.query(RESTART_DISK_SQL.format(disk_name=disk_name))
 
 
 def _get_part_checksum(part_path: str) -> str:

@@ -23,7 +23,6 @@ DEFAULT_CONFIG = {
         'group': 'clickhouse',
         'clickhouse_user': None,
         'clickhouse_password': None,
-        'restart_command': 'service clickhouse-server restart > /dev/null 2>&1',
     },
     'backup': {
         'exclude_dbs': ['_temporary_and_external_tables'],

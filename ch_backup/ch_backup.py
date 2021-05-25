@@ -520,10 +520,7 @@ class ClickhouseBackup:
         for disk_name, revision in backup_meta.s3_revisions.items():
             logging.debug(f'Restore disk {disk_name} to revision {revision}')
             self._ch_ctl.create_s3_disk_restore_file(disk_name, revision, source_bucket, source_path)
-        # Restart ClickHouse to restore S3 data.
-        # TODO: Use SYSTEM RESTART DISK (https://github.com/ClickHouse/ClickHouse/pull/23429)
-        logging.debug('Restarting ClickHouse to restore S3 data...')
-        self._ch_ctl.restart_clickhouse()
+            self._ch_ctl.restart_disk(disk_name)
 
     def _restore_data(self, backup_meta: BackupMetadata, tables: Iterable[TableMetadata]) -> None:
         for table_meta in tables:
