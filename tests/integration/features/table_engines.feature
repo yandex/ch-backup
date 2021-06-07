@@ -138,15 +138,16 @@ Feature: Backup of tables with different engines and configurations
   Scenario: Create backup containing materialized view with implicit backend table
     Given we have executed queries on clickhouse01
     """
-    CREATE TABLE test_db.table_01 (n Int32, s String)
+    CREATE DATABASE `test-db`;
+    CREATE TABLE `test-db`.table_01 (n Int32, s String)
     ENGINE = MergeTree() PARTITION BY n % 10 ORDER BY n;
 
-    CREATE MATERIALIZED VIEW test_db.mview_01
+    CREATE MATERIALIZED VIEW `test-db`.mview_01
     ENGINE = MergeTree() PARTITION BY n % 10 ORDER BY n
     AS SELECT n, n * n AS "n2"
-    FROM test_db.table_01;
+    FROM `test-db`.table_01;
 
-    INSERT INTO test_db.table_01 SELECT number, toString(number) FROM system.numbers LIMIT 1000;
+    INSERT INTO `test-db`.table_01 SELECT number, toString(number) FROM system.numbers LIMIT 1000;
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01

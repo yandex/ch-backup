@@ -102,6 +102,11 @@ GET_DATABASE_ENGINE = strip_query("""
     FORMAT TSVRaw
 """)
 
+GET_DATABASE_METADATA_PATH = strip_query("""
+    SELECT metadata_path FROM system.databases WHERE name='{db_name}'
+    FORMAT JSON
+""")
+
 GET_TABLE_PARTITIONS_SQL = strip_query("""
     SELECT DISTINCT partition
     FROM system.parts
@@ -221,6 +226,7 @@ class ClickhouseCTL:
     """
     def __init__(self, config: dict) -> None:
         self._config = config
+        self._default_timeout = config['timeout']
         self._ch_client = ClickhouseClient(config)
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
         self._root_data_path = config['data_path']
@@ -256,9 +262,11 @@ class ClickhouseCTL:
         """
         Make snapshot of the specified table.
         """
+        parts = len(self.get_partitions(table))
         query_sql = FREEZE_TABLE_SQL.format(db_name=table.database, table_name=table.name, backup_name=backup_name)
 
-        self._ch_client.query(query_sql)
+        # 1 second for 10 parts should be enough. When problem discovered there was ~20 parts/sec
+        self._ch_client.query(query_sql, max(self._default_timeout, int(parts / 10)))
 
     def remove_freezed_data(self) -> None:
         """
@@ -363,7 +371,9 @@ class ClickhouseCTL:
         """
         Get filesystem absolute path to databse metadata.
         """
-        return os.path.join(self._root_data_path, 'metadata', database)
+        data = self._ch_client.query(GET_DATABASE_METADATA_PATH.format(db_name=database))['data']
+        assert len(data) == 1
+        return data[0]['metadata_path']
 
     def get_detached_part_path(self, table: Table, disk_name: str, part_name: str) -> str:
         """

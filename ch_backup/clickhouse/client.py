@@ -35,7 +35,7 @@ class ClickhouseClient:
         self._timeout = config['timeout']
 
     @retry(requests.exceptions.ConnectionError)
-    def query(self, query: str, post_data: dict = None) -> Any:
+    def query(self, query: str, post_data: dict = None, timeout: int = None) -> Any:
         """
         Execute query.
         """
@@ -49,7 +49,7 @@ class ClickhouseClient:
             response = self._session.post(self._url,
                                           params=params,
                                           json=post_data,
-                                          timeout=self._timeout,
+                                          timeout=timeout or self._timeout,
                                           data=query.encode('utf-8'))
 
             response.raise_for_status()

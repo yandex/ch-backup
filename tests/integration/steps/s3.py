@@ -6,7 +6,6 @@ from behave import given, then
 from hamcrest import assert_that, equal_to
 
 from tests.integration.modules import s3
-
 from tests.integration.modules.minio import (configure_s3_credentials, create_s3_buckets)
 
 

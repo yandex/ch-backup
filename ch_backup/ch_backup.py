@@ -513,7 +513,8 @@ class ClickhouseBackup:
             except Exception as e:
                 if exists(table_meta):
                     remove(table_meta)
-                logging.debug(f'Failed to restore view via metadata attach, error: "{repr(e)}", fallback to create')
+                logging.debug(f'Failed to restore view via metadata attach, query: "{create_sql}", '
+                              f'error: "{repr(e)}", fallback to create')
                 self._ch_ctl.restore_meta(self._rewrite_merge_tree_object(view.create_statement))
 
     def _restore_cloud_storage_data(self, backup_meta: BackupMetadata, source_bucket: str, source_path: str) -> None:
@@ -686,9 +687,10 @@ class ClickhouseBackup:
                 if mv_inner_table:
                     inner_uuid_clause = f"TO INNER UUID '{mv_inner_table.uuid}'"
 
-            table_sql = re.sub(f'^CREATE (?P<mat>(MATERIALIZED )?)VIEW (?P<table_name>{table.database}.{table.name}) ',
-                               f"ATTACH \\g<mat>VIEW \\g<table_name> UUID '{table.uuid}' {inner_uuid_clause} ",
-                               table.create_statement)
+            table_sql = re.sub(
+                f'^CREATE (?P<mat>(MATERIALIZED )?)VIEW (?P<table_name>`?{table.database}`?.`?{table.name}`?) ',
+                f"ATTACH \\g<mat>VIEW \\g<table_name> UUID '{table.uuid}' {inner_uuid_clause} ",
+                table.create_statement)
         else:
             table_sql = re.sub(r'^CREATE (?P<mat>(MATERIALIZED )?)VIEW', r'ATTACH \g<mat>VIEW', table.create_statement)
 
