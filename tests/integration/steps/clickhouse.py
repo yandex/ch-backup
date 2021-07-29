@@ -139,6 +139,8 @@ def step_dirty_remove_data(context, node):
     assert container.exec_run('rm -rf /var/lib/clickhouse/data').exit_code == 0
     assert container.exec_run('rm -rf /var/lib/clickhouse/metadata').exit_code == 0
     assert container.exec_run('rm -rf /var/lib/clickhouse/store').exit_code == 0
+    assert container.exec_run('rm -rf /var/lib/clickhouse/disks').exit_code == 0
+    assert container.exec_run('rm -rf /var/lib/clickhouse/access').exit_code == 0
     assert container.exec_run('supervisorctl start clickhouse').exit_code == 0
 
 

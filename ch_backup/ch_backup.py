@@ -135,7 +135,8 @@ class ClickhouseBackup:
                 clean_zookeeper: bool = False,
                 replica_name: Optional[str] = None,
                 cloud_storage_source_bucket: str = None,
-                cloud_storage_source_path: str = None) -> None:
+                cloud_storage_source_path: str = None,
+                cloud_storage_latest: bool = False) -> None:
         """
         Restore specified backup
         """
@@ -158,7 +159,7 @@ class ClickhouseBackup:
                 raise ClickhouseBackupError('Required databases were not found in backup metadata')
 
         self._restore(backup_meta, databases, schema_only, clean_zookeeper, replica_name, cloud_storage_source_bucket,
-                      cloud_storage_source_path)
+                      cloud_storage_source_path, cloud_storage_latest)
 
     def delete(self, backup_name: str) -> Tuple[Optional[str], Optional[str]]:
         """
@@ -444,7 +445,8 @@ class ClickhouseBackup:
                  clean_zookeeper: bool = False,
                  replica_name: Optional[str] = None,
                  cloud_storage_source_bucket: str = None,
-                 cloud_storage_source_path: str = None) -> None:
+                 cloud_storage_source_path: str = None,
+                 cloud_storage_latest: bool = False) -> None:
         logging.debug('Restoring databases: %s', ', '.join(databases))
         tables_meta = list(chain(*[backup_meta.get_tables(db_name) for db_name in databases]))
         tables = list(map(lambda meta: self._get_table_from_meta(backup_meta, meta), tables_meta))
@@ -456,7 +458,7 @@ class ClickhouseBackup:
                 assert cloud_storage_source_path is not None, "Cloud storage source path is not set"
                 source_bucket: str = cloud_storage_source_bucket
                 source_path: str = cloud_storage_source_path
-                self._restore_cloud_storage_data(backup_meta, source_bucket, source_path)
+                self._restore_cloud_storage_data(backup_meta, source_bucket, source_path, cloud_storage_latest)
             self._restore_data(backup_meta, filter(_is_merge_tree, tables_meta))
 
     def _restore_tables(self,
@@ -517,10 +519,12 @@ class ClickhouseBackup:
                               f'error: "{repr(e)}", fallback to create')
                 self._ch_ctl.restore_meta(self._rewrite_merge_tree_object(view.create_statement))
 
-    def _restore_cloud_storage_data(self, backup_meta: BackupMetadata, source_bucket: str, source_path: str) -> None:
+    def _restore_cloud_storage_data(self, backup_meta: BackupMetadata, source_bucket: str, source_path: str,
+                                    cloud_storage_latest: bool) -> None:
         for disk_name, revision in backup_meta.s3_revisions.items():
             logging.debug(f'Restore disk {disk_name} to revision {revision}')
-            self._ch_ctl.create_s3_disk_restore_file(disk_name, revision, source_bucket, source_path)
+            self._ch_ctl.create_s3_disk_restore_file(disk_name, revision if not cloud_storage_latest else 0,
+                                                     source_bucket, source_path)
             self._ch_ctl.restart_disk(disk_name)
 
     def _restore_data(self, backup_meta: BackupMetadata, tables: Iterable[TableMetadata]) -> None:

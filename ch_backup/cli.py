@@ -272,6 +272,7 @@ def backup_command(ctx: Context, ch_backup: ClickhouseBackup, name: str, databas
 @option('--replica-name', type=str, help='Replica name to be removed from zookeeper. Default - hostname')
 @option('--cloud-storage-source-bucket', type=str, help='Source bucket name to restore cloud storage data')
 @option('--cloud-storage-source-path', type=str, help='Source path to restore cloud storage data')
+@option('--cloud-storage-latest', is_flag=True, help='Forces to use revision=0 to cloud storage')
 def restore_command(ctx: Context,
                     ch_backup: ClickhouseBackup,
                     name: str,
@@ -282,13 +283,14 @@ def restore_command(ctx: Context,
                     clean_zookeeper: bool = False,
                     replica_name: str = None,
                     cloud_storage_source_bucket: str = None,
-                    cloud_storage_source_path: str = None) -> None:
+                    cloud_storage_source_path: str = None,
+                    cloud_storage_latest: bool = False) -> None:
     """Restore data from a particular backup."""
     # pylint: disable=too-many-arguments
     name = _validate_name(ctx, ch_backup, name)
 
     ch_backup.restore(name, databases, schema_only, override_replica_name, force_non_replicated, clean_zookeeper,
-                      replica_name, cloud_storage_source_bucket, cloud_storage_source_path)
+                      replica_name, cloud_storage_source_bucket, cloud_storage_source_path, cloud_storage_latest)
 
 
 @command(name='restore-schema')
