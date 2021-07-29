@@ -3,7 +3,7 @@ Clickhouse backup logic
 """
 
 import re
-from collections import defaultdict
+from collections import defaultdict, deque
 from copy import copy
 from datetime import timedelta
 from itertools import chain
@@ -486,8 +486,7 @@ class ClickhouseBackup:
                     map(lambda table: table.create_statement, filter(_is_replicated, merge_tree_tables))),
                 replica_name, self._ch_ctl.get_macros())
 
-        self._restore_table_objects(chain(merge_tree_tables, other_tables, distributed_tables))
-        self._restore_view_objects(view_tables)
+        self._restore_table_objects(chain(merge_tree_tables, other_tables, distributed_tables, view_tables))
 
     def _restore_database_objects(self, backup_meta: BackupMetadata, databases: Iterable[str]) -> None:
         present_databases = self._ch_ctl.get_databases()
@@ -498,26 +497,45 @@ class ClickhouseBackup:
                 self._ch_ctl.restore_meta(db_sql)
 
     def _restore_table_objects(self, tables: Iterable[Table]) -> None:
-        for table in tables:
-            self._ch_ctl.restore_meta(self._rewrite_with_explicit_uuid(table))
-
-    def _restore_view_objects(self, views: Iterable[Table]) -> None:
-        # Create view through attach to omit checks.
-        for view in views:
-            database_meta = self._ch_ctl.get_database_metadata_path(view.database)
-            table_meta = join(database_meta, f'{view.name}.sql')
+        errors: List[Tuple[Union[Table], Exception]] = []
+        unprocessed = deque(table for table in tables)
+        while unprocessed:
+            table = unprocessed.popleft()
             try:
-                create_sql = self._rewrite_view_object(view)
-                with open(table_meta, 'w') as f:
-                    f.write(create_sql)
-                self._ch_ctl.chown_dir(database_meta)
-                self._ch_ctl.attach_table(view)
+                if _is_view(table):
+                    self._restore_view_object(table)
+                else:
+                    self._ch_ctl.restore_meta(self._rewrite_with_explicit_uuid(table))
             except Exception as e:
-                if exists(table_meta):
-                    remove(table_meta)
-                logging.debug(f'Failed to restore view via metadata attach, query: "{create_sql}", '
-                              f'error: "{repr(e)}", fallback to create')
-                self._ch_ctl.restore_meta(self._rewrite_merge_tree_object(view.create_statement))
+                errors.append((table, e))
+                unprocessed.append(table)
+                if len(errors) > len(unprocessed):
+                    break
+            else:
+                errors.clear()
+
+        if errors:
+            logging.error('Failed to restore tables:\n%s',
+                          '\n'.join(f'"{v.database}"."{v.name}": {e!r}' for v, e in errors))
+            failed_views_str = ', '.join(f'"{v.database}"."{v.name}"' for v, _ in errors)
+            raise ClickhouseBackupError(f'Failed to restore tables: {failed_views_str}')
+
+    def _restore_view_object(self, view: Table) -> None:
+        # Create view through attach to omit checks.
+        database_meta = self._ch_ctl.get_database_metadata_path(view.database)
+        table_meta = join(database_meta, f'{view.name}.sql')
+        try:
+            create_sql = self._rewrite_view_object(view)
+            with open(table_meta, 'w') as f:
+                f.write(create_sql)
+            self._ch_ctl.chown_dir(database_meta)
+            self._ch_ctl.attach_table(view)
+        except Exception as e:
+            if exists(table_meta):
+                remove(table_meta)
+            logging.debug(f'Failed to restore view via metadata attach, query: "{create_sql}", '
+                          f'error: "{repr(e)}", fallback to create')
+            self._ch_ctl.restore_meta(self._rewrite_merge_tree_object(view.create_statement))
 
     def _restore_cloud_storage_data(self, backup_meta: BackupMetadata, source_bucket: str, source_path: str,
                                     cloud_storage_latest: bool) -> None:
