@@ -1,4 +1,4 @@
-FROM ubuntu:18.04
+FROM registry.yandex.net/ubuntu:bionic
 
 RUN apt-get update -qq && apt-get -y install python3-bottle --no-install-recommends
 
