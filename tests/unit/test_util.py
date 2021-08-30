@@ -3,6 +3,7 @@ Unit test for util module.
 """
 import pytest
 
+from ch_backup.clickhouse.control import Table
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.util import (get_zookeeper_paths, normalize_schema, retry, strip_query)
 
@@ -68,15 +69,15 @@ _test_tables = {
                   "ENGINE ReplicatedMergeTree('/clickhouse/tables/shard1/valid_test', '{replica}') "
                   "PARTITION BY (id) ORDER BY (id)",
     'valid_legacy': "CREATE TABLE legacy_test (id Date) ENGINE"
-                    "ReplicatedMergeTree('/clickhouse/tables/shard1/legacy_test', '{replica}', id, id, id, 8192)",
+                    "ReplicatedMergeTree('/clickhouse/tables/shard1/valid_legacy', '{replica}', id, id, id, 8192)",
     'valid_summing_test': "CREATE TABLE valid_summing_test (id Int32)"
                           "ENGINE ReplicatedMergeTree('/clickhouse/tables/shard1/valid_summing_test', '{replica}') "
                           "PARTITION BY (id) ORDER BY (id)",
     'valid_summing_legacy': "CREATE TABLE legacy_summing_test (id Date) ENGINE ReplicatedSummingMergeTree("
-                            "'/clickhouse/tables/shard1/legacy_summing_test', '{replica}', id, id, id, 8192)",
-    'valid_with_spaces': "CREATE TABLE valid_test (id Int32)"
-                         "ENGINE ReplicatedMergeTree('/clickhouse/tables/shard1/valid_test ', '{replica}') "
-                         "PARTITION BY (id) ORDER BY (id)",
+                            "'/clickhouse/tables/shard1/valid_summing_legacy', '{replica}', id, id, id, 8192)",
+    'valid_with_spaces ': "CREATE TABLE valid_with_spaces (id Int32)"
+                          "ENGINE ReplicatedMergeTree('/clickhouse/tables/shard1/valid_with_spaces ', '{replica}') "
+                          "PARTITION BY (id) ORDER BY (id)",
     'invalid_test': "CREATE TABLE invalid_test (id Int32) ENGINE MergeTree() PARTITION BY (id) ORDER BY (id)",
     # valid path for clickhouse
     'invalid_with_quotes_test': "CREATE TABLE valid_test (id Int32)"
@@ -93,19 +94,20 @@ class TestGetZooKeeperPath:
     """
     Tests for get_zookeeper_paths() function.
     """
+    @staticmethod
+    def _make_table(name, create_statement):
+        return Table('default', name, '', [], [], create_statement, '')
+
     def test_valid_sql(self):
-        actual = get_zookeeper_paths(value for name, value in _test_tables.items() if name.startswith('valid_'))
-        assert actual == [
-            '/clickhouse/tables/shard1/valid_test',
-            '/clickhouse/tables/shard1/legacy_test',
-            '/clickhouse/tables/shard1/valid_summing_test',
-            '/clickhouse/tables/shard1/legacy_summing_test',
-            '/clickhouse/tables/shard1/valid_test ',
-        ]
+        actual = get_zookeeper_paths(
+            self._make_table(name, value) for name, value in _test_tables.items() if name.startswith('valid_'))
+        assert actual == [(self._make_table(table, _test_tables[table]), f'/clickhouse/tables/shard1/{table}')
+                          for table in ('valid_test', 'valid_legacy', 'valid_summing_test', 'valid_summing_legacy',
+                                        'valid_with_spaces ')]
 
     def test_invalid_sql(self):
         with pytest.raises(ClickhouseBackupError):
-            get_zookeeper_paths(['invalid_test'])
+            get_zookeeper_paths([self._make_table('invalid_test', 'invalid_test')])
 
 
 class TestNormalizeSchema:

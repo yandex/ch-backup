@@ -481,10 +481,8 @@ class ClickhouseBackup:
 
         if clean_zookeeper and len(self._zk_config.get('hosts')) > 0:
             zk_ctl = ZookeeperCTL(self._zk_config)
-            zk_ctl.delete_replica_metadata(
-                get_zookeeper_paths(
-                    map(lambda table: table.create_statement, filter(_is_replicated, merge_tree_tables))),
-                replica_name, self._ch_ctl.get_macros())
+            zk_ctl.delete_replica_metadata(get_zookeeper_paths(filter(_is_replicated, merge_tree_tables)),
+                                           replica_name, self._ch_ctl.get_macros())
 
         self._restore_table_objects(chain(merge_tree_tables, other_tables, distributed_tables, view_tables))
 

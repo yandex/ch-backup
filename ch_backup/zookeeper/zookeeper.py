@@ -4,11 +4,12 @@ ZooKeeper-control classes module
 
 import os
 import socket
-from typing import Dict, Iterable, Optional
+from typing import Dict, Iterable, Optional, Tuple
 
 from kazoo.client import KazooClient
 from kazoo.exceptions import KazooException, NoNodeError
 
+from ch_backup.clickhouse.control import Table
 from ch_backup.logging import debug
 
 from ..util import retry
@@ -38,7 +39,7 @@ class ZookeeperCTL:
 
     @KAZOO_RETRIES
     def delete_replica_metadata(self,
-                                table_paths: Iterable[str],
+                                tables: Iterable[Tuple[Table, str]],
                                 replica: Optional[str] = None,
                                 macros: Dict = None) -> None:
         """
@@ -52,8 +53,10 @@ class ZookeeperCTL:
         self._zk_client.start()
         if self._zk_user and self._zk_password:
             self._zk_client.add_auth('digest', f'{self._zk_user}:{self._zk_password}')
-        for table in table_paths:
-            path = os.path.join(self._zk_root_path, table[1:].format(**macros), 'replicas',
+        for table, table_path in tables:
+            table_macros = dict(database=table.database, table=table.name)
+            table_macros.update(macros)
+            path = os.path.join(self._zk_root_path, table_path[1:].format(**table_macros), 'replicas',
                                 replica)  # remove leading '/'
             debug(f'Deleting zk node: "{path}"')
             try:

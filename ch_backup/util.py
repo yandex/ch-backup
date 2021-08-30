@@ -9,7 +9,7 @@ import re
 import shutil
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Iterable, Union
+from typing import Callable, Iterable, Tuple, Union
 
 import tenacity
 
@@ -117,17 +117,17 @@ def retry(exception_types: Union[type, tuple] = Exception,
                           before_sleep=_log_retry)
 
 
-def get_zookeeper_paths(create_statements: Iterable[str]) -> Iterable[str]:
+def get_zookeeper_paths(tables: Iterable) -> Iterable[Tuple]:
     """
     Parse ZooKeeper path from create statement.
     """
-    paths = []
-    for table in create_statements:
-        match = re.search(R"""Replicated\S{0,20}MergeTree\(\'(?P<zk_path>[^']+)\',""", table)
+    result = []
+    for table in tables:
+        match = re.search(R"""Replicated\S{0,20}MergeTree\(\'(?P<zk_path>[^']+)\',""", table.create_statement)
         if not match:
             raise ClickhouseBackupError(f'Couldn`t parse create statement for zk path: "{table}')
-        paths.append(match.group('zk_path'))
-    return paths
+        result.append((table, match.group('zk_path')))
+    return result
 
 
 def normalize_schema(schema: str) -> str:

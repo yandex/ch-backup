@@ -62,3 +62,20 @@ Feature: Restore metadata from another host without s3
     """
     When we restore clickhouse schema from clickhouse01 to clickhouse02
     Then clickhouse01 has same schema as clickhouse02
+
+  Scenario: Restore metadata from another host with {database} and {table} macros
+    Given we have executed queries on clickhouse01
+    """
+    CREATE TABLE default.table_01 (
+        EventDate DateTime,
+        CounterID UInt32,
+        UserID UInt32
+    )
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/{database}.{table}', '{replica}')
+    PARTITION BY toYYYYMM(EventDate)
+    ORDER BY (CounterID, EventDate, intHash32(UserID))
+    SAMPLE BY intHash32(UserID);
+    INSERT INTO default.table_01 SELECT now(), number, rand() FROM system.numbers LIMIT 10
+    """
+    When we restore clickhouse schema from clickhouse01 to clickhouse02
+    Then clickhouse01 has same schema as clickhouse02
