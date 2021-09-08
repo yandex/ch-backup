@@ -65,7 +65,7 @@ install:
 	ln -s /opt/yandex/ch-backup/bin/ch-backup $(DESTDIR)/usr/bin/
 	mkdir -p $(DESTDIR)/etc/bash_completion.d/
 	env LC_ALL=C.UTF-8 LANG=C.UTF-8 \
-	    _CH_BACKUP_COMPLETE=source $(INSTALL_DIR)/bin/ch-backup > $(DESTDIR)/etc/bash_completion.d/ch-backup || \
+	    _CH_BACKUP_COMPLETE=bash_source $(INSTALL_DIR)/bin/ch-backup > $(DESTDIR)/etc/bash_completion.d/ch-backup || \
 	    test -s $(DESTDIR)/etc/bash_completion.d/ch-backup
 	rm -rf $(INSTALL_DIR)/bin/activate*
 	find $(INSTALL_DIR) -name __pycache__ -type d -exec rm -rf {} +
