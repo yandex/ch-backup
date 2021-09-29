@@ -232,6 +232,7 @@ class ClickhouseCTL:
         self._root_data_path = config['data_path']
         self._shadow_data_path = os.path.join(self._root_data_path, 'shadow')
         self._disks = self.get_disks()
+        self._restart_disk_timeout = self._config['restart_disk_timeout']
 
     def chown_detached_table_parts(self, table: Table) -> None:
         """
@@ -501,7 +502,7 @@ class ClickhouseCTL:
         """
         Restarts ClickHouse and waits till it can process queries.
         """
-        self._ch_client.query(RESTART_DISK_SQL.format(disk_name=disk_name))
+        self._ch_client.query(RESTART_DISK_SQL.format(disk_name=disk_name), timeout=self._restart_disk_timeout)
 
 
 def _get_part_checksum(part_path: str) -> str:

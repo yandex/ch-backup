@@ -32,10 +32,11 @@ class ClickhouseClient:
         # pylint: disable=no-member
         requests.packages.urllib3.disable_warnings()
         self._url = f'{protocol}://{host}:{port}'
+        self._connect_timeout = config['connect_timeout']
         self._timeout = config['timeout']
 
     @retry(requests.exceptions.ConnectionError)
-    def query(self, query: str, post_data: dict = None, timeout: int = None) -> Any:
+    def query(self, query: str, post_data: dict = None, timeout: float = None) -> Any:
         """
         Execute query.
         """
@@ -49,7 +50,7 @@ class ClickhouseClient:
             response = self._session.post(self._url,
                                           params=params,
                                           json=post_data,
-                                          timeout=timeout or self._timeout,
+                                          timeout=(self._connect_timeout, timeout or self._timeout),
                                           data=query.encode('utf-8'))
 
             response.raise_for_status()
