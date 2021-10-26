@@ -311,14 +311,15 @@ class ClickhouseBackup:
 
         backup_meta.add_database(db_name)
 
-        for table in self._ch_ctl.get_tables_ordered(db_name, tables):
-            table_meta = TableMetadata(table.database, table.name, table.engine, table.uuid)
-            self._backup_table_schema(backup_meta, table)
-            if not schema_only:
-                # table_meta will be populated with parts info
-                self._backup_table_data(backup_meta, table, table_meta, dedup_backups)
+        if not self._is_db_external(db_name):
+            for table in self._ch_ctl.get_tables_ordered(db_name, tables):
+                table_meta = TableMetadata(table.database, table.name, table.engine, table.uuid)
+                self._backup_table_schema(backup_meta, table)
+                if not schema_only:
+                    # table_meta will be populated with parts info
+                    self._backup_table_data(backup_meta, table, table_meta, dedup_backups)
 
-            backup_meta.add_table(table_meta)
+                backup_meta.add_table(table_meta)
 
         self._backup_layout.upload_backup_metadata(backup_meta)
 
@@ -448,7 +449,8 @@ class ClickhouseBackup:
                  cloud_storage_source_path: str = None,
                  cloud_storage_latest: bool = False) -> None:
         logging.debug('Restoring databases: %s', ', '.join(databases))
-        tables_meta = list(chain(*[backup_meta.get_tables(db_name) for db_name in databases]))
+        tables_meta = list(
+            chain(*[backup_meta.get_tables(db_name) for db_name in databases if not self._is_db_external(db_name)]))
         tables = list(map(lambda meta: self._get_table_from_meta(backup_meta, meta), tables_meta))
         self._restore_database_objects(backup_meta, databases)
         self._restore_tables(self._filter_present_tables(databases, tables), clean_zookeeper, replica_name)
@@ -767,6 +769,17 @@ class ClickhouseBackup:
 
         return is_changed, deleting_parts
 
+    def _is_db_external(self, db_name: str) -> bool:
+        """
+        Return True if DB's engine is one of:
+        - MySQL
+        - MaterializedMySQL
+        - PostgreSQL
+        - MaterializedPostgreSQL
+        or False otherwise
+        """
+        return _is_external_db_engine(self._ch_ctl.get_database_engine(db_name))
+
 
 def _get_access_control_files(objects: Sequence[str]) -> chain:
     """
@@ -816,3 +829,20 @@ def _is_materialized_view(table: Union[Table, TableMetadata]) -> bool:
     Return True if table is a view, or False otherwise.
     """
     return table.engine == 'MaterializedView'
+
+
+def _is_external_db_engine(db_engine: str) -> bool:
+    """
+    Return True if DB's engine is one of:
+    - MySQL
+    - MaterializedMySQL
+    - PostgreSQL
+    - MaterializedPostgreSQL
+    or False otherwise
+    """
+    return any([
+        db_engine == 'MySQL',
+        db_engine == 'MaterializedMySQL',
+        db_engine == 'PostgreSQL',
+        db_engine == 'MaterializedPostgreSQL',
+    ])

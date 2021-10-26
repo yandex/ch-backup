@@ -220,6 +220,7 @@ class FreezedPart(SimpleNamespace):
                             disk_name=self.disk_name)
 
 
+# pylint: disable=too-many-public-methods
 class ClickhouseCTL:
     """
     ClickHouse control tool.
@@ -305,6 +306,13 @@ class ClickhouseCTL:
         Return database schema (CREATE DATABASE query).
         """
         query_sql = SHOW_CREATE_DATABASE_SQL.format(db_name=db_name)
+        return self._ch_client.query(query_sql)
+
+    def get_database_engine(self, db_name: str) -> str:
+        """
+        Return database engine.
+        """
+        query_sql = GET_DATABASE_ENGINE.format(db_name=db_name)
         return self._ch_client.query(query_sql)
 
     def get_tables_ordered(self, db_name: str, tables: Optional[Sequence[str]] = None) -> Sequence[Table]:
