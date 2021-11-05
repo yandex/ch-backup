@@ -27,7 +27,7 @@ DEFAULT_CONFIG = {
         'clickhouse_password': None,
     },
     'backup': {
-        'exclude_dbs': ['_temporary_and_external_tables'],
+        'exclude_dbs': [],
         'path_root': None,
         'deduplicate_parts': True,
         'deduplication_age_limit': {

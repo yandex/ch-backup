@@ -88,7 +88,7 @@ GET_DATABASES_SQL = strip_query("""
     SELECT
         name
     FROM system.databases
-    WHERE name NOT IN ('system', '_temporary_and_external_tables')
+    WHERE name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA')
     FORMAT JSON
 """)
 

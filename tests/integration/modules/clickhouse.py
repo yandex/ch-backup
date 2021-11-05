@@ -130,7 +130,7 @@ class ClickhouseClient:
         query = """
             SELECT name
             FROM system.databases
-            WHERE name NOT IN ('system', '_temporary_and_external_tables')
+            WHERE name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA')
             FORMAT JSONCompact
             """
 
@@ -174,7 +174,7 @@ class ClickhouseClient:
                 table,
                 groupArray(name) AS columns
             FROM system.columns
-            WHERE database NOT IN ('system', '_temporary_and_external_tables')
+        WHERE database NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA')
             GROUP BY database, table
             ORDER BY database, table
             FORMAT JSONCompact

@@ -793,7 +793,13 @@ def _has_embedded_metadata(db_name: str) -> bool:
     """
     Return True if db create statement shouldn't be uploaded and applied with restore.
     """
-    return db_name in ['system', '_temporary_and_external_tables', 'default']
+    return db_name in [
+        'default',
+        'system',
+        '_temporary_and_external_tables',
+        'information_schema',
+        'INFORMATION_SCHEMA',
+    ]
 
 
 def _is_merge_tree(table: Union[Table, TableMetadata]) -> bool:
