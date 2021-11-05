@@ -41,7 +41,10 @@ Commands:
 
 ### Regression
 
-The regression test suite requires:
+The regression test suite contains run of static code analysis tools (isort, yapf, flake8, pylint, mypy, bandit),
+unit tests and integration tests.
+
+System requirements are:
 ```
 python 3.6
 make
@@ -97,3 +100,10 @@ root@clickhouse01:/# ch-backup show LAST
 
 Note: There are no prepopulated data in ClickHouse. So you need to insert some
  data yourself in order to make non-zero backup.
+
+### Testing new versions
+
+```
+export CLICKHOUSE_VERSION=21.11.1.8636
+make test integration_test
+```
