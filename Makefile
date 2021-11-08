@@ -48,7 +48,7 @@ integration_test: build create_env
 
 .PHONY: clean
 clean: clean_env clean_pycache
-	rm -rf .tox .cache *.egg-info htmlcov .coverage* .hypothesis ch_backup/version.txt
+	rm -rf .tox .cache *.egg-info htmlcov .coverage* .hypothesis .mypy_cache ch_backup/version.txt
 
 .PHONY: clean_pycache
 clean_pycache:
