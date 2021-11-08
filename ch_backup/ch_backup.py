@@ -48,7 +48,7 @@ class ClickhouseBackup:
         Get list of existing backups sorted by start timestamp.
         """
         backups = []
-        for backup in self._iter_backups():
+        for backup in self._iter_backups(use_light_meta=True):
             if state and backup.state != state:
                 continue
             backups.append(backup)
@@ -91,7 +91,7 @@ class ClickhouseBackup:
         if last_backup and not self._check_min_interval(last_backup, force):
             msg = 'Backup is skipped per backup.min_interval config option.'
             logging.info(msg)
-            return (last_backup.name, msg)
+            return last_backup.name, msg
 
         backup_meta = BackupMetadata(name=name,
                                      path=self._backup_layout.get_backup_path(name),
@@ -123,7 +123,7 @@ class ClickhouseBackup:
             if not self._config.get('keep_freezed_data_on_failure'):
                 self._ch_ctl.remove_freezed_data()
 
-        return (backup_meta.name, None)
+        return backup_meta.name, None
 
     # pylint: disable=too-many-arguments
     def restore(self,
@@ -645,7 +645,7 @@ class ClickhouseBackup:
 
         return backup
 
-    def _iter_backup_dir(self) -> Iterable[Tuple[str, Optional[BackupMetadata]]]:
+    def _iter_backup_dir(self, use_light_meta: bool = False) -> Iterable[Tuple[str, Optional[BackupMetadata]]]:
         logging.debug('Collecting existing backups')
 
         def _sort_key(item: Tuple[str, Optional[BackupMetadata]]) -> str:
@@ -655,15 +655,15 @@ class ClickhouseBackup:
         result = []
         for name in self._backup_layout.get_backup_names():
             try:
-                backup = self._backup_layout.get_backup_metadata(name)
+                backup = self._backup_layout.get_backup_metadata(name, use_light_meta)
                 result.append((name, backup))
             except Exception:
                 logging.exception('Failed to load metadata for backup %s', name)
 
         return sorted(result, key=_sort_key, reverse=True)
 
-    def _iter_backups(self) -> Iterable[BackupMetadata]:
-        for _name, backup in self._iter_backup_dir():
+    def _iter_backups(self, use_light_meta: bool = False) -> Iterable[BackupMetadata]:
+        for _name, backup in self._iter_backup_dir(use_light_meta):
             if backup:
                 yield backup
 

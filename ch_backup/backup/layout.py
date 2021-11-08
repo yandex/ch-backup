@@ -108,11 +108,11 @@ class BackupLayout:
         """
         return self._storage_loader.list_dir(self._config['path_root'], recursive=False, absolute=False)
 
-    def get_backup_metadata(self, backup_name: str) -> Optional[BackupMetadata]:
+    def get_backup_metadata(self, backup_name: str, use_light: bool = False) -> Optional[BackupMetadata]:
         """
         Download and return backup metadata.
         """
-        path = self._backup_metadata_path(backup_name)
+        path = self._backup_light_metadata_path(backup_name) if use_light else self._backup_metadata_path(backup_name)
 
         if not self._storage_loader.path_exists(path):
             return None
