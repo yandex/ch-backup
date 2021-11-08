@@ -6,7 +6,7 @@ SESSION_FILE=.session_conf.sav
 INSTALL_DIR=$(DESTDIR)/opt/yandex/ch-backup
 
 export PYTHONIOENCODING?=utf8
-export CLICKHOUSE_VERSION?=20.8.12.2
+export CLICKHOUSE_VERSION?=21.8.10.19
 
 ENV_CONTROL=env -i \
     PATH=${TEST_VENV}/bin:$$PATH \
