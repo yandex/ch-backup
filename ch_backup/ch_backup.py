@@ -86,8 +86,7 @@ class ClickhouseBackup:
         if databases is None:
             databases = self._ch_ctl.get_databases(self._config['exclude_dbs'])
 
-        last_backup = next(iter(self._iter_backups()), None)
-
+        last_backup = self._last_backup(use_light_meta=True)
         if last_backup and not self._check_min_interval(last_backup, force):
             msg = 'Backup is skipped per backup.min_interval config option.'
             logging.info(msg)
@@ -666,6 +665,9 @@ class ClickhouseBackup:
         for _name, backup in self._iter_backup_dir(use_light_meta):
             if backup:
                 yield backup
+
+    def _last_backup(self, use_light_meta: bool = False) -> Optional[BackupMetadata]:
+        return next(iter(self._iter_backups(use_light_meta=use_light_meta)), None)
 
     def _check_min_interval(self, last_backup: BackupMetadata, force: bool) -> bool:
         if force:

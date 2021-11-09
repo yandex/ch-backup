@@ -4,6 +4,7 @@ Interface to ch-backup command-line tool.
 
 import json
 import os
+from copy import copy
 from typing import Sequence, Set, Union
 
 import yaml
@@ -93,11 +94,18 @@ class Backup:
         return self.meta.get('time_format')
 
     @property
-    def path(self) -> str:
+    def metadata_path(self) -> str:
         """
-        Path to backup struct
+        Path to full backup metadata file.
         """
         return os.path.join(self.meta['path'], 'backup_struct.json')
+
+    @property
+    def light_metadata_path(self) -> str:
+        """
+        Path to light backup metadata file.
+        """
+        return os.path.join(self.meta['path'], 'backup_light_struct.json')
 
     def update(self, metadata: dict, merge: bool = True) -> None:
         """
@@ -108,11 +116,16 @@ class Backup:
         else:
             self._metadata = metadata
 
-    def dump_json(self, indent: int = 4) -> str:
+    def dump_json(self, *, light: bool = False, indent: int = 4) -> str:
         """
-        Dump struct to json data
+        Dump backup metadata to JSON representation.
         """
-        return json.dumps(self._metadata, indent=indent)
+        metadata = copy(self._metadata)
+        if light:
+            metadata['databases'] = {}
+            metadata['access_control'] = []
+
+        return json.dumps(metadata, indent=indent)
 
     def get_file_paths(self) -> Sequence[str]:
         """
@@ -273,7 +286,8 @@ class BackupManager:
         """
         backup = self.get_backup(backup_id)
         backup.update(metadata, merge)
-        self._s3_client.upload_data(backup.dump_json().encode('utf-8'), backup.path)
+        self._s3_client.upload_data(backup.dump_json(light=False).encode('utf-8'), backup.metadata_path)
+        self._s3_client.upload_data(backup.dump_json(light=True).encode('utf-8'), backup.light_metadata_path)
 
     def delete_backup_file(self, backup_id: BackupId, path: str) -> None:
         """
