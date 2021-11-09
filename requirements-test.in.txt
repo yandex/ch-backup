@@ -6,8 +6,12 @@ flake8-commas
 flake8-quotes
 flake8-print
 pep8
-pylint
+pylint<2.7
 mypy
+types-PyYAML
+types-requests
+types-setuptools
+types-tabulate
 bandit
 pytest
 PyHamcrest==2.0.0
@@ -16,5 +20,3 @@ behave
 docker
 docker-compose<1.28
 Jinja2
-humanfriendly
-kazoo

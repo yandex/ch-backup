@@ -6,6 +6,10 @@ import logging
 import logging.config
 import os
 
+import psutil
+
+from ch_backup.util import format_size
+
 
 def configure(config: dict) -> None:
     """
@@ -59,6 +63,27 @@ def debug(msg, *args, **kwargs):
     Log a message with severity 'DEBUG'.
     """
     _get_logger().debug(msg, *args, **kwargs)
+
+
+def memory_usage():
+    """
+    Log memory usage information.
+
+    It's assumed that a big amount of memory is shared across main and worker processes. So shared memory is accounted
+    only for main process.
+    """
+    main_proc = psutil.Process()
+    main_proc_usage = main_proc.memory_info().rss
+
+    worker_procs_usage = 0
+    for proc in main_proc.children():
+        memory_info = proc.memory_info()
+        worker_procs_usage += memory_info.rss - memory_info.shared
+
+    total_usage = main_proc_usage + worker_procs_usage
+
+    debug('Memory usage: %s (main process: %s, worker processes: %s)', format_size(total_usage),
+          format_size(main_proc_usage), format_size(worker_procs_usage))
 
 
 def _get_logger() -> logging.Logger:

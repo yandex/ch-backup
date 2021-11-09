@@ -11,6 +11,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable, Tuple, Union
 
+import humanfriendly
 import tenacity
 
 from ch_backup import logging
@@ -101,7 +102,7 @@ def utcnow() -> datetime:
 def retry(exception_types: Union[type, tuple] = Exception,
           max_attempts: int = 5,
           max_interval: float = 5,
-          retry_if: Callable = tenacity.retry_always) -> Callable:
+          retry_if: tenacity.retry_base = tenacity.retry_always) -> Callable:
     """
     Function decorator that retries wrapped function on failures.
     """
@@ -138,3 +139,10 @@ def normalize_schema(schema: str) -> str:
     """
     return re.sub(r"ENGINE = Distributed\('([^']+)', ('?)(\w+)\2, ('?)(\w+)\4(, .*)?\)",
                   r"ENGINE = Distributed('\1', '\3', '\5'\6)", schema)
+
+
+def format_size(value: int) -> str:
+    """
+    Format a value in bytes to human-friendly representation.
+    """
+    return humanfriendly.format_size(value, binary=True)

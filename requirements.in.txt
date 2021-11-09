@@ -1,9 +1,11 @@
 requests
 boto3
 botocore
-PyYAML
+psutil
+PyYAML<6
 PyNaCl==1.2.1
 click
+humanfriendly
 tabulate
 tenacity
 kazoo

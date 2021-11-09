@@ -238,6 +238,7 @@ class BackupLayout:
         Wait for completion of data upload and download.
         """
         try:
+            logging.memory_usage()
             logging.debug('Waiting for completion of async operations')
             self._storage_loader.wait()
         except Exception as e:
