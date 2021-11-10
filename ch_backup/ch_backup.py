@@ -171,9 +171,6 @@ class ClickhouseBackup:
                 deleting_backup = backup
                 break
 
-            if backup.state in (BackupState.DELETING, BackupState.PARTIALLY_DELETED):
-                continue
-
             newer_backups.append(backup)
 
         if not deleting_backup:
@@ -220,13 +217,8 @@ class ClickhouseBackup:
 
             deleting_backups.append(backup)
 
-        deduplicatable_backups = [
-            backup for backup in retained_backups
-            if backup.state not in (BackupState.DELETING, BackupState.PARTIALLY_DELETED)
-        ]
-
         for backup in deleting_backups:
-            backup_name, _ = self._delete(backup, deduplicatable_backups)
+            backup_name, _ = self._delete(backup, retained_backups)
             if backup_name:
                 deleted_backup_names.append(backup_name)
 
@@ -397,10 +389,10 @@ class ClickhouseBackup:
         self._ch_ctl.remove_freezed_data()
 
     def _delete(self, backup: BackupMetadata,
-                newer_backups: Sequence[BackupMetadata]) -> Tuple[Optional[str], Optional[str]]:
+                deduplicatable_backups: Sequence[BackupMetadata]) -> Tuple[Optional[str], Optional[str]]:
         logging.info('Deleting backup %s, state: %s', backup.name, backup.state)
 
-        is_changed, deleting_parts = self._pop_deleting_parts(backup, newer_backups)
+        is_changed, deleting_parts = self._pop_deleting_parts(backup, deduplicatable_backups)
         is_empty = backup.is_empty()
 
         if not is_empty and not is_changed:
