@@ -3,6 +3,7 @@ ZooKeeper client calls
 """
 
 from kazoo.client import KazooClient
+from kazoo.exceptions import NodeExistsError
 
 from tests.integration.modules.docker import get_container, get_exposed_port
 
@@ -18,7 +19,10 @@ def initialize_zookeeper_roots(context: ContextT, node: str = 'zookeeper01') -> 
     instance_count = context.conf.get('services', {}).get('clickhouse', {}).get('docker_instances', 1)
     for i in range(1, instance_count + 1):
         if not zk.exists(f'/clickhouse{i:02d}'):
-            zk.create(f'/clickhouse{i:02d}')
+            try:
+                zk.create(f'/clickhouse{i:02d}')
+            except NodeExistsError:
+                pass
     zk.stop()
 
 
