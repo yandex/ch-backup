@@ -80,7 +80,10 @@ def copy_container_dir(container: Container, container_dir: str, local_dir: str)
     buffer.seek(0)
 
     tar = tarfile.open(mode='r', fileobj=buffer)
-    tar.extractall(path=local_dir)
+
+    members = [m for m in tar.getmembers() if m.type != tarfile.SYMTYPE]
+
+    tar.extractall(path=local_dir, members=members)
 
 
 def get_file_size(container: Container, path: str) -> int:

@@ -43,12 +43,13 @@ unit_test: ${TEST_VENV} build
 
 .PHONY: integration_test
 integration_test: ${TEST_VENV} build create_env
+	rm -rf staging/logs
 	tox -e integration_test -- -D skip_setup $(BEHAVE_ARGS)
 
 
 .PHONY: clean
 clean: clean_env clean_pycache
-	rm -rf .tox .cache *.egg-info htmlcov .coverage* .hypothesis .mypy_cache ch_backup/version.txt
+	rm -rf .tox *.egg-info htmlcov .coverage* .hypothesis .mypy_cache .pytest_cache ch_backup/version.txt
 
 .PHONY: clean_pycache
 clean_pycache:

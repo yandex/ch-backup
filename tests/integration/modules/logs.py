@@ -38,4 +38,5 @@ def _save_container_logs(container: Container, logs_dir: str) -> None:
     with open(os.path.join(base, 'docker.log'), 'wb') as out:
         out.write(container.logs(stdout=True, stderr=True, timestamps=True))
 
+    copy_container_dir(container, '/etc', base)
     copy_container_dir(container, '/var/log', base)
