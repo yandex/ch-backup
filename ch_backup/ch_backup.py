@@ -13,11 +13,12 @@ from time import sleep
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from ch_backup import logging
+from ch_backup.backup.deduplication import (DatabaseDedupInfo, TableDedupInfo, collect_dedup_info, deduplicate_part)
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import (BackupMetadata, BackupState, PartMetadata, TableMetadata)
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.clickhouse.client import ClickhouseError
-from ch_backup.clickhouse.control import ClickhouseCTL, FreezedPart, Table
+from ch_backup.clickhouse.control import ClickhouseCTL, Table
 from ch_backup.config import Config
 from ch_backup.exceptions import BackupNotFound, ClickhouseBackupError
 from ch_backup.util import get_zookeeper_paths, normalize_schema, now, utcnow
@@ -48,7 +49,7 @@ class ClickhouseBackup:
         Get list of existing backups sorted by start timestamp.
         """
         backups = []
-        for backup in self._iter_backups(use_light_meta=True):
+        for backup in self._backup_layout.get_backups(use_light_meta=True):
             if state and backup.state != state:
                 continue
             backups.append(backup)
@@ -86,7 +87,9 @@ class ClickhouseBackup:
         if databases is None:
             databases = self._ch_ctl.get_databases(self._config['exclude_dbs'])
 
-        last_backup = self._last_backup(use_light_meta=True)
+        backups_with_light_meta = self._backup_layout.get_backups(use_light_meta=True)
+
+        last_backup = next(iter(backups_with_light_meta), None)
         if last_backup and not self._check_min_interval(last_backup, force):
             msg = 'Backup is skipped per backup.min_interval config option.'
             logging.info(msg)
@@ -107,9 +110,16 @@ class ClickhouseBackup:
         try:
             if backup_access_control or self._config.get('backup_access_control'):
                 self._backup_access_control(backup_meta)
-            dedup_backups = [] if schema_only else self._get_backup_dedup_list()
+
+            dedup_info = collect_dedup_info(config=self._config,
+                                            layout=self._backup_layout,
+                                            backups_with_light_meta=backups_with_light_meta,
+                                            databases=databases,
+                                            schema_only=schema_only)
+
             for db_name in databases:
-                self._backup_database(backup_meta, db_name, db_tables[db_name], dedup_backups, schema_only)
+                self._backup_database(backup_meta, db_name, db_tables[db_name], dedup_info.database(db_name),
+                                      schema_only)
             backup_meta.state = BackupState.CREATED
         except Exception:
             logging.critical('Backup failed', exc_info=True)
@@ -166,7 +176,7 @@ class ClickhouseBackup:
         """
         deleting_backup = None
         newer_backups = []
-        for backup in self._iter_backups():
+        for backup in self._backup_layout.get_backups():
             if backup.name == backup_name:
                 deleting_backup = backup
                 break
@@ -197,21 +207,22 @@ class ClickhouseBackup:
 
         retained_backups: List[BackupMetadata] = []
         deleting_backups: List[BackupMetadata] = []
-        for name, backup in self._iter_backup_dir():
-            if not backup:
-                logging.info('Deleting backup without metadata: %s', name)
-                self._backup_layout.delete_backup(name)
+        backup_names = self._backup_layout.get_backup_names()
+        for backup in self._backup_layout.get_backups():
+            if backup.name not in backup_names:
+                logging.info('Deleting backup without metadata: %s', backup.name)
+                self._backup_layout.delete_backup(backup.name)
                 continue
 
             if retain_count > 0:
-                logging.info('Preserving backup per retain count policy: %s, state %s', name, backup.state)
+                logging.info('Preserving backup per retain count policy: %s, state %s', backup.name, backup.state)
                 retained_backups.append(backup)
                 if backup.state == BackupState.CREATED:
                     retain_count -= 1
                 continue
 
             if retain_time_limit and backup.start_time >= retain_time_limit:
-                logging.info('Preserving backup per retain time policy: %s, state %s', name, backup.state)
+                logging.info('Preserving backup per retain time policy: %s, state %s', backup.name, backup.state)
                 retained_backups.append(backup)
                 continue
 
@@ -253,24 +264,6 @@ class ClickhouseBackup:
         for name in _get_access_control_files(objects):
             self._backup_layout.download_access_control_file(backup_meta.name, name)
 
-    def _get_backup_dedup_list(self):
-        """
-        Get list of backup deduplication candidates.
-        """
-        backup_age_limit = None
-        if self._config.get('deduplicate_parts'):
-            backup_age_limit = utcnow() - timedelta(**self._config['deduplication_age_limit'])
-
-        dedup_backups = []
-        for backup in self._iter_backups():
-
-            if not backup_age_limit or backup.start_time < backup_age_limit:
-                break
-
-            dedup_backups.append(backup)
-
-        return dedup_backups
-
     def _backup_access_control(self, backup_meta):
         objects = self._ch_ctl.get_access_control_objects()
         backup_meta.set_access_control(objects)
@@ -289,7 +282,7 @@ class ClickhouseBackup:
                          backup_meta: BackupMetadata,
                          db_name: str,
                          tables: Sequence[str],
-                         dedup_backups: Sequence[BackupMetadata],
+                         dedup_info: DatabaseDedupInfo,
                          schema_only: bool = False) -> None:
         """
         Backup database.
@@ -308,7 +301,7 @@ class ClickhouseBackup:
                 self._backup_table_schema(backup_meta, table)
                 if not schema_only:
                     # table_meta will be populated with parts info
-                    self._backup_table_data(backup_meta, table, table_meta, dedup_backups)
+                    self._backup_table_data(backup_meta, table, table_meta, dedup_info.table(table.name))
 
                 backup_meta.add_table(table_meta)
 
@@ -324,7 +317,7 @@ class ClickhouseBackup:
                                                           table.create_statement)
 
     def _backup_table_data(self, backup_meta: BackupMetadata, table: Table, table_meta: TableMetadata,
-                           dedup_backups: Sequence[BackupMetadata]) -> None:
+                           dedup_info: TableDedupInfo) -> None:
         """
         Backup table with data opposed to schema only.
         """
@@ -367,7 +360,7 @@ class ClickhouseBackup:
                     continue
 
                 # trying to find part in storage
-                part = self._deduplicate_part(fpart, dedup_backups)
+                part = deduplicate_part(self._backup_layout, fpart, dedup_info)
                 if part:
                     self._ch_ctl.remove_freezed_part(fpart)
                 else:
@@ -379,14 +372,22 @@ class ClickhouseBackup:
 
         self._backup_layout.wait()
 
-        if self._config['validate_part_after_upload']:
-            failed = list(filter(lambda p: not self._backup_layout.check_data_part(backup_meta, p), uploaded_parts))
-            if failed:
-                for part in failed:
-                    logging.error(f'Uploaded part is broken, {part.database}.{part.table}: {part.name}')
-                raise RuntimeError(f'Uploaded parts are broken, {", ".join(map(lambda p: p.name, failed))}')
+        self._validate_uploaded_parts(backup_meta, uploaded_parts)
 
         self._ch_ctl.remove_freezed_data()
+
+    def _validate_uploaded_parts(self, backup_meta, uploaded_parts):
+        if self._config['validate_part_after_upload']:
+            invalid_parts = []
+
+            for part in uploaded_parts:
+                if not self._backup_layout.check_data_part(backup_meta.path, part):
+                    invalid_parts.append(part)
+
+            if invalid_parts:
+                for part in invalid_parts:
+                    logging.error(f'Uploaded part is broken, {part.database}.{part.table}: {part.name}')
+                raise RuntimeError(f'Uploaded parts are broken, {", ".join(map(lambda p: p.name, invalid_parts))}')
 
     def _delete(self, backup: BackupMetadata,
                 deduplicatable_backups: Sequence[BackupMetadata]) -> Tuple[Optional[str], Optional[str]]:
@@ -588,78 +589,12 @@ class ClickhouseBackup:
                 raise ClickhouseBackupError(f'Table {key} has different schema with backup "{table.create_statement}" '
                                             f'!= "{present_tables[key].create_statement}"')
 
-    def _deduplicate_part(self, fpart: FreezedPart, dedup_backups: Sequence[BackupMetadata]) -> Optional[PartMetadata]:
-        """
-        Deduplicate part if it's possible
-        """
-        logging.debug('Looking for deduplication of part "%s"', fpart.name)
-
-        db_name = fpart.database
-        table_name = fpart.table
-        part_name = fpart.name
-        for backup_meta in dedup_backups:
-            existing_part = backup_meta.find_part(db_name, table_name, part_name)
-
-            if not existing_part:
-                logging.debug('Part "%s" was not found in backup "%s", skip', part_name, backup_meta.name)
-                continue
-
-            if existing_part.link:
-                logging.debug('Part "%s" in backup "%s" is link, skip', part_name, backup_meta.name)
-                continue
-
-            if existing_part.checksum != fpart.checksum:
-                logging.debug('Part "%s" in backup "%s" has mismatched checksum, skip', part_name, backup_meta.name)
-                continue
-
-            if not self._backup_layout.check_data_part(backup_meta, existing_part):
-                logging.debug('Part "%s" in backup "%s" is invalid, skip', part_name, backup_meta.name)
-                continue
-
-            logging.info('Deduplicating part "%s" based on %s', part_name, backup_meta.name)
-            return PartMetadata(database=db_name,
-                                table=table_name,
-                                name=part_name,
-                                checksum=existing_part.checksum,
-                                size=existing_part.size,
-                                link=backup_meta.path,
-                                files=existing_part.files,
-                                tarball=existing_part.tarball,
-                                disk_name=existing_part.disk_name)
-
-        return None
-
-    def _get_backup(self, backup_name: str) -> BackupMetadata:
-        backup = self._backup_layout.get_backup_metadata(backup_name)
+    def _get_backup(self, backup_name: str, use_light_meta: bool = False) -> BackupMetadata:
+        backup = self._backup_layout.get_backup(backup_name, use_light_meta)
         if not backup:
             raise BackupNotFound(backup_name)
 
         return backup
-
-    def _iter_backup_dir(self, use_light_meta: bool = False) -> Iterable[Tuple[str, Optional[BackupMetadata]]]:
-        logging.debug('Collecting existing backups')
-
-        def _sort_key(item: Tuple[str, Optional[BackupMetadata]]) -> str:
-            backup = item[1]
-            return backup.start_time.isoformat() if backup else ''
-
-        result = []
-        for name in self._backup_layout.get_backup_names():
-            try:
-                backup = self._backup_layout.get_backup_metadata(name, use_light_meta)
-                result.append((name, backup))
-            except Exception:
-                logging.exception('Failed to load metadata for backup %s', name)
-
-        return sorted(result, key=_sort_key, reverse=True)
-
-    def _iter_backups(self, use_light_meta: bool = False) -> Iterable[BackupMetadata]:
-        for _name, backup in self._iter_backup_dir(use_light_meta):
-            if backup:
-                yield backup
-
-    def _last_backup(self, use_light_meta: bool = False) -> Optional[BackupMetadata]:
-        return next(iter(self._iter_backups(use_light_meta=use_light_meta)), None)
 
     def _check_min_interval(self, last_backup: BackupMetadata, force: bool) -> bool:
         if force:

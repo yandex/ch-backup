@@ -272,7 +272,8 @@ class BackupMetadata:
                 'real_bytes': self.real_size,
                 'state': self._state.value,
                 'labels': self.labels,
-                # TODO: clean up backward-compatibility logic (delete 'date_fmt')
+                # TODO: clean up backward-compatibility logic (delete 'date_fmt'); it's required changes in int api
+                # to replace 'date_fmt' with 'time_format'.
                 'date_fmt': self.time_format,
                 'schema_only': self.schema_only,
                 's3_revisions': self.s3_revisions,

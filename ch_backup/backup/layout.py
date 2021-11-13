@@ -108,14 +108,42 @@ class BackupLayout:
         """
         return self._storage_loader.list_dir(self._config['path_root'], recursive=False, absolute=False)
 
-    def get_backup_metadata(self, backup_name: str, use_light: bool = False) -> Optional[BackupMetadata]:
+    def get_backup(self, backup_name: str, use_light_meta: bool = False) -> Optional[BackupMetadata]:
         """
         Download and return backup metadata.
         """
-        path = self._backup_light_metadata_path(backup_name) if use_light else self._backup_metadata_path(backup_name)
+        path = self._backup_light_metadata_path(backup_name) if use_light_meta else self._backup_metadata_path(
+            backup_name)
 
         if not self._storage_loader.path_exists(path):
             return None
+
+        try:
+            data = self._storage_loader.download_data(path)
+            return BackupMetadata.load_json(data)
+        except Exception as e:
+            raise StorageError('Failed to download backup metadata') from e
+
+    def get_backups(self, use_light_meta: bool = False) -> List[BackupMetadata]:
+        """
+        Return list of existing backups sorted by start_time in descent order.
+        """
+        logging.debug('Collecting %s of existing backups', 'light metadata' if use_light_meta else 'metadata')
+
+        backups = []
+        for name in self.get_backup_names():
+            backup = self.get_backup(name, use_light_meta)
+            if backup:
+                backups.append(backup)
+
+        return sorted(backups, key=lambda b: b.start_time.isoformat(), reverse=True)
+
+    def reload_backup(self, backup: BackupMetadata, use_light_meta: bool = False) -> BackupMetadata:
+        """
+        Reload backup metadata.
+        """
+        path = self._backup_light_metadata_path(backup.name) if use_light_meta else self._backup_metadata_path(
+            backup.name)
 
         try:
             data = self._storage_loader.download_data(path)
@@ -185,11 +213,11 @@ class BackupLayout:
                     msg = f'Failed to download part file {remote_path}'
                     raise StorageError(msg) from e
 
-    def check_data_part(self, backup_meta: BackupMetadata, part: PartMetadata) -> bool:
+    def check_data_part(self, backup_path: str, part: PartMetadata) -> bool:
         """
         Check availability of part data in storage.
         """
-        remote_dir_path = _part_path(part.link or backup_meta.path, part.database, part.table, part.name)
+        remote_dir_path = _part_path(part.link or backup_path, part.database, part.table, part.name)
         remote_files = self._storage_loader.list_dir(remote_dir_path)
 
         if remote_files == [f'{part.name}.tar']:
