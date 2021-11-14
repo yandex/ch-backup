@@ -3,10 +3,11 @@ ClickHouse client.
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Sequence, Tuple, Union
 from urllib.parse import urljoin
 
+from pkg_resources import parse_version
 from requests import HTTPError, Session
 
 from . import docker
@@ -56,6 +57,12 @@ class ClickhouseClient:
         Get ClickHouse version.
         """
         return self._query('GET', 'SELECT version()')
+
+    def match_ch_version(self, min_version: str) -> bool:
+        """
+        Returns True if ClickHouse version >= min_version.
+        """
+        return parse_version(self.get_version()) >= parse_version(min_version)
 
     def init_schema(self) -> None:
         """
@@ -165,7 +172,12 @@ class ClickhouseClient:
         """
         db_name = self._get_test_db_name(db_num)
         table_name = self._get_test_table_name(table_num)
-        self._query('POST', f'DROP TABLE {db_name}.{table_name}')
+
+        query = f'DROP TABLE `{db_name}`.`{table_name}`'
+        if self.match_ch_version(min_version='20.8'):
+            query += ' NO DELAY'
+
+        self._query('POST', query)
 
     def _get_all_user_tables(self) -> dict:
         query = """
@@ -227,12 +239,10 @@ class ClickhouseClient:
         return f'test_table_{table_num:02d}'
 
     @staticmethod
-    def _gen_record(row_num=0, day_diff=None, str_len=5, str_prefix=None):
+    def _gen_record(row_num=0, str_len=5, str_prefix=None):
         """
         Generate test record.
         """
-        if day_diff is None:
-            day_diff = {'days': 0}
         if str_prefix is None:
             str_prefix = ''
         else:
@@ -240,7 +250,7 @@ class ClickhouseClient:
 
         rand_str = generate_random_string(str_len)
 
-        dt_now = datetime.utcnow() - timedelta(**day_diff)
+        dt_now = datetime.utcnow()
         row = (dt_now.strftime('%Y-%m-%d'), dt_now.strftime('%Y-%m-%d %H:%M:%S'), str(row_num),
                f'{str_prefix}{rand_str}')
 
