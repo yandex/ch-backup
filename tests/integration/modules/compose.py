@@ -49,7 +49,7 @@ def shutdown_containers(context: ContextT) -> None:
     """
     Shutdown and remove docker containers.
     """
-    _call_compose(context.conf, 'down --volumes')
+    _call_compose(context.conf, 'down --volumes --timeout 0')
 
 
 @utils.env_stage('create', fail=True)
