@@ -105,5 +105,17 @@ Note: There are no prepopulated data in ClickHouse. So you need to insert some
 
 ```
 export CLICKHOUSE_VERSION=21.11.1.8636
-make test integration_test
+make all
 ```
+
+### Integration tests
+
+Integration tests verify ch-backup functionality in isolated virtual environment.
+[Docker](https://docs.docker.com/) is used as a virtualization technology and
+[Behave](https://behave.readthedocs.io/en/stable/) as a testing framework.
+
+The tests can be run as a part of regression test suite with `make all` or
+separately with `make integration_test`. Additionally, `BEHAVE_ARGS` parameter
+can be used to pass additional arguments to underlying `behave` invocation.
+For example, `make integration_tests BEHAVE_ARGS='-i ssl_support'` executes
+tests that belongs to SSL support feature (`ssl_support.feature`).

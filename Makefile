@@ -43,7 +43,7 @@ unit_test: ${TEST_VENV} build
 
 .PHONY: integration_test
 integration_test: ${TEST_VENV} build create_env
-	tox -e integration_test -- -D skip_setup
+	tox -e integration_test -- -D skip_setup $(BEHAVE_ARGS)
 
 
 .PHONY: clean
@@ -181,3 +181,4 @@ help:
 	@echo
 	@echo "Environment Variables:"
 	@echo "  CLICKHOUSE_VERSION         ClickHouse version to use in integration_test target (default: \"$(CLICKHOUSE_VERSION)\")."
+	@echo "  BEHAVE_ARGS                Arguments to pass to behave."
