@@ -113,25 +113,25 @@ Feature: Backup & Clean & Restore
   Scenario: Attempt to delete "shared" backup deletes no data
     When we delete clickhouse01 clickhouse backup #6
     Then we got the following backups on clickhouse01
-      | num | state    | data_count | link_count   | title         |
-      | 0   | created  | 0          | 0            | schema-only   |
-      | 1   | created  | 13         | 0            | data          |
-      | 2   | created  | 4          | 9            | links+data    |
-      | 3   | created  | 12         | 0            | shared+data   |
-      | 4   | created  | 0          | 8            | links         |
-      | 5   | created  | 4          | 4            | shared+links  |
-      | 6   | created  | 4          | 0            | shared        |
+      | num | state             | data_count | link_count   | title         |
+      | 0   | created           | 0          | 0            | schema-only   |
+      | 1   | created           | 13         | 0            | data          |
+      | 2   | created           | 4          | 9            | links+data    |
+      | 3   | created           | 12         | 0            | shared+data   |
+      | 4   | created           | 0          | 8            | links         |
+      | 5   | created           | 4          | 4            | shared+links  |
+      | 6   | partially_deleted | 4          | 0            | shared        |
 
   Scenario: Attempt to delete "schema-only" backup succeeds
     When we delete clickhouse01 clickhouse backup #0
     Then we got the following backups on clickhouse01
-      | num | state    | data_count | link_count   | title         |
-      | 0   | created  | 13         | 0            | data          |
-      | 1   | created  | 4          | 9            | links+data    |
-      | 2   | created  | 12         | 0            | shared+data   |
-      | 3   | created  | 0          | 8            | links         |
-      | 4   | created  | 4          | 4            | shared+links  |
-      | 5   | created  | 4          | 0            | shared        |
+      | num | state             | data_count | link_count   | title         |
+      | 0   | created           | 13         | 0            | data          |
+      | 1   | created           | 4          | 9            | links+data    |
+      | 2   | created           | 12         | 0            | shared+data   |
+      | 3   | created           | 0          | 8            | links         |
+      | 4   | created           | 4          | 4            | shared+links  |
+      | 5   | partially_deleted | 4          | 0            | shared        |
 
   Scenario: Attempt to delete "shared + links" backup deletes links only
     When we delete clickhouse01 clickhouse backup #4
@@ -142,7 +142,7 @@ Feature: Backup & Clean & Restore
       | 2   | created           | 12         | 0            | shared+data  |
       | 3   | created           | 0          | 8            | links        |
       | 4   | partially_deleted | 4          | 0            | shared+links |
-      | 5   | created           | 4          | 0            | shared       |
+      | 5   | partially_deleted | 4          | 0            | shared       |
 
   Scenario: Attempt to delete "links" backup succeeds
     When we delete clickhouse01 clickhouse backup #3
@@ -152,7 +152,7 @@ Feature: Backup & Clean & Restore
       | 1   | created           | 4          | 9            | links+data   |
       | 2   | created           | 12         | 0            | shared+data  |
       | 3   | partially_deleted | 4          | 0            | shared+links |
-      | 4   | created           | 4          | 0            | shared       |
+      | 4   | partially_deleted | 4          | 0            | shared       |
   And s3 contains 77 objects
 
   Scenario: Attempt to delete "shared + data" backup deletes non-shared data only
@@ -163,7 +163,7 @@ Feature: Backup & Clean & Restore
       | 1   | created           | 4          | 9            | links+data   |
       | 2   | partially_deleted | 9          | 0            | shared+data  |
       | 3   | partially_deleted | 4          | 0            | shared+links |
-      | 4   | created           | 4          | 0            | shared       |
+      | 4   | partially_deleted | 4          | 0            | shared       |
     And s3 contains 74 objects
 
   Scenario: Attempt to delete  "links + data" backup succeeds
@@ -173,7 +173,7 @@ Feature: Backup & Clean & Restore
       | 0   | created           | 13         | 0            | data         |
       | 1   | partially_deleted | 9          | 0            | shared+data  |
       | 2   | partially_deleted | 4          | 0            | shared+links |
-      | 3   | created           | 4          | 0            | shared       |
+      | 3   | partially_deleted | 4          | 0            | shared       |
     And s3 contains 62 objects
 
   Scenario: Attempt to delete  "data" backup succeeds
@@ -182,5 +182,5 @@ Feature: Backup & Clean & Restore
       | num | state             | data_count | link_count   | title        |
       | 0   | partially_deleted | 9          | 0            | shared+data  |
       | 1   | partially_deleted | 4          | 0            | shared+links |
-      | 2   | created           | 4          | 0            | shared       |
+      | 2   | partially_deleted | 4          | 0            | shared       |
     And s3 contains 41 objects

@@ -393,13 +393,8 @@ class ClickhouseBackup:
                 deduplicatable_backups: Sequence[BackupMetadata]) -> Tuple[Optional[str], Optional[str]]:
         logging.info('Deleting backup %s, state: %s', backup.name, backup.state)
 
-        is_changed, deleting_parts = self._pop_deleting_parts(backup, deduplicatable_backups)
+        deleting_parts = self._pop_deleting_parts(backup, deduplicatable_backups)
         is_empty = backup.is_empty()
-
-        if not is_empty and not is_changed:
-            logging.info('Nothing was found for deletion')
-            return None, 'Backup was not deleted as its data is in use by subsequent backups per ' \
-                         'deduplication settings.'
 
         backup.state = BackupState.DELETING
         self._backup_layout.upload_backup_metadata(backup)
@@ -661,7 +656,7 @@ class ClickhouseBackup:
 
     @staticmethod
     def _pop_deleting_parts(backup_meta: BackupMetadata,
-                            newer_backups: Sequence[BackupMetadata]) -> Tuple[bool, Sequence[PartMetadata]]:
+                            newer_backups: Sequence[BackupMetadata]) -> Sequence[PartMetadata]:
         """
         Get backup parts which are safe to delete.
         """
@@ -677,7 +672,6 @@ class ClickhouseBackup:
                 part_id = (part.database, part.table, part.name)
                 skip_parts[part_id] = new_backup.name
 
-        is_changed = False
         deleting_parts: List[PartMetadata] = []
         for part in backup_meta.get_parts():
             part_id = (part.database, part.table, part.name)
@@ -694,9 +688,8 @@ class ClickhouseBackup:
                 deleting_parts.append(part)
 
             backup_meta.remove_part(part)
-            is_changed = True
 
-        return is_changed, deleting_parts
+        return deleting_parts
 
     def _is_db_external(self, db_name: str) -> bool:
         """
