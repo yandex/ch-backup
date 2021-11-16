@@ -108,6 +108,15 @@ export CLICKHOUSE_VERSION=21.11.1.8636
 make all
 ```
 
+### Unit tests
+
+Unit tests are implemented based on [pytest](https://docs.pytest.org/en/latest/) testing framework.
+
+The tests can be run as a part of regression test suite with `make all` or
+separately with `make unit_test`. Additionally, `PYTEST_ARGS` parameter
+can be used to pass additional arguments to underlying `py.test` invocation.
+For example, `make unit_tests PYTES_ARGS='-k dedup'` executes only deduplication-realted tests.
+
 ### Integration tests
 
 Integration tests verify ch-backup functionality in isolated virtual environment.

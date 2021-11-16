@@ -4,7 +4,7 @@ Data part deduplication.
 
 from collections import defaultdict
 from datetime import timedelta
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Set
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
@@ -169,3 +169,66 @@ def deduplicate_part(layout: BackupLayout, fpart: FreezedPart, dedup_info: Table
     logging.debug('Part "%s" found in "%s", reusing', part_name, existing_part.backup_path)
 
     return part
+
+
+TableDedupReferences = Set[str]
+
+DatabaseDedupReferences = Dict[str, TableDedupReferences]
+
+DedupReferences = Dict[str, DatabaseDedupReferences]
+
+
+def collect_dedup_references_for_backup_deletion(layout: BackupLayout,
+                                                 retained_backups_with_light_meta: List[BackupMetadata],
+                                                 deleting_backup_with_light_meta: BackupMetadata) -> DedupReferences:
+    """
+    Collect deduplication information for deleting backup. It contains names of data parts that should pe preserved
+    during deletion.
+    """
+    dedup_refences = collect_dedup_references_for_batch_backup_deletion(
+        layout=layout,
+        retained_backups_with_light_meta=retained_backups_with_light_meta,
+        deleting_backups_with_light_meta=[deleting_backup_with_light_meta])
+
+    return dedup_refences[deleting_backup_with_light_meta.name]
+
+
+def collect_dedup_references_for_batch_backup_deletion(
+        layout: BackupLayout, retained_backups_with_light_meta: List[BackupMetadata],
+        deleting_backups_with_light_meta: List[BackupMetadata]) -> Dict[str, DedupReferences]:
+    """
+    Collect deduplication information for deleting multiple backups. It contains names of data parts that should
+    pe preserved during deletion.
+    """
+    dedup_references: Dict[str, DedupReferences] = defaultdict(dict)
+
+    deleting_backup_name_resolver = {b.path: b.name for b in deleting_backups_with_light_meta}
+    for backup in retained_backups_with_light_meta:
+        backup = layout.reload_backup(backup, use_light_meta=False)
+
+        for db_name in backup.get_databases():
+            for table in backup.get_tables(db_name):
+                for part in table.get_parts():
+                    if not part.link:
+                        continue
+
+                    backup_name = deleting_backup_name_resolver.get(part.link)
+                    if not backup_name:
+                        continue
+
+                    _add_part_to_dedup_references(dedup_references[backup_name], part)
+
+    return dedup_references
+
+
+def _add_part_to_dedup_references(dedup_references: DedupReferences, part: PartMetadata) -> None:
+    if part.database not in dedup_references:
+        dedup_references[part.database] = {part.table: {part.name}}
+        return
+
+    db_dedup_references = dedup_references[part.database]
+    if part.table not in db_dedup_references:
+        db_dedup_references[part.table] = {part.name}
+        return
+
+    db_dedup_references[part.table].add(part.name)

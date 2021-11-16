@@ -6,7 +6,7 @@ import socket
 from datetime import datetime, timezone
 from enum import Enum
 from types import SimpleNamespace
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Set
 
 from ch_backup.exceptions import InvalidBackupStruct, UnknownBackupStateError
 from ch_backup.util import now
@@ -139,13 +139,17 @@ class TableMetadata(SimpleNamespace):
         """
         return self.raw_metadata['uuid']
 
-    def get_parts(self) -> Sequence[PartMetadata]:
+    def get_parts(self, *, excluded_parts: Set[str] = None) -> List[PartMetadata]:
         """
         Return data parts.
         """
+        if not excluded_parts:
+            excluded_parts = set()
+
         result = []
         for part_name, raw_metadata in self.raw_metadata['parts'].items():
-            result.append(PartMetadata.load(self.database, self.name, part_name, raw_metadata))
+            if part_name not in excluded_parts:
+                result.append(PartMetadata.load(self.database, self.name, part_name, raw_metadata))
 
         return result
 
@@ -165,12 +169,6 @@ class TableMetadata(SimpleNamespace):
             'tarball': part.tarball,
             'disk_name': part.disk_name,
         }
-
-    def remove_part(self, part_name: str) -> None:
-        """
-        Remove data part from metadata.
-        """
-        del self.raw_metadata['parts'][part_name]
 
     @classmethod
     def load(cls, database: str, name: str, raw_metadata: dict) -> 'TableMetadata':
@@ -282,22 +280,21 @@ class BackupMetadata:
         return json.dumps(report, separators=(',', ':'))
 
     @classmethod
-    def load_json(cls, data):
+    def load(cls, data: dict) -> 'BackupMetadata':
         """
-        Load backup metadata from json representation.
+        Deserialize backup metadata.
         """
         # pylint: disable=protected-access
         try:
-            loaded = json.loads(data)
-            meta = loaded['meta']
+            meta = data['meta']
 
             backup = cls.__new__(cls)
             backup.name = meta['name']
             backup.path = meta['path']
             backup.hostname = meta['hostname']
             backup.time_format = meta['time_format']
-            backup._databases = loaded['databases']
-            backup._access_control = loaded.get('access_control', [])
+            backup._databases = data['databases']
+            backup._access_control = data.get('access_control', [])
             backup.start_time = cls._load_time(meta, 'start_time')
             backup.end_time = cls._load_time(meta, 'end_time')
             backup.size = meta['bytes']
@@ -313,6 +310,13 @@ class BackupMetadata:
 
         except (ValueError, KeyError):
             raise InvalidBackupStruct
+
+    @classmethod
+    def load_json(cls, data):
+        """
+        Deserialize backup metadata from JSON representation.
+        """
+        return cls.load(json.loads(data))
 
     def get_databases(self) -> Sequence[str]:
         """
@@ -392,15 +396,18 @@ class BackupMetadata:
         if not part.link:
             self.real_size += part.size
 
-    def remove_part(self, part: PartMetadata) -> None:
+    def remove_parts(self, table: TableMetadata, parts: List[PartMetadata]) -> None:
         """
-        Remove data part from backup metadata.
+        Remove data parts from backup metadata.
         """
-        self.get_table(part.database, part.table).remove_part(part.name)
+        _parts = self._databases[table.database]['tables'][table.name]['parts']
 
-        self.size -= part.size
-        if not part.link:
-            self.real_size -= part.size
+        for part in parts:
+            del _parts[part.name]
+
+            self.size -= part.size
+            if not part.link:
+                self.real_size -= part.size
 
     def is_empty(self) -> bool:
         """

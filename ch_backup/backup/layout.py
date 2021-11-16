@@ -250,6 +250,9 @@ class BackupLayout:
         """
         Delete backup data parts from storage.
         """
+        if not parts:
+            return
+
         deleting_files: List[str] = []
         for part in parts:
             part_path = _part_path(part.link or backup_meta.path, part.database, part.table, part.name)

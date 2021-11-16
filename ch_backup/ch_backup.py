@@ -10,12 +10,14 @@ from itertools import chain
 from os import remove
 from os.path import exists, join
 from time import sleep
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
 
 from ch_backup import logging
-from ch_backup.backup.deduplication import (DatabaseDedupInfo, TableDedupInfo, collect_dedup_info, deduplicate_part)
+from ch_backup.backup.deduplication import (DatabaseDedupInfo, DedupReferences, TableDedupInfo, collect_dedup_info,
+                                            collect_dedup_references_for_backup_deletion,
+                                            collect_dedup_references_for_batch_backup_deletion, deduplicate_part)
 from ch_backup.backup.layout import BackupLayout
-from ch_backup.backup.metadata import (BackupMetadata, BackupState, PartMetadata, TableMetadata)
+from ch_backup.backup.metadata import (BackupMetadata, BackupState, TableMetadata)
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.control import ClickhouseCTL, Table
@@ -175,18 +177,23 @@ class ClickhouseBackup:
         Delete the specified backup.
         """
         deleting_backup = None
-        newer_backups = []
-        for backup in self._backup_layout.get_backups():
+        retained_backups = []
+        for backup in self._backup_layout.get_backups(use_light_meta=True):
             if backup.name == backup_name:
                 deleting_backup = backup
                 break
 
-            newer_backups.append(backup)
+            retained_backups.append(backup)
 
         if not deleting_backup:
             raise BackupNotFound(backup_name)
 
-        return self._delete(deleting_backup, newer_backups)
+        dedup_references = collect_dedup_references_for_backup_deletion(
+            layout=self._backup_layout,
+            retained_backups_with_light_meta=retained_backups,
+            deleting_backup_with_light_meta=deleting_backup)
+
+        return self._delete(deleting_backup, dedup_references)
 
     def purge(self) -> Tuple[Sequence[str], Optional[str]]:
         """
@@ -208,7 +215,7 @@ class ClickhouseBackup:
         retained_backups: List[BackupMetadata] = []
         deleting_backups: List[BackupMetadata] = []
         backup_names = self._backup_layout.get_backup_names()
-        for backup in self._backup_layout.get_backups():
+        for backup in self._backup_layout.get_backups(use_light_meta=True):
             if backup.name not in backup_names:
                 logging.info('Deleting backup without metadata: %s', backup.name)
                 self._backup_layout.delete_backup(backup.name)
@@ -228,8 +235,13 @@ class ClickhouseBackup:
 
             deleting_backups.append(backup)
 
+        dedup_references = collect_dedup_references_for_batch_backup_deletion(
+            layout=self._backup_layout,
+            retained_backups_with_light_meta=retained_backups,
+            deleting_backups_with_light_meta=deleting_backups)
+
         for backup in deleting_backups:
-            backup_name, _ = self._delete(backup, retained_backups)
+            backup_name, _ = self._delete(backup, dedup_references[backup.name])
             if backup_name:
                 deleted_backup_names.append(backup_name)
 
@@ -389,29 +401,27 @@ class ClickhouseBackup:
                     logging.error(f'Uploaded part is broken, {part.database}.{part.table}: {part.name}')
                 raise RuntimeError(f'Uploaded parts are broken, {", ".join(map(lambda p: p.name, invalid_parts))}')
 
-    def _delete(self, backup: BackupMetadata,
-                deduplicatable_backups: Sequence[BackupMetadata]) -> Tuple[Optional[str], Optional[str]]:
-        logging.info('Deleting backup %s, state: %s', backup.name, backup.state)
+    def _delete(self, backup_with_light_meta: BackupMetadata,
+                dedup_references: DedupReferences) -> Tuple[Optional[str], Optional[str]]:
+        logging.info('Deleting backup %s, state: %s', backup_with_light_meta.name, backup_with_light_meta.state)
 
-        deleting_parts = self._pop_deleting_parts(backup, deduplicatable_backups)
-        is_empty = backup.is_empty()
+        backup = self._backup_layout.reload_backup(backup_with_light_meta, use_light_meta=False)
 
         backup.state = BackupState.DELETING
         self._backup_layout.upload_backup_metadata(backup)
 
         try:
-            # delete whole backup prefix if backup entry is empty
-            if is_empty:
+            # delete whole backup prefix if its data parts are not shared with other backups
+            if not dedup_references:
                 logging.info('Removing backup data entirely')
                 self._backup_layout.delete_backup(backup.name)
                 return backup.name, None
 
-            backup.state = BackupState.PARTIALLY_DELETED
-
-            # some data (not linked) parts were deleted
-            if deleting_parts:
-                logging.info('Removing non-linked backup data parts')
-                self._backup_layout.delete_data_parts(backup, deleting_parts)
+            logging.info('Removing non-shared backup data parts')
+            for db_name in backup.get_databases():
+                db_dedup_references = dedup_references.get(db_name, {})
+                for table in backup.get_tables(db_name):
+                    self._delete_data_parts(backup, table, db_dedup_references.get(table.name))
 
             return None, 'Backup was partially deleted as its data is in use by subsequent backups per ' \
                          'deduplication settings.'
@@ -423,8 +433,18 @@ class ClickhouseBackup:
 
         finally:
             self._backup_layout.wait()
-            if not is_empty:
+            if dedup_references:
+                backup.state = BackupState.PARTIALLY_DELETED
                 self._backup_layout.upload_backup_metadata(backup)
+
+    def _delete_data_parts(self,
+                           backup: BackupMetadata,
+                           table: TableMetadata,
+                           excluded_parts: Set[str] = None) -> None:
+        parts = table.get_parts(excluded_parts=excluded_parts)
+        own_parts = [part for part in parts if not part.link]
+        self._backup_layout.delete_data_parts(backup, own_parts)
+        backup.remove_parts(table, parts)
 
     def _restore(self,
                  backup_meta: BackupMetadata,
@@ -653,43 +673,6 @@ class ClickhouseBackup:
                                 f'{table_sql} '
             return table_sql[:index] + f"UUID '{table.uuid}' " + table_sql[index:]
         return table_sql
-
-    @staticmethod
-    def _pop_deleting_parts(backup_meta: BackupMetadata,
-                            newer_backups: Sequence[BackupMetadata]) -> Sequence[PartMetadata]:
-        """
-        Get backup parts which are safe to delete.
-        """
-        skip_parts = {}
-        for new_backup in newer_backups:
-            for part in new_backup.get_parts():
-                if not part.link:
-                    continue
-
-                if not part.link.endswith(backup_meta.name):
-                    continue
-
-                part_id = (part.database, part.table, part.name)
-                skip_parts[part_id] = new_backup.name
-
-        deleting_parts: List[PartMetadata] = []
-        for part in backup_meta.get_parts():
-            part_id = (part.database, part.table, part.name)
-
-            logging.debug('Working on part "%s.%s.%s"', *part_id)
-            if part_id in skip_parts:
-                logging.debug('Skip removing part "%s": link from "%s" was found', part.name, skip_parts[part_id])
-                continue
-
-            logging.debug('Dropping part contents from meta "%s"', part.name)
-
-            if not part.link:
-                logging.debug('Scheduling deletion of part files "%s"', part.name)
-                deleting_parts.append(part)
-
-            backup_meta.remove_part(part)
-
-        return deleting_parts
 
     def _is_db_external(self, db_name: str) -> bool:
         """

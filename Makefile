@@ -38,7 +38,7 @@ lint: ${TEST_VENV} build
 
 .PHONY: unit_test
 unit_test: ${TEST_VENV} build
-	tox -e unit_test
+	tox -e unit_test -- $(PYTEST_ARGS)
 
 
 .PHONY: integration_test
@@ -183,3 +183,4 @@ help:
 	@echo "Environment Variables:"
 	@echo "  CLICKHOUSE_VERSION         ClickHouse version to use in integration_test target (default: \"$(CLICKHOUSE_VERSION)\")."
 	@echo "  BEHAVE_ARGS                Arguments to pass to behave."
+	@echo "  PYTEST_ARGS                Arguments to pass to pytest."
