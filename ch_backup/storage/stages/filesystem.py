@@ -11,6 +11,8 @@ from typing import IO, Iterator, List, Optional, Tuple
 
 from .base import BufferedIterStage, InputStage, IterStage
 
+# pylint: disable=consider-using-with
+
 STAGE_TYPE = 'filesystem'
 
 

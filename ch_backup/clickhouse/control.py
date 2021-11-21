@@ -492,7 +492,7 @@ class ClickhouseCTL:
         if not os.path.exists(file_path):
             return None
 
-        with open(file_path, 'r') as file:
+        with open(file_path, 'r', encoding='utf-8') as file:
             return int(file.read().strip())
 
     def create_s3_disk_restore_file(self, disk_name: str, revision: int, source_bucket: str, source_path: str) -> None:
@@ -500,7 +500,7 @@ class ClickhouseCTL:
         Creates file with restore information for S3 disk.
         """
         file_path = os.path.join(self._disks[disk_name].path, 'restore')
-        with open(file_path, 'w') as file:
+        with open(file_path, 'w', encoding='utf-8') as file:
             file.write(f'revision={revision}{os.linesep}')
             file.write(f'source_bucket={source_bucket}{os.linesep}')
             file.write(f'source_path={source_path}{os.linesep}')

@@ -45,11 +45,12 @@ class RestoreContext:
         """
         Dumps restore state to file of disk.
         """
-        with open(self._state_file, 'w') as f:
+        with open(self._state_file, 'w', encoding='utf-8') as f:
             json.dump({
                 'databases': self._databases,
             }, f)
 
     def _load_state(self) -> None:
-        state = json.load(open(self._state_file, 'r'))
-        self._databases = state['databases']
+        with open(self._state_file, 'r', encoding='utf-8') as f:
+            state = json.load(f)
+            self._databases = state['databases']

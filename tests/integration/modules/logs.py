@@ -23,7 +23,7 @@ def save_logs(context: ContextT) -> None:
         for container in get_containers(context):
             _save_container_logs(container, logs_dir)
 
-        with open(os.path.join(logs_dir, 'session_conf.json'), 'w') as out:
+        with open(os.path.join(logs_dir, 'session_conf.json'), 'w', encoding='utf-8') as out:
             json.dump(context.conf, out, default=repr, indent=4)
 
         export_s3_data(context, logs_dir)

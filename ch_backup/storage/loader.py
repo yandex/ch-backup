@@ -69,6 +69,7 @@ class StorageLoader:
         Unless encoding is None, the data will be decoded and returned as
         a string.
         """
+        # pylint: disable=no-member
         data = self._ploader.download_data(remote_path, is_async=is_async, encryption=encryption)
         return data.decode(encoding) if encoding else data
 

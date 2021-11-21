@@ -69,7 +69,7 @@ def _write_config(path: str, compose_conf: dict) -> None:
     catalog_name = os.path.dirname(path)
     os.makedirs(catalog_name, exist_ok=True)
     temp_file_path = f'{catalog_name}/.docker-compose-conftest-{random.randint(0, 100)}.yaml'
-    with open(temp_file_path, 'w') as conf_file:
+    with open(temp_file_path, 'w', encoding='utf-8') as conf_file:
         yaml.dump(compose_conf, stream=conf_file, default_flow_style=False, indent=4)
     try:
         _validate_config(temp_file_path)
@@ -182,6 +182,7 @@ def _prepare_volumes(volumes: dict, local_basedir: str) -> list:
     """
     Form a docker-compose volume list, and create endpoints.
     """
+    # pylint: disable=consider-using-f-string
     volume_list = []
     for props in volumes.values():
         # "local" params are expected to be relative to docker-compose.yaml, so prepend its location.

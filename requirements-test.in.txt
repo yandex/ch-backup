@@ -6,7 +6,7 @@ flake8-commas
 flake8-quotes
 flake8-print
 pep8
-pylint<2.7
+pylint
 mypy
 types-PyYAML
 types-requests

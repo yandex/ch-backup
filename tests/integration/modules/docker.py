@@ -58,14 +58,13 @@ def put_file(container: Container, data: bytes, path: str) -> None:
     """
     Put provided bytes data to given path
     """
-    tarstream = io.BytesIO()
-    tar_data = tarfile.open(fileobj=tarstream, mode='w')
-    tarinfo = tarfile.TarInfo(name=path)
-    tarinfo.size = len(data)
-    tar_data.addfile(tarinfo, io.BytesIO(data))
-    tar_data.close()
+    tar_stream = io.BytesIO()
+    with tarfile.open(fileobj=tar_stream, mode='w') as tar:
+        tar_file = tarfile.TarInfo(name=path)
+        tar_file.size = len(data)
+        tar.addfile(tar_file, io.BytesIO(data))
 
-    container.put_archive(path='/', data=tarstream.getvalue())
+    container.put_archive(path='/', data=tar_stream.getvalue())
 
 
 def copy_container_dir(container: Container, container_dir: str, local_dir: str) -> None:
@@ -79,11 +78,9 @@ def copy_container_dir(container: Container, container_dir: str, local_dir: str)
         buffer.write(chunk)
     buffer.seek(0)
 
-    tar = tarfile.open(mode='r', fileobj=buffer)
-
-    members = [m for m in tar.getmembers() if m.type != tarfile.SYMTYPE]
-
-    tar.extractall(path=local_dir, members=members)
+    with tarfile.open(mode='r', fileobj=buffer) as tar:
+        members = [m for m in tar.getmembers() if m.type != tarfile.SYMTYPE]
+        tar.extractall(path=local_dir, members=members)
 
 
 def get_file_size(container: Container, path: str) -> int:

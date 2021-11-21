@@ -513,7 +513,7 @@ class ClickhouseBackup:
         table_meta = join(database_meta, f'{view.name}.sql')
         try:
             create_sql = self._rewrite_view_object(view)
-            with open(table_meta, 'w') as f:
+            with open(table_meta, 'w', encoding='utf-8') as f:
                 f.write(create_sql)
             self._ch_ctl.chown_dir(database_meta)
             self._ch_ctl.attach_table(view)

@@ -331,5 +331,5 @@ def get_version() -> str:
     """
     Get ch-backup version.
     """
-    with open('ch_backup/version.txt') as f:
+    with open('ch_backup/version.txt', encoding='utf-8') as f:
         return f.read().strip()

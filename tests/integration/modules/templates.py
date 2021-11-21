@@ -50,7 +50,7 @@ def _render_file(context: ContextT, directory: str, basename: str) -> None:
     environment = _environment(context, loader)
     jinja_context = context_to_dict(context)
     try:
-        with open(temp_file_path, 'w') as temp_file:
+        with open(temp_file_path, 'w', encoding='utf-8') as temp_file:
             template = environment.get_template(basename)
             temp_file.write(template.render(jinja_context))
     except Exception as e:

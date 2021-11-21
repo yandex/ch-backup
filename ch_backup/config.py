@@ -181,7 +181,7 @@ class Config:
                 base_dict[key] = value
 
     def _read_config(self, file_name):
-        with open(file_name, 'r') as fileobj:
+        with open(file_name, 'r', encoding='utf-8') as fileobj:
             try:
                 custom_config = yaml.safe_load(fileobj)
                 if custom_config:
