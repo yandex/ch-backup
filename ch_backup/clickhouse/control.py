@@ -107,15 +107,6 @@ GET_DATABASE_METADATA_PATH = strip_query("""
     FORMAT JSON
 """)
 
-GET_TABLE_PARTITIONS_SQL = strip_query("""
-    SELECT DISTINCT partition
-    FROM system.parts
-    WHERE active
-      AND database = '{db_name}'
-      AND table = '{table_name}'
-    FORMAT JSON
-""")
-
 GET_VERSION_SQL = strip_query("""
     SELECT version()
     FORMAT TSVRaw
@@ -179,17 +170,6 @@ class Table(SimpleNamespace):
         return matched_disks[0]
 
 
-class Partition(SimpleNamespace):
-    """
-    Table partition.
-    """
-    def __init__(self, database: str, table: str, name: str) -> None:
-        super().__init__()
-        self.database = database
-        self.table = table
-        self.name = name
-
-
 class FreezedPart(SimpleNamespace):
     """
     Freezed data part.
@@ -227,12 +207,13 @@ class ClickhouseCTL:
     """
     def __init__(self, config: dict) -> None:
         self._config = config
-        self._default_timeout = config['timeout']
         self._ch_client = ClickhouseClient(config)
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
         self._root_data_path = config['data_path']
         self._shadow_data_path = os.path.join(self._root_data_path, 'shadow')
         self._disks = self.get_disks()
+        self._timeout = config['timeout']
+        self._freeze_timeout = config['freeze_timeout']
         self._restart_disk_timeout = self._config['restart_disk_timeout']
 
     def chown_detached_table_parts(self, table: Table) -> None:
@@ -264,11 +245,8 @@ class ClickhouseCTL:
         """
         Make snapshot of the specified table.
         """
-        parts = len(self.get_partitions(table))
         query_sql = FREEZE_TABLE_SQL.format(db_name=table.database, table_name=table.name, backup_name=backup_name)
-
-        # 1 second for 10 parts should be enough. When problem discovered there was ~20 parts/sec
-        self._ch_client.query(query_sql, max(self._default_timeout, int(parts / 10)))
+        self._ch_client.query(query_sql, timeout=self._freeze_timeout)
 
     def remove_freezed_data(self) -> None:
         """
@@ -360,15 +338,6 @@ class ClickhouseCTL:
         """
         query_sql = CHECK_TABLE_SQL.format(db_name=db_name, table_name=table_name)
         return bool(int(self._ch_client.query(query_sql)))
-
-    def get_partitions(self, table: Table) -> Sequence[Partition]:
-        """
-        Get dict with all table parts
-        """
-        query_sql = GET_TABLE_PARTITIONS_SQL.format(db_name=table.database, table_name=table.name)
-
-        data = self._ch_client.query(query_sql)['data']
-        return [Partition(table.database, table.name, item['partition']) for item in data]
 
     def restore_meta(self, query_sql: str) -> None:
         """

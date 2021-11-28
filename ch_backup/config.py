@@ -20,6 +20,7 @@ DEFAULT_CONFIG = {
         'ca_path': None,
         'connect_timeout': 10,
         'timeout': 90,
+        'freeze_timeout': 30 * 60,
         'restart_disk_timeout': 8 * 60 * 60,
         'user': 'clickhouse',
         'group': 'clickhouse',
