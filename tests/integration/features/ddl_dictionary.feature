@@ -7,7 +7,6 @@ Feature: Backup dictionary created by ddl
     And a working clickhouse on clickhouse01
     And a working clickhouse on clickhouse02
 
-  @require_version_19.17
   Scenario: Backup dictionary created by ddl
     Given we have executed queries on clickhouse01
     """
@@ -29,7 +28,6 @@ Feature: Backup dictionary created by ddl
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
-  @require_version_19.17
   Scenario: Depedent tables and dicts works
     Given we have executed queries on clickhouse01
     """

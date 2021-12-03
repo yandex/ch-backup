@@ -48,22 +48,6 @@ GET_TABLES_COMPAT_20_3_SQL = strip_query("""
     FORMAT JSON
 """)
 
-GET_TABLES_COMPAT_19_14_SQL = strip_query("""
-    SELECT
-        database,
-        name,
-        engine,
-        engine_full,
-        create_table_query,
-        array(data_path) "data_paths",
-        NULL "uuid"
-    FROM system.tables
-    WHERE database = '{db_name}'
-      AND (empty({tables}) OR has(cast({tables}, 'Array(String)'), name))
-    ORDER BY metadata_modification_time
-    FORMAT JSON
-""")
-
 CHECK_TABLE_SQL = strip_query("""
     SELECT countIf(database = '{db_name}' AND name = '{table_name}')
     FROM system.tables
@@ -300,10 +284,8 @@ class ClickhouseCTL:
         query_sql: str
         if self.match_ch_version(min_version='20.4'):
             query_sql = GET_TABLES_SQL
-        elif self.match_ch_version(min_version='19.15'):
-            query_sql = GET_TABLES_COMPAT_20_3_SQL
         else:
-            query_sql = GET_TABLES_COMPAT_19_14_SQL
+            query_sql = GET_TABLES_COMPAT_20_3_SQL
 
         query_sql = query_sql.format(db_name=db_name, tables=tables or [])
         result: List[Table] = []
@@ -319,10 +301,8 @@ class ClickhouseCTL:
         query_sql: str
         if self.match_ch_version(min_version='20.4'):
             query_sql = GET_TABLES_SQL
-        elif self.match_ch_version(min_version='19.15'):
-            query_sql = GET_TABLES_COMPAT_20_3_SQL
         else:
-            query_sql = GET_TABLES_COMPAT_19_14_SQL
+            query_sql = GET_TABLES_COMPAT_20_3_SQL
 
         query_sql = query_sql.format(db_name=db_name, tables=[table_name])
         tables_raw = self._ch_client.query(query_sql)['data']
