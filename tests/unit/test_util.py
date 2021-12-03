@@ -5,7 +5,7 @@ import pytest
 
 from ch_backup.clickhouse.control import Table
 from ch_backup.exceptions import ClickhouseBackupError
-from ch_backup.util import (get_zookeeper_paths, normalize_schema, retry, strip_query)
+from ch_backup.util import (compare_schema, get_zookeeper_paths, retry, strip_query)
 
 from . import ExpectedException, UnexpectedException
 
@@ -179,8 +179,17 @@ class TestNormalizeSchema:
             "ENGINE = Distributed('foo-foo', database_bar, table_biz, shard_key, policy_name) SETTINGS c=b",
             False,
         ],
+        [
+            "CREATE TABLE test_db.table_01 (`date` Date, `n` Int32, "
+            "PROJECTION test_proj (SELECT n, COUNT(*) AS count GROUP BY n)) "
+            "ENGINE = MergeTree PARTITION BY date ORDER BY date SETTINGS index_granularity = 8192",
+            "CREATE TABLE test_db.table_01 (`date` Date, `n` Int32, "
+            "PROJECTION test_proj (SELECT n, count(*) AS count GROUP BY n)) "
+            "ENGINE = MergeTree PARTITION BY date ORDER BY date SETTINGS index_granularity = 8192",
+            True,
+        ],
     ]
 
     def test_normalize_schema(self):
         for schema in self.schemas:
-            assert (normalize_schema(str(schema[0])) == normalize_schema(str(schema[1]))) == schema[2]
+            assert compare_schema(str(schema[0]), str(schema[1])) == bool(schema[2])

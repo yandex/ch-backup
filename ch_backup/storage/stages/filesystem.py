@@ -168,7 +168,9 @@ class WriteFilesStage(BufferedIterStage):
             if self._name_from_buffer:
                 self._tarinfo.name = self._name_from_buffer[:-1].decode()  # ignore string null terminator
                 self._name_from_buffer = None
-            self._fobj = open(os.path.join(self._dir, self._tarinfo.name), 'wb')
+            filepath = os.path.join(self._dir, self._tarinfo.name)
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            self._fobj = open(filepath, 'wb')
         return True
 
     def _process_long_name(self) -> bool:

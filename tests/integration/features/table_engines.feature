@@ -216,3 +216,22 @@ Feature: Backup of tables with different engines and configurations
     When we restore clickhouse backup #0 to clickhouse02
     Then clickhouse02 has same schema as clickhouse01
     But on clickhouse02 tables are empty
+
+  @require_version_21.6
+  Scenario: Create backup containing merge tree tables with projections
+    Given we have executed queries on clickhouse01
+    """
+    CREATE TABLE test_db.table_01 (date Date, n Int32)
+    ENGINE = MergeTree() PARTITION BY date ORDER BY date;
+    INSERT INTO test_db.table_01 SELECT today(), number FROM system.numbers LIMIT 1000;
+
+    ALTER TABLE test_db.table_01 ADD PROJECTION test_proj ( SELECT n, COUNT(*) count GROUP BY n);
+    ALTER TABLE test_db.table_01 MATERIALIZE PROJECTION test_proj;
+    """
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 1          | 0          |
+    When we restore clickhouse backup #0 to clickhouse02
+    Then clickhouse02 has same schema as clickhouse01
+    And we got same clickhouse data at clickhouse01 clickhouse02

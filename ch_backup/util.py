@@ -131,14 +131,17 @@ def get_zookeeper_paths(tables: Iterable) -> Iterable[Tuple]:
     return result
 
 
-def normalize_schema(schema: str) -> str:
+def compare_schema(schema_a: str, schema_b: str) -> bool:
     """
     Normalize table schema for comparison.
     `... ENGINE = Distributed('aaa', bbb, ccc, xxx) ...` may be in ver. before 19.16, 20.1
     `... ENGINE = Distributed('aaa', 'bbb', 'ccc', xxx) ...` in ver. 19.16+, 20.1+
     """
-    return re.sub(r"ENGINE = Distributed\('([^']+)', ('?)(\w+)\2, ('?)(\w+)\4(, .*)?\)",
-                  r"ENGINE = Distributed('\1', '\3', '\5'\6)", schema)
+    def _normalize(schema: str) -> str:
+        return re.sub(r"ENGINE = Distributed\('([^']+)', ('?)(\w+)\2, ('?)(\w+)\4(, .*)?\)",
+                      r"ENGINE = Distributed('\1', '\3', '\5'\6)", schema).lower()
+
+    return _normalize(schema_a) == _normalize(schema_b)
 
 
 def format_size(value: int) -> str:

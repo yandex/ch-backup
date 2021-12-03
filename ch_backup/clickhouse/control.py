@@ -2,6 +2,7 @@
 Clickhouse-control classes module
 """
 
+import glob
 import os
 import shutil
 from hashlib import md5
@@ -373,8 +374,11 @@ class ClickhouseCTL:
         for part in os.listdir(path):
             part_path = os.path.join(path, part)
             checksum = _get_part_checksum(part_path)
-            size = _get_part_size(part_path)
-            files = os.listdir(part_path)
+            files = [
+                file[len(part_path) + 1:]
+                for file in filter(os.path.isfile, glob.iglob(part_path + '/**', recursive=True))
+            ]
+            size = _get_part_size(part_path, files)
             freezed_parts.append(
                 FreezedPart(table.database, table.name, part, disk.name, part_path, checksum, size, files))
 
@@ -467,9 +471,9 @@ def _get_part_checksum(part_path: str) -> str:
         return md5(f.read()).hexdigest()  # nosec
 
 
-def _get_part_size(part_path: str) -> int:
+def _get_part_size(part_path: str, files: List[str]) -> int:
     size = 0
-    for file in os.listdir(part_path):
+    for file in files:
         filesize = os.path.getsize(os.path.join(part_path, file))
         remainder = filesize % BLOCKSIZE
         if remainder > 0:
