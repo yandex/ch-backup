@@ -14,6 +14,7 @@ from pkg_resources import parse_version
 
 from ch_backup import logging
 from ch_backup.backup.metadata import PartMetadata, TableMetadata
+from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.util import chown_dir_contents, retry, strip_query
 
@@ -201,14 +202,19 @@ class ClickhouseCTL:
         self._freeze_timeout = config['freeze_timeout']
         self._restart_disk_timeout = self._config['restart_disk_timeout']
 
-    def chown_detached_table_parts(self, table: Table) -> None:
+    def chown_detached_table_parts(self, table: Table, context: RestoreContext) -> None:
         """
         Change permissions (owner and group) of detached data parts for the
         specified table. New values for permissions are taken from the config.
         """
         for _, disk in table.paths_with_disks:
             detached_path = self._get_table_detached_path(table, disk.name)
-            self.chown_dir(detached_path)
+            try:
+                self.chown_dir(detached_path)
+            except FileNotFoundError:
+                logging.warning(f'table {table.database}.{table.name} path {detached_path} not found')
+                context.add_failed_chown(TableMetadata(table.database, table.name, table.engine, table.uuid),
+                                         detached_path)
 
     def attach_part(self, table: Table, part_name: str) -> None:
         """

@@ -576,11 +576,16 @@ class ClickhouseBackup:
 
                 self._backup_layout.wait()
 
-                self._ch_ctl.chown_detached_table_parts(table)
+                self._ch_ctl.chown_detached_table_parts(table, self._restore_context)
                 for part in attach_parts:
-                    logging.debug('Attaching "%s.%s" part: %s', table_meta.database, table.name, part.name)
-                    self._ch_ctl.attach_part(table, part.name)
-                    self._restore_context.add_part(part)
+                    try:
+                        logging.debug('Attaching "%s.%s" part: %s', table_meta.database, table.name, part.name)
+                        self._ch_ctl.attach_part(table, part.name)
+                        self._restore_context.add_part(part)
+                    except Exception as e:
+                        logging.warning('Attaching "%s.%s" part %s failed: %s', table_meta.database, table.name,
+                                        part.name, repr(e))
+                        self._restore_context.add_failed_part(part, e)
             finally:
                 self._restore_context.dump_state()
 

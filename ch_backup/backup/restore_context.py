@@ -3,8 +3,9 @@ Backup restoring context.
 """
 
 import json
+from collections import defaultdict
 from os.path import exists
-from typing import Dict, List
+from typing import Any, Dict, List, Mapping
 
 from ch_backup.backup.metadata import PartMetadata, TableMetadata
 
@@ -16,6 +17,10 @@ class RestoreContext:
     def __init__(self, config: Dict):
         self._state_file = config['restore_context_path']
         self._databases: Dict[str, Dict[str, List]] = {}
+        self._failed: Mapping[str, Any] = defaultdict(lambda: defaultdict(lambda: {
+            'failed_paths': [],
+            'failed_parts': {},
+        }))
         if exists(self._state_file):
             self._load_state()
 
@@ -41,6 +46,18 @@ class RestoreContext:
         """
         return part.name in self._databases[part.database][part.table]
 
+    def add_failed_chown(self, table: TableMetadata, path: str) -> None:
+        """
+        Save information about failed detached dir chown in context
+        """
+        self._failed[table.database][table.name]['failed_paths'].append(path)
+
+    def add_failed_part(self, part: PartMetadata, e: Exception) -> None:
+        """
+        Save information about failed to restore part in context
+        """
+        self._failed[part.database][part.table]['failed_parts'][part.name] = repr(e)
+
     def dump_state(self) -> None:
         """
         Dumps restore state to file of disk.
@@ -48,6 +65,7 @@ class RestoreContext:
         with open(self._state_file, 'w', encoding='utf-8') as f:
             json.dump({
                 'databases': self._databases,
+                'failed': self._failed,
             }, f)
 
     def _load_state(self) -> None:
