@@ -21,6 +21,7 @@ class RestoreContext:
             'failed_paths': [],
             'failed_parts': {},
         }))
+        self._restarted_disks: List[str] = []
         if exists(self._state_file):
             self._load_state()
 
@@ -42,7 +43,7 @@ class RestoreContext:
 
     def part_restored(self, part: PartMetadata) -> bool:
         """
-        Check is data part was restored.
+        Checks if data part was restored.
         """
         return part.name in self._databases[part.database][part.table]
 
@@ -58,17 +59,32 @@ class RestoreContext:
         """
         self._failed[part.database][part.table]['failed_parts'][part.name] = repr(e)
 
+    def add_restarted_disk(self, disk_name: str) -> None:
+        """
+        Marks that disk was restarted.
+        """
+        self._restarted_disks.append(disk_name)
+
+    def disk_restarted(self, disk_name: str) -> bool:
+        """
+        Checks if disk was restarted.
+        """
+        return disk_name in self._restarted_disks
+
     def dump_state(self) -> None:
         """
         Dumps restore state to file of disk.
         """
         with open(self._state_file, 'w', encoding='utf-8') as f:
-            json.dump({
-                'databases': self._databases,
-                'failed': self._failed,
-            }, f)
+            json.dump(
+                {
+                    'databases': self._databases,
+                    'failed': self._failed,
+                    'restarted_disks': self._restarted_disks,
+                }, f)
 
     def _load_state(self) -> None:
         with open(self._state_file, 'r', encoding='utf-8') as f:
-            state = json.load(f)
+            state: Dict[str, Any] = json.load(f)
             self._databases = state['databases']
+            self._restarted_disks = state.get('restarted_disks', [])

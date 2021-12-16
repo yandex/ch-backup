@@ -465,11 +465,12 @@ class ClickhouseCTL:
             file.write(f'source_path={source_path}{os.linesep}')
             file.write(f'detached=true{os.linesep}')
 
-    def restart_disk(self, disk_name: str) -> None:
+    def restart_disk(self, disk_name: str, context: RestoreContext) -> None:
         """
         Restarts ClickHouse and waits till it can process queries.
         """
         self._ch_client.query(RESTART_DISK_SQL.format(disk_name=disk_name), timeout=self._restart_disk_timeout)
+        context.add_restarted_disk(disk_name)
 
 
 def _get_part_checksum(part_path: str) -> str:

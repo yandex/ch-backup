@@ -548,9 +548,18 @@ class ClickhouseBackup:
                                     cloud_storage_latest: bool) -> None:
         for disk_name, revision in backup_meta.s3_revisions.items():
             logging.debug(f'Restore disk {disk_name} to revision {revision}')
+
             self._ch_ctl.create_s3_disk_restore_file(disk_name, revision if not cloud_storage_latest else 0,
                                                      source_bucket, source_path)
-            self._ch_ctl.restart_disk(disk_name)
+
+            if self._restore_context.disk_restarted(disk_name):
+                logging.debug(f'Skip restoring disk {disk_name} as it has already been restored')
+                continue
+
+            try:
+                self._ch_ctl.restart_disk(disk_name, self._restore_context)
+            finally:
+                self._restore_context.dump_state()
 
     def _restore_data(self, backup_meta: BackupMetadata, tables: Iterable[TableMetadata]) -> None:
         for table_meta in tables:
