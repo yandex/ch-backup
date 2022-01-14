@@ -524,8 +524,8 @@ class ClickhouseBackup:
         if errors:
             logging.error('Failed to restore tables:\n%s',
                           '\n'.join(f'"{v.database}"."{v.name}": {e!r}' for v, e in errors))
-            failed_views_str = ', '.join(f'"{v.database}"."{v.name}"' for v, _ in errors)
-            raise ClickhouseBackupError(f'Failed to restore tables: {failed_views_str}')
+            failed_tables = sorted(f'`{t.database}`.`{t.name}`' for t in set(table for table, _ in errors))
+            raise ClickhouseBackupError(f'Failed to restore tables: {", ".join(failed_tables)}')
 
     def _restore_view_object(self, view: Table) -> None:
         # Create view through attach to omit checks.
