@@ -15,7 +15,7 @@ from pkg_resources import parse_version
 from ch_backup import logging
 from ch_backup.backup.metadata import PartMetadata, TableMetadata
 from ch_backup.backup.restore_context import RestoreContext
-from ch_backup.clickhouse.client import ClickhouseClient
+from ch_backup.clickhouse.client import ClickhouseClient, ClickhouseError
 from ch_backup.util import chown_dir_contents, retry, strip_query
 
 GET_TABLES_SQL = strip_query("""
@@ -146,6 +146,9 @@ class Table(SimpleNamespace):
 
     def _map_paths_to_disks(self, disks: List[Disk], data_paths: List[str]) -> List[Tuple[str, Disk]]:
         return list(map(lambda data_path: (data_path, self._map_path_to_disk(disks, data_path)), data_paths))
+
+    def __hash__(self):
+        return hash((self.database, self.name))
 
     @staticmethod
     def _map_path_to_disk(disks: List[Disk], data_path: str) -> Disk:
@@ -330,7 +333,11 @@ class ClickhouseCTL:
         """
         Restore database or table meta sql
         """
-        self._ch_client.query(query_sql)
+        try:
+            self._ch_client.query(query_sql)
+        except ClickhouseError as e:
+            logging.warning(f'failed to execute "{query_sql}" with error {repr(e)}, fallback to ATTACH')
+            self._ch_client.query(query_sql.replace("CREATE", "ATTACH", 1))
 
     def get_database_metadata_path(self, database: str) -> str:
         """

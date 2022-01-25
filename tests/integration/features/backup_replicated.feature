@@ -453,3 +453,24 @@ Feature: Backup replicated merge tree table
     SummingMergeTree
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
+
+  Scenario: Backup replicated table with invalid zk path
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db ENGINE Ordinary;
+    ATTACH TABLE test_db.table_01 (
+        EventDate DateTime,
+        CounterID UInt32,
+        UserID UInt32
+    )
+    ENGINE = ReplicatedMergeTree('invalid_path', '{replica}')
+    PARTITION BY CounterID % 10
+    ORDER BY (CounterID, EventDate, intHash32(UserID))
+    SAMPLE BY intHash32(UserID)
+    """
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 0          | 0          |
+    When we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
