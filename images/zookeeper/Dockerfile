@@ -1,4 +1,4 @@
-FROM zookeeper:3.6.3
+FROM zookeeper:3.7
 
 COPY staging/images/{{instance_name}}/ssl/ /conf/ssl/
 
