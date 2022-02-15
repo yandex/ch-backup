@@ -303,3 +303,9 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryHelper):
         Returns remote object size in bytes.
         """
         return self._s3_client.get_object(Bucket=self._s3_bucket_name, Key=remote_path)['ContentLength']
+
+    def get_client(self):
+        """
+        Retunr S3 raw client.
+        """
+        return self._s3_client

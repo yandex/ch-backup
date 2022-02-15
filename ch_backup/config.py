@@ -84,6 +84,8 @@ DEFAULT_CONFIG = {
         # How many files we can delete by bulk delete operation in one call
         'bulk_delete_chunk_size': 1000,
     },
+    # Same structure as 'storage' section, but for cloud storage
+    'cloud_storage': None,
     'encryption': {
         'type': 'nacl',
         # Chunk size used when encrypting / decrypting data, in bytes.

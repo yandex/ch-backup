@@ -23,6 +23,7 @@ from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.control import ClickhouseCTL, Table
 from ch_backup.config import Config
 from ch_backup.exceptions import BackupNotFound, ClickhouseBackupError
+from ch_backup.storage.engine.s3 import S3StorageEngine
 from ch_backup.util import compare_schema, get_zookeeper_paths, now, utcnow
 from ch_backup.version import get_version
 from ch_backup.zookeeper.zookeeper import ZookeeperCTL
@@ -171,6 +172,73 @@ class ClickhouseBackup:
 
         self._restore(backup_meta, databases, schema_only, clean_zookeeper, replica_name, cloud_storage_source_bucket,
                       cloud_storage_source_path, cloud_storage_latest)
+
+    # pylint: disable=too-many-locals,too-many-nested-blocks,too-many-branches
+    def fix_s3_oplog(self,
+                     source_cluster_id: str = None,
+                     shard: str = None,
+                     cloud_storage_source_bucket: str = None,
+                     cloud_storage_source_path: str = None,
+                     dryrun: bool = False) -> None:
+        """
+        Fix S3 operations log.
+        """
+        if not self._config.get('cloud_storage', None):
+            return
+
+        if not cloud_storage_source_bucket or not cloud_storage_source_path:
+            if not source_cluster_id:
+                source_cluster_id = self._config['restore_from']['cid']
+            if not shard:
+                shard = self._config['restore_from']['shard_name']
+            cloud_storage_source_bucket = f'cloud-storage-{source_cluster_id}'
+            cloud_storage_source_path = f'cloud_storage/{source_cluster_id}/{shard}'
+
+        engine = S3StorageEngine(self._config['cloud_storage'])
+        client = engine.get_client()
+        prefix = f'{cloud_storage_source_path}/operations/r'
+        paginator = client.get_paginator('list_objects')
+        list_object_kwargs = dict(Bucket=cloud_storage_source_bucket, Prefix=prefix)
+
+        delete_list: Dict[str, int] = {}
+
+        collision_counter = 0
+
+        for result in paginator.paginate(**list_object_kwargs):
+            if result.get('Contents') is not None:
+                for file_data in result.get('Contents'):
+                    key = file_data.get('Key')
+                    if key.endswith('-rename'):
+                        head = client.head_object(Bucket=cloud_storage_source_bucket, Key=key)
+                        metadata = head.get('Metadata')
+                        to_path = ''
+                        if 'To_path' in metadata:
+                            to_path = metadata.get('To_path')
+                        if 'delete_tmp_' in to_path:
+                            if to_path in delete_list:
+                                collision_counter += 1
+                                new_path = f'{to_path}_collision_{delete_list[to_path]}'
+                                delete_list[to_path] += 1
+                                logging.info('Collision for %s, new path %s', to_path, new_path)
+                                if not dryrun:
+                                    metadata['To_path'] = new_path
+                                    metadata['To_path_original'] = to_path
+                                    client.copy_object(Bucket=cloud_storage_source_bucket,
+                                                       Key=key,
+                                                       CopySource={
+                                                           'Bucket': cloud_storage_source_bucket,
+                                                           'Key': key,
+                                                       },
+                                                       Metadata=metadata,
+                                                       MetadataDirective="REPLACE")
+                            else:
+                                delete_list[to_path] = 1
+
+        logging.info('Fix S3 OpLog: bucket "%s", path "%s"', cloud_storage_source_bucket, cloud_storage_source_path)
+        if dryrun:
+            logging.info('Fix S3 OpLog: found %d collisions', collision_counter)
+        else:
+            logging.info('Fix S3 OpLog: found and fixed %d collisions', collision_counter)
 
     def delete(self, backup_name: str) -> Tuple[Optional[str], Optional[str]]:
         """
