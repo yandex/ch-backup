@@ -29,19 +29,15 @@ RUN echo "root:root" | chpasswd && \
     mkdir /var/run/sshd
 
 RUN mkdir -p ${CH_TMP_DIR}
-COPY setup.py requirements.txt images/clickhouse/clickhouse.gpg ${CH_TMP_DIR}/
+COPY setup.py requirements.txt ${CH_TMP_DIR}/
 
 RUN cd ${CH_TMP_DIR} && \
     pip3 install -r requirements.txt && \
     mkdir -p /etc/apt/sources.list.d && \
-    echo "deb https://packages.clickhouse.com/deb prestable main"   | tee /etc/apt/sources.list.d/clickhouse-prestable.list && \
-    echo "deb https://packages.clickhouse.com/deb stable main"   | tee /etc/apt/sources.list.d/clickhouse-stable.list && \
-    echo "deb https://packages.clickhouse.com/deb lts main"   | tee /etc/apt/sources.list.d/clickhouse-lts.list && \
     echo "deb http://dist.yandex.ru/mdb-bionic-secure testing/all/"     | tee /etc/apt/sources.list.d/mdb-bionic-secure-testing.list && \
     echo "deb http://dist.yandex.ru/mdb-bionic-secure testing/\$(ARCH)/" | tee -a /etc/apt/sources.list.d/mdb-bionic-secure-testing.list && \
     echo "deb http://dist.yandex.ru/mdb-bionic-secure stable/all/"      | tee /etc/apt/sources.list.d/mdb-bionic-secure-stable.list && \
-    echo "deb http://dist.yandex.ru/mdb-bionic-secure stable/\$(ARCH)/"  | tee -a /etc/apt/sources.list.d/mdb-bionic-secure-stable.list && \
-    apt-key add clickhouse.gpg
+    echo "deb http://dist.yandex.ru/mdb-bionic-secure stable/\$(ARCH)/"  | tee -a /etc/apt/sources.list.d/mdb-bionic-secure-stable.list
 
 RUN apt-get update -qq && \
     apt-get upgrade -y && \
