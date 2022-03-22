@@ -55,9 +55,10 @@ signal.signal(signal.SIGINT, signal_handler)
 @option('--port', type=int, help='Port used to connect to ClickHouse server.')
 @option('--ca-path', type=str, help='Path to custom CA bundle path for https protocol.')
 @option('--insecure', is_flag=True, help='Disable certificate verification for https protocol.')
+@option('--zk-hosts', type=str, help='Use specified zk hosts for connection to the ZK')
 @pass_context
-def cli(ctx: Context, config: str, protocol: str, host: str, port: int, ca_path: Union[str, bool],
-        insecure: bool) -> None:
+def cli(ctx: Context, config: str, protocol: str, host: str, port: int, ca_path: Union[str, bool], insecure: bool,
+        zk_hosts: str) -> None:
     """Tool for managing ClickHouse backups."""
     if insecure:
         ca_path = False
@@ -71,6 +72,8 @@ def cli(ctx: Context, config: str, protocol: str, host: str, port: int, ca_path:
         cfg['clickhouse']['port'] = port
     if ca_path is not None:
         cfg['clickhouse']['ca_path'] = ca_path
+    if zk_hosts is not None:
+        cfg['zookeeper']['hosts'] = zk_hosts
 
     logging.configure(cfg['logging'])
     setup_environment(cfg['main'])

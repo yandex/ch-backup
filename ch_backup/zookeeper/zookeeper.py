@@ -8,13 +8,14 @@ from typing import Dict, Iterable, Optional, Tuple
 
 from kazoo.client import KazooClient
 from kazoo.exceptions import KazooException, NoNodeError
+from kazoo.handlers.threading import KazooTimeoutError
 
 from ch_backup.clickhouse.control import Table
 from ch_backup.logging import debug
 
 from ..util import retry
 
-KAZOO_RETRIES = retry(KazooException, max_attempts=5, max_interval=60)
+KAZOO_RETRIES = retry((KazooException, KazooTimeoutError), max_attempts=5, max_interval=60)
 
 
 class ZookeeperCTL:
