@@ -79,3 +79,30 @@ Feature: Restore metadata from another host without s3
     """
     When we restore clickhouse schema from clickhouse01 to clickhouse02
     Then clickhouse01 has same schema as clickhouse02
+
+  Scenario: Restore metadata from another host with schema normalization
+    Given we have executed queries on clickhouse01
+    """
+    CREATE TABLE test_db.table_static (
+        EventDate DateTime,
+        CounterID UInt32,
+        UserID UInt32
+    )
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_static', 'static_name')
+    PARTITION BY toYYYYMM(EventDate)
+    ORDER BY (CounterID, EventDate, intHash32(UserID))
+    SAMPLE BY intHash32(UserID);
+    INSERT INTO test_db.table_01 SELECT now(), number, rand() FROM system.numbers LIMIT 10
+    """
+    When we restore clickhouse schema from clickhouse01 to clickhouse02
+    Then clickhouse01 has same schema as clickhouse02
+    When we restore clickhouse schema from clickhouse01 to clickhouse02
+    Then clickhouse01 has same schema as clickhouse02
+    When we execute query on clickhouse02
+    """
+    SELECT DISTINCT replica_name FROM system.replicas
+    """
+    Then we get response
+    """
+    clickhouse02
+    """

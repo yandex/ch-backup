@@ -333,6 +333,11 @@ class ClickhouseBackup:
                 db_sql = source_ch_ctl.get_database_schema(database)
                 self._ch_ctl.restore_meta(db_sql)
             tables.extend(source_ch_ctl.get_tables_ordered(database))
+
+        if self._config['override_replica_name'] is None and replica_name is not None:
+            self._config['override_replica_name'] = replica_name
+        for table in tables:
+            table.create_statement = self._rewrite_merge_tree_object(table.create_statement)
         self._restore_tables(self._filter_present_tables(databases, tables),
                              clean_zookeeper=True,
                              replica_name=replica_name)

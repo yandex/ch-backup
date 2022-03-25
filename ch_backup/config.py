@@ -47,7 +47,7 @@ DEFAULT_CONFIG = {
         # User data including into backup metadata.
         'labels': {},
         'keep_freezed_data_on_failure': True,
-        'override_replica_name': None,
+        'override_replica_name': '{replica}',
         'force_non_replicated': False,
         'backup_access_control': False,
         'restore_context_path': '/tmp/ch_backup_restore_state.json',  # nosec
