@@ -1,88 +1,459 @@
 """
 Unit tests for deduplication module.
 """
-
+from datetime import timedelta
 from unittest.mock import MagicMock
 
-from ch_backup.backup.deduplication import \
-    collect_dedup_references_for_batch_backup_deletion
-from ch_backup.backup.metadata import BackupMetadata
-from tests.unit.utils import parametrize
+from ch_backup.backup.deduplication import (DatabaseDedupInfo, DedupInfo, collect_dedup_info,
+                                            collect_dedup_references_for_batch_backup_deletion)
+from ch_backup.backup.metadata import BackupState
+from tests.unit.utils import (backup_metadata, parametrize, parts, parts_dedup_info)
+
+
+@parametrize(
+    {
+        'id': 'initial backup',
+        'args': {
+            'config': {
+                'deduplicate_parts': True,
+                'deduplication_age_limit': {
+                    'days': 7,
+                },
+            },
+            'databases': ['db1'],
+            'creating_backup': backup_metadata('new_backup', BackupState.CREATING),
+            'backups': [],
+            'result': DedupInfo(),
+        },
+    },
+    {
+        'id': 'ordinary incremental backup',
+        'args': {
+            'config': {
+                'deduplicate_parts': True,
+                'deduplication_age_limit': {
+                    'days': 7,
+                },
+            },
+            'databases': ['db1'],
+            'creating_backup': backup_metadata('new_backup', BackupState.CREATING),
+            'backups': [
+                backup_metadata(name='backup1',
+                                state=BackupState.CREATED,
+                                age=timedelta(days=1),
+                                databases={
+                                    'db1': {
+                                        'tables': {
+                                            'table1': {
+                                                'engine': 'MergeTree',
+                                                'parts': parts(1),
+                                            },
+                                        },
+                                    },
+                                }),
+            ],
+            'result': DedupInfo({
+                'db1': DatabaseDedupInfo({'table1': parts_dedup_info('ch_backup/backup1', 1)}),
+            }),
+        },
+    },
+    {
+        'id': 'deduplication disabled',
+        'args': {
+            'config': {
+                'deduplicate_parts': False,
+            },
+            'databases': ['db1'],
+            'creating_backup': backup_metadata('new_backup', BackupState.CREATING),
+            'backups': [
+                backup_metadata(name='backup1',
+                                state=BackupState.CREATED,
+                                age=timedelta(days=1),
+                                databases={
+                                    'db1': {
+                                        'tables': {
+                                            'table1': {
+                                                'engine': 'MergeTree',
+                                                'parts': parts(1),
+                                            },
+                                        },
+                                    },
+                                }),
+            ],
+            'result': DedupInfo(),
+        },
+    },
+    {
+        'id': 'schema-only backup',
+        'args': {
+            'config': {
+                'deduplicate_parts': True,
+                'deduplication_age_limit': {
+                    'days': 7,
+                },
+            },
+            'databases': ['db1'],
+            'creating_backup': backup_metadata('new_backup', BackupState.CREATING, schema_only=True),
+            'backups': [
+                backup_metadata(name='backup1',
+                                state=BackupState.CREATED,
+                                age=timedelta(days=1),
+                                databases={
+                                    'db1': {
+                                        'tables': {
+                                            'table1': {
+                                                'engine': 'MergeTree',
+                                                'parts': parts(1),
+                                            },
+                                        },
+                                    },
+                                }),
+            ],
+            'result': DedupInfo(),
+        },
+    },
+    {
+        'id': 'irrelevant parts of old backups are ignored',
+        'args': {
+            'config': {
+                'deduplicate_parts': True,
+                'deduplication_age_limit': {
+                    'days': 7,
+                },
+            },
+            'databases': ['db1'],
+            'creating_backup':
+                backup_metadata('new_backup', BackupState.CREATING),
+            'backups': [
+                backup_metadata(name='backup2',
+                                state=BackupState.CREATED,
+                                age=timedelta(days=1),
+                                databases={
+                                    'db1': {
+                                        'tables': {
+                                            'table1': {
+                                                'engine': 'MergeTree',
+                                                'parts': parts(1, link='ch_backup/backup1'),
+                                            },
+                                            'table3': {
+                                                'engine': 'ReplicatedMergeTree',
+                                                'parts': parts(1, link='ch_backup/backup1'),
+                                            },
+                                            'table5': {
+                                                'engine': 'ReplicatedMergeTree',
+                                                'parts': parts(1),
+                                            },
+                                        },
+                                    },
+                                }),
+                backup_metadata(name='backup1',
+                                state=BackupState.CREATED,
+                                age=timedelta(days=2),
+                                databases={
+                                    'db1': {
+                                        'tables': {
+                                            'table1': {
+                                                'engine': 'MergeTree',
+                                                'parts': parts(1),
+                                            },
+                                            'table2': {
+                                                'engine': 'MergeTree',
+                                                'parts': parts(1),
+                                            },
+                                            'table3': {
+                                                'engine': 'ReplicatedMergeTree',
+                                                'parts': parts(1),
+                                            },
+                                            'table4': {
+                                                'engine': 'ReplicatedMergeTree',
+                                                'parts': parts(1),
+                                            },
+                                        },
+                                    },
+                                }),
+            ],
+            'result':
+                DedupInfo({
+                    'db1':
+                        DatabaseDedupInfo({
+                            'table1': parts_dedup_info('ch_backup/backup1', 1, verified=True),
+                            'table3': parts_dedup_info('ch_backup/backup1', 1, verified=True),
+                            'table5': parts_dedup_info('ch_backup/backup2', 1),
+                        }),
+                }),
+        },
+    },
+    {
+        'id': 'deduplication info is collected only for requested databases',
+        'args': {
+            'config': {
+                'deduplicate_parts': True,
+                'deduplication_age_limit': {
+                    'days': 7,
+                },
+            },
+            'databases': ['db1'],
+            'creating_backup': backup_metadata('new_backup', BackupState.CREATING),
+            'backups': [
+                backup_metadata(name='backup1',
+                                state=BackupState.CREATED,
+                                age=timedelta(days=1),
+                                databases={
+                                    'db1': {
+                                        'tables': {
+                                            'table1': {
+                                                'engine': 'MergeTree',
+                                                'parts': parts(1),
+                                            },
+                                        },
+                                    },
+                                    'db2': {
+                                        'tables': {
+                                            'table1': {
+                                                'engine': 'MergeTree',
+                                                'parts': parts(1),
+                                            },
+                                        },
+                                    },
+                                }),
+            ],
+            'result': DedupInfo({
+                'db1': DatabaseDedupInfo({'table1': parts_dedup_info('ch_backup/backup1', 1)}),
+            }),
+        },
+    },
+    {
+        'id': 'parts of failed and partially deleted backups are used for deduplication',
+        'args': {
+            'config': {
+                'deduplicate_parts': True,
+                'deduplication_age_limit': {
+                    'days': 7,
+                },
+            },
+            'databases': ['db1', 'db2'],
+            'creating_backup':
+                backup_metadata('new_backup', BackupState.CREATING),
+            'backups': [
+                backup_metadata(name='backup3',
+                                state=BackupState.FAILED,
+                                age=timedelta(days=1),
+                                databases={
+                                    'db1': {
+                                        'tables': {
+                                            'table1': {
+                                                'engine': 'MergeTree',
+                                                'parts': parts(1, link='ch_backup/backup1'),
+                                            },
+                                            'table2': {
+                                                'engine': 'MergeTree',
+                                                'parts': parts(1),
+                                            },
+                                        },
+                                    },
+                                }),
+                backup_metadata(name='backup2',
+                                state=BackupState.CREATED,
+                                age=timedelta(days=2),
+                                databases={
+                                    'db1': {
+                                        'tables': {
+                                            'table1': {
+                                                'engine': 'MergeTree',
+                                                'parts': parts(1, link='ch_backup/backup1'),
+                                            },
+                                        },
+                                    },
+                                    'db2': {
+                                        'tables': {
+                                            'table1': {
+                                                'engine': 'MergeTree',
+                                                'parts': parts(1),
+                                            },
+                                        },
+                                    },
+                                }),
+                backup_metadata(name='backup1',
+                                state=BackupState.PARTIALLY_DELETED,
+                                age=timedelta(days=3),
+                                databases={
+                                    'db1': {
+                                        'tables': {
+                                            'table1': {
+                                                'engine': 'MergeTree',
+                                                'parts': parts(1),
+                                            },
+                                        },
+                                    },
+                                }),
+            ],
+            'result':
+                DedupInfo({
+                    'db1':
+                        DatabaseDedupInfo({
+                            'table1': parts_dedup_info('ch_backup/backup1', 1, verified=True),
+                            'table2': parts_dedup_info('ch_backup/backup3', 1),
+                        }),
+                    'db2':
+                        DatabaseDedupInfo({
+                            'table1': parts_dedup_info('ch_backup/backup2', 1),
+                        }),
+                }),
+        },
+    },
+    {
+        'id': 'parts of backups that are out of deduction window are ignored',
+        'args': {
+            'config': {
+                'deduplicate_parts': True,
+                'deduplication_age_limit': {
+                    'days': 7,
+                },
+            },
+            'databases': ['db1'],
+            'creating_backup':
+                backup_metadata('new_backup', BackupState.CREATING),
+            'backups': [
+                backup_metadata(name='backup2',
+                                state=BackupState.CREATED,
+                                age=timedelta(days=1),
+                                databases={
+                                    'db1': {
+                                        'tables': {
+                                            'table1': {
+                                                'engine': 'MergeTree',
+                                                'parts': parts(1, link='ch_backup/backup1'),
+                                            },
+                                            'table2': {
+                                                'engine': 'MergeTree',
+                                                'parts': parts(1),
+                                            },
+                                        },
+                                    },
+                                }),
+                backup_metadata(name='backup1',
+                                state=BackupState.CREATED,
+                                age=timedelta(days=10),
+                                databases={
+                                    'db1': {
+                                        'tables': {
+                                            'table1': {
+                                                'engine': 'MergeTree',
+                                                'parts': parts(1),
+                                            },
+                                        },
+                                    },
+                                }),
+            ],
+            'result':
+                DedupInfo({
+                    'db1': DatabaseDedupInfo({
+                        'table1': {},
+                        'table2': parts_dedup_info('ch_backup/backup2', 1),
+                    }),
+                }),
+        },
+    },
+    {
+        'id': 'only local backups are used for deduplicating parts of non-replicated tables',
+        'args': {
+            'config': {
+                'deduplicate_parts': True,
+                'deduplication_age_limit': {
+                    'days': 7,
+                },
+            },
+            'databases': ['db1'],
+            'creating_backup':
+                backup_metadata('new_backup', BackupState.CREATING, hostname='host1'),
+            'backups': [
+                backup_metadata(name='backup2',
+                                state=BackupState.CREATED,
+                                age=timedelta(days=1),
+                                hostname='host2',
+                                databases={
+                                    'db1': {
+                                        'tables': {
+                                            'replicated_table': {
+                                                'engine': 'ReplicatedMergeTree',
+                                                'parts': parts(1, link='ch_backup/backup1'),
+                                            },
+                                            'host2_table': {
+                                                'engine': 'MergeTree',
+                                                'parts': parts(1),
+                                            },
+                                        },
+                                    },
+                                }),
+                backup_metadata(name='backup1',
+                                state=BackupState.CREATED,
+                                age=timedelta(days=2),
+                                hostname='host1',
+                                databases={
+                                    'db1': {
+                                        'tables': {
+                                            'replicated_table': {
+                                                'engine': 'ReplicatedMergeTree',
+                                                'parts': parts(1),
+                                            },
+                                            'host1_table': {
+                                                'engine': 'MergeTree',
+                                                'parts': parts(1),
+                                            },
+                                        },
+                                    },
+                                }),
+            ],
+            'result':
+                DedupInfo({
+                    'db1':
+                        DatabaseDedupInfo({
+                            'replicated_table': parts_dedup_info('ch_backup/backup1', 1, verified=True),
+                            'host1_table': parts_dedup_info('ch_backup/backup1', 1),
+                        }),
+                }),
+        },
+    },
+)
+def test_collect_dedup_info(config, creating_backup, databases, backups, result):
+    assert collect_dedup_info(config=config,
+                              layout=layout_mock(),
+                              creating_backup=creating_backup,
+                              databases=databases,
+                              backups_with_light_meta=backups) == result
 
 
 @parametrize({
     'id': 'single data part',
     'args': {
-        'retained_backups': [{
-            'meta': {
-                'name': 'backup2',
-                'path': 'ch_backup/backup2',
-                'state': 'created',
-                'start_time': '2021-05-09 00:00:00 +0300',
-                'end': '2021-05-09 00:01:00 +0300',
-                'time_format': '%Y-%m-%d %H:%M:%S %z',
-                'bytes': 1024,
-                'real_bytes': 0,
-                'labels': [],
-                'version': '1.0.0',
-                'ch_version': '21.3.2.1',
-                'hostname': 'host1',
-            },
-            'databases': {
-                'db1': {
-                    'tables': {
-                        'table1': {
-                            'engine': 'MergeTree',
-                            'parts': {
-                                'part1': {
-                                    'bytes': 1024,
-                                    'files': ['file1', 'file2'],
-                                    'checksum': 'checksum1',
-                                    'tarball': True,
-                                    'link': 'ch_backup/backup1',
-                                    'disk_name': 'default',
+        'retained_backups': [
+            backup_metadata(name='backup2',
+                            state=BackupState.CREATED,
+                            databases={
+                                'db1': {
+                                    'tables': {
+                                        'table1': {
+                                            'engine': 'MergeTree',
+                                            'parts': parts(1, link='ch_backup/backup1'),
+                                        },
+                                    },
                                 },
-                            },
-                        },
-                    },
-                },
-            },
-        }],
-        'deleting_backups': [{
-            'meta': {
-                'name': 'backup1',
-                'path': 'ch_backup/backup1',
-                'state': 'created',
-                'start_time': '2021-05-08 00:00:00 +0300',
-                'end': '2021-05-08 00:01:00 +0300',
-                'time_format': '%Y-%m-%d %H:%M:%S %z',
-                'bytes': 1024,
-                'real_bytes': 1024,
-                'labels': [],
-                'version': '1.0.0',
-                'ch_version': '21.3.2.1',
-                'hostname': 'host1',
-            },
-            'databases': {
-                'db1': {
-                    'tables': {
-                        'table1': {
-                            'engine': 'MergeTree',
-                            'parts': {
-                                'part1': {
-                                    'bytes': 1024,
-                                    'files': ['file1', 'file2'],
-                                    'checksum': 'checksum1',
-                                    'tarball': True,
-                                    'link': None,
-                                    'disk_name': 'default',
+                            }),
+        ],
+        'deleting_backups': [
+            backup_metadata(name='backup1',
+                            state=BackupState.CREATED,
+                            databases={
+                                'db1': {
+                                    'tables': {
+                                        'table1': {
+                                            'engine': 'MergeTree',
+                                            'parts': parts(1),
+                                        },
+                                    },
                                 },
-                            },
-                        },
-                    },
-                },
-            },
-        }],
+                            }),
+        ],
         'result': {
             'backup1': {
                 'db1': {
@@ -93,13 +464,13 @@ from tests.unit.utils import parametrize
     },
 })
 def test_collect_dedup_references_for_batch_backup_deletion(retained_backups, deleting_backups, result):
-    retained_backups = [BackupMetadata.load(raw_backup) for raw_backup in retained_backups]
-    deleting_backups = [BackupMetadata.load(raw_backup) for raw_backup in deleting_backups]
-
-    layout = MagicMock()
-    layout.reload_backup = lambda backup, use_light_meta: backup
-
     assert collect_dedup_references_for_batch_backup_deletion(
-        layout=layout,
+        layout=layout_mock(),
         retained_backups_with_light_meta=retained_backups,
         deleting_backups_with_light_meta=deleting_backups) == result
+
+
+def layout_mock():
+    layout = MagicMock()
+    layout.reload_backup = lambda backup, use_light_meta: backup
+    return layout

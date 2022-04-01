@@ -21,6 +21,8 @@ from ch_backup.backup.metadata import (BackupMetadata, BackupState, TableMetadat
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.control import ClickhouseCTL, Table
+from ch_backup.clickhouse.schema import (is_distributed, is_external_db_engine, is_materialized_view, is_merge_tree,
+                                         is_replicated, is_view)
 from ch_backup.config import Config
 from ch_backup.exceptions import BackupNotFound, ClickhouseBackupError
 from ch_backup.storage.engine.s3 import S3StorageEngine
@@ -116,9 +118,9 @@ class ClickhouseBackup:
 
             dedup_info = collect_dedup_info(config=self._config,
                                             layout=self._backup_layout,
+                                            creating_backup=backup_meta,
                                             backups_with_light_meta=backups_with_light_meta,
-                                            databases=databases,
-                                            schema_only=schema_only)
+                                            databases=databases)
 
             for db_name in databases:
                 self._backup_database(backup_meta, db_name, db_tables[db_name], dedup_info.database(db_name),
@@ -408,7 +410,7 @@ class ClickhouseBackup:
         """
         logging.debug('Performing table backup for "%s"."%s"', table.database, table.name)
 
-        if not _is_merge_tree(table):
+        if not is_merge_tree(table.engine):
             logging.info('Skipping table backup for non MergeTree table "%s"."%s"', table.database, table.name)
             return
 
@@ -541,7 +543,7 @@ class ClickhouseBackup:
                 source_bucket: str = cloud_storage_source_bucket
                 source_path: str = cloud_storage_source_path
                 self._restore_cloud_storage_data(backup_meta, source_bucket, source_path, cloud_storage_latest)
-            self._restore_data(backup_meta, filter(_is_merge_tree, tables_meta))
+            self._restore_data(backup_meta, [table for table in tables_meta if is_merge_tree(table.engine)])
 
     def _restore_tables(self,
                         tables: Iterable[Table],
@@ -552,19 +554,20 @@ class ClickhouseBackup:
         view_tables = []
         other_tables = []
         for table in tables:
-            if _is_merge_tree(table):
+            if is_merge_tree(table.engine):
                 merge_tree_tables.append(table)
-            elif _is_distributed(table):
+            elif is_distributed(table.engine):
                 distributed_tables.append(table)
-            elif _is_view(table):
+            elif is_view(table.engine):
                 view_tables.append(table)
             else:
                 other_tables.append(table)
 
         if clean_zookeeper and len(self._zk_config.get('hosts')) > 0:
+            macros = self._ch_ctl.get_macros()
+            replicated_tables = [table for table in merge_tree_tables if is_replicated(table.engine)]
             zk_ctl = ZookeeperCTL(self._zk_config)
-            zk_ctl.delete_replica_metadata(get_zookeeper_paths(filter(_is_replicated, merge_tree_tables)),
-                                           replica_name, self._ch_ctl.get_macros())
+            zk_ctl.delete_replica_metadata(get_zookeeper_paths(replicated_tables), replica_name, macros)
 
         self._restore_table_objects(chain(merge_tree_tables, other_tables, distributed_tables, view_tables))
 
@@ -582,7 +585,7 @@ class ClickhouseBackup:
         while unprocessed:
             table = unprocessed.popleft()
             try:
-                if _is_view(table):
+                if is_view(table.engine):
                     self._restore_view_object(table)
                 else:
                     self._ch_ctl.restore_meta(self._rewrite_with_explicit_uuid(table))
@@ -735,7 +738,7 @@ class ClickhouseBackup:
         if table.uuid and self._ch_ctl.get_database_schema(table.database).find('ENGINE = Atomic') != -1:
             # For 21.4 it's required to explicitly set inner table UUID for MV.
             inner_uuid_clause = ''
-            if _is_materialized_view(table) and self._ch_ctl.match_ch_version('21.4'):
+            if is_materialized_view(table.engine) and self._ch_ctl.match_ch_version('21.4'):
                 mv_inner_table = self._ch_ctl.get_table(table.database, f'.inner_id.{table.uuid}')
                 if mv_inner_table:
                     inner_uuid_clause = f"TO INNER UUID '{mv_inner_table.uuid}'"
@@ -770,7 +773,7 @@ class ClickhouseBackup:
         - MaterializedPostgreSQL
         or False otherwise
         """
-        return _is_external_db_engine(self._ch_ctl.get_database_engine(db_name))
+        return is_external_db_engine(self._ch_ctl.get_database_engine(db_name))
 
 
 def _get_access_control_files(objects: Sequence[str]) -> chain:
@@ -792,55 +795,3 @@ def _has_embedded_metadata(db_name: str) -> bool:
         'information_schema',
         'INFORMATION_SCHEMA',
     ]
-
-
-def _is_merge_tree(table: Union[Table, TableMetadata]) -> bool:
-    """
-    Return True if table belongs to merge tree table engine family, or False otherwise.
-    """
-    return table.engine.find('MergeTree') != -1
-
-
-def _is_replicated(table: Union[Table, TableMetadata]) -> bool:
-    """
-    Return True if table belongs to replicated merge tree table engine family, or False otherwise.
-    """
-    return table.engine.find('Replicated') != -1
-
-
-def _is_distributed(table: Union[Table, TableMetadata]) -> bool:
-    """
-    Return True if table has distributed engine, or False otherwise.
-    """
-    return table.engine == 'Distributed'
-
-
-def _is_view(table: Union[Table, TableMetadata]) -> bool:
-    """
-    Return True if table is a view, or False otherwise.
-    """
-    return table.engine in ('View', 'MaterializedView')
-
-
-def _is_materialized_view(table: Union[Table, TableMetadata]) -> bool:
-    """
-    Return True if table is a view, or False otherwise.
-    """
-    return table.engine == 'MaterializedView'
-
-
-def _is_external_db_engine(db_engine: str) -> bool:
-    """
-    Return True if DB's engine is one of:
-    - MySQL
-    - MaterializedMySQL
-    - PostgreSQL
-    - MaterializedPostgreSQL
-    or False otherwise
-    """
-    return any([
-        db_engine == 'MySQL',
-        db_engine == 'MaterializedMySQL',
-        db_engine == 'PostgreSQL',
-        db_engine == 'MaterializedPostgreSQL',
-    ])

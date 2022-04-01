@@ -250,11 +250,11 @@ class BackupMetadata:
         """
         self.end_time = now()
 
-    def dump_json(self, light: bool = False) -> str:
+    def dump(self, light: bool = False) -> dict:
         """
-        Return json representation of backup metadata.
+        Serialize backup metadata.
         """
-        report = {
+        return {
             'databases': self._databases if not light else {},
             'access_control': self._access_control if not light else [],
             'meta': {
@@ -277,7 +277,12 @@ class BackupMetadata:
                 's3_revisions': self.s3_revisions,
             },
         }
-        return json.dumps(report, separators=(',', ':'))
+
+    def dump_json(self, light: bool = False) -> str:
+        """
+        Return json representation of backup metadata.
+        """
+        return json.dumps(self.dump(light), separators=(',', ':'))
 
     @classmethod
     def load(cls, data: dict) -> 'BackupMetadata':
