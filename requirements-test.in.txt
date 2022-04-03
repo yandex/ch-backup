@@ -7,9 +7,9 @@ flake8-quotes
 flake8-print
 pep8
 pylint
-mypy
+mypy==0.910
 types-PyYAML
-types-requests
+types-requests<2.27
 types-setuptools
 types-tabulate
 bandit
@@ -20,3 +20,4 @@ behave
 docker
 docker-compose<1.28
 Jinja2
+deepdiff

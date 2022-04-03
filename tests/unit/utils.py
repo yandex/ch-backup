@@ -1,10 +1,12 @@
 """
 Testing utilities.
 """
+from collections import defaultdict
 from datetime import timedelta
 from typing import List
 
 import pytest
+from deepdiff import DeepDiff
 
 from ch_backup.backup.deduplication import PartDedupInfo
 from ch_backup.backup.metadata import BackupMetadata, BackupState
@@ -155,3 +157,10 @@ def parts_dedup_info(backup_path: str, count: int, verified: bool = False) -> di
                                      verified=verified)
 
     return result
+
+
+def assert_equal(actual, expected):
+    if actual != expected:
+        ignore_type_in_groups = [(dict, defaultdict)]
+        diff = DeepDiff(actual, expected, ignore_type_in_groups=ignore_type_in_groups)
+        assert False, f'\n   expected: {expected}\n    but was: {actual}\ndifferences:\n{diff.pretty()}'

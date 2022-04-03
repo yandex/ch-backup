@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 from ch_backup.backup.deduplication import (DatabaseDedupInfo, DedupInfo, collect_dedup_info,
                                             collect_dedup_references_for_batch_backup_deletion)
 from ch_backup.backup.metadata import BackupState
-from tests.unit.utils import (backup_metadata, parametrize, parts, parts_dedup_info)
+from tests.unit.utils import (assert_equal, backup_metadata, parametrize, parts, parts_dedup_info)
 
 
 @parametrize(
@@ -416,11 +416,12 @@ from tests.unit.utils import (backup_metadata, parametrize, parts, parts_dedup_i
     },
 )
 def test_collect_dedup_info(config, creating_backup, databases, backups, result):
-    assert collect_dedup_info(config=config,
-                              layout=layout_mock(),
-                              creating_backup=creating_backup,
-                              databases=databases,
-                              backups_with_light_meta=backups) == result
+    dedup_info = collect_dedup_info(config=config,
+                                    layout=layout_mock(),
+                                    creating_backup=creating_backup,
+                                    databases=databases,
+                                    backups_with_light_meta=backups)
+    assert_equal(dedup_info, result)
 
 
 @parametrize({
