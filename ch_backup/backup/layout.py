@@ -15,6 +15,7 @@ from ch_backup.config import Config
 from ch_backup.encryption import get_encryption
 from ch_backup.exceptions import StorageError
 from ch_backup.storage import StorageLoader
+from ch_backup.storage.engine.s3 import S3RetryingError
 
 BACKUP_META_FNAME = 'backup_struct.json'
 BACKUP_LIGHT_META_FNAME = 'backup_light_struct.json'
@@ -217,23 +218,29 @@ class BackupLayout:
         """
         Check availability of part data in storage.
         """
-        remote_dir_path = _part_path(part.link or backup_path, part.database, part.table, part.name)
-        remote_files = self._storage_loader.list_dir(remote_dir_path)
+        try:
+            remote_dir_path = _part_path(part.link or backup_path, part.database, part.table, part.name)
+            remote_files = self._storage_loader.list_dir(remote_dir_path)
 
-        if remote_files == [f'{part.name}.tar']:
-            actual_size = self._storage_loader.get_file_size(os.path.join(remote_dir_path, f'{part.name}.tar'))
-            target_size = self._target_part_size(part)
-            if target_size != actual_size:
-                logging.warning(f'Part {part.name} files stored in tar, size not match {target_size} != {actual_size}')
+            if remote_files == [f'{part.name}.tar']:
+                actual_size = self._storage_loader.get_file_size(os.path.join(remote_dir_path, f'{part.name}.tar'))
+                target_size = self._target_part_size(part)
+                if target_size != actual_size:
+                    logging.warning(
+                        f'Part {part.name} files stored in tar, size not match {target_size} != {actual_size}')
+                    return False
+                return True
+
+            notfound_files = set(part.files) - set(remote_files)
+            if notfound_files:
+                logging.warning('Some part files were not found in %s: %s', remote_dir_path, ', '.join(notfound_files))
                 return False
+
             return True
 
-        notfound_files = set(part.files) - set(remote_files)
-        if notfound_files:
-            logging.warning('Some part files were not found in %s: %s', remote_dir_path, ', '.join(notfound_files))
+        except S3RetryingError:
+            logging.warning(f"Failed to check data part {part.name}, consider it's broken", exc_info=True)
             return False
-
-        return True
 
     def delete_backup(self, backup_name: str) -> None:
         """
