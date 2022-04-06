@@ -1,4 +1,3 @@
-VERSION?=1.0
 TEST_VENV=.tox/py36
 REQUIREMENTS_VENV=.tox/requirements
 TEST_REQUIREMENTS_VENV=.tox/test_requirements
@@ -155,7 +154,7 @@ ${TEST_REQUIREMENTS_VENV}: requirements.txt requirements-test.in.txt
 
 
 ch_backup/version.txt:
-	@echo ${VERSION}.`git rev-list HEAD --count` > ch_backup/version.txt
+	@echo "2.$$(git rev-list HEAD --count).$$(git rev-parse --short HEAD | perl -ne 'print hex $$_')" > ch_backup/version.txt
 
 
 .PHONY: help
