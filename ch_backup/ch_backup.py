@@ -588,7 +588,7 @@ class ClickhouseBackup:
                 if is_view(table.engine):
                     self._restore_view_object(table)
                 else:
-                    self._ch_ctl.restore_meta(self._rewrite_with_explicit_uuid(table))
+                    self._ch_ctl.restore_meta(self._get_create_query_for_restore(table))
             except Exception as e:
                 errors.append((table, e))
                 unprocessed.append(table)
@@ -752,17 +752,11 @@ class ClickhouseBackup:
 
         return self._rewrite_merge_tree_object(table_sql)
 
-    def _rewrite_with_explicit_uuid(self, table: Table) -> str:
-        table_sql = table.create_statement
-        # Rewrite create statement with explicit table UUID (as was in backup).
+    def _get_create_query_for_restore(self, table: Table) -> str:
         if table.uuid and self._ch_ctl.get_database_schema(table.database).find('ENGINE = Atomic') != -1:
-            # CREATE TABLE <db-name>.<table-name> $ (...)
-            # UUID clause is inserted to $ place.
-            index = table.create_statement.find('(')
-            assert index != -1, f'Unable to find UUID insertion point for the following create table statement: ' \
-                                f'{table_sql} '
-            return table_sql[:index] + f"UUID '{table.uuid}' " + table_sql[index:]
-        return table_sql
+            # Rewrite create statement with explicit table UUID (as was in backup).
+            return _rewrite_with_explicit_uuid(table)
+        return table.create_statement
 
     def _is_db_external(self, db_name: str) -> bool:
         """
@@ -774,6 +768,22 @@ class ClickhouseBackup:
         or False otherwise
         """
         return is_external_db_engine(self._ch_ctl.get_database_engine(db_name))
+
+
+def _rewrite_with_explicit_uuid(table: Table) -> str:
+    # CREATE TABLE <db-name>.<table-name> $ (...)
+    # UUID clause is inserted to $ place.
+    table_sql = table.create_statement
+    engine_index = table_sql.upper().find('ENGINE')
+    brace_index = table_sql.find('(')
+    if engine_index != -1 and brace_index != -1:
+        index = min(engine_index, brace_index)
+    else:
+        index = max(engine_index, brace_index)
+
+    assert index != -1, f'Unable to find UUID insertion point for the following create table statement: ' \
+                        f'{table_sql} '
+    return table_sql[:index] + f"UUID '{table.uuid}' " + table_sql[index:]
 
 
 def _get_access_control_files(objects: Sequence[str]) -> chain:
