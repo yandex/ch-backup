@@ -126,5 +126,5 @@ Integration tests verify ch-backup functionality in isolated virtual environment
 The tests can be run as a part of regression test suite with `make all` or
 separately with `make integration_test`. Additionally, `BEHAVE_ARGS` parameter
 can be used to pass additional arguments to underlying `behave` invocation.
-For example, `make integration_tests BEHAVE_ARGS='-i ssl_support'` executes
+For example, `make integration_test BEHAVE_ARGS='-i ssl_support'` executes
 tests that belongs to SSL support feature (`ssl_support.feature`).
