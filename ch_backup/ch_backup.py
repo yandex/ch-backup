@@ -7,7 +7,6 @@ from collections import defaultdict, deque
 from copy import copy
 from datetime import timedelta
 from itertools import chain
-from os import remove
 from os.path import exists, join
 from time import sleep
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple, Union
@@ -20,9 +19,11 @@ from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import (BackupMetadata, BackupState, TableMetadata)
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.clickhouse.client import ClickhouseError
-from ch_backup.clickhouse.control import ClickhouseCTL, Table
-from ch_backup.clickhouse.schema import (is_distributed, is_external_db_engine, is_materialized_view, is_merge_tree,
-                                         is_replicated, is_view)
+from ch_backup.clickhouse.control import ClickhouseCTL
+from ch_backup.clickhouse.models import Table
+from ch_backup.clickhouse.schema import (is_atomic_db_engine, is_distributed, is_external_db_engine,
+                                         is_materialized_view, is_merge_tree, is_replicated, is_view,
+                                         rewrite_table_schema)
 from ch_backup.config import Config
 from ch_backup.exceptions import BackupNotFound, ClickhouseBackupError
 from ch_backup.storage.engine.s3 import S3StorageEngine
@@ -333,13 +334,13 @@ class ClickhouseBackup:
             logging.debug('Restoring database "%s"', database)
             if not _has_embedded_metadata(database) and database not in present_databases:
                 db_sql = source_ch_ctl.get_database_schema(database)
-                self._ch_ctl.restore_meta(db_sql)
+                self._ch_ctl.restore_database(db_sql)
             tables.extend(source_ch_ctl.get_tables_ordered(database))
 
         if self._config['override_replica_name'] is None and replica_name is not None:
             self._config['override_replica_name'] = replica_name
         for table in tables:
-            table.create_statement = self._rewrite_merge_tree_object(table.create_statement)
+            self._rewrite_table_schema(table)
         self._restore_tables(self._filter_present_tables(databases, tables),
                              clean_zookeeper=True,
                              replica_name=replica_name)
@@ -554,6 +555,8 @@ class ClickhouseBackup:
         view_tables = []
         other_tables = []
         for table in tables:
+            self._rewrite_table_schema(table, add_uuid_if_required=True)
+
             if is_merge_tree(table.engine):
                 merge_tree_tables.append(table)
             elif is_distributed(table.engine):
@@ -577,7 +580,7 @@ class ClickhouseBackup:
         for db_name in databases:
             if not _has_embedded_metadata(db_name) and db_name not in present_databases:
                 db_sql = self._backup_layout.get_database_create_statement(backup_meta, db_name)
-                self._ch_ctl.restore_meta(db_sql)
+                self._ch_ctl.restore_database(db_sql)
 
     def _restore_table_objects(self, tables: Iterable[Table]) -> None:
         errors: List[Tuple[Union[Table], Exception]] = []
@@ -585,15 +588,14 @@ class ClickhouseBackup:
         while unprocessed:
             table = unprocessed.popleft()
             try:
-                if is_view(table.engine):
-                    self._restore_view_object(table)
-                else:
-                    self._ch_ctl.restore_meta(self._get_create_query_for_restore(table))
+                self._ch_ctl.restore_table(table.database, table.name, table.engine, table.create_statement)
             except Exception as e:
                 errors.append((table, e))
                 unprocessed.append(table)
                 if len(errors) > len(unprocessed):
                     break
+                logging.warning(f'Failed to restore "{table.database}"."{table.name}" with "{repr(e)}",'
+                                ' will retry after restoring other tables')
             else:
                 errors.clear()
 
@@ -602,23 +604,6 @@ class ClickhouseBackup:
                           '\n'.join(f'"{v.database}"."{v.name}": {e!r}' for v, e in errors))
             failed_tables = sorted(f'`{t.database}`.`{t.name}`' for t in set(table for table, _ in errors))
             raise ClickhouseBackupError(f'Failed to restore tables: {", ".join(failed_tables)}')
-
-    def _restore_view_object(self, view: Table) -> None:
-        # Create view through attach to omit checks.
-        database_meta = self._ch_ctl.get_database_metadata_path(view.database)
-        table_meta = join(database_meta, f'{view.name}.sql')
-        try:
-            create_sql = self._rewrite_view_object(view)
-            with open(table_meta, 'w', encoding='utf-8') as f:
-                f.write(create_sql)
-            self._ch_ctl.chown_dir(database_meta)
-            self._ch_ctl.attach_table(view)
-        except Exception as e:
-            if exists(table_meta):
-                remove(table_meta)
-            logging.debug(f'Failed to restore view via metadata attach, query: "{create_sql}", '
-                          f'error: "{repr(e)}", fallback to create')
-            self._ch_ctl.restore_meta(self._rewrite_merge_tree_object(view.create_statement))
 
     def _restore_cloud_storage_data(self, backup_meta: BackupMetadata, source_bucket: str, source_path: str,
                                     cloud_storage_latest: bool) -> None:
@@ -677,7 +662,7 @@ class ClickhouseBackup:
     def _get_table_from_meta(self, backup_meta: BackupMetadata, meta: TableMetadata) -> Table:
         table = Table(meta.database, meta.name, meta.engine, [], [],
                       self._backup_layout.get_table_create_statement(backup_meta, meta.database, meta.name), meta.uuid)
-        table.create_statement = self._rewrite_merge_tree_object(table.create_statement)
+        self._rewrite_table_schema(table)
         return table
 
     def _filter_present_tables(self, databases: Iterable[str], tables: Iterable[Table]) -> Iterable[Table]:
@@ -717,46 +702,28 @@ class ClickhouseBackup:
 
         return False
 
-    def _rewrite_merge_tree_object(self, table_sql: str) -> str:
-        if self._config['force_non_replicated']:
-            match = re.search(r"(?P<replicated>Replicated)\S{0,20}MergeTree\((?P<params>('[^']+', '[^']+'(,\s*|))|)",
-                              table_sql)
-            if match:
-                params = match.group('params')
-                if len(params) > 0:
-                    table_sql = table_sql.replace(params, '').replace(match.group('replicated'), '')
-                    table_sql = table_sql.replace('MergeTree()', 'MergeTree')
+    def _rewrite_table_schema(self, table: Table, add_uuid_if_required: bool = False) -> None:
+        rewrite_table_schema(table,
+                             force_non_replicated_engine=self._config['force_non_replicated'],
+                             override_replica_name=self._config['override_replica_name'])
 
-        if self._config['override_replica_name']:
-            match = re.search(r"Replicated\S{0,20}MergeTree\('[^']+', (?P<replica>\'\S+\')", table_sql)
-            if match:
-                table_sql = table_sql.replace(match.group('replica'), f"'{self._config['override_replica_name']}'")
+        if add_uuid_if_required and table.uuid and self._is_db_atomic(table.database):
+            if is_view(table.engine):
+                self._rewrite_view_schema_with_explicit_uuid(table)
+            else:
+                _rewrite_table_schema_with_explicit_uuid(table)
 
-        return table_sql
+    def _rewrite_view_schema_with_explicit_uuid(self, table: Table) -> None:
+        # Starting with 21.4 it's required to explicitly set inner table UUID for MV.
+        inner_uuid_clause = ''
+        if is_materialized_view(table.engine) and self._ch_ctl.match_ch_version('21.4'):
+            mv_inner_table = self._ch_ctl.get_table(table.database, f'.inner_id.{table.uuid}')
+            if mv_inner_table:
+                inner_uuid_clause = f"TO INNER UUID '{mv_inner_table.uuid}'"
 
-    def _rewrite_view_object(self, table: Table) -> str:
-        if table.uuid and self._ch_ctl.get_database_schema(table.database).find('ENGINE = Atomic') != -1:
-            # For 21.4 it's required to explicitly set inner table UUID for MV.
-            inner_uuid_clause = ''
-            if is_materialized_view(table.engine) and self._ch_ctl.match_ch_version('21.4'):
-                mv_inner_table = self._ch_ctl.get_table(table.database, f'.inner_id.{table.uuid}')
-                if mv_inner_table:
-                    inner_uuid_clause = f"TO INNER UUID '{mv_inner_table.uuid}'"
-
-            table_sql = re.sub(
-                f'^CREATE (?P<mat>(MATERIALIZED )?)VIEW (?P<table_name>`?{table.database}`?.`?{table.name}`?) ',
-                f"ATTACH \\g<mat>VIEW \\g<table_name> UUID '{table.uuid}' {inner_uuid_clause} ",
-                table.create_statement)
-        else:
-            table_sql = re.sub(r'^CREATE (?P<mat>(MATERIALIZED )?)VIEW', r'ATTACH \g<mat>VIEW', table.create_statement)
-
-        return self._rewrite_merge_tree_object(table_sql)
-
-    def _get_create_query_for_restore(self, table: Table) -> str:
-        if table.uuid and self._ch_ctl.get_database_schema(table.database).find('ENGINE = Atomic') != -1:
-            # Rewrite create statement with explicit table UUID (as was in backup).
-            return _rewrite_with_explicit_uuid(table)
-        return table.create_statement
+        table.create_statement = re.sub(
+            f'^CREATE (?P<mat>(MATERIALIZED )?)VIEW (?P<table_name>`?{table.database}`?.`?{table.name}`?) ',
+            f"CREATE \\g<mat>VIEW \\g<table_name> UUID '{table.uuid}' {inner_uuid_clause} ", table.create_statement)
 
     def _is_db_external(self, db_name: str) -> bool:
         """
@@ -769,8 +736,14 @@ class ClickhouseBackup:
         """
         return is_external_db_engine(self._ch_ctl.get_database_engine(db_name))
 
+    def _is_db_atomic(self, db_name: str) -> bool:
+        """
+        Return True if database engine is Atomic, or False otherwise.
+        """
+        return is_atomic_db_engine(self._ch_ctl.get_database_engine(db_name))
 
-def _rewrite_with_explicit_uuid(table: Table) -> str:
+
+def _rewrite_table_schema_with_explicit_uuid(table: Table) -> None:
     # CREATE TABLE <db-name>.<table-name> $ (...)
     # UUID clause is inserted to $ place.
     table_sql = table.create_statement
@@ -783,7 +756,7 @@ def _rewrite_with_explicit_uuid(table: Table) -> str:
 
     assert index != -1, f'Unable to find UUID insertion point for the following create table statement: ' \
                         f'{table_sql} '
-    return table_sql[:index] + f"UUID '{table.uuid}' " + table_sql[index:]
+    table.create_statement = table_sql[:index] + f"UUID '{table.uuid}' " + table_sql[index:]
 
 
 def _get_access_control_files(objects: Sequence[str]) -> chain:

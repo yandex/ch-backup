@@ -3,7 +3,7 @@ Unit test for util module.
 """
 import pytest
 
-from ch_backup.clickhouse.control import Table
+from ch_backup.clickhouse.models import Table
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.util import (compare_schema, get_zookeeper_paths, retry, strip_query)
 

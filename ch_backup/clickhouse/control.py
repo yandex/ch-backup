@@ -7,15 +7,16 @@ import os
 import shutil
 from hashlib import md5
 from tarfile import BLOCKSIZE  # type: ignore
-from types import SimpleNamespace
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Sequence, Union
 
 from pkg_resources import parse_version
 
 from ch_backup import logging
-from ch_backup.backup.metadata import PartMetadata, TableMetadata
+from ch_backup.backup.metadata import TableMetadata
 from ch_backup.backup.restore_context import RestoreContext
-from ch_backup.clickhouse.client import ClickhouseClient, ClickhouseError
+from ch_backup.clickhouse.client import ClickhouseClient
+from ch_backup.clickhouse.models import Disk, FreezedPart, Table
+from ch_backup.clickhouse.schema import is_replicated, is_view, to_attach_query
 from ch_backup.util import chown_dir_contents, retry, strip_query
 
 GET_TABLES_SQL = strip_query("""
@@ -46,12 +47,20 @@ PART_ATTACH_SQL = strip_query("""
 """)
 
 TABLE_ATTACH_SQL = strip_query("""
-    ATTACH TABLE `{database}`.`{table}`
+    ATTACH TABLE `{db_name}`.`{table_name}`
 """)
 
 FREEZE_TABLE_SQL = strip_query("""
     ALTER TABLE `{db_name}`.`{table_name}`
     FREEZE WITH NAME '{backup_name}'
+""")
+
+DROP_TABLE_IF_EXISTS_SQL = strip_query("""
+    DROP TABLE IF EXISTS `{db_name}`.`{table_name}`
+""")
+
+RESTORE_REPLICA_SQL = strip_query("""
+    SYSTEM RESTORE REPLICA `{db_name}`.`{table_name}`
 """)
 
 GET_DATABASES_SQL = strip_query("""
@@ -103,76 +112,6 @@ RESTART_DISK_SQL = strip_query("""
 """)
 
 
-class Disk(SimpleNamespace):
-    """
-    Disk representation.
-    """
-    def __init__(self, name: str, path: str, disk_type: str):
-        super().__init__()
-        self.name = name
-        self.path = path
-        self.type = disk_type
-
-
-class Table(SimpleNamespace):
-    """
-    Table.
-    """
-    def __init__(self, database: str, name: str, engine: str, disks: List[Disk], data_paths: List[str],
-                 create_statement: str, uuid: Optional[str]) -> None:
-        super().__init__()
-        self.database = database
-        self.name = name
-        self.engine = engine
-        self.create_statement = create_statement
-        self.uuid = uuid
-        self.paths_with_disks = self._map_paths_to_disks(disks, data_paths)
-
-    def _map_paths_to_disks(self, disks: List[Disk], data_paths: List[str]) -> List[Tuple[str, Disk]]:
-        return list(map(lambda data_path: (data_path, self._map_path_to_disk(disks, data_path)), data_paths))
-
-    def __hash__(self):
-        return hash((self.database, self.name))
-
-    @staticmethod
-    def _map_path_to_disk(disks: List[Disk], data_path: str) -> Disk:
-        matched_disks = list(filter(lambda disk: data_path.startswith(disk.path), disks))
-
-        # Disks are sorted by their length of path.
-        # We return disk with longest path matched to given data_path here.
-        return matched_disks[0]
-
-
-class FreezedPart(SimpleNamespace):
-    """
-    Freezed data part.
-    """
-    def __init__(self, database: str, table: str, name: str, disk_name: str, path: str, checksum: str, size: int,
-                 files: List[str]):
-        super().__init__()
-        self.database = database
-        self.table = table
-        self.name = name
-        self.disk_name = disk_name
-        self.path = path
-        self.checksum = checksum
-        self.size = size
-        self.files = files
-
-    def to_part_metadata(self) -> PartMetadata:
-        """
-        Converts to PartMetadata.
-        """
-        return PartMetadata(database=self.database,
-                            table=self.table,
-                            name=self.name,
-                            checksum=self.checksum,
-                            size=self.size,
-                            files=self.files,
-                            tarball=True,
-                            disk_name=self.disk_name)
-
-
 # pylint: disable=too-many-public-methods
 class ClickhouseCTL:
     """
@@ -215,7 +154,7 @@ class ClickhouseCTL:
         """
         Attach data part to the specified table.
         """
-        query_sql = TABLE_ATTACH_SQL.format(database=table.database, table=table.name)
+        query_sql = TABLE_ATTACH_SQL.format(db_name=table.database, table_name=table.name)
 
         self._ch_client.query(query_sql)
 
@@ -301,19 +240,39 @@ class ClickhouseCTL:
         query_sql = CHECK_TABLE_SQL.format(db_name=db_name, table_name=table_name)
         return bool(int(self._ch_client.query(query_sql)))
 
-    def restore_meta(self, query_sql: str) -> None:
+    def restore_database(self, database_schema: str) -> None:
         """
-        Restore database or table meta sql
+        Restore database.
         """
-        try:
-            self._ch_client.query(query_sql)
-        except ClickhouseError as e:
-            logging.warning(f'failed to execute "{query_sql}" with error {repr(e)}, fallback to ATTACH')
-            self._ch_client.query(query_sql.replace("CREATE", "ATTACH", 1))
+        self._ch_client.query(database_schema)
+
+    def restore_table(self, db_name: str, table_name: str, table_engine: str, table_schema: str) -> None:
+        """
+        Restore table.
+        """
+        if is_view(table_engine):
+            # Restore views using ATTACH.
+            self._ch_client.query(to_attach_query(table_schema))
+        elif is_replicated(table_engine) and self.match_ch_version(min_version='21.8'):
+            # Restore replicated tables using ATTACH + SYSTEM RESTORE REPLICA.
+            # Conditional logic for differential versions is required because:
+            # - Starting with 22.4 it's forbidden to specify UUID in non-distributed CREATE queries. As a result, we
+            #   cannot use CREATE in new versions.
+            # - SYSTEM RESTORE REPLICA query is supported only for versions 21.8 and newer. As a result, we
+            #   cannot use SYSTEM RESTORE REPLICA in old versions.
+            try:
+                self._ch_client.query(to_attach_query(table_schema))
+                self._ch_client.query(RESTORE_REPLICA_SQL.format(db_name=db_name, table_name=table_name))
+            except Exception:
+                self._ch_client.query(DROP_TABLE_IF_EXISTS_SQL.format(db_name=db_name, table_name=table_name))
+                raise
+        else:
+            # Use CREATE for restoring all other types of tables.
+            self._ch_client.query(table_schema)
 
     def get_database_metadata_path(self, database: str) -> str:
         """
-        Get filesystem absolute path to databse metadata.
+        Get filesystem absolute path to database metadata.
         """
         data = self._ch_client.query(GET_DATABASE_METADATA_PATH.format(db_name=database))['data']
         assert len(data) == 1

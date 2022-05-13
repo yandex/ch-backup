@@ -2,8 +2,8 @@
 Unit tests ClickhouseBackup.
 """
 
-from ch_backup.ch_backup import _rewrite_with_explicit_uuid
-from ch_backup.clickhouse.control import Table
+from ch_backup.ch_backup import _rewrite_table_schema_with_explicit_uuid
+from ch_backup.clickhouse.models import Table
 from tests.unit.utils import parametrize
 
 
@@ -41,4 +41,5 @@ from tests.unit.utils import parametrize
     })
 def test_rewrite_with_explicit_uuid(create, uuid, result):
     table: Table = Table(name="", database="", engine="", disks=[], data_paths=[], create_statement=create, uuid=uuid)
-    assert _rewrite_with_explicit_uuid(table) == result
+    _rewrite_table_schema_with_explicit_uuid(table)
+    assert table.create_statement == result

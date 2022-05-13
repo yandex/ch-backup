@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Sequence, Set
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, BackupState, PartMetadata
-from ch_backup.clickhouse.control import FreezedPart
+from ch_backup.clickhouse.models import FreezedPart
 from ch_backup.clickhouse.schema import is_replicated
 from ch_backup.util import utcnow
 

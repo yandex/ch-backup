@@ -454,6 +454,7 @@ Feature: Backup replicated merge tree table
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
+  @require_version_21.8
   Scenario: Backup replicated table with invalid zk path
     Given we have executed queries on clickhouse01
     """

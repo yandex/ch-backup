@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from ch_backup import logging
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
-from ch_backup.clickhouse.control import FreezedPart
+from ch_backup.clickhouse.models import FreezedPart
 from ch_backup.config import Config
 from ch_backup.encryption import get_encryption
 from ch_backup.exceptions import StorageError
