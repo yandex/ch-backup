@@ -7,7 +7,6 @@ Feature: Backup users, roles, etc. created by SQL
     And a working clickhouse on clickhouse01
     And a working clickhouse on clickhouse02
 
-  @require_version_20.6
   Scenario: Backup user, role with grants and row_policy
     Given we have executed queries on clickhouse01
     """

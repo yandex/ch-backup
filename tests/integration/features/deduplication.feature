@@ -52,28 +52,6 @@ Feature: Deduplication
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
-  @legacy_versions_prior_20.3
-  Scenario Outline: Failed backups are used in deduplication
-    Given metadata of clickhouse01 backup #0 was adjusted with
-    """
-    meta:
-        state: <state>
-    """
-    And file "data/test_db1/test_table1/0_1_1_0/0_1_1_0.tar" was deleted from clickhouse01 backup #0
-    When we create clickhouse01 clickhouse backup
-    Then we got the following backups on clickhouse01
-      | num | state    | data_count | link_count   |
-      | 0   | created  | 4          | 1            |
-      | 1   | <state>  | 2          | 0            |
-    When we restore clickhouse backup #0 to clickhouse02
-    Then we got same clickhouse data at clickhouse01 clickhouse02
-
-    Examples:
-      | state             |
-      | creating          |
-      | failed            |
-
-  @require_version_20.3
   Scenario Outline: Failed backups are used in deduplication
     Given we have executed queries on clickhouse01
     """
@@ -104,7 +82,6 @@ Feature: Deduplication
       | creating          |
       | failed            |
 
-  @require_version_20.3
   Scenario Outline: Broken parts are not used in deduplication
     Given we have executed queries on clickhouse01
     """

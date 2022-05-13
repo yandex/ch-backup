@@ -173,10 +173,7 @@ class ClickhouseClient:
         db_name = self._get_test_db_name(db_num)
         table_name = self._get_test_table_name(table_num)
 
-        query = f'DROP TABLE `{db_name}`.`{table_name}`'
-        if self.match_ch_version(min_version='20.8'):
-            query += ' NO DELAY'
-
+        query = f'DROP TABLE `{db_name}`.`{table_name}` NO DELAY'
         self._query('POST', query)
 
     def _get_all_user_tables(self) -> dict:

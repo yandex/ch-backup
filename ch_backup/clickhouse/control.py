@@ -34,22 +34,6 @@ GET_TABLES_SQL = strip_query("""
     FORMAT JSON
 """)
 
-GET_TABLES_COMPAT_20_3_SQL = strip_query("""
-    SELECT
-        database,
-        name,
-        engine,
-        engine_full,
-        create_table_query,
-        data_paths,
-        NULL "uuid"
-    FROM system.tables
-    WHERE database = '{db_name}'
-      AND (empty({tables}) OR has(cast({tables}, 'Array(String)'), name))
-    ORDER BY metadata_modification_time
-    FORMAT JSON
-""")
-
 CHECK_TABLE_SQL = strip_query("""
     SELECT countIf(database = '{db_name}' AND name = '{table_name}')
     FROM system.tables
@@ -291,13 +275,7 @@ class ClickhouseCTL:
         """
         Get ordered by mtime list of all database tables
         """
-        query_sql: str
-        if self.match_ch_version(min_version='20.4'):
-            query_sql = GET_TABLES_SQL
-        else:
-            query_sql = GET_TABLES_COMPAT_20_3_SQL
-
-        query_sql = query_sql.format(db_name=db_name, tables=tables or [])
+        query_sql = GET_TABLES_SQL.format(db_name=db_name, tables=tables or [])
         result: List[Table] = []
         for row in self._ch_client.query(query_sql)['data']:
             result.append(self._make_table(row))
@@ -308,13 +286,7 @@ class ClickhouseCTL:
         """
         Get table by name, returns None if no table has found.
         """
-        query_sql: str
-        if self.match_ch_version(min_version='20.4'):
-            query_sql = GET_TABLES_SQL
-        else:
-            query_sql = GET_TABLES_COMPAT_20_3_SQL
-
-        query_sql = query_sql.format(db_name=db_name, tables=[table_name])
+        query_sql = GET_TABLES_SQL.format(db_name=db_name, tables=[table_name])
         tables_raw = self._ch_client.query(query_sql)['data']
 
         if tables_raw:
