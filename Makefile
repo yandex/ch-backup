@@ -42,8 +42,12 @@ unit_test: ${TEST_VENV} build
 
 .PHONY: integration_test
 integration_test: ${TEST_VENV} build create_env
-	rm -rf staging/logs
-	tox -e integration_test -- -D skip_setup $(BEHAVE_ARGS)
+	@if [[ "${CLICKHOUSE_VERSION}" =~ ^22.4.* ]]; then \
+		echo "Integration tests for ClickHouse 22.4 are disabled"; \
+	else \
+		rm -rf staging/logs; \
+		tox -e integration_test -- -D skip_setup $(BEHAVE_ARGS); \
+	fi
 
 
 .PHONY: clean
