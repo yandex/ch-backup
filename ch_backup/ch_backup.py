@@ -335,15 +335,13 @@ class ClickhouseBackup:
             if not _has_embedded_metadata(database) and database not in present_databases:
                 db_sql = source_ch_ctl.get_database_schema(database)
                 self._ch_ctl.restore_database(db_sql)
-            tables.extend(source_ch_ctl.get_tables_ordered(database))
+            tables.extend(source_ch_ctl.get_tables(database))
 
         if self._config['override_replica_name'] is None and replica_name is not None:
             self._config['override_replica_name'] = replica_name
-        for table in tables:
-            self._rewrite_table_schema(table)
-        self._restore_tables(self._filter_present_tables(databases, tables),
-                             clean_zookeeper=True,
-                             replica_name=replica_name)
+
+        tables = self._preprocess_tables_to_restore(tables)
+        self._restore_tables(tables, clean_zookeeper=True, replica_name=replica_name)
 
     def restore_access_control(self, backup_name: str) -> None:
         """Restore ClickHouse access control metadata."""
@@ -384,7 +382,7 @@ class ClickhouseBackup:
         backup_meta.add_database(db_name)
 
         if not self._is_db_external(db_name):
-            for table in self._ch_ctl.get_tables_ordered(db_name, tables):
+            for table in self._ch_ctl.get_tables(db_name, tables):
                 table_meta = TableMetadata(table.database, table.name, table.engine, table.uuid)
                 self._backup_table_schema(backup_meta, table)
                 if not schema_only:
@@ -532,11 +530,19 @@ class ClickhouseBackup:
                  cloud_storage_source_path: str = None,
                  cloud_storage_latest: bool = False) -> None:
         logging.debug('Restoring databases: %s', ', '.join(databases))
+
+        # Restore databases.
+        self._restore_database_objects(backup_meta, databases)
+
+        # Restore tables and data stored on local disks.
         tables_meta = list(
             chain(*[backup_meta.get_tables(db_name) for db_name in databases if not self._is_db_external(db_name)]))
         tables = list(map(lambda meta: self._get_table_from_meta(backup_meta, meta), tables_meta))
-        self._restore_database_objects(backup_meta, databases)
-        self._restore_tables(self._filter_present_tables(databases, tables), clean_zookeeper, replica_name)
+
+        tables = self._preprocess_tables_to_restore(tables)
+        self._restore_tables(tables, clean_zookeeper, replica_name)
+
+        # Restore data stored on S3 disks.
         if not schema_only:
             if backup_meta.has_s3_data():
                 assert cloud_storage_source_bucket is not None, "Cloud storage source bucket is not set"
@@ -660,24 +666,40 @@ class ClickhouseBackup:
                 self._restore_context.dump_state()
 
     def _get_table_from_meta(self, backup_meta: BackupMetadata, meta: TableMetadata) -> Table:
-        table = Table(meta.database, meta.name, meta.engine, [], [],
-                      self._backup_layout.get_table_create_statement(backup_meta, meta.database, meta.name), meta.uuid)
-        self._rewrite_table_schema(table)
-        return table
+        return Table(
+            database=meta.database,
+            name=meta.name,
+            engine=meta.engine,
+            # TODO: set disks and data_paths
+            disks=[],
+            data_paths=[],
+            uuid=meta.uuid,
+            create_statement=self._backup_layout.get_table_create_statement(backup_meta, meta.database, meta.name))
 
-    def _filter_present_tables(self, databases: Iterable[str], tables: Iterable[Table]) -> Iterable[Table]:
-        present_tables = {}
-        for database in databases:
-            for table in self._ch_ctl.get_tables_ordered(database):
-                present_tables[(table.database, table.name)] = table
-
+    def _preprocess_tables_to_restore(self, tables: List[Table]) -> List[Table]:
+        # Prepare table schema to restore.
         for table in tables:
-            key = (table.database, table.name)
-            if key not in present_tables:
-                yield table
-            elif not compare_schema(present_tables[key].create_statement, table.create_statement):
-                raise ClickhouseBackupError(f'Table {key} has different schema with backup "{table.create_statement}" '
-                                            f'!= "{present_tables[key].create_statement}"')
+            self._rewrite_table_schema(table)
+
+        # Filter out already restored tables.
+        existing_tables = {}
+        for table in self._ch_ctl.get_tables():
+            existing_tables[(table.database, table.name)] = table
+
+        result: List[Table] = []
+        for table in tables:
+            existing_table = existing_tables.get((table.database, table.name))
+            if existing_table:
+                if compare_schema(existing_table.create_statement, table.create_statement):
+                    continue
+                logging.warning(
+                    'Table "%s"."%s" will be recreated as its schema mismatches the schema from backup: "%s" != "%s"',
+                    table.database, table.name, existing_table.create_statement, table.create_statement)
+                self._ch_ctl.drop_table_if_exists(table.database, table.name)
+
+            result.append(table)
+
+        return result
 
     def _get_backup(self, backup_name: str, use_light_meta: bool = False) -> BackupMetadata:
         backup = self._backup_layout.get_backup(backup_name, use_light_meta)

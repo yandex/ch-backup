@@ -46,6 +46,21 @@ Feature: Restore metadata from another host without s3
     When we restore clickhouse schema from clickhouse01 to clickhouse02
     Then clickhouse01 has same schema as clickhouse02
 
+  Scenario: Restore metadata from another host with schema mismatch
+    Given we have executed queries on clickhouse02
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (
+        EventDate DateTime,
+        CounterID UInt32
+    )
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_01', '{replica}')
+    PARTITION BY toYYYYMM(EventDate)
+    ORDER BY (CounterID, EventDate);
+    """
+    When we restore clickhouse schema from clickhouse01 to clickhouse02
+    Then clickhouse01 has same schema as clickhouse02
+
   Scenario: Restore metadata from another host with non empty default db
     Given we have executed queries on clickhouse01
     """

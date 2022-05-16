@@ -29,8 +29,8 @@ GET_TABLES_SQL = strip_query("""
         data_paths,
         uuid
     FROM system.tables
-    WHERE database = '{db_name}'
-      AND (empty({tables}) OR has(cast({tables}, 'Array(String)'), name))
+    WHERE (empty('{db_name}') OR database = '{db_name}')
+      AND (empty({table_names}) OR has(cast({table_names}, 'Array(String)'), name))
     ORDER BY metadata_modification_time
     FORMAT JSON
 """)
@@ -210,11 +210,11 @@ class ClickhouseCTL:
         query_sql = GET_DATABASE_ENGINE.format(db_name=db_name)
         return self._ch_client.query(query_sql)
 
-    def get_tables_ordered(self, db_name: str, tables: Optional[Sequence[str]] = None) -> Sequence[Table]:
+    def get_tables(self, db_name: str = None, tables: Optional[Sequence[str]] = None) -> Sequence[Table]:
         """
-        Get ordered by mtime list of all database tables
+        Get database tables.
         """
-        query_sql = GET_TABLES_SQL.format(db_name=db_name, tables=tables or [])
+        query_sql = GET_TABLES_SQL.format(db_name=db_name or '', table_names=tables or [])
         result: List[Table] = []
         for row in self._ch_client.query(query_sql)['data']:
             result.append(self._make_table(row))
@@ -225,7 +225,7 @@ class ClickhouseCTL:
         """
         Get table by name, returns None if no table has found.
         """
-        query_sql = GET_TABLES_SQL.format(db_name=db_name, tables=[table_name])
+        query_sql = GET_TABLES_SQL.format(db_name=db_name, table_names=[table_name])
         tables_raw = self._ch_client.query(query_sql)['data']
 
         if tables_raw:
@@ -264,11 +264,17 @@ class ClickhouseCTL:
                 self._ch_client.query(to_attach_query(table_schema))
                 self._ch_client.query(RESTORE_REPLICA_SQL.format(db_name=db_name, table_name=table_name))
             except Exception:
-                self._ch_client.query(DROP_TABLE_IF_EXISTS_SQL.format(db_name=db_name, table_name=table_name))
+                self.drop_table_if_exists(db_name, table_name)
                 raise
         else:
             # Use CREATE for restoring all other types of tables.
             self._ch_client.query(table_schema)
+
+    def drop_table_if_exists(self, db_name: str, table_name: str) -> None:
+        """
+        Drop table. If the specified table doesn't exist, do nothing.
+        """
+        self._ch_client.query(DROP_TABLE_IF_EXISTS_SQL.format(db_name=db_name, table_name=table_name))
 
     def get_database_metadata_path(self, database: str) -> str:
         """
