@@ -5,9 +5,10 @@ Docker interface.
 import io
 import os
 import random
+import re
 import tarfile
 from distutils import dir_util
-from typing import Sequence, Tuple
+from typing import List, Sequence, Tuple
 from urllib.parse import urlparse
 
 import docker
@@ -67,7 +68,7 @@ def put_file(container: Container, data: bytes, path: str) -> None:
     container.put_archive(path='/', data=tar_stream.getvalue())
 
 
-def copy_container_dir(container: Container, container_dir: str, local_dir: str) -> None:
+def copy_container_dir(container: Container, container_dir: str, local_dir: str, exclude_pattern: str = None) -> None:
     """
     Save docker directory.
     """
@@ -79,7 +80,13 @@ def copy_container_dir(container: Container, container_dir: str, local_dir: str)
     buffer.seek(0)
 
     with tarfile.open(mode='r', fileobj=buffer) as tar:
-        members = [m for m in tar.getmembers() if m.type != tarfile.SYMTYPE]
+        members: List[tarfile.TarInfo] = []
+        for member in tar.getmembers():
+            if member.type == tarfile.SYMTYPE:
+                continue
+            if exclude_pattern and re.search(exclude_pattern, member.name):
+                continue
+            members.append(member)
         tar.extractall(path=local_dir, members=members)
 
 
