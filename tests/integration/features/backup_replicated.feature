@@ -474,4 +474,5 @@ Feature: Backup replicated merge tree table
       | num | state   | data_count | link_count |
       | 0   | created | 0          | 0          |
     When we restore clickhouse backup #0 to clickhouse02
-    Then we got same clickhouse data at clickhouse01 clickhouse02
+    Then clickhouse02 has same schema as clickhouse01
+    And we got same clickhouse data at clickhouse01 clickhouse02

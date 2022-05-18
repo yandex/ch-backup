@@ -6,14 +6,13 @@ Feature: Backup of tables with different engines and configurations
     And a working zookeeper on zookeeper01
     And a working clickhouse on clickhouse01
     And a working clickhouse on clickhouse02
-    And we have executed queries on clickhouse01
-    """
-    CREATE DATABASE test_db;
-    """
 
+  @merge_tree
   Scenario: Create backup containing merge tree table with old style configuration
     Given we have executed queries on clickhouse01
     """
+    CREATE DATABASE test_db;
+
     CREATE TABLE test_db.table_01 (date Date, n Int32)
     ENGINE = MergeTree(date, date, 8192);
     INSERT INTO test_db.table_01 SELECT today(), number FROM system.numbers LIMIT 1000;
@@ -26,9 +25,12 @@ Feature: Backup of tables with different engines and configurations
     Then clickhouse02 has same schema as clickhouse01
     And we got same clickhouse data at clickhouse01 clickhouse02
 
+  @merge_tree
   Scenario: Create backup containing merge tree tables with new style configuration
     Given we have executed queries on clickhouse01
     """
+    CREATE DATABASE test_db;
+
     CREATE TABLE test_db.table_01 (date Date, n Int32)
     ENGINE = MergeTree() PARTITION BY date ORDER BY date;
     INSERT INTO test_db.table_01 SELECT today(), number FROM system.numbers LIMIT 1000;
@@ -45,9 +47,12 @@ Feature: Backup of tables with different engines and configurations
     Then clickhouse02 has same schema as clickhouse01
     And we got same clickhouse data at clickhouse01 clickhouse02
 
+  @merge_tree
   Scenario: Create backup containing merge tree table with implicit structure
     Given we have executed queries on clickhouse01
     """
+    CREATE DATABASE test_db;
+
     CREATE TABLE test_db.table_01
     ENGINE = MergeTree() PARTITION BY n % 10 ORDER BY n
     AS SELECT number "n", toString(number) "s" FROM system.numbers LIMIT 1000;
@@ -60,9 +65,12 @@ Feature: Backup of tables with different engines and configurations
     Then clickhouse02 has same schema as clickhouse01
     And we got same clickhouse data at clickhouse01 clickhouse02
 
+  @log
   Scenario: Create backup containing tables with log table engine family
     Given we have executed queries on clickhouse01
     """
+    CREATE DATABASE test_db;
+
     CREATE TABLE test_db.table_01 (n Int32, s String) ENGINE = TinyLog;
     INSERT INTO test_db.table_01 SELECT number, toString(number) FROM system.numbers LIMIT 1000;
 
@@ -80,9 +88,12 @@ Feature: Backup of tables with different engines and configurations
     Then clickhouse02 has same schema as clickhouse01
     But on clickhouse02 tables are empty
 
+  @distributed
   Scenario: Create backup containing distributed table
     Given we have executed queries on clickhouse01
     """
+    CREATE DATABASE test_db;
+
     CREATE TABLE test_db.table_01 (n Int32, s String)
     ENGINE = MergeTree() PARTITION BY n % 10 ORDER BY n;
     INSERT INTO test_db.table_01 SELECT number, toString(number) FROM system.numbers LIMIT 1000;
@@ -98,9 +109,11 @@ Feature: Backup of tables with different engines and configurations
     Then clickhouse02 has same schema as clickhouse01
     And we got same clickhouse data at clickhouse01 clickhouse02
 
+  @view
   Scenario: Create backup containing views
     Given we have executed queries on clickhouse01
     """
+    CREATE DATABASE test_db;
     CREATE DATABASE test_db2;
 
     CREATE TABLE test_db.table_01 (n Int32, s String)
@@ -111,11 +124,11 @@ Feature: Backup of tables with different engines and configurations
     ENGINE = MergeTree() PARTITION BY n % 10 ORDER BY n;
     INSERT INTO test_db2.table_02 SELECT number, number * number FROM system.numbers LIMIT 1000;
 
-    CREATE VIEW test_db.view_01
+    CREATE VIEW test_db.view_on_single_table
     AS SELECT n, n * n AS "n2"
     FROM test_db.table_01;
 
-    CREATE VIEW test_db2.view_02
+    CREATE VIEW test_db2.view_on_multiple_tables
     AS SELECT n, n2, s
     FROM (
         SELECT n, s
@@ -126,6 +139,10 @@ Feature: Backup of tables with different engines and configurations
         FROM test_db2.table_02
     ) subquery2
     USING n;
+
+    CREATE LIVE VIEW test_db.live_view
+    AS SELECT n, n * n AS "n2"
+    FROM test_db.table_01;
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
@@ -135,6 +152,7 @@ Feature: Backup of tables with different engines and configurations
     Then clickhouse02 has same schema as clickhouse01
     And we got same clickhouse data at clickhouse01 clickhouse02
 
+  @view
   Scenario: Create backup containing materialized view with implicit backend table
     Given we have executed queries on clickhouse01
     """
@@ -157,9 +175,12 @@ Feature: Backup of tables with different engines and configurations
     Then clickhouse02 has same schema as clickhouse01
     And we got same clickhouse data at clickhouse01 clickhouse02
 
+  @view
   Scenario: Create backup containing materialized view with explicit backend table
     Given we have executed queries on clickhouse01
     """
+    CREATE DATABASE test_db;
+
     CREATE TABLE test_db.table_01 (n Int32, s String)
     ENGINE = MergeTree() PARTITION BY n % 10 ORDER BY n;
 
@@ -180,9 +201,12 @@ Feature: Backup of tables with different engines and configurations
     Then clickhouse02 has same schema as clickhouse01
     And we got same clickhouse data at clickhouse01 clickhouse02
 
+  @view
   Scenario: Create backup containing materialized view with implicit backend table and broken view dependencies
     Given we have executed queries on clickhouse01
     """
+    CREATE DATABASE test_db;
+
     CREATE TABLE test_db.table_01 (n Int32, s String)
     ENGINE = MergeTree() PARTITION BY n % 10 ORDER BY n;
 
@@ -204,9 +228,12 @@ Feature: Backup of tables with different engines and configurations
     And we got same clickhouse data at clickhouse01 clickhouse02
 
   @require_version_21.1
+  @rocksdb
   Scenario: Create backup containing tables with EmbeddedRocksDB table engine family
     Given we have executed queries on clickhouse01
     """
+    CREATE DATABASE test_db;
+
     CREATE TABLE test_db.table_01 (key String, value UInt32) ENGINE = EmbeddedRocksDB PRIMARY KEY key
     """
     When we create clickhouse01 clickhouse backup
@@ -218,9 +245,12 @@ Feature: Backup of tables with different engines and configurations
     But on clickhouse02 tables are empty
 
   @require_version_21.6
+  @merge_tree
   Scenario: Create backup containing merge tree tables with projections
     Given we have executed queries on clickhouse01
     """
+    CREATE DATABASE test_db;
+
     CREATE TABLE test_db.table_01 (date Date, n Int32)
     ENGINE = MergeTree() PARTITION BY date ORDER BY date;
     INSERT INTO test_db.table_01 SELECT today(), number FROM system.numbers LIMIT 1000;

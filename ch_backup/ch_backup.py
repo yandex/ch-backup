@@ -2,7 +2,6 @@
 Clickhouse backup logic
 """
 
-import re
 from collections import defaultdict, deque
 from copy import copy
 from datetime import timedelta
@@ -725,27 +724,21 @@ class ClickhouseBackup:
         return False
 
     def _rewrite_table_schema(self, table: Table, add_uuid_if_required: bool = False) -> None:
+        add_uuid = False
+        inner_uuid = None
+        if add_uuid_if_required and table.uuid and self._is_db_atomic(table.database):
+            add_uuid = True
+            # Starting with 21.4 it's required to explicitly set inner table UUID for materialized views.
+            if is_materialized_view(table.engine) and self._ch_ctl.match_ch_version('21.4'):
+                inner_table = self._ch_ctl.get_table(table.database, f'.inner_id.{table.uuid}')
+                if inner_table:
+                    inner_uuid = inner_table.uuid
+
         rewrite_table_schema(table,
                              force_non_replicated_engine=self._config['force_non_replicated'],
-                             override_replica_name=self._config['override_replica_name'])
-
-        if add_uuid_if_required and table.uuid and self._is_db_atomic(table.database):
-            if is_view(table.engine):
-                self._rewrite_view_schema_with_explicit_uuid(table)
-            else:
-                _rewrite_table_schema_with_explicit_uuid(table)
-
-    def _rewrite_view_schema_with_explicit_uuid(self, table: Table) -> None:
-        # Starting with 21.4 it's required to explicitly set inner table UUID for MV.
-        inner_uuid_clause = ''
-        if is_materialized_view(table.engine) and self._ch_ctl.match_ch_version('21.4'):
-            mv_inner_table = self._ch_ctl.get_table(table.database, f'.inner_id.{table.uuid}')
-            if mv_inner_table:
-                inner_uuid_clause = f"TO INNER UUID '{mv_inner_table.uuid}'"
-
-        table.create_statement = re.sub(
-            f'^CREATE (?P<mat>(MATERIALIZED )?)VIEW (?P<table_name>`?{table.database}`?.`?{table.name}`?) ',
-            f"CREATE \\g<mat>VIEW \\g<table_name> UUID '{table.uuid}' {inner_uuid_clause} ", table.create_statement)
+                             override_replica_name=self._config['override_replica_name'],
+                             add_uuid=add_uuid,
+                             inner_uuid=inner_uuid)
 
     def _is_db_external(self, db_name: str) -> bool:
         """
@@ -763,22 +756,6 @@ class ClickhouseBackup:
         Return True if database engine is Atomic, or False otherwise.
         """
         return is_atomic_db_engine(self._ch_ctl.get_database_engine(db_name))
-
-
-def _rewrite_table_schema_with_explicit_uuid(table: Table) -> None:
-    # CREATE TABLE <db-name>.<table-name> $ (...)
-    # UUID clause is inserted to $ place.
-    table_sql = table.create_statement
-    engine_index = table_sql.upper().find('ENGINE')
-    brace_index = table_sql.find('(')
-    if engine_index != -1 and brace_index != -1:
-        index = min(engine_index, brace_index)
-    else:
-        index = max(engine_index, brace_index)
-
-    assert index != -1, f'Unable to find UUID insertion point for the following create table statement: ' \
-                        f'{table_sql} '
-    table.create_statement = table_sql[:index] + f"UUID '{table.uuid}' " + table_sql[index:]
 
 
 def _get_access_control_files(objects: Sequence[str]) -> chain:

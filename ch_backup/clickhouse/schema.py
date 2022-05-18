@@ -31,7 +31,7 @@ def is_view(engine: str) -> bool:
     """
     Return True if table engine is a view (either View or MaterializedView), or False otherwise.
     """
-    return engine in ('View', 'MaterializedView')
+    return engine in ('View', 'LiveView', 'MaterializedView')
 
 
 def is_materialized_view(engine: str) -> bool:
@@ -74,28 +74,52 @@ def to_attach_query(create_query: str) -> str:
 
 def rewrite_table_schema(table: Table,
                          force_non_replicated_engine: bool = False,
-                         override_replica_name: str = None) -> None:
+                         override_replica_name: str = None,
+                         add_uuid: bool = False,
+                         inner_uuid: str = None) -> None:
     """
     Rewrite table schema.
     """
-    table_schema = table.create_statement
-    table_engine = table.engine
-
     if force_non_replicated_engine:
+        create_statement = table.create_statement
         match = re.search(r"(?P<replicated>Replicated)\S{0,20}MergeTree\((?P<params>('[^']+', '[^']+'(,\s*|))|)",
-                          table_schema)
+                          create_statement)
         if match:
             params = match.group('params')
             if len(params) > 0:
-                table_schema = table_schema.replace(params, '').replace(match.group('replicated'), '')
-                table_schema = table_schema.replace('MergeTree()', 'MergeTree')
-            if is_replicated(table_engine):
-                table_engine = table_engine.replace('Replicated', '')
+                create_statement = create_statement.replace(params, '').replace(match.group('replicated'), '')
+                create_statement = create_statement.replace('MergeTree()', 'MergeTree')
+                table.create_statement = create_statement
+            if is_replicated(table.engine):
+                table.engine = table.engine.replace('Replicated', '')
 
     if override_replica_name:
-        match = re.search(r"Replicated\S{0,20}MergeTree\('[^']+', (?P<replica>\'\S+\')", table_schema)
+        create_statement = table.create_statement
+        match = re.search(r"Replicated\S{0,20}MergeTree\('[^']+', (?P<replica>\'\S+\')", create_statement)
         if match:
-            table_schema = table_schema.replace(match.group('replica'), f"'{override_replica_name}'")
+            table.create_statement = create_statement.replace(match.group('replica'), f"'{override_replica_name}'")
 
-    table.create_statement = table_schema
-    table.engine = table_engine
+    if add_uuid:
+        _add_uuid(table, inner_uuid)
+
+
+def _add_uuid(table: Table, inner_uuid: str = None) -> None:
+    if is_view(table.engine):
+        inner_uuid_clause = f"TO INNER UUID '{inner_uuid}'" if inner_uuid else ''
+        table.create_statement = re.sub(
+            f"^CREATE (?P<view_type>((MATERIALIZED|LIVE) )?VIEW) (?P<view_name>`?{table.database}`?.`?{table.name}`?) ",
+            f"CREATE \\g<view_type> \\g<view_name> UUID '{table.uuid}' {inner_uuid_clause} ", table.create_statement)
+    else:
+        # CREATE TABLE <db-name>.<table-name> $ (...)
+        # UUID clause is inserted to $ place.
+        create_statement = table.create_statement
+        engine_index = create_statement.upper().find('ENGINE')
+        brace_index = create_statement.find('(')
+        if engine_index != -1 and brace_index != -1:
+            index = min(engine_index, brace_index)
+        else:
+            index = max(engine_index, brace_index)
+
+        assert index != -1, f'Unable to find UUID insertion point for the following create table statement: ' \
+                            f'{create_statement} '
+        table.create_statement = create_statement[:index] + f"UUID '{table.uuid}' " + create_statement[index:]
