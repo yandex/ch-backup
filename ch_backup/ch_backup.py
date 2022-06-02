@@ -356,9 +356,15 @@ class ClickhouseBackup:
         # ClickHouse creates file need_rebuild_lists.mark after access management objects modification
         # to show that lists should be updated.
         mark_file = join(self._ch_ctl_conf['access_control_path'], 'need_rebuild_lists.mark')
-        while exists(mark_file):
+        # We wait 10 minutes. Then if file stucks we make backup anyway.
+        max_iterations = 600
+        while max_iterations > 0 and exists(mark_file):
             logging.debug(f'Waiting for clickhouse rebuild access control lists. File "{mark_file}".')
             sleep(1)
+            max_iterations -= 1
+
+        if exists(mark_file):
+            self._backup_layout.upload_access_control_file(backup_meta.name, 'need_rebuild_lists.mark')
 
         for name in _get_access_control_files(objects):
             self._backup_layout.upload_access_control_file(backup_meta.name, name)
