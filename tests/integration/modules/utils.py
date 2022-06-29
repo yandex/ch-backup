@@ -3,6 +3,7 @@ Utility functions.
 """
 
 import logging
+import re
 import string
 from functools import wraps
 from random import choice as random_choise
@@ -88,3 +89,15 @@ def context_to_dict(context: ContextT) -> dict:
                 result[key] = value
 
     return result
+
+
+def normalize_create_query(create_query):
+    """
+    Normalize create table query for comparison.
+    """
+    # Override replica parameter for replicated tables. The backup tool does the same.
+    match = re.search(r"Replicated\S{0,20}MergeTree\('[^']+', (?P<replica>\'\S+\')", create_query)
+    if match:
+        create_query = create_query.replace(match.group('replica'), "'{replica}'")
+
+    return create_query

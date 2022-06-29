@@ -371,7 +371,7 @@ Feature: Backup replicated merge tree table
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE test_db Engine = Atomic;
-    CREATE TABLE test_db.table_01 ON CLUSTER 'cluster_name' (
+    CREATE TABLE test_db.table_01 ON CLUSTER 'default' (
         EventDate DateTime,
         CounterID UInt32,
         UserID UInt32
@@ -381,7 +381,7 @@ Feature: Backup replicated merge tree table
     ORDER BY (CounterID, EventDate, intHash32(UserID))
     SAMPLE BY intHash32(UserID);
 
-    CREATE MATERIALIZED VIEW test_db.view_01 ON CLUSTER 'cluster_name' (
+    CREATE MATERIALIZED VIEW test_db.view_01 ON CLUSTER 'default' (
         `n` Int32
     )
     ENGINE = ReplicatedMergeTree()
@@ -402,7 +402,7 @@ Feature: Backup replicated merge tree table
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE test_db Engine = Atomic;
-    CREATE TABLE test_db.table_01 ON CLUSTER 'cluster_name' (
+    CREATE TABLE test_db.table_01 ON CLUSTER 'default' (
         EventDate DateTime,
         CounterID UInt32,
         UserID UInt32
@@ -412,7 +412,7 @@ Feature: Backup replicated merge tree table
     ORDER BY (CounterID, EventDate, intHash32(UserID))
     SAMPLE BY intHash32(UserID);
 
-    CREATE MATERIALIZED VIEW test_db.view_01 ON CLUSTER 'cluster_name' (
+    CREATE MATERIALIZED VIEW test_db.view_01 ON CLUSTER 'default' (
         `n` Int32
     )
     ENGINE = ReplicatedMergeTree()
@@ -423,7 +423,7 @@ Feature: Backup replicated merge tree table
     """
     And we have executed queries on clickhouse01
     """
-    CREATE TABLE test_db.table_02 ON CLUSTER 'cluster_name' (
+    CREATE TABLE test_db.table_02 ON CLUSTER 'default' (
         EventDate DateTime,
         CounterID UInt32,
         UserID UInt32

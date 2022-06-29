@@ -29,29 +29,37 @@
 {% endif %}
     </openSSL>
     <remote_servers>
-        <cluster_name>
+        <default>
             <shard>
                 <replica>
                     <host>{{instance_name}}.{{conf.network_name}}</host>
                     <port>9000</port>
                 </replica>
             </shard>
-        </cluster_name>
+        </default>
+        <{{instance_name}}>
+            <shard>
+                <replica>
+                    <host>{{instance_name}}.{{conf.network_name}}</host>
+                    <port>9000</port>
+                </replica>
+            </shard>
+        </{{instance_name}}>
     </remote_servers>
-     <zookeeper>
-         <node index="1">
-             <host>{{conf.zk.uri}}</host>
+    <zookeeper>
+        <node index="1">
+            <host>{{conf.zk.uri}}</host>
 {% if conf.zk.secure %}
-             <port>{{conf.zk.secure_port}}</port>
-             <secure>1</secure>
+            <port>{{conf.zk.secure_port}}</port>
+            <secure>1</secure>
 {% else %}
-             <port>{{conf.zk.port}}</port>
+            <port>{{conf.zk.port}}</port>
 {% endif %}
-         </node>
-         <session_timeout_ms>3000</session_timeout_ms>
-         <root>/{{instance_name}}</root>
-         <identity>{{conf.zk.user}}:{{conf.zk.password}}</identity>
-     </zookeeper>
+        </node>
+        <session_timeout_ms>3000</session_timeout_ms>
+        <root>/{{instance_name}}</root>
+        <identity>{{conf.zk.user}}:{{conf.zk.password}}</identity>
+    </zookeeper>
     <macros>
         <replica>{{instance_name}}</replica>
         <shard>shard1</shard>

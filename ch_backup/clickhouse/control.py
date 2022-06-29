@@ -16,7 +16,7 @@ from ch_backup.backup.metadata import TableMetadata
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.clickhouse.models import Disk, FreezedPart, Table
-from ch_backup.clickhouse.schema import is_replicated, is_view, to_attach_query
+from ch_backup.clickhouse.schema import (is_distributed, is_replicated, is_view, to_attach_query)
 from ch_backup.util import chown_dir_contents, retry, strip_query
 
 GET_TABLES_SQL = strip_query("""
@@ -250,8 +250,8 @@ class ClickhouseCTL:
         """
         Restore table.
         """
-        if is_view(table_engine):
-            # Restore views using ATTACH.
+        if is_view(table_engine) or is_distributed(table_engine):
+            # Restore views and distributed tables using ATTACH.
             self._ch_client.query(to_attach_query(table_schema))
         elif is_replicated(table_engine) and self.match_ch_version(min_version='21.8'):
             # Restore replicated tables using ATTACH + SYSTEM RESTORE REPLICA.

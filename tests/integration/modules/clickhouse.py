@@ -12,7 +12,7 @@ from requests import HTTPError, Session
 
 from . import docker
 from .typing import ContextT
-from .utils import generate_random_string
+from .utils import generate_random_string, normalize_create_query
 
 DB_COUNT = 2
 TABLE_COUNT = 2
@@ -104,7 +104,7 @@ class ClickhouseClient:
         """
         user_data = {}
         rows_count = 0
-        for db_name, table_name, columns in self._get_all_user_tables():
+        for db_name, table_name, columns in self._get_tables_for_data_comparisson():
             query = f"""
                 SELECT *
                 FROM `{db_name}`.`{table_name}`
@@ -116,19 +116,23 @@ class ClickhouseClient:
             rows_count += table_data['rows']
         return rows_count, user_data
 
-    def get_all_user_schemas(self) -> dict:
+    def get_table_schemas(self) -> dict:
         """
         Retrieve DDL for user schemas.
         """
-        all_tables_desc = {}
-        for db_name, table_name, _ in self._get_all_user_tables():
-            query = f"""
-                DESCRIBE `{db_name}`.`{table_name}`
-                FORMAT JSONCompact
-                """
-            table_data = self._query('GET', query)
-            all_tables_desc[(db_name, table_name)] = table_data['data']
-        return all_tables_desc
+        query = """
+            SELECT
+                database,
+                name,
+                create_table_query
+            FROM system.tables
+            WHERE database NOT IN ('system', '_temporary_and_external_tables',
+                                   'information_schema', 'INFORMATION_SCHEMA')
+            FORMAT JSON
+            """
+        tables = self._query('GET', query)['data']
+        return {(table['database'], table['name']): normalize_create_query(table['create_table_query'])
+                for table in tables}
 
     def get_all_user_databases(self) -> Sequence[str]:
         """
@@ -137,7 +141,8 @@ class ClickhouseClient:
         query = """
             SELECT name
             FROM system.databases
-            WHERE name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA')
+            WHERE name NOT IN ('system', '_temporary_and_external_tables',
+                               'information_schema', 'INFORMATION_SCHEMA')
             FORMAT JSONCompact
             """
 
@@ -176,14 +181,17 @@ class ClickhouseClient:
         query = f'DROP TABLE `{db_name}`.`{table_name}` NO DELAY'
         self._query('POST', query)
 
-    def _get_all_user_tables(self) -> dict:
+    def _get_tables_for_data_comparisson(self) -> dict:
         query = """
             SELECT
                 database,
                 table,
-                groupArray(name) AS columns
-            FROM system.columns
-        WHERE database NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA')
+                groupArray(c.name) "columns"
+            FROM system.tables t
+            JOIN system.columns c ON (t.database = c.database AND t.name = c.table)
+            WHERE database NOT IN ('system', '_temporary_and_external_tables',
+                                   'information_schema', 'INFORMATION_SCHEMA')
+              AND t.engine NOT IN ('View', 'MaterializedView', 'Distributed')
             GROUP BY database, table
             ORDER BY database, table
             FORMAT JSONCompact

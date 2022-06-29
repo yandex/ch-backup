@@ -110,7 +110,7 @@ def step_drop_databases(context, node):
 def step_has_same_schema(context, node1, node2):
     def _get_ddl(node):
         ch_client = ClickhouseClient(context, node)
-        return ch_client.get_all_user_schemas()
+        return ch_client.get_table_schemas()
 
     assert_that(_get_ddl(node1), equal_to(_get_ddl(node2)))
 

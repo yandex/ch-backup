@@ -89,7 +89,7 @@ Feature: Backup of tables with different engines and configurations
     But on clickhouse02 tables are empty
 
   @distributed
-  Scenario: Create backup containing distributed table
+  Scenario: Create backup containing distributed tables
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE test_db;
@@ -98,8 +98,11 @@ Feature: Backup of tables with different engines and configurations
     ENGINE = MergeTree() PARTITION BY n % 10 ORDER BY n;
     INSERT INTO test_db.table_01 SELECT number, toString(number) FROM system.numbers LIMIT 1000;
 
-    CREATE TABLE test_db.table_02 AS test_db.table_01
-    ENGINE = Distributed('test_shard_localhost', 'test_db', 'table_01', n);
+    CREATE TABLE test_db.dtable_with_default_cluster AS test_db.table_01
+    ENGINE = Distributed('default', 'test_db', 'table_01', n);
+
+    CREATE TABLE test_db.dtable_with_clickhouse01_cluster AS test_db.table_01
+    ENGINE = Distributed('clickhouse01', 'test_db', 'table_01', n);
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
@@ -255,7 +258,7 @@ Feature: Backup of tables with different engines and configurations
     ENGINE = MergeTree() PARTITION BY date ORDER BY date;
     INSERT INTO test_db.table_01 SELECT today(), number FROM system.numbers LIMIT 1000;
 
-    ALTER TABLE test_db.table_01 ADD PROJECTION test_proj ( SELECT n, COUNT(*) count GROUP BY n);
+    ALTER TABLE test_db.table_01 ADD PROJECTION test_proj (SELECT n, count() GROUP BY n);
     ALTER TABLE test_db.table_01 MATERIALIZE PROJECTION test_proj;
     """
     When we create clickhouse01 clickhouse backup
