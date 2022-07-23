@@ -119,14 +119,19 @@ class ClickhouseCTL:
     """
     def __init__(self, config: dict) -> None:
         self._config = config
-        self._ch_client = ClickhouseClient(config)
-        self._ch_version = self._ch_client.query(GET_VERSION_SQL)
         self._root_data_path = config['data_path']
         self._shadow_data_path = os.path.join(self._root_data_path, 'shadow')
-        self._disks = self.get_disks()
         self._timeout = config['timeout']
         self._freeze_timeout = config['freeze_timeout']
         self._restart_disk_timeout = self._config['restart_disk_timeout']
+        self._ch_client = ClickhouseClient(config)
+        self._ch_version = self._ch_client.query(GET_VERSION_SQL)
+        self._disks = self.get_disks()
+        if self.match_ch_version(min_version='22.7'):
+            self._ch_client.settings.update({
+                'allow_deprecated_database_ordinary': 1,
+                'allow_deprecated_syntax_for_merge_tree': 1,
+            })
 
     def chown_detached_table_parts(self, table: Table, context: RestoreContext) -> None:
         """

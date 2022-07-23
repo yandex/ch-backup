@@ -1,7 +1,7 @@
 """
 ClickHouse client.
 """
-
+from copy import copy
 from typing import Any
 
 import requests
@@ -24,33 +24,31 @@ class ClickhouseClient:
         host = config['host']
         protocol = config['protocol']
         port = config['port'] or (8123 if protocol == 'http' else 8443)
-        ca_path = config.get('ca_path')
-        self._user = config.get('clickhouse_user', None)
-        self._password = config.get('clickhouse_password', None)
-        self._session = requests.Session()
-        self._session.verify = True if ca_path is None else ca_path
-        # pylint: disable=no-member
-        requests.packages.urllib3.disable_warnings()
+        self._session = self._create_session(config)
         self._url = f'{protocol}://{host}:{port}'
-        self._connect_timeout = config['connect_timeout']
-        self._timeout = config['timeout']
+        self.timeout = config['timeout']
+        self.connect_timeout = config['connect_timeout']
+        self.settings: dict = {}
 
     @retry(requests.exceptions.ConnectionError)
-    def query(self, query: str, post_data: dict = None, timeout: float = None) -> Any:
+    def query(self, query: str, post_data: dict = None, settings: dict = None, timeout: float = None) -> Any:
         """
         Execute query.
         """
         try:
             logging.debug('Executing query: %s', query)
-            params = {}
-            if self._user:
-                params['user'] = self._user
-            if self._password:
-                params['password'] = self._password
+
+            params = copy(self.settings)
+            if settings:
+                params.update(settings)
+
+            if timeout is None:
+                timeout = self.timeout
+
             response = self._session.post(self._url,
                                           params=params,
                                           json=post_data,
-                                          timeout=(self._connect_timeout, timeout or self._timeout),
+                                          timeout=(self.connect_timeout, timeout),
                                           data=query.encode('utf-8'))
 
             response.raise_for_status()
@@ -61,3 +59,25 @@ class ClickhouseClient:
             return response.json()
         except ValueError:
             return str.strip(response.text)
+
+    @staticmethod
+    def _create_session(config):
+        session = requests.Session()
+
+        ca_path = config.get('ca_path')
+        session.verify = True if ca_path is None else ca_path
+
+        headers = {}
+        user = config.get('clickhouse_user')
+        if user:
+            headers['X-ClickHouse-User'] = user
+        password = config.get('clickhouse_password')
+        if password:
+            headers['X-ClickHouse-Key'] = password
+
+        session.headers.update(headers)
+
+        # pylint: disable=no-member
+        requests.packages.urllib3.disable_warnings()
+
+        return session

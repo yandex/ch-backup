@@ -3,6 +3,7 @@ ClickHouse client.
 """
 
 import logging
+from copy import copy
 from datetime import datetime
 from typing import Any, Sequence, Tuple, Union
 from urllib.parse import urljoin
@@ -33,6 +34,7 @@ class ClickhouseClient:
         self._timeout = 30
         self._user = user
         self._password = password
+        self._settings = context.clickhouse_settings
 
     def ping(self) -> None:
         """
@@ -80,7 +82,9 @@ class ClickhouseClient:
                         int_num UInt32,
                         str String
                     )
-                    ENGINE = MergeTree(date, int_num, 8192)
+                    ENGINE MergeTree
+                    PARTITION BY date
+                    ORDER BY int_num
                     """
                 self._query('POST', query)
 
@@ -207,7 +211,7 @@ class ClickhouseClient:
         if isinstance(data, str):
             data = data.encode()
 
-        params = {}
+        params = copy(self._settings)
         if query:
             params['query'] = query
         if self._user:

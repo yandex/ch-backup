@@ -8,7 +8,7 @@ Feature: Deduplication
     And a working clickhouse on clickhouse02
     And we have executed queries on clickhouse01
     """
-    CREATE DATABASE test_db1 Engine = Ordinary;
+    CREATE DATABASE test_db1;
 
     CREATE TABLE test_db1.test_table1 (partition_id Int32, n Int32)
     ENGINE = MergeTree() PARTITION BY partition_id ORDER BY (partition_id, n);
