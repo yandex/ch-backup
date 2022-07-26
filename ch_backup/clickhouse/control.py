@@ -127,6 +127,10 @@ class ClickhouseCTL:
         self._ch_client = ClickhouseClient(config)
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
         self._disks = self.get_disks()
+        if self.match_ch_version(min_version='21.3'):
+            self._ch_client.settings.update({
+                'allow_experimental_database_replicated': 1,
+            })
         if self.match_ch_version(min_version='22.7'):
             self._ch_client.settings.update({
                 'allow_deprecated_database_ordinary': 1,

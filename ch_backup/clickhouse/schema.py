@@ -65,6 +65,13 @@ def is_atomic_db_engine(db_engine: str) -> bool:
     return db_engine == 'Atomic'
 
 
+def is_replicated_db_engine(db_sql: str) -> bool:
+    """
+    Return True if database engine is Replicaed, or False otherwise.
+    """
+    return db_sql.find('Replicated') != -1
+
+
 def to_attach_query(create_query: str) -> str:
     """
     Convert CREATE table query to ATTACH one.

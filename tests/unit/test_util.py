@@ -5,7 +5,7 @@ import pytest
 
 from ch_backup.clickhouse.models import Table
 from ch_backup.exceptions import ClickhouseBackupError
-from ch_backup.util import (compare_schema, get_zookeeper_paths, retry, strip_query)
+from ch_backup.util import (compare_schema, get_table_zookeeper_paths, retry, strip_query)
 
 from . import ExpectedException, UnexpectedException
 
@@ -99,7 +99,7 @@ class TestGetZooKeeperPath:
         return Table('default', name, '', [], [], create_statement, '')
 
     def test_valid_sql(self):
-        actual = get_zookeeper_paths(
+        actual = get_table_zookeeper_paths(
             self._make_table(name, value) for name, value in _test_tables.items() if name.startswith('valid_'))
         assert actual == [(self._make_table(table, _test_tables[table]), f'/clickhouse/tables/shard1/{table}')
                           for table in ('valid_test', 'valid_legacy', 'valid_summing_test', 'valid_summing_legacy',
@@ -107,7 +107,7 @@ class TestGetZooKeeperPath:
 
     def test_invalid_sql(self):
         with pytest.raises(ClickhouseBackupError):
-            get_zookeeper_paths([self._make_table('invalid_test', 'invalid_test')])
+            get_table_zookeeper_paths([self._make_table('invalid_test', 'invalid_test')])
 
 
 class TestNormalizeSchema:

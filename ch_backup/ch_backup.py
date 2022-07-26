@@ -21,12 +21,12 @@ from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.models import Table
 from ch_backup.clickhouse.schema import (is_atomic_db_engine, is_distributed, is_external_db_engine,
-                                         is_materialized_view, is_merge_tree, is_replicated, is_view,
-                                         rewrite_table_schema)
+                                         is_materialized_view, is_merge_tree, is_replicated, is_replicated_db_engine,
+                                         is_view, rewrite_table_schema)
 from ch_backup.config import Config
 from ch_backup.exceptions import BackupNotFound, ClickhouseBackupError
 from ch_backup.storage.engine.s3 import S3StorageEngine
-from ch_backup.util import compare_schema, get_zookeeper_paths, now, utcnow
+from ch_backup.util import (compare_schema, get_database_zookeeper_paths, get_table_zookeeper_paths, now, utcnow)
 from ch_backup.version import get_version
 from ch_backup.zookeeper.zookeeper import ZookeeperCTL
 
@@ -329,12 +329,25 @@ class ClickhouseBackup:
 
         tables: List[Table] = []
         present_databases = self._ch_ctl.get_databases()
+        databases_to_create = []
         for database in databases:
             logging.debug('Restoring database "%s"', database)
             if not _has_embedded_metadata(database) and database not in present_databases:
                 db_sql = source_ch_ctl.get_database_schema(database)
-                self._ch_ctl.restore_database(db_sql)
+                databases_to_create.append(db_sql)
+                if is_replicated_db_engine(db_sql):  # do not check tables in replicated database
+                    continue
             tables.extend(source_ch_ctl.get_tables(database))
+
+        if databases_to_create:
+            if len(self._zk_config.get('hosts')) > 0:
+                logging.info("Cleaning up replicated database metadata")
+                macros = self._ch_ctl.get_macros()
+                zk_ctl = ZookeeperCTL(self._zk_config)
+                zk_ctl.delete_replicated_database_metadata(get_database_zookeeper_paths(databases_to_create),
+                                                           replica_name, macros)
+            for db_sql in databases_to_create:
+                self._ch_ctl.restore_database(db_sql)
 
         if self._config['override_replica_name'] is None and replica_name is not None:
             self._config['override_replica_name'] = replica_name
@@ -581,7 +594,7 @@ class ClickhouseBackup:
             macros = self._ch_ctl.get_macros()
             replicated_tables = [table for table in merge_tree_tables if is_replicated(table.engine)]
             zk_ctl = ZookeeperCTL(self._zk_config)
-            zk_ctl.delete_replica_metadata(get_zookeeper_paths(replicated_tables), replica_name, macros)
+            zk_ctl.delete_replica_metadata(get_table_zookeeper_paths(replicated_tables), replica_name, macros)
 
         self._restore_table_objects(chain(merge_tree_tables, other_tables, distributed_tables, view_tables))
 

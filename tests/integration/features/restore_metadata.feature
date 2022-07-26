@@ -78,15 +78,16 @@ Feature: Restore metadata from another host without s3
     When we restore clickhouse schema from clickhouse01 to clickhouse02
     Then clickhouse01 has same schema as clickhouse02
 
-  Scenario: Restore metadata from another host with {database} and {table} macros
+  @require_version_21.3
+  Scenario: Restore metadata from another host with {database}, {table} and {uuid} macros
     Given we have executed queries on clickhouse01
     """
-    CREATE TABLE default.table_01 (
+    CREATE TABLE default.table_01 ON CLUSTER '{replica}' (
         EventDate DateTime,
         CounterID UInt32,
         UserID UInt32
     )
-    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/{database}.{table}', '{replica}')
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/{database}/{table}/{uuid}', '{replica}')
     PARTITION BY toYYYYMM(EventDate)
     ORDER BY (CounterID, EventDate, intHash32(UserID))
     SAMPLE BY intHash32(UserID);
@@ -121,3 +122,21 @@ Feature: Restore metadata from another host without s3
     """
     clickhouse02
     """
+
+  @require_version_21.3
+  Scenario: Restore replicated database metadata from another host
+    Given ClickHouse settings
+    """
+    allow_experimental_database_replicated: 1
+    """
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_replicated_db Engine=Replicated('/clickhouse/databases/test_db', '{shard}', '{replica}');
+    """
+    Given we have executed queries on clickhouse02
+    """
+    CREATE DATABASE test_replicated_db Engine=Replicated('/clickhouse/databases/test_db', '{shard}', '{replica}');
+    """
+    And dirty removed clickhouse data at clickhouse02
+    When we restore clickhouse schema from clickhouse01 to clickhouse02
+    Then clickhouse01 has same schema as clickhouse02

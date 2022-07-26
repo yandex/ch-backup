@@ -118,7 +118,7 @@ def retry(exception_types: Union[type, tuple] = Exception,
                           before_sleep=_log_retry)
 
 
-def get_zookeeper_paths(tables: Iterable) -> Iterable[Tuple]:
+def get_table_zookeeper_paths(tables: Iterable) -> Iterable[Tuple]:
     """
     Parse ZooKeeper path from create statement.
     """
@@ -128,6 +128,19 @@ def get_zookeeper_paths(tables: Iterable) -> Iterable[Tuple]:
         if not match:
             raise ClickhouseBackupError(f'Couldn`t parse create statement for zk path: "{table}')
         result.append((table, match.group('zk_path')))
+    return result
+
+
+def get_database_zookeeper_paths(databases: Iterable[str]) -> Iterable[str]:
+    """
+    Parse ZooKeeper path from create statement.
+    """
+    result = []
+    for db_sql in databases:
+        match = re.search(R"""Replicated\(\'(?P<zk_path>[^']+)\', '(?P<shard>[^']+)', '(?P<replica>[^']+)'""", db_sql)
+        if not match:
+            continue
+        result.append(f'{match.group("zk_path")}/replicas/{match.group("shard")}|{match.group("replica")}')
     return result
 
 

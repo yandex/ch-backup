@@ -55,10 +55,36 @@ class ZookeeperCTL:
         if self._zk_user and self._zk_password:
             self._zk_client.add_auth('digest', f'{self._zk_user}:{self._zk_password}')
         for table, table_path in tables:
-            table_macros = dict(database=table.database, table=table.name)
+            table_macros = dict(database=table.database, table=table.name, uuid=table.uuid)
             table_macros.update(macros)
             path = os.path.join(self._zk_root_path, table_path[1:].format(**table_macros), 'replicas',
                                 replica)  # remove leading '/'
+            debug(f'Deleting zk node: "{path}"')
+            try:
+                self._zk_client.delete(path, recursive=True)
+            except NoNodeError:
+                pass
+        self._zk_client.stop()
+
+    @KAZOO_RETRIES
+    def delete_replicated_database_metadata(self,
+                                            databases: Iterable[str],
+                                            replica: Optional[str] = None,
+                                            macros: Dict = None) -> None:
+        """
+        Remove replica metadata from zookeeper for all replicated databases from args.
+        """
+        if macros is None:
+            macros = {}
+        if not replica:
+            replica = socket.getfqdn()
+        macros['replica'] = replica
+
+        self._zk_client.start()
+        if self._zk_user and self._zk_password:
+            self._zk_client.add_auth('digest', f'{self._zk_user}:{self._zk_password}')
+        for zk_path in databases:
+            path = os.path.join(self._zk_root_path, zk_path[1:].format(**macros))  # remove leading '/'
             debug(f'Deleting zk node: "{path}"')
             try:
                 self._zk_client.delete(path, recursive=True)
