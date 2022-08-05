@@ -68,6 +68,11 @@
         <console>1</console>
     </logger>
 
+    <rabbitmq>
+        <username>rabbitmq_user</username>
+        <password>rabbitmq_password</password>
+    </rabbitmq>
+
     <!-- It's needed to force atomic database drop when execute DROP DATABASE query -->
     <database_atomic_delay_before_drop_table_sec>0</database_atomic_delay_before_drop_table_sec>
 </yandex>

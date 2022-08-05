@@ -256,7 +256,7 @@ Feature: Backup of tables with different engines and configurations
 
   @require_version_21.1
   @rocksdb
-  Scenario: Create backup containing tables with EmbeddedRocksDB table engine family
+  Scenario: Create backup containing tables with EmbeddedRocksDB engine
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE test_db;
@@ -270,6 +270,26 @@ Feature: Backup of tables with different engines and configurations
     When we restore clickhouse backup #0 to clickhouse02
     Then clickhouse02 has same schema as clickhouse01
     But on clickhouse02 tables are empty
+
+  @require_version_21.3
+  @rabbitmq
+  Scenario: Create backup containing tables with RabbitMQ engine
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+
+    ATTACH TABLE test_db.rabbitmq_table UUID 'b21b194c-2473-4a7d-b79a-4b2e84c20f72' (`json` String)
+    ENGINE = RabbitMQ
+    SETTINGS rabbitmq_host_port = 'rabbitmq_host:5672', rabbitmq_exchange_name = 'test_exchange',
+             rabbitmq_format = 'TSV', rabbitmq_exchange_type = 'topic', rabbitmq_flush_interval_ms = 5000,
+             rabbitmq_persistent = 1;
+    """
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state    | data_count | link_count   |
+      | 0   | created  | 0          | 0            |
+    When we restore clickhouse backup #0 to clickhouse02
+    Then clickhouse02 has same schema as clickhouse01
 
   @require_version_21.6
   @merge_tree

@@ -41,21 +41,19 @@ def is_materialized_view(engine: str) -> bool:
     return engine == 'MaterializedView'
 
 
+def is_external_engine(engine: str) -> bool:
+    """
+    Return True if the specified table engine is intended to use for integration with external systems.
+    """
+    return engine in ('COSN', 'ExternalDistributed', 'HDFS', 'Hive', 'JDBC', 'Kafka', 'MeiliSearch', 'MongoDB',
+                      'MySQL', 'ODBC', 'PostgreSQL', 'RabbitMQ', 'S3', 'URL')
+
+
 def is_external_db_engine(db_engine: str) -> bool:
     """
-    Return True if DB's engine is one of:
-    - MySQL
-    - MaterializedMySQL
-    - PostgreSQL
-    - MaterializedPostgreSQL
-    or False otherwise.
+    Return True if the specified database engine is intended to use for integration with external systems.
     """
-    return any((
-        db_engine == 'MySQL',
-        db_engine == 'MaterializedMySQL',
-        db_engine == 'PostgreSQL',
-        db_engine == 'MaterializedPostgreSQL',
-    ))
+    return db_engine in ('MySQL', 'MaterializedMySQL', 'PostgreSQL', 'MaterializedPostgreSQL')
 
 
 def is_atomic_db_engine(db_engine: str) -> bool:
