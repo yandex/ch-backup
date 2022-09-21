@@ -55,6 +55,10 @@ FREEZE_TABLE_SQL = strip_query("""
     FREEZE WITH NAME '{backup_name}'
 """)
 
+SYSTEM_UNFREEZE_SQL = strip_query("""
+    SYSTEM UNFREEZE WITH NAME '{backup_name}'
+""")
+
 DROP_TABLE_IF_EXISTS_SQL = strip_query("""
     DROP TABLE IF EXISTS `{db_name}`.`{table_name}`
 """)
@@ -123,6 +127,7 @@ class ClickhouseCTL:
         self._shadow_data_path = os.path.join(self._root_data_path, 'shadow')
         self._timeout = config['timeout']
         self._freeze_timeout = config['freeze_timeout']
+        self._system_unfreeze_timeout = config['system_unfreeze_timeout']
         self._restart_disk_timeout = self._config['restart_disk_timeout']
         self._ch_client = ClickhouseClient(config)
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
@@ -173,6 +178,14 @@ class ClickhouseCTL:
         """
         query_sql = FREEZE_TABLE_SQL.format(db_name=table.database, table_name=table.name, backup_name=backup_name)
         self._ch_client.query(query_sql, timeout=self._freeze_timeout)
+
+    def system_unfreeze(self, backup_name: str) -> None:
+        """
+        Unfreeze all partitions from all disks
+        """
+        if self.match_ch_version(min_version='22.6'):
+            query_sql = SYSTEM_UNFREEZE_SQL.format(backup_name=backup_name)
+            self._ch_client.query(query_sql, timeout=self._system_unfreeze_timeout)
 
     def remove_freezed_data(self) -> None:
         """

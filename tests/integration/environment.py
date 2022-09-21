@@ -66,12 +66,14 @@ def _check_tags(context, scenario):
     require_version = _parse_version_tag(scenario.tags, 'require_version')
     if require_version:
         if context.version < require_version:
+            logging.info('Skipping scenario due to require_version mismatch')
             scenario.mark_skipped()
             return False
 
     require_lt_version = _parse_version_tag(scenario.tags, 'require_version_less_than')
     if require_lt_version:
         if context.version > require_lt_version:
+            logging.info('Skipping scenario due to require_version_less_than mismatch')
             scenario.mark_skipped()
             return False
 

@@ -24,3 +24,10 @@ def step_s3_contains_files(context, count):
     s3_client = s3.S3Client(context)
     objects = s3_client.list_objects('/')
     assert_that(len(objects), equal_to(count), f'Objects count = {len(objects)}, expected {count}, objects {objects}')
+
+
+@then('s3 bucket {bucket} contains {count:d} objects')
+def step_cloud_storage_bucket_contains_files(context, bucket, count):
+    s3_client = s3.S3Client(context, bucket)
+    objects = s3_client.list_objects('/')
+    assert_that(len(objects), equal_to(count), f'Objects count = {len(objects)}, expected {count}, objects {objects}')

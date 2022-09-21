@@ -2,7 +2,7 @@
 S3 client.
 """
 import logging
-from typing import List
+from typing import List, Optional
 
 import boto3
 from botocore.client import Config
@@ -16,7 +16,7 @@ class S3Client:
     """
     S3 client.
     """
-    def __init__(self, context: ContextT) -> None:
+    def __init__(self, context: ContextT, bucket: Optional[str] = None) -> None:
         config = context.conf['s3']
         boto_config = config['boto_config']
         self._s3_session = boto3.session.Session(aws_access_key_id=config['access_key_id'],
@@ -32,7 +32,11 @@ class S3Client:
                 'addressing_style': boto_config['addressing_style'],
                 'region_name': boto_config['region_name'],
             }))
-        self._s3_bucket_name = config['bucket']
+
+        if bucket:
+            self._s3_bucket_name = bucket
+        else:
+            self._s3_bucket_name = config['bucket']
 
         for module_logger in ('boto3', 'botocore', 's3transfer', 'urllib3'):
             logging.getLogger(module_logger).setLevel(logging.CRITICAL)

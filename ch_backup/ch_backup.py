@@ -507,6 +507,7 @@ class ClickhouseBackup:
             if not dedup_references:
                 logging.info('Removing backup data entirely')
                 self._backup_layout.delete_backup(backup.name)
+                self._ch_ctl.system_unfreeze(backup.name)
                 return backup.name, None
 
             logging.info('Removing non-shared backup data parts')
@@ -515,6 +516,7 @@ class ClickhouseBackup:
                 for table in backup.get_tables(db_name):
                     self._delete_data_parts(backup, table, db_dedup_references.get(table.name))
 
+            self._ch_ctl.system_unfreeze(backup.name)
             return None, 'Backup was partially deleted as its data is in use by subsequent backups per ' \
                          'deduplication settings.'
 

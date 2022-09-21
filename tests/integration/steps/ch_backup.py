@@ -1,6 +1,7 @@
 """
 Steps related to ch-backup command-line tool.
 """
+import json
 from behave import given, then, when
 from hamcrest import (any_of, assert_that, contains_string, equal_to, has_entries, matches_regexp)
 
@@ -134,3 +135,17 @@ def step_restore_access_control_backup(context, backup_id, node):
     assert_that(result, matches_regexp('^$'))
     container = get_container(context, node)
     assert container.exec_run('supervisorctl restart clickhouse').exit_code == 0
+
+
+@then('we got the following s3 backup directories on {node:w}')
+def step_check_s3_backup_directory(context, node):
+    backups_directory = '/var/lib/clickhouse/disks/s3/shadow/'
+    container = get_container(context, node)
+    run_result = container.exec_run(f'ls {backups_directory}', user='root')
+    run_output = run_result.output.decode().strip()
+    actual_directories = list(run_output.split())
+
+    expected_directories = json.loads(context.text)
+
+    assert_that(actual_directories, equal_to(expected_directories),
+                f'Actual backup directories = {actual_directories}, expected {expected_directories}')

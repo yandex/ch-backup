@@ -4,6 +4,7 @@ features/access_control_backup.feature
 features/table_engines.feature
 features/backup_restore.feature
 features/backup_delete.feature
+features/cloud_storage.feature
 features/backup_purge.feature
 features/deduplication.feature
 features/incremental_restore.feature
