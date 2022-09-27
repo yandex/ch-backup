@@ -750,7 +750,7 @@ class ClickhouseBackup:
         if add_uuid_if_required and table.uuid and self._is_db_atomic(table.database):
             add_uuid = True
             # Starting with 21.4 it's required to explicitly set inner table UUID for materialized views.
-            if is_materialized_view(table.engine) and self._ch_ctl.match_ch_version('21.4'):
+            if is_materialized_view(table.engine) and self._ch_ctl.ch_version_ge('21.4'):
                 inner_table = self._ch_ctl.get_table(table.database, f'.inner_id.{table.uuid}')
                 if inner_table:
                     inner_uuid = inner_table.uuid

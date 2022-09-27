@@ -6,6 +6,7 @@ Feature: Metadata
     And a working zookeeper on zookeeper01
     And a working clickhouse on clickhouse01
 
+  @require_version_22.3
   Scenario: Create backup
     Given ch-backup configuration on clickhouse01
     """
@@ -21,7 +22,7 @@ Feature: Metadata
     Then metadata of clickhouse01 backup #0 contains
     """
     version: {{ version }}
-    ch_version: {{ clickhouse_version('clickhouse01') }}
+    ch_version: {{ conf.ch_version }}
     labels:
       environment: testing
       name: test_backup
@@ -31,6 +32,7 @@ Feature: Metadata
     schema_only: true
     """
 
+  @require_version_22.3
   Scenario: Create "schema-only" backup
     When we create clickhouse01 clickhouse backup
     """
@@ -39,6 +41,6 @@ Feature: Metadata
     Then metadata of clickhouse01 backup #0 contains
     """
     version: {{ version }}
-    ch_version: {{ clickhouse_version('clickhouse01') }}
+    ch_version: {{ conf.ch_version }}
     schema_only: true
     """

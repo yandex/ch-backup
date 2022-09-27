@@ -12,9 +12,7 @@
         </default>
     </users>
     <profiles>
-        <default>
-            <allow_experimental_live_view>1</allow_experimental_live_view>
-        </default>
+        <default/>
     </profiles>
     <quotas>
         <default>

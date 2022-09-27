@@ -13,12 +13,6 @@ except ImportError:
     CONF_OVERRIDE = {}
 
 
-def _version_greater_or_equal(major, minor):
-    version_parts = os.getenv("CLICKHOUSE_VERSION", "0.0").split('.')
-    assert len(version_parts) >= 2, "Invalid version string"
-    return int(version_parts[0]) > major or (int(version_parts[0]) == major and int(version_parts[1]) >= minor)
-
-
 def create():
     """
     Create test configuration (non-idempotent function).
@@ -55,11 +49,6 @@ def create():
         'password': 'password.password.password',
     }
 
-    if _version_greater_or_equal(20, 4):
-        zk['secure'] = True
-    else:
-        zk['secure'] = False
-
     config = {
         'images_dir': 'images',
         'staging_dir': 'staging',
@@ -69,6 +58,7 @@ def create():
         'ch_backup': {
             'encrypt_key': generate_random_string(32),
         },
+        'ch_version': os.getenv('CLICKHOUSE_VERSION'),
 
         # A dict with all services that are going to interact in this
         # testing environment.

@@ -2,11 +2,11 @@
 Behave entry point.
 """
 import logging
-import os
 import re
 
 from tests.integration import env_control
 from tests.integration.modules.logs import save_logs
+from tests.integration.modules.utils import version_ge, version_lt
 
 try:
     import ipdb as pdb
@@ -20,10 +20,8 @@ def before_all(context):
     """
     if not context.config.userdata.getbool('skip_setup'):
         env_control.create(context)
-
-    version_str = os.getenv("CLICKHOUSE_VERSION", "0.0")
-    context.version = [int(item) for item in version_str.split('.')]
-    assert len(context.version) >= 2, f"Invalid version: {version_str}"
+    else:
+        env_control.load(context)
 
 
 def before_feature(context, _feature):
@@ -63,16 +61,18 @@ def after_all(context):
 
 
 def _check_tags(context, scenario):
+    ch_version = context.conf['ch_version']
+
     require_version = _parse_version_tag(scenario.tags, 'require_version')
     if require_version:
-        if context.version < require_version:
+        if not version_ge(ch_version, require_version):
             logging.info('Skipping scenario due to require_version mismatch')
             scenario.mark_skipped()
             return False
 
     require_lt_version = _parse_version_tag(scenario.tags, 'require_version_less_than')
     if require_lt_version:
-        if context.version > require_lt_version:
+        if not version_lt(ch_version, require_lt_version):
             logging.info('Skipping scenario due to require_version_less_than mismatch')
             scenario.mark_skipped()
             return False
@@ -81,10 +81,10 @@ def _check_tags(context, scenario):
 
 
 def _parse_version_tag(tags, prefix):
-    tag_pattern = prefix + r'_(?P<major>\d+)\.(?P<minor>\d+)'
+    tag_pattern = prefix + r'_(?P<version>[\d\.]+)'
     for tag in tags:
         match = re.fullmatch(tag_pattern, tag)
         if match:
-            return [int(match.group('major')), int(match.group('minor'))]
+            return match.group('version')
 
     return None

@@ -18,4 +18,8 @@ def get_step_data(context: ContextT) -> Any:
     if not context.text:
         return {}
 
-    return yaml.load(render_template(context, context.text), yaml.SafeLoader)
+    data = yaml.load(render_template(context, context.text), yaml.SafeLoader)
+    if not data:
+        return {}
+
+    return data

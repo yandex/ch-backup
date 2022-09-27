@@ -10,6 +10,8 @@ from random import choice as random_choise
 from types import SimpleNamespace
 from typing import Mapping, MutableMapping, MutableSequence
 
+from pkg_resources import parse_version
+
 from .typing import ContextT
 
 
@@ -101,3 +103,13 @@ def normalize_create_query(create_query):
         create_query = create_query.replace(match.group('replica'), "'{replica}'")
 
     return create_query
+
+
+def version_ge(version1, version2):
+    """Return True if version1 is greater or equal than version2, or False otherwise."""
+    return parse_version(version1) >= parse_version(version2)
+
+
+def version_lt(version1, version2):
+    """Return True if version1 is less than version2, or False otherwise."""
+    return parse_version(version1) < parse_version(version2)

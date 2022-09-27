@@ -8,30 +8,12 @@ Feature: Backup of tables with different engines and configurations
     And a working clickhouse on clickhouse02
 
   @merge_tree
-  @require_version_less_than_22.7
-  Scenario: Create backup containing merge tree table with old style configuration
-    Given we have executed queries on clickhouse01
-    """
-    CREATE DATABASE test_db;
-
-    CREATE TABLE test_db.table_01 (date Date, n Int32)
-    ENGINE = MergeTree(date, date, 8192);
-    INSERT INTO test_db.table_01 SELECT today(), number FROM system.numbers LIMIT 1000;
-    """
-    When we create clickhouse01 clickhouse backup
-    Then we got the following backups on clickhouse01
-      | num | state    | data_count | link_count   |
-      | 0   | created  | 1          | 0            |
-    When we restore clickhouse backup #0 to clickhouse02
-    Then clickhouse02 has same schema as clickhouse01
-    And we got same clickhouse data at clickhouse01 clickhouse02
-
-  @merge_tree
-  @require_version_22.7
   Scenario: Create backup containing merge tree table with old style configuration
     Given ClickHouse settings
     """
+    {% if ch_version_ge('22.7') %}
     allow_deprecated_syntax_for_merge_tree: 1
+    {% endif %}
     """
     And we have executed queries on clickhouse01
     """
@@ -138,6 +120,10 @@ Feature: Backup of tables with different engines and configurations
 
   @view
   Scenario: Create backup containing views
+    Given ClickHouse settings
+    """
+    allow_experimental_live_view: 1
+    """
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE test_db;

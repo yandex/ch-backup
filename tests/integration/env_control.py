@@ -55,6 +55,13 @@ def create(context):
         pickle.dump(context.conf, session_conf)
 
 
+def load(context):
+    """
+    Load test environment.
+    """
+    _init_context(context)
+
+
 def start(context):
     """
     Start test environment runtime.

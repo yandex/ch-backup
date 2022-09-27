@@ -1,7 +1,6 @@
 """
 ClickHouse client.
 """
-from copy import copy
 from typing import Any
 
 import requests
@@ -20,15 +19,21 @@ class ClickhouseClient:
     """
     ClickHouse client.
     """
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, settings: dict = None) -> None:
         host = config['host']
         protocol = config['protocol']
         port = config['port'] or (8123 if protocol == 'http' else 8443)
-        self._session = self._create_session(config)
+        self._session = self._create_session(config, settings)
         self._url = f'{protocol}://{host}:{port}'
         self.timeout = config['timeout']
         self.connect_timeout = config['connect_timeout']
-        self.settings: dict = {}
+
+    @property
+    def settings(self):
+        """
+        ClickHouse settings.
+        """
+        return self._session.params
 
     @retry(requests.exceptions.ConnectionError)
     def query(self, query: str, post_data: dict = None, settings: dict = None, timeout: float = None) -> Any:
@@ -38,15 +43,11 @@ class ClickhouseClient:
         try:
             logging.debug('Executing query: %s', query)
 
-            params = copy(self.settings)
-            if settings:
-                params.update(settings)
-
             if timeout is None:
                 timeout = self.timeout
 
             response = self._session.post(self._url,
-                                          params=params,
+                                          params=settings,
                                           json=post_data,
                                           timeout=(self.connect_timeout, timeout),
                                           data=query.encode('utf-8'))
@@ -61,7 +62,7 @@ class ClickhouseClient:
             return str.strip(response.text)
 
     @staticmethod
-    def _create_session(config):
+    def _create_session(config, settings):
         session = requests.Session()
 
         ca_path = config.get('ca_path')
@@ -76,6 +77,9 @@ class ClickhouseClient:
             headers['X-ClickHouse-Key'] = password
 
         session.headers.update(headers)
+
+        if settings:
+            session.params = settings
 
         # pylint: disable=no-member
         requests.packages.urllib3.disable_warnings()

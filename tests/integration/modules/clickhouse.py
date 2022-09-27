@@ -60,11 +60,11 @@ class ClickhouseClient:
         """
         return self._query('GET', 'SELECT version()')
 
-    def match_ch_version(self, min_version: str) -> bool:
+    def ch_version_ge(self, comparing_version: str) -> bool:
         """
-        Returns True if ClickHouse version >= min_version.
+        Returns True if ClickHouse version >= comparing_version.
         """
-        return parse_version(self.get_version()) >= parse_version(min_version)
+        return parse_version(self.get_version()) >= parse_version(comparing_version)
 
     def init_schema(self) -> None:
         """

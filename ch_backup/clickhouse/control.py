@@ -132,15 +132,23 @@ class ClickhouseCTL:
         self._ch_client = ClickhouseClient(config)
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
         self._disks = self.get_disks()
-        if self.match_ch_version(min_version='21.3'):
-            self._ch_client.settings.update({
+        settings = {
+            'allow_experimental_live_view': 1,
+        }
+        if self.ch_version_ge('21.3'):
+            settings.update({
                 'allow_experimental_database_replicated': 1,
             })
-        if self.match_ch_version(min_version='22.7'):
-            self._ch_client.settings.update({
+        if self.ch_version_ge('22.7'):
+            settings.update({
                 'allow_deprecated_database_ordinary': 1,
                 'allow_deprecated_syntax_for_merge_tree': 1,
             })
+        if self.ch_version_ge('22.8.5'):
+            settings.update({
+                'kafka_disable_num_consumers_limit': 1,
+            })
+        self._ch_client.settings.update(settings)
 
     def chown_detached_table_parts(self, table: Table, context: RestoreContext) -> None:
         """
@@ -183,7 +191,7 @@ class ClickhouseCTL:
         """
         Unfreeze all partitions from all disks
         """
-        if self.match_ch_version(min_version='22.6'):
+        if self.ch_version_ge('22.6'):
             query_sql = SYSTEM_UNFREEZE_SQL.format(backup_name=backup_name)
             self._ch_client.query(query_sql, timeout=self._system_unfreeze_timeout)
 
@@ -275,7 +283,7 @@ class ClickhouseCTL:
         if is_view(table_engine) or is_distributed(table_engine) or is_external_engine(table_engine):
             # Restore views and distributed tables using ATTACH.
             self._ch_client.query(to_attach_query(table_schema))
-        elif is_replicated(table_engine) and self.match_ch_version(min_version='21.8'):
+        elif is_replicated(table_engine) and self.ch_version_ge('21.8'):
             # Restore replicated tables using ATTACH + SYSTEM RESTORE REPLICA.
             # Conditional logic for differential versions is required because:
             # - Starting with 22.4 it's forbidden to specify UUID in non-distributed CREATE queries. As a result, we
@@ -376,11 +384,11 @@ class ClickhouseCTL:
         if os.path.exists(path):
             shutil.rmtree(path)
 
-    def match_ch_version(self, min_version: str) -> bool:
+    def ch_version_ge(self, comparing_version: str) -> bool:
         """
-        Returns True if ClickHouse version >= min_version.
+        Returns True if ClickHouse version >= comparing_version.
         """
-        return parse_version(self._ch_version) >= parse_version(min_version)
+        return parse_version(self.get_version()) >= parse_version(comparing_version)
 
     def get_macros(self) -> Dict:
         """
@@ -393,12 +401,8 @@ class ClickhouseCTL:
         """
         Get all configured disks.
         """
-        if self.match_ch_version(min_version='20.8'):
-            disks_resp = self._ch_client.query(GET_DISKS_SQL)
-            return {row['name']: Disk(row['name'], row['path'], row['type']) for row in disks_resp.get('data', [])}
-
-        # In case if system.disks doesn't exist.
-        return {'default': Disk('default', self._root_data_path, 'local')}
+        disks_resp = self._ch_client.query(GET_DISKS_SQL)
+        return {row['name']: Disk(row['name'], row['path'], row['type']) for row in disks_resp.get('data', [])}
 
     def _make_table(self, record: dict) -> Table:
         return Table(database=record['database'],
