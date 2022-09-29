@@ -7,6 +7,65 @@ Feature: Backup of tables with different engines and configurations
     And a working clickhouse on clickhouse01
     And a working clickhouse on clickhouse02
 
+  @TableEngines
+  @require_version_22.7
+  Scenario Outline: Create backup containing <name> table
+    Given ClickHouse settings
+    """
+    allow_deprecated_database_ordinary: 1
+    """
+    Given we execute query on clickhouse01
+    """
+    CREATE DATABASE test_db ENGINE=Ordinary
+    """
+    When we put following info in "/var/lib/clickhouse/metadata/test_db/test.sql" at clickhouse01
+    """
+    ATTACH TABLE test (s String, n Int32) ENGINE=<engine_request>
+    """
+    When we execute query on clickhouse01
+    """
+    ATTACH TABLE test_db.test
+    """
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state    | data_count | link_count   |
+      | 0   | created  | 0          | 0            |
+    When we restore clickhouse backup #0 to clickhouse02
+    Then clickhouse02 has same schema as clickhouse01
+    Examples:
+      | name        | engine_request                                                                                              |
+      | ODBC        | ODBC('', 'test', 'test')                                                                                    |
+      | JDBC        | JDBC('jdbc:test_driver://test:1111/?user=test_user&password=test_password', 'test', 'test')                 |
+      | RabbitMQ    | RabbitMQ SETTINGS rabbitmq_host_port='test:1111', rabbitmq_exchange_name='test_name', rabbitmq_format='TSV' |
+      | HDFS        | HDFS('hdfs://test:1111/test_storage', 'TSV')                                                                |
+      | Kafka       | Kafka('mysql:1111', 'test', 'test_group', 'TSV')                                                            |
+      | MySQL       | MySQL('mysql:1111', 'test', 'test_table', 'test_user', 'clickhouse')                                        |
+      | PostgreSQL  | PostgreSQL('postgre:1111', 'test', 'test_table', 'test_user', 'clickhouse')                                 |
+      | MongoDB     | MongoDB('mongo:1111', 'test', 'test_table', 'test_user', 'clickhouse')                                      |
+
+  @S3
+  Scenario: Create backup containing s3 tables
+    Given we execute query on clickhouse01
+    """
+    CREATE DATABASE test_db
+    """
+    When we execute query on clickhouse01
+    """
+    CREATE TABLE test_db.s3_test_table (s String, n Int32)
+    ENGINE = S3('{{conf['s3']['endpoint']}}/ch-backup/s3_test_table.tsv', '{{conf['s3']['access_key_id']}}', '{{conf['s3']['access_secret_key']}}', 'TSV');
+    """
+    When we execute queries on clickhouse01
+    """
+    INSERT INTO test_db.s3_test_table VALUES ('one', 1);
+    """
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state    | data_count | link_count   |
+      | 0   | created  | 0          | 0            |
+    When we restore clickhouse backup #0 to clickhouse02
+    Then clickhouse02 has same schema as clickhouse01
+    And we got same clickhouse data at clickhouse01 clickhouse02
+
   @merge_tree
   Scenario: Create backup containing merge tree table with old style configuration
     Given ClickHouse settings

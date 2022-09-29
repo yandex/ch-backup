@@ -1,14 +1,16 @@
 """
 Steps for interacting with ClickHouse DBMS.
 """
+
 import yaml
 from behave import given, then, when
 from hamcrest import assert_that, equal_to, has_length
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 from tests.integration.modules.clickhouse import ClickhouseClient
-from tests.integration.modules.docker import get_container
+from tests.integration.modules.docker import get_container, put_file
 from tests.integration.modules.steps import get_step_data
+from tests.integration.modules.templates import render_template
 
 
 @given('a working clickhouse on {node:w}')
@@ -29,6 +31,12 @@ def step_init_test_schema(context, node):
     ClickhouseClient(context, node).init_schema()
 
 
+@when('we put following info in "{path}" at {node:w}')
+def step_put_file(context, path, node):
+    container = get_container(context, node)
+    put_file(container, bytes(context.text, 'utf-8'), path)
+
+
 @given('{node:w} has test clickhouse data {test_name:w}')
 @when('{node:w} has test clickhouse data {test_name:w}')
 def step_fill_with_test_data(context, node, test_name):
@@ -38,10 +46,11 @@ def step_fill_with_test_data(context, node, test_name):
     ClickhouseClient(context, node).init_data(mark=test_name)
 
 
+@given('we execute query on {node:w}')
 @when('we execute query on {node:w}')
 def step_test_request(context, node):
     ch_client = ClickhouseClient(context, node)
-    context.response = ch_client.get_response(context.text)
+    context.response = ch_client.get_response(render_template(context, context.text))
 
 
 @given('we have executed queries on {node:w}')
@@ -52,7 +61,6 @@ def step_test_data(context, node):
         string = string.strip()
         if string:
             queries.append(string)
-
     ch_client = ClickhouseClient(context, node)
     for query in queries:
         ch_client.execute(query)
@@ -77,7 +85,6 @@ def step_same_clickhouse_data(context, nodes):
         ch_client = ClickhouseClient(context, node, **options)
         _, rows_data = ch_client.get_all_user_data()
         user_data.append(rows_data)
-
     node1_data = user_data[0]
     for node_num in range(1, len(user_data)):
         node_data = user_data[node_num]
@@ -88,12 +95,10 @@ def step_same_clickhouse_data(context, nodes):
 def step_has_subset_data(context, node1, node2):
     options = yaml.load(context.text, yaml.SafeLoader)
     tables = options['tables']
-
     node_data = {}
     for node in (node1, node2):
         ch_client = ClickhouseClient(context, node)
         _, node_data[node] = ch_client.get_all_user_data()
-
     assert_that(node_data[node1], has_length(len(tables)))
     for table in tables:
         assert_that(node_data[node1][table], equal_to(node_data[node2][table]))

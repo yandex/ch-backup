@@ -20,9 +20,7 @@ def step_update_ch_backup_config(context, node):
 @when('we create {node:w} clickhouse backup')
 def step_create_backup(context, node):
     options = get_step_data(context)
-
     name = BackupManager(context, node).backup(**options)
-
     name_regexp = options.get('name', '{uuid}')
     name_regexp = name_regexp.replace('{timestamp}', '[0-9]{8}T[0-9]{6}')
     name_regexp = name_regexp.replace('{uuid}', '[0-9a-f-]{36}')
@@ -104,7 +102,6 @@ def step_check_backups_conditions(context, node):
     expected_backup_count = len(context.table.rows)
     assert_that(backup_count, equal_to(expected_backup_count),
                 f'Backup count = {backup_count}, expected {expected_backup_count}')
-
     for i, backup_id in enumerate(backup_ids):
         backup = ch_backup.get_backup(backup_id)
         expected_backup = context.table[i]
