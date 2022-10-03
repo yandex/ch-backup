@@ -60,7 +60,7 @@ SYSTEM_UNFREEZE_SQL = strip_query("""
 """)
 
 DROP_TABLE_IF_EXISTS_SQL = strip_query("""
-    DROP TABLE IF EXISTS `{db_name}`.`{table_name}`
+    DROP TABLE IF EXISTS `{db_name}`.`{table_name}` NO DELAY
 """)
 
 RESTORE_REPLICA_SQL = strip_query("""
