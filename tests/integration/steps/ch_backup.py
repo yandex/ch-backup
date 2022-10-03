@@ -2,6 +2,7 @@
 Steps related to ch-backup command-line tool.
 """
 import json
+
 from behave import given, then, when
 from hamcrest import (any_of, assert_that, contains_string, equal_to, has_entries, matches_regexp)
 

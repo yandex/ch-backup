@@ -428,7 +428,7 @@ class ClickhouseCTL:
         """
         Returns True if ClickHouse version >= comparing_version.
         """
-        return parse_version(self.get_version()) >= parse_version(comparing_version)
+        return parse_version(self.get_version()) >= parse_version(comparing_version)  # type: ignore
 
     def get_macros(self) -> Dict:
         """

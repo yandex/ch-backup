@@ -64,7 +64,7 @@ class ClickhouseClient:
         """
         Returns True if ClickHouse version >= comparing_version.
         """
-        return parse_version(self.get_version()) >= parse_version(comparing_version)
+        return parse_version(self.get_version()) >= parse_version(comparing_version)  # type: ignore
 
     def init_schema(self) -> None:
         """

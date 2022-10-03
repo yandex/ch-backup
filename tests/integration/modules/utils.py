@@ -107,9 +107,9 @@ def normalize_create_query(create_query):
 
 def version_ge(version1, version2):
     """Return True if version1 is greater or equal than version2, or False otherwise."""
-    return parse_version(version1) >= parse_version(version2)
+    return parse_version(version1) >= parse_version(version2)  # type: ignore
 
 
 def version_lt(version1, version2):
     """Return True if version1 is less than version2, or False otherwise."""
-    return parse_version(version1) < parse_version(version2)
+    return parse_version(version1) < parse_version(version2)  # type: ignore
