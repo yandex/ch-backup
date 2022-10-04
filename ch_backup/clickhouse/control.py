@@ -17,7 +17,7 @@ from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.clickhouse.models import Disk, FreezedPart, Table
 from ch_backup.clickhouse.schema import (is_distributed, is_external_engine, is_replicated, is_view, to_attach_query)
-from ch_backup.util import chown_dir_contents, retry, strip_query
+from ch_backup.util import chown_dir_contents, escape, retry, strip_query
 
 GET_TABLES_SQL = strip_query("""
     SELECT
@@ -167,14 +167,16 @@ class ClickhouseCTL:
                 self.chown_dir(detached_path)
             except FileNotFoundError:
                 logging.warning(f'table {table.database}.{table.name} path {detached_path} not found')
-                context.add_failed_chown(TableMetadata(table.database, table.name, table.engine, table.uuid),
-                                         detached_path)
+                context.add_failed_chown(
+                    TableMetadata(escape(table.database), escape(table.name), table.engine, table.uuid), detached_path)
 
     def attach_part(self, table: Table, part_name: str) -> None:
         """
         Attach data part to the specified table.
         """
-        query_sql = PART_ATTACH_SQL.format(db_name=table.database, table_name=table.name, part_name=part_name)
+        query_sql = PART_ATTACH_SQL.format(db_name=escape(table.database),
+                                           table_name=escape(table.name),
+                                           part_name=part_name)
 
         self._ch_client.query(query_sql)
 
@@ -182,7 +184,7 @@ class ClickhouseCTL:
         """
         Attach data part to the specified table.
         """
-        query_sql = TABLE_ATTACH_SQL.format(db_name=table.database, table_name=table.name)
+        query_sql = TABLE_ATTACH_SQL.format(db_name=escape(table.database), table_name=escape(table.name))
 
         self._ch_client.query(query_sql)
 
@@ -190,7 +192,9 @@ class ClickhouseCTL:
         """
         Make snapshot of the specified table.
         """
-        query_sql = FREEZE_TABLE_SQL.format(db_name=table.database, table_name=table.name, backup_name=backup_name)
+        query_sql = FREEZE_TABLE_SQL.format(db_name=escape(table.database),
+                                            table_name=escape(table.name),
+                                            backup_name=backup_name)
         self._ch_client.query(query_sql, timeout=self._freeze_timeout)
 
     def system_unfreeze(self, backup_name: str) -> None:
@@ -236,21 +240,23 @@ class ClickhouseCTL:
         """
         Return database schema (CREATE DATABASE query).
         """
-        query_sql = SHOW_CREATE_DATABASE_SQL.format(db_name=db_name)
+        query_sql = SHOW_CREATE_DATABASE_SQL.format(db_name=escape(db_name))
         return self._ch_client.query(query_sql)
 
     def get_database_engine(self, db_name: str) -> str:
         """
         Return database engine.
         """
-        query_sql = GET_DATABASE_ENGINE.format(db_name=db_name)
+        query_sql = GET_DATABASE_ENGINE.format(db_name=escape(db_name))
         return self._ch_client.query(query_sql)
 
     def get_tables(self, db_name: str = None, tables: Optional[Sequence[str]] = None) -> Sequence[Table]:
         """
         Get database tables.
         """
-        query_sql = GET_TABLES_SQL.format(db_name=db_name or '', table_names=tables or [])
+        query_sql = GET_TABLES_SQL.format(
+            db_name=escape(db_name) if db_name is not None else '',
+            table_names=list(map(escape, tables)) if tables is not None else [])  # type: ignore
         result: List[Table] = []
         for row in self._ch_client.query(query_sql)['data']:
             result.append(self._make_table(row))
@@ -261,7 +267,7 @@ class ClickhouseCTL:
         """
         Get table by name, returns None if no table has found.
         """
-        query_sql = GET_TABLES_SQL.format(db_name=db_name, table_names=[table_name])
+        query_sql = GET_TABLES_SQL.format(db_name=escape(db_name), table_names=[escape(table_name)])
         tables_raw = self._ch_client.query(query_sql)['data']
 
         if tables_raw:
@@ -273,7 +279,7 @@ class ClickhouseCTL:
         """
         Return True if the specified table exists.
         """
-        query_sql = CHECK_TABLE_SQL.format(db_name=db_name, table_name=table_name)
+        query_sql = CHECK_TABLE_SQL.format(db_name=escape(db_name), table_name=escape(table_name))
         return bool(int(self._ch_client.query(query_sql)))
 
     def restore_database(self, database_schema: str) -> None:
@@ -298,9 +304,10 @@ class ClickhouseCTL:
             #   cannot use SYSTEM RESTORE REPLICA in old versions.
             try:
                 self._ch_client.query(to_attach_query(table_schema))
-                self._ch_client.query(RESTORE_REPLICA_SQL.format(db_name=db_name, table_name=table_name))
+                self._ch_client.query(
+                    RESTORE_REPLICA_SQL.format(db_name=escape(db_name), table_name=escape(table_name)))
             except Exception:
-                self.drop_table_if_exists(db_name, table_name)
+                self.drop_table_if_exists(db_name, escape(table_name))
                 raise
         else:
             # Use CREATE for restoring all other types of tables.
@@ -310,7 +317,7 @@ class ClickhouseCTL:
         """
         Drop table. If the specified table doesn't exist, do nothing.
         """
-        self._ch_client.query(DROP_TABLE_IF_EXISTS_SQL.format(db_name=db_name, table_name=table_name))
+        self._ch_client.query(DROP_TABLE_IF_EXISTS_SQL.format(db_name=escape(db_name), table_name=escape(table_name)))
 
     def get_database_metadata_path(self, database: str) -> str:
         """
@@ -365,6 +372,7 @@ class ClickhouseCTL:
                 for file in filter(os.path.isfile, glob.iglob(part_path + '/**', recursive=True))
             ]
             size = _get_part_size(part_path, files)
+            logging.debug(f"list_freezed_parts: {table.name} -> {escape(table.name)} \n {part}")
             freezed_parts.append(
                 FreezedPart(table.database, table.name, part, disk.name, part_path, checksum, size, files))
 

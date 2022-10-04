@@ -55,6 +55,13 @@ def demote_user(new_user: str) -> None:
     os.setuid(new_uid)
 
 
+def escape(string: str) -> str:
+    """
+    Escaping special character '`'
+    """
+    return r'\`'.join(string.split('`'))
+
+
 def demote_user_group(new_user: str, new_group: str) -> None:
     """
     Perform user and group change

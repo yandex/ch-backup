@@ -22,6 +22,26 @@ Feature: Restore metadata from another host without s3
     INSERT INTO test_db.table_01 SELECT now(), number, rand() FROM system.numbers LIMIT 10;
     """
 
+  @require_version_21.3
+  Scenario: Restore table with escaping in database name and table name
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE `db\`_name`;
+    CREATE TABLE `db\`_name`.`table_name` (s String, n Int32)
+    ENGINE=MergeTree()
+    ORDER BY n;
+
+    INSERT INTO `db\`_name`.`table_name` VALUES ('one', 1);
+    INSERT INTO `db\`_name`.`table_name` VALUES ('two', 2);
+    INSERT INTO `db\`_name`.`table_name` VALUES ('three', 3);
+    """
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 4          | 0          |
+    When we restore clickhouse backup #0 to clickhouse02
+    Then clickhouse02 has same schema as clickhouse01
+
   Scenario: Restore metadata from another host without s3, restart success
     When we restore clickhouse schema from clickhouse01 to clickhouse02
     Then clickhouse01 has same schema as clickhouse02
