@@ -14,6 +14,7 @@ ENV_CONTROL=env -i \
     DOCKER_HOST=$$DOCKER_HOST \
     DOCKER_TLS_VERIFY=$$DOCKER_TLS_VERIFY \
     DOCKER_CERT_PATH=$$DOCKER_CERT_PATH \
+    COMPOSE_HTTP_TIMEOUT=300 \
     ${TEST_VENV}/bin/python -m tests.integration.env_control
 
 

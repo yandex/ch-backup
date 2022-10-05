@@ -27,6 +27,8 @@ BASE_CONF = {
     'services': {},
 }
 
+COMPOSE_UP_DOWN_TIMEOUT = 30
+
 
 @utils.env_stage('create', fail=True)
 def build_images(context: ContextT) -> None:
@@ -41,7 +43,7 @@ def startup_containers(context: ContextT) -> None:
     """
     Start up docker containers.
     """
-    _call_compose(context.conf, 'up -d')
+    _call_compose(context.conf, f'up -d --timeout {COMPOSE_UP_DOWN_TIMEOUT}')
 
 
 @utils.env_stage('stop', fail=False)
@@ -49,7 +51,7 @@ def shutdown_containers(context: ContextT) -> None:
     """
     Shutdown and remove docker containers.
     """
-    _call_compose(context.conf, 'down --volumes --timeout 0')
+    _call_compose(context.conf, f'down --volumes --timeout {COMPOSE_UP_DOWN_TIMEOUT}')
 
 
 @utils.env_stage('create', fail=True)

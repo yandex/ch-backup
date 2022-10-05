@@ -150,7 +150,8 @@ class ClickhouseBackup:
                 replica_name: Optional[str] = None,
                 cloud_storage_source_bucket: str = None,
                 cloud_storage_source_path: str = None,
-                cloud_storage_latest: bool = False) -> None:
+                cloud_storage_latest: bool = False,
+                keep_going: bool = False) -> None:
         """
         Restore specified backup
         """
@@ -173,7 +174,7 @@ class ClickhouseBackup:
                 raise ClickhouseBackupError('Required databases were not found in backup metadata')
 
         self._restore(backup_meta, databases, schema_only, clean_zookeeper, replica_name, cloud_storage_source_bucket,
-                      cloud_storage_source_path, cloud_storage_latest)
+                      cloud_storage_source_path, cloud_storage_latest, keep_going)
 
     # pylint: disable=too-many-locals,too-many-nested-blocks,too-many-branches
     def fix_s3_oplog(self,
@@ -548,19 +549,20 @@ class ClickhouseBackup:
                  replica_name: Optional[str] = None,
                  cloud_storage_source_bucket: str = None,
                  cloud_storage_source_path: str = None,
-                 cloud_storage_latest: bool = False) -> None:
+                 cloud_storage_latest: bool = False,
+                 keep_going: bool = False) -> None:
         logging.debug('Restoring databases: %s', ', '.join(databases))
 
         # Restore databases.
         self._restore_database_objects(backup_meta, databases)
 
         # Restore tables and data stored on local disks.
-        tables_meta = list(
+        tables_meta: List[TableMetadata] = list(
             chain(*[backup_meta.get_tables(db_name) for db_name in databases if not self._is_db_external(db_name)]))
         tables = list(map(lambda meta: self._get_table_from_meta(backup_meta, meta), tables_meta))
 
         tables = self._preprocess_tables_to_restore(tables)
-        self._restore_tables(tables, clean_zookeeper, replica_name)
+        failed_tables = self._restore_tables(tables, clean_zookeeper, replica_name, keep_going)
 
         # Restore data stored on S3 disks.
         if not schema_only:
@@ -570,12 +572,19 @@ class ClickhouseBackup:
                 source_bucket: str = cloud_storage_source_bucket
                 source_path: str = cloud_storage_source_path
                 self._restore_cloud_storage_data(backup_meta, source_bucket, source_path, cloud_storage_latest)
-            self._restore_data(backup_meta, [table for table in tables_meta if is_merge_tree(table.engine)])
+
+            failed_tables_names = [f"`{t.database}`.`{t.name}`" for t in failed_tables]
+            tables_to_restore = filter(lambda t: is_merge_tree(t.engine), tables_meta)
+            tables_to_restore = filter(lambda t: f"`{t.database}`.`{t.name}`" not in failed_tables_names,
+                                       tables_to_restore)
+
+            self._restore_data(backup_meta, tables_to_restore)
 
     def _restore_tables(self,
                         tables: Iterable[Table],
                         clean_zookeeper: bool = False,
-                        replica_name: Optional[str] = None) -> None:
+                        replica_name: Optional[str] = None,
+                        keep_going: bool = False) -> List[Table]:
         merge_tree_tables = []
         distributed_tables = []
         view_tables = []
@@ -598,7 +607,8 @@ class ClickhouseBackup:
             zk_ctl = ZookeeperCTL(self._zk_config)
             zk_ctl.delete_replica_metadata(get_table_zookeeper_paths(replicated_tables), replica_name, macros)
 
-        self._restore_table_objects(chain(merge_tree_tables, other_tables, distributed_tables, view_tables))
+        return self._restore_table_objects(chain(merge_tree_tables, other_tables, distributed_tables, view_tables),
+                                           keep_going)
 
     def _restore_database_objects(self, backup_meta: BackupMetadata, databases: Iterable[str]) -> None:
         present_databases = self._ch_ctl.get_databases()
@@ -608,7 +618,7 @@ class ClickhouseBackup:
                 db_sql = self._backup_layout.get_database_create_statement(backup_meta, db_name)
                 self._ch_ctl.restore_database(db_sql)
 
-    def _restore_table_objects(self, tables: Iterable[Table]) -> None:
+    def _restore_table_objects(self, tables: Iterable[Table], keep_going: bool = False) -> List[Table]:
         errors: List[Tuple[Union[Table], Exception]] = []
         unprocessed = deque(table for table in tables)
         while unprocessed:
@@ -628,8 +638,14 @@ class ClickhouseBackup:
         if errors:
             logging.error('Failed to restore tables:\n%s',
                           '\n'.join(f'"{v.database}"."{v.name}": {e!r}' for v, e in errors))
-            failed_tables = sorted(f'`{t.database}`.`{t.name}`' for t in set(table for table, _ in errors))
+
+            if keep_going:
+                return list(set(table for table, _ in errors))
+
+            failed_tables = sorted(list(set(f'`{t.database}`.`{t.name}`' for t in set(table for table, _ in errors))))
             raise ClickhouseBackupError(f'Failed to restore tables: {", ".join(failed_tables)}')
+
+        return []
 
     def _restore_cloud_storage_data(self, backup_meta: BackupMetadata, source_bucket: str, source_path: str,
                                     cloud_storage_latest: bool) -> None:
