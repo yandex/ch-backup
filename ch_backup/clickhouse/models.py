@@ -12,11 +12,12 @@ class Disk(SimpleNamespace):
     """
     ClickHouse disk.
     """
-    def __init__(self, name: str, path: str, disk_type: str):
+    def __init__(self, name: str, path: str, disk_type: str, cache_path: str = ''):
         super().__init__()
         self.name = name
         self.path = path
         self.type = disk_type
+        self.cache_path = cache_path
 
 
 class Table(SimpleNamespace):

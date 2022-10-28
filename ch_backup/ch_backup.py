@@ -446,7 +446,7 @@ class ClickhouseBackup:
             return
 
         for disk in self._ch_ctl.get_disks().values():
-            if disk.type == 's3':
+            if disk.type == 's3' and not disk.cache_path:
                 # Save revision for S3 disks.
                 revision = self._ch_ctl.read_s3_disk_revision(disk.name, backup_name)
                 if revision:

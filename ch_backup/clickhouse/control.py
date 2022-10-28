@@ -111,6 +111,12 @@ GET_DISKS_SQL = strip_query("""
     FORMAT JSON
 """)
 
+GET_DISKS_SQL_22_8 = strip_query("""
+    SELECT name, path, type, cache_path FROM system.disks
+    ORDER BY length(path) DESC
+    FORMAT JSON
+""")
+
 RESTART_DISK_SQL = strip_query("""
     SYSTEM RESTART DISK {disk_name}
 """)
@@ -401,6 +407,12 @@ class ClickhouseCTL:
         """
         Get all configured disks.
         """
+        if self.ch_version_ge('22.8'):
+            disks_resp = self._ch_client.query(GET_DISKS_SQL_22_8)
+            return {
+                row['name']: Disk(row['name'], row['path'], row['type'], row['cache_path'])
+                for row in disks_resp.get('data', [])
+            }
         disks_resp = self._ch_client.query(GET_DISKS_SQL)
         return {row['name']: Disk(row['name'], row['path'], row['type']) for row in disks_resp.get('data', [])}
 
