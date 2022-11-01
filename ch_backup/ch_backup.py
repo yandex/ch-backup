@@ -1,7 +1,6 @@
 """
 Clickhouse backup logic
 """
-
 from collections import defaultdict, deque
 from copy import copy
 from datetime import timedelta
@@ -25,6 +24,7 @@ from ch_backup.clickhouse.schema import (is_atomic_db_engine, is_distributed, is
                                          is_view, rewrite_table_schema)
 from ch_backup.config import Config
 from ch_backup.exceptions import BackupNotFound, ClickhouseBackupError
+from ch_backup.logic.udf import UDFBackup
 from ch_backup.storage.engine.s3 import S3StorageEngine
 from ch_backup.util import (compare_schema, get_database_zookeeper_paths, get_table_zookeeper_paths, now, utcnow)
 from ch_backup.version import get_version
@@ -42,6 +42,7 @@ class ClickhouseBackup:
         self._config = config['backup']
         self._zk_config = config.get('zookeeper')
         self._restore_context = RestoreContext(self._config)
+        self._udf_backup_manager = UDFBackup(self._ch_ctl, self._backup_layout)
 
     def get(self, backup_name: str) -> BackupMetadata:
         """
@@ -115,7 +116,7 @@ class ClickhouseBackup:
         try:
             if backup_access_control or self._config.get('backup_access_control'):
                 self._backup_access_control(backup_meta)
-
+            self._udf_backup_manager.backup(backup_meta)
             dedup_info = collect_dedup_info(config=self._config,
                                             layout=self._backup_layout,
                                             creating_backup=backup_meta,
@@ -552,6 +553,9 @@ class ClickhouseBackup:
                  cloud_storage_latest: bool = False,
                  keep_going: bool = False) -> None:
         logging.debug('Restoring databases: %s', ', '.join(databases))
+
+        # Restore UDF
+        self._udf_backup_manager.restore(backup_meta)
 
         # Restore databases.
         self._restore_database_objects(backup_meta, databases)

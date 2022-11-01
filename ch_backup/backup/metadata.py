@@ -213,6 +213,7 @@ class BackupMetadata:
         self.real_size = 0
         self.schema_only = schema_only
         self.s3_revisions: Dict[str, int] = {}  # S3 disk name -> revision counter.
+        self._user_defined_functions: List[str] = []
 
     def __str__(self) -> str:
         return self.dump_json()
@@ -275,6 +276,7 @@ class BackupMetadata:
                 'date_fmt': self.time_format,
                 'schema_only': self.schema_only,
                 's3_revisions': self.s3_revisions,
+                'user_defined_functions': self._user_defined_functions,
             },
         }
 
@@ -310,11 +312,12 @@ class BackupMetadata:
             backup.version = meta['version']
             backup.schema_only = meta.get('schema_only', False)
             backup.s3_revisions = meta.get('s3_revisions', {})
+            backup._user_defined_functions = meta.get('user_defined_functions', [])
 
             return backup
 
-        except (ValueError, KeyError):
-            raise InvalidBackupStruct
+        except (ValueError, KeyError) as e:
+            raise InvalidBackupStruct(e)
 
     @classmethod
     def load_json(cls, data):
@@ -369,6 +372,19 @@ class BackupMetadata:
             self.size += part.size
             if not part.link:
                 self.real_size += part.size
+
+    def add_udf(self, udf_name: str) -> None:
+        """
+        Add user defined function in metadata
+        """
+        assert udf_name not in self._user_defined_functions
+        self._user_defined_functions.append(udf_name)
+
+    def get_udf(self) -> List[str]:
+        """
+        Get user defined function data
+        """
+        return self._user_defined_functions
 
     def get_parts(self) -> Sequence[PartMetadata]:
         """

@@ -80,12 +80,16 @@ def backup_metadata(name: str,
                     hostname: str = 'host1',
                     age: timedelta = timedelta(minutes=1),
                     schema_only: bool = False,
-                    databases: dict = None) -> BackupMetadata:
+                    databases: dict = None,
+                    user_defined_functions: List[str] = None) -> BackupMetadata:
     """
     Build and return backup metadata.
     """
     if databases is None:
         databases = {}
+
+    if user_defined_functions is None:
+        user_defined_functions = []
 
     backup_size = 0
     real_backup_size = 0
@@ -119,6 +123,7 @@ def backup_metadata(name: str,
             'version': '1.0.0',
             'ch_version': '21.3.2.1',
             'schema_only': schema_only,
+            'user_defined_functions': user_defined_functions,
         },
         'databases': databases,
     })

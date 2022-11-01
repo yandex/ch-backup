@@ -84,6 +84,17 @@ class BackupLayout:
             msg = f'Failed to upload access control metadata file "{remote_path}"'
             raise StorageError(msg) from e
 
+    def upload_udf(self, backup_name: str, file_name: str, metadata: str) -> None:
+        """
+        Upload user defined function data
+        """
+        remote_path = _udf_data_path(self.get_backup_path(backup_name), file_name)
+        try:
+            self._storage_loader.upload_data(data=metadata, remote_path=remote_path, encryption=True)
+        except Exception as e:
+            msg = f'Failed to upload udf metadata "{remote_path}"'
+            raise StorageError(msg) from e
+
     def upload_data_part(self, backup_name: str, fpart: FreezedPart) -> None:
         """
         Upload part data.
@@ -102,6 +113,13 @@ class BackupLayout:
         except Exception as e:
             msg = f'Failed to create async upload of {remote_path}'
             raise StorageError(msg) from e
+
+    def get_udf_create_statement(self, backup_meta: BackupMetadata, filename: str) -> str:
+        """
+        Download user defined function create statement
+        """
+        remote_path = _udf_data_path(backup_meta.path, filename)
+        return self._storage_loader.download_data(remote_path, encryption=True)
 
     def get_backup_names(self) -> Sequence[str]:
         """
@@ -323,6 +341,13 @@ def _access_control_data_path(backup_path: str, file_name: str) -> str:
     Return S3 path to access control data.
     """
     return os.path.join(backup_path, 'access_control', file_name)
+
+
+def _udf_data_path(backup_path: str, udf_file: str) -> str:
+    """
+    Return S3 path to UDF data
+    """
+    return os.path.join(backup_path, 'udf', udf_file)
 
 
 def _db_metadata_path(backup_path: str, db_name: str) -> str:

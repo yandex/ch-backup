@@ -63,6 +63,10 @@ DROP_TABLE_IF_EXISTS_SQL = strip_query("""
     DROP TABLE IF EXISTS `{db_name}`.`{table_name}` NO DELAY
 """)
 
+DROP_UDF_SQL = strip_query("""
+    DROP FUNCTION `{udf_name}`
+""")
+
 RESTORE_REPLICA_SQL = strip_query("""
     SYSTEM RESTORE REPLICA `{db_name}`.`{table_name}`
 """)
@@ -114,6 +118,11 @@ GET_DISKS_SQL = strip_query("""
 GET_DISKS_SQL_22_8 = strip_query("""
     SELECT name, path, type, cache_path FROM system.disks
     ORDER BY length(path) DESC
+    FORMAT JSON
+""")
+
+GET_UDF_QUERY_SQL = strip_query("""
+    SELECT name, create_query FROM system.functions WHERE origin == 'SQLUserDefined'
     FORMAT JSON
 """)
 
@@ -288,6 +297,12 @@ class ClickhouseCTL:
         """
         self._ch_client.query(database_schema)
 
+    def restore_udf(self, udf_statement):
+        """
+        Restore user defined function
+        """
+        self._ch_client.query(udf_statement)
+
     def restore_table(self, db_name: str, table_name: str, table_engine: str, table_schema: str) -> None:
         """
         Restore table.
@@ -318,6 +333,12 @@ class ClickhouseCTL:
         Drop table. If the specified table doesn't exist, do nothing.
         """
         self._ch_client.query(DROP_TABLE_IF_EXISTS_SQL.format(db_name=escape(db_name), table_name=escape(table_name)))
+
+    def drop_udf(self, udf_name: str) -> None:
+        """
+        Drop user defined function.
+        """
+        self._ch_client.query(DROP_UDF_SQL.format(udf_name=escape(udf_name)))
 
     def get_database_metadata_path(self, database: str) -> str:
         """
@@ -410,6 +431,13 @@ class ClickhouseCTL:
         """
         ch_resp = self._ch_client.query(GET_MACROS_SQL)
         return {row['macro']: row['substitution'] for row in ch_resp.get('data', [])}
+
+    def get_udf_query(self) -> Dict[str, str]:
+        """
+        Get udf query from system table
+        """
+        resp = self._ch_client.query(GET_UDF_QUERY_SQL)
+        return {row['name']: row['create_query'] for row in resp.get('data', [])}
 
     def get_disks(self) -> Dict[str, Disk]:
         """
