@@ -92,6 +92,19 @@ def test_is_view(engine, result):
         },
     },
     {
+        'id': 'MergeTree table, add_uuid=True',
+        'args': {
+            'table_schema': 'CREATE TABLE test_db.test_table_engine (s String, n Int32)'
+                            ' ENGINE = MergeTree ORDER BY n',
+            'table_engine': 'MergeTree',
+            'force_non_replicated_engine': True,
+            'add_uuid': True,
+            'result_table_schema': f"CREATE TABLE test_db.test_table_engine UUID '{UUID}' (s String, n Int32)"
+                                   f" ENGINE = MergeTree ORDER BY n",
+            'result_table_engine': 'MergeTree',
+        },
+    },
+    {
         'id': 'ReplicatedMergeTree table, force_non_replicated_engine=True',
         'args': {
             'table_schema': "CREATE TABLE test_db.test_table (partition_id Int32, n Int32)"

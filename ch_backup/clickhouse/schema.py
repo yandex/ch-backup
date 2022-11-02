@@ -117,14 +117,6 @@ def _add_uuid(table: Table, inner_uuid: str = None) -> None:
     else:
         # CREATE TABLE <db-name>.<table-name> $ (...)
         # UUID clause is inserted to $ place.
-        create_statement = table.create_statement
-        engine_index = create_statement.upper().find('ENGINE')
-        brace_index = create_statement.find('(')
-        if engine_index != -1 and brace_index != -1:
-            index = min(engine_index, brace_index)
-        else:
-            index = max(engine_index, brace_index)
-
-        assert index != -1, f'Unable to find UUID insertion point for the following create table statement: ' \
-                            f'{create_statement} '
-        table.create_statement = create_statement[:index] + f"UUID '{table.uuid}' " + create_statement[index:]
+        table.create_statement = re.sub(
+            r"CREATE (?P<type>\S*) (?P<table_name>(`[^`]*`\.`[^`]*`|\S+\.\S+|`[^`]*`\.\S+|\S+\.`[^`]*`))",
+            f"CREATE \\g<type> \\g<table_name> UUID '{table.uuid}'", table.create_statement)
