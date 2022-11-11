@@ -1,49 +1,37 @@
 """
-UDF management module.
+Clickhouse backup logic for UDFs
 """
-
-from typing import List
+from typing import Any, List
 
 from ch_backup import logging
 
-from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata
-from ch_backup.clickhouse.control import ClickhouseCTL
+from ch_backup.logic.backup_manager import BackupManager
 
 
-class UDFBackup:
+class UDFBackup(BackupManager):
     """
-    UDF backup manager.
+    UDF backup class
     """
-    def __init__(self, ch_ctl: ClickhouseCTL, backup_layout: BackupLayout) -> None:
-        self._ch_ctl = ch_ctl
-        self._backup_layout = backup_layout
-
     @staticmethod
     def get_udf_list(backup_meta: BackupMetadata) -> List[str]:
         """
-        Get list of UDFs.
+        Get UDF list
         """
         return backup_meta.get_udf()
 
-    def backup(self, backup_meta: BackupMetadata) -> None:
-        """
-        Backup UDFs.
-        """
+    def backup(self, **kwargs: Any) -> None:
         if not self._ch_ctl.ch_version_ge('21.11'):
             return
         udf = self._ch_ctl.get_udf_query()
         for udf_name in udf.keys():
-            backup_meta.add_udf(udf_name)
+            kwargs['backup_meta'].add_udf(udf_name)
 
         logging.debug('Performing UDF backup for: %s', ' ,'.join(udf.keys()))
         for udf_name, udf_statement in udf.items():
-            self._backup_layout.upload_udf(backup_meta.name, udf_name, udf_statement)
+            self._backup_layout.upload_udf(kwargs['backup_meta'].name, udf_name, udf_statement)
 
-    def restore(self, backup_meta: BackupMetadata) -> None:
-        """
-        Restore UDFs.
-        """
+    def restore(self, backup_meta: BackupMetadata, **kwargs: Any) -> None:
         if not self._ch_ctl.ch_version_ge('21.11'):
             return
         udf_list = self.get_udf_list(backup_meta)

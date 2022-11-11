@@ -208,7 +208,7 @@ class BackupMetadata:
         self.start_time = now()
         self.end_time: Optional[datetime] = None
         self._databases: Dict[str, dict] = {}
-        self._access_control: List[str] = []
+        self._access_control: Sequence[str] = []
         self.size = 0
         self.real_size = 0
         self.schema_only = schema_only
@@ -442,7 +442,7 @@ class BackupMetadata:
         """
         return self._access_control
 
-    def set_access_control(self, objects: List[str]) -> None:
+    def set_access_control(self, objects: Sequence[str]) -> None:
         """
         Add access control objects to backup metadata.
         """
