@@ -1,3 +1,7 @@
+"""
+UDF management module.
+"""
+
 from typing import List
 
 from ch_backup import logging
@@ -8,15 +12,24 @@ from ch_backup.clickhouse.control import ClickhouseCTL
 
 
 class UDFBackup:
+    """
+    UDF backup manager.
+    """
     def __init__(self, ch_ctl: ClickhouseCTL, backup_layout: BackupLayout) -> None:
         self._ch_ctl = ch_ctl
         self._backup_layout = backup_layout
 
     @staticmethod
     def get_udf_list(backup_meta: BackupMetadata) -> List[str]:
+        """
+        Get list of UDFs.
+        """
         return backup_meta.get_udf()
 
     def backup(self, backup_meta: BackupMetadata) -> None:
+        """
+        Backup UDFs.
+        """
         if not self._ch_ctl.ch_version_ge('21.11'):
             return
         udf = self._ch_ctl.get_udf_query()
@@ -28,6 +41,9 @@ class UDFBackup:
             self._backup_layout.upload_udf(backup_meta.name, udf_name, udf_statement)
 
     def restore(self, backup_meta: BackupMetadata) -> None:
+        """
+        Restore UDFs.
+        """
         if not self._ch_ctl.ch_version_ge('21.11'):
             return
         udf_list = self.get_udf_list(backup_meta)
