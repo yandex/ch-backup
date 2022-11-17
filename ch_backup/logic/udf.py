@@ -6,6 +6,7 @@ from typing import Any, List
 from ch_backup import logging
 
 from ch_backup.backup.metadata import BackupMetadata
+from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.logic.backup_manager import BackupManager
 
 
@@ -46,4 +47,22 @@ class UDFBackup(BackupManager):
                 self._ch_ctl.restore_udf(statement)
 
             if udf_name not in udf_on_clickhouse_list:
+                self._ch_ctl.restore_udf(statement)
+
+    def restore_schema(self, source_ch_ctl: ClickhouseCTL) -> None:
+        """
+        Restoring user defined functions schema
+        """
+        if not self._ch_ctl.ch_version_ge('21.11'):
+            return
+        udf_current = self._ch_ctl.get_udf_query()
+        udf_current_list = udf_current.keys()
+        udf_on_source_clickhouse = source_ch_ctl.get_udf_query()
+        logging.debug('Restoring UDFs schema: %s', ' ,'.join(udf_on_source_clickhouse.keys()))
+        for udf_name, statement in udf_on_source_clickhouse.items():
+            if udf_name in udf_current_list and statement != udf_current[udf_name]:
+                self._ch_ctl.drop_udf(udf_name)
+                self._ch_ctl.restore_udf(statement)
+
+            if udf_name not in udf_current_list:
                 self._ch_ctl.restore_udf(statement)

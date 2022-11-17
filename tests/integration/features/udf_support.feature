@@ -44,3 +44,39 @@ Feature: User defined functions support
     """
     CREATE FUNCTION test_func AS (a, b) -> (a + b)
     """
+
+  @require_version_21.11
+  Scenario: Check udf restore-schema
+    Given we have executed queries on clickhouse01
+    """
+    CREATE FUNCTION test_func AS (a, b) -> a + b;
+    """
+    When we restore clickhouse schema from clickhouse01 to clickhouse02
+    When we execute query on clickhouse02
+    """
+    SELECT name FROM system.functions WHERE origin == 'SQLUserDefined' LIMIT 1;
+    """
+    Then we get response
+    """
+    test_func
+    """
+
+  @require_version_21.11
+  Scenario: Check udf restore-schema with same udf name
+    Given we have executed queries on clickhouse01
+    """
+    CREATE FUNCTION test_func AS (a, b) -> a + b;
+    """
+    Given we have executed queries on clickhouse02
+    """
+    CREATE FUNCTION test_func AS (a, b) -> a - b;
+    """
+    When we restore clickhouse schema from clickhouse01 to clickhouse02
+    When we execute query on clickhouse02
+    """
+    SELECT create_query FROM system.functions WHERE origin == 'SQLUserDefined' LIMIT 1;
+    """
+    Then we get response
+    """
+    CREATE FUNCTION test_func AS (a, b) -> (a + b)
+    """

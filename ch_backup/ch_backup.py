@@ -328,6 +328,8 @@ class ClickhouseBackup:
         source_ch_ctl = ClickhouseCTL(config=source_conf)
         databases = source_ch_ctl.get_databases(exclude_dbs if exclude_dbs else self._config['exclude_dbs'])
 
+        self._udf_backup_manager.restore_schema(source_ch_ctl)
+
         self._database_backup_manager.restore_schema(databases=databases,
                                                      source_ch_ctl=source_ch_ctl,
                                                      replica_name=replica_name)
