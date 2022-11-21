@@ -7,7 +7,7 @@ from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata
 from ch_backup.clickhouse.control import ClickhouseCTL
-from ch_backup.clickhouse.schema import is_replicated_db_engine
+from ch_backup.clickhouse.schema import (is_replicated_db_engine, rewrite_database_schema)
 from ch_backup.config import Config
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.util import get_database_zookeeper_paths
@@ -33,6 +33,8 @@ class DatabaseBackup(BackupManager):
         for db_name in kwargs['databases']:
             if not _has_embedded_metadata(db_name) and db_name not in present_databases:
                 db_sql = self._backup_layout.get_database_create_statement(backup_meta, db_name)
+                db_sql = rewrite_database_schema(db_sql, self._config['force_non_replicated'],
+                                                 self._config['override_replica_name'])
                 self._ch_ctl.restore_database(db_sql)
 
     def restore_schema(self, **kwargs: Any) -> None:

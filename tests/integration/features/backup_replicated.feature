@@ -29,6 +29,69 @@ Feature: Backup replicated merge tree table
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
+  @require_version_21.10
+  Scenario: Backup & Restore databases with Replicated engine
+    Given ClickHouse settings
+    """
+    allow_experimental_database_replicated: 1
+    """
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_replicated_db
+    ENGINE = Replicated('/clickhouse/databases/test_db', '{shard}', '{replica}');
+    """
+    When we create clickhouse01 clickhouse backup
+    And we restore clickhouse backup #0 to clickhouse02
+    Then clickhouse01 has same schema as clickhouse02
+
+  @require_version_21.10
+  Scenario: Backup Replicated database with static replica name
+    Given ClickHouse settings
+    """
+    allow_experimental_database_replicated: 1
+    """
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db ENGINE=Replicated('some/path/test_db','test_shard','test_replica');
+    """
+    When we create clickhouse01 clickhouse backup
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    override_replica_name: '{replica}'
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT name FROM system.zookeeper WHERE path='/some/path/test_db/replicas'
+    """
+    Then we get response
+    """
+    test_shard|clickhouse02
+    """
+
+  @require_version_21.10
+  Scenario: Override replicated database to single-node on restore with cmd flag
+    Given ClickHouse settings
+    """
+    allow_experimental_database_replicated: 1
+    """
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db ENGINE=Replicated('some/path/test_db','test_shard','test_replica');
+    """
+    When we create clickhouse01 clickhouse backup
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    force_non_replicated: true
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT engine FROM system.databases WHERE name = 'test_db'
+    """
+    Then we get response
+    """
+    Atomic
+    """
+
   @require_version_less_than_22.7
   Scenario: Backup ReplicatedMergeTree table with static replica name
     Given we have executed queries on clickhouse01

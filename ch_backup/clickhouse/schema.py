@@ -108,6 +108,23 @@ def rewrite_table_schema(table: Table,
         _add_uuid(table, inner_uuid)
 
 
+def rewrite_database_schema(db_sql: str,
+                            force_non_replicated_engine: bool = False,
+                            override_replica_name: str = None) -> str:
+    """
+    Rewrite database schema
+    """
+    if force_non_replicated_engine:
+        db_sql = re.sub(r"ENGINE\s*=\s*Replicated\('[^']*'\s*,\s*'[^']*'\s*,\s*'[^']*'\s*\)", r"ENGINE=Atomic", db_sql)
+
+    if override_replica_name:
+        match = re.search(r"Replicated\('[^']*'\s*,\s*'[^']*'\s*,\s*(?P<replica>'[^']*'\s*)\)", db_sql)
+        if match:
+            db_sql = db_sql.replace(match.group('replica'), f"'{override_replica_name}'")
+
+    return db_sql
+
+
 def _add_uuid(table: Table, inner_uuid: str = None) -> None:
     if is_view(table.engine):
         inner_uuid_clause = f"TO INNER UUID '{inner_uuid}'" if inner_uuid else ''
