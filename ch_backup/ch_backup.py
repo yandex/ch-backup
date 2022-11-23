@@ -30,9 +30,13 @@ class ClickhouseBackup:
     """
     Clickhouse backup logic
     """
+
+    # pylint: disable=too-many-instance-attributes
+
     def __init__(self, config: Config) -> None:
         self._ch_ctl_conf = config['clickhouse']
-        self._ch_ctl = ClickhouseCTL(self._ch_ctl_conf)
+        self._main_conf = config['main']
+        self._ch_ctl = ClickhouseCTL(self._ch_ctl_conf, self._main_conf)
         self._backup_layout = BackupLayout(config)
         self._config = config['backup']
         self._zk_config = config.get('zookeeper')
@@ -325,7 +329,7 @@ class ClickhouseBackup:
         """
         source_conf = self._ch_ctl_conf.copy()
         source_conf.update(dict(host=source_host, port=source_port))
-        source_ch_ctl = ClickhouseCTL(config=source_conf)
+        source_ch_ctl = ClickhouseCTL(source_conf, self._main_conf)
         databases = source_ch_ctl.get_databases(exclude_dbs if exclude_dbs else self._config['exclude_dbs'])
 
         self._udf_backup_manager.restore_schema(source_ch_ctl)

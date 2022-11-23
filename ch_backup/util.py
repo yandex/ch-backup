@@ -20,12 +20,19 @@ from ch_backup.exceptions import ClickhouseBackupError
 LOCAL_TZ = timezone(timedelta(seconds=-1 * (time.altzone if time.daylight else time.timezone)))
 
 
-def chown_dir_contents(user: str, group: str, dir_path: str) -> None:
+def chown_dir_contents(user: str, group: str, dir_path: str, need_recursion: bool = False) -> None:
     """
     Recursively change directory user/group
     """
-    for path in os.listdir(dir_path):
-        shutil.chown(os.path.join(dir_path, path), user, group)
+    if need_recursion:
+        for path, dirs, files in os.walk(dir_path):
+            for directory in dirs:
+                shutil.chown(os.path.join(path, directory), user, group)
+            for file in files:
+                shutil.chown(os.path.join(path, file), user, group)
+    else:
+        for path in os.listdir(dir_path):
+            shutil.chown(os.path.join(dir_path, path), user, group)
 
 
 def setup_environment(config: dict) -> None:

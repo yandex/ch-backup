@@ -136,15 +136,19 @@ class ClickhouseCTL:
     """
     ClickHouse control tool.
     """
-    def __init__(self, config: dict) -> None:
-        self._config = config
-        self._root_data_path = config['data_path']
+
+    # pylint: disable=too-many-instance-attributes
+
+    def __init__(self, ch_ctl_config: dict, main_config: dict) -> None:
+        self._ch_ctl_config = ch_ctl_config
+        self._main_config = main_config
+        self._root_data_path = self._ch_ctl_config['data_path']
         self._shadow_data_path = os.path.join(self._root_data_path, 'shadow')
-        self._timeout = config['timeout']
-        self._freeze_timeout = config['freeze_timeout']
-        self._system_unfreeze_timeout = config['system_unfreeze_timeout']
-        self._restart_disk_timeout = self._config['restart_disk_timeout']
-        self._ch_client = ClickhouseClient(config)
+        self._timeout = self._ch_ctl_config['timeout']
+        self._freeze_timeout = self._ch_ctl_config['freeze_timeout']
+        self._system_unfreeze_timeout = self._ch_ctl_config['system_unfreeze_timeout']
+        self._restart_disk_timeout = self._ch_ctl_config['restart_disk_timeout']
+        self._ch_client = ClickhouseClient(self._ch_ctl_config)
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
         self._disks = self.get_disks()
         settings = {
@@ -410,7 +414,8 @@ class ClickhouseCTL:
         """
         Change owner and group for all files in folder.
         """
-        chown_dir_contents(self._config['user'], self._config['group'], dir_path)
+        need_recursion = not self._main_config['drop_privileges']
+        chown_dir_contents(self._ch_ctl_config['user'], self._ch_ctl_config['group'], dir_path, need_recursion)
 
     @retry(OSError)
     def _remove_shadow_data(self, path: str) -> None:
