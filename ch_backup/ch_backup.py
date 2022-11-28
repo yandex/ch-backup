@@ -8,7 +8,6 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from ch_backup import logging
 from ch_backup.backup.deduplication import (DedupReferences, collect_dedup_info,
-                                            collect_dedup_references_for_backup_deletion,
                                             collect_dedup_references_for_batch_backup_deletion)
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import (BackupMetadata, BackupState, TableMetadata)
@@ -247,28 +246,39 @@ class ClickhouseBackup:
         else:
             logging.info('Fix S3 OpLog: found and fixed %d collisions', collision_counter)
 
-    def delete(self, backup_name: str) -> Tuple[Optional[str], Optional[str]]:
+    def delete(self, backup_name: str, purge_partial: bool) -> Tuple[Optional[str], Optional[str]]:
         """
         Delete the specified backup.
         """
-        deleting_backup = None
+        found = False
+        deleting_backups = []
         retained_backups = []
         for backup in self._backup_layout.get_backups(use_light_meta=True):
             if backup.name == backup_name:
-                deleting_backup = backup
-                break
+                deleting_backups.append(backup)
+                found = True
+                continue
 
-            retained_backups.append(backup)
+            if purge_partial and backup.state != BackupState.CREATED:
+                deleting_backups.append(backup)
+            else:
+                retained_backups.append(backup)
 
-        if not deleting_backup:
+        if not found:
             raise BackupNotFound(backup_name)
 
-        dedup_references = collect_dedup_references_for_backup_deletion(
+        dedup_references = collect_dedup_references_for_batch_backup_deletion(
             layout=self._backup_layout,
             retained_backups_with_light_meta=retained_backups,
-            deleting_backup_with_light_meta=deleting_backup)
+            deleting_backups_with_light_meta=deleting_backups)
 
-        return self._delete(deleting_backup, dedup_references)
+        result: Tuple[Optional[str], Optional[str]] = (None, None)
+        for backup in deleting_backups:
+            deleted_name, msg = self._delete(backup, dedup_references[backup.name])
+            if backup_name == backup.name:
+                result = (deleted_name, msg)
+
+        return result
 
     def purge(self) -> Tuple[Sequence[str], Optional[str]]:
         """

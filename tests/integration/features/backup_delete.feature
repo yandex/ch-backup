@@ -184,3 +184,12 @@ Feature: Backup & Clean & Restore
       | 1   | partially_deleted | 4          | 0            | shared+links |
       | 2   | partially_deleted | 4          | 0            | shared       |
     And s3 contains 41 objects
+
+  Scenario: Attempt to delete "shared+data" with purge partially succeeds
+    When we delete clickhouse01 clickhouse backup #0
+    """
+    purge_partial: true
+    """
+    Then we got the following backups on clickhouse01
+      | num | state             | data_count | link_count   | title        |
+    And s3 contains 0 objects

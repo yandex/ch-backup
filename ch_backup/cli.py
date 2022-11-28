@@ -338,11 +338,12 @@ def restore_access_control_command(_ctx: Context, _ch_backup: ClickhouseBackup, 
 
 @command(name='delete')
 @argument('name', metavar='BACKUP')
-def delete_command(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> None:
+@option('--purge-partial', is_flag=True, default=False, help='Also purge all partial deleted backups')
+def delete_command(ctx: Context, ch_backup: ClickhouseBackup, name: str, purge_partial: bool) -> None:
     """Delete particular backup."""
     name = _validate_name(ctx, ch_backup, name)
 
-    deleted_backup_name, msg = ch_backup.delete(name)
+    deleted_backup_name, msg = ch_backup.delete(name, purge_partial)
 
     if msg:
         print(msg, file=sys.stderr, flush=True)

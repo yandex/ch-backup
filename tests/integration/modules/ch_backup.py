@@ -187,12 +187,12 @@ class BackupManager:
             options.append('--backup-access-control')
         return self._exec(f'backup {" ".join(options)}').strip()
 
-    def delete(self, backup_id: BackupId) -> str:
+    def delete(self, backup_id: BackupId, purge_partial: bool = False) -> str:
         """
         Execute delete command.
         """
         backup_id = self._normalize_id(backup_id)
-        return self._exec(f'delete {backup_id}')
+        return self._exec(f'delete {"--purge-partial " if purge_partial else ""}{backup_id}')
 
     def purge(self) -> str:
         """
