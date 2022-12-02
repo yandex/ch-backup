@@ -62,6 +62,10 @@ DROP_TABLE_IF_EXISTS_SQL = strip_query("""
     DROP TABLE IF EXISTS `{db_name}`.`{table_name}` NO DELAY
 """)
 
+DROP_DATABASE_IF_EXISTS_SQL = strip_query("""
+    DROP DATABASE IF EXISTS `{db_name}`
+""")
+
 DROP_UDF_SQL = strip_query("""
     DROP FUNCTION `{udf_name}`
 """)
@@ -347,6 +351,12 @@ class ClickhouseCTL:
         Drop table. If the specified table doesn't exist, do nothing.
         """
         self._ch_client.query(DROP_TABLE_IF_EXISTS_SQL.format(db_name=escape(db_name), table_name=escape(table_name)))
+
+    def drop_database_if_exists(self, db_name: str) -> None:
+        """
+        Drop database. If the specified database doesn't exist, do nothing.
+        """
+        self._ch_client.query(DROP_DATABASE_IF_EXISTS_SQL.format(db_name=escape(db_name)))
 
     def drop_udf(self, udf_name: str) -> None:
         """

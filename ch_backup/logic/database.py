@@ -7,7 +7,7 @@ from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata
 from ch_backup.clickhouse.control import ClickhouseCTL
-from ch_backup.clickhouse.schema import (is_replicated_db_engine, rewrite_database_schema)
+from ch_backup.clickhouse.schema import rewrite_database_schema
 from ch_backup.config import Config
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.util import get_database_zookeeper_paths
@@ -49,24 +49,26 @@ class DatabaseBackup(BackupManager):
         Restore schema
         """
         present_databases = self._ch_ctl.get_databases()
-        databases_to_create = []
+        databases_to_create = {}
         for database in databases:
             logging.debug('Restoring database "%s"', database)
-            if not _has_embedded_metadata(database) and database not in present_databases:
-                db_sql = source_ch_ctl.get_database_schema(database)
-                databases_to_create.append(db_sql)
-                if is_replicated_db_engine(db_sql):  # do not check tables in replicated database
-                    continue
+            db_sql = source_ch_ctl.get_database_schema(database)
+            databases_to_create[database] = db_sql
 
         if databases_to_create:
             if len(self._zk_config.get('hosts')) > 0:
                 logging.info("Cleaning up replicated database metadata")
                 macros = self._ch_ctl.get_macros()
                 zk_ctl = ZookeeperCTL(self._zk_config)
-                zk_ctl.delete_replicated_database_metadata(get_database_zookeeper_paths(databases_to_create),
+                zk_ctl.delete_replicated_database_metadata(get_database_zookeeper_paths(databases_to_create.values()),
                                                            replica_name, macros)
-            for db_sql in databases_to_create:
-                self._ch_ctl.restore_database(db_sql)
+            for database, db_sql in databases_to_create.items():
+                if database in present_databases:
+                    if self._ch_ctl.get_database_engine(database) != source_ch_ctl.get_database_engine(database):
+                        self._ch_ctl.drop_database_if_exists(database)
+                        self._ch_ctl.restore_database(db_sql)
+                else:
+                    self._ch_ctl.restore_database(db_sql)
 
     def _backup_database(self, backup_meta: BackupMetadata, db_name: str) -> None:
         """
