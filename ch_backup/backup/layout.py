@@ -10,12 +10,13 @@ from urllib.parse import quote
 
 from ch_backup import logging
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
-from ch_backup.clickhouse.models import FreezedPart
+from ch_backup.clickhouse.models import Disk, FreezedPart
 from ch_backup.config import Config
 from ch_backup.encryption import get_encryption
 from ch_backup.exceptions import StorageError
 from ch_backup.storage import StorageLoader
 from ch_backup.storage.engine.s3 import S3RetryingError
+from ch_backup.util import list_dir_files
 
 BACKUP_META_FNAME = 'backup_struct.json'
 BACKUP_LIGHT_META_FNAME = 'backup_light_struct.json'
@@ -113,6 +114,35 @@ class BackupLayout:
         except Exception as e:
             msg = f'Failed to create async upload of {remote_path}'
             raise StorageError(msg) from e
+
+    def upload_cloud_storage_metadata(self,
+                                      backup_meta: BackupMetadata,
+                                      disk: Disk,
+                                      delete_after_upload: bool = False) -> bool:
+        """
+        Upload specified disk metadata files from given directory path as a tarball.
+        Returns: whether backed up disk had data.
+        """
+        backup_name = backup_meta.get_sanitized_name()
+        remote_path = _disk_metadata_path(self.get_backup_path(backup_name), disk.name)
+        shadow_path = os.path.join(disk.path, 'shadow', backup_name)
+        files = list(filter(lambda p: not p.endswith('/frozen_metadata.txt'), list_dir_files(shadow_path)))
+        if not files:
+            return False
+
+        logging.debug(f'Uploading "{shadow_path}" content to "{remote_path}"')
+
+        try:
+            self._storage_loader.upload_files_tarball(dir_path=shadow_path,
+                                                      remote_path=remote_path,
+                                                      files=files,
+                                                      is_async=True,
+                                                      encryption=backup_meta.cloud_storage.encrypted,
+                                                      delete=delete_after_upload)
+        except Exception as e:
+            msg = f'Failed to upload "{shadow_path}" content to "{remote_path}"'
+            raise StorageError(msg) from e
+        return True
 
     def get_udf_create_statement(self, backup_meta: BackupMetadata, filename: str) -> str:
         """
@@ -260,6 +290,26 @@ class BackupLayout:
             logging.warning(f"Failed to check data part {part.name}, consider it's broken", exc_info=True)
             return False
 
+    def download_cloud_storage_metadata(self, backup_meta: BackupMetadata, disk: Disk, source_disk_name: str) -> None:
+        """
+        Download files packed in tarball and unpacks them into specified directory.
+        """
+        backup_name = backup_meta.get_sanitized_name()
+
+        disk_path = os.path.join(disk.path, 'shadow', backup_name)
+        os.makedirs(disk_path, exist_ok=True)
+        remote_path = _disk_metadata_path(self.get_backup_path(backup_name), source_disk_name)
+
+        logging.debug(f'Downloading "{disk_path}" files from "{remote_path}"')
+        try:
+            self._storage_loader.download_files(remote_path=remote_path,
+                                                local_path=disk_path,
+                                                is_async=True,
+                                                encryption=backup_meta.cloud_storage.encrypted)
+        except Exception as e:
+            msg = f'Failed to download tarball file "{remote_path}"'
+            raise StorageError(msg) from e
+
     def delete_backup(self, backup_name: str) -> None:
         """
         Delete backup data and metadata from storage.
@@ -369,6 +419,13 @@ def _part_path(backup_path: str, db_name: str, table_name: str, part_name: str) 
     Return S3 path to data part.
     """
     return os.path.join(backup_path, 'data', db_name, table_name, part_name)
+
+
+def _disk_metadata_path(backup_path: str, disk_name: str) -> str:
+    """
+    Returns path to store tarball with cloud storage shadow metadata.
+    """
+    return os.path.join(backup_path, 'disks', f'{disk_name}.tar')
 
 
 def _quote(value: str) -> str:

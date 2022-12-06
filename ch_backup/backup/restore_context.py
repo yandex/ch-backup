@@ -71,6 +71,12 @@ class RestoreContext:
         """
         return disk_name in self._restarted_disks
 
+    def has_failed_parts(self) -> bool:
+        """
+        Returns whether some parts failed during restore.
+        """
+        return len(self._failed) > 0
+
     def dump_state(self) -> None:
         """
         Dumps restore state to file of disk.

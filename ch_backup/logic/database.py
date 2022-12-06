@@ -1,7 +1,7 @@
 """
 Clickhouse backup logic for databases
 """
-from typing import Any
+from typing import Sequence
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
@@ -23,28 +23,33 @@ class DatabaseBackup(BackupManager):
         self._config = config['backup']
         self._zk_config = config.get('zookeeper')
 
-    def backup(self, **kwargs: Any) -> None:
-        for db_name in kwargs['databases']:
-            self._backup_database(kwargs['backup_meta'], db_name)
+    def backup(self, backup_meta: BackupMetadata, databases: Sequence[str]) -> None:
+        """
+        Backup database objects metadata.
+        """
+        for db_name in databases:
+            self._backup_database(backup_meta, db_name)
 
-    def restore(self, backup_meta: BackupMetadata, **kwargs: Any) -> None:
+    def restore(self, backup_meta: BackupMetadata, databases: Sequence[str]) -> None:
+        """
+        Restore database objects.
+        """
         present_databases = self._ch_ctl.get_databases()
 
-        for db_name in kwargs['databases']:
+        for db_name in databases:
             if not _has_embedded_metadata(db_name) and db_name not in present_databases:
                 db_sql = self._backup_layout.get_database_create_statement(backup_meta, db_name)
                 db_sql = rewrite_database_schema(db_sql, self._config['force_non_replicated'],
                                                  self._config['override_replica_name'])
+                logging.debug(f'Restoring database `{db_name}`')
                 self._ch_ctl.restore_database(db_sql)
 
-    def restore_schema(self, **kwargs: Any) -> None:
+    def restore_schema(self, source_ch_ctl: ClickhouseCTL, databases: Sequence[str], replica_name: str) -> None:
         """
         Restore schema
         """
         present_databases = self._ch_ctl.get_databases()
         databases_to_create = []
-        databases = kwargs['databases']
-        source_ch_ctl = kwargs['source_ch_ctl']
         for database in databases:
             logging.debug('Restoring database "%s"', database)
             if not _has_embedded_metadata(database) and database not in present_databases:
@@ -59,7 +64,7 @@ class DatabaseBackup(BackupManager):
                 macros = self._ch_ctl.get_macros()
                 zk_ctl = ZookeeperCTL(self._zk_config)
                 zk_ctl.delete_replicated_database_metadata(get_database_zookeeper_paths(databases_to_create),
-                                                           kwargs['replica_name'], macros)
+                                                           replica_name, macros)
             for db_sql in databases_to_create:
                 self._ch_ctl.restore_database(db_sql)
 

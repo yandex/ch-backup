@@ -3,8 +3,7 @@ ZooKeeper-control classes module
 """
 
 import os
-import socket
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, Tuple
 
 from kazoo.client import KazooClient
 from kazoo.exceptions import KazooException, NoNodeError
@@ -39,17 +38,12 @@ class ZookeeperCTL:
         self._zk_password = config['password'] if 'password' in config else None
 
     @KAZOO_RETRIES
-    def delete_replica_metadata(self,
-                                tables: Iterable[Tuple[Table, str]],
-                                replica: Optional[str] = None,
-                                macros: Dict = None) -> None:
+    def delete_replica_metadata(self, tables: Iterable[Tuple[Table, str]], replica: str, macros: Dict = None) -> None:
         """
         Remove replica metadata from zookeeper for all tables from args.
         """
         if macros is None:
             macros = {}
-        if not replica:
-            replica = socket.getfqdn()
 
         self._zk_client.start()
         if self._zk_user and self._zk_password:
@@ -67,17 +61,12 @@ class ZookeeperCTL:
         self._zk_client.stop()
 
     @KAZOO_RETRIES
-    def delete_replicated_database_metadata(self,
-                                            databases: Iterable[str],
-                                            replica: Optional[str] = None,
-                                            macros: Dict = None) -> None:
+    def delete_replicated_database_metadata(self, databases: Iterable[str], replica: str, macros: Dict = None) -> None:
         """
         Remove replica metadata from zookeeper for all replicated databases from args.
         """
         if macros is None:
             macros = {}
-        if not replica:
-            replica = socket.getfqdn()
         macros['replica'] = replica
 
         self._zk_client.start()

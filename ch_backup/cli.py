@@ -204,6 +204,7 @@ def list_command(_ctx: Context, ch_backup: ClickhouseBackup, verbose: bool, **kw
                 ('size', backup.size),
                 ('real_size', backup.real_size),
                 ('ch_version', backup.ch_version),
+                ('cloud_disks', backup.cloud_storage.disks),
             )))
 
     if kwargs['format'] == 'json':

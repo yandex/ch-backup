@@ -2,6 +2,7 @@
 util module defines various auxiliary functions
 """
 
+import glob
 import grp
 import os
 import pwd
@@ -9,7 +10,7 @@ import re
 import shutil
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Iterable, Tuple, Union
+from typing import Callable, Iterable, List, Tuple, Union
 
 import humanfriendly
 import tenacity
@@ -33,6 +34,13 @@ def chown_dir_contents(user: str, group: str, dir_path: str, need_recursion: boo
     else:
         for path in os.listdir(dir_path):
             shutil.chown(os.path.join(dir_path, path), user, group)
+
+
+def list_dir_files(dir_path: str) -> List[str]:
+    """
+    Returns paths of all files of directory (recursively), relative to its path
+    """
+    return [file[len(dir_path) + 1:] for file in filter(os.path.isfile, glob.iglob(dir_path + '/**', recursive=True))]
 
 
 def setup_environment(config: dict) -> None:
@@ -111,6 +119,34 @@ def utcnow() -> datetime:
     Return UTC datetime with timezone information.
     """
     return datetime.now(timezone.utc)
+
+
+def wait_for(func: Callable[[], bool],
+             timeout_s: float,
+             interval_s: float = 1.,
+             on_wait_begin: Callable = None,
+             on_wait_end: Callable = None,
+             on_interval_begin: Callable = None,
+             on_interval_end: Callable = None) -> None:
+    """
+    Waits for function to return True in time.
+    """
+    if on_wait_begin is not None:
+        on_wait_begin()
+
+    time_left = timeout_s
+    while time_left > 0 and func():
+        if on_interval_begin is not None:
+            on_interval_begin()
+
+        time.sleep(interval_s)
+        time_left -= interval_s
+
+        if on_interval_end is not None:
+            on_interval_end()
+
+    if on_wait_end is not None:
+        on_wait_end()
 
 
 def retry(exception_types: Union[type, tuple] = Exception,

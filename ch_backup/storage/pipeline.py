@@ -141,14 +141,23 @@ class PipelineLoader:
         """
         Upload given bytes or file-like object.
         """
-        return self._execute_pipeline((self.upload_data.__name__, '<data>', *args),
-                                      (ReadDataStage, EncryptStage, UploadDataStorageStage), data, *args, **kwargs)
+        stages = [
+            ReadDataStage,
+            EncryptStage,
+            UploadDataStorageStage,
+        ]
+
+        return self._execute_pipeline((self.upload_data.__name__, '<data>', *args), stages, data, *args, **kwargs)
 
     def upload_file(self, *args, delete, **kwargs):
         """
         Upload file from local filesystem.
         """
-        stages = [ReadFileStage, EncryptStage, UploadFileStorageStage]
+        stages = [
+            ReadFileStage,
+            EncryptStage,
+            UploadFileStorageStage,
+        ]
         if delete:
             stages.append(DeleteFileStage)
 
@@ -158,7 +167,11 @@ class PipelineLoader:
         """
         Upload file from local filesystem.
         """
-        stages = [ReadFilesStage, EncryptStage, UploadFileStorageStage]
+        stages = [
+            ReadFilesStage,
+            EncryptStage,
+            UploadFileStorageStage,
+        ]
         if delete:
             stages.append(DeleteFilesStage)
 
@@ -168,35 +181,57 @@ class PipelineLoader:
         """
         Download file from storage and return its content as a string.
         """
-        return self._execute_pipeline((self.download_data.__name__, *args),
-                                      (DownloadStorageStage, DecryptStage, CollectDataStage), *args, **kwargs)
+        stages = [
+            DownloadStorageStage,
+            DecryptStage,
+            CollectDataStage,
+        ]
+
+        return self._execute_pipeline((self.download_data.__name__, *args), stages, *args, **kwargs)
 
     def download_file(self, *args, **kwargs):
         """
         Download file to local filesystem.
         """
-        self._execute_pipeline((self.download_file.__name__, *args),
-                               (DownloadStorageStage, DecryptStage, WriteFileStage), *args, **kwargs)
+        stages = [
+            DownloadStorageStage,
+            DecryptStage,
+            WriteFileStage,
+        ]
+
+        self._execute_pipeline((self.download_file.__name__, *args), stages, *args, **kwargs)
 
     def download_files(self, *args, **kwargs):
         """
         Download file to local filesystem.
         """
-        self._execute_pipeline((self.download_files.__name__, *args),
-                               (DownloadStorageStage, DecryptStage, WriteFilesStage), *args, **kwargs)
+        stages = [
+            DownloadStorageStage,
+            DecryptStage,
+            WriteFilesStage,
+        ]
+
+        self._execute_pipeline((self.download_files.__name__, *args), stages, *args, **kwargs)
 
     def delete_file(self, *args, **kwargs):
         """
         Delete file from storage.
         """
-        return self._execute_pipeline((self.delete_file.__name__, *args), (DeleteStorageStage, ), *args, **kwargs)
+        stages = [
+            DeleteStorageStage,
+        ]
+
+        return self._execute_pipeline((self.delete_file.__name__, *args), stages, *args, **kwargs)
 
     def delete_files(self, *args, **kwargs):
         """
         Delete files from storage.
         """
-        return self._execute_pipeline((self.delete_files.__name__, *args), (DeleteMultipleStorageStage, ), *args,
-                                      **kwargs)
+        stages = [
+            DeleteMultipleStorageStage,
+        ]
+
+        return self._execute_pipeline((self.delete_files.__name__, *args), stages, *args, **kwargs)
 
     def wait(self) -> None:
         """

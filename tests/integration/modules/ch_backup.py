@@ -132,12 +132,13 @@ class Backup:
         Return all storage paths
         """
         backup_path = self.meta['path']
+        cloud_stage_disks = set(self._metadata['cloud_storage']['disks'])
         file_paths: Set[str] = set()
         for db_name, db_obj in self._metadata['databases'].items():
             for table_name, table_obj in db_obj['tables'].items():
                 for part_name, part_obj in table_obj['parts'].items():
                     # Skip S3 parts.
-                    if part_obj.get('disk_name') in self.meta.get('s3_revisions', {}).keys():
+                    if part_obj.get('disk_name') in cloud_stage_disks:
                         continue
                     part_path = os.path.join(
                         part_obj.get('link') or backup_path, 'data', db_name, table_name, part_name)

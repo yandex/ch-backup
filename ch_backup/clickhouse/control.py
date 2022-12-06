@@ -2,7 +2,6 @@
 Clickhouse-control classes module
 """
 
-import glob
 import os
 import shutil
 from hashlib import md5
@@ -17,7 +16,7 @@ from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.clickhouse.models import Disk, FreezedPart, Table
 from ch_backup.clickhouse.schema import (is_distributed, is_external_engine, is_replicated, is_view, to_attach_query)
-from ch_backup.util import chown_dir_contents, escape, retry, strip_query
+from ch_backup.util import (chown_dir_contents, escape, list_dir_files, retry, strip_query)
 
 GET_TABLES_SQL = strip_query("""
     SELECT
@@ -109,6 +108,12 @@ GET_ACCESS_CONTROL_OBJECTS_SQL = strip_query("""
     FORMAT JSON
 """)
 
+GET_DISK_SQL = strip_query("""
+    SELECT name, path, type, cache_path FROM system.disks
+    WHERE name = '{disk_name}'
+    FORMAT JSON
+""")
+
 GET_DISKS_SQL = strip_query("""
     SELECT name, path, type FROM system.disks
     ORDER BY length(path) DESC
@@ -128,6 +133,10 @@ GET_UDF_QUERY_SQL = strip_query("""
 
 RESTART_DISK_SQL = strip_query("""
     SYSTEM RESTART DISK {disk_name}
+""")
+
+RELOAD_CONFIG_SQL = strip_query("""
+    SYSTEM RELOAD CONFIG
 """)
 
 
@@ -393,10 +402,7 @@ class ClickhouseCTL:
         for part in os.listdir(path):
             part_path = os.path.join(path, part)
             checksum = _get_part_checksum(part_path)
-            files = [
-                file[len(part_path) + 1:]
-                for file in filter(os.path.isfile, glob.iglob(part_path + '/**', recursive=True))
-            ]
+            files = list_dir_files(part_path)
             size = _get_part_size(part_path, files)
             logging.debug(f"list_freezed_parts: {table.name} -> {escape(table.name)} \n {part}")
             freezed_parts.append(
@@ -444,6 +450,15 @@ class ClickhouseCTL:
         """
         resp = self._ch_client.query(GET_UDF_QUERY_SQL)
         return {row['name']: row['create_query'] for row in resp.get('data', [])}
+
+    def get_disk(self, disk_name: str) -> Disk:
+        """
+        Get disk by name.
+        """
+        resp = self._ch_client.query(GET_DISK_SQL.format(disk_name=disk_name)).get('data')
+        assert resp, f"disk '{disk_name}' not found"
+        resp = resp[0]
+        return Disk(resp['name'], resp['path'], resp['type'], resp['cache_path'])
 
     def get_disks(self) -> Dict[str, Disk]:
         """
@@ -495,6 +510,12 @@ class ClickhouseCTL:
         """
         self._ch_client.query(RESTART_DISK_SQL.format(disk_name=disk_name), timeout=self._restart_disk_timeout)
         context.add_restarted_disk(disk_name)
+
+    def reload_config(self):
+        """
+        Reload ClickHouse configuration query.
+        """
+        self._ch_client.query(RELOAD_CONFIG_SQL, timeout=self._timeout)
 
 
 def _get_part_checksum(part_path: str) -> str:

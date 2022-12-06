@@ -6,7 +6,7 @@ import socket
 from datetime import datetime, timezone
 from enum import Enum
 from types import SimpleNamespace
-from typing import Dict, List, Optional, Sequence, Set
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 from ch_backup.exceptions import InvalidBackupStruct, UnknownBackupStateError
 from ch_backup.util import now
@@ -180,6 +180,64 @@ class TableMetadata(SimpleNamespace):
         return table
 
 
+class CloudStorageMetadata:
+    """
+    Backup metadata for Cloud Storage.
+    """
+    def __init__(self, encryption: bool = True, disks: Optional[List[str]] = None) -> None:
+        self._encryption: bool = encryption
+        self._disks: List[str] = disks or []
+
+    @property
+    def enabled(self) -> bool:
+        """
+        Return True if Cloud Storage is enabled within the backup.
+        """
+        return len(self._disks) > 0
+
+    @property
+    def disks(self) -> List[str]:
+        """
+        Return list of backed up disks names.
+        """
+        return self._disks
+
+    def add_disk(self, disk_name: str) -> None:
+        """
+        Add disk name in backed up disks list.
+        """
+        self._disks.append(disk_name)
+
+    @property
+    def encrypted(self) -> bool:
+        """
+        Return True if Cloud Storage backup is encrypted.
+        """
+        return self._encryption
+
+    def encrypt(self) -> None:
+        """
+        Encrypt Cloud Storage data within the backup.
+        """
+        self._encryption = True
+
+    @classmethod
+    def load(cls, data: Dict[str, Any]) -> 'CloudStorageMetadata':
+        """
+        Deserialize Cloud Storage metadata.
+        """
+        return cls(encryption=data.get('encryption', True), disks=data.get('disks', []))
+
+    def dump(self) -> Dict[str, Any]:
+        """
+        Serialize Cloud Storage metadata.
+        """
+        return {
+            'encryption': self._encryption,
+            'disks': self._disks,
+        }
+
+
 class BackupMetadata:
     """
     Backup metadata.
@@ -214,6 +272,7 @@ class BackupMetadata:
         self.schema_only = schema_only
         self.s3_revisions: Dict[str, int] = {}  # S3 disk name -> revision counter.
         self._user_defined_functions: List[str] = []
+        self.cloud_storage: CloudStorageMetadata = CloudStorageMetadata()
 
     def __str__(self) -> str:
         return self.dump_json()
@@ -258,6 +317,7 @@ class BackupMetadata:
         return {
             'databases': self._databases if not light else {},
             'access_control': self._access_control if not light else [],
+            'cloud_storage': self.cloud_storage.dump(),
             'meta': {
                 'name': self.name,
                 'path': self.path,
@@ -302,6 +362,7 @@ class BackupMetadata:
             backup.time_format = meta['time_format']
             backup._databases = data['databases']
             backup._access_control = data.get('access_control', [])
+            backup.cloud_storage = CloudStorageMetadata.load(data.get('cloud_storage', {}))
             backup.start_time = cls._load_time(meta, 'start_time')
             backup.end_time = cls._load_time(meta, 'end_time')
             backup.size = meta['bytes']
@@ -451,8 +512,16 @@ class BackupMetadata:
     def has_s3_data(self) -> bool:
         """
         Return True if backup has data on S3 disks.
+        TODO: could be removed after denial of storing S3 revisions
         """
         return len(self.s3_revisions) > 0
+
+    def get_sanitized_name(self) -> str:
+        """
+        ClickHouse will place shadow data under this directory.
+        '-' character is replaced to '_' to avoid unnecessary escaping on CH side.
+        """
+        return self.name.replace('-', '_')
 
     def _format_time(self, value: datetime) -> str:
         return value.strftime(self.time_format)

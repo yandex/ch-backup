@@ -51,6 +51,7 @@ def shutdown_containers(context: ContextT) -> None:
     """
     Shutdown and remove docker containers.
     """
+    _call_compose(context.conf, 'kill')
     _call_compose(context.conf, f'down --volumes --timeout {COMPOSE_UP_DOWN_TIMEOUT}')
 
 

@@ -14,6 +14,7 @@ DEFAULT_CONFIG = {
     'clickhouse': {
         'data_path': '/var/lib/clickhouse',
         'access_control_path': '/var/lib/clickhouse/access',
+        'config_dir': '/etc/clickhouse-server/config.d/',
         'host': socket.gethostname(),
         'protocol': 'http',
         'port': None,
@@ -53,6 +54,7 @@ DEFAULT_CONFIG = {
         'backup_access_control': False,
         'restore_context_path': '/tmp/ch_backup_restore_state.json',  # nosec
         'validate_part_after_upload': False,
+        'restore_fail_on_attach_error': False,
     },
     'storage': {
         'type': 's3',
@@ -86,7 +88,9 @@ DEFAULT_CONFIG = {
         'bulk_delete_chunk_size': 1000,
     },
     # Same structure as 'storage' section, but for cloud storage
-    'cloud_storage': {},
+    'cloud_storage': {
+        'encryption': True,
+    },
     'encryption': {
         'type': 'nacl',
         # Chunk size used when encrypting / decrypting data, in bytes.
@@ -136,6 +140,11 @@ DEFAULT_CONFIG = {
                 'filename': '/var/log/ch-backup/boto.log',
                 'formatter': 'boto',
             },
+            'clickhouse-disks': {
+                'class': 'logging.FileHandler',
+                'filename': '/var/log/ch-backup/clickhouse-disks.log',
+                'formatter': 'ch-backup',
+            },
         },
         'loggers': {
             'ch-backup': {
@@ -158,6 +167,10 @@ DEFAULT_CONFIG = {
             'urllib3.connectionpool': {
                 'handlers': ['boto'],
                 'level': 'DEBUG',
+            },
+            'clickhouse-disks': {
+                'handlers': ['clickhouse-disks'],
+                'level': 'INFO',
             },
         },
     },

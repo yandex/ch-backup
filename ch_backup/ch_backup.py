@@ -1,6 +1,7 @@
 """
 Clickhouse backup logic
 """
+import socket
 from collections import defaultdict
 from copy import copy
 from datetime import timedelta
@@ -17,14 +18,15 @@ from ch_backup.clickhouse.schema import is_atomic_db_engine
 from ch_backup.config import Config
 from ch_backup.exceptions import BackupNotFound, ClickhouseBackupError
 from ch_backup.logic.access import AccessBackup
+from ch_backup.logic.cloud_storage_utils import fix_s3_oplog
 from ch_backup.logic.database import DatabaseBackup
 from ch_backup.logic.table import TableBackup
 from ch_backup.logic.udf import UDFBackup
-from ch_backup.storage.engine.s3 import S3StorageEngine
 from ch_backup.util import now, utcnow
 from ch_backup.version import get_version
 
 
+# pylint: disable=too-many-instance-attributes
 class ClickhouseBackup:
     """
     Clickhouse backup logic
@@ -40,10 +42,10 @@ class ClickhouseBackup:
         self._config = config['backup']
         self._zk_config = config.get('zookeeper')
         self._restore_context = RestoreContext(self._config)
-        self._udf_backup_manager = UDFBackup(self._ch_ctl, self._backup_layout)
+        self._access_backup_manager = AccessBackup(self._ch_ctl, self._backup_layout, config)
         self._database_backup_manager = DatabaseBackup(self._ch_ctl, self._backup_layout, config)
         self._table_backup_manager = TableBackup(self._ch_ctl, self._backup_layout, config)
-        self._access_backup_manager = AccessBackup(self._ch_ctl, self._backup_layout, config)
+        self._udf_backup_manager = UDFBackup(self._ch_ctl, self._backup_layout)
 
     def get(self, backup_name: str) -> BackupMetadata:
         """
@@ -115,19 +117,17 @@ class ClickhouseBackup:
         logging.debug('Starting backup "%s" for databases: %s', backup_meta.name, ', '.join(databases))
 
         try:
-            self._access_backup_manager.backup(backup_meta=backup_meta, backup_access_control=backup_access_control)
-            self._udf_backup_manager.backup(backup_meta=backup_meta)
+            self._access_backup_manager.backup(backup_meta, backup_access_control)
+            self._udf_backup_manager.backup(backup_meta)
+            self._database_backup_manager.backup(backup_meta, databases)
+
             dedup_info = collect_dedup_info(config=self._config,
                                             layout=self._backup_layout,
                                             creating_backup=backup_meta,
                                             backups_with_light_meta=backups_with_light_meta,
                                             databases=databases)
-            self._database_backup_manager.backup(backup_meta=backup_meta, databases=databases)
-            self._table_backup_manager.backup(backup_meta=backup_meta,
-                                              databases=databases,
-                                              db_tables=db_tables,
-                                              dedup_info=dedup_info,
-                                              schema_only=schema_only)
+            self._table_backup_manager.backup(backup_meta, databases, db_tables, dedup_info, schema_only)
+
             backup_meta.state = BackupState.CREATED
         except Exception:
             logging.critical('Backup failed', exc_info=True)
@@ -160,8 +160,9 @@ class ClickhouseBackup:
         """
         backup_meta = self._get_backup(backup_name)
 
-        if backup_meta.has_s3_data() and cloud_storage_source_bucket is None and not schema_only:
-            raise ClickhouseBackupError('Cloud storage source bucket must be set if backup has data on S3 disks')
+        if cloud_storage_source_bucket is None and not schema_only:
+            if backup_meta.has_s3_data() or backup_meta.cloud_storage.enabled:
+                raise ClickhouseBackupError('Cloud storage source bucket must be set if backup has data on S3 disks')
 
         self._config['override_replica_name'] = override_replica_name or self._config.get('override_replica_name')
         self._config['force_non_replicated'] = force_non_replicated or self._config['force_non_replicated']
@@ -189,62 +190,17 @@ class ClickhouseBackup:
         """
         Fix S3 operations log.
         """
-        if not self._config.get('cloud_storage', None):
+        if not self._config.get('cloud_storage'):
             return
 
-        if not cloud_storage_source_bucket or not cloud_storage_source_path:
-            if not source_cluster_id:
-                source_cluster_id = self._config['restore_from']['cid']
-            if not shard:
-                shard = self._config['restore_from']['shard_name']
-            cloud_storage_source_bucket = f'cloud-storage-{source_cluster_id}'
-            cloud_storage_source_path = f'cloud_storage/{source_cluster_id}/{shard}'
-
-        engine = S3StorageEngine(self._config['cloud_storage'])
-        client = engine.get_client()
-        prefix = f'{cloud_storage_source_path}/operations/r'
-        paginator = client.get_paginator('list_objects')
-        list_object_kwargs = dict(Bucket=cloud_storage_source_bucket, Prefix=prefix)
-
-        delete_list: Dict[str, int] = {}
-
-        collision_counter = 0
-
-        for result in paginator.paginate(**list_object_kwargs):
-            if result.get('Contents') is not None:
-                for file_data in result.get('Contents'):
-                    key = file_data.get('Key')
-                    if key.endswith('-rename'):
-                        head = client.head_object(Bucket=cloud_storage_source_bucket, Key=key)
-                        metadata = head.get('Metadata')
-                        to_path = ''
-                        if 'To_path' in metadata:
-                            to_path = metadata.get('To_path')
-                        if 'delete_tmp_' in to_path:
-                            if to_path in delete_list:
-                                collision_counter += 1
-                                new_path = f'{to_path}_collision_{delete_list[to_path]}'
-                                delete_list[to_path] += 1
-                                logging.info('Collision for %s, new path %s', to_path, new_path)
-                                if not dryrun:
-                                    metadata['To_path'] = new_path
-                                    metadata['To_path_original'] = to_path
-                                    client.copy_object(Bucket=cloud_storage_source_bucket,
-                                                       Key=key,
-                                                       CopySource={
-                                                           'Bucket': cloud_storage_source_bucket,
-                                                           'Key': key,
-                                                       },
-                                                       Metadata=metadata,
-                                                       MetadataDirective="REPLACE")
-                            else:
-                                delete_list[to_path] = 1
-
-        logging.info('Fix S3 OpLog: bucket "%s", path "%s"', cloud_storage_source_bucket, cloud_storage_source_path)
-        if dryrun:
-            logging.info('Fix S3 OpLog: found %d collisions', collision_counter)
-        else:
-            logging.info('Fix S3 OpLog: found and fixed %d collisions', collision_counter)
+        fix_s3_oplog(
+            self._config['cloud_storage'],
+            source_cluster_id if source_cluster_id else self._config['restore_from']['cid'],
+            shard if shard else self._config['restore_from']['shard_name'],
+            cloud_storage_source_bucket,
+            cloud_storage_source_path,
+            dryrun,
+        )
 
     def delete(self, backup_name: str, purge_partial: bool) -> Tuple[Optional[str], Optional[str]]:
         """
@@ -342,18 +298,14 @@ class ClickhouseBackup:
         source_ch_ctl = ClickhouseCTL(source_conf, self._main_conf)
         databases = source_ch_ctl.get_databases(exclude_dbs if exclude_dbs else self._config['exclude_dbs'])
 
-        self._udf_backup_manager.restore_schema(source_ch_ctl)
-
-        self._database_backup_manager.restore_schema(databases=databases,
-                                                     source_ch_ctl=source_ch_ctl,
-                                                     replica_name=replica_name)
-
         if self._config['override_replica_name'] is None and replica_name is not None:
             self._config['override_replica_name'] = replica_name
+        if replica_name is None:
+            replica_name = socket.getfqdn()
 
-        self._table_backup_manager.restore_schema(databases=databases,
-                                                  source_ch_ctl=source_ch_ctl,
-                                                  replica_name=replica_name)
+        self._udf_backup_manager.restore_schema(source_ch_ctl)
+        self._database_backup_manager.restore_schema(source_ch_ctl, databases, replica_name)
+        self._table_backup_manager.restore_schema(source_ch_ctl, databases, replica_name)
 
     def restore_access_control(self, backup_name: str) -> None:
         """Restore ClickHouse access control metadata."""
@@ -413,8 +365,8 @@ class ClickhouseBackup:
                  schema_only: bool,
                  clean_zookeeper: bool = False,
                  replica_name: Optional[str] = None,
-                 cloud_storage_source_bucket: str = None,
-                 cloud_storage_source_path: str = None,
+                 cloud_storage_source_bucket: Optional[str] = None,
+                 cloud_storage_source_path: Optional[str] = None,
                  cloud_storage_latest: bool = False,
                  keep_going: bool = False) -> None:
         logging.debug('Restoring databases: %s', ', '.join(databases))
@@ -423,18 +375,14 @@ class ClickhouseBackup:
         self._udf_backup_manager.restore(backup_meta)
 
         # Restore databases.
-        self._database_backup_manager.restore(backup_meta, databases=databases)
+        self._database_backup_manager.restore(backup_meta, databases)
 
         # Restore tables and data stored on local disks.
-        self._table_backup_manager.restore(backup_meta,
-                                           databases=databases,
-                                           schema_only=schema_only,
-                                           clean_zookeeper=clean_zookeeper,
-                                           replica_name=replica_name,
-                                           cloud_storage_source_bucket=cloud_storage_source_bucket,
-                                           cloud_storage_source_path=cloud_storage_source_path,
-                                           cloud_storage_latest=cloud_storage_latest,
-                                           keep_going=keep_going)
+        self._table_backup_manager.restore(backup_meta, databases, replica_name, cloud_storage_source_bucket,
+                                           cloud_storage_source_path, cloud_storage_latest, clean_zookeeper,
+                                           schema_only, keep_going)
+        if self._config['restore_fail_on_attach_error'] and self._restore_context.has_failed_parts():
+            raise ClickhouseBackupError("Some parts are failed to attach")
 
     def _get_backup(self, backup_name: str, use_light_meta: bool = False) -> BackupMetadata:
         backup = self._backup_layout.get_backup(backup_name, use_light_meta)

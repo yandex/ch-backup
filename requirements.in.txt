@@ -9,3 +9,4 @@ humanfriendly
 tabulate
 tenacity
 kazoo
+xmltodict

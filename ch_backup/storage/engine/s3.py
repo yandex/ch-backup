@@ -306,6 +306,6 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryHelper):
 
     def get_client(self):
         """
-        Retunr S3 raw client.
+        Return S3 raw client.
         """
         return self._s3_client

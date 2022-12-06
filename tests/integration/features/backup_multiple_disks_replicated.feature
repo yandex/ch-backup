@@ -35,7 +35,7 @@ Feature: Backup & Restore multiple disks and S3 with replication
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
-  @require_version_21.6
+  @require_version_22.8
   Scenario: Backup table with S3 storage policy
     Given we have executed queries on clickhouse01
     """
@@ -71,7 +71,7 @@ Feature: Backup & Restore multiple disks and S3 with replication
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
-  @require_version_21.6
+  @require_version_22.8
   Scenario: Backup table with S3-cold storage policy
     Given we have executed queries on clickhouse01
     """
@@ -109,7 +109,7 @@ Feature: Backup & Restore multiple disks and S3 with replication
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
-  @require_version_21.6
+  @require_version_22.8
   Scenario: Backup multiple tables with S3 storage policy
     Given we have executed queries on clickhouse01
     """
@@ -162,7 +162,7 @@ Feature: Backup & Restore multiple disks and S3 with replication
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
-  @require_version_21.6
+  @require_version_22.8
   Scenario: Multiple backups with S3 storage policy
     When we execute queries on clickhouse01
     """

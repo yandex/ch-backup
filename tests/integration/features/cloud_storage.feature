@@ -34,7 +34,7 @@ Feature: Backup & Clean & Restore
     Then we got the following backups on clickhouse01
       | num | state   | data_count | link_count | title   |
       | 0   | created | 5          | 0          | deleted |
-    And s3 contains 14 objects
+    And s3 contains 15 objects
     And s3 bucket cloud-storage-01 contains 10 objects
     And we got the following s3 backup directories on clickhouse01
     """

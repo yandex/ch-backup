@@ -3,15 +3,16 @@ Clickhouse backup logic for tables
 """
 from collections import deque
 from itertools import chain
-from typing import Any, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from ch_backup import logging
-from ch_backup.backup.deduplication import (DatabaseDedupInfo, TableDedupInfo, deduplicate_part)
+from ch_backup.backup.deduplication import (DatabaseDedupInfo, DedupInfo, TableDedupInfo, deduplicate_part)
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, TableMetadata
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.control import ClickhouseCTL
+from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
 from ch_backup.clickhouse.models import Table
 from ch_backup.clickhouse.schema import (is_atomic_db_engine, is_distributed, is_external_db_engine,
                                          is_materialized_view, is_merge_tree, is_replicated, is_view,
@@ -29,65 +30,93 @@ class TableBackup(BackupManager):
     """
     def __init__(self, ch_ctl: ClickhouseCTL, backup_layout: BackupLayout, config: Config) -> None:
         super().__init__(ch_ctl, backup_layout)
+        self._config_root = config
         self._config = config['backup']
         self._restore_context = RestoreContext(self._config)
         self._zk_config = config.get('zookeeper')
 
-    def backup(self, **kwargs: Any) -> None:
-        for db_name in kwargs['databases']:
-            self._backup(kwargs['backup_meta'], db_name, kwargs['db_tables'][db_name],
-                         kwargs['dedup_info'].database(db_name), kwargs['schema_only'])
+    def backup(self, backup_meta: BackupMetadata, databases: Sequence[str], db_tables: Dict[str, list],
+               dedup_info: DedupInfo, schema_only: bool) -> None:
+        """
+        Backup tables metadata, MergeTree data and Cloud storage metadata.
+        """
+        backup_name = backup_meta.get_sanitized_name()
 
-    def _backup(self, backup_meta: BackupMetadata, db_name: str, tables: Sequence[str], dedup_info: DatabaseDedupInfo,
-                schema_only: bool) -> None:
+        for db_name in databases:
+            self._backup(backup_meta, db_name, db_tables[db_name], backup_name, dedup_info.database(db_name),
+                         schema_only)
+        self._backup_cloud_storage_metadata(backup_meta)
+
+    def _backup(self, backup_meta: BackupMetadata, db_name: str, tables: Sequence[str], backup_name: str,
+                dedup_info: DatabaseDedupInfo, schema_only: bool) -> None:
+        """
+        Backup single database tables.
+        """
         if not self._is_db_external(db_name):
             for table in self._ch_ctl.get_tables(db_name, tables):
                 table_meta = TableMetadata(table.database, table.name, table.engine, table.uuid)
                 self._backup_table_schema(backup_meta, table)
                 if not schema_only:
                     # table_meta will be populated with parts info
-                    self._backup_table_data(backup_meta, table, table_meta, dedup_info.table(table.name))
+                    self._backup_table_data(backup_meta, table, table_meta, backup_name, dedup_info.table(table.name))
 
                 backup_meta.add_table(table_meta)
 
         self._backup_layout.upload_backup_metadata(backup_meta)
 
-    def restore(self, backup_meta: BackupMetadata, **kwargs: Any) -> None:
+    def _backup_cloud_storage_metadata(self, backup_meta: BackupMetadata) -> None:
+        """
+        Backup cloud storage metadata files.
+        """
+        if self._config.get('cloud_storage', {}).get('encryption', True):
+            logging.debug('Cloud Storage "shadow" backup will be encrypted')
+            backup_meta.cloud_storage.encrypt()
+
+        logging.debug('Backing up Cloud Storage disks "shadow" directory')
+        disks = self._ch_ctl.get_disks()
+        for disk in disks.values():
+            if disk.type == 's3' and not disk.cache_path:
+                if not self._backup_layout.upload_cloud_storage_metadata(backup_meta, disk):
+                    logging.debug(f'No data frozen on disk "{disk.name}", skipping')
+                    continue
+                backup_meta.cloud_storage.add_disk(disk.name)
+        logging.debug('Cloud Storage disks has been backed up ')
+
+    def restore(self, backup_meta: BackupMetadata, databases: Sequence[str], replica_name: Optional[str],
+                cloud_storage_source_bucket: Optional[str], cloud_storage_source_path: Optional[str],
+                cloud_storage_latest: bool, clean_zookeeper: bool, schema_only: bool, keep_going: bool) -> None:
+        """
+        Restore tables and MergeTree data.
+        """
         tables_meta: List[TableMetadata] = list(
-            chain(*[
-                backup_meta.get_tables(db_name) for db_name in kwargs['databases'] if not self._is_db_external(db_name)
-            ]))
+            chain(*[backup_meta.get_tables(db_name) for db_name in databases if not self._is_db_external(db_name)]))
         tables = list(map(lambda meta: self._get_table_from_meta(backup_meta, meta), tables_meta))
 
         tables = self._preprocess_tables_to_restore(tables)
-        failed_tables = self._restore_tables(tables, kwargs['clean_zookeeper'], kwargs['replica_name'],
-                                             kwargs['keep_going'])
+        failed_tables = self._restore_tables(tables, clean_zookeeper, replica_name, keep_going)
 
         # Restore data stored on S3 disks.
-        if not kwargs['schema_only']:
+        if not schema_only:
             if backup_meta.has_s3_data():
-                assert kwargs['cloud_storage_source_bucket'] is not None, "Cloud storage source bucket is not set"
-                assert kwargs['cloud_storage_source_path'] is not None, "Cloud storage source path is not set"
-                source_bucket: str = kwargs['cloud_storage_source_bucket']
-                source_path: str = kwargs['cloud_storage_source_path']
-                self._restore_cloud_storage_data(backup_meta, source_bucket, source_path,
-                                                 kwargs['cloud_storage_latest'])
+                cloud_storage_source_bucket = cloud_storage_source_bucket if cloud_storage_source_bucket else ''
+                cloud_storage_source_path = cloud_storage_source_path if cloud_storage_source_path else ''
+                self._restore_cloud_storage_data(backup_meta, cloud_storage_source_bucket, cloud_storage_source_path,
+                                                 cloud_storage_latest)
 
             failed_tables_names = [f"`{t.database}`.`{t.name}`" for t in failed_tables]
             tables_to_restore = filter(lambda t: is_merge_tree(t.engine), tables_meta)
             tables_to_restore = filter(lambda t: f"`{t.database}`.`{t.name}`" not in failed_tables_names,
                                        tables_to_restore)
 
-            self._restore_data(backup_meta, tables_to_restore)
+            with ClickHouseTemporaryDisks(self._ch_ctl, self._backup_layout, self._config_root, backup_meta,
+                                          cloud_storage_source_bucket, cloud_storage_source_path) as disks:
+                self._restore_data(backup_meta, tables_to_restore, disks)
 
-    def restore_schema(self, **kwargs: Any) -> None:
+    def restore_schema(self, source_ch_ctl: ClickhouseCTL, databases: Sequence[str], replica_name: str) -> None:
         """
         Restore schema
         """
         tables: List[Table] = []
-        databases = kwargs['databases']
-        source_ch_ctl = kwargs['source_ch_ctl']
-        replica_name = kwargs['replica_name']
         for database in databases:
             tables.extend(source_ch_ctl.get_tables(database))
 
@@ -115,7 +144,7 @@ class TableBackup(BackupManager):
                                                           table.create_statement)
 
     def _backup_table_data(self, backup_meta: BackupMetadata, table: Table, table_meta: TableMetadata,
-                           dedup_info: TableDedupInfo) -> None:
+                           backup_name: str, dedup_info: TableDedupInfo) -> None:
         """
         Backup table with data opposed to schema only.
         """
@@ -125,10 +154,6 @@ class TableBackup(BackupManager):
             logging.info('Skipping table backup for non MergeTree table "%s"."%s"', table.database, table.name)
             return
 
-        # ClickHouse will place shadow data under this directory.
-        # '-' character is replaced to '_' to avoid unnecessary escaping on CH side.
-        backup_name = backup_meta.name.replace('-', '_')
-
         try:
             self._ch_ctl.freeze_table(backup_name, table)
         except ClickhouseError:
@@ -137,14 +162,6 @@ class TableBackup(BackupManager):
 
             logging.warning('Table "%s"."%s" was removed by a user during backup', table.database, table.name)
             return
-
-        for disk in self._ch_ctl.get_disks().values():
-            if disk.type == 's3' and not disk.cache_path:
-                # Save revision for S3 disks.
-                revision = self._ch_ctl.read_s3_disk_revision(disk.name, backup_name)
-                if revision:
-                    backup_meta.s3_revisions[disk.name] = revision
-                    logging.debug('Save revision %d for disk %s', revision, disk.name)
 
         uploaded_parts = []
         for data_path, disk in table.paths_with_disks:
@@ -270,7 +287,8 @@ class TableBackup(BackupManager):
             finally:
                 self._restore_context.dump_state()
 
-    def _restore_data(self, backup_meta: BackupMetadata, tables: Iterable[TableMetadata]) -> None:
+    def _restore_data(self, backup_meta: BackupMetadata, tables: Iterable[TableMetadata],
+                      disks: ClickHouseTemporaryDisks) -> None:
         for table_meta in tables:
             try:
                 logging.debug('Running table "%s.%s" data restore', table_meta.database, table_meta.name)
@@ -287,8 +305,11 @@ class TableBackup(BackupManager):
                         continue
 
                     if part.disk_name not in backup_meta.s3_revisions.keys():
-                        fs_part_path = self._ch_ctl.get_detached_part_path(table, part.disk_name, part.name)
-                        self._backup_layout.download_data_part(backup_meta, part, fs_part_path)
+                        if part.disk_name in backup_meta.cloud_storage.disks:
+                            disks.copy_part(backup_meta, table, part)
+                        else:
+                            fs_part_path = self._ch_ctl.get_detached_part_path(table, part.disk_name, part.name)
+                            self._backup_layout.download_data_part(backup_meta, part, fs_part_path)
 
                     attach_parts.append(part)
 
