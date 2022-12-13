@@ -3,10 +3,10 @@ Unit tests for deduplication module.
 """
 from datetime import timedelta
 from unittest.mock import MagicMock
-
 from ch_backup.backup.deduplication import (DatabaseDedupInfo, DedupInfo, collect_dedup_info,
                                             collect_dedup_references_for_batch_backup_deletion)
 from ch_backup.backup.metadata import BackupState
+from ch_backup.backup_context import BackupContext
 from tests.unit.utils import (assert_equal, backup_metadata, parametrize, parts, parts_dedup_info)
 
 
@@ -15,9 +15,11 @@ from tests.unit.utils import (assert_equal, backup_metadata, parametrize, parts,
         'id': 'initial backup',
         'args': {
             'config': {
-                'deduplicate_parts': True,
-                'deduplication_age_limit': {
-                    'days': 7,
+                'backup': {
+                    'deduplicate_parts': True,
+                    'deduplication_age_limit': {
+                        'days': 7,
+                    },
                 },
             },
             'databases': ['db1'],
@@ -30,9 +32,11 @@ from tests.unit.utils import (assert_equal, backup_metadata, parametrize, parts,
         'id': 'ordinary incremental backup',
         'args': {
             'config': {
-                'deduplicate_parts': True,
-                'deduplication_age_limit': {
-                    'days': 7,
+                'backup': {
+                    'deduplicate_parts': True,
+                    'deduplication_age_limit': {
+                        'days': 7,
+                    },
                 },
             },
             'databases': ['db1'],
@@ -61,7 +65,9 @@ from tests.unit.utils import (assert_equal, backup_metadata, parametrize, parts,
         'id': 'deduplication disabled',
         'args': {
             'config': {
-                'deduplicate_parts': False,
+                'backup': {
+                    'deduplicate_parts': False,
+                },
             },
             'databases': ['db1'],
             'creating_backup': backup_metadata('new_backup', BackupState.CREATING),
@@ -87,9 +93,11 @@ from tests.unit.utils import (assert_equal, backup_metadata, parametrize, parts,
         'id': 'schema-only backup',
         'args': {
             'config': {
-                'deduplicate_parts': True,
-                'deduplication_age_limit': {
-                    'days': 7,
+                'backup': {
+                    'deduplicate_parts': True,
+                    'deduplication_age_limit': {
+                        'days': 7,
+                    },
                 },
             },
             'databases': ['db1'],
@@ -116,9 +124,11 @@ from tests.unit.utils import (assert_equal, backup_metadata, parametrize, parts,
         'id': 'irrelevant parts of old backups are ignored',
         'args': {
             'config': {
-                'deduplicate_parts': True,
-                'deduplication_age_limit': {
-                    'days': 7,
+                'backup': {
+                    'deduplicate_parts': True,
+                    'deduplication_age_limit': {
+                        'days': 7,
+                    },
                 },
             },
             'databases': ['db1'],
@@ -187,9 +197,11 @@ from tests.unit.utils import (assert_equal, backup_metadata, parametrize, parts,
         'id': 'deduplication info is collected only for requested databases',
         'args': {
             'config': {
-                'deduplicate_parts': True,
-                'deduplication_age_limit': {
-                    'days': 7,
+                'backup': {
+                    'deduplicate_parts': True,
+                    'deduplication_age_limit': {
+                        'days': 7,
+                    },
                 },
             },
             'databases': ['db1'],
@@ -226,9 +238,11 @@ from tests.unit.utils import (assert_equal, backup_metadata, parametrize, parts,
         'id': 'parts of failed and partially deleted backups are used for deduplication',
         'args': {
             'config': {
-                'deduplicate_parts': True,
-                'deduplication_age_limit': {
-                    'days': 7,
+                'backup': {
+                    'deduplicate_parts': True,
+                    'deduplication_age_limit': {
+                        'days': 7,
+                    },
                 },
             },
             'databases': ['db1', 'db2'],
@@ -305,9 +319,11 @@ from tests.unit.utils import (assert_equal, backup_metadata, parametrize, parts,
         'id': 'parts of backups that are out of deduction window are ignored',
         'args': {
             'config': {
-                'deduplicate_parts': True,
-                'deduplication_age_limit': {
-                    'days': 7,
+                'backup': {
+                    'deduplicate_parts': True,
+                    'deduplication_age_limit': {
+                        'days': 7,
+                    },
                 },
             },
             'databases': ['db1'],
@@ -358,9 +374,11 @@ from tests.unit.utils import (assert_equal, backup_metadata, parametrize, parts,
         'id': 'only local backups are used for deduplicating parts of non-replicated tables',
         'args': {
             'config': {
-                'deduplicate_parts': True,
-                'deduplication_age_limit': {
-                    'days': 7,
+                'backup': {
+                    'deduplicate_parts': True,
+                    'deduplication_age_limit': {
+                        'days': 7,
+                    },
                 },
             },
             'databases': ['db1'],
@@ -416,11 +434,10 @@ from tests.unit.utils import (assert_equal, backup_metadata, parametrize, parts,
     },
 )
 def test_collect_dedup_info(config, creating_backup, databases, backups, result):
-    dedup_info = collect_dedup_info(config=config,
-                                    layout=layout_mock(),
-                                    creating_backup=creating_backup,
-                                    databases=databases,
-                                    backups_with_light_meta=backups)
+    context = BackupContext(config)
+    context.backup_layout = layout_mock()
+    context.backup_meta = creating_backup
+    dedup_info = collect_dedup_info(context=context, databases=databases, backups_with_light_meta=backups)
     assert_equal(dedup_info, result)
 
 

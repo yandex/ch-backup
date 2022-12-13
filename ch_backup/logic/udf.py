@@ -4,7 +4,7 @@ Clickhouse backup logic for UDFs
 from typing import List
 
 from ch_backup import logging
-from ch_backup.backup.metadata import BackupMetadata
+from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.logic.backup_manager import BackupManager
 
@@ -13,61 +13,61 @@ class UDFBackup(BackupManager):
     """
     UDF backup class
     """
-    def backup(self, backup_meta: BackupMetadata) -> None:
+    def backup(self, context: BackupContext) -> None:
         """
         Backup UDF objects.
         """
-        if not self._ch_ctl.ch_version_ge('21.11'):
+        if not context.ch_ctl.ch_version_ge('21.11'):
             return
-        udf = self._ch_ctl.get_udf_query()
+        udf = context.ch_ctl.get_udf_query()
         for udf_name in udf.keys():
-            backup_meta.add_udf(udf_name)
+            context.backup_meta.add_udf(udf_name)
 
         logging.debug('Performing UDF backup for: %s', ' ,'.join(udf.keys()))
         for udf_name, udf_statement in udf.items():
-            self._backup_layout.upload_udf(backup_meta.name, udf_name, udf_statement)
+            context.backup_layout.upload_udf(context.backup_meta.name, udf_name, udf_statement)
 
-    def restore(self, backup_meta: BackupMetadata) -> None:
+    def restore(self, context: BackupContext) -> None:
         """
         Restore UDF objects.
         """
-        if not self._ch_ctl.ch_version_ge('21.11'):
+        if not context.ch_ctl.ch_version_ge('21.11'):
             return
-        udf_list = self.get_udf_list(backup_meta)
-        udf_on_clickhouse = self._ch_ctl.get_udf_query()
+        udf_list = self.get_udf_list(context)
+        udf_on_clickhouse = context.ch_ctl.get_udf_query()
         udf_on_clickhouse_list = udf_on_clickhouse.keys()
         logging.debug('Restoring UDFs: %s', ' ,'.join(udf_list))
         for udf_name in udf_list:
-            statement = self._backup_layout.get_udf_create_statement(backup_meta, udf_name)
+            statement = context.backup_layout.get_udf_create_statement(context.backup_meta, udf_name)
 
             if udf_name in udf_on_clickhouse_list and udf_on_clickhouse[udf_name] != statement:
-                self._ch_ctl.drop_udf(udf_name)
-                self._ch_ctl.restore_udf(statement)
+                context.ch_ctl.drop_udf(udf_name)
+                context.ch_ctl.restore_udf(statement)
 
             if udf_name not in udf_on_clickhouse_list:
-                self._ch_ctl.restore_udf(statement)
+                context.ch_ctl.restore_udf(statement)
 
-    def restore_schema(self, source_ch_ctl: ClickhouseCTL) -> None:
+    def restore_schema(self, context: BackupContext, source_ch_ctl: ClickhouseCTL) -> None:
         """
         Restoring user defined functions schema
         """
-        if not self._ch_ctl.ch_version_ge('21.11'):
+        if not context.ch_ctl.ch_version_ge('21.11'):
             return
-        udf_current = self._ch_ctl.get_udf_query()
+        udf_current = context.ch_ctl.get_udf_query()
         udf_current_list = udf_current.keys()
         udf_on_source_clickhouse = source_ch_ctl.get_udf_query()
         logging.debug('Restoring UDFs schema: %s', ' ,'.join(udf_on_source_clickhouse.keys()))
         for udf_name, statement in udf_on_source_clickhouse.items():
             if udf_name in udf_current_list and statement != udf_current[udf_name]:
-                self._ch_ctl.drop_udf(udf_name)
-                self._ch_ctl.restore_udf(statement)
+                context.ch_ctl.drop_udf(udf_name)
+                context.ch_ctl.restore_udf(statement)
 
             if udf_name not in udf_current_list:
-                self._ch_ctl.restore_udf(statement)
+                context.ch_ctl.restore_udf(statement)
 
     @staticmethod
-    def get_udf_list(backup_meta: BackupMetadata) -> List[str]:
+    def get_udf_list(context: BackupContext) -> List[str]:
         """
         Get UDF list
         """
-        return backup_meta.get_udf()
+        return context.backup_meta.get_udf()

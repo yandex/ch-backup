@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Sequence, Set
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, BackupState, PartMetadata
+from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.models import FreezedPart
 from ch_backup.clickhouse.schema import is_replicated
 from ch_backup.util import utcnow
@@ -82,7 +83,7 @@ class DedupInfo:
         return self.__dict__ == other.__dict__
 
 
-def collect_dedup_info(config: dict, layout: BackupLayout, creating_backup: BackupMetadata, databases: Sequence[str],
+def collect_dedup_info(context: BackupContext, databases: Sequence[str],
                        backups_with_light_meta: List[BackupMetadata]) -> DedupInfo:
     """
     Collect deduplication information for creating incremental backups.
@@ -90,12 +91,12 @@ def collect_dedup_info(config: dict, layout: BackupLayout, creating_backup: Back
     dedup_info = DedupInfo()
 
     # Do not populate DedupInfo if we are creating schema-only backup.
-    if creating_backup.schema_only:
+    if context.backup_meta.schema_only:
         return dedup_info
 
     backup_age_limit = None
-    if config.get('deduplicate_parts'):
-        backup_age_limit = utcnow() - timedelta(**config['deduplication_age_limit'])
+    if context.config.get('deduplicate_parts'):
+        backup_age_limit = utcnow() - timedelta(**context.config['deduplication_age_limit'])
 
     # Determine backups that can be used for deduplication.
     dedup_backups = []
@@ -108,7 +109,7 @@ def collect_dedup_info(config: dict, layout: BackupLayout, creating_backup: Back
 
         dedup_backups.append(backup)
 
-    _populate_dedup_info(dedup_info, layout, creating_backup.hostname, dedup_backups, databases)
+    _populate_dedup_info(dedup_info, context.backup_layout, context.backup_meta.hostname, dedup_backups, databases)
 
     return dedup_info
 
