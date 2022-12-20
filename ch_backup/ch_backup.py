@@ -119,16 +119,17 @@ class ClickhouseBackup:
         logging.debug('Starting backup "%s" for databases: %s', self._context.backup_meta.name, ', '.join(databases))
 
         try:
-            self._access_backup_manager.backup(self._context, backup_access_control=backup_access_control)
-            self._udf_backup_manager.backup(self._context)
-            self._database_backup_manager.backup(self._context, databases)
+            with self._context.locker():
+                self._access_backup_manager.backup(self._context, backup_access_control=backup_access_control)
+                self._udf_backup_manager.backup(self._context)
+                self._database_backup_manager.backup(self._context, databases)
 
-            dedup_info = collect_dedup_info(context=self._context,
-                                            backups_with_light_meta=backups_with_light_meta,
-                                            databases=databases)
-            self._table_backup_manager.backup(self._context, databases, db_tables, dedup_info, schema_only)
+                dedup_info = collect_dedup_info(context=self._context,
+                                                backups_with_light_meta=backups_with_light_meta,
+                                                databases=databases)
+                self._table_backup_manager.backup(self._context, databases, db_tables, dedup_info, schema_only)
 
-            self._context.backup_meta.state = BackupState.CREATED
+                self._context.backup_meta.state = BackupState.CREATED
         except Exception:
             logging.critical('Backup failed', exc_info=True)
             self._context.backup_meta.state = BackupState.FAILED
@@ -180,9 +181,9 @@ class ClickhouseBackup:
                 logging.critical('Required databases %s were not found in backup metadata: %s',
                                  ', '.join(missed_databases), self._context.backup_meta.path)
                 raise ClickhouseBackupError('Required databases were not found in backup metadata')
-
-        self._restore(databases, schema_only, clean_zookeeper, replica_name, cloud_storage_source_bucket,
-                      cloud_storage_source_path, cloud_storage_latest, keep_going)
+        with self._context.locker():
+            self._restore(databases, schema_only, clean_zookeeper, replica_name, cloud_storage_source_bucket,
+                          cloud_storage_source_path, cloud_storage_latest, keep_going)
 
     # pylint: disable=too-many-locals,too-many-nested-blocks,too-many-branches
     def fix_s3_oplog(self,
@@ -306,15 +307,16 @@ class ClickhouseBackup:
             self._context.config['override_replica_name'] = replica_name
         if replica_name is None:
             replica_name = socket.getfqdn()
-
-        self._udf_backup_manager.restore_schema(self._context, source_ch_ctl)
-        self._database_backup_manager.restore_schema(self._context, source_ch_ctl, databases, replica_name)
-        self._table_backup_manager.restore_schema(self._context, source_ch_ctl, databases, replica_name)
+        with self._context.locker():
+            self._udf_backup_manager.restore_schema(self._context, source_ch_ctl)
+            self._database_backup_manager.restore_schema(self._context, source_ch_ctl, databases, replica_name)
+            self._table_backup_manager.restore_schema(self._context, source_ch_ctl, databases, replica_name)
 
     def restore_access_control(self, backup_name: str) -> None:
         """Restore ClickHouse access control metadata."""
         self._context.backup_meta = self._get_backup(backup_name)
-        self._access_backup_manager.restore(self._context)
+        with self._context.locker():
+            self._access_backup_manager.restore(self._context)
 
     def _delete(self, backup_with_light_meta: BackupMetadata,
                 dedup_references: DedupReferences) -> Tuple[Optional[str], Optional[str]]:

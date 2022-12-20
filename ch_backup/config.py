@@ -177,6 +177,12 @@ DEFAULT_CONFIG = {
     'zookeeper': {
         'hosts': [],
     },
+    'lock': {
+        'flock': False,
+        'zk_flock': False,
+        'flock_path': '/tmp/flock.lock',
+        'zk_flock_path': '/tmp/zk_flock.lock',
+    },
 }
 
 

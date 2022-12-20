@@ -6,6 +6,7 @@ from ch_backup.backup.metadata import BackupMetadata
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.config import Config
+from ch_backup.logic.lock_manager import LockManager
 from ch_backup.zookeeper.zookeeper import ZookeeperCTL
 
 
@@ -13,14 +14,19 @@ class BackupContext:
     """
     Class context for clickhouse backup logic
     """
+
+    # pylint: disable=too-many-instance-attributes
+
     _ch_ctl: ClickhouseCTL
     _backup_layout: BackupLayout
     _zk_ctl: ZookeeperCTL
     _backup_meta: BackupMetadata
     _restore_context: RestoreContext
+    _locker: LockManager
 
     def __init__(self, config: Config) -> None:
         self._config_root = config
+        self._lock_conf = config.get('lock')
         self._ch_ctl_conf = config.get('clickhouse')
         self._main_conf = config.get('main')
         self._config = config.get('backup')
@@ -146,3 +152,33 @@ class BackupContext:
         Setter backup_meta
         """
         self._backup_meta = backup_meta
+
+    @property
+    def lock_conf(self) -> dict:
+        """
+        Getter lock_conf
+        """
+        return self._lock_conf
+
+    @lock_conf.setter
+    def lock_conf(self, lock_conf: dict) -> None:
+        """
+        Setter lock_conf
+        """
+        self._lock_conf = lock_conf
+
+    @property
+    def locker(self) -> LockManager:
+        """
+        Getter locker
+        """
+        if not hasattr(self, '_locker'):
+            self._locker = LockManager(self.lock_conf, self.zk_ctl)
+        return self._locker
+
+    @locker.setter
+    def locker(self, locker: LockManager) -> None:
+        """
+        Setter locker
+        """
+        self._locker = locker
