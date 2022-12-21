@@ -1,14 +1,13 @@
 """
 Clickhouse backup logic for access
 """
-from itertools import chain
-from os.path import exists, join
-from time import sleep
-from typing import Any, Sequence
+from os.path import join
+from typing import Any, Iterator, Sequence
 
-from ch_backup import logging
 from ch_backup.backup_context import BackupContext
 from ch_backup.logic.backup_manager import BackupManager
+
+CH_MARK_FILE = 'need_rebuild_lists.mark'
 
 
 class AccessBackup(BackupManager):
@@ -29,6 +28,7 @@ class AccessBackup(BackupManager):
         objects = context.backup_meta.get_access_control()
         for name in _get_access_control_files(objects):
             context.backup_layout.download_access_control_file(context.backup_meta.name, name)
+        self._mark_to_rebuild(context)
 
     def _backup(self, context: BackupContext) -> None:
         """
@@ -36,27 +36,20 @@ class AccessBackup(BackupManager):
         """
         objects = context.ch_ctl.get_access_control_objects()
         context.backup_meta.set_access_control(objects)
-
-        # ClickHouse creates file need_rebuild_lists.mark after access management objects modification
-        # to show that lists should be updated.
-        mark_file = join(context.ch_ctl_conf['access_control_path'], 'need_rebuild_lists.mark')
-        # We wait 10 minutes. Then if file stucks we make backup anyway.
-        max_iterations = 600
-        while max_iterations > 0 and exists(mark_file):
-            logging.debug(f'Waiting for clickhouse rebuild access control lists. File "{mark_file}".')
-            sleep(1)
-            max_iterations -= 1
-
-        if exists(mark_file):
-            context.backup_layout.upload_access_control_file(context.backup_meta.name, 'need_rebuild_lists.mark')
-
         for name in _get_access_control_files(objects):
             context.backup_layout.upload_access_control_file(context.backup_meta.name, name)
 
+    def _mark_to_rebuild(self, context: BackupContext) -> None:
+        """
+        Creates special mark file to rebuild the lists.
+        """
+        mark_file = join(context.ch_ctl_conf['access_control_path'], CH_MARK_FILE)
+        with open(mark_file, 'a', encoding='utf-8'):
+            pass
 
-def _get_access_control_files(objects: Sequence[str]) -> chain:
+
+def _get_access_control_files(objects: Sequence[str]) -> Iterator[str]:
     """
     Return list of file to be backuped/restored .
     """
-    lists = ['users.list', 'roles.list', 'quotas.list', 'row_policies.list', 'settings_profiles.list']
-    return chain(lists, map(lambda obj: f'{obj}.sql', objects))
+    return map(lambda obj: f'{obj}.sql', objects)
