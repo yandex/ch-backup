@@ -72,7 +72,8 @@ class ClickHouseTemporaryDisks:
         ch_logging.debug(f'Creating tmp disk {tmp_disk_name}')
         with open('/var/lib/clickhouse/preprocessed_configs/config.xml', 'r', encoding='utf-8') as f:
             config = xmltodict.parse(f.read())
-            disk_config = config['clickhouse']['storage_configuration']['disks'][disk.name]
+            config = config.get('clickhouse', config.get('yandex'))
+            disk_config = config['storage_configuration']['disks'][disk.name]
 
         endpoint = urlparse(disk_config['endpoint'])
         disk_config['endpoint'] = os.path.join(f'{endpoint.scheme}://{endpoint.netloc}', source_bucket, source_path,
