@@ -30,7 +30,7 @@ class ClickHouseTemporaryDisks:
     Manages temporary cloud storage disks.
     """
     def __init__(self, ch_ctl: ClickhouseCTL, backup_layout: BackupLayout, config: Config, backup_meta: BackupMetadata,
-                 source_bucket: Optional[str], source_path: Optional[str]):
+                 source_bucket: Optional[str], source_path: Optional[str], source_endpoint: Optional[str]):
         self._ch_ctl = ch_ctl
         self._backup_layout = backup_layout
         self._config = config['backup']
@@ -39,6 +39,7 @@ class ClickHouseTemporaryDisks:
 
         self._source_bucket: str = source_bucket or ''
         self._source_path: str = source_path or ''
+        self._source_endpoint: str = source_endpoint or ''
         if self._backup_meta.cloud_storage.enabled and source_bucket is None:
             raise RuntimeError('Backup contains cloud storage data, cloud-storage-source-bucket must be set.')
 
@@ -49,7 +50,8 @@ class ClickHouseTemporaryDisks:
         self._disks = self._ch_ctl.get_disks()
         for disk_name in self._backup_meta.cloud_storage.disks:
             disk = self._disks[disk_name]
-            self._create_temporary_disk(self._backup_meta, disk, self._source_bucket, self._source_path)
+            self._create_temporary_disk(self._backup_meta, disk, self._source_bucket, self._source_path,
+                                        self._source_endpoint)
         self._backup_layout.wait()
         return self
 
@@ -66,8 +68,8 @@ class ClickHouseTemporaryDisks:
             except FileNotFoundError:
                 pass
 
-    def _create_temporary_disk(self, backup_meta: BackupMetadata, disk: Disk, source_bucket: str,
-                               source_path: str) -> None:
+    def _create_temporary_disk(self, backup_meta: BackupMetadata, disk: Disk, source_bucket: str, source_path: str,
+                               source_endpoint: str) -> None:
         tmp_disk_name = _get_tmp_disk_name(disk.name)
         ch_logging.debug(f'Creating tmp disk {tmp_disk_name}')
         with open('/var/lib/clickhouse/preprocessed_configs/config.xml', 'r', encoding='utf-8') as f:
@@ -76,7 +78,8 @@ class ClickHouseTemporaryDisks:
             disk_config = config['storage_configuration']['disks'][disk.name]
 
         endpoint = urlparse(disk_config['endpoint'])
-        disk_config['endpoint'] = os.path.join(f'{endpoint.scheme}://{endpoint.netloc}', source_bucket, source_path,
+        endpoint_netloc = source_endpoint or endpoint.netloc
+        disk_config['endpoint'] = os.path.join(f'{endpoint.scheme}://{endpoint_netloc}', source_bucket, source_path,
                                                '')
         with open(_get_config_path(self._config_dir, tmp_disk_name), 'w', encoding='utf-8') as f:
             xmltodict.unparse({'yandex': {

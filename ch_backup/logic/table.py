@@ -71,9 +71,11 @@ class TableBackup(BackupManager):
                 context.backup_meta.cloud_storage.add_disk(disk.name)
         logging.debug('Cloud Storage disks has been backed up ')
 
+    # pylint: disable=too-many-arguments
     def restore(self, context: BackupContext, databases: Sequence[str], replica_name: Optional[str],
                 cloud_storage_source_bucket: Optional[str], cloud_storage_source_path: Optional[str],
-                cloud_storage_latest: bool, clean_zookeeper: bool, schema_only: bool, keep_going: bool) -> None:
+                cloud_storage_source_endpoint: Optional[str], cloud_storage_latest: bool, clean_zookeeper: bool,
+                schema_only: bool, keep_going: bool) -> None:
         """
         Restore tables and MergeTree data.
         """
@@ -92,6 +94,7 @@ class TableBackup(BackupManager):
             if context.backup_meta.has_s3_data():
                 cloud_storage_source_bucket = cloud_storage_source_bucket if cloud_storage_source_bucket else ''
                 cloud_storage_source_path = cloud_storage_source_path if cloud_storage_source_path else ''
+                cloud_storage_source_endpoint = cloud_storage_source_endpoint if cloud_storage_source_endpoint else ''
                 self._restore_cloud_storage_data(context, cloud_storage_source_bucket, cloud_storage_source_path,
                                                  cloud_storage_latest)
 
@@ -101,8 +104,8 @@ class TableBackup(BackupManager):
                                        tables_to_restore)
 
             with ClickHouseTemporaryDisks(context.ch_ctl, context.backup_layout, context.config_root,
-                                          context.backup_meta, cloud_storage_source_bucket,
-                                          cloud_storage_source_path) as disks:
+                                          context.backup_meta, cloud_storage_source_bucket, cloud_storage_source_path,
+                                          cloud_storage_source_endpoint) as disks:
                 self._restore_data(context, tables_to_restore, disks)
 
     def restore_schema(self, context: BackupContext, source_ch_ctl: ClickhouseCTL, databases: Sequence[str],
