@@ -4,6 +4,7 @@ Clickhouse backup context
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata
 from ch_backup.backup.restore_context import RestoreContext
+from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.config import Config
 from ch_backup.logic.lock_manager import LockManager
@@ -23,6 +24,7 @@ class BackupContext:
     _backup_meta: BackupMetadata
     _restore_context: RestoreContext
     _locker: LockManager
+    _ch_config: ClickhouseConfig
 
     def __init__(self, config: Config) -> None:
         self._config_root = config
@@ -182,3 +184,17 @@ class BackupContext:
         Setter locker
         """
         self._locker = locker
+
+    @property
+    def ch_config(self) -> ClickhouseConfig:
+        """
+        Getter ch_config
+        """
+        return self._ch_config
+
+    @ch_config.setter
+    def ch_config(self, ch_config: ClickhouseConfig) -> None:
+        """
+        Setter ch_config
+        """
+        self._ch_config = ch_config

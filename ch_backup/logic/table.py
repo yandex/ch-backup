@@ -105,7 +105,7 @@ class TableBackup(BackupManager):
 
             with ClickHouseTemporaryDisks(context.ch_ctl, context.backup_layout, context.config_root,
                                           context.backup_meta, cloud_storage_source_bucket, cloud_storage_source_path,
-                                          cloud_storage_source_endpoint) as disks:
+                                          cloud_storage_source_endpoint, context.ch_config) as disks:
                 self._restore_data(context, tables_to_restore, disks)
 
     def restore_schema(self, context: BackupContext, source_ch_ctl: ClickhouseCTL, databases: Sequence[str],

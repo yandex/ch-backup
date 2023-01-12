@@ -157,7 +157,11 @@ class ClickhouseClient:
         """
         Retrieve DDL for users, roles, etc
         """
-        list_query = "SELECT name FROM system.{type} WHERE storage='disk' or storage='local directory' FORMAT JSON"
+        list_query = """
+            SELECT name
+            FROM system.{type} WHERE storage='disk' or storage='local directory' or storage='replicated'
+            FORMAT JSON
+        """
         types = [('users', 'USER'), ('roles', 'ROLE'), ('quotas', 'QUOTA'), ('row_policies', 'ROW POLICY'),
                  ('settings_profiles', 'SETTINGS PROFILE')]
 

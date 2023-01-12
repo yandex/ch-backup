@@ -6,7 +6,7 @@ import os
 import shutil
 from hashlib import md5
 from tarfile import BLOCKSIZE  # type: ignore
-from typing import Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 from pkg_resources import parse_version
 
@@ -108,7 +108,7 @@ GET_MACROS_SQL = strip_query("""
 """)
 
 GET_ACCESS_CONTROL_OBJECTS_SQL = strip_query("""
-    SELECT id FROM system.{type} WHERE storage='disk' or storage='local directory'
+    SELECT id, name FROM system.{type} WHERE storage='disk' OR storage='local directory' OR storage='replicated'
     FORMAT JSON
 """)
 
@@ -384,15 +384,18 @@ class ClickhouseCTL:
         """
         return self._ch_version
 
-    def get_access_control_objects(self) -> Sequence[str]:
+    def get_access_control_objects(self) -> Sequence[Dict[str, Any]]:
         """
         Returns all access control objects.
         """
-        result: List[str] = []
+        result: List[Dict[str, Any]] = []
 
         for obj_type in ['users', 'roles', 'quotas', 'row_policies', 'settings_profiles']:
             ch_resp = self._ch_client.query(GET_ACCESS_CONTROL_OBJECTS_SQL.format(type=obj_type))
-            result.extend(map(lambda row: row['id'], ch_resp.get('data', [])))
+            obj_result = ch_resp.get('data', [])
+            for row in obj_result:
+                row.update({'type': obj_type})
+            result.extend(obj_result)
 
         return result
 

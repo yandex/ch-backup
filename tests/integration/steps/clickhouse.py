@@ -153,3 +153,16 @@ def step_dirty_remove_data(context, node):
 def step_drop_restore_context(context, node):
     container = get_container(context, node)
     assert container.exec_run('rm -rf /tmp/ch_backup_restore_state.json').exit_code == 0
+
+
+@given('we have dirty enabled replicated access on {node:w} with restart')
+@when('we dirty enable replicated access on {node:w} with restart')
+def step_dirty_enable_replicated_access(context, node):
+    """
+    Replace a part of CH config on the fly to enable replicated access storage.
+    """
+    container = get_container(context, node)
+
+    override_config = '/config/user_directories_replicated.xml'
+    assert container.exec_run(f'ln -s {override_config} /etc/clickhouse-server/conf.d/').exit_code == 0
+    assert container.exec_run('supervisorctl restart clickhouse').exit_code == 0

@@ -44,6 +44,20 @@ class ZookeeperCTL:
         """
         return self._zk_client
 
+    @property
+    def zk_root_path(self) -> str:
+        """
+        Getter zk_root_path
+        """
+        return self._zk_root_path
+
+    def zk_add_auth(self) -> None:
+        """
+        Send credentials to server if they were configured.
+        """
+        if self._zk_user and self._zk_password:
+            self._zk_client.add_auth('digest', f'{self._zk_user}:{self._zk_password}')
+
     @KAZOO_RETRIES
     def delete_replica_metadata(self, tables: Iterable[Tuple[Table, str]], replica: str, macros: Dict = None) -> None:
         """
@@ -53,8 +67,7 @@ class ZookeeperCTL:
             macros = {}
 
         self._zk_client.start()
-        if self._zk_user and self._zk_password:
-            self._zk_client.add_auth('digest', f'{self._zk_user}:{self._zk_password}')
+        self.zk_add_auth()
         for table, table_path in tables:
             table_macros = dict(database=table.database, table=table.name, uuid=table.uuid)
             table_macros.update(macros)
@@ -77,8 +90,7 @@ class ZookeeperCTL:
         macros['replica'] = replica
 
         self._zk_client.start()
-        if self._zk_user and self._zk_password:
-            self._zk_client.add_auth('digest', f'{self._zk_user}:{self._zk_password}')
+        self.zk_add_auth()
         for zk_path in databases:
             path = os.path.join(self._zk_root_path, zk_path[1:].format(**macros))  # remove leading '/'
             debug(f'Deleting zk node: "{path}"')

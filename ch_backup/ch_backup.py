@@ -14,6 +14,7 @@ from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import (BackupMetadata, BackupState, TableMetadata)
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.backup_context import BackupContext
+from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.schema import is_atomic_db_engine
 from ch_backup.config import Config
@@ -44,6 +45,7 @@ class ClickhouseBackup:
         self._context.config = config['backup']
         self._context.zk_config = config.get('zookeeper')
         self._context.restore_context = RestoreContext(self._context.config)
+        self._context.ch_config = ClickhouseConfig(config)
         self._access_backup_manager = AccessBackup()
         self._database_backup_manager = DatabaseBackup()
         self._table_backup_manager = TableBackup()

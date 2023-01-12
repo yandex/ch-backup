@@ -2,8 +2,9 @@
 ZooKeeper client calls
 """
 
+from typing import List, Optional
 from kazoo.client import KazooClient
-from kazoo.exceptions import NodeExistsError
+from kazoo.exceptions import NodeExistsError, NoNodeError
 
 from tests.integration.modules.docker import get_container, get_exposed_port
 
@@ -35,6 +36,20 @@ def write_znode(context: ContextT, node: str, znode: str, data: bytes) -> None:
 
     zk.create(znode, data, makepath=True)
     zk.stop()
+
+
+def get_children_list(context: ContextT, node: str, zk_path: str) -> Optional[List]:
+    zk = _get_zookeeper_client(context, node)
+    zk_config = context.conf.get('zk', {})
+    try:
+        zk.start()
+        if zk_config.get('user') and zk_config.get('password'):
+            zk.add_auth('digest', f'{zk_config.get("user")}:{zk_config.get("password")}')
+        return zk.get_children(zk_path)
+    except NoNodeError:
+        return None
+    finally:
+        zk.stop()
 
 
 def _get_zookeeper_client(context: ContextT, node: str) -> KazooClient:

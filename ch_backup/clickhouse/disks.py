@@ -13,6 +13,7 @@ import xmltodict
 import ch_backup.logging as ch_logging
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
+from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.models import Disk, Table
 from ch_backup.config import Config
@@ -29,13 +30,17 @@ class ClickHouseTemporaryDisks:
     """
     Manages temporary cloud storage disks.
     """
+
+    # pylint: disable=too-many-instance-attributes
     def __init__(self, ch_ctl: ClickhouseCTL, backup_layout: BackupLayout, config: Config, backup_meta: BackupMetadata,
-                 source_bucket: Optional[str], source_path: Optional[str], source_endpoint: Optional[str]):
+                 source_bucket: Optional[str], source_path: Optional[str], source_endpoint: Optional[str],
+                 ch_config: ClickhouseConfig):
         self._ch_ctl = ch_ctl
         self._backup_layout = backup_layout
         self._config = config['backup']
         self._config_dir = config['clickhouse']['config_dir']
         self._backup_meta = backup_meta
+        self._ch_config = ch_config
 
         self._source_bucket: str = source_bucket or ''
         self._source_path: str = source_path or ''
@@ -72,10 +77,7 @@ class ClickHouseTemporaryDisks:
                                source_endpoint: str) -> None:
         tmp_disk_name = _get_tmp_disk_name(disk.name)
         ch_logging.debug(f'Creating tmp disk {tmp_disk_name}')
-        with open('/var/lib/clickhouse/preprocessed_configs/config.xml', 'r', encoding='utf-8') as f:
-            config = xmltodict.parse(f.read())
-            config = config.get('clickhouse', config.get('yandex'))
-            disk_config = config['storage_configuration']['disks'][disk.name]
+        disk_config = self._ch_config.config['storage_configuration']['disks'][disk.name]
 
         endpoint = urlparse(disk_config['endpoint'])
         endpoint_netloc = source_endpoint or endpoint.netloc

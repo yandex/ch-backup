@@ -14,7 +14,9 @@ DEFAULT_CONFIG = {
     'clickhouse': {
         'data_path': '/var/lib/clickhouse',
         'access_control_path': '/var/lib/clickhouse/access',
+        'zk_access_control_path': '/clickhouse/access',
         'config_dir': '/etc/clickhouse-server/config.d/',
+        'preprocessed_config_path': '/var/lib/clickhouse/preprocessed_configs/config.xml',
         'host': socket.gethostname(),
         'protocol': 'http',
         'port': None,
