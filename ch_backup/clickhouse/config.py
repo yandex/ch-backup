@@ -3,6 +3,7 @@ Module for working with Clickhouse configuration file.
 """
 
 from typing import Any, Dict
+
 import xmltodict
 
 from ch_backup.config import Config

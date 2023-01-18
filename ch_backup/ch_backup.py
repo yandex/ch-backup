@@ -145,26 +145,30 @@ class ClickhouseBackup:
 
         return self._context.backup_meta.name, None
 
-    # pylint: disable=too-many-arguments,duplicate-code
+    # pylint: disable=too-many-arguments,too-many-locals,duplicate-code
     def restore(self,
                 backup_name: str,
-                databases: Sequence[str] = None,
+                databases: Sequence[str],
+                exclude_databases: Sequence[str],
+                tables: List[TableMetadata],
+                exclude_tables: List[TableMetadata],
                 schema_only: bool = False,
                 override_replica_name: str = None,
                 force_non_replicated: bool = False,
-                clean_zookeeper: bool = False,
                 replica_name: Optional[str] = None,
                 cloud_storage_source_bucket: str = None,
                 cloud_storage_source_path: str = None,
                 cloud_storage_source_endpoint: str = None,
                 cloud_storage_latest: bool = False,
+                skip_cloud_storage: bool = False,
+                clean_zookeeper: bool = False,
                 keep_going: bool = False) -> None:
         """
         Restore specified backup
         """
         self._context.backup_meta = self._get_backup(backup_name)
 
-        if cloud_storage_source_bucket is None and not schema_only:
+        if cloud_storage_source_bucket is None and not schema_only and not skip_cloud_storage:
             if self._context.backup_meta.has_s3_data() or self._context.backup_meta.cloud_storage.enabled:
                 raise ClickhouseBackupError('Cloud storage source bucket must be set if backup has data on S3 disks')
 
@@ -173,20 +177,46 @@ class ClickhouseBackup:
         self._context.config[
             'force_non_replicated'] = force_non_replicated or self._context.config['force_non_replicated']
 
-        if databases is None:
+        if tables:
+            logging.debug('Picking databases for specified tables.')
+            databases = list(set(t.database for t in tables))
+
+        if not databases:
+            logging.debug('Picking all databases from backup.')
             databases = self._context.backup_meta.get_databases()
-        else:
-            # check all required databases exists in backup meta
-            missed_databases = [
-                db_name for db_name in databases if db_name not in self._context.backup_meta.get_databases()
-            ]
-            if missed_databases:
-                logging.critical('Required databases %s were not found in backup metadata: %s',
-                                 ', '.join(missed_databases), self._context.backup_meta.path)
-                raise ClickhouseBackupError('Required databases were not found in backup metadata')
+
+        if exclude_databases:
+            logging.debug(f'Excluding specified databases from restoring: {", ".join(exclude_databases)}.')
+            databases = list(filter(lambda db_name: db_name not in exclude_databases, databases))
+
+        # check if all required databases exist in backup meta
+        logging.info('Checking for presence of required databases.')
+
+        missed_databases = [
+            db_name for db_name in databases if db_name not in self._context.backup_meta.get_databases()
+        ]
+        if missed_databases:
+            logging.critical('Required databases %s were not found in backup metadata: %s',
+                             ', '.join(missed_databases), self._context.backup_meta.path)
+            raise ClickhouseBackupError('Required databases were not found in backup metadata')
+
+        logging.info('All required databases are present in backup.')
+
         with self._context.locker():
-            self._restore(databases, schema_only, clean_zookeeper, replica_name, cloud_storage_source_bucket,
-                          cloud_storage_source_path, cloud_storage_source_endpoint, cloud_storage_latest, keep_going)
+            self._restore(
+                databases=databases,
+                schema_only=schema_only,
+                tables=tables,
+                exclude_tables=exclude_tables,
+                replica_name=replica_name,
+                cloud_storage_source_bucket=cloud_storage_source_bucket,
+                cloud_storage_source_path=cloud_storage_source_path,
+                cloud_storage_latest=cloud_storage_latest,
+                cloud_storage_source_endpoint=cloud_storage_source_endpoint,
+                skip_cloud_storage=skip_cloud_storage,
+                clean_zookeeper=clean_zookeeper,
+                keep_going=keep_going,
+            )
 
     # pylint: disable=too-many-locals,too-many-nested-blocks,too-many-branches
     def fix_s3_oplog(self,
@@ -296,8 +326,12 @@ class ClickhouseBackup:
 
         return deleted_backup_names, None
 
-    def restore_schema(self, source_host: str, source_port: int, exclude_dbs: List[str],
-                       replica_name: Optional[str]) -> None:
+    def restore_schema(self,
+                       source_host: str,
+                       source_port: int,
+                       exclude_dbs: List[str],
+                       replica_name: Optional[str],
+                       keep_going: bool = False) -> None:
         """
         Restore ClickHouse schema from replica, without s3.
         """
@@ -313,7 +347,8 @@ class ClickhouseBackup:
         with self._context.locker():
             self._udf_backup_manager.restore_schema(self._context, source_ch_ctl)
             self._database_backup_manager.restore_schema(self._context, source_ch_ctl, databases, replica_name)
-            self._table_backup_manager.restore_schema(self._context, source_ch_ctl, databases, replica_name)
+            self._table_backup_manager.restore_schema(self._context, source_ch_ctl, databases, replica_name,
+                                                      keep_going)
 
     def restore_access_control(self, backup_name: str) -> None:
         """Restore ClickHouse access control metadata."""
@@ -371,14 +406,17 @@ class ClickhouseBackup:
     def _restore(self,
                  databases: Sequence[str],
                  schema_only: bool,
-                 clean_zookeeper: bool = False,
+                 tables: List[TableMetadata],
+                 exclude_tables: List[TableMetadata],
                  replica_name: Optional[str] = None,
                  cloud_storage_source_bucket: Optional[str] = None,
                  cloud_storage_source_path: Optional[str] = None,
                  cloud_storage_source_endpoint: Optional[str] = None,
                  cloud_storage_latest: bool = False,
+                 skip_cloud_storage: bool = False,
+                 clean_zookeeper: bool = False,
                  keep_going: bool = False) -> None:
-        logging.debug('Restoring databases: %s', ', '.join(databases))
+        logging.debug('Restoring started')
 
         # Restore UDF
         self._udf_backup_manager.restore(self._context)
@@ -387,11 +425,27 @@ class ClickhouseBackup:
         self._database_backup_manager.restore(self._context, databases)
 
         # Restore tables and data stored on local disks.
-        self._table_backup_manager.restore(self._context, databases, replica_name, cloud_storage_source_bucket,
-                                           cloud_storage_source_path, cloud_storage_source_endpoint,
-                                           cloud_storage_latest, clean_zookeeper, schema_only, keep_going)
-        if self._context.config['restore_fail_on_attach_error'] and self._context.restore_context.has_failed_parts():
-            raise ClickhouseBackupError("Some parts are failed to attach")
+        self._table_backup_manager.restore(
+            context=self._context,
+            databases=databases,
+            schema_only=schema_only,
+            tables=tables,
+            exclude_tables=exclude_tables,
+            replica_name=replica_name,
+            cloud_storage_source_bucket=cloud_storage_source_bucket,
+            cloud_storage_source_path=cloud_storage_source_path,
+            cloud_storage_source_endpoint=cloud_storage_source_endpoint,
+            cloud_storage_latest=cloud_storage_latest,
+            skip_cloud_storage=skip_cloud_storage,
+            clean_zookeeper=clean_zookeeper,
+            keep_going=keep_going,
+        )
+        if self._context.restore_context.has_failed_parts():
+            msg = 'Some parts are failed to attach'
+            logging.warning(msg)
+
+            if self._context.config['restore_fail_on_attach_error']:
+                raise ClickhouseBackupError(msg)
 
     def _get_backup(self, backup_name: str, use_light_meta: bool = False) -> BackupMetadata:
         backup = self._context.backup_layout.get_backup(backup_name, use_light_meta)

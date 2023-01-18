@@ -3,6 +3,7 @@ Unit tests for deduplication module.
 """
 from datetime import timedelta
 from unittest.mock import MagicMock
+
 from ch_backup.backup.deduplication import (DatabaseDedupInfo, DedupInfo, collect_dedup_info,
                                             collect_dedup_references_for_batch_backup_deletion)
 from ch_backup.backup.metadata import BackupState

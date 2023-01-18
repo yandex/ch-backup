@@ -5,6 +5,7 @@ import os
 from fcntl import LOCK_SH, flock
 from types import TracebackType
 from typing import IO, Optional, Type
+
 from kazoo.recipe.lock import Lock
 
 from ch_backup.zookeeper.zookeeper import ZookeeperCTL

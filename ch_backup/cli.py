@@ -6,17 +6,20 @@ import json
 import re
 import signal
 import sys
+import typing
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from functools import wraps
 from typing import Union
 
-from click import (Choice, Context, ParamType, Path, argument, group, option, pass_context)
+from click import Choice, ParamType, Path, argument, pass_context, style
 from click.types import StringParamType
+from cloup import (Color, Context, HelpFormatter, HelpTheme, Style, group, option, option_group)
+from cloup.constraints import constraint, mutually_exclusive
 from tabulate import tabulate
 
 from . import logging
-from .backup.metadata import BackupState
+from .backup.metadata import BackupState, TableMetadata
 from .ch_backup import ClickhouseBackup
 from .config import Config
 from .util import drop_privileges, setup_environment, utcnow
@@ -41,10 +44,22 @@ signal.signal(signal.SIGHUP, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 
 
-@group(context_settings={
-    'help_option_names': ['-h', '--help'],
-    'terminal_width': 100,
-})
+@group(context_settings=Context.settings(
+    help_option_names=['-h', '--help'],
+    terminal_width=100,
+    align_option_groups=False,
+    align_sections=True,
+    show_constraints=True,
+    formatter_settings=HelpFormatter.settings(
+        row_sep='',  # empty line between definitions
+        theme=HelpTheme(
+            invoked_command=Style(fg=Color.bright_green),  # type: ignore
+            heading=Style(fg=Color.bright_white, bold=True),  # type: ignore
+            constraint=Style(fg=Color.bright_red),  # type: ignore
+            col1=Style(fg=Color.bright_yellow),  # type: ignore
+            section_help=Style(italic=True),  # type: ignore
+        ),
+    )))
 @option('-c',
         '--config',
         type=Path(exists=True),
@@ -127,7 +142,7 @@ class List(ParamType):
         Convert input value into list of items.
         """
         try:
-            result = value.split(self.separator)
+            result = list(map(str.strip, value.split(self.separator)))
 
             if self.regexp:
                 for item in result:
@@ -142,6 +157,70 @@ class List(ParamType):
                 msg += f' matching the format: {self.regexp_str}'
 
             self.fail(msg, param, ctx)
+
+
+KeyValue = typing.Dict[str, str]
+
+
+class KeyValueList(List):
+    """
+    List of key-value type for command-line parameters.
+    """
+    name = 'kvlist'
+
+    def __init__(self, kv_separator=':', list_separator=','):
+        super().__init__(separator=list_separator)
+        self.kv_separator = kv_separator
+
+    def convert(self, value, param, ctx):
+        """
+        Convert input value into list of key-value.
+        """
+        result: KeyValue = {}
+
+        try:
+            kvs = super().convert(value, param, ctx)
+
+            for kv in kvs:
+                k, v = list(map(str.strip, kv.split(self.kv_separator)))
+                result[k] = v
+
+            return result
+
+        except ValueError:
+            self.fail(f'"{value}" is not a valid list of key-value', param, ctx)
+
+
+KeyValues = typing.Dict[str, typing.List[str]]
+
+
+class KeyValuesList(KeyValueList):
+    """
+    List of key-values type for command-line parameters.
+    """
+    name = 'kvslist'
+
+    def __init__(self, value_separator=',', kv_separator=':', list_separator=';'):
+        super().__init__(kv_separator=kv_separator, list_separator=list_separator)
+        self.value_separator = value_separator
+
+    def convert(self, value, param, ctx):
+        """
+        Convert input value into list of key-values.
+        """
+        result: KeyValues = defaultdict(list)
+
+        try:
+            kvs: KeyValue = super().convert(value, param, ctx)
+
+            for k in kvs.keys():
+                vs = list(map(str.strip, kvs[k].split(self.value_separator)))
+                result[k].extend(vs)
+
+            return dict(result)
+
+        except ValueError:
+            self.fail(f'"{value}" is not a valid list of key-values', param, ctx)
 
 
 class String(StringParamType):
@@ -269,38 +348,119 @@ def backup_command(ctx: Context, ch_backup: ClickhouseBackup, name: str, databas
 
 @command(name='restore')
 @argument('name', metavar='BACKUP')
-@option('-d', '--databases', type=List(regexp=r'\w+'), help='Comma-separated list of databases to restore.')
-@option('--schema-only', is_flag=True, help='Restore only databases schemas')
-@option('--override-replica-name', type=str, help='Override replica name to value from config')
-@option('--force-non-replicated', is_flag=True, help='Override ReplicatedMergeTree family tables to MergeTree')
-@option('--clean-zookeeper', is_flag=True, help='Remove zookeeper metadata for tables to restore')
-@option('--replica-name', type=str, help='Replica name to be removed from zookeeper. Default - hostname')
-@option('--cloud-storage-source-bucket', type=str, help='Source bucket name to restore cloud storage data')
-@option('--cloud-storage-source-path', type=str, help='Source path to restore cloud storage data')
-@option('--cloud-storage-source-endpoint', type=str, help='Endpoint for source bucket')
-@option('--cloud-storage-latest', is_flag=True, help='Forces to use revision=0 to cloud storage')
+@option_group(
+    'Database',
+    f'Example for {style(List.name.upper(), bold=True)}: ' + style('"db1, db2"', fg=Color.cyan),
+    mutually_exclusive(
+        option('-d',
+               '--databases',
+               type=List(regexp=r'\w+'),
+               help='Comma-separated list of databases to restore. Other databases will be skipped.'),
+        option('--exclude-databases',
+               type=List(regexp=r'\w+'),
+               help='Comma-separated list of databases to exclude for restore. Other databases will be restored.'),
+    ),
+    option('--schema-only', is_flag=True, help='Restore only database schemas.'),
+)
+@option_group(
+    'Table',
+    # pylint: disable=consider-using-f-string
+    'Example for {key_values}: {key_values_example}'.format(
+        key_values=style(KeyValuesList.name.upper(), bold=True),
+        key_values_example=style('"db1: table1, table2; db2: table3"', fg=Color.cyan),
+    ),
+    option('-t',
+           '--tables',
+           type=KeyValuesList(),
+           help='Semicolon-separated list of db:tables to restore. Other tables will be skipped.'),
+    option('--exclude-tables',
+           type=KeyValuesList(),
+           help='Semicolon-separated list of db:tables to skip on restore. Other tables will be restored.'),
+    constraint=mutually_exclusive,
+)
+@option_group(
+    'Replica',
+    option('--override-replica-name', type=str, help='Override replica name to value from config.'),
+    option(
+        '--force-non-replicated',
+        is_flag=True,
+        # pylint: disable=consider-using-f-string
+        help='Override {replicated_mergee_tree} family tables to {merge_tree}.'.format(
+            replicated_mergee_tree=style("ReplicatedMergeTree", fg=Color.bright_green),
+            merge_tree=style("MergeTree", fg=Color.bright_green),
+        ),
+    ),
+    option('--replica-name',
+           type=str,
+           help=f'Replica name to be removed from zookeeper. Default - {style("hostname", fg=Color.bright_green)}.'),
+)
+@option_group(
+    'Cloud Storage',
+    option('--cloud-storage-source-bucket', type=str, help='Source bucket name to restore cloud storage data.'),
+    option('--cloud-storage-source-path', type=str, help='Source path to restore cloud storage data.'),
+    option('--cloud-storage-source-endpoint', type=str, help='Endpoint for source bucket.'),
+    option('--cloud-storage-latest',
+           is_flag=True,
+           help=f'Forces to use {style("revision=0", fg=Color.bright_green)} to cloud storage.'),
+    option('--skip-cloud-storage', is_flag=True, help='Forces to skip restoring data on cloud storage.'),
+)
+@option_group(
+    'ZooKeeper',
+    option('--clean-zookeeper', is_flag=True, help='Remove zookeeper metadata for tables to restore'),
+)
 @option('--keep-going', is_flag=True, help='Forces to keep going if some tables are failed on restore')
-def restore_command(ctx: Context,
-                    ch_backup: ClickhouseBackup,
-                    name: str,
-                    databases: list,
-                    schema_only: bool,
-                    override_replica_name: str = None,
-                    force_non_replicated: bool = False,
-                    clean_zookeeper: bool = False,
-                    replica_name: str = None,
-                    cloud_storage_source_bucket: str = None,
-                    cloud_storage_source_path: str = None,
-                    cloud_storage_source_endpoint: str = None,
-                    cloud_storage_latest: bool = False,
-                    keep_going: bool = False) -> None:
+@constraint(mutually_exclusive, ['databases', 'tables'])
+@constraint(mutually_exclusive, ['exclude_databases', 'tables'])
+@constraint(mutually_exclusive, ['schema_only', 'tables'])
+@constraint(mutually_exclusive, ['schema_only', 'exclude_tables'])
+def restore_command(
+    ctx: Context,
+    ch_backup: ClickhouseBackup,
+    name: str,
+    databases: list,
+    exclude_databases: list,
+    schema_only: bool,
+    tables: typing.Optional[KeyValues] = None,
+    exclude_tables: typing.Optional[KeyValues] = None,
+    override_replica_name: str = None,
+    force_non_replicated: bool = False,
+    replica_name: str = None,
+    cloud_storage_source_bucket: str = None,
+    cloud_storage_source_path: str = None,
+    cloud_storage_source_endpoint: str = None,
+    cloud_storage_latest: bool = False,
+    skip_cloud_storage: bool = False,
+    clean_zookeeper: bool = False,
+    keep_going: bool = False,
+) -> None:
     """Restore data from a particular backup."""
-    # pylint: disable=too-many-arguments
+    # pylint: disable=too-many-arguments,too-many-locals
     name = _validate_name(ctx, ch_backup, name)
 
-    ch_backup.restore(name, databases, schema_only, override_replica_name, force_non_replicated, clean_zookeeper,
-                      replica_name, cloud_storage_source_bucket, cloud_storage_source_path,
-                      cloud_storage_source_endpoint, cloud_storage_latest, keep_going)
+    specified_databases: typing.List[str] = _list_to_database_names(databases)
+    specified_exclude_databases: typing.List[str] = _list_to_database_names(exclude_databases)
+
+    specified_tables: typing.List[TableMetadata] = _key_values_to_tables_metadata(tables)
+    specified_exclude_tables: typing.List[TableMetadata] = _key_values_to_tables_metadata(exclude_tables)
+
+    ch_backup.restore(
+        backup_name=name,
+        databases=specified_databases,
+        exclude_databases=specified_exclude_databases,
+        schema_only=schema_only,
+        tables=specified_tables,
+        exclude_tables=specified_exclude_tables,
+        override_replica_name=override_replica_name,
+        force_non_replicated=force_non_replicated,
+        replica_name=replica_name,
+        cloud_storage_source_bucket=cloud_storage_source_bucket,
+        cloud_storage_source_path=cloud_storage_source_path,
+        cloud_storage_source_endpoint=cloud_storage_source_endpoint,
+        cloud_storage_latest=cloud_storage_latest,
+        skip_cloud_storage=skip_cloud_storage,
+        clean_zookeeper=clean_zookeeper,
+        keep_going=keep_going,
+    )
 
 
 @command(name='fix-s3-oplog')
@@ -325,12 +485,18 @@ def fix_s3_oplog_command(ctx: Context,
 @option('--source-port', type=int, help='Port used to connect to source ClickHouse server.')
 @option('--exclude-dbs', type=List(regexp=r'\w+'), help='Comma-separated of databases to exclude.')
 @option('--replica-name', type=str, help='Name of restored replica for zk cleanup. Default - hostname')
-def restore_schema_command(ctx: Context, _ch_backup: ClickhouseBackup, source_host: str, source_port: int,
-                           exclude_dbs: list, replica_name: str) -> None:
+@option('--keep-going', is_flag=True, help='Forces to keep going if there are some errors on restoring schema.')
+def restore_schema_command(ctx: Context,
+                           _ch_backup: ClickhouseBackup,
+                           source_host: str,
+                           source_port: int,
+                           exclude_dbs: list,
+                           replica_name: str,
+                           keep_going: bool = False) -> None:
     """Restore ClickHouse schema from replica, without s3."""
     if not source_host:
         ctx.fail('Clickhouse source host not specified.')
-    _ch_backup.restore_schema(source_host, source_port, exclude_dbs, replica_name)
+    _ch_backup.restore_schema(source_host, source_port, exclude_dbs, replica_name, keep_going)
 
 
 @command(name='restore-access-control')
@@ -385,3 +551,23 @@ def _validate_name(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> str:
         ctx.fail(f'No backups with name "{name}" were found.')
 
     return name
+
+
+def _list_to_database_names(dbs: typing.Optional[typing.List[str]]) -> typing.List[str]:
+    if not dbs:
+        return []
+
+    return dbs
+
+
+def _key_values_to_tables_metadata(kvs: typing.Optional[KeyValues]) -> typing.List[TableMetadata]:
+    result: typing.List[TableMetadata] = []
+
+    if not kvs:
+        return result
+
+    for k, vs in kvs.items():
+        for v in vs:
+            result.append(TableMetadata(database=k, name=v, engine='', uuid=''))
+
+    return result

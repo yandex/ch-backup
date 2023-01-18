@@ -71,45 +71,78 @@ class TableBackup(BackupManager):
                 context.backup_meta.cloud_storage.add_disk(disk.name)
         logging.debug('Cloud Storage disks has been backed up ')
 
-    # pylint: disable=too-many-arguments
-    def restore(self, context: BackupContext, databases: Sequence[str], replica_name: Optional[str],
+    # pylint: disable=too-many-arguments,too-many-locals
+    def restore(self, context: BackupContext, databases: Sequence[str], schema_only: bool, tables: List[TableMetadata],
+                exclude_tables: List[TableMetadata], replica_name: Optional[str],
                 cloud_storage_source_bucket: Optional[str], cloud_storage_source_path: Optional[str],
-                cloud_storage_source_endpoint: Optional[str], cloud_storage_latest: bool, clean_zookeeper: bool,
-                schema_only: bool, keep_going: bool) -> None:
+                cloud_storage_source_endpoint: Optional[str], cloud_storage_latest: bool, skip_cloud_storage: bool,
+                clean_zookeeper: bool, keep_going: bool) -> None:
         """
         Restore tables and MergeTree data.
         """
+        logging.debug('Retrieving tables metadata')
         tables_meta: List[TableMetadata] = list(
             chain(*[
                 context.backup_meta.get_tables(db_name)
                 for db_name in databases if not self._is_db_external(context, db_name)
             ]))
-        tables = list(map(lambda meta: self._get_table_from_meta(context, meta), tables_meta))
 
-        tables = self._preprocess_tables_to_restore(context, tables)
-        failed_tables = self._restore_tables(context, tables, clean_zookeeper, replica_name, keep_going)
+        if tables:
+            db_tables = [(table.database, table.name) for table in tables_meta]
+
+            logging.debug('Checking for presence of required tables')
+
+            missed_tables = [table for table in tables if (table.database, table.name) not in db_tables]
+            if missed_tables:
+                logging.critical('Required tables %s were not found in backup metadata',
+                                 ', '.join([f'{t.database}.{t.name}' for t in missed_tables]))
+                raise ClickhouseBackupError('Required tables were not found in backup metadata')
+
+            logging.debug('All required tables are present')
+
+            logging.debug('Leaving only required tables metadata')
+            required_tables = [(table.database, table.name) for table in tables]
+            tables_meta = list(filter(lambda t: (t.database, t.name) in required_tables, tables_meta))
+
+        if exclude_tables:
+            logging.debug('Excluding unnecessary tables metadata')
+            excluded_tables = [(table.database, table.name) for table in exclude_tables]
+            tables_meta = list(filter(lambda t: (t.database, t.name) not in excluded_tables, tables_meta))
+
+        logging.debug('Retrieving tables from tables metadata')
+        tables_to_restore: List[Table] = list(map(lambda meta: self._get_table_from_meta(context, meta), tables_meta))
+        tables_to_restore = self._preprocess_tables_to_restore(context, tables_to_restore)
+
+        failed_tables = self._restore_tables(context, tables_to_restore, clean_zookeeper, replica_name, keep_going)
+
+        if schema_only:
+            logging.debug('Skipping restoring of table data as --schema-only flag passed')
+            return
 
         # Restore data stored on S3 disks.
-        if not schema_only:
-            if context.backup_meta.has_s3_data():
-                cloud_storage_source_bucket = cloud_storage_source_bucket if cloud_storage_source_bucket else ''
-                cloud_storage_source_path = cloud_storage_source_path if cloud_storage_source_path else ''
-                cloud_storage_source_endpoint = cloud_storage_source_endpoint if cloud_storage_source_endpoint else ''
+        if context.backup_meta.has_s3_data():
+            cloud_storage_source_bucket = cloud_storage_source_bucket if cloud_storage_source_bucket else ''
+            cloud_storage_source_path = cloud_storage_source_path if cloud_storage_source_path else ''
+            cloud_storage_source_endpoint = cloud_storage_source_endpoint if cloud_storage_source_endpoint else ''
+
+            if not skip_cloud_storage:
                 self._restore_cloud_storage_data(context, cloud_storage_source_bucket, cloud_storage_source_path,
                                                  cloud_storage_latest)
+            else:
+                logging.debug('Skipping restoring of cloud storage data as --skip-cloud-storage flag passed')
 
-            failed_tables_names = [f"`{t.database}`.`{t.name}`" for t in failed_tables]
-            tables_to_restore = filter(lambda t: is_merge_tree(t.engine), tables_meta)
-            tables_to_restore = filter(lambda t: f"`{t.database}`.`{t.name}`" not in failed_tables_names,
-                                       tables_to_restore)
+        failed_tables_names = [f"`{t.database}`.`{t.name}`" for t in failed_tables]
+        tables_to_restore_data = filter(lambda t: is_merge_tree(t.engine), tables_meta)
+        tables_to_restore_data = filter(lambda t: f"`{t.database}`.`{t.name}`" not in failed_tables_names,
+                                        tables_to_restore_data)
 
-            with ClickHouseTemporaryDisks(context.ch_ctl, context.backup_layout, context.config_root,
-                                          context.backup_meta, cloud_storage_source_bucket, cloud_storage_source_path,
-                                          cloud_storage_source_endpoint, context.ch_config) as disks:
-                self._restore_data(context, tables_to_restore, disks)
+        with ClickHouseTemporaryDisks(context.ch_ctl, context.backup_layout, context.config_root, context.backup_meta,
+                                      cloud_storage_source_bucket, cloud_storage_source_path,
+                                      cloud_storage_source_endpoint, context.ch_config) as disks:
+            self._restore_data(context, tables_to_restore_data, disks, skip_cloud_storage)
 
     def restore_schema(self, context: BackupContext, source_ch_ctl: ClickhouseCTL, databases: Sequence[str],
-                       replica_name: str) -> None:
+                       replica_name: str, keep_going: bool) -> None:
         """
         Restore schema
         """
@@ -118,7 +151,7 @@ class TableBackup(BackupManager):
             tables.extend(source_ch_ctl.get_tables(database))
 
         tables = self._preprocess_tables_to_restore(context, tables)
-        self._restore_tables(context, tables, clean_zookeeper=True, replica_name=replica_name)
+        self._restore_tables(context, tables, clean_zookeeper=True, replica_name=replica_name, keep_going=keep_going)
 
     def _is_db_external(self, context: BackupContext, db_name: str) -> bool:
         """
@@ -244,11 +277,14 @@ class TableBackup(BackupManager):
                         clean_zookeeper: bool = False,
                         replica_name: Optional[str] = None,
                         keep_going: bool = False) -> List[Table]:
+        logging.info('Preparing tables for restoring')
+
         merge_tree_tables = []
         distributed_tables = []
         view_tables = []
         other_tables = []
         for table in tables:
+            logging.debug('Preparing table %s for restoring', f'{table.database}.{table.name}')
             self._rewrite_table_schema(context, table, add_uuid_if_required=True)
 
             if is_merge_tree(table.engine):
@@ -263,6 +299,9 @@ class TableBackup(BackupManager):
         if clean_zookeeper and len(context.zk_config.get('hosts')) > 0:  # type: ignore
             macros = context.ch_ctl.get_macros()
             replicated_tables = [table for table in merge_tree_tables if is_replicated(table.engine)]
+
+            logging.debug('Deleting replica metadata for replicated tables: %s',
+                          ', '.join([f'{t.database}.{t.name}' for t in replicated_tables]))
             context.zk_ctl.delete_replica_metadata(get_table_zookeeper_paths(replicated_tables), replica_name, macros)
 
         return self._restore_table_objects(context,
@@ -286,8 +325,10 @@ class TableBackup(BackupManager):
             finally:
                 context.restore_context.dump_state()
 
-    def _restore_data(self, context: BackupContext, tables: Iterable[TableMetadata],
-                      disks: ClickHouseTemporaryDisks) -> None:
+    def _restore_data(self, context: BackupContext, tables: Iterable[TableMetadata], disks: ClickHouseTemporaryDisks,
+                      skip_cloud_storage: bool) -> None:
+        logging.info('Restoring tables data')
+
         for table_meta in tables:
             try:
                 logging.debug('Running table "%s.%s" data restore', table_meta.database, table_meta.name)
@@ -305,6 +346,11 @@ class TableBackup(BackupManager):
 
                     if part.disk_name not in context.backup_meta.s3_revisions.keys():
                         if part.disk_name in context.backup_meta.cloud_storage.disks:
+                            if skip_cloud_storage:
+                                logging.debug(f'Skipping restoring of {table.database}.{table.name} part {part.name} '
+                                              'on cloud storage because of --skip-cloud-storage flag')
+                                continue
+
                             disks.copy_part(context.backup_meta, table, part)
                         else:
                             fs_part_path = context.ch_ctl.get_detached_part_path(table, part.disk_name, part.name)
@@ -316,8 +362,8 @@ class TableBackup(BackupManager):
 
                 context.ch_ctl.chown_detached_table_parts(table, context.restore_context)
                 for part in attach_parts:
+                    logging.debug('Attaching "%s.%s" part: %s', table_meta.database, table.name, part.name)
                     try:
-                        logging.debug('Attaching "%s.%s" part: %s', table_meta.database, table.name, part.name)
                         context.ch_ctl.attach_part(table, part.name)
                         context.restore_context.add_part(part)
                     except Exception as e:
@@ -326,6 +372,8 @@ class TableBackup(BackupManager):
                         context.restore_context.add_failed_part(part, e)
             finally:
                 context.restore_context.dump_state()
+
+        logging.info('Restoring tables data completed')
 
     def _rewrite_table_schema(self, context: BackupContext, table: Table, add_uuid_if_required: bool = False) -> None:
         add_uuid = False
@@ -348,11 +396,14 @@ class TableBackup(BackupManager):
                                context: BackupContext,
                                tables: Iterable[Table],
                                keep_going: bool = False) -> List[Table]:
+        logging.info('Restoring tables')
+
         errors: List[Tuple[Union[Table], Exception]] = []
         unprocessed = deque(table for table in tables)
         while unprocessed:
             table = unprocessed.popleft()
             try:
+                logging.debug('Trying to restore table object for table %s', f'{table.database}.{table.name}')
                 context.ch_ctl.restore_table(table.database, table.name, table.engine, table.create_statement)
             except Exception as e:
                 errors.append((table, e))
@@ -363,6 +414,8 @@ class TableBackup(BackupManager):
                                 ' will retry after restoring other tables')
             else:
                 errors.clear()
+
+        logging.info('Restoring tables completed')
 
         if errors:
             logging.error('Failed to restore tables:\n%s',

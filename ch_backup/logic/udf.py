@@ -33,11 +33,19 @@ class UDFBackup(BackupManager):
         """
         if not context.ch_ctl.ch_version_ge('21.11'):
             return
+
         udf_list = self.get_udf_list(context)
+        if not udf_list:
+            return
+
+        logging.info('Restoring UDFs: %s', ' ,'.join(udf_list))
+
         udf_on_clickhouse = context.ch_ctl.get_udf_query()
         udf_on_clickhouse_list = udf_on_clickhouse.keys()
-        logging.debug('Restoring UDFs: %s', ' ,'.join(udf_list))
+
         for udf_name in udf_list:
+            logging.debug('Restoring UDF %s', udf_name)
+
             statement = context.backup_layout.get_udf_create_statement(context.backup_meta, udf_name)
 
             if udf_name in udf_on_clickhouse_list and udf_on_clickhouse[udf_name] != statement:
@@ -46,6 +54,10 @@ class UDFBackup(BackupManager):
 
             if udf_name not in udf_on_clickhouse_list:
                 context.ch_ctl.restore_udf(statement)
+
+            logging.debug('UDF %s restored', udf_name)
+
+        logging.info('All UDFs restored')
 
     def restore_schema(self, context: BackupContext, source_ch_ctl: ClickhouseCTL) -> None:
         """

@@ -27,15 +27,22 @@ class DatabaseBackup(BackupManager):
         """
         Restore database objects.
         """
+        logging.debug('Retrieving list of databases')
         present_databases = context.ch_ctl.get_databases()
 
-        for db_name in databases:
-            if not _has_embedded_metadata(db_name) and db_name not in present_databases:
-                db_sql = context.backup_layout.get_database_create_statement(context.backup_meta, db_name)
-                db_sql = rewrite_database_schema(db_sql, context.config['force_non_replicated'],
-                                                 context.config['override_replica_name'])
-                logging.debug(f'Restoring database `{db_name}`')
-                context.ch_ctl.restore_database(db_sql)
+        databases_to_restore: Sequence[str] = list(
+            filter(lambda d: not _has_embedded_metadata(d) and d not in present_databases, databases))
+        logging.info('Restoring databases: %s', ', '.join(databases_to_restore))
+
+        for db_name in databases_to_restore:
+            db_sql = context.backup_layout.get_database_create_statement(context.backup_meta, db_name)
+            db_sql = rewrite_database_schema(db_sql, context.config['force_non_replicated'],
+                                             context.config['override_replica_name'])
+
+            logging.debug(f'Restoring database `{db_name}`')
+            context.ch_ctl.restore_database(db_sql)
+
+        logging.info('All databases restored')
 
     def restore_schema(self, context: BackupContext, source_ch_ctl: ClickhouseCTL, databases: Sequence[str],
                        replica_name: str) -> None:
