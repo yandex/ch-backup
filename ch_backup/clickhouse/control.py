@@ -171,6 +171,10 @@ class ClickhouseCTL:
             settings.update({
                 'allow_experimental_database_replicated': 1,
             })
+        if self.ch_version_ge('22.3'):
+            settings.update({
+                'allow_experimental_object_type': 1,
+            })
         if self.ch_version_ge('22.7'):
             settings.update({
                 'allow_deprecated_database_ordinary': 1,
@@ -178,7 +182,6 @@ class ClickhouseCTL:
             })
         if self.ch_version_ge('22.8.5'):
             settings.update({
-                'allow_experimental_object_type': 1,
                 'kafka_disable_num_consumers_limit': 1,
             })
         self._ch_client.settings.update(settings)
