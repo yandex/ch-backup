@@ -24,14 +24,14 @@ class LockManager:
     _zk_lock: Lock
     _file: IO
 
-    def __init__(self, lock_conf: dict, zk_ctl: ZookeeperCTL) -> None:
+    def __init__(self, lock_conf: dict, zk_ctl: Optional[ZookeeperCTL]) -> None:
         """
         Init-method for lock manager
         """
         self._lock_conf = lock_conf
         self._process_lockfile_path = str(lock_conf.get('flock_path'))
         self._process_zk_lockfile_path = str(lock_conf.get('zk_flock_path'))
-        self._zk_client = zk_ctl.zk_client
+        self._zk_client = zk_ctl.zk_client if zk_ctl else None
 
     def __call__(self):  # type: ignore
         """
@@ -45,7 +45,7 @@ class LockManager:
         """
         if self._lock_conf.get('flock'):
             self._flock()
-        if self._lock_conf.get('zk_flock'):
+        if self._zk_client and self._lock_conf.get('zk_flock'):
             self._zk_flock()
         return self
 
@@ -56,7 +56,7 @@ class LockManager:
         """
         if self._lock_conf.get('flock'):
             os.close(self._fd)
-        if self._lock_conf.get('zk_flock'):
+        if self._zk_client and self._lock_conf.get('zk_flock'):
             self._zk_lock.release()
 
     def _flock(self) -> None:

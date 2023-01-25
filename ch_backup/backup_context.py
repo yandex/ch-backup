@@ -121,6 +121,8 @@ class BackupContext:
         Getter zk_ctl
         """
         if not hasattr(self, '_zk_ctl'):
+            if not self._zk_config['hosts']:
+                raise RuntimeError('Cannot init Zookeeper client without hosts')
             self._zk_ctl = ZookeeperCTL(self._zk_config)
         return self._zk_ctl
 
@@ -175,7 +177,8 @@ class BackupContext:
         Getter locker
         """
         if not hasattr(self, '_locker'):
-            self._locker = LockManager(self.lock_conf, self.zk_ctl)
+            zk_ctl = self.zk_ctl if self._zk_config['hosts'] else None
+            self._locker = LockManager(self.lock_conf, zk_ctl)
         return self._locker
 
     @locker.setter
