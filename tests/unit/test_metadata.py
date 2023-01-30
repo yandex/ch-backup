@@ -74,3 +74,53 @@ class TestBackupMetadata:
                                 hostname='clickhouse01.test_net_711')
 
         assert backup.dump_json().find(' ') == -1
+
+    @pytest.mark.parametrize(
+        ('objects', 'expected_list', 'expected_meta'),
+        [
+            ([], [], {}),
+            (
+                [{
+                    'id': '1',
+                    'name': 'acl1',
+                    'char': 'U',
+                }],
+                ['1'],
+                {
+                    '0': {
+                        'name': 'acl1',
+                        'char': 'U',
+                    },
+                },
+            ),
+            (
+                [{
+                    'id': '2',
+                    'name': 'acl2',
+                    'char': 'P',
+                }, {
+                    'id': '1',
+                    'name': 'acl1',
+                    'char': 'U',
+                }],
+                ['2', '1'],
+                {
+                    '0': {
+                        'name': 'acl2',
+                        'char': 'P',
+                    },
+                    '1': {
+                        'name': 'acl1',
+                        'char': 'U',
+                    },
+                },
+            ),
+        ],
+    )
+    def test_make_acl_objects(self, objects, expected_list, expected_meta):
+        # pylint: disable=protected-access
+        acl_list, acl_meta = BackupMetadata._make_acl_objects(objects)
+        assert len(acl_list) == len(objects)
+        assert len(acl_meta) == len(objects)
+        assert acl_list == expected_list
+        assert acl_meta == expected_meta

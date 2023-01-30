@@ -6,7 +6,7 @@ import socket
 from datetime import datetime, timezone
 from enum import Enum
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Sequence, Set
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from ch_backup.exceptions import InvalidBackupStruct, UnknownBackupStateError
 from ch_backup.util import now
@@ -266,7 +266,8 @@ class BackupMetadata:
         self.start_time = now()
         self.end_time: Optional[datetime] = None
         self._databases: Dict[str, dict] = {}
-        self._access_control: Sequence[Dict[str, Any]] = []
+        self._access_control: Sequence[str] = []
+        self._access_control_meta: Dict[str, Dict[str, Any]] = {}
         self.size = 0
         self.real_size = 0
         self.schema_only = schema_only
@@ -317,6 +318,7 @@ class BackupMetadata:
         return {
             'databases': self._databases if not light else {},
             'access_control': self._access_control if not light else [],
+            'access_control_meta': self._access_control_meta if not light else {},
             'cloud_storage': self.cloud_storage.dump(),
             'meta': {
                 'name': self.name,
@@ -362,6 +364,7 @@ class BackupMetadata:
             backup.time_format = meta['time_format']
             backup._databases = data['databases']
             backup._access_control = data.get('access_control', [])
+            backup._access_control_meta = data.get('access_control_meta', {})
             backup.cloud_storage = CloudStorageMetadata.load(data.get('cloud_storage', {}))
             backup.start_time = cls._load_time(meta, 'start_time')
             backup.end_time = cls._load_time(meta, 'end_time')
@@ -497,17 +500,19 @@ class BackupMetadata:
         """
         return self.size == 0
 
-    def get_access_control(self) -> Sequence[Dict[str, Any]]:
+    def get_access_control(self) -> Tuple[Sequence[str], Dict[str, Dict[str, Any]]]:
         """
         Get access control objects.
         """
-        return self._access_control
+        return self._access_control, self._access_control_meta
 
     def set_access_control(self, objects: Sequence[Dict[str, Any]]) -> None:
         """
-        Add access control objects to backup metadata.
+        Build and add access control objects to backup metadata.
         """
-        self._access_control = objects
+        acl_list, acl_meta = self._make_acl_objects(objects)
+        self._access_control = acl_list
+        self._access_control_meta = acl_meta
 
     def has_s3_data(self) -> bool:
         """
@@ -537,3 +542,12 @@ class BackupMetadata:
             result = result.replace(tzinfo=timezone.utc)
 
         return result
+
+    @staticmethod
+    def _make_acl_objects(objects: Sequence[Dict[str, Any]]) -> Tuple[Sequence[str], Dict[str, Dict[str, Any]]]:
+        acl_list, acl_meta = [], {}
+        for i, item in enumerate(objects):
+            acl_list.append(item['id'])
+            acl_meta[str(i)] = {'name': item['name'], 'char': item['char']}
+
+        return acl_list, acl_meta

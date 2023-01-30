@@ -12,8 +12,6 @@ from ch_backup.zookeeper.zookeeper import ZookeeperCTL
 
 CH_MARK_FILE = 'need_rebuild_lists.mark'
 
-ACCESS_ENTITY_CHAR = {'users': 'U', 'roles': 'R', 'quotas': 'Q', 'row_policies': 'P', 'settings_profiles': 'S'}
-
 
 class AccessBackup(BackupManager):
     """
@@ -30,14 +28,17 @@ class AccessBackup(BackupManager):
         """
         Restore access rights
         """
-        objects = context.backup_meta.get_access_control()
+        acl_list, acl_meta = context.backup_meta.get_access_control()
+        if not acl_list:
+            logging.debug('No access control entities to restore.')
+            return
+
         has_replicated_access = self._has_replicated_access(context)
         mark_to_rebuild = not has_replicated_access
-        uuid_list = [uuid['id'] for uuid in objects]
 
-        self._restore_local(uuid_list, context, mark_to_rebuild=mark_to_rebuild)
+        self._restore_local(acl_list, context, mark_to_rebuild=mark_to_rebuild)
         if has_replicated_access:
-            self._restore_replicated(objects, context)
+            self._restore_replicated(acl_list, acl_meta, context)
 
     def _backup(self, context: BackupContext) -> None:
         """
@@ -45,49 +46,55 @@ class AccessBackup(BackupManager):
         """
         objects = context.ch_ctl.get_access_control_objects()
         context.backup_meta.set_access_control(objects)
-        uuid_list = [uuid['id'] for uuid in objects]
+        acl_list, _ = context.backup_meta.get_access_control()
 
         if self._has_replicated_access(context):
-            self._backup_replicated(uuid_list, context)
-        self._backup_local(uuid_list, context)
+            self._backup_replicated(acl_list, context)
+        self._backup_local(acl_list, context)
 
-    def _backup_local(self, uuid_list: Sequence[str], context: BackupContext) -> None:
+    def _backup_local(self, acl_list: Sequence[str], context: BackupContext) -> None:
         """
         Backup access entities from local storage.
         """
-        logging.debug(f'Backupping {len(uuid_list)} access entities from local storage')
-        for name in _get_access_control_files(uuid_list):
+        logging.debug(f'Backupping {len(acl_list)} access entities from local storage')
+        for name in _get_access_control_files(acl_list):
             context.backup_layout.upload_access_control_file(context.backup_meta.name, name)
 
-    def _backup_replicated(self, uuid_list: Sequence[str], context: BackupContext) -> None:
+    def _backup_replicated(self, acl_list: Sequence[str], context: BackupContext) -> None:
         """
         Backup access entities from replicated storage (ZK/CK).
         """
-        logging.debug(f'Backupping {len(uuid_list)} access entities from replicated storage')
+        logging.debug(f'Backupping {len(acl_list)} access entities from replicated storage')
         with _zk_ctl_client(context) as zk_ctl:
-            for uuid in uuid_list:
+            for uuid in acl_list:
                 uuid_zk_path = _get_access_zk_path(context, f'/uuid/{uuid}')
                 data, _ = zk_ctl.zk_client.get(uuid_zk_path)
                 _file_create(context, f'{uuid}.sql', data.decode())
 
-    def _restore_local(self, uuid_list: Sequence[str], context: BackupContext, mark_to_rebuild: bool = True) -> None:
+    def _restore_local(self, acl_list: Sequence[str], context: BackupContext, mark_to_rebuild: bool = True) -> None:
         """
         Restore access entities to local storage.
         """
-        logging.debug(f'Restoring {len(uuid_list)} access entities to local storage')
-        for name in _get_access_control_files(uuid_list):
+        logging.debug(f'Restoring {len(acl_list)} access entities to local storage')
+        for name in _get_access_control_files(acl_list):
             context.backup_layout.download_access_control_file(context.backup_meta.name, name)
         if mark_to_rebuild:
             self._mark_to_rebuild(context)
 
-    def _restore_replicated(self, objects: Sequence[Dict[str, Any]], context: BackupContext) -> None:
+    def _restore_replicated(self, acl_list: Sequence[str], acl_meta: Dict[str, Dict[str, Any]],
+                            context: BackupContext) -> None:
         """
         Restore access entities to replicated storage (ZK/CK).
         """
-        logging.debug(f'Restoring {len(objects)} access entities to replicated storage')
+        logging.debug(f'Restoring {len(acl_list)} access entities to replicated storage')
+        if not acl_meta:
+            logging.warning('Can not restore access entities to replicated storage without meta information!')
+            return
+
         with _zk_ctl_client(context) as zk_ctl:
-            for item in objects:
-                uuid, name, obj_type = item['id'], item['name'], item['type']
+            for i, uuid in enumerate(acl_list):
+                meta_data = acl_meta[str(i)]
+                name, obj_char = meta_data['name'], meta_data['char']
 
                 # restore object data
                 file_path = _get_access_file_path(context, f'{uuid}.sql')
@@ -97,7 +104,6 @@ class AccessBackup(BackupManager):
                     _zk_upsert_data(zk_ctl, uuid_zk_path, data)
 
                 # restore object link
-                obj_char = ACCESS_ENTITY_CHAR[obj_type]
                 uuid_zk_path = _get_access_zk_path(context, f'/{obj_char}/{name}')
                 _zk_upsert_data(zk_ctl, uuid_zk_path, uuid)
 

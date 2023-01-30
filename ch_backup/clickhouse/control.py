@@ -18,6 +18,8 @@ from ch_backup.clickhouse.models import Disk, FreezedPart, Table
 from ch_backup.clickhouse.schema import (is_distributed, is_external_engine, is_replicated, is_view, to_attach_query)
 from ch_backup.util import (chown_dir_contents, escape, list_dir_files, retry, strip_query)
 
+ACCESS_ENTITY_CHAR = {'users': 'U', 'roles': 'R', 'quotas': 'Q', 'row_policies': 'P', 'settings_profiles': 'S'}
+
 GET_TABLES_SQL = strip_query("""
     SELECT
         database,
@@ -393,11 +395,11 @@ class ClickhouseCTL:
         """
         result: List[Dict[str, Any]] = []
 
-        for obj_type in ['users', 'roles', 'quotas', 'row_policies', 'settings_profiles']:
+        for obj_type, obj_char in ACCESS_ENTITY_CHAR.items():
             ch_resp = self._ch_client.query(GET_ACCESS_CONTROL_OBJECTS_SQL.format(type=obj_type))
             obj_result = ch_resp.get('data', [])
             for row in obj_result:
-                row.update({'type': obj_type})
+                row.update({'char': obj_char})
             result.extend(obj_result)
 
         return result
