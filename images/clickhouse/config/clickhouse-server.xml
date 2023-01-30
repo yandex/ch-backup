@@ -73,7 +73,7 @@
         <password>rabbitmq_password</password>
     </rabbitmq>
 
-{% if ch_version_ge('22.9') %}
+{% if ch_version_ge('22.8.13') %}
     <enable_system_unfreeze>1</enable_system_unfreeze>
 {% endif %}
     <!-- It's needed to force atomic database drop when execute DROP DATABASE query -->
