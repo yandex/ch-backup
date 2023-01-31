@@ -3,7 +3,7 @@ boto3<1.19
 botocore<1.22
 psutil
 PyYAML<6
-PyNaCl
+PyNaCl==1.2.1
 click
 cloup
 humanfriendly

@@ -21,4 +21,3 @@ docker
 docker-compose<1.28
 Jinja2
 deepdiff
-tox
