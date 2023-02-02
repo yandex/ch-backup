@@ -70,6 +70,7 @@ class AccessBackup(BackupManager):
                 uuid_zk_path = _get_access_zk_path(context, f'/uuid/{uuid}')
                 data, _ = zk_ctl.zk_client.get(uuid_zk_path)
                 _file_create(context, f'{uuid}.sql', data.decode())
+        context.ch_ctl.chown_dir(context.ch_ctl_conf['access_control_path'])
 
     def _restore_local(self, acl_list: Sequence[str], context: BackupContext, mark_to_rebuild: bool = True) -> None:
         """
@@ -80,6 +81,7 @@ class AccessBackup(BackupManager):
             context.backup_layout.download_access_control_file(context.backup_meta.name, name)
         if mark_to_rebuild:
             self._mark_to_rebuild(context)
+            context.ch_ctl.chown_dir(context.ch_ctl_conf['access_control_path'])
 
     def _restore_replicated(self, acl_list: Sequence[str], acl_meta: Dict[str, Dict[str, Any]],
                             context: BackupContext) -> None:
@@ -131,8 +133,8 @@ def _get_access_file_path(context: BackupContext, file_name: str) -> str:
 
 
 def _get_access_zk_path(context: BackupContext, zk_path: str) -> str:
-    zk_path = zk_path.lstrip('/')
-    return f"{context.zk_ctl.zk_root_path}/{context.ch_ctl_conf['zk_access_control_path']}/{zk_path}"
+    paths = (context.zk_ctl.zk_root_path, context.ch_ctl_conf['zk_access_control_path'], zk_path)
+    return '/' + os.path.join(*map(lambda x: x.lstrip('/'), paths))
 
 
 @contextmanager
