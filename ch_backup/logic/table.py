@@ -3,19 +3,17 @@ Clickhouse backup logic for tables
 """
 from collections import deque
 from itertools import chain
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ch_backup import logging
 from ch_backup.backup.deduplication import (DatabaseDedupInfo, DedupInfo, TableDedupInfo, deduplicate_part)
-from ch_backup.backup.metadata import TableMetadata
+from ch_backup.backup.metadata import PartMetadata, TableMetadata
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.client import ClickhouseError
-from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
-from ch_backup.clickhouse.models import Table
-from ch_backup.clickhouse.schema import (is_atomic_db_engine, is_distributed, is_external_db_engine,
-                                         is_materialized_view, is_merge_tree, is_replicated, is_view,
-                                         rewrite_table_schema)
+from ch_backup.clickhouse.models import Database, Table
+from ch_backup.clickhouse.schema import (is_distributed, is_materialized_view, is_merge_tree, is_replicated, is_view,
+                                         rewrite_table_schema, to_attach_query, to_create_query)
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.util import compare_schema, get_table_zookeeper_paths
@@ -25,26 +23,26 @@ class TableBackup(BackupManager):
     """
     Table backup class
     """
-    def backup(self, context: BackupContext, databases: Sequence[str], db_tables: Dict[str, list],
+    def backup(self, context: BackupContext, databases: Sequence[Database], db_tables: Dict[str, list],
                dedup_info: DedupInfo, schema_only: bool) -> None:
         """
         Backup tables metadata, MergeTree data and Cloud storage metadata.
         """
         backup_name = context.backup_meta.get_sanitized_name()
 
-        for db_name in databases:
-            self._backup(context, db_name, db_tables[db_name], backup_name, dedup_info.database(db_name), schema_only)
+        for db in databases:
+            self._backup(context, db, db_tables[db.name], backup_name, dedup_info.database(db.name), schema_only)
         self._backup_cloud_storage_metadata(context)
 
-    def _backup(self, context: BackupContext, db_name: str, tables: Sequence[str], backup_name: str,
+    def _backup(self, context: BackupContext, db: Database, tables: Sequence[str], backup_name: str,
                 dedup_info: DatabaseDedupInfo, schema_only: bool) -> None:
         """
         Backup single database tables.
         """
-        if not self._is_db_external(context, db_name):
-            for table in context.ch_ctl.get_tables(db_name, tables):
+        if not db.is_external_db_engine():
+            for table in context.ch_ctl.get_tables(db.name, tables):
                 table_meta = TableMetadata(table.database, table.name, table.engine, table.uuid)
-                self._backup_table_schema(context, table)
+                self._backup_table_schema(context, db, table)
                 if not schema_only:
                     # table_meta will be populated with parts info
                     self._backup_table_data(context, table, table_meta, backup_name, dedup_info.table(table.name))
@@ -53,7 +51,8 @@ class TableBackup(BackupManager):
 
         context.backup_layout.upload_backup_metadata(context.backup_meta)
 
-    def _backup_cloud_storage_metadata(self, context: BackupContext) -> None:
+    @staticmethod
+    def _backup_cloud_storage_metadata(context: BackupContext) -> None:
         """
         Backup cloud storage metadata files.
         """
@@ -72,8 +71,8 @@ class TableBackup(BackupManager):
         logging.debug('Cloud Storage disks has been backed up ')
 
     # pylint: disable=too-many-arguments,too-many-locals
-    def restore(self, context: BackupContext, databases: Sequence[str], schema_only: bool, tables: List[TableMetadata],
-                exclude_tables: List[TableMetadata], replica_name: Optional[str],
+    def restore(self, context: BackupContext, databases: Dict[str, Database], schema_only: bool,
+                tables: List[TableMetadata], exclude_tables: List[TableMetadata], replica_name: Optional[str],
                 cloud_storage_source_bucket: Optional[str], cloud_storage_source_path: Optional[str],
                 cloud_storage_source_endpoint: Optional[str], cloud_storage_latest: bool, skip_cloud_storage: bool,
                 clean_zookeeper: bool, keep_going: bool) -> None:
@@ -83,8 +82,7 @@ class TableBackup(BackupManager):
         logging.debug('Retrieving tables metadata')
         tables_meta: List[TableMetadata] = list(
             chain(*[
-                context.backup_meta.get_tables(db_name)
-                for db_name in databases if not self._is_db_external(context, db_name)
+                context.backup_meta.get_tables(db.name) for db in databases.values() if not db.is_external_db_engine()
             ]))
 
         if tables:
@@ -111,25 +109,24 @@ class TableBackup(BackupManager):
 
         logging.debug('Retrieving tables from tables metadata')
         tables_to_restore: List[Table] = list(map(lambda meta: self._get_table_from_meta(context, meta), tables_meta))
-        tables_to_restore = self._preprocess_tables_to_restore(context, tables_to_restore)
+        tables_to_restore = self._preprocess_tables_to_restore(context, databases, tables_to_restore)
 
-        failed_tables = self._restore_tables(context, tables_to_restore, clean_zookeeper, replica_name, keep_going)
+        failed_tables = self._restore_tables(context, databases, tables_to_restore, clean_zookeeper, replica_name,
+                                             keep_going)
 
         if schema_only:
             logging.debug('Skipping restoring of table data as --schema-only flag passed')
             return
 
         # Restore data stored on S3 disks.
-        if context.backup_meta.has_s3_data():
+        if context.backup_meta.has_s3_data() and not skip_cloud_storage:
             cloud_storage_source_bucket = cloud_storage_source_bucket if cloud_storage_source_bucket else ''
             cloud_storage_source_path = cloud_storage_source_path if cloud_storage_source_path else ''
             cloud_storage_source_endpoint = cloud_storage_source_endpoint if cloud_storage_source_endpoint else ''
-
-            if not skip_cloud_storage:
-                self._restore_cloud_storage_data(context, cloud_storage_source_bucket, cloud_storage_source_path,
-                                                 cloud_storage_latest)
-            else:
-                logging.debug('Skipping restoring of cloud storage data as --skip-cloud-storage flag passed')
+            self._restore_cloud_storage_data(context, cloud_storage_source_bucket, cloud_storage_source_path,
+                                             cloud_storage_latest)
+        else:
+            logging.debug('Skipping restoring of cloud storage data as --skip-cloud-storage flag passed')
 
         failed_tables_names = [f"`{t.database}`.`{t.name}`" for t in failed_tables]
         tables_to_restore_data = filter(lambda t: is_merge_tree(t.engine), tables_meta)
@@ -141,37 +138,13 @@ class TableBackup(BackupManager):
                                       cloud_storage_source_endpoint, context.ch_config) as disks:
             self._restore_data(context, tables_to_restore_data, disks, skip_cloud_storage)
 
-    def restore_schema(self, context: BackupContext, source_ch_ctl: ClickhouseCTL, databases: Sequence[str],
-                       replica_name: str, keep_going: bool) -> None:
-        """
-        Restore schema
-        """
-        tables: List[Table] = []
-        for database in databases:
-            tables.extend(source_ch_ctl.get_tables(database))
-
-        tables = self._preprocess_tables_to_restore(context, tables)
-        self._restore_tables(context, tables, clean_zookeeper=True, replica_name=replica_name, keep_going=keep_going)
-
-    def _is_db_external(self, context: BackupContext, db_name: str) -> bool:
-        """
-        Return True if DB's engine is one of:
-        - MySQL
-        - MaterializedMySQL
-        - PostgreSQL
-        - MaterializedPostgreSQL
-        or False otherwise
-        """
-        return is_external_db_engine(context.ch_ctl.get_database_engine(db_name))
-
-    def _backup_table_schema(self, context: BackupContext, table: Table) -> None:
+    @staticmethod
+    def _backup_table_schema(context: BackupContext, db: Database, table: Table) -> None:
         """
         Backup table object.
         """
         logging.debug('Uploading table schema for "%s"."%s"', table.database, table.name)
-
-        context.backup_layout.upload_table_create_statement(context.backup_meta.name, table.database, table.name,
-                                                            table.create_statement)
+        context.backup_layout.upload_table_create_statement(context.backup_meta.name, db, table)
 
     def _backup_table_data(self, context: BackupContext, table: Table, table_meta: TableMetadata, backup_name: str,
                            dedup_info: TableDedupInfo) -> None:
@@ -195,13 +168,13 @@ class TableBackup(BackupManager):
 
         uploaded_parts = []
         for data_path, disk in table.paths_with_disks:
-            freezed_parts = context.ch_ctl.list_freezed_parts(table, disk, data_path, backup_name)
+            freezed_parts = context.ch_ctl.list_frozen_parts(table, disk, data_path, backup_name)
 
             for fpart in freezed_parts:
                 logging.debug('Working on %s', fpart)
 
                 if disk.type == 's3':
-                    table_meta.add_part(fpart.to_part_metadata())
+                    table_meta.add_part(PartMetadata.from_frozen_part(fpart))
                     continue
 
                 # trying to find part in storage
@@ -210,7 +183,7 @@ class TableBackup(BackupManager):
                     context.ch_ctl.remove_freezed_part(fpart)
                 else:
                     context.backup_layout.upload_data_part(context.backup_meta.name, fpart)
-                    part = fpart.to_part_metadata()
+                    part = PartMetadata.from_frozen_part(fpart)
                     uploaded_parts.append(part)
 
                 table_meta.add_part(part)  # type: ignore
@@ -221,7 +194,8 @@ class TableBackup(BackupManager):
 
         context.ch_ctl.remove_freezed_data()
 
-    def _validate_uploaded_parts(self, context: BackupContext, uploaded_parts: list) -> None:
+    @staticmethod
+    def _validate_uploaded_parts(context: BackupContext, uploaded_parts: list) -> None:
         if context.config['validate_part_after_upload']:
             invalid_parts = []
 
@@ -234,10 +208,11 @@ class TableBackup(BackupManager):
                     logging.error(f'Uploaded part is broken, {part.database}.{part.table}: {part.name}')
                 raise RuntimeError(f'Uploaded parts are broken, {", ".join(map(lambda p: p.name, invalid_parts))}')
 
-    def _preprocess_tables_to_restore(self, context: BackupContext, tables: List[Table]) -> List[Table]:
+    def _preprocess_tables_to_restore(self, context: BackupContext, databases: Dict[str, Database],
+                                      tables: List[Table]) -> List[Table]:
         # Prepare table schema to restore.
         for table in tables:
-            self._rewrite_table_schema(context, table)
+            self._rewrite_table_schema(context, databases[table.database], table)
 
         # Filter out already restored tables.
         existing_tables = {}
@@ -253,13 +228,14 @@ class TableBackup(BackupManager):
                 logging.warning(
                     'Table "%s"."%s" will be recreated as its schema mismatches the schema from backup: "%s" != "%s"',
                     table.database, table.name, existing_table.create_statement, table.create_statement)
-                context.ch_ctl.drop_table_if_exists(table.database, table.name)
+                context.ch_ctl.drop_table_if_exists(table)
 
             result.append(table)
 
         return result
 
-    def _get_table_from_meta(self, context: BackupContext, meta: TableMetadata) -> Table:
+    @staticmethod
+    def _get_table_from_meta(context: BackupContext, meta: TableMetadata) -> Table:
         return Table(
             database=meta.database,
             name=meta.name,
@@ -273,6 +249,7 @@ class TableBackup(BackupManager):
 
     def _restore_tables(self,
                         context: BackupContext,
+                        databases: Dict[str, Database],
                         tables: Iterable[Table],
                         clean_zookeeper: bool = False,
                         replica_name: Optional[str] = None,
@@ -285,7 +262,7 @@ class TableBackup(BackupManager):
         other_tables = []
         for table in tables:
             logging.debug('Preparing table %s for restoring', f'{table.database}.{table.name}')
-            self._rewrite_table_schema(context, table, add_uuid_if_required=True)
+            self._rewrite_table_schema(context, databases[table.database], table, add_uuid_if_required=True)
 
             if is_merge_tree(table.engine):
                 merge_tree_tables.append(table)
@@ -304,11 +281,12 @@ class TableBackup(BackupManager):
                           ', '.join([f'{t.database}.{t.name}' for t in replicated_tables]))
             context.zk_ctl.delete_replica_metadata(get_table_zookeeper_paths(replicated_tables), replica_name, macros)
 
-        return self._restore_table_objects(context,
+        return self._restore_table_objects(context, databases,
                                            chain(merge_tree_tables, other_tables, distributed_tables, view_tables),
                                            keep_going)
 
-    def _restore_cloud_storage_data(self, context: BackupContext, source_bucket: str, source_path: str,
+    @staticmethod
+    def _restore_cloud_storage_data(context: BackupContext, source_bucket: str, source_path: str,
                                     cloud_storage_latest: bool) -> None:
         for disk_name, revision in context.backup_meta.s3_revisions.items():
             logging.debug(f'Restore disk {disk_name} to revision {revision}')
@@ -325,15 +303,15 @@ class TableBackup(BackupManager):
             finally:
                 context.restore_context.dump_state()
 
-    def _restore_data(self, context: BackupContext, tables: Iterable[TableMetadata], disks: ClickHouseTemporaryDisks,
+    @staticmethod
+    def _restore_data(context: BackupContext, tables: Iterable[TableMetadata], disks: ClickHouseTemporaryDisks,
                       skip_cloud_storage: bool) -> None:
         logging.info('Restoring tables data')
-
         for table_meta in tables:
             try:
                 logging.debug('Running table "%s.%s" data restore', table_meta.database, table_meta.name)
 
-                context.restore_context.add_table(table_meta)
+                context.restore_context.add_table(table_meta.database, table_meta.name)
                 maybe_table = context.ch_ctl.get_table(table_meta.database, table_meta.name)
                 assert maybe_table is not None, f'Table not found {table_meta.database}.{table_meta.name}'
                 table: Table = maybe_table
@@ -375,10 +353,14 @@ class TableBackup(BackupManager):
 
         logging.info('Restoring tables data completed')
 
-    def _rewrite_table_schema(self, context: BackupContext, table: Table, add_uuid_if_required: bool = False) -> None:
+    def _rewrite_table_schema(self,
+                              context: BackupContext,
+                              db: Database,
+                              table: Table,
+                              add_uuid_if_required: bool = False) -> None:
         add_uuid = False
         inner_uuid = None
-        if add_uuid_if_required and table.uuid and self._is_db_atomic(context, table.database):
+        if add_uuid_if_required and table.uuid and db.is_atomic():
             add_uuid = True
             # Starting with 21.4 it's required to explicitly set inner table UUID for materialized views.
             if is_materialized_view(table.engine) and context.ch_ctl.ch_version_ge('21.4'):
@@ -394,21 +376,24 @@ class TableBackup(BackupManager):
 
     def _restore_table_objects(self,
                                context: BackupContext,
+                               databases: Dict[str, Database],
                                tables: Iterable[Table],
                                keep_going: bool = False) -> List[Table]:
         logging.info('Restoring tables')
-
-        errors: List[Tuple[Union[Table], Exception]] = []
+        errors: List[Tuple[Table, Exception]] = []
         unprocessed = deque(table for table in tables)
         while unprocessed:
             table = unprocessed.popleft()
             try:
                 logging.debug('Trying to restore table object for table %s', f'{table.database}.{table.name}')
-                context.ch_ctl.restore_table(table.database, table.name, table.engine, table.create_statement)
+                self._restore_table_object(context, databases[table.database], table)
             except Exception as e:
                 errors.append((table, e))
                 unprocessed.append(table)
+                logging.debug(f'Errors {len(errors)}, unprocessed {len(unprocessed)}')
                 if len(errors) > len(unprocessed):
+                    logging.error(f'Failed to restore "{table.database}"."{table.name}" with "{repr(e)}",'
+                                  ' no retries anymore')
                     break
                 logging.warning(f'Failed to restore "{table.database}"."{table.name}" with "{repr(e)}",'
                                 ' will retry after restoring other tables')
@@ -429,8 +414,23 @@ class TableBackup(BackupManager):
 
         return []
 
-    def _is_db_atomic(self, context: BackupContext, db_name: str) -> bool:
-        """
-        Return True if database engine is Atomic, or False otherwise.
-        """
-        return is_atomic_db_engine(context.ch_ctl.get_database_engine(db_name))
+    @staticmethod
+    def _restore_table_object(context: BackupContext, db: Database, table: Table) -> None:
+        try:
+            try:
+                logging.debug(f'Trying to restore table `{db.name}`.`{table.name}` by ATTACH method')
+                table.create_statement = to_attach_query(table.create_statement)
+                context.ch_ctl.create_table(table)
+            except Exception as e:
+                logging.warning(f'Failed to restore table `{db.name}`.`{table.name}` using ATTACH method, '
+                                f'fallback to CREATE. Exception: {e}')
+                table.create_statement = to_create_query(table.create_statement)
+                context.ch_ctl.create_table(table)
+
+            if is_replicated(table.create_statement) and not is_materialized_view(
+                    table.engine) and context.ch_ctl.ch_version_ge('21.8'):
+                context.ch_ctl.restore_replica(table)
+        except Exception as e:
+            logging.debug(f'Both table `{db.name}`.`{table.name}` restore methods failed. Removing it. Exception: {e}')
+            context.ch_ctl.drop_table_if_exists(table)
+            raise ClickhouseBackupError(f'Failed to restore table: {table.database}.{table.name}')

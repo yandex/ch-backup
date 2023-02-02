@@ -20,6 +20,7 @@ def _as_seconds(t: str) -> int:
 DEFAULT_CONFIG = {
     'clickhouse': {
         'data_path': '/var/lib/clickhouse',
+        'metadata_path': '/var/lib/clickhouse/metadata',
         'access_control_path': '/var/lib/clickhouse/access',
         'zk_access_control_path': '/clickhouse/access',
         'config_dir': '/etc/clickhouse-server/config.d/',

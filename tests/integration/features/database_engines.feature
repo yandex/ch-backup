@@ -19,7 +19,15 @@ Feature: Database engines
     DROP DATABASE IF EXIST default;
     CREATE DATABASE default ENGINE=Ordinary
     """
-    When we restore clickhouse schema from clickhouse01 to clickhouse02
+    When we create clickhouse01 clickhouse backup
+    """
+    backup_access_control: true
+    schema_only: true
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    schema_only: true
+    """
     When we execute query on clickhouse02
     """
     SELECT engine FROM system.databases WHERE database='default'

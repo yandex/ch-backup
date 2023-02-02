@@ -8,6 +8,7 @@ import os
 import pwd
 import re
 import shutil
+import string
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable, List, Tuple, Union
@@ -19,6 +20,8 @@ from ch_backup import logging
 from ch_backup.exceptions import ClickhouseBackupError
 
 LOCAL_TZ = timezone(timedelta(seconds=-1 * (time.altzone if time.daylight else time.timezone)))
+_ALLOWED_NAME_CHARS = set(['_'] + list(string.ascii_letters) + list(string.digits))
+_HEX_UPPERCASE_TABLE = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F']
 
 
 def chown_dir_contents(user: str, group: str, dir_path: str, need_recursion: bool = False) -> None:
@@ -70,11 +73,11 @@ def demote_user(new_user: str) -> None:
     os.setuid(new_uid)
 
 
-def escape(string: str) -> str:
+def escape(s: str) -> str:
     """
     Escaping special character '`'
     """
-    return r'\`'.join(string.split('`'))
+    return r'\`'.join(s.split('`'))
 
 
 def demote_user_group(new_user: str, new_group: str) -> None:
@@ -199,10 +202,20 @@ def compare_schema(schema_a: str, schema_b: str) -> bool:
     Normalize table schema for comparison.
     `... ENGINE = Distributed('aaa', bbb, ccc, xxx) ...` may be in ver. before 19.16, 20.1
     `... ENGINE = Distributed('aaa', 'bbb', 'ccc', xxx) ...` in ver. 19.16+, 20.1+
+
+    Also
+    `ATTACH TABLE `db`.`table` UUID '...' ...` from file schema, multiline
+    `CREATE TABLE db.table ` from sql request, single line
     """
     def _normalize(schema: str) -> str:
-        return re.sub(r"ENGINE = Distributed\('([^']+)', ('?)(\w+)\2, ('?)(\w+)\4(, .*)?\)",
-                      r"ENGINE = Distributed('\1', '\3', '\5'\6)", schema).lower()
+        res = re.sub(r"ENGINE = Distributed\('([^']+)', ('?)(\w+)\2, ('?)(\w+)\4(, .*)?\)",
+                     r"ENGINE = Distributed('\1', '\3', '\5'\6)", schema).lower()
+        res = re.sub(r"^attach table `?([^`\.]+)`?\.\`?([^`\.]+)\` (uuid '[^']+')?", r"create table \1.\2", res)
+        res = re.sub(r"\s+", " ", res)
+        res = re.sub(r"\( +", "(", res)
+        res = re.sub(r" +\)", ")", res)
+        res = re.sub(r" $", "", res)
+        return res
 
     return _normalize(schema_a) == _normalize(schema_b)
 
@@ -212,3 +225,18 @@ def format_size(value: int) -> str:
     Format a value in bytes to human-friendly representation.
     """
     return humanfriendly.format_size(value, binary=True)
+
+
+def escape_metadata_file_name(name: str) -> str:
+    """
+    Escape object name to use for metadata file.
+    Should be equal to https://github.com/ClickHouse/ClickHouse/blob/master/src/Common/escapeForFileName.cpp#L8
+    """
+    result = ""
+    for c in name:
+        if c in _ALLOWED_NAME_CHARS:
+            result += c
+        else:
+            ascii_code = ord(c)
+            result += f'%{_HEX_UPPERCASE_TABLE[int(ascii_code / 16)]}{_HEX_UPPERCASE_TABLE[ascii_code % 16]}'
+    return result

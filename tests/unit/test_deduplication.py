@@ -8,6 +8,7 @@ from ch_backup.backup.deduplication import (DatabaseDedupInfo, DedupInfo, collec
                                             collect_dedup_references_for_batch_backup_deletion)
 from ch_backup.backup.metadata import BackupState
 from ch_backup.backup_context import BackupContext
+from ch_backup.clickhouse.models import Database
 from tests.unit.utils import (assert_equal, backup_metadata, parametrize, parts, parts_dedup_info)
 
 
@@ -438,7 +439,8 @@ def test_collect_dedup_info(config, creating_backup, databases, backups, result)
     context = BackupContext(config)
     context.backup_layout = layout_mock()
     context.backup_meta = creating_backup
-    dedup_info = collect_dedup_info(context=context, databases=databases, backups_with_light_meta=backups)
+    dbs = list(map(lambda db_name: Database(db_name, '', ''), databases))
+    dedup_info = collect_dedup_info(context=context, databases=dbs, backups_with_light_meta=backups)
     assert_equal(dedup_info, result)
 
 

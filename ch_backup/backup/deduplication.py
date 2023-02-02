@@ -10,7 +10,7 @@ from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, BackupState, PartMetadata
 from ch_backup.backup_context import BackupContext
-from ch_backup.clickhouse.models import FreezedPart
+from ch_backup.clickhouse.models import Database, FrozenPart
 from ch_backup.clickhouse.schema import is_replicated
 from ch_backup.util import utcnow
 
@@ -83,7 +83,7 @@ class DedupInfo:
         return self.__dict__ == other.__dict__
 
 
-def collect_dedup_info(context: BackupContext, databases: Sequence[str],
+def collect_dedup_info(context: BackupContext, databases: Sequence[Database],
                        backups_with_light_meta: List[BackupMetadata]) -> DedupInfo:
     """
     Collect deduplication information for creating incremental backups.
@@ -129,9 +129,9 @@ class _DatabaseToHandle:
 
 
 def _populate_dedup_info(dedup_info: DedupInfo, layout: BackupLayout, hostname: str,
-                         dedup_backups_with_light_meta: List[BackupMetadata], databases: Sequence[str]) -> None:
+                         dedup_backups_with_light_meta: List[BackupMetadata], databases: Sequence[Database]) -> None:
     # pylint: disable=too-many-locals,too-many-branches
-    databases_to_handle = {db_name: _DatabaseToHandle(db_name) for db_name in databases}
+    databases_to_handle = {db.name: _DatabaseToHandle(db.name) for db in databases}
     dedup_backup_paths = set(backup.path for backup in dedup_backups_with_light_meta)
     for backup in dedup_backups_with_light_meta:
         backup = layout.reload_backup(backup, use_light_meta=False)
@@ -190,7 +190,7 @@ def _populate_dedup_info(dedup_info: DedupInfo, layout: BackupLayout, hostname: 
             break
 
 
-def deduplicate_part(layout: BackupLayout, fpart: FreezedPart, dedup_info: TableDedupInfo) -> Optional[PartMetadata]:
+def deduplicate_part(layout: BackupLayout, fpart: FrozenPart, dedup_info: TableDedupInfo) -> Optional[PartMetadata]:
     """
     Deduplicate part if it's possible.
     """

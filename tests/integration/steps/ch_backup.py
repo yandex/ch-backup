@@ -121,12 +121,6 @@ def step_check_backups_conditions(context, node):
                         f' {expected_value}, but was {current_value}')
 
 
-@when('we restore clickhouse schema from {node1:w} to {node2:w}')
-def step_restore_schema(context, node1, node2):
-    result = BackupManager(context, node2).restore_metadata(node1, node2)
-    assert_that(result, matches_regexp('^$'))
-
-
 @when('we restore clickhouse access control metadata backup #{backup_id:d} to {node:w} with restart')
 @when('we restore clickhouse access control metadata backup "{backup_id}" to {node:w} with restart')
 def step_restore_access_control_backup(context, backup_id, node):

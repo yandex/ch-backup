@@ -267,13 +267,6 @@ class BackupManager:
             options.append('--cloud-storage-latest')
         return self._exec(f'restore {" ".join(options)} {backup_id}')
 
-    def restore_metadata(self, node, replica_name):
-        """
-        Restore metadata from another host.
-        """
-        options = ['--source-host', node, '--source-port', '8123', '--replica-name', replica_name]
-        return self._exec(f'restore-schema {" ".join(options)}')
-
     def restore_access_control(self, backup_id: BackupId) -> str:
         """
         Restore access control metadata from backup.

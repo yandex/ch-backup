@@ -8,6 +8,7 @@ from enum import Enum
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
+from ch_backup.clickhouse.models import Database, FrozenPart
 from ch_backup.exceptions import InvalidBackupStruct, UnknownBackupStateError
 from ch_backup.util import now
 
@@ -109,6 +110,20 @@ class PartMetadata(SimpleNamespace):
                    tarball=raw_metadata.get('tarball', False),
                    link=raw_metadata['link'],
                    disk_name=raw_metadata.get('disk_name', 'default'))
+
+    @classmethod
+    def from_frozen_part(cls, frozen_part: FrozenPart) -> 'PartMetadata':
+        """
+        Converts FrozenPart to PartMetadata.
+        """
+        return cls(database=frozen_part.database,
+                   table=frozen_part.table,
+                   name=frozen_part.name,
+                   checksum=frozen_part.checksum,
+                   size=frozen_part.size,
+                   files=frozen_part.files,
+                   tarball=True,
+                   disk_name=frozen_part.disk_name)
 
 
 class TableMetadata(SimpleNamespace):
@@ -319,6 +334,7 @@ class BackupMetadata:
             'databases': self._databases if not light else {},
             'access_control': self._access_control if not light else [],
             'access_control_meta': self._access_control_meta if not light else {},
+            'user_defined_functions': self._user_defined_functions if not light else [],
             'cloud_storage': self.cloud_storage.dump(),
             'meta': {
                 'name': self.name,
@@ -338,7 +354,6 @@ class BackupMetadata:
                 'date_fmt': self.time_format,
                 'schema_only': self.schema_only,
                 's3_revisions': self.s3_revisions,
-                'user_defined_functions': self._user_defined_functions,
             },
         }
 
@@ -376,7 +391,8 @@ class BackupMetadata:
             backup.version = meta['version']
             backup.schema_only = meta.get('schema_only', False)
             backup.s3_revisions = meta.get('s3_revisions', {})
-            backup._user_defined_functions = meta.get('user_defined_functions', [])
+            # TODO remove after a several weeks/months, when backups rotated
+            backup._user_defined_functions = data.get('user_defined_functions', meta.get('user_defined_functions', []))
 
             return backup
 
@@ -396,13 +412,24 @@ class BackupMetadata:
         """
         return tuple(self._databases.keys())
 
-    def add_database(self, db_name: str) -> None:
+    def get_database(self, db_name: str) -> Optional[Database]:
+        """
+        Get database.
+        """
+        db_meta = self._databases[db_name]
+        if 'engine' not in db_meta:
+            return None
+        return Database(db_name, db_meta['engine'], db_meta['metadata_path'])
+
+    def add_database(self, db: Database) -> None:
         """
         Add database to backup metadata.
         """
-        assert db_name not in self._databases
+        assert db.name not in self._databases
 
-        self._databases[db_name] = {
+        self._databases[db.name] = {
+            'engine': db.engine,
+            'metadata_path': db.metadata_path,
             'tables': {},
         }
 

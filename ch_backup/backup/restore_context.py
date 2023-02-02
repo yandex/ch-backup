@@ -7,7 +7,7 @@ from collections import defaultdict
 from os.path import exists
 from typing import Any, Dict, List, Mapping
 
-from ch_backup.backup.metadata import PartMetadata, TableMetadata
+from ch_backup.backup.metadata import PartMetadata
 
 
 class RestoreContext:
@@ -25,15 +25,15 @@ class RestoreContext:
         if exists(self._state_file):
             self._load_state()
 
-    def add_table(self, table: TableMetadata) -> None:
+    def add_table(self, database: str, table: str) -> None:
         """
         Add table to restore metadata.
         """
-        if table.database not in self._databases:
-            self._databases[table.database] = {}
+        if database not in self._databases:
+            self._databases[database] = {}
 
-        if table.name not in self._databases[table.database]:
-            self._databases[table.database][table.name] = []
+        if table not in self._databases[database]:
+            self._databases[database][table] = []
 
     def add_part(self, part: PartMetadata) -> None:
         """
@@ -47,11 +47,11 @@ class RestoreContext:
         """
         return part.name in self._databases[part.database][part.table]
 
-    def add_failed_chown(self, table: TableMetadata, path: str) -> None:
+    def add_failed_chown(self, database: str, table: str, path: str) -> None:
         """
         Save information about failed detached dir chown in context
         """
-        self._failed[table.database][table.name]['failed_paths'].append(path)
+        self._failed[database][table]['failed_paths'].append(path)
 
     def add_failed_part(self, part: PartMetadata, e: Exception) -> None:
         """

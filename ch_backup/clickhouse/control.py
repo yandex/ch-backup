@@ -14,8 +14,8 @@ from ch_backup import logging
 from ch_backup.backup.metadata import TableMetadata
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.clickhouse.client import ClickhouseClient
-from ch_backup.clickhouse.models import Disk, FreezedPart, Table
-from ch_backup.clickhouse.schema import (is_distributed, is_external_engine, is_replicated, is_view, to_attach_query)
+from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
+from ch_backup.clickhouse.schema import is_replicated
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.util import (chown_dir_contents, escape, list_dir_files, retry, strip_query)
 
@@ -41,6 +41,10 @@ CHECK_TABLE_SQL = strip_query("""
     SELECT countIf(database = '{db_name}' AND name = '{table_name}')
     FROM system.tables
     FORMAT TSVRaw
+""")
+
+DATABASE_ATTACH_SQL = strip_query("""
+    ATTACH DATABASE `{db_name}`
 """)
 
 PART_ATTACH_SQL = strip_query("""
@@ -79,7 +83,9 @@ RESTORE_REPLICA_SQL = strip_query("""
 
 GET_DATABASES_SQL = strip_query("""
     SELECT
-        name
+        name,
+        engine,
+        metadata_path
     FROM system.databases
     WHERE name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA')
     FORMAT JSON
@@ -200,8 +206,7 @@ class ClickhouseCTL:
                 self.chown_dir(detached_path)
             except FileNotFoundError:
                 logging.warning(f'table {table.database}.{table.name} path {detached_path} not found')
-                context.add_failed_chown(
-                    TableMetadata(escape(table.database), escape(table.name), table.engine, table.uuid), detached_path)
+                context.add_failed_chown(table.database, table.database, detached_path)
 
     def attach_part(self, table: Table, part_name: str) -> None:
         """
@@ -248,24 +253,27 @@ class ClickhouseCTL:
                 logging.debug('Removing shadow data: %s', shadow_path)
                 self._remove_shadow_data(shadow_path)
 
-    def remove_freezed_part(self, part: FreezedPart) -> None:
+    def remove_freezed_part(self, part: FrozenPart) -> None:
         """
         Remove the freezed part.
         """
         logging.debug('Removing freezed part: %s', part.path)
         self._remove_shadow_data(part.path)
 
-    def get_databases(self, exclude_dbs: Optional[Sequence[str]] = None) -> Sequence[str]:
+    def get_databases(self, exclude_dbs: Optional[Sequence[str]] = None) -> Sequence[Database]:
         """
         Get list of all databases
         """
         if not exclude_dbs:
             exclude_dbs = []
 
-        result: List[str] = []
+        result: List[Database] = []
         ch_resp = self._ch_client.query(GET_DATABASES_SQL)
         if 'data' in ch_resp:
-            result = [row['name'] for row in ch_resp['data'] if row['name'] not in exclude_dbs]
+            result = [
+                Database(row['name'], row['engine'], row['metadata_path']) for row in ch_resp['data']
+                if row['name'] not in exclude_dbs
+            ]
 
         return result
 
@@ -315,6 +323,12 @@ class ClickhouseCTL:
         query_sql = CHECK_TABLE_SQL.format(db_name=escape(db_name), table_name=escape(table_name))
         return bool(int(self._ch_client.query(query_sql)))
 
+    def attach_database(self, db: Database) -> None:
+        """
+        Restore database.
+        """
+        self._ch_client.query(DATABASE_ATTACH_SQL.format(db_name=escape(db.name)))
+
     def restore_database(self, database_schema: str) -> None:
         """
         Restore database.
@@ -327,36 +341,26 @@ class ClickhouseCTL:
         """
         self._ch_client.query(udf_statement)
 
-    def restore_table(self, db_name: str, table_name: str, table_engine: str, table_schema: str) -> None:
+    def create_table(self, table: Table) -> None:
         """
         Restore table.
         """
-        if is_view(table_engine) or is_distributed(table_engine) or is_external_engine(table_engine):
-            # Restore views and distributed tables using ATTACH.
-            self._ch_client.query(to_attach_query(table_schema))
-        elif is_replicated(table_engine) and self.ch_version_ge('21.8'):
-            # Restore replicated tables using ATTACH + SYSTEM RESTORE REPLICA.
-            # Conditional logic for differential versions is required because:
-            # - Starting with 22.4 it's forbidden to specify UUID in non-distributed CREATE queries. As a result, we
-            #   cannot use CREATE in new versions.
-            # - SYSTEM RESTORE REPLICA query is supported only for versions 21.8 and newer. As a result, we
-            #   cannot use SYSTEM RESTORE REPLICA in old versions.
-            try:
-                self._ch_client.query(to_attach_query(table_schema))
-                self._ch_client.query(
-                    RESTORE_REPLICA_SQL.format(db_name=escape(db_name), table_name=escape(table_name)))
-            except Exception:
-                self.drop_table_if_exists(db_name, escape(table_name))
-                raise
-        else:
-            # Use CREATE for restoring all other types of tables.
-            self._ch_client.query(table_schema)
+        self._ch_client.query(table.create_statement)
 
-    def drop_table_if_exists(self, db_name: str, table_name: str) -> None:
+    def restore_replica(self, table: Table) -> None:
+        """
+        Call SYSTEM RESTORE REPLICA for table
+        """
+        assert is_replicated(table.create_statement)
+        self._ch_client.query(RESTORE_REPLICA_SQL.format(db_name=escape(table.database),
+                                                         table_name=escape(table.name)))
+
+    def drop_table_if_exists(self, table: Table) -> None:
         """
         Drop table. If the specified table doesn't exist, do nothing.
         """
-        self._ch_client.query(DROP_TABLE_IF_EXISTS_SQL.format(db_name=escape(db_name), table_name=escape(table_name)))
+        self._ch_client.query(
+            DROP_TABLE_IF_EXISTS_SQL.format(db_name=escape(table.database), table_name=escape(table.name)))
 
     def drop_database_if_exists(self, db_name: str) -> None:
         """
@@ -406,9 +410,9 @@ class ClickhouseCTL:
         return result
 
     @staticmethod
-    def list_freezed_parts(table: Table, disk: Disk, data_path: str, backup_name: str) -> Sequence[FreezedPart]:
+    def list_frozen_parts(table: Table, disk: Disk, data_path: str, backup_name: str) -> Sequence[FrozenPart]:
         """
-        List freezed parts from specific disk and path.
+        List frozen parts from specific disk and path.
         """
         table_relative_path = os.path.relpath(data_path, disk.path)
         path = os.path.join(disk.path, 'shadow', backup_name, table_relative_path)
@@ -417,7 +421,7 @@ class ClickhouseCTL:
             logging.debug('Shadow path %s is empty', path)
             return []
 
-        freezed_parts: List[FreezedPart] = []
+        freezed_parts: List[FrozenPart] = []
         for part in os.listdir(path):
             part_path = os.path.join(path, part)
             checksum = _get_part_checksum(part_path)
@@ -425,7 +429,7 @@ class ClickhouseCTL:
             size = _get_part_size(part_path, files)
             logging.debug(f"list_freezed_parts: {table.name} -> {escape(table.name)} \n {part}")
             freezed_parts.append(
-                FreezedPart(table.database, table.name, part, disk.name, part_path, checksum, size, files))
+                FrozenPart(table.database, table.name, part, disk.name, part_path, checksum, size, files))
 
         return freezed_parts
 

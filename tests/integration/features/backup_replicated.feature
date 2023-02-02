@@ -28,6 +28,26 @@ Feature: Backup replicated merge tree table
       | 0   | created | 10         | 0          |
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM test_db.table_01
+    """
+    Then we get response
+    """
+    10
+    """
+    When we execute query on clickhouse02
+    """
+    INSERT INTO test_db.table_01 SELECT now(), number, rand() FROM system.numbers LIMIT 10
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM test_db.table_01
+    """
+    Then we get response
+    """
+    20
+    """
 
   @require_version_21.10
   Scenario: Backup & Restore databases with Replicated engine

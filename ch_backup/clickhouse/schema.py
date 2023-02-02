@@ -3,7 +3,9 @@ Utilities for schema manipulation.
 """
 import re
 
-from ch_backup.clickhouse.models import Table
+from ch_backup import logging
+from ch_backup.clickhouse.models import Database, Table
+from ch_backup.util import escape
 
 
 def is_merge_tree(engine: str) -> bool:
@@ -56,25 +58,18 @@ def is_external_db_engine(db_engine: str) -> bool:
     return db_engine in ('MySQL', 'MaterializedMySQL', 'PostgreSQL', 'MaterializedPostgreSQL')
 
 
-def is_atomic_db_engine(db_engine: str) -> bool:
-    """
-    Return True if database engine is Atomic, or False otherwise.
-    """
-    return db_engine == 'Atomic'
-
-
-def is_replicated_db_engine(db_sql: str) -> bool:
-    """
-    Return True if database engine is Replicaed, or False otherwise.
-    """
-    return db_sql.find('Replicated') != -1
-
-
 def to_attach_query(create_query: str) -> str:
     """
     Convert CREATE table query to ATTACH one.
     """
     return re.sub('^CREATE', 'ATTACH', create_query)
+
+
+def to_create_query(create_query: str) -> str:
+    """
+    Convert CREATE table query to ATTACH one.
+    """
+    return re.sub('^ATTACH', 'CREATE', create_query)
 
 
 def rewrite_table_schema(table: Table,
@@ -85,6 +80,7 @@ def rewrite_table_schema(table: Table,
     """
     Rewrite table schema.
     """
+    logging.info(f'Going to rewrite table schema: {table.create_statement}')
     if force_non_replicated_engine:
         create_statement = table.create_statement
         match = re.search(r"(?P<replicated>Replicated)\S{0,20}MergeTree\((?P<params>('[^']+', '[^']+'(,\s*|))|)",
@@ -107,8 +103,14 @@ def rewrite_table_schema(table: Table,
     if add_uuid:
         _add_uuid(table, inner_uuid)
 
+    table.create_statement = re.sub(
+        f'(?P<create>CREATE|ATTACH)\\s+(?P<type>TABLE|(\\S+\\s+)?VIEW|DICTIONARY)\\s+(_|`?{escape(table.name)}`?)\\s+',
+        f'\\g<create> \\g<type> `{escape(table.database)}`.`{escape(table.name)}` ', table.create_statement)
+    logging.info(f'Resulting table schema: {table.create_statement}')
 
-def rewrite_database_schema(db_sql: str,
+
+def rewrite_database_schema(db: Database,
+                            db_sql: str,
                             force_non_replicated_engine: bool = False,
                             override_replica_name: str = None) -> str:
     """
@@ -122,10 +124,13 @@ def rewrite_database_schema(db_sql: str,
         if match:
             db_sql = db_sql.replace(match.group('replica'), f"'{override_replica_name}'")
 
-    return db_sql
+    return re.sub(r'CREATE\s+DATABASE\s+_', f'CREATE DATABASE `{escape(db.name)}`', db_sql)
 
 
 def _add_uuid(table: Table, inner_uuid: str = None) -> None:
+    if table.create_statement.find(f"UUID '{table.uuid}'") != -1:
+        return
+
     if is_view(table.engine):
         inner_uuid_clause = f"TO INNER UUID '{inner_uuid}'" if inner_uuid else ''
         table.create_statement = re.sub(

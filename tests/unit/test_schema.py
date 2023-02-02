@@ -195,6 +195,54 @@ def test_is_view(engine, result):
             'result_table_engine': 'Dictionary',
         },
     },
+    {
+        'id': 'MergeTree table, add name',
+        'args': {
+            'table_schema': 'CREATE TABLE _ (partition_id Int32, n Int32)'
+                            ' ENGINE = MergeTree PARTITION BY partition_id ORDER BY (partition_id, n)',
+            'table_engine': 'MergeTree',
+            'force_non_replicated_engine': True,
+            'add_uuid': False,
+            'result_table_schema': 'CREATE TABLE `test_db`.`test_table` (partition_id Int32, n Int32)'
+                                   ' ENGINE = MergeTree PARTITION BY partition_id ORDER BY (partition_id, n)',
+            'result_table_engine': 'MergeTree',
+        },
+    },
+    {
+        'id': 'MergeTree table, add database',
+        'args': {
+            'table_schema': 'CREATE TABLE test_table (partition_id Int32, n Int32)'
+                            ' ENGINE = MergeTree PARTITION BY partition_id ORDER BY (partition_id, n)',
+            'table_engine': 'MergeTree',
+            'force_non_replicated_engine': True,
+            'add_uuid': False,
+            'result_table_schema': 'CREATE TABLE `test_db`.`test_table` (partition_id Int32, n Int32)'
+                                   ' ENGINE = MergeTree PARTITION BY partition_id ORDER BY (partition_id, n)',
+            'result_table_engine': 'MergeTree',
+        },
+    },
+    {
+        'id': 'view, add name',
+        'args': {
+            'table_schema': 'CREATE VIEW _ AS SELECT n FROM test_db.table_01',
+            'table_engine': 'MergeTree',
+            'force_non_replicated_engine': True,
+            'add_uuid': False,
+            'result_table_schema': 'CREATE VIEW `test_db`.`test_table` AS SELECT n FROM test_db.table_01',
+            'result_table_engine': 'MergeTree',
+        },
+    },
+    {
+        'id': 'LIVE view, add name',
+        'args': {
+            'table_schema': 'CREATE LIVE VIEW _ AS SELECT n FROM test_db.table_01',
+            'table_engine': 'MergeTree',
+            'force_non_replicated_engine': True,
+            'add_uuid': False,
+            'result_table_schema': 'CREATE LIVE VIEW `test_db`.`test_table` AS SELECT n FROM test_db.table_01',
+            'result_table_engine': 'MergeTree',
+        },
+    },
 )
 def test_rewrite_table_schema(table_schema, table_engine, force_non_replicated_engine, add_uuid, result_table_schema,
                               result_table_engine):

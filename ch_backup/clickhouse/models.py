@@ -5,8 +5,6 @@ ClickHouse resource models.
 from types import SimpleNamespace
 from typing import List, Optional, Tuple
 
-from ch_backup.backup.metadata import PartMetadata
-
 
 class Disk(SimpleNamespace):
     """
@@ -49,7 +47,48 @@ class Table(SimpleNamespace):
         return matched_disks[0]
 
 
-class FreezedPart(SimpleNamespace):
+class Database(SimpleNamespace):
+    """
+    ClickHouse database.
+    """
+    def __init__(self, name: str, engine: str, metadata_path: str) -> None:
+        super().__init__()
+        self.name = name
+        self.engine = engine
+        self.metadata_path = metadata_path
+
+    def is_atomic(self) -> bool:
+        """
+        Return True if database engine is Atomic or derived.
+        """
+        return self.engine in ['Atomic', 'Replicated']
+
+    def is_replicated_db_engine(self) -> bool:
+        """
+        Return True if database engine is Replicated, or False otherwise.
+        """
+        return self.engine == 'Replicated'
+
+    def is_external_db_engine(self) -> bool:
+        """
+        Return True if the specified database engine is intended to use for integration with external systems.
+        """
+        return self.engine in ('MySQL', 'MaterializedMySQL', 'PostgreSQL', 'MaterializedPostgreSQL')
+
+    def has_embedded_metadata(self) -> bool:
+        """
+        Return True if db create statement shouldn't be uploaded and applied with restore.
+        """
+        return self.name in [
+            'default',
+            'system',
+            '_temporary_and_external_tables',
+            'information_schema',
+            'INFORMATION_SCHEMA',
+        ]
+
+
+class FrozenPart(SimpleNamespace):
     """
     Freezed data part.
     """
@@ -64,16 +103,3 @@ class FreezedPart(SimpleNamespace):
         self.checksum = checksum
         self.size = size
         self.files = files
-
-    def to_part_metadata(self) -> PartMetadata:
-        """
-        Converts to PartMetadata.
-        """
-        return PartMetadata(database=self.database,
-                            table=self.table,
-                            name=self.name,
-                            checksum=self.checksum,
-                            size=self.size,
-                            files=self.files,
-                            tarball=True,
-                            disk_name=self.disk_name)

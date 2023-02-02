@@ -1,7 +1,6 @@
 """
 Clickhouse backup logic
 """
-import socket
 from collections import defaultdict
 from copy import copy
 from datetime import timedelta
@@ -16,7 +15,7 @@ from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.control import ClickhouseCTL
-from ch_backup.clickhouse.schema import is_atomic_db_engine
+from ch_backup.clickhouse.models import Database
 from ch_backup.config import Config
 from ch_backup.exceptions import BackupNotFound, ClickhouseBackupError
 from ch_backup.logic.access import AccessBackup
@@ -71,7 +70,7 @@ class ClickhouseBackup:
 
     def backup(self,
                name: str,
-               databases: Sequence[str] = None,
+               db_names: Sequence[str] = None,
                tables: Sequence[str] = None,
                force: bool = False,
                labels: dict = None,
@@ -83,7 +82,7 @@ class ClickhouseBackup:
         If force is True, backup.min_interval config option is ignored.
         """
         # pylint: disable=too-many-locals,too-many-branches
-        assert not (databases and tables)
+        assert not (db_names and tables)
 
         backup_labels: dict = copy(self._context.config.get('labels'))  # type: ignore
         if labels:
@@ -95,10 +94,11 @@ class ClickhouseBackup:
                 db_name, table_name = table.split('.', 1)
                 db_tables[db_name].append(table_name)
 
-            databases = list(db_tables.keys())
+            db_names = list(db_tables.keys())
 
-        if databases is None:
-            databases = self._context.ch_ctl.get_databases(self._context.config['exclude_dbs'])
+        databases = self._context.ch_ctl.get_databases(self._context.config['exclude_dbs'])
+        if db_names is not None:
+            databases = [db for db in databases if db.name in db_names]
 
         backups_with_light_meta = self._context.backup_layout.get_backups(use_light_meta=True)
 
@@ -118,7 +118,8 @@ class ClickhouseBackup:
 
         self._context.backup_layout.upload_backup_metadata(self._context.backup_meta)
 
-        logging.debug('Starting backup "%s" for databases: %s', self._context.backup_meta.name, ', '.join(databases))
+        logging.debug('Starting backup "%s" for databases: %s', self._context.backup_meta.name, ', '.join(
+            map(lambda db: db.name, databases)))
 
         try:
             with self._context.locker():
@@ -204,7 +205,7 @@ class ClickhouseBackup:
 
         with self._context.locker():
             self._restore(
-                databases=databases,
+                db_names=databases,
                 schema_only=schema_only,
                 tables=tables,
                 exclude_tables=exclude_tables,
@@ -326,30 +327,6 @@ class ClickhouseBackup:
 
         return deleted_backup_names, None
 
-    def restore_schema(self,
-                       source_host: str,
-                       source_port: int,
-                       exclude_dbs: List[str],
-                       replica_name: Optional[str],
-                       keep_going: bool = False) -> None:
-        """
-        Restore ClickHouse schema from replica, without s3.
-        """
-        source_conf = self._context.ch_ctl_conf.copy()
-        source_conf.update(dict(host=source_host, port=source_port))
-        source_ch_ctl = ClickhouseCTL(source_conf, self._context.main_conf)
-        databases = source_ch_ctl.get_databases(exclude_dbs if exclude_dbs else self._context.config['exclude_dbs'])
-
-        if self._context.config['override_replica_name'] is None and replica_name is not None:
-            self._context.config['override_replica_name'] = replica_name
-        if replica_name is None:
-            replica_name = socket.getfqdn()
-        with self._context.locker():
-            self._udf_backup_manager.restore_schema(self._context, source_ch_ctl)
-            self._database_backup_manager.restore_schema(self._context, source_ch_ctl, databases, replica_name)
-            self._table_backup_manager.restore_schema(self._context, source_ch_ctl, databases, replica_name,
-                                                      keep_going)
-
     def restore_access_control(self, backup_name: str) -> None:
         """Restore ClickHouse access control metadata."""
         self._context.backup_meta = self._get_backup(backup_name)
@@ -404,7 +381,7 @@ class ClickhouseBackup:
         backup.remove_parts(table, parts)
 
     def _restore(self,
-                 databases: Sequence[str],
+                 db_names: Sequence[str],
                  schema_only: bool,
                  tables: List[TableMetadata],
                  exclude_tables: List[TableMetadata],
@@ -416,7 +393,12 @@ class ClickhouseBackup:
                  skip_cloud_storage: bool = False,
                  clean_zookeeper: bool = False,
                  keep_going: bool = False) -> None:
-        logging.debug('Restoring started')
+        databases: Dict[str, Database] = {}
+        # TODO refactor after a several weeks/months, when backups rotated
+        for db_name in db_names:
+            db = self._context.backup_meta.get_database(db_name)
+            databases[db_name] = db or Database(db_name, self._context.ch_ctl.get_database_engine(db_name),
+                                                self._context.ch_ctl.get_database_metadata_path(db_name))
 
         # Restore UDF
         self._udf_backup_manager.restore(self._context)
@@ -469,9 +451,3 @@ class ClickhouseBackup:
             return True
 
         return False
-
-    def _is_db_atomic(self, db_name: str) -> bool:
-        """
-        Return True if database engine is Atomic, or False otherwise.
-        """
-        return is_atomic_db_engine(self._context.ch_ctl.get_database_engine(db_name))

@@ -10,13 +10,13 @@ from urllib.parse import quote
 
 from ch_backup import logging
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
-from ch_backup.clickhouse.models import Disk, FreezedPart
+from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.config import Config
 from ch_backup.encryption import get_encryption
 from ch_backup.exceptions import StorageError
 from ch_backup.storage import StorageLoader
 from ch_backup.storage.engine.s3 import S3RetryingError
-from ch_backup.util import list_dir_files
+from ch_backup.util import escape_metadata_file_name, list_dir_files
 
 BACKUP_META_FNAME = 'backup_struct.json'
 BACKUP_LIGHT_META_FNAME = 'backup_light_struct.json'
@@ -30,6 +30,7 @@ class BackupLayout:
         self._storage_loader = StorageLoader(config)
         self._config = config['backup']
         self._access_control_path = config['clickhouse']['access_control_path']
+        self._metadata_path = config['clickhouse']['metadata_path']
         enc_conf = config['encryption']
         self._encryption_chunk_size = enc_conf['chunk_size']
         self._encryption_metadata_size = get_encryption(enc_conf['type'], enc_conf).metadata_size()
@@ -48,26 +49,28 @@ class BackupLayout:
         except Exception as e:
             raise StorageError('Failed to upload backup metadata') from e
 
-    def upload_database_create_statement(self, backup_name: str, db_name: str, metadata: str) -> None:
+    def upload_database_create_statement(self, backup_name: str, db: Database) -> None:
         """
-        Upload database create statement.
+        Upload database create statement from metadata file.
         """
-        remote_path = _db_metadata_path(self.get_backup_path(backup_name), db_name)
+        local_path = os.path.join(self._metadata_path, f'{escape_metadata_file_name(db.name)}.sql')
+        remote_path = _db_metadata_path(self.get_backup_path(backup_name), db.name)
         try:
-            logging.debug('Uploading metadata (create statement) for database "%s"', db_name)
-            self._storage_loader.upload_data(metadata, remote_path=remote_path, encryption=True)
+            logging.debug('Uploading metadata (create statement) for database "%s"', db.name)
+            self._storage_loader.upload_file(local_path, remote_path=remote_path, encryption=True)
         except Exception as e:
             msg = f'Failed to create async upload of {remote_path}'
             raise StorageError(msg) from e
 
-    def upload_table_create_statement(self, backup_name: str, db_name: str, table_name: str, metadata: str) -> None:
+    def upload_table_create_statement(self, backup_name: str, db: Database, table: Table) -> None:
         """
         Upload table create statement.
         """
-        remote_path = _table_metadata_path(self.get_backup_path(backup_name), db_name, table_name)
+        local_path = os.path.join(db.metadata_path, f'{escape_metadata_file_name(table.name)}.sql')
+        remote_path = _table_metadata_path(self.get_backup_path(backup_name), db.name, table.name)
         try:
-            logging.debug('Uploading metadata (create statement) for table "%s"."%s"', db_name, table_name)
-            self._storage_loader.upload_data(metadata, remote_path=remote_path, is_async=True, encryption=True)
+            logging.debug('Uploading metadata (create statement) for table "%s"."%s"', db.name, table.name)
+            self._storage_loader.upload_file(local_path, remote_path, is_async=True, encryption=True)
         except Exception as e:
             msg = f'Failed to create async upload of {remote_path}'
             raise StorageError(msg) from e
@@ -96,7 +99,7 @@ class BackupLayout:
             msg = f'Failed to upload udf metadata "{remote_path}"'
             raise StorageError(msg) from e
 
-    def upload_data_part(self, backup_name: str, fpart: FreezedPart) -> None:
+    def upload_data_part(self, backup_name: str, fpart: FrozenPart) -> None:
         """
         Upload part data.
         """
@@ -206,6 +209,14 @@ class BackupLayout:
         """
         remote_path = _db_metadata_path(backup_meta.path, db_name)
         return self._storage_loader.download_data(remote_path, encryption=True)
+
+    def write_database_metadata(self, db: Database, db_sql: str) -> None:
+        """
+        Write db sql to metadata file to prepare ATTACH query.
+        """
+        metadata_path = os.path.join(self._metadata_path, f'{escape_metadata_file_name(db.name)}.sql')
+        with open(metadata_path, 'w', encoding='utf-8') as f:
+            f.write(db_sql)
 
     def get_table_create_statement(self, backup_meta: BackupMetadata, db_name: str, table_name: str) -> str:
         """

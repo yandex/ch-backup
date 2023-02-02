@@ -51,7 +51,15 @@ Feature: User defined functions support
     """
     CREATE FUNCTION test_func AS (a, b) -> a + b;
     """
-    When we restore clickhouse schema from clickhouse01 to clickhouse02
+    When we create clickhouse01 clickhouse backup
+    """
+    backup_access_control: true
+    schema_only: true
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    schema_only: true
+    """
     When we execute query on clickhouse02
     """
     SELECT name FROM system.functions WHERE origin == 'SQLUserDefined' LIMIT 1;
@@ -71,7 +79,15 @@ Feature: User defined functions support
     """
     CREATE FUNCTION test_func AS (a, b) -> a - b;
     """
-    When we restore clickhouse schema from clickhouse01 to clickhouse02
+    When we create clickhouse01 clickhouse backup
+    """
+    backup_access_control: true
+    schema_only: true
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    schema_only: true
+    """
     When we execute query on clickhouse02
     """
     SELECT create_query FROM system.functions WHERE origin == 'SQLUserDefined' LIMIT 1;

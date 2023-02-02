@@ -334,7 +334,7 @@ def backup_command(ctx: Context, ch_backup: ClickhouseBackup, name: str, databas
         labels[key] = value
 
     (name, msg) = ch_backup.backup(name,
-                                   databases=databases,
+                                   db_names=databases,
                                    tables=tables,
                                    force=force,
                                    labels=labels,
@@ -478,25 +478,6 @@ def fix_s3_oplog_command(ctx: Context,
                          dryrun: bool = False) -> None:
     """Fix S3 operations log."""
     ch_backup.fix_s3_oplog(source_cluster_id, shard, cloud_storage_source_bucket, cloud_storage_source_path, dryrun)
-
-
-@command(name='restore-schema')
-@option('--source-host', type=str, help='Host used to connect to source ClickHouse server.')
-@option('--source-port', type=int, help='Port used to connect to source ClickHouse server.')
-@option('--exclude-dbs', type=List(regexp=r'\w+'), help='Comma-separated of databases to exclude.')
-@option('--replica-name', type=str, help='Name of restored replica for zk cleanup. Default - hostname')
-@option('--keep-going', is_flag=True, help='Forces to keep going if there are some errors on restoring schema.')
-def restore_schema_command(ctx: Context,
-                           _ch_backup: ClickhouseBackup,
-                           source_host: str,
-                           source_port: int,
-                           exclude_dbs: list,
-                           replica_name: str,
-                           keep_going: bool = False) -> None:
-    """Restore ClickHouse schema from replica, without s3."""
-    if not source_host:
-        ctx.fail('Clickhouse source host not specified.')
-    _ch_backup.restore_schema(source_host, source_port, exclude_dbs, replica_name, keep_going)
 
 
 @command(name='restore-access-control')
