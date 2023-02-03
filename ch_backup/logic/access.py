@@ -2,12 +2,14 @@
 Clickhouse backup logic for access entities.
 """
 import os
+import shutil
 from contextlib import contextmanager
 from typing import Any, Dict, Generator, Iterator, Sequence, Union
 
 from ch_backup import logging
 from ch_backup.backup_context import BackupContext
 from ch_backup.logic.backup_manager import BackupManager
+from ch_backup.util import chown_dir_contents
 from ch_backup.zookeeper.zookeeper import ZookeeperCTL
 
 CH_MARK_FILE = 'need_rebuild_lists.mark'
@@ -64,24 +66,25 @@ class AccessBackup(BackupManager):
         """
         Backup access entities from replicated storage (ZK/CK).
         """
+        _ensure_access_control_path(context)
         logging.debug(f'Backupping {len(acl_list)} access entities from replicated storage')
         with _zk_ctl_client(context) as zk_ctl:
             for uuid in acl_list:
                 uuid_zk_path = _get_access_zk_path(context, f'/uuid/{uuid}')
                 data, _ = zk_ctl.zk_client.get(uuid_zk_path)
                 _file_create(context, f'{uuid}.sql', data.decode())
-        context.ch_ctl.chown_dir(context.ch_ctl_conf['access_control_path'])
+        _chown_access_control_dir(context)
 
     def _restore_local(self, acl_list: Sequence[str], context: BackupContext, mark_to_rebuild: bool = True) -> None:
         """
         Restore access entities to local storage.
         """
+        _ensure_access_control_path(context)
         logging.debug(f'Restoring {len(acl_list)} access entities to local storage')
         for name in _get_access_control_files(acl_list):
             context.backup_layout.download_access_control_file(context.backup_meta.name, name)
         if mark_to_rebuild:
             self._mark_to_rebuild(context)
-            context.ch_ctl.chown_dir(context.ch_ctl_conf['access_control_path'])
 
     def _restore_replicated(self, acl_list: Sequence[str], acl_meta: Dict[str, Dict[str, Any]],
                             context: BackupContext) -> None:
@@ -116,6 +119,7 @@ class AccessBackup(BackupManager):
         mark_file = _get_access_file_path(context, CH_MARK_FILE)
         with open(mark_file, 'a', encoding='utf-8'):
             pass
+        _chown_path(context, mark_file)
 
     def _has_replicated_access(self, context: BackupContext) -> bool:
         return context.ch_config.config.get('user_directories', {}).get('replicated') is not None
@@ -167,3 +171,19 @@ def _file_create(context: BackupContext, file_name: str, file_content: str = '')
         file.write(file_content)
 
     return file_path
+
+
+def _ensure_access_control_path(context: BackupContext) -> None:
+    acl_path = context.ch_ctl_conf['access_control_path']
+    os.makedirs(acl_path, exist_ok=True)
+    _chown_path(context, acl_path)
+
+
+def _chown_access_control_dir(context: BackupContext) -> None:
+    ch_config = context.ch_ctl_conf
+    chown_dir_contents(ch_config['user'], ch_config['group'], ch_config['access_control_path'])
+
+
+def _chown_path(context: BackupContext, path: str) -> None:
+    ch_config = context.ch_ctl_conf
+    shutil.chown(path, ch_config['user'], ch_config['group'])

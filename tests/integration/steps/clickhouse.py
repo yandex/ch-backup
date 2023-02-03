@@ -166,3 +166,4 @@ def step_dirty_enable_replicated_access(context, node):
     override_config = '/config/user_directories_replicated.xml'
     assert container.exec_run(f'ln -s {override_config} /etc/clickhouse-server/conf.d/').exit_code == 0
     assert container.exec_run('supervisorctl restart clickhouse').exit_code == 0
+    assert container.exec_run('rm -rf /var/lib/clickhouse/access').exit_code == 0
