@@ -16,6 +16,7 @@ from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.clickhouse.models import Disk, FreezedPart, Table
 from ch_backup.clickhouse.schema import (is_distributed, is_external_engine, is_replicated, is_view, to_attach_query)
+from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.util import (chown_dir_contents, escape, list_dir_files, retry, strip_query)
 
 ACCESS_ENTITY_CHAR = {'users': 'U', 'roles': 'R', 'quotas': 'Q', 'row_policies': 'P', 'settings_profiles': 'S'}
@@ -444,10 +445,20 @@ class ClickhouseCTL:
 
     @retry(OSError)
     def _remove_shadow_data(self, path: str) -> None:
-        assert path.find('/shadow') != -1, path
+        if path.find('/shadow') == -1:
+            raise ClickhouseBackupError(f'Path \'{path}\' is incompatible for shadow data')
 
         if os.path.exists(path):
+            logging.debug(f'Path {path} exists. Trying to remove it.')
+
             shutil.rmtree(path)
+
+            msg = 'shutil.rmtree has done working'
+            if os.path.exists(path):
+                msg += ', but path still exists'
+            logging.debug(msg)
+        else:
+            logging.debug(f'Path {path} does not exist. There is nothing to remove.')
 
     def ch_version_ge(self, comparing_version: str) -> bool:
         """

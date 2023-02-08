@@ -8,7 +8,14 @@ from typing import Any
 
 import yaml
 
+from humanfriendly import parse_size, parse_timespan
+
 from ch_backup import logging
+
+
+def _as_seconds(t: str) -> int:
+    return int(parse_timespan(t))
+
 
 DEFAULT_CONFIG = {
     'clickhouse': {
@@ -21,11 +28,11 @@ DEFAULT_CONFIG = {
         'protocol': 'http',
         'port': None,
         'ca_path': None,
-        'connect_timeout': 10,
-        'timeout': 90,
-        'freeze_timeout': 30 * 60,
-        'system_unfreeze_timeout': 1 * 60 * 60,
-        'restart_disk_timeout': 8 * 60 * 60,
+        'connect_timeout': _as_seconds('10 sec'),
+        'timeout': _as_seconds('1.5 min'),
+        'freeze_timeout': _as_seconds('45 min'),
+        'system_unfreeze_timeout': _as_seconds('1 hour'),
+        'restart_disk_timeout': _as_seconds('8 hours'),
         'user': 'clickhouse',
         'group': 'clickhouse',
         'clickhouse_user': None,
@@ -78,9 +85,9 @@ DEFAULT_CONFIG = {
         },
         'disable_ssl_warnings': True,
         # Chunk size used when uploading / downloading data, in bytes.
-        'chunk_size': 8 * 1024 * 1024,
+        'chunk_size': parse_size('8 MiB'),
         # Buffer size, in bytes.
-        'buffer_size': 128 * 1024 * 1024,
+        'buffer_size': parse_size('128 MiB'),
         # The maximum number of chunks on which uploading or downloading data
         # can be split. If data_size > chunk_size * max_chunk_count,
         # chunk_size will be multiplied on a required number of times
@@ -96,18 +103,18 @@ DEFAULT_CONFIG = {
     'encryption': {
         'type': 'nacl',
         # Chunk size used when encrypting / decrypting data, in bytes.
-        'chunk_size': 8 * 1024 * 1024,
+        'chunk_size': parse_size('8 MiB'),
         # Buffer size, in bytes.
-        'buffer_size': 128 * 1024 * 1024,
+        'buffer_size': parse_size('128 MiB'),
         # Encryption key.
         'key': None,
     },
     'filesystem': {
         'type': 'unlimited',
         # Chunk size used when reading from / writing to filesystem, in bytes.
-        'chunk_size': 1 * 1024 * 1024,
+        'chunk_size': parse_size('1 MiB'),
         # Buffer size, in bytes.
-        'buffer_size': 128 * 1024 * 1024,
+        'buffer_size': parse_size('128 MiB'),
     },
     'multiprocessing': {
         # The number of processes allocating for data processing. If set to 0, all processing will be performed
