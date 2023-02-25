@@ -174,15 +174,29 @@ class ClickhouseCTL:
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
         self._disks = self.get_disks()
         settings = {
+            'allow_experimental_database_materialized_postgresql': 1,
+            'allow_experimental_database_replicated': 1,
+            'allow_experimental_funnel_functions': 1,
             'allow_experimental_live_view': 1,
+            'allow_suspicious_codecs': 1,
+            'allow_suspicious_low_cardinality_types': 1,
         }
-        if self.ch_version_ge('21.3'):
+        if self.ch_version_ge('21.9'):
             settings.update({
-                'allow_experimental_database_replicated': 1,
+                'allow_experimental_database_materialized_mysql': 1,
+                'allow_experimental_nlp_functions': 1,
+            })
+        if self.ch_version_ge('21.12'):
+            settings.update({
+                'allow_experimental_window_view': 1,
             })
         if self.ch_version_ge('22.3'):
             settings.update({
                 'allow_experimental_object_type': 1,
+            })
+        if self.ch_version_ge('22.6'):
+            settings.update({
+                'allow_experimental_hash_functions': 1,
             })
         if self.ch_version_ge('22.7'):
             settings.update({
@@ -192,6 +206,15 @@ class ClickhouseCTL:
         if self.ch_version_ge('22.8.5'):
             settings.update({
                 'kafka_disable_num_consumers_limit': 1,
+            })
+        if self.ch_version_ge('22.9'):
+            settings.update({
+                'allow_experimental_annoy_index': 1,
+                'allow_suspicious_fixed_string_types': 1,
+            })
+        if self.ch_version_ge('23.1'):
+            settings.update({
+                'allow_experimental_inverted_index': 1,
             })
         self._ch_client.settings.update(settings)
 
