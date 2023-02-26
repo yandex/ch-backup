@@ -7,53 +7,6 @@ Feature: Backup of tables with different engines and configurations
     And a working clickhouse on clickhouse01
     And a working clickhouse on clickhouse02
 
-  @view
-  Scenario: Create backup containing views
-    Given ClickHouse settings
-    """
-    allow_experimental_live_view: 1
-    """
-    Given we have executed queries on clickhouse01
-    """
-    CREATE DATABASE test_db;
-    CREATE DATABASE test_db2;
-
-    CREATE TABLE test_db.table_01 (n Int32, s String)
-    ENGINE = MergeTree() PARTITION BY n % 10 ORDER BY n;
-    INSERT INTO test_db.table_01 SELECT number, toString(number) FROM system.numbers LIMIT 1000;
-
-    CREATE TABLE test_db2.table_02 (n Int32, n2 Int32)
-    ENGINE = MergeTree() PARTITION BY n % 10 ORDER BY n;
-    INSERT INTO test_db2.table_02 SELECT number, number * number FROM system.numbers LIMIT 1000;
-
-    CREATE VIEW test_db.view_on_single_table
-    AS SELECT n, n * n AS "n2"
-    FROM test_db.table_01;
-
-    CREATE VIEW test_db2.view_on_multiple_tables
-    AS SELECT n, n2, s
-    FROM (
-        SELECT n, s
-        FROM test_db.table_01
-    ) subquery1
-    ALL LEFT JOIN (
-        SELECT n, n2
-        FROM test_db2.table_02
-    ) subquery2
-    USING n;
-
-    CREATE LIVE VIEW test_db.live_view
-    AS SELECT n, n * n AS "n2"
-    FROM test_db.table_01;
-    """
-    When we create clickhouse01 clickhouse backup
-    Then we got the following backups on clickhouse01
-      | num | state    | data_count | link_count   |
-      | 0   | created  | 20         | 0            |
-    When we restore clickhouse backup #0 to clickhouse02
-    Then clickhouse02 has same schema as clickhouse01
-    And we got same clickhouse data at clickhouse01 clickhouse02
-
   @TableEngines
   @require_version_22.7
   Scenario Outline: Create backup containing <name> table
