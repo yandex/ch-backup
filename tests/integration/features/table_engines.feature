@@ -274,27 +274,37 @@ Feature: Backup of tables with different engines and configurations
     And we got same clickhouse data at clickhouse01 clickhouse02
 
   @view
-  Scenario: Create backup containing materialized view with implicit backend table and broken view dependencies
+  Scenario: Create backup containing materialized views and broken view dependencies
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE test_db;
 
+    -- Source table that will be selected by materialized views
     CREATE TABLE test_db.table_01 (n Int32, s String)
-    ENGINE = MergeTree() PARTITION BY n % 10 ORDER BY n;
+    ENGINE MergeTree PARTITION BY n % 10 ORDER BY n;
 
+    -- Materialized view with implicit backend table
     CREATE MATERIALIZED VIEW test_db.mview_01
-    ENGINE = MergeTree() PARTITION BY n % 10 ORDER BY n
-    AS SELECT n, n * n AS "n2"
-    FROM test_db.table_01;
+    ENGINE MergeTree PARTITION BY n % 10 ORDER BY n
+    AS SELECT n, n * n AS "n2" FROM test_db.table_01;
 
+    -- Materialized view with explicit backend table
+    CREATE TABLE test_db.mview_02_backend (n Int32, n2 Int64)
+    ENGINE MergeTree PARTITION BY n % 10 ORDER BY n;
+
+    CREATE MATERIALIZED VIEW test_db.mview_02 TO test_db.mview_02_backend
+    AS SELECT n, n * n AS "n2" FROM test_db.table_01;
+
+    -- Insert test data to the source table
     INSERT INTO test_db.table_01 SELECT number, toString(number) FROM system.numbers LIMIT 1000;
 
+    -- Drop source table and break dependencies across tables and views
     DROP TABLE test_db.table_01;
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   |
-      | 0   | created  | 10          | 0            |
+      | 0   | created  | 20         | 0            |
     When we restore clickhouse backup #0 to clickhouse02
     Then clickhouse02 has same schema as clickhouse01
     And we got same clickhouse data at clickhouse01 clickhouse02
