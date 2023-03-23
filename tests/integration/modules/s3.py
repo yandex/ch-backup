@@ -20,7 +20,8 @@ class S3Client:
         config = context.conf['s3']
         boto_config = config['boto_config']
         self._s3_session = boto3.session.Session(aws_access_key_id=config['access_key_id'],
-                                                 aws_secret_access_key=config['access_secret_key'])
+                                                 aws_secret_access_key=config['access_secret_key'],
+                                                 region_name=boto_config['region_name'])
 
         host, port = docker.get_exposed_port(docker.get_container(context, context.conf['s3']['container']),
                                              context.conf['s3']['port'])

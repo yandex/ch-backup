@@ -35,11 +35,10 @@ class S3ClientFactory:
     """
     def __init__(self, config: dict):
         credentials_config = config['credentials']
-        self._s3_session = boto3.session.Session(
-            aws_access_key_id=credentials_config['access_key_id'],
-            aws_secret_access_key=credentials_config['secret_access_key'],
-        )
         self._config = config
+        self._s3_session = boto3.session.Session(aws_access_key_id=credentials_config['access_key_id'],
+                                                 aws_secret_access_key=credentials_config['secret_access_key'],
+                                                 region_name=self._config['boto_config']['region_name'])
 
     @retry((S3BalancerUnknownHost, requests.RequestException))
     def _resolve_proxies(self, resolver_path: str, proxy_port: int) -> Union[dict, None]:
