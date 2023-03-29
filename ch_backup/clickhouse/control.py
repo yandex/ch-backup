@@ -69,6 +69,10 @@ DROP_TABLE_IF_EXISTS_SQL = strip_query("""
     DROP TABLE IF EXISTS `{db_name}`.`{table_name}` NO DELAY
 """)
 
+DROP_DICTIONARY_IF_EXISTS_SQL = strip_query("""
+    DROP DICTIONARY IF EXISTS `{db_name}`.`{table_name}` NO DELAY
+""")
+
 DROP_DATABASE_IF_EXISTS_SQL = strip_query("""
     DROP DATABASE IF EXISTS `{db_name}`
 """)
@@ -384,6 +388,13 @@ class ClickhouseCTL:
         """
         self._ch_client.query(
             DROP_TABLE_IF_EXISTS_SQL.format(db_name=escape(table.database), table_name=escape(table.name)))
+
+    def drop_dictionary_if_exists(self, table: Table) -> None:
+        """
+        Drop dictionary. If the specified dictionary doesn't exist, do nothing.
+        """
+        self._ch_client.query(
+            DROP_DICTIONARY_IF_EXISTS_SQL.format(db_name=escape(table.database), table_name=escape(table.name)))
 
     def drop_database_if_exists(self, db_name: str) -> None:
         """

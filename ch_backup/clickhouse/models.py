@@ -38,6 +38,12 @@ class Table(SimpleNamespace):
     def __hash__(self):
         return hash((self.database, self.name))
 
+    def is_dictionary(self) -> bool:
+        """
+        Return True if table is dictionary.
+        """
+        return self.engine == 'Dictionary'
+
     @staticmethod
     def _map_path_to_disk(disks: List[Disk], data_path: str) -> Disk:
         matched_disks = list(filter(lambda disk: data_path.startswith(disk.path), disks))

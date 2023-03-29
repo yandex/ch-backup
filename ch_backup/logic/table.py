@@ -228,7 +228,10 @@ class TableBackup(BackupManager):
                 logging.warning(
                     'Table "%s"."%s" will be recreated as its schema mismatches the schema from backup: "%s" != "%s"',
                     table.database, table.name, existing_table.create_statement, table.create_statement)
-                context.ch_ctl.drop_table_if_exists(table)
+                if table.is_dictionary():
+                    context.ch_ctl.drop_dictionary_if_exists(table)
+                else:
+                    context.ch_ctl.drop_table_if_exists(table)
 
             result.append(table)
 
@@ -432,5 +435,8 @@ class TableBackup(BackupManager):
                 context.ch_ctl.restore_replica(table)
         except Exception as e:
             logging.debug(f'Both table `{db.name}`.`{table.name}` restore methods failed. Removing it. Exception: {e}')
-            context.ch_ctl.drop_table_if_exists(table)
+            if table.is_dictionary():
+                context.ch_ctl.drop_dictionary_if_exists(table)
+            else:
+                context.ch_ctl.drop_table_if_exists(table)
             raise ClickhouseBackupError(f'Failed to restore table: {table.database}.{table.name}')
