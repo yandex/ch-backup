@@ -7,7 +7,6 @@ import socket
 from typing import Any
 
 import yaml
-
 from humanfriendly import parse_size, parse_timespan
 
 from ch_backup import logging
@@ -212,6 +211,13 @@ class Config:
                 self._recursively_update(base_dict[key], update_dict[key])
             else:
                 base_dict[key] = value
+
+    def merge(self, patch_dict):
+        """
+        Merge config with the patch.
+        """
+        self._recursively_update(self._conf, update_dict=patch_dict)
+        return self._conf
 
     def _read_config(self, file_name):
         with open(file_name, 'r', encoding='utf-8') as fileobj:

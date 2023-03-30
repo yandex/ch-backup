@@ -36,19 +36,41 @@ class ClickhouseBackup:
     # pylint: disable=too-many-instance-attributes
 
     def __init__(self, config: Config) -> None:
-        self._context = BackupContext(config)
-        self._context.ch_ctl_conf = config['clickhouse']
-        self._context.main_conf = config['main']
-        self._context.ch_ctl = ClickhouseCTL(self._context.ch_ctl_conf, self._context.main_conf)
-        self._context.backup_layout = BackupLayout(config)
-        self._context.config = config['backup']
-        self._context.zk_config = config.get('zookeeper')
-        self._context.restore_context = RestoreContext(self._context.config)
-        self._context.ch_config = ClickhouseConfig(config)
+        self._context: BackupContext = self._load_context(config)
         self._access_backup_manager = AccessBackup()
         self._database_backup_manager = DatabaseBackup()
         self._table_backup_manager = TableBackup()
         self._udf_backup_manager = UDFBackup()
+
+    @staticmethod
+    def _load_context(config: Config) -> BackupContext:
+        ctx = BackupContext(config)
+
+        ctx.ch_ctl_conf = config['clickhouse']
+        ctx.main_conf = config['main']
+        ctx.ch_ctl = ClickhouseCTL(ctx.ch_ctl_conf, ctx.main_conf)
+        ctx.backup_layout = BackupLayout(config)
+        ctx.config = config['backup']
+        ctx.zk_config = config.get('zookeeper')
+        ctx.restore_context = RestoreContext(ctx.config)
+        ctx.ch_config = ClickhouseConfig(config)
+
+        return ctx
+
+    @property
+    def config(self) -> Config:
+        """
+        Returns current config.
+        """
+        return self._context.config_root
+
+    def reload_config(self, config: Config) -> None:
+        """
+        Completely reloads the config.
+        """
+        logging.info('Reloading config.')
+        self._context = self._load_context(config)
+        logging.info('Config reloaded.')
 
     def get(self, backup_name: str) -> BackupMetadata:
         """

@@ -16,12 +16,13 @@ from click import Choice, ParamType, Path, argument, pass_context, style
 from click.types import StringParamType
 from cloup import (Color, Context, HelpFormatter, HelpTheme, Style, group, option, option_group)
 from cloup.constraints import constraint, mutually_exclusive
+from humanfriendly import InvalidTimespan, format_timespan, parse_timespan
 from tabulate import tabulate
 
 from . import logging
 from .backup.metadata import BackupState, TableMetadata
 from .ch_backup import ClickhouseBackup
-from .config import Config
+from .config import DEFAULT_CONFIG, Config
 from .util import drop_privileges, setup_environment, utcnow
 from .version import get_version
 
@@ -251,6 +252,22 @@ class String(StringParamType):
         return super().convert(value, param, ctx)
 
 
+class TimeSpan(ParamType):
+    """
+    TimeSpan type for command-line parameters.
+    """
+    name = 'TimeSpan'
+
+    def convert(self, value, param, ctx):
+        """
+        Convert timespan string into seconds.
+        """
+        try:
+            return int(parse_timespan(value))
+        except InvalidTimespan as e:
+            self.fail(f'"{value}" is not a valid timespan: {str(e)}', param, ctx)
+
+
 @command(name='list')
 @option('-a',
         '--all',
@@ -304,27 +321,54 @@ def show_command(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> None:
 
 
 @command(name='backup')
-@option('--name',
-        type=String(regexp=r'(?a)[\w-]+', macros={
-            '{timestamp}': TIMESTAMP,
-            '{uuid}': UUID,
-        }),
-        help='Name of creating backup. The value can contain macros:'
-        f' {{timestamp}} - current time in UTC ({TIMESTAMP}),'
-        f' {{uuid}} - randomly generated UUID value ({UUID}).',
-        default='{timestamp}')
-@option('-d', '--databases', type=List(regexp=r'\w+'), help='Comma-separated list of databases to backup.')
-@option('-t', '--tables', type=List(regexp=r'[\w.]+'), help='Comma-separated list of tables to backup.')
-@option('-f', '--force', is_flag=True, help='Enables force mode (backup.min_interval is ignored).')
-@option('-l', '--label', multiple=True, help='Custom labels as key-value pairs that represents user metadata.')
-@option('--schema-only', is_flag=True, help='Backup only databases schemas')
-@option('--backup-access-control', is_flag=True, help='Backup users, roles, etc. created by SQL.')
+@option_group(
+    'General',
+    option('--name',
+           type=String(regexp=r'(?a)[\w-]+', macros={
+               '{timestamp}': TIMESTAMP,
+               '{uuid}': UUID,
+           }),
+           help='Name of creating backup. The value can contain macros:'
+           f' {{timestamp}} - current time in UTC ({TIMESTAMP}),'
+           f' {{uuid}} - randomly generated UUID value ({UUID}).',
+           default='{timestamp}'),
+    option('-l', '--label', multiple=True, help='Custom labels as key-value pairs that represents user metadata.'),
+    option('--backup-access-control', is_flag=True, help='Backup users, roles, etc. created by SQL.'),
+)
+@option_group(
+    'Partial backup',
+    mutually_exclusive(
+        option('-d', '--databases', type=List(regexp=r'\w+'), help='Comma-separated list of databases to backup.'),
+        option('-t', '--tables', type=List(regexp=r'[\w.]+'), help='Comma-separated list of tables to backup.'),
+    ),
+    option('--schema-only', is_flag=True, help='Backup only databases schemas'),
+)
+@option_group(
+    'Timeout configuration',
+    # pylint: disable=consider-using-f-string
+    'Examples for {timespan_slug}: {examples}'.format(
+        timespan_slug=style(TimeSpan.name.upper(), bold=True),
+        examples=style('"10 seconds"', fg=Color.cyan) + ', ' + style('"1.5 hours"', fg=Color.cyan),
+    ),
+    option(
+        '--freeze-timeout',
+        type=TimeSpan(),
+        help='Timeout for `ALTER FREEZE` command. Default is {d}'.format(d=style('"{}"'.format(
+            format_timespan(typing.cast(typing.Dict[str, dict], DEFAULT_CONFIG["clickhouse"])["freeze_timeout"])),
+                                                                                 fg=Color.cyan)),
+    ),
+)
+@option_group(
+    'Util',
+    option('-f', '--force', is_flag=True, help='Enables force mode (backup.min_interval is ignored).'),
+)
 def backup_command(ctx: Context, ch_backup: ClickhouseBackup, name: str, databases: list, tables: list, force: bool,
-                   label: list, schema_only: bool, backup_access_control: bool) -> None:
+                   label: list, schema_only: bool, backup_access_control: bool, freeze_timeout: int) -> None:
     """Perform backup."""
     # pylint: disable=too-many-arguments
-    if databases and tables:
-        ctx.fail('Options --databases and --tables are mutually exclusive.')
+    if freeze_timeout:
+        logging.info(f'ALTER FREEZE timeout force set to {freeze_timeout} sec.')
+        ch_backup.reload_config(ch_backup.config.merge({'clickhouse': {'freeze_timeout': freeze_timeout}}))
 
     labels = {}
     for key_value_str in label:
