@@ -57,7 +57,7 @@ class Database(SimpleNamespace):
     """
     ClickHouse database.
     """
-    def __init__(self, name: str, engine: str, metadata_path: str) -> None:
+    def __init__(self, name: str, engine: Optional[str], metadata_path: Optional[str]) -> None:
         super().__init__()
         self.name = name
         self.engine = engine
@@ -80,6 +80,12 @@ class Database(SimpleNamespace):
         Return True if the specified database engine is intended to use for integration with external systems.
         """
         return self.engine in ('MySQL', 'MaterializedMySQL', 'PostgreSQL', 'MaterializedPostgreSQL')
+
+    def is_stub(self) -> bool:
+        """
+        Return True if self is stub for incompatibility changes (no engine).
+        """
+        return not self.engine
 
     def has_embedded_metadata(self) -> bool:
         """

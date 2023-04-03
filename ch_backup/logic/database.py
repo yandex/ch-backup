@@ -42,7 +42,11 @@ class DatabaseBackup(BackupManager):
                 db_sql = context.backup_layout.get_database_create_statement(context.backup_meta, db.name)
                 if db.is_atomic():
                     logging.debug(f'Going to restore database `{db.name}` using CREATE')
-                    db_sql = to_create_query(db_sql)
+
+                    # Added for incompatibility reasons
+                    if not db.is_stub():
+                        db_sql = to_create_query(db_sql)
+
                     db_sql = rewrite_database_schema(db, db_sql, context.config['force_non_replicated'],
                                                      context.config['override_replica_name'])
                     logging.debug(f'Creating database `{db.name}`')

@@ -418,9 +418,7 @@ class ClickhouseBackup:
         databases: Dict[str, Database] = {}
         # TODO refactor after a several weeks/months, when backups rotated
         for db_name in db_names:
-            db = self._context.backup_meta.get_database(db_name)
-            databases[db_name] = db or Database(db_name, self._context.ch_ctl.get_database_engine(db_name),
-                                                self._context.ch_ctl.get_database_metadata_path(db_name))
+            databases[db_name] = self._context.backup_meta.get_database(db_name)
 
         # Restore UDF
         self._udf_backup_manager.restore(self._context)

@@ -412,14 +412,12 @@ class BackupMetadata:
         """
         return tuple(self._databases.keys())
 
-    def get_database(self, db_name: str) -> Optional[Database]:
+    def get_database(self, db_name: str) -> Database:
         """
         Get database.
         """
         db_meta = self._databases[db_name]
-        if 'engine' not in db_meta:
-            return None
-        return Database(db_name, db_meta['engine'], db_meta['metadata_path'])
+        return Database(db_name, db_meta.get('engine'), db_meta.get('metadata_path'))
 
     def add_database(self, db: Database) -> None:
         """

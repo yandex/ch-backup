@@ -124,6 +124,10 @@ def rewrite_database_schema(db: Database,
         if match:
             db_sql = db_sql.replace(match.group('replica'), f"'{override_replica_name}'")
 
+    # Added for incompatibility reasons
+    if db.is_stub():
+        return db_sql
+
     return re.sub(r'CREATE\s+DATABASE\s+_', f'CREATE DATABASE `{escape(db.name)}`', db_sql)
 
 
