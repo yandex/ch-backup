@@ -40,7 +40,7 @@ class DatabaseBackup(BackupManager):
         for db in databases_to_restore.values():
             if not db.has_embedded_metadata() and db.name not in present_databases:
                 db_sql = context.backup_layout.get_database_create_statement(context.backup_meta, db.name)
-                if db.is_atomic():
+                if db.is_stub() or db.is_atomic():
                     logging.debug(f'Going to restore database `{db.name}` using CREATE')
 
                     # Added for incompatibility reasons
