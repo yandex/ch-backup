@@ -39,6 +39,12 @@ def step_update_backup_metadata(context, node, backup_id):
     ch_backup.update_backup_metadata(backup_id, metadata)
 
 
+@when('metadata paths of {node:w} backup #{backup_id:d} was deleted')
+def step_backup_metadata_delete(context, node, backup_id):
+    paths = get_step_data(context)
+    BackupManager(context, node).delete_backup_metadata_paths(backup_id, paths)
+
+
 @given('file "{path}" was deleted from {node:w} backup #{backup_id:d}')
 @given('file "{path}" was deleted from {node:w} backup "{backup_id:d}"')
 def step_delete_backup_file(context, path, node, backup_id):

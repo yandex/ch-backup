@@ -4,6 +4,7 @@ features/access_control_backup.feature
 features/access_control_replicated_backup.feature
 features/table_engines.feature
 features/backup_restore.feature
+features/backward_compatibility.feature
 features/backup_delete.feature
 features/cloud_storage.feature
 features/backup_purge.feature

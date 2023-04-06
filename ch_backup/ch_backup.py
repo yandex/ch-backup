@@ -416,10 +416,13 @@ class ClickhouseBackup:
                  clean_zookeeper: bool = False,
                  keep_going: bool = False) -> None:
         databases: Dict[str, Database] = {}
-        # TODO refactor after a several weeks/months, when backups rotated
         for db_name in db_names:
-            databases[db_name] = self._context.backup_meta.get_database(db_name)
-
+            db = self._context.backup_meta.get_database(db_name)
+            # TODO For backward compatibility, remove when all backups rotated
+            if db.engine is None:
+                db_sql = self._context.backup_layout.get_database_create_statement(self._context.backup_meta, db.name)
+                db.set_engine_from_sql(db_sql)
+            databases[db_name] = db
         # Restore UDF
         self._udf_backup_manager.restore(self._context)
 

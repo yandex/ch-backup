@@ -33,6 +33,13 @@ class Backup:
         return self._metadata.get('meta', {})
 
     @property
+    def metadata(self) -> dict:
+        """
+        Full backup struct.
+        """
+        return self._metadata
+
+    @property
     def link_count(self) -> int:
         """
         The number of links (deduplicated parts).
@@ -280,6 +287,22 @@ class BackupManager:
         """
         backup = self.get_backup(backup_id)
         backup.update(metadata, merge)
+        self._s3_client.upload_data(backup.dump_json(light=False).encode('utf-8'), backup.metadata_path)
+        self._s3_client.upload_data(backup.dump_json(light=True).encode('utf-8'), backup.light_metadata_path)
+
+    def delete_backup_metadata_paths(self, backup_id: BackupId, paths: Sequence[str]) -> None:
+        """
+        Delete paths from backup metadata.
+        """
+        def delete_path(obj: dict, path: Sequence[str]) -> None:
+            if len(path) == 1:
+                del obj[path[0]]
+                return
+            delete_path(obj[path[0]], path[1:])
+
+        backup = self.get_backup(backup_id)
+        for path in paths:
+            delete_path(backup.metadata, path.split('.'))
         self._s3_client.upload_data(backup.dump_json(light=False).encode('utf-8'), backup.metadata_path)
         self._s3_client.upload_data(backup.dump_json(light=True).encode('utf-8'), backup.light_metadata_path)
 

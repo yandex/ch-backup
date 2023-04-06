@@ -2,8 +2,11 @@
 ClickHouse resource models.
 """
 
+import re
 from types import SimpleNamespace
 from typing import List, Optional, Tuple
+
+import ch_backup.logging
 
 
 class Disk(SimpleNamespace):
@@ -81,12 +84,6 @@ class Database(SimpleNamespace):
         """
         return self.engine in ('MySQL', 'MaterializedMySQL', 'PostgreSQL', 'MaterializedPostgreSQL')
 
-    def is_stub(self) -> bool:
-        """
-        Return True if self is stub for incompatibility changes (no engine).
-        """
-        return not self.engine
-
     def has_embedded_metadata(self) -> bool:
         """
         Return True if db create statement shouldn't be uploaded and applied with restore.
@@ -98,6 +95,16 @@ class Database(SimpleNamespace):
             'information_schema',
             'INFORMATION_SCHEMA',
         ]
+
+    def set_engine_from_sql(self, db_sql: str) -> None:
+        """
+        Parse database engine from create query and set it.
+        """
+        match = re.search(r'(?i)Engine\s*=\s*(?P<engine>\S+)', db_sql)
+        if match is None:
+            ch_backup.logging.warning(f'Failed to parse engine for database "{self.name}", from query: "{db_sql}"')
+        else:
+            self.engine = match.group('engine')
 
 
 class FrozenPart(SimpleNamespace):
