@@ -26,7 +26,7 @@ class Table(SimpleNamespace):
     ClickHouse table.
     """
     def __init__(self, database: str, name: str, engine: str, disks: List[Disk], data_paths: List[str],
-                 create_statement: str, uuid: Optional[str]) -> None:
+                 metadata_path: str, create_statement: str, uuid: Optional[str]) -> None:
         super().__init__()
         self.database = database
         self.name = name
@@ -34,6 +34,7 @@ class Table(SimpleNamespace):
         self.create_statement = create_statement
         self.uuid = uuid
         self.paths_with_disks = self._map_paths_to_disks(disks, data_paths)
+        self.metadata_path = metadata_path
 
     def _map_paths_to_disks(self, disks: List[Disk], data_paths: List[str]) -> List[Tuple[str, Disk]]:
         return list(map(lambda data_path: (data_path, self._map_path_to_disk(disks, data_path)), data_paths))

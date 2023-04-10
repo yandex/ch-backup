@@ -232,11 +232,11 @@ def escape_metadata_file_name(name: str) -> str:
     Escape object name to use for metadata file.
     Should be equal to https://github.com/ClickHouse/ClickHouse/blob/master/src/Common/escapeForFileName.cpp#L8
     """
-    result = ""
-    for c in name:
-        if c in _ALLOWED_NAME_CHARS:
-            result += c
+    result = bytearray(b'')
+    name_b = name.encode('utf-8')
+    for c in name_b:
+        if chr(c) in _ALLOWED_NAME_CHARS:
+            result.append(c)
         else:
-            ascii_code = ord(c)
-            result += f'%{_HEX_UPPERCASE_TABLE[int(ascii_code / 16)]}{_HEX_UPPERCASE_TABLE[ascii_code % 16]}'
-    return result
+            result.extend(f'%{_HEX_UPPERCASE_TABLE[int(c / 16)]}{_HEX_UPPERCASE_TABLE[c % 16]}'.encode('utf-8'))
+    return result.decode('utf-8')

@@ -96,7 +96,7 @@ class TestGetZooKeeperPath:
     """
     @staticmethod
     def _make_table(name, create_statement):
-        return Table('default', name, '', [], [], create_statement, '')
+        return Table('default', name, '', [], [], '', create_statement, '')
 
     def test_valid_sql(self):
         actual = get_table_zookeeper_paths(

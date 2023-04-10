@@ -68,7 +68,7 @@ class BackupLayout:
         """
         assert db.metadata_path is not None
 
-        local_path = os.path.join(db.metadata_path, f'{escape_metadata_file_name(table.name)}.sql')
+        local_path = table.metadata_path
         remote_path = _table_metadata_path(self.get_backup_path(backup_name), db.name, table.name)
         try:
             logging.debug('Uploading metadata (create statement) for table "%s"."%s"', db.name, table.name)

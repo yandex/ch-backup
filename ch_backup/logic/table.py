@@ -246,6 +246,7 @@ class TableBackup(BackupManager):
             # TODO: set disks and data_paths
             disks=[],
             data_paths=[],
+            metadata_path='',
             uuid=meta.uuid,
             create_statement=context.backup_layout.get_table_create_statement(context.backup_meta, meta.database,
                                                                               meta.name))

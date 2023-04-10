@@ -103,3 +103,19 @@ Feature: Backup & Restore
     And we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 # TODO: check deduplication with overdue backups
+
+  Scenario: Backup & Restore with non-ascii file names
+    When we drop all databases at clickhouse01
+    And we drop all databases at clickhouse02
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE `тест-дб`;
+    CREATE TABLE `тест-дб`.`тест-тбл` (`ключ` Int32)
+      ENGINE = MergeTree()
+      PARTITION BY `ключ` % 1
+      ORDER BY `ключ`;
+    INSERT INTO `тест-дб`.`тест-тбл` SELECT number FROM system.numbers LIMIT 50;
+    """
+    When we create clickhouse01 clickhouse backup
+    And we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02

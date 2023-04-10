@@ -252,6 +252,7 @@ def test_rewrite_table_schema(table_schema, table_engine, force_non_replicated_e
                   engine=table_engine,
                   disks=[],
                   data_paths=[],
+                  metadata_path='',
                   uuid=UUID)
     rewrite_table_schema(table,
                          force_non_replicated_engine=force_non_replicated_engine,

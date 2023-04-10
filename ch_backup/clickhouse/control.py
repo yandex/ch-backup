@@ -29,6 +29,7 @@ GET_TABLES_SQL = strip_query("""
         engine_full,
         create_table_query,
         data_paths,
+        metadata_path,
         uuid
     FROM system.tables
     WHERE (empty('{db_name}') OR database = '{db_name}')
@@ -546,6 +547,7 @@ class ClickhouseCTL:
                      engine=record['engine'],
                      disks=list(self._disks.values()),
                      data_paths=record['data_paths'] if record['engine'].find('MergeTree') != -1 else [],
+                     metadata_path=record['metadata_path'],
                      create_statement=record['create_table_query'],
                      uuid=record.get('uuid', None))
 
