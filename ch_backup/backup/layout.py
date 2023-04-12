@@ -72,7 +72,11 @@ class BackupLayout:
         remote_path = _table_metadata_path(self.get_backup_path(backup_name), db.name, table.name)
         try:
             logging.debug('Uploading metadata (create statement) for table "%s"."%s"', db.name, table.name)
-            self._storage_loader.upload_file(local_path, remote_path, is_async=True, encryption=True)
+            self._storage_loader.upload_file(local_path,
+                                             remote_path,
+                                             is_async=True,
+                                             encryption=True,
+                                             skip_deleted=True)
         except Exception as e:
             msg = f'Failed to create async upload of {remote_path}'
             raise StorageError(msg) from e

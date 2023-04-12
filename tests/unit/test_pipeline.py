@@ -142,10 +142,10 @@ def run_forward_pl(in_file_name, out_file_name, read_conf, encrypt_conf, write_c
     """
 
     pipeline = Pipeline()
-    pipeline.append(ReadFileStage(read_conf))
+    pipeline.append(ReadFileStage(read_conf, {}))
     if encrypt_conf:
-        pipeline.append(EncryptStage(encrypt_conf))
-    pipeline.append(WriteFileStage(write_conf))
+        pipeline.append(EncryptStage(encrypt_conf, {}))
+    pipeline.append(WriteFileStage(write_conf, {}))
 
     return pipeline(in_file_name, out_file_name)
 
@@ -156,10 +156,10 @@ def run_backward_pl(in_file_name, out_file_name, read_conf, encrypt_conf, write_
     """
 
     pipeline = Pipeline()
-    pipeline.append(ReadFileStage(read_conf))
+    pipeline.append(ReadFileStage(read_conf, {}))
     if encrypt_conf:
-        pipeline.append(DecryptStage(encrypt_conf))
-    pipeline.append(WriteFileStage(write_conf))
+        pipeline.append(DecryptStage(encrypt_conf, {}))
+    pipeline.append(WriteFileStage(write_conf, {}))
 
     return pipeline(in_file_name, out_file_name)
 
@@ -185,8 +185,8 @@ def test_nacl_ecrypt_decrypt(incoming_stream_size, incoming_chunk_size, conf):
     conf['key'] = SECRET_KEY
     conf['type'] = 'nacl'
 
-    encrypt_cmd = EncryptStage(conf)
-    decrypt_cmd = DecryptStage(conf)
+    encrypt_cmd = EncryptStage(conf, {})
+    decrypt_cmd = DecryptStage(conf, {})
 
     test_stream = get_test_stream(incoming_stream_size)
     stream_iter = StreamInter(chunk_size=incoming_chunk_size)
@@ -219,9 +219,9 @@ def test_write_file_cmd(monkeypatch, incoming_stream_size, incoming_chunk_size, 
 
     result_stream = io.BytesIO()
 
-    monkeypatch.setattr(WriteFileStage, '_pre_process', lambda x, y, z: None)
+    monkeypatch.setattr(WriteFileStage, '_pre_process', lambda x, y, z: True)
     monkeypatch.setattr(WriteFileStage, '_post_process', lambda x: None)
-    write_file_cmd = WriteFileStage(conf)
+    write_file_cmd = WriteFileStage(conf, {})
     monkeypatch.setattr(write_file_cmd, '_fobj', result_stream)
 
     test_stream = get_test_stream(incoming_stream_size)

@@ -7,7 +7,7 @@ import os
 import tarfile
 from enum import Enum
 from tarfile import BLOCKSIZE, GNUTYPE_LONGNAME, NUL  # type: ignore
-from typing import IO, Iterator, List, Optional, Tuple
+from typing import IO, Any, Iterator, List, Optional, Tuple
 
 from .base import BufferedIterStage, InputStage, IterStage
 
@@ -73,8 +73,9 @@ class ReadDataStage(InputStage):
         self._src_key = None
         self._read = False
 
-    def _pre_process(self, src_key):
+    def _pre_process(self, src_key: Any) -> bool:
         self._src_key = src_key
+        return True
 
     def _process(self):
         if not self._read:
@@ -89,12 +90,13 @@ class WriteFileStage(BufferedIterStage):
 
     stype = STAGE_TYPE
 
-    def __init__(self, conf):
-        super().__init__(conf)
+    def __init__(self, conf, params):
+        super().__init__(conf, params)
         self._fobj = None
 
-    def _pre_process(self, src_key, dst_key):
+    def _pre_process(self, src_key: Any, dst_key: Any) -> bool:
         self._fobj = open(dst_key, 'bw', 0)
+        return True
 
     def _process(self, data):
         assert self._fobj
@@ -125,8 +127,8 @@ class WriteFilesStage(BufferedIterStage):
 
     stype = STAGE_TYPE
 
-    def __init__(self, conf):
-        super().__init__(conf)
+    def __init__(self, conf, params):
+        super().__init__(conf, params)
         self._dir: Optional[str] = None
         self._tarstream = FileStream()
         self._tarinfo: Optional[tarfile.TarInfo] = None
@@ -135,8 +137,9 @@ class WriteFilesStage(BufferedIterStage):
         self._bytes_to_process: int = 0
         self._name_from_buffer: Optional[bytes] = None
 
-    def _pre_process(self, src_key, dst_key):
+    def _pre_process(self, src_key: Any, dst_key: Any) -> bool:
         self._dir = dst_key
+        return True
 
     def _process(self, data):
         self._tarstream.write(data)
@@ -228,12 +231,19 @@ class ReadFileStage(InputStage):
 
     stype = STAGE_TYPE
 
-    def __init__(self, conf: dict) -> None:
+    def __init__(self, conf: dict, params: dict) -> None:
         self._chunk_size = conf['chunk_size']
         self._fobj: Optional[IO] = None
+        self._skip_deleted = params.get('skip_deleted', False)
 
-    def _pre_process(self, src_key: str) -> None:
-        self._fobj = open(src_key, 'br')
+    def _pre_process(self, src_key: str) -> bool:
+        try:
+            self._fobj = open(src_key, 'br')
+        except FileNotFoundError:
+            if self._skip_deleted:
+                return False
+            raise
+        return True
 
     def _process(self):
         assert self._fobj
@@ -251,18 +261,25 @@ class ReadFilesStage(InputStage):
 
     stype = STAGE_TYPE
 
-    def __init__(self, conf: dict) -> None:
+    def __init__(self, conf: dict, params: dict) -> None:
         self._chunk_size = conf['chunk_size']
         self._tarstream = FileStream()
         self._file_iter: Iterator[str] = iter([])
         self._fobj: Optional[IO] = None
         self._dir_path: Optional[str] = None
         self._tarinfo: Optional[tarfile.TarInfo] = None
+        self._skip_deleted = params.get('skip_deleted', False)
 
-    def _pre_process(self, src_key: Tuple[str, List[str]]) -> None:
-        self._dir_path = src_key[0]
-        self._file_iter = iter(src_key[1])
-        self._open_next_file()
+    def _pre_process(self, src_key: Tuple[str, List[str]]) -> bool:
+        try:
+            self._dir_path = src_key[0]
+            self._file_iter = iter(src_key[1])
+            self._open_next_file()
+        except FileNotFoundError:
+            if self._skip_deleted:
+                return False
+            raise
+        return True
 
     def _process(self):
         try:
@@ -314,11 +331,12 @@ class DeleteFileStage(IterStage):
 
     stype = STAGE_TYPE
 
-    def __init__(self, _config):
+    def __init__(self, *_):
         self._local_path = None
 
-    def _pre_process(self, src_key, dst_key):
+    def _pre_process(self, src_key: Any, dst_key: Any) -> bool:
         self._local_path = src_key
+        return True
 
     def _process(self, _data):
         pass
@@ -335,12 +353,13 @@ class DeleteFilesStage(IterStage):
 
     stype = STAGE_TYPE
 
-    def __init__(self, _config):
+    def __init__(self, *_):
         self._dir = None
         self._files = None
 
-    def _pre_process(self, src_key: Tuple[str, List[str]], dst_key: str) -> None:
+    def _pre_process(self, src_key: Tuple[str, List[str]], dst_key: str) -> bool:
         self._dir, self._files = src_key
+        return True
 
     def _process(self, _data):
         pass

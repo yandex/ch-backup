@@ -4,7 +4,7 @@ Storage pipeline stages module
 import os
 from abc import ABCMeta, abstractmethod
 from math import ceil
-from typing import List, Tuple, Union
+from typing import Any, List, Tuple, Union
 
 from ch_backup.util import retry
 
@@ -21,27 +21,34 @@ class UploadStorageStage(BufferedIterStage, metaclass=ABCMeta):
 
     stype = STAGE_TYPE
 
-    def __init__(self, conf: dict) -> None:
-        super().__init__(conf)
+    def __init__(self, conf: dict, params: dict) -> None:
+        super().__init__(conf, params)
         self._max_chunk_count = conf['max_chunk_count']
         self._loader = get_storage_engine(conf)
         self._remote_path = None
         self._upload_id = None
+        self._skip_deleted = params.get('skip_deleted', False)
 
-    def _pre_process(self, src_key, dst_key):
-        self._remote_path = dst_key
+    def _pre_process(self, src_key: Any, dst_key: Any) -> bool:
+        try:
+            self._remote_path = dst_key
 
-        src_size = self._source_size(src_key)
+            src_size = self._source_size(src_key)
 
-        # use multi-part upload if source data size > chunk_size
-        if src_size > self._chunk_size:
-            self._upload_id = self._loader.create_multipart_upload(remote_path=dst_key)
+            # use multi-part upload if source data size > chunk_size
+            if src_size > self._chunk_size:
+                self._upload_id = self._loader.create_multipart_upload(remote_path=dst_key)
 
-        chunk_count = src_size / self._chunk_size
-        if chunk_count > self._max_chunk_count:
-            multiplier = ceil(chunk_count / self._max_chunk_count)
-            self._buffer_size *= multiplier
-            self._chunk_size *= multiplier
+            chunk_count = src_size / self._chunk_size
+            if chunk_count > self._max_chunk_count:
+                multiplier = ceil(chunk_count / self._max_chunk_count)
+                self._buffer_size *= multiplier
+                self._chunk_size *= multiplier
+            return True
+        except FileNotFoundError:
+            if self._skip_deleted:
+                return False
+            raise
 
     def _process(self, data):
         if self._upload_id:
@@ -87,13 +94,14 @@ class DownloadStorageStage(InputStage):
 
     stype = STAGE_TYPE
 
-    def __init__(self, conf):
+    def __init__(self, conf, _params):
         self._chunk_size = conf['chunk_size']
         self._loader = get_storage_engine(conf)
         self._download_id = None
 
-    def _pre_process(self, src_key):
+    def _pre_process(self, src_key: str) -> bool:
         self._download_id = self._loader.create_multipart_download(remote_path=src_key)
+        return True
 
     def _process(self):
         return self._loader.download_part(download_id=self._download_id, part_len=self._chunk_size)
@@ -110,12 +118,13 @@ class DeleteStorageStage(InputStage):
 
     stype = STAGE_TYPE
 
-    def __init__(self, conf):
+    def __init__(self, conf, _params):
         self._loader = get_storage_engine(conf)
         self._remote_path = None
 
-    def _pre_process(self, src_key):
+    def _pre_process(self, src_key: str) -> bool:
         self._remote_path = src_key
+        return True
 
     def _process(self):
         self._loader.delete_file(self._remote_path)
@@ -131,15 +140,16 @@ class DeleteMultipleStorageStage(InputStage):
 
     stype = STAGE_TYPE
 
-    def __init__(self, conf):
+    def __init__(self, conf, _params):
         self._loader = get_storage_engine(conf)
         self._bulk_delete_chunk_size = conf['bulk_delete_chunk_size']
         self._files_iter = None
 
-    def _pre_process(self, src_key):
+    def _pre_process(self, src_key: List) -> bool:
         self._files_iter = iter([
             src_key[i:i + self._bulk_delete_chunk_size] for i in range(0, len(src_key), self._bulk_delete_chunk_size)
         ])
+        return True
 
     def _process(self):
         assert self._files_iter

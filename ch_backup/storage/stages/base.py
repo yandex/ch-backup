@@ -28,8 +28,9 @@ class InputStage(metaclass=ABCMeta):
 
         self._post_process()
 
-    def _pre_process(self, src_key):
-        pass
+    # pylint: disable=unused-argument
+    def _pre_process(self, src_key: Any) -> bool:
+        return True
 
     @abstractmethod
     def _process(self):
@@ -47,15 +48,17 @@ class IterStage(metaclass=ABCMeta):
     stype: Optional[str] = None
 
     def __call__(self, src_iter: Callable, src_key: Any, dst_key: Any) -> Generator:
-        self._pre_process(src_key, dst_key)
+        if not self._pre_process(src_key, dst_key):
+            return
 
         for data in src_iter(src_key, dst_key):
             yield self._process(data)
 
         return self._post_process()
 
-    def _pre_process(self, src_key, dst_key):
-        pass
+    # pylint: disable=unused-argument
+    def _pre_process(self, src_key: Any, dst_key: Any) -> bool:
+        return True
 
     @abstractmethod
     def _process(self, data):
@@ -73,7 +76,7 @@ class BufferedIterStage(IterStage, metaclass=ABCMeta):
     - collects chunk of desired size in memory buffer.
     - produces processed data.
     """
-    def __init__(self, conf: dict) -> None:
+    def __init__(self, conf: dict, _params: dict) -> None:
         self._buffer_size = conf['buffer_size']
         self._chunk_size = conf['chunk_size']
         self._buffer = io.BytesIO()
@@ -82,7 +85,8 @@ class BufferedIterStage(IterStage, metaclass=ABCMeta):
         """
         Handles incoming data.
         """
-        self._pre_process(src_key, dst_key)
+        if not self._pre_process(src_key, dst_key):
+            return
 
         consumed_size = 0
         total_size = 0

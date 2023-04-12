@@ -33,13 +33,18 @@ class StorageLoader:
 
         return self._ploader.upload_data(data, remote_path, is_async=is_async, encryption=encryption)
 
-    def upload_file(self, local_path, remote_path, is_async=False, encryption=False, delete=False):
+    def upload_file(self, local_path, remote_path, is_async=False, encryption=False, delete=False, skip_deleted=False):
         """
         Upload file from local filesystem.
 
         If delete is True, the file will be deleted after upload.
         """
-        self._ploader.upload_file(local_path, remote_path, is_async=is_async, encryption=encryption, delete=delete)
+        self._ploader.upload_file(local_path,
+                                  remote_path,
+                                  is_async=is_async,
+                                  encryption=encryption,
+                                  delete=delete,
+                                  params={'skip_deleted': skip_deleted})
         return remote_path
 
     def upload_files_tarball(self,

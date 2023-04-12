@@ -97,10 +97,11 @@ def pipeline_wrapper(config: dict, stages: Sequence, *args: Any, **kwargs: Any) 
     Build and execute pipeline.
     """
     pipeline = Pipeline()
+    params = kwargs.pop('params', {})
 
     for stage in stages:
         stage_conf = config[stage.stype]
-        pipeline.append(stage(stage_conf))
+        pipeline.append(stage(stage_conf, params))
 
     return pipeline(*args, **kwargs)
 
@@ -117,7 +118,7 @@ class PipelineLoader:
         if worker_count:
             self._exec_pool = ExecPool(worker_count)
 
-    def _execute_pipeline(self, id_tuple, stages, *args, is_async, encryption):
+    def _execute_pipeline(self, id_tuple, stages, *args, is_async, encryption, **kwargs):
         """
         Run pipeline inplace or schedule for exec in process pool
         """
@@ -127,7 +128,7 @@ class PipelineLoader:
         # we have to create pipelines inside running job, because
         # multiproc futures must be pickable, but boto3 is not pickable
         # https://github.com/boto/botocore/issues/636
-        pipeline_runner = partial(pipeline_wrapper, self._config, stages, *args)
+        pipeline_runner = partial(pipeline_wrapper, self._config, stages, *args, **kwargs)
 
         if is_async and self._exec_pool:
             job_args = ', '.join(map(repr, id_tuple[1:]))
