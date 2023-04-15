@@ -315,7 +315,7 @@ def list_command(_ctx: Context, ch_backup: ClickhouseBackup, verbose: bool, **kw
 @argument('name', metavar='BACKUP')
 def show_command(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> None:
     """Show details for a particular backup."""
-    name = _validate_name(ctx, ch_backup, name)
+    name = _validate_and_resolve_name(ctx, ch_backup, name)
 
     print(ch_backup.get(name))
 
@@ -479,7 +479,7 @@ def restore_command(
 ) -> None:
     """Restore data from a particular backup."""
     # pylint: disable=too-many-arguments,too-many-locals
-    name = _validate_name(ctx, ch_backup, name)
+    name = _validate_and_resolve_name(ctx, ch_backup, name)
 
     specified_databases: typing.List[str] = _list_to_database_names(databases)
     specified_exclude_databases: typing.List[str] = _list_to_database_names(exclude_databases)
@@ -526,9 +526,11 @@ def fix_s3_oplog_command(ctx: Context,
 
 @command(name='restore-access-control')
 @argument('name', metavar='BACKUP')
-def restore_access_control_command(_ctx: Context, _ch_backup: ClickhouseBackup, name: str) -> None:
+def restore_access_control_command(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> None:
     """Restore ClickHouse access control metadata."""
-    _ch_backup.restore_access_control(name)
+    name = _validate_and_resolve_name(ctx, ch_backup, name)
+
+    ch_backup.restore_access_control(name)
 
 
 @command(name='delete')
@@ -536,7 +538,7 @@ def restore_access_control_command(_ctx: Context, _ch_backup: ClickhouseBackup, 
 @option('--purge-partial', is_flag=True, default=False, help='Also purge all partial deleted backups')
 def delete_command(ctx: Context, ch_backup: ClickhouseBackup, name: str, purge_partial: bool) -> None:
     """Delete particular backup."""
-    name = _validate_name(ctx, ch_backup, name)
+    name = _validate_and_resolve_name(ctx, ch_backup, name)
 
     deleted_backup_name, msg = ch_backup.delete(name, purge_partial)
 
@@ -564,7 +566,7 @@ def version_command(_ctx: Context, _ch_backup: ClickhouseBackup) -> None:
     print(get_version())
 
 
-def _validate_name(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> str:
+def _validate_and_resolve_name(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> str:
     backups = ch_backup.list()
 
     if name == 'LAST':
