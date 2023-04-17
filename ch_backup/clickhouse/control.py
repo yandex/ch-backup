@@ -157,6 +157,24 @@ RELOAD_CONFIG_SQL = strip_query("""
     SYSTEM RELOAD CONFIG
 """)
 
+GET_ZOOKEEPER_ADMIN_USER = strip_query("""
+    SELECT
+        name,
+        value
+    FROM system.zookeeper
+    WHERE (path = '/clickhouse/access/U') AND (name = 'admin')
+    FORMAT JSON
+""")
+
+GET_ZOOKEEPER_ADMIN_UUID = strip_query("""
+    SELECT
+        name,
+        value
+    FROM system.zookeeper
+    WHERE (path = '/clickhouse/access/uuid') AND (value LIKE 'ATTACH USER admin%')
+    FORMAT JSON
+""")
+
 
 # pylint: disable=too-many-public-methods
 class ClickhouseCTL:
@@ -443,6 +461,21 @@ class ClickhouseCTL:
             result.extend(obj_result)
 
         return result
+
+    def get_zookeeper_admin_id(self) -> str:
+        """
+        Returns linked admin's UUID from zookeeper.
+        """
+        result = self._ch_client.query(GET_ZOOKEEPER_ADMIN_USER).get('data', [])
+        assert len(result) == 1
+        return result[0]['value']
+
+    def get_zookeeper_admin_uuid(self) -> Dict[str, str]:
+        """
+        Returns all UUIDs associated with admin user.
+        """
+        result = self._ch_client.query(GET_ZOOKEEPER_ADMIN_UUID).get('data', [])
+        return {item['name']: item['value'] for item in result}
 
     @staticmethod
     def list_frozen_parts(table: Table, disk: Disk, data_path: str, backup_name: str) -> Sequence[FrozenPart]:

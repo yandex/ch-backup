@@ -533,6 +533,13 @@ def restore_access_control_command(ctx: Context, ch_backup: ClickhouseBackup, na
     ch_backup.restore_access_control(name)
 
 
+@command(name='fix-admin-user')
+@option('--dryrun', is_flag=True, default=True, help='Do not perform any destructive actions.')
+def fix_admin_user_command(ctx: Context, ch_backup: ClickhouseBackup, dryrun: bool = True) -> None:
+    """Check and fix potential duplicates of `admin` user in Keeper."""
+    ch_backup.fix_admin_user(dry_run=dryrun)
+
+
 @command(name='delete')
 @argument('name', metavar='BACKUP')
 @option('--purge-partial', is_flag=True, default=False, help='Also purge all partial deleted backups')

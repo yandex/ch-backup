@@ -355,6 +355,11 @@ class ClickhouseBackup:
         with self._context.locker():
             self._access_backup_manager.restore(self._context)
 
+    def fix_admin_user(self, dry_run: bool = True) -> None:
+        """Check and fix potential duplicates of `admin` user in Keeper."""
+        with self._context.locker():
+            self._access_backup_manager.fix_admin_user(self._context, dry_run)
+
     def _delete(self, backup_with_light_meta: BackupMetadata,
                 dedup_references: DedupReferences) -> Tuple[Optional[str], Optional[str]]:
         logging.info('Deleting backup %s, state: %s', backup_with_light_meta.name, backup_with_light_meta.state)

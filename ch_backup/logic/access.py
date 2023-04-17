@@ -2,9 +2,12 @@
 Clickhouse backup logic for access entities.
 """
 import os
+import re
 import shutil
 from contextlib import contextmanager
 from typing import Any, Dict, Generator, Iterator, Sequence, Union
+
+from kazoo.exceptions import NoNodeError
 
 from ch_backup import logging
 from ch_backup.backup_context import BackupContext
@@ -41,6 +44,64 @@ class AccessBackup(BackupManager):
         self._restore_local(acl_list, context, mark_to_rebuild=mark_to_rebuild)
         if has_replicated_access:
             self._restore_replicated(acl_list, acl_meta, context)
+
+    def fix_admin_user(self, context: BackupContext, dry_run: bool = True) -> None:
+        """
+        Check and fix potential duplicates of `admin` user in Keeper and local storage.
+        """
+        if not self._has_replicated_access(context):
+            logging.info('Cluster uses local storage for access entities, nothing to check.')
+            return
+
+        admin_user_id = context.ch_ctl.get_zookeeper_admin_id()
+        admin_uuids = context.ch_ctl.get_zookeeper_admin_uuid()
+
+        if admin_user_id not in admin_uuids:
+            raise ValueError(f'Linked admin uuid {admin_user_id} not found, manual check required!')
+
+        if len(admin_uuids) == 1:
+            logging.debug(f'Found only one admin user with {admin_user_id} id, nothing to fix.')
+            return
+
+        to_delete = []
+        # check that all duplicates have the same password hash, settings and grants
+        admin_create_str = self._clean_user_uuid(admin_uuids[admin_user_id])
+        for uuid, create_str in admin_uuids.items():
+            if uuid == admin_user_id:
+                continue
+            cleaned_create_str = self._clean_user_uuid(create_str)
+            if admin_create_str == cleaned_create_str:
+                to_delete.append(uuid)
+            else:
+                raise ValueError(f'Duplicate {uuid} has differences, manual check required!')
+
+        # cleanup ZK paths and local files
+        with _zk_ctl_client(context) as zk_ctl:
+            for uuid in to_delete:
+                # cleanup ZK duplicate
+                zk_path = _get_access_zk_path(context, f'/uuid/{uuid}')
+                logging.debug(f'Removing zk path {zk_path}')
+                try:
+                    if dry_run:
+                        logging.debug(f'Skipped removing zk path {zk_path} due to dry-run')
+                    else:
+                        zk_ctl.zk_client.delete(zk_path)
+                except NoNodeError:
+                    logging.debug(f'Node {zk_path} not found.')
+
+                # cleanup SQL file
+                file_path = _get_access_file_path(context, f'{uuid}.sql')
+                logging.debug(f'Removing file {file_path}')
+                try:
+                    if dry_run:
+                        logging.debug(f'Skipped removing file {file_path} due to dry-run')
+                    else:
+                        os.remove(file_path)
+                except FileNotFoundError:
+                    logging.debug(f'File {file_path} not found.')
+
+    def _clean_user_uuid(self, raw_str: str) -> str:
+        return re.sub(r"EXCEPT ID\('(.+)'\)", '', raw_str)
 
     def _backup(self, context: BackupContext) -> None:
         """
