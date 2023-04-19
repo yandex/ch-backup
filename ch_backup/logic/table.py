@@ -436,15 +436,14 @@ class TableBackup(BackupManager):
                 logging.debug(f'Trying to restore table `{db.name}`.`{table.name}` by ATTACH method')
                 table.create_statement = to_attach_query(table.create_statement)
                 context.ch_ctl.create_table(table)
+                if is_replicated(table.create_statement) and not is_materialized_view(
+                        table.engine) and context.ch_ctl.ch_version_ge('21.8'):
+                    context.ch_ctl.restore_replica(table)
             except Exception as e:
                 logging.warning(f'Failed to restore table `{db.name}`.`{table.name}` using ATTACH method, '
                                 f'fallback to CREATE. Exception: {e}')
                 table.create_statement = to_create_query(table.create_statement)
                 context.ch_ctl.create_table(table)
-
-            if is_replicated(table.create_statement) and not is_materialized_view(
-                    table.engine) and context.ch_ctl.ch_version_ge('21.8'):
-                context.ch_ctl.restore_replica(table)
         except Exception as e:
             logging.debug(f'Both table `{db.name}`.`{table.name}` restore methods failed. Removing it. Exception: {e}')
             if table.is_dictionary():

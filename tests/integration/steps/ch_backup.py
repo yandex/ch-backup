@@ -56,7 +56,14 @@ def step_delete_backup_file(context, path, node, backup_id):
 @given('file "{path}" in {node:w} backup "{backup_id:d}" is empty')
 def step_truncate_backup_file(context, path, node, backup_id):
     ch_backup = BackupManager(context, node)
-    ch_backup.truncate_backup_file(backup_id, path)
+    ch_backup.set_backup_file_data(backup_id, path, data=b'')
+
+
+@given('file "{path}" in {node:w} backup #{backup_id:d} data set to')
+@given('file "{path}" in {node:w} backup "{backup_id:d}" data set to')
+def step_set_backup_file(context, path, node, backup_id):
+    ch_backup = BackupManager(context, node)
+    ch_backup.set_backup_file_data(backup_id, path, data=context.text.strip().encode())
 
 
 @when('we restore clickhouse backup #{backup_id:d} to {node:w}')

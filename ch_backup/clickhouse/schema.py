@@ -134,11 +134,21 @@ def _add_uuid(table: Table, inner_uuid: str = None) -> None:
     if is_view(table.engine):
         inner_uuid_clause = f"TO INNER UUID '{inner_uuid}'" if inner_uuid else ''
         table.create_statement = re.sub(
-            f"^CREATE (?P<view_type>((MATERIALIZED|LIVE) )?VIEW) (?P<view_name>`?{table.database}`?.`?{table.name}`?) ",
-            f"CREATE \\g<view_type> \\g<view_name> UUID '{table.uuid}' {inner_uuid_clause} ", table.create_statement)
+            f"^(?P<statemet>CREATE|ATTACH) (?P<view_type>((MATERIALIZED|LIVE) )?VIEW) "
+            f"(?P<view_name>`?{table.database}`?.`?{table.name}`?) ",
+            f"\\g<statement> \\g<view_type> \\g<view_name> UUID '{table.uuid}' {inner_uuid_clause} ",
+            table.create_statement)
     else:
         # CREATE TABLE <db-name>.<table-name> $ (...)
         # UUID clause is inserted to $ place.
         table.create_statement = re.sub(
-            r"CREATE (?P<type>\S*) (?P<table_name>(`[^`]*`\.`[^`]*`|\S+\.\S+|`[^`]*`\.\S+|\S+\.`[^`]*`))",
-            f"CREATE \\g<type> \\g<table_name> UUID '{table.uuid}'", table.create_statement)
+            r"(?P<statement>CREATE|ATTACH) (?P<type>\S*) "
+            r"(?P<table_name>(`[^`]*`\.`[^`]*`|\S+\.\S+|`[^`]*`\.\S+|\S+\.`[^`]*`))",
+            f"\\g<statement> \\g<type> \\g<table_name> UUID '{table.uuid}'", table.create_statement)
+
+
+def embedded_schema_db_sql(db: Database) -> str:
+    """
+    Returns create statement for db with embedded schema.
+    """
+    return f'CREATE DATABASE `{db.name}` Engine={db.engine}'

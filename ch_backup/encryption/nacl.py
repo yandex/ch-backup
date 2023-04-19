@@ -15,6 +15,7 @@ class NaClEncryption(BaseEncryption):
     https://pynacl.readthedocs.io/en/latest/secret/
     """
     def __init__(self, conf):
+        super().__init__(conf)
         self._box = SecretBox(conf['key'].encode('utf-8'))
 
     def encrypt(self, data):
@@ -23,8 +24,7 @@ class NaClEncryption(BaseEncryption):
     def decrypt(self, data):
         return self._box.decrypt(data)
 
-    @staticmethod
-    def metadata_size():
+    def metadata_size(self):
         """
         Computes NaCl metadata size
         """

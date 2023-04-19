@@ -9,6 +9,9 @@ class BaseEncryption(metaclass=ABCMeta):
     """
     Encryption base class
     """
+    def __init__(self, config):
+        pass
+
     @abstractmethod
     def encrypt(self, data):
         """
@@ -22,3 +25,9 @@ class BaseEncryption(metaclass=ABCMeta):
         Decrypt piece of data
         """
         pass
+
+    @abstractmethod
+    def metadata_size(self):
+        """
+        Returns extra amount of extra space for encryption stuff.
+        """

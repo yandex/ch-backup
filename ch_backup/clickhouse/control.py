@@ -75,7 +75,7 @@ DROP_DICTIONARY_IF_EXISTS_SQL = strip_query("""
 """)
 
 DROP_DATABASE_IF_EXISTS_SQL = strip_query("""
-    DROP DATABASE IF EXISTS `{db_name}`
+    DROP DATABASE IF EXISTS `{db_name}` NO DELAY
 """)
 
 DROP_UDF_SQL = strip_query("""

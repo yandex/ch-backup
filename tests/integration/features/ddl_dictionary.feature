@@ -32,7 +32,7 @@ Feature: Backup dictionary created by ddl
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
-  Scenario: Depedent tables and dicts works
+  Scenario: Dependent tables and dicts works
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE test_db;
@@ -61,3 +61,29 @@ Feature: Backup dictionary created by ddl
     SYSTEM RELOAD DICTIONARY 'test_db.test_dictionary';
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
+
+  @require_version_22.7
+  Scenario: Dict with nonexistent dependent table works
+    Given ClickHouse settings
+    """
+    allow_deprecated_database_ordinary: 1
+    """
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db Engine=Ordinary;
+
+    CREATE TABLE test_db.table_01 (n1 UInt32, n2 UInt32)
+    ENGINE MergeTree PARTITION BY tuple() ORDER BY n1;
+
+    CREATE DICTIONARY test_db.test_dictionary (n1 UInt32, n2 UInt32)
+    PRIMARY KEY n1 LAYOUT(hashed()) LIFETIME(MIN 1 MAX 10)
+    SOURCE(CLICKHOUSE(HOST 'localhost' PORT 9000 DB 'test_db' TABLE 'table_01' USER 'default'));
+
+    ATTACH TABLE test_db.dict_table (`n1` UInt32, `n2` UInt32) ENGINE = Dictionary('test_db.test_dictionary');
+    """
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 0          | 0          |
+    When we restore clickhouse backup #0 to clickhouse02
+    Then clickhouse02 has same schema as clickhouse01

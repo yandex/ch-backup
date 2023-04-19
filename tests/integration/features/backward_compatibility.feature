@@ -22,12 +22,47 @@ Feature: Restore backup from previous versions
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
-      | num | state    | data_count | link_count   |
-      | 0   | created  | 11         | 0            |
+      | num | state   | data_count | link_count |
+      | 0   | created | 11         | 0          |
     When metadata paths of clickhouse01 backup #0 was deleted
     """
     - databases.test_db.engine
     - databases.test_db.metadata_path
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    Then clickhouse02 has same schema as clickhouse01
+    And we got same clickhouse data at clickhouse01 clickhouse02
+
+
+  Scenario: Restore backup with incomplete database metadata
+    Given ch-backup configuration on clickhouse01
+    """
+    encryption:
+      type: noop
+    """
+    Given ch-backup configuration on clickhouse02
+    """
+    encryption:
+      type: noop
+    """
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+
+    CREATE TABLE test_db.table_01 ON CLUSTER 'default' (date Date, n Int32)
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/test_db/table', '{replica}') PARTITION BY date ORDER BY date;
+    INSERT INTO test_db.table_01 SELECT today(), number FROM system.numbers LIMIT 1000;
+    """
+    When we create clickhouse01 clickhouse backup
+    When metadata paths of clickhouse01 backup #0 was deleted
+    """
+    - databases.test_db.engine
+    - databases.test_db.metadata_path
+    """
+    Given file "metadata/test_db/table_01.sql" in clickhouse01 backup #0 data set to
+    """
+    CREATE TABLE test_db.table_01 ON CLUSTER 'default' (date Date, n Int32)
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/test_db/table', '{replica}') PARTITION BY date ORDER BY date
     """
     When we restore clickhouse backup #0 to clickhouse02
     Then clickhouse02 has same schema as clickhouse01

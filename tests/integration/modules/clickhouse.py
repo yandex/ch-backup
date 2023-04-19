@@ -177,7 +177,7 @@ class ClickhouseClient:
         """
         Drop database.
         """
-        self._query('POST', f'DROP DATABASE {db_name}')
+        self._query('POST', f'DROP DATABASE `{db_name}`')
 
     def drop_test_table(self, db_num: int, table_num: int) -> None:
         """
