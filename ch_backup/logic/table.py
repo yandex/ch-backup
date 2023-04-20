@@ -136,7 +136,11 @@ class TableBackup(BackupManager):
         with ClickHouseTemporaryDisks(context.ch_ctl, context.backup_layout, context.config_root, context.backup_meta,
                                       cloud_storage_source_bucket, cloud_storage_source_path,
                                       cloud_storage_source_endpoint, context.ch_config) as disks:
-            self._restore_data(context, tables_to_restore_data, disks, skip_cloud_storage)
+            self._restore_data(context,
+                               tables=tables_to_restore_data,
+                               disks=disks,
+                               skip_cloud_storage=skip_cloud_storage,
+                               keep_going=keep_going)
 
     @staticmethod
     def _backup_table_schema(context: BackupContext, db: Database, table: Table) -> None:
@@ -309,7 +313,7 @@ class TableBackup(BackupManager):
 
     @staticmethod
     def _restore_data(context: BackupContext, tables: Iterable[TableMetadata], disks: ClickHouseTemporaryDisks,
-                      skip_cloud_storage: bool) -> None:
+                      skip_cloud_storage: bool, keep_going: bool) -> None:
         logging.info('Restoring tables data')
         for table_meta in tables:
             try:
@@ -326,19 +330,26 @@ class TableBackup(BackupManager):
                         logging.debug(f'{table.database}.{table.name} part {part.name} already restored, skipping it')
                         continue
 
-                    if part.disk_name not in context.backup_meta.s3_revisions.keys():
-                        if part.disk_name in context.backup_meta.cloud_storage.disks:
-                            if skip_cloud_storage:
-                                logging.debug(f'Skipping restoring of {table.database}.{table.name} part {part.name} '
-                                              'on cloud storage because of --skip-cloud-storage flag')
-                                continue
+                    try:
+                        if part.disk_name not in context.backup_meta.s3_revisions.keys():
+                            if part.disk_name in context.backup_meta.cloud_storage.disks:
+                                if skip_cloud_storage:
+                                    logging.debug(
+                                        f'Skipping restoring of {table.database}.{table.name} part {part.name} '
+                                        'on cloud storage because of --skip-cloud-storage flag')
+                                    continue
 
-                            disks.copy_part(context.backup_meta, table, part)
+                                disks.copy_part(context.backup_meta, table, part)
+                            else:
+                                fs_part_path = context.ch_ctl.get_detached_part_path(table, part.disk_name, part.name)
+                                context.backup_layout.download_data_part(context.backup_meta, part, fs_part_path)
+
+                        attach_parts.append(part)
+                    except Exception:
+                        if keep_going:
+                            logging.exception(f'Restore of part {part.name} failed, skipping due to --keep-going flag')
                         else:
-                            fs_part_path = context.ch_ctl.get_detached_part_path(table, part.disk_name, part.name)
-                            context.backup_layout.download_data_part(context.backup_meta, part, fs_part_path)
-
-                    attach_parts.append(part)
+                            raise
 
                 context.backup_layout.wait()
 
