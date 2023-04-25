@@ -534,8 +534,8 @@ def restore_access_control_command(ctx: Context, ch_backup: ClickhouseBackup, na
 
 
 @command(name='fix-admin-user')
-@option('--dryrun', is_flag=True, default=True, help='Do not perform any destructive actions.')
-def fix_admin_user_command(ctx: Context, ch_backup: ClickhouseBackup, dryrun: bool = True) -> None:
+@option('--dryrun', is_flag=True, default=False, help='Do not perform any destructive actions.')
+def fix_admin_user_command(ctx: Context, ch_backup: ClickhouseBackup, dryrun: bool = False) -> None:
     """Check and fix potential duplicates of `admin` user in Keeper."""
     ch_backup.fix_admin_user(dry_run=dryrun)
 
