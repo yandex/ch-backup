@@ -13,7 +13,7 @@ from ch_backup import logging
 from ch_backup.backup_context import BackupContext
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.util import chown_dir_contents
-from ch_backup.zookeeper.zookeeper import ZookeeperCTL
+from ch_backup.zookeeper.zookeeper import KAZOO_RETRIES, ZookeeperCTL
 
 CH_MARK_FILE = 'need_rebuild_lists.mark'
 
@@ -203,6 +203,7 @@ def _get_access_zk_path(context: BackupContext, zk_path: str) -> str:
 
 
 @contextmanager
+@KAZOO_RETRIES
 def _zk_ctl_client(context: BackupContext) -> Generator[ZookeeperCTL, None, None]:
     zk_ctl = context.zk_ctl
     try:
