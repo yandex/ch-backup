@@ -1,7 +1,6 @@
 """
 Noop encryption module
 """
-
 from ch_backup.encryption.base import BaseEncryption
 
 
@@ -21,7 +20,8 @@ class NoopEncryption(BaseEncryption):
         """
         return data
 
-    def metadata_size(self):
+    @staticmethod
+    def metadata_size() -> int:
         """
         Extra space :)
         """

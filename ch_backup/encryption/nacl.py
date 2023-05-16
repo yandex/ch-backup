@@ -24,7 +24,8 @@ class NaClEncryption(BaseEncryption):
     def decrypt(self, data):
         return self._box.decrypt(data)
 
-    def metadata_size(self):
+    @staticmethod
+    def metadata_size():
         """
         Computes NaCl metadata size
         """

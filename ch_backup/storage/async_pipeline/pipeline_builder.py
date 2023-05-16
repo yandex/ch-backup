@@ -1,0 +1,206 @@
+"""
+Pipeline builder.
+"""
+from functools import reduce
+from math import ceil
+from pathlib import Path
+from typing import Any, Iterable, List, Sequence, Type, Union
+
+from pypeln import utils as pypeln_utils
+from pypeln.thread.api.from_iterable import from_iterable
+
+from ch_backup.encryption import get_encryption
+from ch_backup.storage.async_pipeline import thread_flat_map
+from ch_backup.storage.async_pipeline.base_pipeline.input import thread_input
+from ch_backup.storage.async_pipeline.base_pipeline.map import thread_map
+from ch_backup.storage.async_pipeline.stages import (
+    ChunkingStage, CollectDataStage, DecryptStage, DeleteFilesStage, DeleteMultipleStorageStage, DownloadStorageStage,
+    EncryptStage, MultipartStorageUploadingStage, ReadFileStage, ReadFilesTarballStage, StorageUploadingStage,
+    WriteFilesStage, WriteFileStage)
+from ch_backup.storage.engine import get_storage_engine
+
+# Union here is a workaround according to https://github.com/python/mypy/issues/7866
+PypelnStage = Union[pypeln_utils.BaseStage]
+
+
+class PipelineBuilder:
+    """
+    Build the whole pipeline stage by stage and return the final result.
+
+    build_* functions can be chained.
+    """
+    def __init__(self, config: dict) -> None:
+        self._config = config
+        self._stages: List[PypelnStage] = []
+
+    def build_iterable_stage(self, iterable: Iterable[Any]) -> 'PipelineBuilder':
+        """
+        Build stage from arbitrary iterable.
+        """
+        self.append(from_iterable(iterable))
+        return self
+
+    def build_read_file_stage(self, file_path: Path) -> 'PipelineBuilder':
+        """
+        Build reading file stage.
+        """
+        stage_config = self._config[ReadFileStage.stype]
+
+        self.append(thread_input(ReadFileStage(stage_config, file_path)))
+
+        return self
+
+    def build_read_files_tarball_stage(self, dir_path: Path, file_relative_paths: List[Path]) -> 'PipelineBuilder':
+        """
+        Build reading files to tarball stage.
+        """
+        stage_config = self._config[ReadFilesTarballStage.stype]
+
+        self.append(thread_input(ReadFilesTarballStage(stage_config, dir_path, file_relative_paths)))
+
+        return self
+
+    def build_encrypt_stage(self) -> "PipelineBuilder":
+        """
+        Build encrypting stage.
+        """
+        stage_config = self._config[EncryptStage.stype]
+
+        buffer_size = stage_config['buffer_size']
+        chunk_size = stage_config['chunk_size']
+        crypto = get_encryption(stage_config['type'], stage_config)
+
+        self.append(
+            thread_flat_map(ChunkingStage(chunk_size, buffer_size)),
+            thread_map(EncryptStage(crypto)),
+        )
+
+        return self
+
+    def build_decrypt_stage(self) -> 'PipelineBuilder':
+        """
+        Build decrypting stage.
+        """
+        stage_config = self._config[EncryptStage.stype]
+
+        buffer_size = stage_config['buffer_size']
+        chunk_size = stage_config['chunk_size']
+
+        crypto = get_encryption(stage_config['type'], stage_config)
+        chunk_size += crypto.metadata_size()
+
+        self.append(
+            thread_flat_map(ChunkingStage(chunk_size, buffer_size)),
+            thread_map(DecryptStage(crypto)),
+        )
+
+        return self
+
+    def build_uploading_stage(self, remote_path: str, source_size: int) -> 'PipelineBuilder':
+        """
+        Build uploading stage.
+        """
+        stage_config = self._config[StorageUploadingStage.stype]
+
+        max_chunk_count = stage_config['max_chunk_count']
+        buffer_size = stage_config['buffer_size']
+        chunk_size = stage_config['chunk_size']
+        stage_type: Union[Type[StorageUploadingStage], Type[MultipartStorageUploadingStage]] = StorageUploadingStage
+
+        if source_size > chunk_size:
+            chunk_count = source_size / chunk_size
+            if chunk_count > max_chunk_count:
+                multiplier = ceil(chunk_count / max_chunk_count)
+                buffer_size *= multiplier
+                chunk_size *= multiplier
+            stage_type = MultipartStorageUploadingStage
+
+        storage = get_storage_engine(stage_config)
+
+        self.append(
+            thread_flat_map(ChunkingStage(chunk_size, buffer_size)),
+            thread_map(stage_type(stage_config, storage, remote_path)),
+        )
+        return self
+
+    def build_delete_files_stage(self, files: List[Path]) -> 'PipelineBuilder':
+        """
+        Build deleting files stage.
+        """
+        stage_config = self._config[DeleteFilesStage.stype]
+
+        self.append(thread_map(DeleteFilesStage(stage_config, files)))
+        return self
+
+    def build_download_storage_stage(self, remote_path: str) -> 'PipelineBuilder':
+        """
+        Build downloading from storage stage.
+        """
+        stage_config = self._config[DownloadStorageStage.stype]
+        storage = get_storage_engine(stage_config)
+
+        self.append(thread_input(DownloadStorageStage(stage_config, storage, remote_path)))
+        return self
+
+    def build_write_files_stage(self, dir_path: Path) -> 'PipelineBuilder':
+        """
+        Build writing files to local filesystem stage.
+        """
+        stage_config = self._config[WriteFilesStage.stype]
+
+        buffer_size = stage_config['buffer_size']
+        chunk_size = stage_config['chunk_size']
+
+        self.append(
+            thread_flat_map(ChunkingStage(chunk_size, buffer_size)),
+            thread_map(WriteFilesStage(stage_config, dir_path, buffer_size)),
+        )
+        return self
+
+    def build_collect_data_stage(self) -> 'PipelineBuilder':
+        """
+        Build collecting data stage.
+        """
+        self.append(thread_map(CollectDataStage()))
+        return self
+
+    def build_write_file_stage(self, file_path: Path) -> 'PipelineBuilder':
+        """
+        Build writing single file stage.
+        """
+        self.append(thread_map(WriteFileStage(file_path)))
+        return self
+
+    def build_delete_multiple_storage_stage(self, remote_paths: Sequence[str]) -> 'PipelineBuilder':
+        """
+        Build deleting objects from storage stage.
+        """
+        stage_config = self._config[DeleteMultipleStorageStage.stype]
+        storage = get_storage_engine(stage_config)
+
+        self.append(thread_map(DeleteMultipleStorageStage(stage_config, remote_paths, storage)))
+        return self
+
+    def append(self, *stages: PypelnStage) -> None:
+        """
+        Append new stage to pipeline that is being built.
+        """
+        for stage in stages:
+            self._stages.append(stage)
+
+    def pipeline(self) -> PypelnStage:
+        """
+        Return built pipeline.
+        """
+        if len(self._stages) == 0:
+            raise RuntimeError('Pipeline must not be empty. Please build at least one stage')
+
+        # The pipeline must start with a pypeln iterable Stage object (pypeln library requirement),
+        # but all helper functions, like flat_map, produce pypeln_utils.Partial wrapper.
+        # Therefore, we add dummy_stage in that case
+        if isinstance(self._stages[0], pypeln_utils.Partial):
+            dummy_stage = from_iterable([])
+            self._stages = [dummy_stage, *self._stages]
+
+        # pipeline = stage1 | stage2 | ... | stageN
+        return reduce(lambda pipeline, stage: pipeline | stage, self._stages)

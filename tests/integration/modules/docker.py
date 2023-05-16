@@ -46,7 +46,7 @@ def get_exposed_port(container: Container, port: int) -> Tuple[str, int]:
     Get pair of (host, port) for connection to exposed port.
     """
     host_url = os.getenv('DOCKER_HOST') or ''
-    host = urlparse(host_url.strip()).hostname or 'localhost'
+    host = urlparse(host_url.strip()).hostname or '127.0.0.1'  # pin to IPv4 localhost
 
     binding = container.attrs['NetworkSettings']['Ports'].get(f'{port}/tcp')
     if not binding:

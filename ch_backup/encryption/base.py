@@ -26,8 +26,10 @@ class BaseEncryption(metaclass=ABCMeta):
         """
         pass
 
+    @staticmethod
     @abstractmethod
-    def metadata_size(self):
+    def metadata_size() -> int:
         """
-        Returns extra amount of extra space for encryption stuff.
+        Return size of metadata which is added to the encrypted object
         """
+        pass

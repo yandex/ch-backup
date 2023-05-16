@@ -1,7 +1,7 @@
 """
 util module defines various auxiliary functions
 """
-
+import collections
 import glob
 import grp
 import os
@@ -11,7 +11,11 @@ import shutil
 import string
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Iterable, List, Tuple, Union
+from functools import partial
+from inspect import currentframe
+from itertools import islice
+from pathlib import Path
+from typing import (BinaryIO, Callable, Iterable, Iterator, List, Sequence, Tuple, Union)
 
 import humanfriendly
 import tenacity
@@ -240,3 +244,53 @@ def escape_metadata_file_name(name: str) -> str:
         else:
             result.extend(f'%{_HEX_UPPERCASE_TABLE[int(c / 16)]}{_HEX_UPPERCASE_TABLE[c % 16]}'.encode('utf-8'))
     return result.decode('utf-8')
+
+
+def total_files_size(files: Sequence[Path]) -> int:
+    """
+    Return the sum of the file sizes.
+    """
+    return sum(file.stat().st_size for file in files)
+
+
+def chunked(iterable: Iterable, n: int) -> Iterator[list]:
+    """
+    Chunkify iterable into lists of length n. The last chunk may be shorter.
+
+    Based on https://docs.python.org/3/library/itertools.html#itertools-recipes
+
+    >>> list(chunked('ABCDEFG', 3))
+    [['A', 'B', 'C'], ['D', 'E', 'F'], ['G']]
+    """
+    if n < 1:
+        raise ValueError('n must be at least one')
+    it = iter(iterable)
+    while True:
+        chunk = list(islice(it, n))
+        if not chunk:
+            break
+        yield chunk
+
+
+def read_by_chunks(file: BinaryIO, chunk_size: int) -> Iterator[bytes]:
+    """
+    Read and yield file-like object by chunks.
+    """
+    for chunk in iter(partial(file.read, chunk_size), b''):
+        yield chunk
+
+
+def current_func_name() -> str:
+    """
+    Return the current function name.
+
+    Current function is a function calling func_name()
+    """
+    return currentframe().f_back.f_code.co_name  # type: ignore[union-attr]
+
+
+def exhaust_iterator(iterator: Iterator) -> None:
+    """
+    Read all elements from iterator until it stops.
+    """
+    collections.deque(iterator, maxlen=0)

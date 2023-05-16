@@ -4,7 +4,7 @@ Storage pipeline stages module
 import os
 from abc import ABCMeta, abstractmethod
 from math import ceil
-from typing import Any, List, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 
 from ch_backup.util import retry
 
@@ -25,8 +25,8 @@ class UploadStorageStage(BufferedIterStage, metaclass=ABCMeta):
         super().__init__(conf, params)
         self._max_chunk_count = conf['max_chunk_count']
         self._loader = get_storage_engine(conf)
-        self._remote_path = None
-        self._upload_id = None
+        self._remote_path: Optional[str] = None
+        self._upload_id: Optional[str] = None
         self._skip_deleted = params.get('skip_deleted', False)
 
     def _pre_process(self, src_key: Any, dst_key: Any) -> bool:
@@ -51,6 +51,7 @@ class UploadStorageStage(BufferedIterStage, metaclass=ABCMeta):
             raise
 
     def _process(self, data):
+        assert self._remote_path is not None
         if self._upload_id:
             self._loader.upload_part(data, remote_path=self._remote_path, upload_id=self._upload_id)
 
@@ -120,13 +121,14 @@ class DeleteStorageStage(InputStage):
 
     def __init__(self, conf, _params):
         self._loader = get_storage_engine(conf)
-        self._remote_path = None
+        self._remote_path: Optional[str] = None
 
     def _pre_process(self, src_key: str) -> bool:
         self._remote_path = src_key
         return True
 
     def _process(self):
+        assert self._remote_path is not None
         self._loader.delete_file(self._remote_path)
 
     def _post_process(self):

@@ -5,8 +5,7 @@ Clickhouse backup logic for Cloud Storage
 from typing import Any, Dict, Optional
 
 from ch_backup import logging
-
-from ..storage.engine.s3 import S3StorageEngine
+from ch_backup.storage.engine.s3 import S3StorageEngine
 
 
 # pylint: disable=too-many-locals,too-many-nested-blocks,too-many-branches

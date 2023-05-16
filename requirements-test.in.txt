@@ -21,3 +21,4 @@ docker
 docker-compose<1.28
 Jinja2
 deepdiff
+mypy-boto3-s3==1.21.7  # This is the last version that requires typing-extensions<4.0.0

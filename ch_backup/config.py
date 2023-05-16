@@ -95,6 +95,8 @@ DEFAULT_CONFIG = {
         'max_chunk_count': 10000,
         # How many files we can delete by bulk delete operation in one call
         'bulk_delete_chunk_size': 1000,
+        # The number of uploading threads for multipart storage uploading
+        'uploading_threads': 4,
     },
     # Same structure as 'storage' section, but for cloud storage
     'cloud_storage': {
@@ -120,6 +122,10 @@ DEFAULT_CONFIG = {
         # The number of processes allocating for data processing. If set to 0, all processing will be performed
         # in the main process.
         'workers': 4,
+    },
+    'pipeline': {
+        # Is asynchronous pipelines used (based on Pypeln library)
+        'async': True,
     },
     'main': {
         'user': 'clickhouse',

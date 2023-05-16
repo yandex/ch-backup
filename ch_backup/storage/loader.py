@@ -4,8 +4,9 @@ remote path on existence, etc.).
 """
 from typing import List, Sequence
 
-from .engine import get_storage_engine
-from .pipeline import PipelineLoader
+from ch_backup.storage.async_pipeline.pipeline_executor import PipelineExecutor
+from ch_backup.storage.engine import get_storage_engine
+from ch_backup.storage.pipeline import PipelineLoader
 
 
 class StorageLoader:
@@ -19,7 +20,12 @@ class StorageLoader:
     def __init__(self, config):
         self._config = config
         self._engine = get_storage_engine(config['storage'])
-        self._ploader = PipelineLoader(config)
+
+        # FIXME: Temporary feature toggle
+        if config['pipeline']['async']:
+            self._ploader = PipelineExecutor(config)
+        else:
+            self._ploader = PipelineLoader(config)  # type: ignore[assignment]
 
     def upload_data(self, data, remote_path, is_async=False, encryption=False, encoding='utf-8'):
         """
@@ -98,17 +104,11 @@ class StorageLoader:
         """
         self._ploader.download_files(remote_path, local_path, is_async=is_async, encryption=encryption)
 
-    def delete_file(self, remote_path, is_async=False, encryption=False):
-        """
-        Delete file from storage.
-        """
-        return self._ploader.delete_file(remote_path, is_async=is_async, encryption=encryption)
-
     def delete_files(self, remote_paths: Sequence[str], is_async: bool = False, encryption: bool = False) -> None:
         """
         Delete multiple files from storage.
         """
-        return self._ploader.delete_files(remote_paths, is_async=is_async, encryption=encryption)
+        self._ploader.delete_files(remote_paths, is_async=is_async, encryption=encryption)
 
     def wait(self) -> None:
         """

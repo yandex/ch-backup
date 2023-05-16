@@ -3,7 +3,7 @@ Interfaces for storage engines.
 """
 
 from abc import ABCMeta, abstractmethod
-from typing import Sequence
+from typing import Any, Optional, Sequence
 
 
 class StorageEngine(metaclass=ABCMeta):
@@ -71,7 +71,7 @@ class PipeLineCompatibleStorageEngine(StorageEngine):
         pass
 
     @abstractmethod
-    def upload_part(self, data, remote_path, upload_id):
+    def upload_part(self, data: bytes, remote_path: str, upload_id: str, part_num: Optional[int] = None) -> None:
         """
         Upload data part in multipart upload.
         """
@@ -102,5 +102,19 @@ class PipeLineCompatibleStorageEngine(StorageEngine):
     def complete_multipart_download(self, download_id):
         """
         Finish multipart download.
+        """
+        pass
+
+    @abstractmethod
+    def delete_files(self, remote_paths: Sequence[str]) -> Any:
+        """
+        Delete files from storage.
+        """
+        pass
+
+    @abstractmethod
+    def get_object_size(self, remote_path: str) -> int:
+        """
+        Return object size.
         """
         pass

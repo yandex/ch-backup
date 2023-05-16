@@ -11,3 +11,4 @@ tabulate
 tenacity
 kazoo
 xmltodict
+pypeln==0.4.9

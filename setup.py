@@ -15,6 +15,7 @@ REQUIREMENTS = [
     'click',
     'tabulate',
     'tenacity',
+    'pypeln'
 ]
 
 
