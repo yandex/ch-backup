@@ -87,7 +87,7 @@ DEFAULT_CONFIG = {
         # Chunk size used when uploading / downloading data, in bytes.
         'chunk_size': parse_size('8 MiB'),
         # Buffer size, in bytes.
-        'buffer_size': parse_size('128 MiB'),
+        'buffer_size': parse_size('32 MiB'),
         # The maximum number of chunks on which uploading or downloading data
         # can be split. If data_size > chunk_size * max_chunk_count,
         # chunk_size will be multiplied on a required number of times
@@ -97,6 +97,8 @@ DEFAULT_CONFIG = {
         'bulk_delete_chunk_size': 1000,
         # The number of uploading threads for multipart storage uploading
         'uploading_threads': 4,
+        # The maximum number of objects the stage's input queue can hold simultaneously, `0`is unbounded
+        'queue_size': 10,
     },
     # Same structure as 'storage' section, but for cloud storage
     'cloud_storage': {
@@ -107,16 +109,20 @@ DEFAULT_CONFIG = {
         # Chunk size used when encrypting / decrypting data, in bytes.
         'chunk_size': parse_size('8 MiB'),
         # Buffer size, in bytes.
-        'buffer_size': parse_size('128 MiB'),
+        'buffer_size': parse_size('32 MiB'),
         # Encryption key.
         'key': None,
+        # The maximum number of objects the stage's input queue can hold simultaneously, `0` is unbounded
+        'queue_size': 10,
     },
     'filesystem': {
         'type': 'unlimited',
         # Chunk size used when reading from / writing to filesystem, in bytes.
         'chunk_size': parse_size('1 MiB'),
         # Buffer size, in bytes.
-        'buffer_size': parse_size('128 MiB'),
+        'buffer_size': parse_size('32 MiB'),
+        # The maximum number of objects the stage's input queue can hold simultaneously, `0`is unbounded
+        'queue_size': 50,
     },
     'multiprocessing': {
         # The number of processes allocating for data processing. If set to 0, all processing will be performed

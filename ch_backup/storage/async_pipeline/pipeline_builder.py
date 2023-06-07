@@ -45,8 +45,9 @@ class PipelineBuilder:
         Build reading file stage.
         """
         stage_config = self._config[ReadFileStage.stype]
+        queue_size = stage_config['queue_size']
 
-        self.append(thread_input(ReadFileStage(stage_config, file_path)))
+        self.append(thread_input(ReadFileStage(stage_config, file_path), maxsize=queue_size))
 
         return self
 
@@ -55,8 +56,10 @@ class PipelineBuilder:
         Build reading files to tarball stage.
         """
         stage_config = self._config[ReadFilesTarballStage.stype]
+        queue_size = stage_config['queue_size']
 
-        self.append(thread_input(ReadFilesTarballStage(stage_config, dir_path, file_relative_paths)))
+        self.append(
+            thread_input(ReadFilesTarballStage(stage_config, dir_path, file_relative_paths), maxsize=queue_size))
 
         return self
 
@@ -68,10 +71,11 @@ class PipelineBuilder:
 
         buffer_size = stage_config['buffer_size']
         chunk_size = stage_config['chunk_size']
+        queue_size = stage_config['queue_size']
         crypto = get_encryption(stage_config['type'], stage_config)
 
         self.append(
-            thread_flat_map(ChunkingStage(chunk_size, buffer_size)),
+            thread_flat_map(ChunkingStage(chunk_size, buffer_size), maxsize=queue_size),
             thread_map(EncryptStage(crypto)),
         )
 
@@ -85,13 +89,14 @@ class PipelineBuilder:
 
         buffer_size = stage_config['buffer_size']
         chunk_size = stage_config['chunk_size']
+        queue_size = stage_config['queue_size']
 
         crypto = get_encryption(stage_config['type'], stage_config)
         chunk_size += crypto.metadata_size()
 
         self.append(
-            thread_flat_map(ChunkingStage(chunk_size, buffer_size)),
-            thread_map(DecryptStage(crypto)),
+            thread_flat_map(ChunkingStage(chunk_size, buffer_size), maxsize=queue_size),
+            thread_map(DecryptStage(crypto), maxsize=queue_size),
         )
 
         return self
@@ -105,6 +110,7 @@ class PipelineBuilder:
         max_chunk_count = stage_config['max_chunk_count']
         buffer_size = stage_config['buffer_size']
         chunk_size = stage_config['chunk_size']
+        queue_size = stage_config['queue_size']
         stage_type: Union[Type[StorageUploadingStage], Type[MultipartStorageUploadingStage]] = StorageUploadingStage
 
         if source_size > chunk_size:
@@ -118,8 +124,8 @@ class PipelineBuilder:
         storage = get_storage_engine(stage_config)
 
         self.append(
-            thread_flat_map(ChunkingStage(chunk_size, buffer_size)),
-            thread_map(stage_type(stage_config, storage, remote_path)),
+            thread_flat_map(ChunkingStage(chunk_size, buffer_size), maxsize=queue_size),
+            thread_map(stage_type(stage_config, storage, remote_path), maxsize=queue_size),
         )
         return self
 
@@ -138,8 +144,9 @@ class PipelineBuilder:
         """
         stage_config = self._config[DownloadStorageStage.stype]
         storage = get_storage_engine(stage_config)
+        queue_size = stage_config['queue_size']
 
-        self.append(thread_input(DownloadStorageStage(stage_config, storage, remote_path)))
+        self.append(thread_input(DownloadStorageStage(stage_config, storage, remote_path), maxsize=queue_size))
         return self
 
     def build_write_files_stage(self, dir_path: Path) -> 'PipelineBuilder':
@@ -150,10 +157,11 @@ class PipelineBuilder:
 
         buffer_size = stage_config['buffer_size']
         chunk_size = stage_config['chunk_size']
+        queue_size = stage_config['queue_size']
 
         self.append(
-            thread_flat_map(ChunkingStage(chunk_size, buffer_size)),
-            thread_map(WriteFilesStage(stage_config, dir_path, buffer_size)),
+            thread_flat_map(ChunkingStage(chunk_size, buffer_size), maxsize=queue_size),
+            thread_map(WriteFilesStage(stage_config, dir_path, buffer_size), maxsize=queue_size),
         )
         return self
 

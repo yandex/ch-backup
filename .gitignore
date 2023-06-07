@@ -10,6 +10,8 @@
 .pytest_cache/
 .session_conf.sav
 .tox/
+.vscode
+ch_backup/version.txt
 debian/ch-backup*
 debian/changelog
 debian/files
@@ -17,7 +19,6 @@ htmlcov/
 local_configuration.py
 staging/
 venv/
-ch_backup/version.txt
 
 # MacOS specific
 .DS_Store
