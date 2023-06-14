@@ -4,7 +4,7 @@ Pipeline builder.
 from functools import reduce
 from math import ceil
 from pathlib import Path
-from typing import Any, Iterable, List, Sequence, Type, Union
+from typing import Any, Iterable, List, Sequence, Union
 
 from pypeln import utils as pypeln_utils
 from pypeln.thread.api.from_iterable import from_iterable
@@ -14,9 +14,9 @@ from ch_backup.storage.async_pipeline import thread_flat_map
 from ch_backup.storage.async_pipeline.base_pipeline.input import thread_input
 from ch_backup.storage.async_pipeline.base_pipeline.map import thread_map
 from ch_backup.storage.async_pipeline.stages import (
-    ChunkingStage, CollectDataStage, DecryptStage, DeleteFilesStage, DeleteMultipleStorageStage, DownloadStorageStage,
-    EncryptStage, MultipartStorageUploadingStage, ReadFileStage, ReadFilesTarballStage, StorageUploadingStage,
-    WriteFilesStage, WriteFileStage)
+    ChunkingStage, CollectDataStage, CompleteMultipartUploadStage, DecryptStage, DeleteFilesStage,
+    DeleteMultipleStorageStage, DownloadStorageStage, EncryptStage, MultipartUploadStage, ReadFileStage,
+    ReadFilesTarballStage, StartMultipartUploadStage, StorageUploadingStage, WriteFilesStage, WriteFileStage)
 from ch_backup.storage.engine import get_storage_engine
 
 # Union here is a workaround according to https://github.com/python/mypy/issues/7866
@@ -76,7 +76,7 @@ class PipelineBuilder:
 
         self.append(
             thread_flat_map(ChunkingStage(chunk_size, buffer_size), maxsize=queue_size),
-            thread_map(EncryptStage(crypto)),
+            thread_map(EncryptStage(crypto), maxsize=queue_size),
         )
 
         return self
@@ -111,22 +111,28 @@ class PipelineBuilder:
         buffer_size = stage_config['buffer_size']
         chunk_size = stage_config['chunk_size']
         queue_size = stage_config['queue_size']
-        stage_type: Union[Type[StorageUploadingStage], Type[MultipartStorageUploadingStage]] = StorageUploadingStage
+
+        storage = get_storage_engine(stage_config)
 
         if source_size > chunk_size:
+            # Multipart uploading
             chunk_count = source_size / chunk_size
             if chunk_count > max_chunk_count:
                 multiplier = ceil(chunk_count / max_chunk_count)
                 buffer_size *= multiplier
                 chunk_size *= multiplier
-            stage_type = MultipartStorageUploadingStage
 
-        storage = get_storage_engine(stage_config)
+            stages = [
+                thread_map(StartMultipartUploadStage(stage_config, storage, remote_path), maxsize=queue_size),
+                thread_map(MultipartUploadStage(stage_config, storage, remote_path),
+                           maxsize=queue_size,
+                           workers=stage_config['uploading_threads']),
+                thread_map(CompleteMultipartUploadStage(stage_config, storage, remote_path), maxsize=queue_size),
+            ]
+        else:
+            stages = [thread_map(StorageUploadingStage(stage_config, storage, remote_path), maxsize=queue_size)]
 
-        self.append(
-            thread_flat_map(ChunkingStage(chunk_size, buffer_size), maxsize=queue_size),
-            thread_map(stage_type(stage_config, storage, remote_path), maxsize=queue_size),
-        )
+        self.append(thread_flat_map(ChunkingStage(chunk_size, buffer_size), maxsize=queue_size), *stages)
         return self
 
     def build_delete_files_stage(self, files: List[Path]) -> 'PipelineBuilder':
