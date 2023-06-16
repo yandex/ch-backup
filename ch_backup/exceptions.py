@@ -45,3 +45,12 @@ class UnknownBackupStateError(ClickhouseBackupError):
     """
     Invalid backup state.
     """
+
+
+class TerminatingSignal(BaseException):
+    """
+    Raised in a terminating signal handler.
+
+    Derived from BaseException to avoid unintentional catching,
+    for example, by retrying operations.
+    """

@@ -19,6 +19,8 @@ from cloup.constraints import constraint, mutually_exclusive
 from humanfriendly import InvalidTimespan, format_timespan, parse_timespan
 from tabulate import tabulate
 
+from ch_backup.exceptions import TerminatingSignal
+
 from . import logging
 from .backup.metadata import BackupState, TableMetadata
 from .ch_backup import ClickhouseBackup
@@ -30,12 +32,15 @@ TIMESTAMP = utcnow().strftime('%Y%m%dT%H%M%S')
 UUID = str(uuid.uuid4())
 
 
-# pylint: disable=unused-argument
-def signal_handler(signum, frame):
+def signal_handler(signum, _frame):
     """
     Logs received signal. Useful for troubleshooting.
     """
     logging.info('Received signal %d', signum)
+    # If a signal handler raises an exception, the exception will be propagated to the main
+    # thread and may be raised after any bytecode instruction.
+    # https://docs.python.org/3/library/signal.html#note-on-signal-handlers-and-exceptions
+    raise TerminatingSignal(f'Execution was interrupted by the signal {signum}')
 
 
 signal.signal(signal.SIGTERM, signal_handler)
@@ -118,7 +123,7 @@ def command(*args, **kwargs):
                 result = ctx.invoke(f, ctx, ctx.obj['backup'], *args, **kwargs)
                 logging.info('Command \'%s\' completed', ctx.command.name)
                 return result
-            except Exception:
+            except (Exception, TerminatingSignal):
                 logging.exception('Command \'%s\' failed', ctx.command.name)
                 raise
 
@@ -362,7 +367,7 @@ def show_command(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> None:
     'Util',
     option('-f', '--force', is_flag=True, help='Enables force mode (backup.min_interval is ignored).'),
 )
-def backup_command(ctx: Context, ch_backup: ClickhouseBackup, name: str, databases: list, tables: list, force: bool,
+def backup_command(_ctx: Context, ch_backup: ClickhouseBackup, name: str, databases: list, tables: list, force: bool,
                    label: list, schema_only: bool, backup_access_control: bool, freeze_timeout: int) -> None:
     """Perform backup."""
     # pylint: disable=too-many-arguments
@@ -513,7 +518,7 @@ def restore_command(
 @option('--source-cluster-id', type=str, help='Source cluster ID.')
 @option('--shard', type=str, default='shard1', help='Shard name.')
 @option('--dryrun', is_flag=True, default=False, help='Do not perform any actions.')
-def fix_s3_oplog_command(ctx: Context,
+def fix_s3_oplog_command(_ctx: Context,
                          ch_backup: ClickhouseBackup,
                          cloud_storage_source_bucket: str = None,
                          cloud_storage_source_path: str = None,
@@ -535,7 +540,7 @@ def restore_access_control_command(ctx: Context, ch_backup: ClickhouseBackup, na
 
 @command(name='fix-admin-user')
 @option('--dryrun', is_flag=True, default=False, help='Do not perform any destructive actions.')
-def fix_admin_user_command(ctx: Context, ch_backup: ClickhouseBackup, dryrun: bool = False) -> None:
+def fix_admin_user_command(_ctx: Context, ch_backup: ClickhouseBackup, dryrun: bool = False) -> None:
     """Check and fix potential duplicates of `admin` user in Keeper."""
     ch_backup.fix_admin_user(dry_run=dryrun)
 

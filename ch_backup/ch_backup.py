@@ -17,7 +17,7 @@ from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.models import Database
 from ch_backup.config import Config
-from ch_backup.exceptions import BackupNotFound, ClickhouseBackupError
+from ch_backup.exceptions import (BackupNotFound, ClickhouseBackupError, TerminatingSignal)
 from ch_backup.logic.access import AccessBackup
 from ch_backup.logic.cloud_storage_utils import fix_s3_oplog
 from ch_backup.logic.database import DatabaseBackup
@@ -155,7 +155,7 @@ class ClickhouseBackup:
                 self._table_backup_manager.backup(self._context, databases, db_tables, dedup_info, schema_only)
 
                 self._context.backup_meta.state = BackupState.CREATED
-        except Exception:
+        except (Exception, TerminatingSignal):
             logging.critical('Backup failed', exc_info=True)
             self._context.backup_meta.state = BackupState.FAILED
             raise
@@ -387,7 +387,7 @@ class ClickhouseBackup:
             return None, 'Backup was partially deleted as its data is in use by subsequent backups per ' \
                          'deduplication settings.'
 
-        except Exception:
+        except (Exception, TerminatingSignal):
             logging.critical('Delete failed', exc_info=True)
             backup.state = BackupState.FAILED
             raise

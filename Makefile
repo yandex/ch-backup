@@ -36,6 +36,11 @@ lint: ${TEST_VENV} build
 	tox -e isort,yapf,flake8,pylint,mypy,bandit
 
 
+lint-%: ${TEST_VENV} build
+	git --no-pager diff HEAD~1 --check
+	tox -e $*
+
+
 .PHONY: unit_test
 unit_test: ${TEST_VENV} build
 	tox -e unit_test -- $(PYTEST_ARGS)
@@ -164,7 +169,8 @@ help:
 	@echo "  build (default)            Build project (it only generates version.txt for now)."
 	@echo "  all                        Alias for \"build lint unit_test integration_test\"."
 	@echo "  test                       Alias for \"lint unit_test\"."
-	@echo "  lint                       Run linter tools."
+	@echo "  lint                       Run all linter tools."
+	@echo "  lint-%                     Run specific linter tool."
 	@echo "  unit_test                  Run unit tests."
 	@echo "  integration_test           Run integration tests."
 	@echo "  clean                      Clean up build and test artifacts."

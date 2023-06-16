@@ -46,3 +46,9 @@ class ExecPool:
                 logging.error('Future "%s" generated an exception:', future_id, exc_info=True)
                 raise
         self._futures = {}
+
+    def __del__(self) -> None:
+        """
+        Shutdown pool explicitly to prevent the program from hanging in case of ungraceful termination.
+        """
+        self._pool.shutdown(wait=False)
