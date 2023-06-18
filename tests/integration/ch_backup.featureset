@@ -6,16 +6,15 @@ features/backup_multiple_disks_replicated.feature
 features/backup_purge.feature
 features/backup_replicated.feature
 features/backup_restore.feature
+features/backup_restore_sources.feature
 features/backward_compatibility.feature
 features/cloud_storage.feature
-
 features/database_engines.feature
 features/ddl_dictionary.feature
 features/deduplication.feature
 features/incremental_restore.feature
 features/metadata.feature
 features/min_interval.feature
-
 features/single_table.feature
 features/ssl_support.feature
 features/table_engines.feature

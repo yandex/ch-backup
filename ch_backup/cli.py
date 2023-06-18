@@ -23,6 +23,7 @@ from ch_backup.exceptions import TerminatingSignal
 
 from . import logging
 from .backup.metadata import BackupState, TableMetadata
+from .backup.sources import BackupSources
 from .ch_backup import ClickhouseBackup
 from .config import DEFAULT_CONFIG, Config
 from .util import drop_privileges, setup_environment, utcnow
@@ -338,7 +339,6 @@ def show_command(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> None:
            f' {{uuid}} - randomly generated UUID value ({UUID}).',
            default='{timestamp}'),
     option('-l', '--label', multiple=True, help='Custom labels as key-value pairs that represents user metadata.'),
-    option('--backup-access-control', is_flag=True, help='Backup users, roles, etc. created by SQL.'),
 )
 @option_group(
     'Partial backup',
@@ -347,6 +347,10 @@ def show_command(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> None:
         option('-t', '--tables', type=List(regexp=r'[\w.]+'), help='Comma-separated list of tables to backup.'),
     ),
     option('--schema-only', is_flag=True, help='Backup only databases schemas'),
+    option('--access', is_flag=True, help='Perform partial backup of access control entities.'),
+    option('--data', is_flag=True, help='Perform partial backup of database schemas and tables data.'),
+    option('--schema', is_flag=True, help='Perform partial backup of databases and tables schemas.'),
+    option('--udf', is_flag=True, help='Perform partial backup of user defined functions.'),
 )
 @option_group(
     'Timeout configuration',
@@ -367,10 +371,16 @@ def show_command(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> None:
     'Util',
     option('-f', '--force', is_flag=True, help='Enables force mode (backup.min_interval is ignored).'),
 )
+@constraint(mutually_exclusive, ['schema_only', 'access'])
+@constraint(mutually_exclusive, ['schema_only', 'data'])
+@constraint(mutually_exclusive, ['schema_only', 'schema'])
+@constraint(mutually_exclusive, ['schema_only', 'udf'])
+@constraint(mutually_exclusive, ['data', 'schema'])
 def backup_command(_ctx: Context, ch_backup: ClickhouseBackup, name: str, databases: list, tables: list, force: bool,
-                   label: list, schema_only: bool, backup_access_control: bool, freeze_timeout: int) -> None:
+                   label: list, schema_only: bool, freeze_timeout: int, access: bool, data: bool, schema: bool,
+                   udf: bool) -> None:
     """Perform backup."""
-    # pylint: disable=too-many-arguments
+    # pylint: disable=too-many-arguments,too-many-locals
     if freeze_timeout:
         logging.info(f'ALTER FREEZE timeout force set to {freeze_timeout} sec.')
         ch_backup.reload_config(ch_backup.config.merge({'clickhouse': {'freeze_timeout': freeze_timeout}}))
@@ -382,13 +392,8 @@ def backup_command(_ctx: Context, ch_backup: ClickhouseBackup, name: str, databa
         value = key_value.pop() if key_value else None
         labels[key] = value
 
-    (name, msg) = ch_backup.backup(name,
-                                   db_names=databases,
-                                   tables=tables,
-                                   force=force,
-                                   labels=labels,
-                                   schema_only=schema_only,
-                                   backup_access_control=backup_access_control)
+    sources = BackupSources.for_backup(access, data, schema, udf, schema_only)
+    (name, msg) = ch_backup.backup(sources, name, db_names=databases, tables=tables, force=force, labels=labels)
 
     if msg:
         print(msg, file=sys.stderr, flush=True)
@@ -457,11 +462,23 @@ def backup_command(_ctx: Context, ch_backup: ClickhouseBackup, name: str, databa
     'ZooKeeper',
     option('--clean-zookeeper', is_flag=True, help='Remove zookeeper metadata for tables to restore'),
 )
+@option_group(
+    'Partial restore',
+    option('--access', is_flag=True, help='Perform partial restore of access control entities.'),
+    option('--data', is_flag=True, help='Perform partial restore of database schemas and tables data.'),
+    option('--schema', is_flag=True, help='Perform partial restore of databases and tables schemas.'),
+    option('--udf', is_flag=True, help='Perform partial restore of user defined functions.'),
+)
 @option('--keep-going', is_flag=True, help='Forces to keep going if some tables are failed on restore')
 @constraint(mutually_exclusive, ['databases', 'tables'])
 @constraint(mutually_exclusive, ['exclude_databases', 'tables'])
 @constraint(mutually_exclusive, ['schema_only', 'tables'])
 @constraint(mutually_exclusive, ['schema_only', 'exclude_tables'])
+@constraint(mutually_exclusive, ['schema_only', 'access'])
+@constraint(mutually_exclusive, ['schema_only', 'data'])
+@constraint(mutually_exclusive, ['schema_only', 'schema'])
+@constraint(mutually_exclusive, ['schema_only', 'udf'])
+@constraint(mutually_exclusive, ['data', 'schema'])
 def restore_command(
     ctx: Context,
     ch_backup: ClickhouseBackup,
@@ -481,6 +498,10 @@ def restore_command(
     skip_cloud_storage: bool = False,
     clean_zookeeper: bool = False,
     keep_going: bool = False,
+    access: bool = False,
+    data: bool = False,
+    schema: bool = False,
+    udf: bool = False,
 ) -> None:
     """Restore data from a particular backup."""
     # pylint: disable=too-many-arguments,too-many-locals
@@ -492,11 +513,12 @@ def restore_command(
     specified_tables: typing.List[TableMetadata] = _key_values_to_tables_metadata(tables)
     specified_exclude_tables: typing.List[TableMetadata] = _key_values_to_tables_metadata(exclude_tables)
 
+    sources = BackupSources.for_restore(access, data, schema, udf, schema_only)
     ch_backup.restore(
+        sources=sources,
         backup_name=name,
         databases=specified_databases,
         exclude_databases=specified_exclude_databases,
-        schema_only=schema_only,
         tables=specified_tables,
         exclude_tables=specified_exclude_tables,
         override_replica_name=override_replica_name,

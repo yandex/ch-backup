@@ -12,6 +12,7 @@ from ch_backup.backup.deduplication import (DedupReferences, collect_dedup_info,
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import (BackupMetadata, BackupState, TableMetadata)
 from ch_backup.backup.restore_context import RestoreContext
+from ch_backup.backup.sources import BackupSources
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.control import ClickhouseCTL
@@ -91,19 +92,19 @@ class ClickhouseBackup:
         return backups
 
     def backup(self,
+               sources: BackupSources,
                name: str,
                db_names: Sequence[str] = None,
                tables: Sequence[str] = None,
                force: bool = False,
-               labels: dict = None,
-               schema_only: bool = False,
-               backup_access_control: bool = False) -> Tuple[str, Optional[str]]:
+               labels: dict = None) -> Tuple[str, Optional[str]]:
         """
         Perform backup.
 
         If force is True, backup.min_interval config option is ignored.
         """
         # pylint: disable=too-many-locals,too-many-branches
+        logging.info(f'Backup sources: {sources}')
         assert not (db_names and tables)
 
         backup_labels: dict = copy(self._context.config.get('labels'))  # type: ignore
@@ -136,7 +137,7 @@ class ClickhouseBackup:
                                                    version=get_version(),
                                                    ch_version=self._context.ch_ctl.get_version(),
                                                    time_format=self._context.config['time_format'],
-                                                   schema_only=schema_only)
+                                                   schema_only=sources.schema_only)
 
         self._context.backup_layout.upload_backup_metadata(self._context.backup_meta)
 
@@ -145,14 +146,20 @@ class ClickhouseBackup:
 
         try:
             with self._context.locker():
-                self._access_backup_manager.backup(self._context, backup_access_control=backup_access_control)
-                self._udf_backup_manager.backup(self._context)
-                self._database_backup_manager.backup(self._context, databases)
-
-                dedup_info = collect_dedup_info(context=self._context,
-                                                backups_with_light_meta=backups_with_light_meta,
-                                                databases=databases)
-                self._table_backup_manager.backup(self._context, databases, db_tables, dedup_info, schema_only)
+                if sources.access:
+                    self._access_backup_manager.backup(self._context)
+                if sources.udf:
+                    self._udf_backup_manager.backup(self._context)
+                if sources.schemas_included():
+                    self._database_backup_manager.backup(self._context, databases)
+                    dedup_info = collect_dedup_info(context=self._context,
+                                                    backups_with_light_meta=backups_with_light_meta,
+                                                    databases=databases)
+                    self._table_backup_manager.backup(self._context,
+                                                      databases,
+                                                      db_tables,
+                                                      dedup_info,
+                                                      schema_only=sources.schema_only)
 
                 self._context.backup_meta.state = BackupState.CREATED
         except (Exception, TerminatingSignal):
@@ -170,12 +177,12 @@ class ClickhouseBackup:
 
     # pylint: disable=too-many-arguments,too-many-locals,duplicate-code
     def restore(self,
+                sources: BackupSources,
                 backup_name: str,
                 databases: Sequence[str],
                 exclude_databases: Sequence[str],
                 tables: List[TableMetadata],
                 exclude_tables: List[TableMetadata],
-                schema_only: bool = False,
                 override_replica_name: str = None,
                 force_non_replicated: bool = False,
                 replica_name: Optional[str] = None,
@@ -189,9 +196,10 @@ class ClickhouseBackup:
         """
         Restore specified backup
         """
+        logging.info(f'Restore sources: {sources}')
         self._context.backup_meta = self._get_backup(backup_name)
 
-        if cloud_storage_source_bucket is None and not schema_only and not skip_cloud_storage:
+        if cloud_storage_source_bucket is None and not sources.schema_only and not skip_cloud_storage:
             if self._context.backup_meta.has_s3_data() or self._context.backup_meta.cloud_storage.enabled:
                 raise ClickhouseBackupError('Cloud storage source bucket must be set if backup has data on S3 disks')
 
@@ -227,8 +235,8 @@ class ClickhouseBackup:
 
         with self._context.locker():
             self._restore(
+                sources=sources,
                 db_names=databases,
-                schema_only=schema_only,
                 tables=tables,
                 exclude_tables=exclude_tables,
                 replica_name=replica_name,
@@ -408,8 +416,8 @@ class ClickhouseBackup:
         backup.remove_parts(table, parts)
 
     def _restore(self,
+                 sources: BackupSources,
                  db_names: Sequence[str],
-                 schema_only: bool,
                  tables: List[TableMetadata],
                  exclude_tables: List[TableMetadata],
                  replica_name: Optional[str] = None,
@@ -420,42 +428,51 @@ class ClickhouseBackup:
                  skip_cloud_storage: bool = False,
                  clean_zookeeper: bool = False,
                  keep_going: bool = False) -> None:
-        databases: Dict[str, Database] = {}
-        for db_name in db_names:
-            db = self._context.backup_meta.get_database(db_name)
-            # TODO For backward compatibility, remove when all backups rotated
-            if db.engine is None:
-                db_sql = self._context.backup_layout.get_database_create_statement(self._context.backup_meta, db.name)
-                db.set_engine_from_sql(db_sql)
-            databases[db_name] = db
-        # Restore UDF
-        self._udf_backup_manager.restore(self._context)
+        if sources.access:
+            # Restore access control entities
+            self._access_backup_manager.restore(self._context)
 
-        # Restore databases.
-        self._database_backup_manager.restore(self._context, databases)
+        if sources.udf:
+            # Restore UDF
+            self._udf_backup_manager.restore(self._context)
 
-        # Restore tables and data stored on local disks.
-        self._table_backup_manager.restore(
-            context=self._context,
-            databases=databases,
-            schema_only=schema_only,
-            tables=tables,
-            exclude_tables=exclude_tables,
-            replica_name=replica_name,
-            cloud_storage_source_bucket=cloud_storage_source_bucket,
-            cloud_storage_source_path=cloud_storage_source_path,
-            cloud_storage_source_endpoint=cloud_storage_source_endpoint,
-            cloud_storage_latest=cloud_storage_latest,
-            skip_cloud_storage=skip_cloud_storage,
-            clean_zookeeper=clean_zookeeper,
-            keep_going=keep_going,
-        )
-        if self._context.restore_context.has_failed_parts():
-            msg = 'Some parts are failed to attach'
-            logging.warning(msg)
+        if sources.schemas_included():
+            databases: Dict[str, Database] = {}
+            for db_name in db_names:
+                db = self._context.backup_meta.get_database(db_name)
+                # TODO For backward compatibility, remove when all backups rotated
+                if db.engine is None:
+                    db_sql = self._context.backup_layout.get_database_create_statement(
+                        self._context.backup_meta, db.name)
+                    db.set_engine_from_sql(db_sql)
+                databases[db_name] = db
 
-            if self._context.config['restore_fail_on_attach_error']:
-                raise ClickhouseBackupError(msg)
+            # Restore databases.
+            self._database_backup_manager.restore(self._context, databases)
+
+            # Restore tables and data stored on local disks.
+            self._table_backup_manager.restore(
+                context=self._context,
+                databases=databases,
+                schema_only=sources.schema_only,
+                tables=tables,
+                exclude_tables=exclude_tables,
+                replica_name=replica_name,
+                cloud_storage_source_bucket=cloud_storage_source_bucket,
+                cloud_storage_source_path=cloud_storage_source_path,
+                cloud_storage_source_endpoint=cloud_storage_source_endpoint,
+                cloud_storage_latest=cloud_storage_latest,
+                skip_cloud_storage=skip_cloud_storage,
+                clean_zookeeper=clean_zookeeper,
+                keep_going=keep_going,
+            )
+
+            if sources.data and self._context.restore_context.has_failed_parts():
+                msg = 'Some parts are failed to attach'
+                logging.warning(msg)
+
+                if self._context.config['restore_fail_on_attach_error']:
+                    raise ClickhouseBackupError(msg)
 
     def _get_backup(self, backup_name: str, use_light_meta: bool = False) -> BackupMetadata:
         backup = self._context.backup_layout.get_backup(backup_name, use_light_meta)

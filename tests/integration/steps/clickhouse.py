@@ -111,6 +111,18 @@ def step_drop_databases(context, node):
         ch_client.drop_database(db_name)
 
 
+@when('we drop all data at {node:w}')
+def step_drop_accesses(context, node):
+    ch_client = ClickhouseClient(context, node)
+    # drop databases
+    for db_name in ch_client.get_all_user_databases():
+        ch_client.drop_database(db_name)
+    # drop all access entities
+    ch_client.drop_all_access_objects()
+    # drop all udf
+    ch_client.drop_all_udf()
+
+
 @then('{node1:w} has same schema as {node2:w}')
 def step_has_same_schema(context, node1, node2):
     def _get_ddl(node):

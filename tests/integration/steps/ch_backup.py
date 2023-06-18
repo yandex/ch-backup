@@ -143,6 +143,12 @@ def step_restore_access_control_backup(context, backup_id, node):
     assert container.exec_run('supervisorctl restart clickhouse').exit_code == 0
 
 
+@when('we restart clickhouse on {node:w}')
+def step_restart_clickhouse(context, node):
+    container = get_container(context, node)
+    assert container.exec_run('supervisorctl restart clickhouse').exit_code == 0
+
+
 @then('we got the following s3 backup directories on {node:w}')
 def step_check_s3_backup_directory(context, node):
     backups_directory = '/var/lib/clickhouse/disks/s3/shadow/'

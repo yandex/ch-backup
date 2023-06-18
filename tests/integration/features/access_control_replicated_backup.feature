@@ -42,9 +42,6 @@ Feature: Backup and restore functionality of replicated access control entities
     CREATE SETTINGS PROFILE memory_profile SETTINGS max_memory_usage = 100000001 MIN 90000000 MAX 110000000 TO test_role;
     """
     When we create clickhouse01 clickhouse backup
-    """
-    backup_access_control: True
-    """
     Then we got the following backups on clickhouse01
       | num | state   | data_count | link_count |
       | 0   | created | 1          | 0          |
@@ -69,9 +66,6 @@ Feature: Backup and restore functionality of replicated access control entities
     CREATE SETTINGS PROFILE memory_profile SETTINGS max_memory_usage = 100000001 MIN 90000000 MAX 110000000 TO test_role;
     """
     When we create clickhouse01 clickhouse backup
-    """
-    backup_access_control: True
-    """
     Then we got the following backups on clickhouse01
       | num | state   | data_count | link_count |
       | 0   | created | 1          | 0          |

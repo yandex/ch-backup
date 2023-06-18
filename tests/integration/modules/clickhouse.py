@@ -19,6 +19,19 @@ DB_COUNT = 2
 TABLE_COUNT = 2
 ROWS_COUNT = 3
 
+ACCESS_TYPES = [
+    ('users', 'USER'),
+    ('roles', 'ROLE'),
+    ('quotas', 'QUOTA'),
+    ('row_policies', 'ROW POLICY'),
+    ('settings_profiles', 'SETTINGS PROFILE'),
+]
+ACCESS_LIST_QUERY = """
+SELECT name
+FROM system.{type} WHERE storage='disk' or storage='local directory' or storage='replicated'
+FORMAT JSON
+"""
+
 
 class ClickhouseClient:
     """
@@ -157,21 +170,33 @@ class ClickhouseClient:
         """
         Retrieve DDL for users, roles, etc
         """
-        list_query = """
-            SELECT name
-            FROM system.{type} WHERE storage='disk' or storage='local directory' or storage='replicated'
-            FORMAT JSON
-        """
-        types = [('users', 'USER'), ('roles', 'ROLE'), ('quotas', 'QUOTA'), ('row_policies', 'ROW POLICY'),
-                 ('settings_profiles', 'SETTINGS PROFILE')]
-
         result = set()
-        for table_name, uppercase_name in types:
-            ch_resp = self._query('GET', query=list_query.format(type=table_name))
+        for table_name, uppercase_name in ACCESS_TYPES:
+            ch_resp = self._query('GET', query=ACCESS_LIST_QUERY.format(type=table_name))
             for row in ch_resp.get('data', []):
                 result.add(self._query('GET', query=f"SHOW CREATE {uppercase_name} {row['name']}"))
 
         return result
+
+    def drop_all_access_objects(self) -> None:
+        """
+        Drop all access entities.
+        """
+        for table_name, uppercase_name in ACCESS_TYPES:
+            ch_resp = self._query('GET', query=ACCESS_LIST_QUERY.format(type=table_name))
+            for row in ch_resp.get('data', []):
+                self._query('POST', f'DROP {uppercase_name} `{row["name"]}`')
+
+    def drop_all_udf(self) -> None:
+        """
+        Drop all UDF.
+        """
+        if not self.ch_version_ge('21.11'):
+            return
+        all_functions_query = "SELECT name FROM system.functions WHERE origin == 'SQLUserDefined' FORMAT JSON"
+        ch_resp = self._query('GET', query=all_functions_query)
+        for row in ch_resp.get('data', []):
+            self._query('POST', f'DROP FUNCTION `{row["name"]}`')
 
     def drop_database(self, db_name: str) -> None:
         """

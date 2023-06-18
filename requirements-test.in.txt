@@ -9,6 +9,7 @@ pep8
 pylint
 mypy==0.910
 types-PyYAML
+types-dataclasses==0.6.6
 types-requests<2.27
 types-setuptools
 types-tabulate

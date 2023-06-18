@@ -53,7 +53,6 @@ Feature: User defined functions support
     """
     When we create clickhouse01 clickhouse backup
     """
-    backup_access_control: true
     schema_only: true
     """
     When we restore clickhouse backup #0 to clickhouse02
@@ -81,7 +80,6 @@ Feature: User defined functions support
     """
     When we create clickhouse01 clickhouse backup
     """
-    backup_access_control: true
     schema_only: true
     """
     When we restore clickhouse backup #0 to clickhouse02

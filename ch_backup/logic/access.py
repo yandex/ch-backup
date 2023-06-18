@@ -22,12 +22,17 @@ class AccessBackup(BackupManager):
     """
     Access backup class
     """
-    def backup(self, context: BackupContext, **kwargs: Any) -> None:
+    def backup(self, context: BackupContext) -> None:
         """
-        Backup access rights
+        Backup access control entities.
         """
-        if kwargs['backup_access_control'] or context.config.get('backup_access_control'):
-            self._backup(context)
+        objects = context.ch_ctl.get_access_control_objects()
+        context.backup_meta.set_access_control(objects)
+        acl_list, _ = context.backup_meta.get_access_control()
+
+        if self._has_replicated_access(context):
+            self._backup_replicated(acl_list, context)
+        self._backup_local(acl_list, context)
 
     def restore(self, context: BackupContext) -> None:
         """
@@ -102,18 +107,6 @@ class AccessBackup(BackupManager):
 
     def _clean_user_uuid(self, raw_str: str) -> str:
         return re.sub(r"EXCEPT ID\('(.+)'\)", '', raw_str)
-
-    def _backup(self, context: BackupContext) -> None:
-        """
-        Backup method
-        """
-        objects = context.ch_ctl.get_access_control_objects()
-        context.backup_meta.set_access_control(objects)
-        acl_list, _ = context.backup_meta.get_access_control()
-
-        if self._has_replicated_access(context):
-            self._backup_replicated(acl_list, context)
-        self._backup_local(acl_list, context)
 
     def _backup_local(self, acl_list: Sequence[str], context: BackupContext) -> None:
         """

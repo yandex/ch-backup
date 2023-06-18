@@ -66,6 +66,27 @@ class Backup:
         return count
 
     @property
+    def acl_count(self) -> int:
+        """
+        The number of access control entities.
+        """
+        return len(self._metadata.get('access_control', []))
+
+    @property
+    def udf_count(self) -> int:
+        """
+        The number of user defined functions.
+        """
+        return len(self._metadata.get('user_defined_functions', []))
+
+    @property
+    def schema_only(self) -> bool:
+        """
+        Current value for `schema_only` meta flag.
+        """
+        return bool(self._metadata.get('meta', {}).get('schema_only'))
+
+    @property
     def name(self):
         """
         Backup name.
@@ -169,6 +190,7 @@ class BackupManager:
         self._cmd_base = \
             f'timeout {timeout} {CH_BACKUP_CLI_PATH} --protocol {protocol} --insecure  --config {self._config_path}'
 
+    # pylint: disable=too-many-arguments
     def backup(self,
                name: str = '{uuid}',
                force: bool = None,
@@ -176,7 +198,10 @@ class BackupManager:
                tables: Sequence[str] = None,
                labels: dict = None,
                schema_only: bool = False,
-               backup_access_control: bool = None) -> str:
+               access: bool = None,
+               data: bool = None,
+               schema: bool = None,
+               udf: bool = None) -> str:
         """
         Execute backup command.
         """
@@ -191,8 +216,14 @@ class BackupManager:
             options.append(f'--label {key}={value}')
         if schema_only:
             options.append('--schema-only')
-        if backup_access_control:
-            options.append('--backup-access-control')
+        if access:
+            options.append('--access')
+        if data:
+            options.append('--data')
+        if schema:
+            options.append('--schema')
+        if udf:
+            options.append('--udf')
         return self._exec(f'backup {" ".join(options)}').strip()
 
     def delete(self, backup_id: BackupId, purge_partial: bool = False) -> str:
@@ -241,6 +272,7 @@ class BackupManager:
         output = self._exec(f'show {backup_id}')
         return Backup(json.loads(output))
 
+    # pylint: disable=too-many-arguments
     def restore(self,
                 backup_id: BackupId,
                 schema_only: bool = False,
@@ -250,7 +282,11 @@ class BackupManager:
                 replica_name: str = None,
                 cloud_storage_source_bucket: str = None,
                 cloud_storage_source_path: str = None,
-                cloud_storage_latest: bool = False) -> str:
+                cloud_storage_latest: bool = False,
+                access: bool = None,
+                data: bool = None,
+                schema: bool = None,
+                udf: bool = None) -> str:
         """
         Restore backup entry.
         """
@@ -272,6 +308,14 @@ class BackupManager:
             options.append(f'--cloud-storage-source-path {cloud_storage_source_path}')
         if cloud_storage_latest:
             options.append('--cloud-storage-latest')
+        if access:
+            options.append('--access')
+        if data:
+            options.append('--data')
+        if schema:
+            options.append('--schema')
+        if udf:
+            options.append('--udf')
         return self._exec(f'restore {" ".join(options)} {backup_id}')
 
     def restore_access_control(self, backup_id: BackupId) -> str:
