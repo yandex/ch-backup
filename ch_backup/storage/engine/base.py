@@ -3,7 +3,7 @@ Interfaces for storage engines.
 """
 
 from abc import ABCMeta, abstractmethod
-from typing import Any, Optional, Sequence
+from typing import Optional, Sequence
 
 
 class StorageEngine(metaclass=ABCMeta):
@@ -106,7 +106,7 @@ class PipeLineCompatibleStorageEngine(StorageEngine):
         pass
 
     @abstractmethod
-    def delete_files(self, remote_paths: Sequence[str]) -> Any:
+    def delete_files(self, remote_paths: Sequence[str]) -> None:
         """
         Delete files from storage.
         """

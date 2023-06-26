@@ -14,7 +14,7 @@ from ch_backup.storage.engine.s3.s3_client_factory import (S3ClientCachedFactory
 from ch_backup.storage.engine.s3.s3_multipart_uploader import \
     S3MultipartUploader
 from ch_backup.storage.engine.s3.s3_retry import S3RetryMeta
-from ch_backup.type_hints.boto3.s3 import DeleteObjectsOutputTypeDef, S3Client
+from ch_backup.type_hints.boto3.s3 import S3Client
 
 
 class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
@@ -33,6 +33,8 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
 
         if config.get('disable_ssl_warnings'):
             requests.packages.urllib3.disable_warnings()  # pylint: disable=no-member
+
+        self._bulk_delete_enabled = config.get('bulk_delete_enabled', True)
 
     @property
     def _s3_client(self) -> S3Client:
@@ -65,14 +67,17 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
         remote_path = remote_path.lstrip('/')
         self._s3_client.delete_object(Bucket=self._s3_bucket_name, Key=remote_path)
 
-    def delete_files(self, remote_paths: Sequence[str]) -> DeleteObjectsOutputTypeDef:
+    def delete_files(self, remote_paths: Sequence[str]) -> None:
         """
         Delete multiple files from S3
         """
         # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/s3.html#S3.Client.delete_objects
-        objects_to_delete: Sequence = [{'Key': path.lstrip('/')} for path in remote_paths]
-
-        return self._s3_client.delete_objects(Bucket=self._s3_bucket_name, Delete={'Objects': objects_to_delete})
+        if self._bulk_delete_enabled:
+            objects_to_delete: Sequence = [{'Key': path.lstrip('/')} for path in remote_paths]
+            self._s3_client.delete_objects(Bucket=self._s3_bucket_name, Delete={'Objects': objects_to_delete})
+        else:
+            for remote_path in remote_paths:
+                self.delete_file(remote_path)
 
     def list_dir(self, remote_path: str, recursive: bool = False, absolute: bool = False) -> Sequence[str]:
         remote_path = remote_path.strip('/') + '/'
