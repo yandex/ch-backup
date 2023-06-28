@@ -233,7 +233,7 @@ class ClickhouseBackup:
 
         logging.info('All required databases are present in backup.')
 
-        with self._context.locker():
+        with self._context.locker(distributed=not sources.schema_only):
             self._restore(
                 sources=sources,
                 db_names=databases,
@@ -297,11 +297,12 @@ class ClickhouseBackup:
             retained_backups_with_light_meta=retained_backups,
             deleting_backups_with_light_meta=deleting_backups)
 
-        result: Tuple[Optional[str], Optional[str]] = (None, None)
-        for backup in deleting_backups:
-            deleted_name, msg = self._delete(backup, dedup_references[backup.name])
-            if backup_name == backup.name:
-                result = (deleted_name, msg)
+        with self._context.locker():
+            result: Tuple[Optional[str], Optional[str]] = (None, None)
+            for backup in deleting_backups:
+                deleted_name, msg = self._delete(backup, dedup_references[backup.name])
+                if backup_name == backup.name:
+                    result = (deleted_name, msg)
 
         return result
 
@@ -350,10 +351,11 @@ class ClickhouseBackup:
             retained_backups_with_light_meta=retained_backups,
             deleting_backups_with_light_meta=deleting_backups)
 
-        for backup in deleting_backups:
-            backup_name, _ = self._delete(backup, dedup_references[backup.name])
-            if backup_name:
-                deleted_backup_names.append(backup_name)
+        with self._context.locker():
+            for backup in deleting_backups:
+                backup_name, _ = self._delete(backup, dedup_references[backup.name])
+                if backup_name:
+                    deleted_backup_names.append(backup_name)
 
         return deleted_backup_names, None
 

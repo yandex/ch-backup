@@ -385,7 +385,7 @@ class BackupManager:
     def _exec(self, command: str) -> str:
         cmd = f'{self._cmd_base} {command}'
         result = self._container.exec_run(cmd, user='root')
-        assert result.exit_code == 0, result.output.decode()
+        assert result.exit_code == 0, f'execution failed with code {result.exit_code}, out: "{result.output.decode()}'
 
         return result.output.decode().strip()
 

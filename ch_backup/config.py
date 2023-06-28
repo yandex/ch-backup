@@ -195,16 +195,29 @@ DEFAULT_CONFIG = {
                 'handlers': ['clickhouse-disks'],
                 'level': 'INFO',
             },
+            'zookeeper': {
+                'handlers': ['ch-backup'],
+                'level': 'DEBUG',
+            },
         },
     },
     'zookeeper': {
+        'secure': False,
+        'cert': None,
+        'key': None,
+        'ca': None,
+        'connect_timeout': 10,
         'hosts': [],
+        'root_path': '',
+        'user': None,
+        'password': None,
     },
     'lock': {
         'flock': False,
         'zk_flock': False,
         'flock_path': '/tmp/flock.lock',
         'zk_flock_path': '/tmp/zk_flock.lock',
+        'exitcode': 0,
     },
 }
 

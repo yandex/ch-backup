@@ -4,9 +4,9 @@ Clickhouse backup logic for access entities.
 import os
 import re
 import shutil
-from contextlib import contextmanager
-from typing import Any, Dict, Generator, List, Sequence, Union
+from typing import Any, Dict, List, Sequence, Union
 
+from kazoo.client import KazooClient
 from kazoo.exceptions import NoNodeError
 
 from ch_backup import logging
@@ -14,7 +14,6 @@ from ch_backup.backup.metadata import BackupStorageFormat
 from ch_backup.backup_context import BackupContext
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.util import chown_dir_contents
-from ch_backup.zookeeper.zookeeper import KAZOO_RETRIES, ZookeeperCTL
 
 CH_MARK_FILE = 'need_rebuild_lists.mark'
 
@@ -84,7 +83,7 @@ class AccessBackup(BackupManager):
                 raise ValueError(f'Duplicate {uuid} has differences, manual check required!')
 
         # cleanup ZK paths and local files
-        with _zk_ctl_client(context) as zk_ctl:
+        with context.zk_ctl.zk_client as zk_client:
             for uuid in to_delete:
                 # cleanup ZK duplicate
                 zk_path = _get_access_zk_path(context, f'/uuid/{uuid}')
@@ -93,7 +92,7 @@ class AccessBackup(BackupManager):
                     if dry_run:
                         logging.debug(f'Skipped removing zk path {zk_path} due to dry-run')
                     else:
-                        zk_ctl.zk_client.delete(zk_path)
+                        zk_client.delete(zk_path)
                 except NoNodeError:
                     logging.debug(f'Node {zk_path} not found.')
 
@@ -127,10 +126,10 @@ class AccessBackup(BackupManager):
         """
         _ensure_access_control_path(context)
         logging.debug(f'Backupping {len(acl_list)} access entities from replicated storage')
-        with _zk_ctl_client(context) as zk_ctl:
+        with context.zk_ctl.zk_client as zk_client:
             for uuid in acl_list:
                 uuid_zk_path = _get_access_zk_path(context, f'/uuid/{uuid}')
-                data, _ = zk_ctl.zk_client.get(uuid_zk_path)
+                data, _ = zk_client.get(uuid_zk_path)
                 _file_create(context, f'{uuid}.sql', data.decode())
         _chown_access_control_dir(context)
 
@@ -160,7 +159,7 @@ class AccessBackup(BackupManager):
             logging.warning('Can not restore access entities to replicated storage without meta information!')
             return
 
-        with _zk_ctl_client(context) as zk_ctl:
+        with context.zk_ctl.zk_client as zk_client:
             for i, uuid in enumerate(acl_list):
                 meta_data = acl_meta[str(i)]
                 name, obj_char = meta_data['name'], meta_data['char']
@@ -170,11 +169,11 @@ class AccessBackup(BackupManager):
                 with open(file_path, 'r', encoding='utf-8') as file:
                     data = file.read()
                     uuid_zk_path = _get_access_zk_path(context, f'/uuid/{uuid}')
-                    _zk_upsert_data(zk_ctl, uuid_zk_path, data)
+                    _zk_upsert_data(zk_client, uuid_zk_path, data)
 
                 # restore object link
                 uuid_zk_path = _get_access_zk_path(context, f'/{obj_char}/{name}')
-                _zk_upsert_data(zk_ctl, uuid_zk_path, uuid)
+                _zk_upsert_data(zk_client, uuid_zk_path, uuid)
 
     def _mark_to_rebuild(self, context: BackupContext) -> None:
         """
@@ -205,23 +204,10 @@ def _get_access_zk_path(context: BackupContext, zk_path: str) -> str:
     return '/' + os.path.join(*map(lambda x: x.lstrip('/'), paths))
 
 
-@contextmanager
-@KAZOO_RETRIES
-def _zk_ctl_client(context: BackupContext) -> Generator[ZookeeperCTL, None, None]:
-    zk_ctl = context.zk_ctl
-    try:
-        zk_ctl.zk_client.start()
-        zk_ctl.zk_add_auth()
-        yield zk_ctl
-    finally:
-        zk_ctl.zk_client.stop()
-
-
-def _zk_upsert_data(zk_ctl: ZookeeperCTL, path: str, value: Union[str, bytes]) -> None:
+def _zk_upsert_data(zk: KazooClient, path: str, value: Union[str, bytes]) -> None:
     if isinstance(value, str):
         value = value.encode()
 
-    zk = zk_ctl.zk_client
     logging.debug(f'Upserting zk access entity "{path}"')
     if zk.exists(path):
         zk.set(path, value)
