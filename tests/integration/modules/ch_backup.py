@@ -70,7 +70,7 @@ class Backup:
         """
         The number of access control entities.
         """
-        return len(self._metadata.get('access_control', []))
+        return len(self._metadata.get('access_controls', {}).get('acl_ids', []))
 
     @property
     def udf_count(self) -> int:
@@ -151,7 +151,7 @@ class Backup:
         metadata = copy(self._metadata)
         if light:
             metadata['databases'] = {}
-            metadata['access_control'] = []
+            metadata['access_controls'] = {}
 
         return json.dumps(metadata, indent=indent)
 

@@ -5,11 +5,12 @@ import os
 import re
 import shutil
 from contextlib import contextmanager
-from typing import Any, Dict, Generator, Iterator, Sequence, Union
+from typing import Any, Dict, Generator, List, Sequence, Union
 
 from kazoo.exceptions import NoNodeError
 
 from ch_backup import logging
+from ch_backup.backup.metadata import BackupStorageFormat
 from ch_backup.backup_context import BackupContext
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.util import chown_dir_contents
@@ -28,27 +29,29 @@ class AccessBackup(BackupManager):
         """
         objects = context.ch_ctl.get_access_control_objects()
         context.backup_meta.set_access_control(objects)
-        acl_list, _ = context.backup_meta.get_access_control()
+        access_control = context.backup_meta.access_control
 
         if self._has_replicated_access(context):
-            self._backup_replicated(acl_list, context)
-        self._backup_local(acl_list, context)
+            self._backup_replicated(access_control.acl_ids, context)
+        self._backup_local(access_control.acl_ids, context)
 
     def restore(self, context: BackupContext) -> None:
         """
         Restore access rights
         """
-        acl_list, acl_meta = context.backup_meta.get_access_control()
-        if not acl_list:
+        access_control = context.backup_meta.access_control
+        acl_ids, acl_meta = access_control.acl_ids, access_control.acl_meta
+
+        if not acl_ids:
             logging.debug('No access control entities to restore.')
             return
 
         has_replicated_access = self._has_replicated_access(context)
         mark_to_rebuild = not has_replicated_access
 
-        self._restore_local(acl_list, context, mark_to_rebuild=mark_to_rebuild)
+        self._restore_local(acl_ids, context, mark_to_rebuild=mark_to_rebuild)
         if has_replicated_access:
-            self._restore_replicated(acl_list, acl_meta, context)
+            self._restore_replicated(acl_ids, acl_meta, context)
 
     def fix_admin_user(self, context: BackupContext, dry_run: bool = True) -> None:
         """
@@ -108,13 +111,15 @@ class AccessBackup(BackupManager):
     def _clean_user_uuid(self, raw_str: str) -> str:
         return re.sub(r"EXCEPT ID\('(.+)'\)", '', raw_str)
 
-    def _backup_local(self, acl_list: Sequence[str], context: BackupContext) -> None:
+    def _backup_local(self, acl_ids: Sequence[str], context: BackupContext) -> None:
         """
         Backup access entities from local storage.
         """
-        logging.debug(f'Backupping {len(acl_list)} access entities from local storage')
-        for name in _get_access_control_files(acl_list):
-            context.backup_layout.upload_access_control_file(context.backup_meta.name, name)
+        assert context.backup_meta.access_control.backup_format == BackupStorageFormat.TAR
+
+        logging.debug(f'Backupping {len(acl_ids)} access entities from local storage')
+        acl_file_names = _get_access_control_files(acl_ids)
+        context.backup_layout.upload_access_control_files(context.backup_meta.name, acl_file_names)
 
     def _backup_replicated(self, acl_list: Sequence[str], context: BackupContext) -> None:
         """
@@ -135,8 +140,13 @@ class AccessBackup(BackupManager):
         """
         _ensure_access_control_path(context)
         logging.debug(f'Restoring {len(acl_list)} access entities to local storage')
-        for name in _get_access_control_files(acl_list):
-            context.backup_layout.download_access_control_file(context.backup_meta.name, name)
+
+        if context.backup_meta.access_control.backup_format == BackupStorageFormat.TAR:
+            context.backup_layout.download_access_control(context.backup_meta.name)
+        else:
+            for name in _get_access_control_files(acl_list):
+                context.backup_layout.download_access_control_file(context.backup_meta.name, name)
+
         if mark_to_rebuild:
             self._mark_to_rebuild(context)
 
@@ -179,11 +189,11 @@ class AccessBackup(BackupManager):
         return context.ch_config.config.get('user_directories', {}).get('replicated') is not None
 
 
-def _get_access_control_files(objects: Sequence[str]) -> Iterator[str]:
+def _get_access_control_files(objects: Sequence[str]) -> List[str]:
     """
     Return list of file to be backuped/restored.
     """
-    return map(lambda obj: f'{obj}.sql', objects)
+    return [f'{obj}.sql' for obj in objects]
 
 
 def _get_access_file_path(context: BackupContext, file_name: str) -> str:

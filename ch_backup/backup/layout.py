@@ -20,6 +20,7 @@ from ch_backup.util import escape_metadata_file_name, list_dir_files
 
 BACKUP_META_FNAME = 'backup_struct.json'
 BACKUP_LIGHT_META_FNAME = 'backup_light_struct.json'
+ACCESS_CONTROL_FNAME = 'access_control.tar'
 
 
 class BackupLayout:
@@ -96,6 +97,23 @@ class BackupLayout:
         try:
             logging.debug('Uploading access control data "%s"', local_path)
             self._storage_loader.upload_file(local_path=local_path, remote_path=remote_path, encryption=True)
+        except Exception as e:
+            msg = f'Failed to upload access control metadata file "{remote_path}"'
+            raise StorageError(msg) from e
+
+    def upload_access_control_files(self, backup_name: str, file_names: List[str]) -> None:
+        """
+        Upload access control list.
+        """
+        local_path = self._access_control_path
+        remote_path = _access_control_data_path(self.get_backup_path(backup_name), ACCESS_CONTROL_FNAME)
+        try:
+            logging.debug('Uploading access control data "%s"', local_path)
+            self._storage_loader.upload_files_tarball(self._access_control_path,
+                                                      file_names,
+                                                      remote_path,
+                                                      encryption=True)
+
         except Exception as e:
             msg = f'Failed to upload access control metadata file "{remote_path}"'
             raise StorageError(msg) from e
@@ -246,6 +264,19 @@ class BackupLayout:
         logging.debug('Downloading access control metadata "%s" to "%s', remote_path, local_path)
         try:
             self._storage_loader.download_file(remote_path, local_path, encryption=True)
+        except Exception as e:
+            msg = f'Failed to download access control metadata file {remote_path}'
+            raise StorageError(msg) from e
+
+    def download_access_control(self, backup_name: str) -> None:
+        """
+        Download access control object metadata and save on disk.
+        """
+        remote_path = _access_control_data_path(self.get_backup_path(backup_name), ACCESS_CONTROL_FNAME)
+        local_path = self._access_control_path
+        logging.debug('Downloading access control metadata "%s" to "%s', remote_path, local_path)
+        try:
+            self._storage_loader.download_files(remote_path, local_path, encryption=True)
         except Exception as e:
             msg = f'Failed to download access control metadata file {remote_path}'
             raise StorageError(msg) from e

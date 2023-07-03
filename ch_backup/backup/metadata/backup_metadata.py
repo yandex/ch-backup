@@ -5,10 +5,16 @@ import json
 import socket
 from datetime import datetime, timezone
 from enum import Enum
-from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence
 
-from ch_backup.clickhouse.models import Database, FrozenPart
+from ch_backup.backup.metadata.access_control_metadata import \
+    AccessControlMetadata
+from ch_backup.backup.metadata.cloud_storage_metadata import \
+    CloudStorageMetadata
+from ch_backup.backup.metadata.common import BackupStorageFormat
+from ch_backup.backup.metadata.part_metadata import PartMetadata
+from ch_backup.backup.metadata.table_metadata import TableMetadata
+from ch_backup.clickhouse.models import Database
 from ch_backup.exceptions import InvalidBackupStruct, UnknownBackupStateError
 from ch_backup.util import now
 
@@ -23,234 +29,6 @@ class BackupState(Enum):
     DELETING = 'deleting'
     PARTIALLY_DELETED = 'partially_deleted'
     FAILED = 'failed'
-
-
-class PartMetadata(SimpleNamespace):
-    """
-    Backup metadata for ClickHouse data part.
-    """
-
-    # pylint: disable=too-many-arguments
-    def __init__(self,
-                 database: str,
-                 table: str,
-                 name: str,
-                 checksum: str,
-                 size: int,
-                 files: Sequence[str],
-                 tarball: bool,
-                 link: str = None,
-                 disk_name: str = None) -> None:
-        super().__init__()
-        self.database: str = database
-        self.table: str = table
-        self.name: str = name
-        self.raw_metadata: dict = {
-            'checksum': checksum,
-            'size': size,
-            'files': files,
-            'tarball': tarball,
-            'link': link,
-            'disk_name': disk_name,
-        }
-
-    @property
-    def checksum(self) -> str:
-        """
-        Return data part checksum.
-        """
-        return self.raw_metadata['checksum']
-
-    @property
-    def size(self) -> int:
-        """
-        Return data part size.
-        """
-        return self.raw_metadata['size']
-
-    @property
-    def files(self) -> Sequence[str]:
-        """
-        Return data part files.
-        """
-        return self.raw_metadata['files']
-
-    @property
-    def link(self) -> Optional[str]:
-        """
-        For deduplicated data parts it returns link to the source backup (its path). Otherwise None is returned.
-        """
-        return self.raw_metadata['link']
-
-    @property
-    def disk_name(self) -> str:
-        """
-        Return disk name where part is stored.
-        """
-        return self.raw_metadata.get('disk_name', 'default')
-
-    @property
-    def tarball(self) -> bool:
-        """
-        Returns true if part files stored as single tarball.
-        """
-        return self.raw_metadata['tarball']
-
-    @classmethod
-    def load(cls, db_name: str, table_name: str, part_name: str, raw_metadata: dict) -> 'PartMetadata':
-        """
-        Deserialize data part metadata.
-        """
-        return cls(database=db_name,
-                   table=table_name,
-                   name=part_name,
-                   checksum=raw_metadata['checksum'],
-                   size=raw_metadata['bytes'],
-                   files=raw_metadata['files'],
-                   tarball=raw_metadata.get('tarball', False),
-                   link=raw_metadata['link'],
-                   disk_name=raw_metadata.get('disk_name', 'default'))
-
-    @classmethod
-    def from_frozen_part(cls, frozen_part: FrozenPart) -> 'PartMetadata':
-        """
-        Converts FrozenPart to PartMetadata.
-        """
-        return cls(database=frozen_part.database,
-                   table=frozen_part.table,
-                   name=frozen_part.name,
-                   checksum=frozen_part.checksum,
-                   size=frozen_part.size,
-                   files=frozen_part.files,
-                   tarball=True,
-                   disk_name=frozen_part.disk_name)
-
-
-class TableMetadata(SimpleNamespace):
-    """
-    Backup metadata for ClickHouse table.
-    """
-    def __init__(self, database: str, name: str, engine: str, uuid: Optional[str]) -> None:
-        super().__init__()
-        self.database: str = database
-        self.name: str = name
-        self.raw_metadata: dict = {
-            'engine': engine,
-            'uuid': uuid,
-            'parts': {},
-        }
-
-    @property
-    def engine(self) -> str:
-        """
-        Return table engine.
-        """
-        return self.raw_metadata['engine']
-
-    @property
-    def uuid(self) -> Optional[str]:
-        """
-        Return uuid of the table if not zero. Used for view restore in ch > 20.10
-        """
-        return self.raw_metadata['uuid']
-
-    def get_parts(self, *, excluded_parts: Set[str] = None) -> List[PartMetadata]:
-        """
-        Return data parts.
-        """
-        if not excluded_parts:
-            excluded_parts = set()
-
-        result = []
-        for part_name, raw_metadata in self.raw_metadata['parts'].items():
-            if part_name not in excluded_parts:
-                result.append(PartMetadata.load(self.database, self.name, part_name, raw_metadata))
-
-        return result
-
-    def add_part(self, part: PartMetadata) -> None:
-        """
-        Add data part to metadata.
-        """
-        assert part.database == self.database
-        assert part.table == self.name
-        assert part.name not in self.raw_metadata['parts']
-
-        self.raw_metadata['parts'][part.name] = {
-            'checksum': part.checksum,
-            'bytes': part.size,
-            'files': part.files,
-            'link': part.link,
-            'tarball': part.tarball,
-            'disk_name': part.disk_name,
-        }
-
-    @classmethod
-    def load(cls, database: str, name: str, raw_metadata: dict) -> 'TableMetadata':
-        """
-        Deserialize table metadata.
-        """
-        table = cls(database, name, raw_metadata['engine'], raw_metadata.get('uuid', None))
-        table.raw_metadata['parts'] = raw_metadata['parts']
-        return table
-
-
-class CloudStorageMetadata:
-    """
-    Backup metadata for Cloud Storage.
-    """
-    def __init__(self, encryption: bool = True, disks: Optional[List[str]] = None) -> None:
-        self._encryption: bool = encryption
-        self._disks: List[str] = disks or []
-
-    @property
-    def enabled(self) -> bool:
-        """
-        Return True if Cloud Storage is enabled within the backup.
-        """
-        return len(self._disks) > 0
-
-    @property
-    def disks(self) -> List[str]:
-        """
-        Return list of backed up disks names.
-        """
-        return self._disks
-
-    def add_disk(self, disk_name: str) -> None:
-        """
-        Add disk name in backed up disks list.
-        """
-        self._disks.append(disk_name)
-
-    @property
-    def encrypted(self) -> bool:
-        """
-        Return True if Cloud Storage backup is encrypted.
-        """
-        return self._encryption
-
-    def encrypt(self) -> None:
-        """
-        Encrypt Cloud Storage data within the backup.
-        """
-        self._encryption = True
-
-    @classmethod
-    def load(cls, data: Dict[str, Any]) -> 'CloudStorageMetadata':
-        """
-        Deserialize Cloud Storage metadata.
-        """
-        return cls(encryption=data.get('encryption', True), disks=data.get('disks', []))
-
-    def dump(self) -> Dict[str, Any]:
-        """
-        Serialize Cloud Storage metadata.
-        """
-        return {
-            'encryption': self._encryption,
-            'disks': self._disks,
-        }
 
 
 class BackupMetadata:
@@ -276,19 +54,19 @@ class BackupMetadata:
         self.version = version
         self.ch_version = ch_version
         self.hostname = hostname or socket.getfqdn()
-        self._state = BackupState.CREATING
         self.time_format = time_format
         self.start_time = now()
         self.end_time: Optional[datetime] = None
-        self._databases: Dict[str, dict] = {}
-        self._access_control: Sequence[str] = []
-        self._access_control_meta: Dict[str, Dict[str, Any]] = {}
         self.size = 0
         self.real_size = 0
         self.schema_only = schema_only
         self.s3_revisions: Dict[str, int] = {}  # S3 disk name -> revision counter.
-        self._user_defined_functions: List[str] = []
         self.cloud_storage: CloudStorageMetadata = CloudStorageMetadata()
+
+        self._state = BackupState.CREATING
+        self._databases: Dict[str, dict] = {}
+        self._access_control = AccessControlMetadata()
+        self._user_defined_functions: List[str] = []
 
     def __str__(self) -> str:
         return self.dump_json()
@@ -332,8 +110,7 @@ class BackupMetadata:
         """
         return {
             'databases': self._databases if not light else {},
-            'access_control': self._access_control if not light else [],
-            'access_control_meta': self._access_control_meta if not light else {},
+            'access_controls': self._access_control.dump() if not light else {},
             'user_defined_functions': self._user_defined_functions if not light else [],
             'cloud_storage': self.cloud_storage.dump(),
             'meta': {
@@ -378,8 +155,16 @@ class BackupMetadata:
             backup.hostname = meta['hostname']
             backup.time_format = meta['time_format']
             backup._databases = data['databases']
-            backup._access_control = data.get('access_control', [])
-            backup._access_control_meta = data.get('access_control_meta', {})
+
+            if 'access_control' in data:
+                # For backward compatibility
+                backup._access_control = AccessControlMetadata(data.get('access_control', []),
+                                                               data.get('access_control_meta', {}),
+                                                               BackupStorageFormat.PLAIN)
+            else:
+                # Stored under a new name for forward compatibility
+                backup._access_control = AccessControlMetadata.load(data.get('access_controls', {}))
+
             backup.cloud_storage = CloudStorageMetadata.load(data.get('cloud_storage', {}))
             backup.start_time = cls._load_time(meta, 'start_time')
             backup.end_time = cls._load_time(meta, 'end_time')
@@ -525,19 +310,18 @@ class BackupMetadata:
         """
         return self.size == 0
 
-    def get_access_control(self) -> Tuple[Sequence[str], Dict[str, Dict[str, Any]]]:
+    @property
+    def access_control(self) -> AccessControlMetadata:
         """
         Get access control objects.
         """
-        return self._access_control, self._access_control_meta
+        return self._access_control
 
     def set_access_control(self, objects: Sequence[Dict[str, Any]]) -> None:
         """
         Build and add access control objects to backup metadata.
         """
-        acl_list, acl_meta = self._make_acl_objects(objects)
-        self._access_control = acl_list
-        self._access_control_meta = acl_meta
+        self._access_control = AccessControlMetadata.from_ch_objects(objects)
 
     def has_s3_data(self) -> bool:
         """
@@ -567,12 +351,3 @@ class BackupMetadata:
             result = result.replace(tzinfo=timezone.utc)
 
         return result
-
-    @staticmethod
-    def _make_acl_objects(objects: Sequence[Dict[str, Any]]) -> Tuple[Sequence[str], Dict[str, Dict[str, Any]]]:
-        acl_list, acl_meta = [], {}
-        for i, item in enumerate(objects):
-            acl_list.append(item['id'])
-            acl_meta[str(i)] = {'name': item['name'], 'char': item['char']}
-
-        return acl_list, acl_meta
