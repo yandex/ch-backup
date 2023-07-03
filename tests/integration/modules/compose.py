@@ -141,7 +141,12 @@ def _generate_service_config(config: dict, instance_name: str, instance_config: 
     staging_dir = config['staging_dir']
     network_name = config['network_name']
 
-    volumes = [f'./images/{instance_name}/config:/config:rw']
+    volumes = [
+        '../:/code:rw',
+    ]
+    if os.path.exists(os.path.join(staging_dir, f'images/{instance_name}/config')):
+        volumes.append(f'./images/{instance_name}/config:/config:rw')
+
     # Take care of port forwarding
     ports_list = []
     for port in instance_config.get('expose', {}).values():
@@ -179,19 +184,6 @@ def _generate_service_config(config: dict, instance_name: str, instance_config: 
     }
 
     return service
-
-
-def _prepare_volumes(volumes: dict, local_basedir: str) -> list:
-    """
-    Form a docker-compose volume list, and create endpoints.
-    """
-    # pylint: disable=consider-using-f-string
-    volume_list = []
-    for props in volumes.values():
-        # "local" params are expected to be relative to docker-compose.yaml, so prepend its location.
-        os.makedirs(f'{local_basedir}/{props["local"]}', exist_ok=True)
-        volume_list.append('{local}:{remote}:{mode}'.format(**props))
-    return volume_list
 
 
 def _call_compose(conf: dict, action: str) -> None:
