@@ -81,7 +81,7 @@ def tmp_dir_path(dir_path=None):
         'chunk_size': st.integers(1, 1024),
         'type': st.just('nacl'),
         'key': st.just(SECRET_KEY),
-    }),
+    }),  # type: ignore
     write_conf=st.fixed_dictionaries({key: st.integers(1, 1024)
                                       for key in ('buffer_size', 'chunk_size')}),
 )
@@ -166,14 +166,16 @@ def run_backward_pl(in_file_name, out_file_name, read_conf, encrypt_conf, write_
 
 @settings(max_examples=ENCRYPT_DECRYPT_TEST_COUNT, deadline=None)
 @example(791, 28, {'buffer_size': 562, 'chunk_size': 211})
-@given(incoming_stream_size=st.integers(1, 1024),
-       incoming_chunk_size=st.integers(1, 1024),
-       conf=st.fixed_dictionaries({
-           'buffer_size': st.integers(1, 1024),
-           'chunk_size': st.integers(1, 1024),
-           'type': st.just('nacl'),
-           'key': st.just(SECRET_KEY),
-       }))
+@given(
+    incoming_stream_size=st.integers(1, 1024),
+    incoming_chunk_size=st.integers(1, 1024),
+    conf=st.fixed_dictionaries({
+        'buffer_size': st.integers(1, 1024),
+        'chunk_size': st.integers(1, 1024),
+        'type': st.just('nacl'),
+        'key': st.just(SECRET_KEY),
+    }),  # type: ignore
+)
 def test_nacl_ecrypt_decrypt(incoming_stream_size, incoming_chunk_size, conf):
     """
     Tests encryption stage

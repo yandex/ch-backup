@@ -1,25 +1,26 @@
 isort
-yapf
-flake8
+yapf==0.32.0
+flake8<4.0
 flake8-string-format
 flake8-commas
 flake8-quotes
 flake8-print
 pep8
-pylint
+pylint==2.13.9
 mypy==0.910
 types-PyYAML
 types-dataclasses==0.6.6
 types-requests<2.27
 types-setuptools
 types-tabulate
-bandit
+bandit==1.7.1
 pytest
 PyHamcrest==2.0.0
 hypothesis
 behave
-docker
+docker<5.0
 docker-compose<1.28
+websocket-client<1.0  # required for docker-compose<1.28
 Jinja2
-deepdiff
-mypy-boto3-s3==1.21.7  # This is the last version that requires typing-extensions<4.0.0
+deepdiff<5.8
+mypy-boto3-s3==1.21.7  # this is the last version that requires typing-extensions<4.0.0

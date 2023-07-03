@@ -7,7 +7,7 @@ import os
 import random
 import re
 import tarfile
-from distutils import dir_util
+from distutils import dir_util  # pylint: disable=deprecated-module
 from typing import List, Sequence, Tuple
 from urllib.parse import urlparse
 
