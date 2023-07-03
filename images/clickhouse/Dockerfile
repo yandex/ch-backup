@@ -1,4 +1,4 @@
-FROM registry.yandex.net/ubuntu:bionic
+FROM ubuntu:bionic
 
 ENV TZ=Europe/Moscow
 ENV CH_TMP_DIR /var/tmp/ch-backup
@@ -34,12 +34,9 @@ COPY setup.py requirements.txt ${CH_TMP_DIR}/
 RUN cd ${CH_TMP_DIR} && \
     pip3 install -r requirements.txt && \
     mkdir -p /etc/apt/sources.list.d && \
-    echo "deb http://dist.yandex.ru/mdb-bionic-secure testing/all/"     | tee /etc/apt/sources.list.d/mdb-bionic-secure-testing.list && \
-    echo "deb http://dist.yandex.ru/mdb-bionic-secure testing/\$(ARCH)/" | tee -a /etc/apt/sources.list.d/mdb-bionic-secure-testing.list && \
-    echo "deb http://dist.yandex.ru/mdb-bionic-secure stable/all/"      | tee /etc/apt/sources.list.d/mdb-bionic-secure-stable.list && \
-    echo "deb http://dist.yandex.ru/mdb-bionic-secure stable/\$(ARCH)/"  | tee -a /etc/apt/sources.list.d/mdb-bionic-secure-stable.list
-
-RUN apt-get update -qq && \
+    echo "deb https://packages.clickhouse.com/deb stable main" | tee /etc/apt/sources.list.d/clickhouse.list && \
+    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 8919F6BD2B48D754 && \
+    apt-get update -qq && \
     apt-get upgrade -y && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
         clickhouse-common-static=$CLICKHOUSE_VERSION \
