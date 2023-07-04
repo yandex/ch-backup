@@ -226,12 +226,19 @@ class BackupManager:
             options.append('--udf')
         return self._exec(f'backup {" ".join(options)}').strip()
 
-    def delete(self, backup_id: BackupId, purge_partial: bool = False) -> str:
+    def delete(self, backup_id: BackupId, purge_partial: bool = False, force: bool = False) -> str:
         """
         Execute delete command.
         """
         backup_id = self._normalize_id(backup_id)
-        return self._exec(f'delete {"--purge-partial " if purge_partial else ""}{backup_id}')
+
+        options = []
+        if purge_partial:
+            options.append("--purge-partial")
+        if force:
+            options.append("--force")
+
+        return self._exec(f'delete {" ".join(options)} {backup_id}')
 
     def purge(self) -> str:
         """

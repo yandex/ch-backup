@@ -193,3 +193,11 @@ Feature: Backup & Clean & Restore
     Then we got the following backups on clickhouse01
       | num | state             | data_count | link_count   | title        |
     And s3 contains 0 objects
+
+  Scenario: Attempt to delete non-existent backup with force flag succeeds
+    When we delete clickhouse01 clickhouse backup "non_existent_backup"
+    """
+    force: true
+    """
+    Then we got the following backups on clickhouse01
+      | num | state             | data_count | link_count   | title        |
