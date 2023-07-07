@@ -15,8 +15,7 @@ from datetime import datetime, timedelta, timezone
 from functools import partial
 from inspect import currentframe
 from itertools import islice
-from pathlib import Path
-from typing import (BinaryIO, Callable, Iterable, Iterator, List, Sequence, Tuple, Type, TypeVar, Union)
+from typing import (BinaryIO, Callable, Iterable, Iterator, List, Tuple, Type, TypeVar, Union)
 
 import humanfriendly
 import tenacity
@@ -247,13 +246,6 @@ def escape_metadata_file_name(name: str) -> str:
         else:
             result.extend(f'%{_HEX_UPPERCASE_TABLE[int(c / 16)]}{_HEX_UPPERCASE_TABLE[c % 16]}'.encode('utf-8'))
     return result.decode('utf-8')
-
-
-def total_files_size(files: Sequence[Path]) -> int:
-    """
-    Return the sum of the file sizes.
-    """
-    return sum(file.stat().st_size for file in files)
 
 
 def chunked(iterable: Iterable, n: int) -> Iterator[list]:

@@ -2,14 +2,13 @@
 Management of backup data layout.
 """
 
-import math
 import os
-from tarfile import BLOCKSIZE, LENGTH_NAME  # type: ignore
 from typing import List, Optional, Sequence
 from urllib.parse import quote
 
 from ch_backup import logging
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
+from ch_backup.calculators import calc_encrypted_size, calc_tarball_size
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.config import Config
 from ch_backup.encryption import get_encryption
@@ -420,14 +419,8 @@ class BackupLayout:
         """
         Predicts tar archive size after encryption.
         """
-        result = part.size
-        for f in part.raw_metadata['files']:
-            if len(f) < LENGTH_NAME:
-                result += BLOCKSIZE  # file header
-            else:
-                result += (math.ceil(len(f) / BLOCKSIZE) + 2) * BLOCKSIZE  # long name header + name data + file header
-        result += math.ceil(result / self._encryption_chunk_size) * self._encryption_metadata_size
-        return result
+        tar_size = calc_tarball_size(part.raw_metadata['files'], part.size)
+        return calc_encrypted_size(tar_size, self._encryption_chunk_size, self._encryption_metadata_size)
 
 
 def _access_control_data_path(backup_path: str, file_name: str) -> str:
