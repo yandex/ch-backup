@@ -1,0 +1,62 @@
+name: main
+
+on:
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  NO_VENV: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
+        cache: pip
+    - name: "lint: isort"
+      run: make isort
+    - name: "lint: yapf"
+      run: make yapf
+    - name: "lint: flake8"
+      run: make flake8
+    - name: "lint: pylint"
+      run: make pylint
+    - name: "lint: mypy"
+      run: make mypy
+    - name: "lint: bandit"
+      run: make bandit
+
+  test:
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - {python: "3.6.15", ubuntu: "20.04"}
+          - {python: "3.10.12", ubuntu: "latest"}
+        clickhouse:
+        - "21.8.15.7"
+        - "22.3.20.29"
+        - "22.8.19.10"
+        - "23.3.4.17"
+        - "23.4.4.16"
+        - "23.5.3.24"
+        - "23.6.1.1524"
+    runs-on: ubuntu-${{ matrix.target.ubuntu }}
+    steps:
+    - uses: actions/checkout@v3
+    - name: set up python ${{ matrix.target.python }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.target.python }}
+    - name: run unit tests
+      run: make test-unit
+    - name: run integration tests
+      run: make test-integration
