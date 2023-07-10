@@ -1,81 +1,74 @@
 export PYTHON?=python3
 export PYTHONIOENCODING?=utf8
+export NO_VENV?=
+export COMPOSE_HTTP_TIMEOUT?=300
 export CLICKHOUSE_VERSION?=23.3.7.5
+
+ifndef NO_VENV
+  export PATH := venv/bin:${PATH}
+endif
 
 SESSION_FILE=.session_conf.sav
 INSTALL_DIR=$(DESTDIR)/opt/yandex/ch-backup
 
-INTEGRATION_TEST_ENV=env -i \
-    PATH=venv/bin:$$PATH \
+TEST_ENV=env \
+    PATH=${PATH} \
     PYTHONIOENCODING=${PYTHONIOENCODING} \
     CLICKHOUSE_VERSION=${CLICKHOUSE_VERSION} \
-    DOCKER_HOST=$$DOCKER_HOST \
-    DOCKER_TLS_VERIFY=$$DOCKER_TLS_VERIFY \
-    DOCKER_CERT_PATH=$$DOCKER_CERT_PATH \
-    COMPOSE_HTTP_TIMEOUT=300
+    COMPOSE_HTTP_TIMEOUT=${COMPOSE_HTTP_TIMEOUT}
 
-INTEGRATION_TEST_TOOL=${INTEGRATION_TEST_ENV} venv/bin/python -m tests.integration.env_control
+INTEGRATION_TEST_TOOL=${TEST_ENV} python -m tests.integration.env_control
 
 
 .PHONY: build
-build: ch_backup/version.txt
-
+build: install-deps ch_backup/version.txt
 
 .PHONY: all
-all: build lint unit_test integration_test
-
-
-.PHONY: test
-test: lint unit_test
-
+all: build lint test-unit test-integration
 
 .PHONY: lint
-lint: venv build git-diff-check isort yapf flake8 pylint mypy bandit
-
-.PHONY: git-diff-check
-git-diff-check:
-	git --no-pager diff HEAD~1 --check
+lint: install-deps isort yapf flake8 pylint mypy bandit
 
 .PHONY: isort
-isort:
-	venv/bin/isort --check-only --ignore-whitespace --diff ch_backup tests
+isort: install-deps
+	${TEST_ENV} isort --check-only --ignore-whitespace --diff ch_backup tests
 
 .PHONY: yapf
-yapf:
-	venv/bin/yapf -rpd ch_backup tests
+yapf: install-deps
+	${TEST_ENV} yapf -rpd ch_backup tests
 
 .PHONY: flake8
-flake8:
-	venv/bin/flake8 ch_backup tests
+flake8: install-deps
+	${TEST_ENV} flake8 ch_backup tests
 
 .PHONY: pylint
-pylint:
-	venv/bin/pylint --reports=no --score=no ch_backup
-	venv/bin/pylint --disable=redefined-outer-name,missing-docstring,invalid-name --reports=no --score=no tests
+pylint: install-deps
+	${TEST_ENV} pylint --reports=no --score=no ch_backup
+	${TEST_ENV} pylint --disable=redefined-outer-name,missing-docstring,invalid-name --reports=no --score=no tests
 
 .PHONY: mypy
-mypy:
-	venv/bin/mypy ch_backup tests
+mypy: install-deps
+	${TEST_ENV} mypy ch_backup tests
 
 .PHONY: bandit
-bandit:
-	venv/bin/bandit -c bandit.yaml -r ch_backup
+bandit: install-deps
+	${TEST_ENV} bandit -c bandit.yaml -r ch_backup
 
 
-.PHONY: unit_test
-unit_test: venv build
-	venv/bin/py.test $(PYTEST_ARGS) tests
+.PHONY: test-unit
+test-unit: build
+	${TEST_ENV} py.test $(PYTEST_ARGS) tests
 
 
-.PHONY: integration_test
-integration_test: venv build create_env
+.PHONY: test-integration
+test-integration: build create_env
 	rm -rf staging/logs
-	${INTEGRATION_TEST_ENV} venv/bin/behave --show-timings --stop -D skip_setup $(BEHAVE_ARGS) @tests/integration/ch_backup.featureset
+	${TEST_ENV} behave --show-timings --stop -D skip_setup $(BEHAVE_ARGS) @tests/integration/ch_backup.featureset
 
 
 .PHONY: clean
 clean: clean_env clean_pycache
-	rm -rf venv *.egg-info htmlcov .coverage* .hypothesis .mypy_cache .pytest_cache ch_backup/version.txt
+	rm -rf venv *.egg-info htmlcov .coverage* .hypothesis .mypy_cache .pytest_cache .install-deps ch_backup/version.txt
 
 .PHONY: clean_pycache
 clean_pycache:
@@ -128,7 +121,7 @@ clean_debuild: clean
 
 
 .PHONY: create_env
-create_env: venv build ${SESSION_FILE}
+create_env: build ${SESSION_FILE}
 
 ${SESSION_FILE}:
 	${INTEGRATION_TEST_TOOL} create
@@ -141,7 +134,7 @@ start_env: create_env
 
 .PHONY: stop_env
 stop_env:
-	test -d venv/bin && test -f ${SESSION_FILE} && ${INTEGRATION_TEST_TOOL} stop || true
+	test -f ${SESSION_FILE} && ${INTEGRATION_TEST_TOOL} stop || true
 
 
 .PHONY: clean_env
@@ -150,31 +143,32 @@ clean_env: stop_env
 
 
 .PHONY: format
-format: venv
-	venv/bin/isort ch_backup tests
-	venv/bin/yapf --recursive --parallel --in-place ch_backup tests
+format: install-deps
+	${TEST_ENV} isort ch_backup tests
+	${TEST_ENV} yapf --recursive --parallel --in-place ch_backup tests
 
 
 ch_backup/version.txt:
 	@echo "2.$$(git rev-list HEAD --count).$$(git rev-parse --short HEAD | perl -ne 'print hex $$_')" > ch_backup/version.txt
 
 
-venv: requirements.txt requirements-dev.txt
-	${PYTHON} -m venv venv
-	venv/bin/pip install --no-cache-dir --disable-pip-version-check -r requirements.txt -r requirements-dev.txt
+.PHONY: install-deps
+install-deps: .install-deps
+
+.install-deps: requirements.txt requirements-dev.txt
+	if [ -z "${NO_VENV}" ]; then ${PYTHON} -m venv venv; fi
+	${TEST_ENV} pip install --no-cache-dir --disable-pip-version-check -r requirements.txt -r requirements-dev.txt
+	touch .install-deps
 
 
 .PHONY: help
 help:
 	@echo "Targets:"
-	@echo "  build (default)            Build project (it only generates version.txt for now)."
-	@echo "  all                        Alias for \"build lint unit_test integration_test\"."
-	@echo "  test                       Alias for \"lint unit_test\"."
-	@echo "  lint                       Run all linter tools. Alias for \"git-diff-check isort yapf"
-	@echo "                             flake8 pylint mypy bandit\"."
-	@echo "  unit_test                  Run unit tests."
-	@echo "  integration_test           Run integration tests."
-	@echo "  git-diff-check             Perform \"git diff --check\"."
+	@echo "  build (default)            Build project. It installs dependencies and generates version.txt."
+	@echo "  all                        Alias for \"build lint test-unit test-integration\"."
+	@echo "  lint                       Run all linter tools. Alias for \"isort yapf flake8 pylint mypy bandit\"."
+	@echo "  test-unit                  Run unit tests."
+	@echo "  test-integration           Run integration tests."
 	@echo "  isort                      Perform isort checks."
 	@echo "  yapf                       Perform yapf checks."
 	@echo "  flake8                     Perform flake8 checks."
@@ -197,4 +191,5 @@ help:
 	@echo "  PYTHON                     Python executable to use (default: \"$(PYTHON)\")."
 	@echo "  PYTEST_ARGS                Arguments to pass to pytest (unit tests)."
 	@echo "  BEHAVE_ARGS                Arguments to pass to behave (integration tests)."
+	@echo "  NO_VENV                    Disable creation of venv if the variable is set to non-empty value."
 	@echo "  CLICKHOUSE_VERSION         ClickHouse version to use in integration tests (default: \"$(CLICKHOUSE_VERSION)\")."

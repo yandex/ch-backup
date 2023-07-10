@@ -6,6 +6,7 @@
 .editorconfig
 .hypothesis/
 .idea
+.install-deps
 .mypy_cache/
 .pytest_cache/
 .session_conf.sav

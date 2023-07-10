@@ -317,7 +317,7 @@ def list_command(_ctx: Context, ch_backup: ClickhouseBackup, verbose: bool, **kw
         print(tabulate(records, headers='keys'))
 
 
-@command(name='show')
+@command(name='show')  # type: ignore
 @argument('name', metavar='BACKUP')
 def show_command(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> None:
     """Show details for a particular backup."""
@@ -400,7 +400,7 @@ def backup_command(_ctx: Context, ch_backup: ClickhouseBackup, name: str, databa
     print(name)
 
 
-@command(name='restore')
+@command(name='restore')  # type: ignore
 @argument('name', metavar='BACKUP')
 @option_group(
     'Database',
@@ -551,7 +551,7 @@ def fix_s3_oplog_command(_ctx: Context,
     ch_backup.fix_s3_oplog(source_cluster_id, shard, cloud_storage_source_bucket, cloud_storage_source_path, dryrun)
 
 
-@command(name='restore-access-control')
+@command(name='restore-access-control')  # type: ignore
 @argument('name', metavar='BACKUP')
 def restore_access_control_command(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> None:
     """Restore ClickHouse access control metadata."""
@@ -567,7 +567,7 @@ def fix_admin_user_command(_ctx: Context, ch_backup: ClickhouseBackup, dryrun: b
     ch_backup.fix_admin_user(dry_run=dryrun)
 
 
-@command(name='delete')
+@command(name='delete')  # type: ignore
 @argument('name', metavar='BACKUP')
 @option('--purge-partial', is_flag=True, default=False, help='Also purge all partial deleted backups')
 def delete_command(ctx: Context, ch_backup: ClickhouseBackup, name: str, purge_partial: bool) -> None:
