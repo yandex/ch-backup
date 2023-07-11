@@ -63,27 +63,17 @@ class BackupLayout:
             msg = f'Failed to create async upload of {remote_path}'
             raise StorageError(msg) from e
 
-    def upload_table_create_statement(self, backup_name: str, db: Database, table: Table) -> None:
+    def upload_table_create_statement(self, backup_name: str, db: Database, table: Table,
+                                      create_statement: bytes) -> None:
         """
         Upload table create statement.
         """
         assert db.metadata_path is not None
 
-        local_path = table.metadata_path
-        if not local_path:
-            logging.warning(
-                'Skipped uploading metadata (create statement) for table "%s"."%s". '
-                'Local metadata path is empty', db.name, table.name)
-            return
-
         remote_path = _table_metadata_path(self.get_backup_path(backup_name), db.name, table.name)
         try:
             logging.debug('Uploading metadata (create statement) for table "%s"."%s"', db.name, table.name)
-            self._storage_loader.upload_file(local_path,
-                                             remote_path,
-                                             is_async=True,
-                                             encryption=True,
-                                             skip_deleted=True)
+            self._storage_loader.upload_data(create_statement, remote_path, is_async=True, encryption=True)
         except Exception as e:
             msg = f'Failed to create async upload of {remote_path}'
             raise StorageError(msg) from e
