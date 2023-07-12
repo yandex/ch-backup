@@ -20,7 +20,7 @@ KAZOO_RETRIES = retry((KazooException, KazooTimeoutError), max_attempts=5, max_i
 
 class ZookeeperClient:
     """
-    ZooKeeper client, adds context mangment to KazooClient
+    ZooKeeper client, adds context management to KazooClient
     """
     def __init__(self, config: dict):
         self._client = KazooClient(config['hosts'],
@@ -34,18 +34,19 @@ class ZookeeperClient:
         self._connect_timeout = config.get('connect_timeout')
         self._entered = 0
 
+    @KAZOO_RETRIES
     def __enter__(self) -> KazooClient:
-        self._entered += 1
-        if self._entered == 1:
+        if self._entered == 0:
             self._client.start(self._connect_timeout)
             if self._zk_user and self._zk_password:
                 self._client.add_auth('digest', f'{self._zk_user}:{self._zk_password}')
+        self._entered += 1
         return self._client
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self._entered -= 1
         if self._entered == 0:
             self._client.stop()
+        self._entered -= 1
 
 
 class ZookeeperCTL:
