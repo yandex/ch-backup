@@ -10,18 +10,20 @@ import re
 import shutil
 import string
 import time
+from dataclasses import fields as data_fields
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from inspect import currentframe
 from itertools import islice
-from pathlib import Path
-from typing import (BinaryIO, Callable, Iterable, Iterator, List, Sequence, Tuple, Union)
+from typing import (BinaryIO, Callable, Iterable, Iterator, List, Tuple, Type, TypeVar, Union)
 
 import humanfriendly
 import tenacity
 
 from ch_backup import logging
 from ch_backup.exceptions import ClickhouseBackupError
+
+T = TypeVar('T')
 
 LOCAL_TZ = timezone(timedelta(seconds=-1 * (time.altzone if time.daylight else time.timezone)))
 _ALLOWED_NAME_CHARS = set(['_'] + list(string.ascii_letters) + list(string.digits))
@@ -246,13 +248,6 @@ def escape_metadata_file_name(name: str) -> str:
     return result.decode('utf-8')
 
 
-def total_files_size(files: Sequence[Path]) -> int:
-    """
-    Return the sum of the file sizes.
-    """
-    return sum(file.stat().st_size for file in files)
-
-
 def chunked(iterable: Iterable, n: int) -> Iterator[list]:
     """
     Chunkify iterable into lists of length n. The last chunk may be shorter.
@@ -294,3 +289,13 @@ def exhaust_iterator(iterator: Iterator) -> None:
     Read all elements from iterator until it stops.
     """
     collections.deque(iterator, maxlen=0)
+
+
+def dataclass_from_dict(type_: Type[T], data: dict) -> T:
+    """
+    Create dataclass instance from dictionary.
+
+    Function ignores extra keys and is not recursive.
+    """
+    class_fields = {f.name for f in data_fields(type_)}
+    return type_(**{k: v for k, v in data.items() if k in class_fields})  # type: ignore[call-arg]

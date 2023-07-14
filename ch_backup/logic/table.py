@@ -1,8 +1,11 @@
 """
 Clickhouse backup logic for tables
 """
+import os
 from collections import deque
+from dataclasses import dataclass
 from itertools import chain
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ch_backup import logging
@@ -17,6 +20,15 @@ from ch_backup.clickhouse.schema import (is_distributed, is_materialized_view, i
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.util import compare_schema, get_table_zookeeper_paths
+
+
+@dataclass
+class TableMetadataMtime:
+    """
+    Class contains timestamp of table metadata last modification.
+    """
+    metadata_path: str
+    mtime: float
 
 
 class TableBackup(BackupManager):
@@ -34,20 +46,46 @@ class TableBackup(BackupManager):
             self._backup(context, db, db_tables[db.name], backup_name, dedup_info.database(db.name), schema_only)
         self._backup_cloud_storage_metadata(context)
 
+    def _collect_local_metadata_mtime(self, context: BackupContext, db: Database,
+                                      tables: Sequence[str]) -> Dict[str, TableMetadataMtime]:
+        """
+        Collect modification timestamps of table metadata files.
+        """
+        logging.debug('Collecting local metadata modification times')
+        res = {}
+
+        for table in context.ch_ctl.get_tables(db.name, tables):
+            mtime = self._get_mtime(table.metadata_path)
+            if mtime is None:
+                logging.warning('Cannot get metadata mtime for table "%s"."%s". Skipping it', table.database,
+                                table.name)
+                continue
+
+            res[table.name] = TableMetadataMtime(metadata_path=table.metadata_path, mtime=mtime)
+
+        return res
+
     def _backup(self, context: BackupContext, db: Database, tables: Sequence[str], backup_name: str,
                 dedup_info: DatabaseDedupInfo, schema_only: bool) -> None:
         """
         Backup single database tables.
         """
         if not db.is_external_db_engine():
-            for table in context.ch_ctl.get_tables(db.name, tables):
-                table_meta = TableMetadata(table.database, table.name, table.engine, table.uuid)
-                self._backup_table_schema(context, db, table)
-                if not schema_only:
-                    # table_meta will be populated with parts info
-                    self._backup_table_data(context, table, table_meta, backup_name, dedup_info.table(table.name))
 
-                context.backup_meta.add_table(table_meta)
+            # Collect modification timestamps of table metadata files for optimistic concurrency
+            # control of backup creation.
+            # To ensure consistency between metadata and data backups.
+            # See https://en.wikipedia.org/wiki/Optimistic_concurrency_control
+            mtimes = self._collect_local_metadata_mtime(context, db, tables)
+
+            for table in context.ch_ctl.get_tables(db.name, tables):
+                if table.name not in mtimes:
+                    continue
+
+                table_meta = self._backup_table(context, db, table, backup_name, schema_only,
+                                                dedup_info.table(table.name), mtimes)
+                if table_meta is not None:
+                    context.backup_meta.add_table(table_meta)
 
         context.backup_layout.upload_backup_metadata(context.backup_meta)
 
@@ -143,32 +181,75 @@ class TableBackup(BackupManager):
                                keep_going=keep_going)
 
     @staticmethod
-    def _backup_table_schema(context: BackupContext, db: Database, table: Table) -> None:
+    def _load_create_statement_from_disk(table: Table) -> Optional[bytes]:
         """
-        Backup table object.
+        Load a create statement of the table from a metadata file on the disk.
         """
-        logging.debug('Uploading table schema for "%s"."%s"', table.database, table.name)
-        context.backup_layout.upload_table_create_statement(context.backup_meta.name, db, table)
+        if not table.metadata_path:
+            logging.debug('Cannot load a create statement of the table "%s"."%s". Metadata is empty', table.database,
+                          table.name)
+            return None
+        try:
+            return Path(table.metadata_path).read_bytes()
+        except OSError as e:
+            logging.debug('Cannot load a create statement of the table "%s"."%s": %s', table.database, table.name,
+                          str(e))
+            return None
 
-    def _backup_table_data(self, context: BackupContext, table: Table, table_meta: TableMetadata, backup_name: str,
-                           dedup_info: TableDedupInfo) -> None:
+    def _backup_table(self, context: BackupContext, db: Database, table: Table, backup_name: str, schema_only: bool,
+                      dedup_info: TableDedupInfo, mtimes: Dict[str, TableMetadataMtime]) -> Optional[TableMetadata]:
+        """
+        Make backup of metadata and data of single table.
+
+        Return backup metadata of successfully backuped table, otherwise None.
+        """
+        logging.debug('Performing table backup for "%s"."%s"', table.database, table.name)
+        table_meta = TableMetadata(table.database, table.name, table.engine, table.uuid)
+
+        create_statement = self._load_create_statement_from_disk(table)
+        if not create_statement:
+            logging.warning('Skipping table backup for "%s"."%s". Local metadata is empty or absent', db.name,
+                            table.name)
+            return None
+
+        # Freeze only MergeTree tables
+        if not schema_only and is_merge_tree(table.engine):
+            try:
+                context.ch_ctl.freeze_table(backup_name, table)
+            except ClickhouseError:
+                if context.ch_ctl.does_table_exist(table.database, table.name):
+                    raise
+
+                logging.warning('Table "%s"."%s" was removed by a user during backup', table.database, table.name)
+                return None
+
+        # Check if table metadata was updated
+        new_mtime = self._get_mtime(table.metadata_path)
+        if new_mtime is None or mtimes[table.name].mtime != new_mtime:
+            logging.warning(
+                'Skipping table backup for "%s"."%s". The metadata file was updated or removed during backup',
+                table.database, table.name)
+            context.ch_ctl.remove_freezed_data()
+            return None
+
+        # Backup table metadata
+        context.backup_layout.upload_table_create_statement(context.backup_meta.name, db, table, create_statement)
+        # Backup table data
+        if not schema_only:
+            self._backup_frozen_table_data(context, table, table_meta, backup_name, dedup_info)
+
+        return table_meta
+
+    def _backup_frozen_table_data(self, context: BackupContext, table: Table, table_meta: TableMetadata,
+                                  backup_name: str, dedup_info: TableDedupInfo) -> None:
         """
         Backup table with data opposed to schema only.
         """
-        logging.debug('Performing table backup for "%s"."%s"', table.database, table.name)
-
         if not is_merge_tree(table.engine):
-            logging.info('Skipping table backup for non MergeTree table "%s"."%s"', table.database, table.name)
+            logging.info('Skipping table data backup for non MergeTree table "%s"."%s"', table.database, table.name)
             return
 
-        try:
-            context.ch_ctl.freeze_table(backup_name, table)
-        except ClickhouseError:
-            if context.ch_ctl.does_table_exist(table.database, table.name):
-                raise
-
-            logging.warning('Table "%s"."%s" was removed by a user during backup', table.database, table.name)
-            return
+        logging.debug('Uploading table data for "%s"."%s"', table.database, table.name)
 
         uploaded_parts = []
         for data_path, disk in table.paths_with_disks:
@@ -211,6 +292,17 @@ class TableBackup(BackupManager):
                 for part in invalid_parts:
                     logging.error(f'Uploaded part is broken, {part.database}.{part.table}: {part.name}')
                 raise RuntimeError(f'Uploaded parts are broken, {", ".join(map(lambda p: p.name, invalid_parts))}')
+
+    @staticmethod
+    def _get_mtime(file_name: str) -> Optional[float]:
+        """
+        Fetch last modification time of the file safely.
+        """
+        try:
+            return os.path.getmtime(file_name)
+        except OSError as e:
+            logging.debug(f'Failed to get mtime of {file_name}: {str(e)}')
+            return None
 
     def _preprocess_tables_to_restore(self, context: BackupContext, databases: Dict[str, Database],
                                       tables: List[Table]) -> List[Table]:

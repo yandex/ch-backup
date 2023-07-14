@@ -5,6 +5,7 @@ Clickhouse-control classes module
 import os
 import shutil
 from hashlib import md5
+from pathlib import Path
 from tarfile import BLOCKSIZE  # type: ignore
 from typing import Any, Dict, List, Optional, Sequence, Union
 
@@ -13,6 +14,7 @@ from pkg_resources import parse_version
 from ch_backup import logging
 from ch_backup.backup.metadata import TableMetadata
 from ch_backup.backup.restore_context import RestoreContext
+from ch_backup.calculators import calc_aligned_files_size
 from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.clickhouse.schema import is_replicated
@@ -493,11 +495,13 @@ class ClickhouseCTL:
         for part in os.listdir(path):
             part_path = os.path.join(path, part)
             checksum = _get_part_checksum(part_path)
-            files = list_dir_files(part_path)
-            size = _get_part_size(part_path, files)
+            rel_paths = list_dir_files(part_path)
+            abs_paths = [Path(part_path) / file for file in rel_paths]
+
+            size = calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE)
             logging.debug(f"list_freezed_parts: {table.name} -> {escape(table.name)} \n {part}")
             freezed_parts.append(
-                FrozenPart(table.database, table.name, part, disk.name, part_path, checksum, size, files))
+                FrozenPart(table.database, table.name, part, disk.name, part_path, checksum, size, rel_paths))
 
         return freezed_parts
 
@@ -623,14 +627,3 @@ class ClickhouseCTL:
 def _get_part_checksum(part_path: str) -> str:
     with open(os.path.join(part_path, 'checksums.txt'), 'rb') as f:
         return md5(f.read()).hexdigest()  # nosec
-
-
-def _get_part_size(part_path: str, files: List[str]) -> int:
-    size = 0
-    for file in files:
-        filesize = os.path.getsize(os.path.join(part_path, file))
-        remainder = filesize % BLOCKSIZE
-        if remainder > 0:
-            filesize += BLOCKSIZE - remainder
-        size += filesize
-    return size

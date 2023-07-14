@@ -2,14 +2,13 @@
 Management of backup data layout.
 """
 
-import math
 import os
-from tarfile import BLOCKSIZE, LENGTH_NAME  # type: ignore
 from typing import List, Optional, Sequence
 from urllib.parse import quote
 
 from ch_backup import logging
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
+from ch_backup.calculators import calc_encrypted_size, calc_tarball_size
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.config import Config
 from ch_backup.encryption import get_encryption
@@ -20,6 +19,7 @@ from ch_backup.util import escape_metadata_file_name, list_dir_files
 
 BACKUP_META_FNAME = 'backup_struct.json'
 BACKUP_LIGHT_META_FNAME = 'backup_light_struct.json'
+ACCESS_CONTROL_FNAME = 'access_control.tar'
 
 
 class BackupLayout:
@@ -62,27 +62,17 @@ class BackupLayout:
             msg = f'Failed to create async upload of {remote_path}'
             raise StorageError(msg) from e
 
-    def upload_table_create_statement(self, backup_name: str, db: Database, table: Table) -> None:
+    def upload_table_create_statement(self, backup_name: str, db: Database, table: Table,
+                                      create_statement: bytes) -> None:
         """
         Upload table create statement.
         """
         assert db.metadata_path is not None
 
-        local_path = table.metadata_path
-        if not local_path:
-            logging.warning(
-                'Skipped uploading metadata (create statement) for table "%s"."%s". '
-                'Local metadata path is empty', db.name, table.name)
-            return
-
         remote_path = _table_metadata_path(self.get_backup_path(backup_name), db.name, table.name)
         try:
             logging.debug('Uploading metadata (create statement) for table "%s"."%s"', db.name, table.name)
-            self._storage_loader.upload_file(local_path,
-                                             remote_path,
-                                             is_async=True,
-                                             encryption=True,
-                                             skip_deleted=True)
+            self._storage_loader.upload_data(create_statement, remote_path, is_async=True, encryption=True)
         except Exception as e:
             msg = f'Failed to create async upload of {remote_path}'
             raise StorageError(msg) from e
@@ -96,6 +86,23 @@ class BackupLayout:
         try:
             logging.debug('Uploading access control data "%s"', local_path)
             self._storage_loader.upload_file(local_path=local_path, remote_path=remote_path, encryption=True)
+        except Exception as e:
+            msg = f'Failed to upload access control metadata file "{remote_path}"'
+            raise StorageError(msg) from e
+
+    def upload_access_control_files(self, backup_name: str, file_names: List[str]) -> None:
+        """
+        Upload access control list.
+        """
+        local_path = self._access_control_path
+        remote_path = _access_control_data_path(self.get_backup_path(backup_name), ACCESS_CONTROL_FNAME)
+        try:
+            logging.debug('Uploading access control data "%s"', local_path)
+            self._storage_loader.upload_files_tarball(self._access_control_path,
+                                                      file_names,
+                                                      remote_path,
+                                                      encryption=True)
+
         except Exception as e:
             msg = f'Failed to upload access control metadata file "{remote_path}"'
             raise StorageError(msg) from e
@@ -250,6 +257,19 @@ class BackupLayout:
             msg = f'Failed to download access control metadata file {remote_path}'
             raise StorageError(msg) from e
 
+    def download_access_control(self, backup_name: str) -> None:
+        """
+        Download access control object metadata and save on disk.
+        """
+        remote_path = _access_control_data_path(self.get_backup_path(backup_name), ACCESS_CONTROL_FNAME)
+        local_path = self._access_control_path
+        logging.debug('Downloading access control metadata "%s" to "%s', remote_path, local_path)
+        try:
+            self._storage_loader.download_files(remote_path, local_path, encryption=True)
+        except Exception as e:
+            msg = f'Failed to download access control metadata file {remote_path}'
+            raise StorageError(msg) from e
+
     def download_data_part(self, backup_meta: BackupMetadata, part: PartMetadata, fs_part_path: str) -> None:
         """
         Download part data to the specified directory.
@@ -399,14 +419,8 @@ class BackupLayout:
         """
         Predicts tar archive size after encryption.
         """
-        result = part.size
-        for f in part.raw_metadata['files']:
-            if len(f) < LENGTH_NAME:
-                result += BLOCKSIZE  # file header
-            else:
-                result += (math.ceil(len(f) / BLOCKSIZE) + 2) * BLOCKSIZE  # long name header + name data + file header
-        result += math.ceil(result / self._encryption_chunk_size) * self._encryption_metadata_size
-        return result
+        tar_size = calc_tarball_size(part.raw_metadata['files'], part.size)
+        return calc_encrypted_size(tar_size, self._encryption_chunk_size, self._encryption_metadata_size)
 
 
 def _access_control_data_path(backup_path: str, file_name: str) -> str:

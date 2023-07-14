@@ -570,9 +570,16 @@ def fix_admin_user_command(_ctx: Context, ch_backup: ClickhouseBackup, dryrun: b
 @command(name='delete')  # type: ignore
 @argument('name', metavar='BACKUP')
 @option('--purge-partial', is_flag=True, default=False, help='Also purge all partial deleted backups')
-def delete_command(ctx: Context, ch_backup: ClickhouseBackup, name: str, purge_partial: bool) -> None:
+@option('-f', '--force', is_flag=True, default=False, help='Do nothing if backup does not exist')
+def delete_command(ctx: Context, ch_backup: ClickhouseBackup, name: str, purge_partial: bool, force: bool) -> None:
     """Delete particular backup."""
-    name = _validate_and_resolve_name(ctx, ch_backup, name)
+    try:
+        name = _validate_and_resolve_name(ctx, ch_backup, name)
+    except Exception:
+        if force:
+            logging.info(f"Attempt to delete a non-existent backup '{name}' was skipped")
+            return
+        raise
 
     deleted_backup_name, msg = ch_backup.delete(name, purge_partial)
 

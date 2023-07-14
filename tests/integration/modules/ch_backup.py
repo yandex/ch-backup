@@ -70,7 +70,7 @@ class Backup:
         """
         The number of access control entities.
         """
-        return len(self._metadata.get('access_control', []))
+        return len(self._metadata.get('access_controls', {}).get('acl_ids', []))
 
     @property
     def udf_count(self) -> int:
@@ -151,7 +151,7 @@ class Backup:
         metadata = copy(self._metadata)
         if light:
             metadata['databases'] = {}
-            metadata['access_control'] = []
+            metadata['access_controls'] = {}
 
         return json.dumps(metadata, indent=indent)
 
@@ -226,12 +226,19 @@ class BackupManager:
             options.append('--udf')
         return self._exec(f'backup {" ".join(options)}').strip()
 
-    def delete(self, backup_id: BackupId, purge_partial: bool = False) -> str:
+    def delete(self, backup_id: BackupId, purge_partial: bool = False, force: bool = False) -> str:
         """
         Execute delete command.
         """
         backup_id = self._normalize_id(backup_id)
-        return self._exec(f'delete {"--purge-partial " if purge_partial else ""}{backup_id}')
+
+        options = []
+        if purge_partial:
+            options.append("--purge-partial")
+        if force:
+            options.append("--force")
+
+        return self._exec(f'delete {" ".join(options)} {backup_id}')
 
     def purge(self) -> str:
         """
@@ -378,7 +385,7 @@ class BackupManager:
     def _exec(self, command: str) -> str:
         cmd = f'{self._cmd_base} {command}'
         result = self._container.exec_run(cmd, user='root')
-        assert result.exit_code == 0, result.output.decode()
+        assert result.exit_code == 0, f'execution failed with code {result.exit_code}, out: "{result.output.decode()}'
 
         return result.output.decode().strip()
 

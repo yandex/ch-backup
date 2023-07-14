@@ -15,8 +15,8 @@ from ch_backup.storage.async_pipeline.base_pipeline.input import thread_input
 from ch_backup.storage.async_pipeline.base_pipeline.map import thread_map
 from ch_backup.storage.async_pipeline.stages import (
     ChunkingStage, CollectDataStage, CompleteMultipartUploadStage, DecryptStage, DeleteFilesStage,
-    DeleteMultipleStorageStage, DownloadStorageStage, EncryptStage, MultipartUploadStage, ReadFileStage,
-    ReadFilesTarballStage, StartMultipartUploadStage, StorageUploadingStage, WriteFilesStage, WriteFileStage)
+    DeleteMultipleStorageStage, DownloadStorageStage, EncryptStage, ReadFileStage, ReadFilesTarballStage,
+    StartMultipartUploadStage, StorageUploadingStage, WriteFilesStage, WriteFileStage)
 from ch_backup.storage.engine import get_storage_engine
 
 # Union here is a workaround according to https://github.com/python/mypy/issues/7866
@@ -115,22 +115,20 @@ class PipelineBuilder:
         storage = get_storage_engine(stage_config)
 
         if source_size > chunk_size:
-            # Multipart uploading
+            # Adjust chunk size for multipart uploading if needed
             chunk_count = source_size / chunk_size
             if chunk_count > max_chunk_count:
                 multiplier = ceil(chunk_count / max_chunk_count)
                 buffer_size *= multiplier
                 chunk_size *= multiplier
 
-            stages = [
-                thread_map(StartMultipartUploadStage(stage_config, storage, remote_path), maxsize=queue_size),
-                thread_map(MultipartUploadStage(stage_config, storage, remote_path),
-                           maxsize=queue_size,
-                           workers=stage_config['uploading_threads']),
-                thread_map(CompleteMultipartUploadStage(stage_config, storage, remote_path), maxsize=queue_size),
-            ]
-        else:
-            stages = [thread_map(StorageUploadingStage(stage_config, storage, remote_path), maxsize=queue_size)]
+        stages = [
+            thread_map(StartMultipartUploadStage(stage_config, chunk_size, storage, remote_path), maxsize=queue_size),
+            thread_map(StorageUploadingStage(stage_config, storage, remote_path),
+                       maxsize=queue_size,
+                       workers=stage_config['uploading_threads']),
+            thread_map(CompleteMultipartUploadStage(stage_config, storage, remote_path), maxsize=queue_size),
+        ]
 
         self.append(thread_flat_map(ChunkingStage(chunk_size, buffer_size), maxsize=queue_size), *stages)
         return self

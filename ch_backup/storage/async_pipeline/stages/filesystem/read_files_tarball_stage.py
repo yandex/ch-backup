@@ -40,11 +40,10 @@ class ReadFilesTarballStage(InputHandler):
             for chunk in read_by_chunks(file, self._chunk_size):
                 yield chunk
 
-                # Fill padding for last file's TAR block
-                if len(chunk) < self._chunk_size:
-                    remainder = file_path.stat().st_size % tarfile.BLOCKSIZE
-                    if remainder > 0:
-                        yield tarfile.NUL * (tarfile.BLOCKSIZE - remainder)
+            # Fill padding for last file's TAR block
+            remainder = file_path.stat().st_size % tarfile.BLOCKSIZE
+            if remainder > 0:
+                yield tarfile.NUL * (tarfile.BLOCKSIZE - remainder)
 
     @staticmethod
     def make_tar_header(name: str, file_path: Path) -> bytes:
