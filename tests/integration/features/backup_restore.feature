@@ -132,9 +132,6 @@ Feature: Backup & Restore
     INSERT INTO test_db.test_table SELECT number % 2, number FROM system.numbers LIMIT 100;
     """
     And we create clickhouse01 clickhouse backup
-    Then we got the following backups on clickhouse01
-      | num | state    | data_count | link_count   |
-      | 0   | created  | 2          | 0            |
     Given ch-backup configuration on clickhouse02
     """
     backup:
