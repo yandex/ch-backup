@@ -443,7 +443,7 @@ class TableBackup(BackupManager):
                         else:
                             raise
 
-                context.backup_layout.wait()
+                context.backup_layout.wait(keep_going)
 
                 context.ch_ctl.chown_detached_table_parts(table, context.restore_context)
                 for part in attach_parts:

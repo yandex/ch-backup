@@ -110,11 +110,11 @@ class StorageLoader:
         """
         self._ploader.delete_files(remote_paths, is_async=is_async, encryption=encryption)
 
-    def wait(self) -> None:
+    def wait(self, keep_going: bool = False) -> None:
         """
         Wait for completion of async operations.
         """
-        self._ploader.wait()
+        self._ploader.wait(keep_going)
 
     def list_dir(self, remote_path: str, recursive: bool = False, absolute: bool = False) -> Sequence[str]:
         """

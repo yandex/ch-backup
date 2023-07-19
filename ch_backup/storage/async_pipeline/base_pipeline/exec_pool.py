@@ -33,9 +33,12 @@ class ExecPool:
         future.add_done_callback(lambda _: logging.debug('Future "%s" completed', future_id))  # type: ignore[misc]
         self._futures[future_id] = future
 
-    def wait_all(self) -> None:
+    def wait_all(self, keep_going: bool = False) -> None:
         """
-        Wait workers for complete jobs and
+        Wait workers for complete jobs.
+
+        Args:
+            keep_going - skip exceptions raised by futures instead of propagating it.
         """
         wait(self._futures.values(), return_when=ALL_COMPLETED)
 
@@ -43,6 +46,11 @@ class ExecPool:
             try:
                 future.result()
             except Exception:
+                if keep_going:
+                    logging.warning('Future "%s" generated an exception, skipping due to keep_going flag',
+                                    future_id,
+                                    exc_info=True)
+                    continue
                 logging.error('Future "%s" generated an exception:', future_id, exc_info=True)
                 raise
         self._futures = {}

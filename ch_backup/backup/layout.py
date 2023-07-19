@@ -382,14 +382,14 @@ class BackupLayout:
 
         self._delete_files(deleting_files)
 
-    def wait(self) -> None:
+    def wait(self, keep_going: bool = False) -> None:
         """
         Wait for completion of data upload and download.
         """
         try:
             logging.memory_usage()
-            logging.debug('Waiting for completion of async operations')
-            self._storage_loader.wait()
+            logging.debug(f'Waiting for completion of async operations with keep_going={keep_going}')
+            self._storage_loader.wait(keep_going)
         except Exception as e:
             raise StorageError('Failed to complete async operations') from e
 

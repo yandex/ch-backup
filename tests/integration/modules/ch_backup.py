@@ -280,20 +280,23 @@ class BackupManager:
         return Backup(json.loads(output))
 
     # pylint: disable=too-many-arguments
-    def restore(self,
-                backup_id: BackupId,
-                schema_only: bool = False,
-                override_replica_name: str = None,
-                force_non_replicated: bool = False,
-                clean_zookeeper: bool = False,
-                replica_name: str = None,
-                cloud_storage_source_bucket: str = None,
-                cloud_storage_source_path: str = None,
-                cloud_storage_latest: bool = False,
-                access: bool = None,
-                data: bool = None,
-                schema: bool = None,
-                udf: bool = None) -> str:
+    def restore(
+        self,
+        backup_id: BackupId,
+        schema_only: bool = False,
+        override_replica_name: str = None,
+        force_non_replicated: bool = False,
+        clean_zookeeper: bool = False,
+        replica_name: str = None,
+        cloud_storage_source_bucket: str = None,
+        cloud_storage_source_path: str = None,
+        cloud_storage_latest: bool = False,
+        access: bool = None,
+        data: bool = None,
+        schema: bool = None,
+        udf: bool = None,
+        keep_going: bool = False,
+    ) -> str:
         """
         Restore backup entry.
         """
@@ -323,6 +326,8 @@ class BackupManager:
             options.append('--schema')
         if udf:
             options.append('--udf')
+        if keep_going:
+            options.append('--keep-going')
         return self._exec(f'restore {" ".join(options)} {backup_id}')
 
     def restore_access_control(self, backup_id: BackupId) -> str:
