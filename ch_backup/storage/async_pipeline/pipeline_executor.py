@@ -114,12 +114,12 @@ class PipelineExecutor:
         pipeline = partial(delete_multiple_storage_pipeline, self._config, remote_paths)
         self._exec_pipeline(job_id, pipeline, is_async)
 
-    def wait(self) -> None:
+    def wait(self, keep_going: bool = False) -> None:
         """
         Wait for completion of async operations.
         """
         if self._exec_pool:
-            self._exec_pool.wait_all()
+            self._exec_pool.wait_all(keep_going)
 
     def _exec_pipeline(self, job_id: str, pipeline: Callable, is_async: bool) -> Any:
         """

@@ -119,3 +119,40 @@ Feature: Backup & Restore
     When we create clickhouse01 clickhouse backup
     And we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
+
+  Scenario: Restore of a backup with a corrupted data part
+    When we drop all databases at clickhouse01
+    And we drop all databases at clickhouse02    
+    And we execute queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.test_table (partition_id Int32, n Int32)
+    ENGINE MergeTree PARTITION BY partition_id ORDER BY (partition_id, n);
+
+    INSERT INTO test_db.test_table SELECT number % 2, number FROM system.numbers LIMIT 100;
+    """
+    And we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state    | data_count | link_count   |
+      | 0   | created  | 2          | 0            |
+    Given ch-backup configuration on clickhouse02
+    """
+    backup:
+        restore_fail_on_attach_error: False
+    """
+    And file "data/test_db/test_table/0_1_1_0/0_1_1_0.tar" in clickhouse01 backup #0 data set to
+    """
+    Corrupted backup data part
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    keep_going: true
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT count() FROM system.parts WHERE table = 'test_table';
+    """
+    Then we get response
+    """
+    1
+    """
