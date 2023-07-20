@@ -9,7 +9,6 @@ class Handler(ABC):
     """
     Process data values from pipeline and produce optional single value.
     """
-
     @abstractmethod
     def __call__(self, value: Any, index: int) -> Optional[Any]:
         """
@@ -40,7 +39,6 @@ class IterableHandler(ABC):
     """
     Process data values from pipeline and produce optional iterable value.
     """
-
     @abstractmethod
     def __call__(self, value: Any, index: int) -> Optional[Iterable[Any]]:
         """
@@ -71,7 +69,6 @@ class InputHandler(ABC):
     """
     Produce iterable data only.
     """
-
     @abstractmethod
     def __call__(self) -> Optional[Iterable[Any]]:
         """

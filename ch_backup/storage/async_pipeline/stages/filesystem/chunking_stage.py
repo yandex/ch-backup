@@ -17,9 +17,7 @@ class ChunkingStage(Handler):
 
     def __init__(self, chunk_size: int, buffer_size: int) -> None:
         if chunk_size > buffer_size:
-            raise ValueError(
-                f"The chunk size {chunk_size} can't be greater than the buffer size {buffer_size}"
-            )
+            raise ValueError(f"The chunk size {chunk_size} can't be greater than the buffer size {buffer_size}")
 
         self._chunk_size = chunk_size
         self._buffer = BytesFIFO(buffer_size)

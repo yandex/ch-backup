@@ -6,12 +6,8 @@ from typing import Dict, Sequence
 from ch_backup import logging
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.models import Database
-from ch_backup.clickhouse.schema import (
-    embedded_schema_db_sql,
-    rewrite_database_schema,
-    to_attach_query,
-    to_create_query,
-)
+from ch_backup.clickhouse.schema import (embedded_schema_db_sql, rewrite_database_schema, to_attach_query,
+                                         to_create_query)
 from ch_backup.logic.backup_manager import BackupManager
 
 
@@ -19,7 +15,6 @@ class DatabaseBackup(BackupManager):
     """
     Database backup class
     """
-
     def backup(self, context: BackupContext, databases: Sequence[Database]) -> None:
         """
         Backup database objects metadata.
@@ -34,18 +29,13 @@ class DatabaseBackup(BackupManager):
         """
         Restore database objects.
         """
-        logging.debug("Retrieving list of databases")
+        logging.debug('Retrieving list of databases')
         present_databases = {db.name: db for db in context.ch_ctl.get_databases()}
 
         databases_to_restore: Dict[str, Database] = {}
         for name, db in databases.items():
-            if (
-                name in present_databases
-                and db.engine != present_databases[name].engine
-            ):
-                logging.debug(
-                    f"Database engine mismatch({db.engine}!={present_databases[name].engine}), deleting"
-                )
+            if name in present_databases and db.engine != present_databases[name].engine:
+                logging.debug(f'Database engine mismatch({db.engine}!={present_databases[name].engine}), deleting')
                 context.ch_ctl.drop_database_if_exists(name)
                 del present_databases[name]
 
@@ -53,33 +43,27 @@ class DatabaseBackup(BackupManager):
                 databases_to_restore[name] = db
                 continue
 
-        logging.info("Restoring databases: %s", ", ".join(databases_to_restore.keys()))
+        logging.info('Restoring databases: %s', ', '.join(databases_to_restore.keys()))
         for db in databases_to_restore.values():
             if db.has_embedded_metadata():
                 db_sql = embedded_schema_db_sql(db)
             else:
-                db_sql = context.backup_layout.get_database_create_statement(
-                    context.backup_meta, db.name
-                )
+                db_sql = context.backup_layout.get_database_create_statement(context.backup_meta, db.name)
 
             if db.is_atomic() or db.has_embedded_metadata():
-                logging.debug(f"Going to restore database `{db.name}` using CREATE")
+                logging.debug(f'Going to restore database `{db.name}` using CREATE')
                 db_sql = to_create_query(db_sql)
-                db_sql = rewrite_database_schema(
-                    db,
-                    db_sql,
-                    context.config["force_non_replicated"],
-                    context.config["override_replica_name"],
-                )
-                logging.debug(f"Creating database `{db.name}`")
+                db_sql = rewrite_database_schema(db, db_sql, context.config['force_non_replicated'],
+                                                 context.config['override_replica_name'])
+                logging.debug(f'Creating database `{db.name}`')
                 context.ch_ctl.restore_database(db_sql)
             else:
-                logging.debug(f"Going to restore database `{db.name}` using ATTACH")
+                logging.debug(f'Going to restore database `{db.name}` using ATTACH')
                 db_sql = to_attach_query(db_sql)
                 context.backup_layout.write_database_metadata(db, db_sql)
-                logging.debug(f"Attaching database `{db.name}`")
+                logging.debug(f'Attaching database `{db.name}`')
                 context.ch_ctl.attach_database(db)
-        logging.info("All databases restored")
+        logging.info('All databases restored')
 
     @staticmethod
     def _backup_database(context: BackupContext, db: Database) -> None:
@@ -89,9 +73,7 @@ class DatabaseBackup(BackupManager):
         logging.debug('Performing database backup for "%s"', db.name)
 
         if not db.has_embedded_metadata():
-            context.backup_layout.upload_database_create_statement(
-                context.backup_meta.name, db
-            )
+            context.backup_layout.upload_database_create_statement(context.backup_meta.name, db)
 
         context.backup_meta.add_database(db)
         context.backup_layout.upload_backup_metadata(context.backup_meta)

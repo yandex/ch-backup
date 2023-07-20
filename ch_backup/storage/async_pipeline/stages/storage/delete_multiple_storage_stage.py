@@ -16,12 +16,7 @@ class DeleteMultipleStorageStage(InputHandler):
 
     stype = StageType.STORAGE
 
-    def __init__(
-        self,
-        config: dict,
-        remote_paths: Sequence[str],
-        storage: PipeLineCompatibleStorageEngine,
-    ) -> None:
+    def __init__(self, config: dict, remote_paths: Sequence[str], storage: PipeLineCompatibleStorageEngine) -> None:
         self._storage = storage
         self._bulk_delete_chunk_size = config["bulk_delete_chunk_size"]
         self._remote_paths = remote_paths

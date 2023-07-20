@@ -1,6 +1,7 @@
 from typing import ContextManager, Optional
 
 import pytest
+
 from ch_backup.storage.async_pipeline.base_pipeline.bytes_fifo import BytesFIFO
 
 
@@ -11,7 +12,7 @@ def generate_bytes(size: int) -> bytes:
     return bytes(i % 256 for i in range(size))
 
 
-@pytest.mark.parametrize("init_size", [0, 100])
+@pytest.mark.parametrize('init_size', [0, 100])
 def test_empty(init_size: int) -> None:
     fifo = BytesFIFO(init_size)
 
@@ -21,7 +22,7 @@ def test_empty(init_size: int) -> None:
 
 
 @pytest.mark.parametrize(
-    "init_size, write_size, expected_written",
+    'init_size, write_size, expected_written',
     (
         [0, 0, 0],  # no capacity
         [0, 1, 0],
@@ -31,9 +32,7 @@ def test_empty(init_size: int) -> None:
         [100, 200, 100],  # not enough space
     ),
 )
-def test_write_to_empty_fifo(
-    init_size: int, write_size: int, expected_written: int
-) -> None:
+def test_write_to_empty_fifo(init_size: int, write_size: int, expected_written: int) -> None:
     fifo = BytesFIFO(init_size)
 
     written = fifo.write(generate_bytes(write_size))
@@ -43,7 +42,7 @@ def test_write_to_empty_fifo(
 
 
 @pytest.mark.parametrize(
-    "init_size, prefill_size, write_size, expected_written",
+    'init_size, prefill_size, write_size, expected_written',
     (
         [0, 0, 0, 0],  # no capacity
         [100, 0, 100, 100],  # empty
@@ -52,9 +51,7 @@ def test_write_to_empty_fifo(
         [100, 100, 1, 0],  # full
     ),
 )
-def test_write_to_prefilled_fifo(
-    init_size: int, prefill_size: int, write_size: int, expected_written: int
-) -> None:
+def test_write_to_prefilled_fifo(init_size: int, prefill_size: int, write_size: int, expected_written: int) -> None:
     fifo = BytesFIFO(init_size)
     fifo.write(generate_bytes(prefill_size))
 
@@ -65,7 +62,7 @@ def test_write_to_prefilled_fifo(
 
 
 @pytest.mark.parametrize(
-    "init_size, prefill_size, read_size, expected_read",
+    'init_size, prefill_size, read_size, expected_read',
     (
         [0, 0, 0, 0],  # no capacity
         [0, 0, 1, 0],
@@ -75,9 +72,7 @@ def test_write_to_prefilled_fifo(
         [100, 50, 100, 50],  # read more than all
     ),
 )
-def test_read(
-    init_size: int, prefill_size: int, read_size: int, expected_read: int
-) -> None:
+def test_read(init_size: int, prefill_size: int, read_size: int, expected_read: int) -> None:
     fifo = BytesFIFO(init_size)
 
     prefill_data = generate_bytes(prefill_size)
@@ -94,7 +89,7 @@ def test_read(
 
 
 @pytest.mark.parametrize(
-    "init_size, prefill_size, read_size, expected_read, write_size, expected_written",
+    'init_size, prefill_size, read_size, expected_read, write_size, expected_written',
     (
         [0, 0, 0, 0, 0, 0],
         [100, 0, 0, 0, 100, 100],
@@ -106,14 +101,8 @@ def test_read(
         [100, 99, 98, 98, 100, 99],
     ),
 )
-def test_write_after_read(
-    init_size: int,
-    prefill_size: int,
-    read_size: int,
-    write_size: int,
-    expected_read: int,
-    expected_written: int,
-) -> None:
+def test_write_after_read(init_size: int, prefill_size: int, read_size: int, write_size: int, expected_read: int,
+                          expected_written: int) -> None:
     fifo = BytesFIFO(init_size)
     prefill_data = generate_bytes(prefill_size)
     write_data = generate_bytes(write_size)
@@ -129,10 +118,10 @@ def test_write_after_read(
 
     expected_len = prefill_size + expected_written - read_size
     assert len(fifo) == expected_len
-    assert fifo.read() == data[read_size : prefill_size + expected_written]
+    assert fifo.read() == data[read_size:prefill_size + expected_written]
 
 
-@pytest.mark.parametrize("init_size, write_size", [(0, 0), (100, 100)])
+@pytest.mark.parametrize('init_size, write_size', [(0, 0), (100, 100)])
 def test_flush(init_size: int, write_size: int) -> None:
     fifo = BytesFIFO(init_size)
 
@@ -144,7 +133,7 @@ def test_flush(init_size: int, write_size: int) -> None:
 
 
 @pytest.mark.parametrize(
-    "init_size, write_size, is_full",
+    'init_size, write_size, is_full',
     [
         (0, 0, True),
         (100, 0, False),
@@ -161,7 +150,7 @@ def test_full(init_size: int, write_size: int, is_full: bool) -> None:
 
 
 @pytest.mark.parametrize(
-    "init_size, write_size, read_size, expected_free",
+    'init_size, write_size, read_size, expected_free',
     [
         (0, 0, 0, 0),
         (100, 0, 0, 100),
@@ -172,9 +161,7 @@ def test_full(init_size: int, write_size: int, is_full: bool) -> None:
         (100, 100, 100, 100),
     ],
 )
-def test_free(
-    init_size: int, write_size: int, read_size: int, expected_free: int
-) -> None:
+def test_free(init_size: int, write_size: int, read_size: int, expected_free: int) -> None:
     fifo = BytesFIFO(init_size)
 
     fifo.write(generate_bytes(write_size))
@@ -184,27 +171,17 @@ def test_free(
 
 
 @pytest.mark.parametrize(
-    "init_size, prefill_size, new_size, exception",
+    'init_size, prefill_size, new_size, exception',
     [
-        (0, 0, 0, pytest.raises(ValueError, match="Cannot resize to zero")),
-        (100, 0, 0, pytest.raises(ValueError, match="Cannot resize to zero")),
+        (0, 0, 0, pytest.raises(ValueError, match='Cannot resize to zero')),
+        (100, 0, 0, pytest.raises(ValueError, match='Cannot resize to zero')),
         (100, 0, 1, None),
         (100, 0, 99, None),
         (100, 50, 50, None),
-        (
-            100,
-            100,
-            99,
-            pytest.raises(ValueError, match="Cannot contract FIFO to less than"),
-        ),
+        (100, 100, 99, pytest.raises(ValueError, match='Cannot contract FIFO to less than')),
     ],
 )
-def test_resize(
-    init_size: int,
-    prefill_size: int,
-    new_size: int,
-    exception: Optional[ContextManager],
-) -> None:
+def test_resize(init_size: int, prefill_size: int, new_size: int, exception: Optional[ContextManager]) -> None:
     fifo = BytesFIFO(init_size)
 
     data = generate_bytes(prefill_size)

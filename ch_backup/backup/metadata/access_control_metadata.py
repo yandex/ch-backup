@@ -13,7 +13,6 @@ class AccessControlMetadata:
     """
     Access control metadata.
     """
-
     acl_ids: List[str] = field(default_factory=list)
     acl_meta: Dict[str, Any] = field(default_factory=dict)
     backup_format: BackupStorageFormat = BackupStorageFormat.TAR
@@ -22,21 +21,19 @@ class AccessControlMetadata:
         self.backup_format = BackupStorageFormat(self.backup_format)
 
     @classmethod
-    def from_ch_objects(
-        cls, objects: Sequence[Dict[str, Any]]
-    ) -> "AccessControlMetadata":
+    def from_ch_objects(cls, objects: Sequence[Dict[str, Any]]) -> 'AccessControlMetadata':
         """
         Create Access Control metadata from objects fetched from ClickHouse.
         """
         acl_ids, acl_meta = [], {}
         for i, item in enumerate(objects):
-            acl_ids.append(item["id"])
-            acl_meta[str(i)] = {"name": item["name"], "char": item["char"]}
+            acl_ids.append(item['id'])
+            acl_meta[str(i)] = {'name': item['name'], 'char': item['char']}
 
         return cls(acl_ids, acl_meta)
 
     @classmethod
-    def load(cls, data: Dict[str, Any]) -> "AccessControlMetadata":
+    def load(cls, data: Dict[str, Any]) -> 'AccessControlMetadata':
         """
         Deserialize Access Control metadata.
         """
@@ -46,8 +43,4 @@ class AccessControlMetadata:
         """
         Serialize Access Control metadata.
         """
-        return {
-            "acl_ids": self.acl_ids,
-            "acl_meta": self.acl_meta,
-            "backup_format": self.backup_format.value,
-        }
+        return {'acl_ids': self.acl_ids, 'acl_meta': self.acl_meta, 'backup_format': self.backup_format.value}

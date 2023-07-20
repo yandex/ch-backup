@@ -8,7 +8,6 @@ class StageType(str, Enum):
     """
     Stage types.
     """
-
-    STORAGE = "storage"
-    FILESYSTEM = "filesystem"
-    ENCRYPTION = "encryption"
+    STORAGE = 'storage'
+    FILESYSTEM = 'filesystem'
+    ENCRYPTION = 'encryption'

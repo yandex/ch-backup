@@ -51,16 +51,15 @@ def env_stage(event, fail=False):
     """
     Nicely logs env stage.
     """
-
     def wrapper(fun):
         @wraps(fun)
         def _wrapped_fun(*args, **kwargs):
-            stage_name = f"{fun.__module__}.{fun.__name__}"
-            logging.info("initiating %s stage %s", event, stage_name)
+            stage_name = f'{fun.__module__}.{fun.__name__}'
+            logging.info('initiating %s stage %s', event, stage_name)
             try:
                 return fun(*args, **kwargs)
             except Exception as e:
-                logging.error("%s failed: %s", stage_name, e)
+                logging.error('%s failed: %s', stage_name, e)
                 if fail:
                     raise
 
@@ -73,9 +72,7 @@ def generate_random_string(length: int = 64) -> str:
     """
     Generate random alphanum sequence.
     """
-    return "".join(
-        random_choise(string.ascii_letters + string.digits) for _ in range(length)
-    )
+    return ''.join(random_choise(string.ascii_letters + string.digits) for _ in range(length))
 
 
 def context_to_dict(context: ContextT) -> dict:
@@ -101,11 +98,9 @@ def normalize_create_query(create_query):
     Normalize create table query for comparison.
     """
     # Override replica parameter for replicated tables. The backup tool does the same.
-    match = re.search(
-        r"Replicated\S{0,20}MergeTree\('[^']+', (?P<replica>\'\S+\')", create_query
-    )
+    match = re.search(r"Replicated\S{0,20}MergeTree\('[^']+', (?P<replica>\'\S+\')", create_query)
     if match:
-        create_query = create_query.replace(match.group("replica"), "'{replica}'")
+        create_query = create_query.replace(match.group('replica'), "'{replica}'")
 
     return create_query
 

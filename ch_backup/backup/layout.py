@@ -17,26 +17,23 @@ from ch_backup.storage import StorageLoader
 from ch_backup.storage.engine.s3 import S3RetryingError
 from ch_backup.util import escape_metadata_file_name, list_dir_files
 
-BACKUP_META_FNAME = "backup_struct.json"
-BACKUP_LIGHT_META_FNAME = "backup_light_struct.json"
-ACCESS_CONTROL_FNAME = "access_control.tar"
+BACKUP_META_FNAME = 'backup_struct.json'
+BACKUP_LIGHT_META_FNAME = 'backup_light_struct.json'
+ACCESS_CONTROL_FNAME = 'access_control.tar'
 
 
 class BackupLayout:
     """
     Class responsible for management of backup data layout.
     """
-
     def __init__(self, config: Config) -> None:
         self._storage_loader = StorageLoader(config)
-        self._config = config["backup"]
-        self._access_control_path = config["clickhouse"]["access_control_path"]
-        self._metadata_path = config["clickhouse"]["metadata_path"]
-        enc_conf = config["encryption"]
-        self._encryption_chunk_size = enc_conf["chunk_size"]
-        self._encryption_metadata_size = get_encryption(
-            enc_conf["type"], enc_conf
-        ).metadata_size()
+        self._config = config['backup']
+        self._access_control_path = config['clickhouse']['access_control_path']
+        self._metadata_path = config['clickhouse']['metadata_path']
+        enc_conf = config['encryption']
+        self._encryption_chunk_size = enc_conf['chunk_size']
+        self._encryption_metadata_size = get_encryption(enc_conf['type'], enc_conf).metadata_size()
 
     def upload_backup_metadata(self, backup: BackupMetadata) -> None:
         """
@@ -45,58 +42,39 @@ class BackupLayout:
         remote_path = self._backup_metadata_path(backup.name)
         remote_light_path = self._backup_light_metadata_path(backup.name)
         try:
-            logging.debug("Saving backup metadata in %s", remote_path)
-            self._storage_loader.upload_data(
-                backup.dump_json(light=False), remote_path=remote_path
-            )
-            logging.debug("Saving backup light metadata in %s", remote_light_path)
-            self._storage_loader.upload_data(
-                backup.dump_json(light=True), remote_path=remote_light_path
-            )
+            logging.debug('Saving backup metadata in %s', remote_path)
+            self._storage_loader.upload_data(backup.dump_json(light=False), remote_path=remote_path)
+            logging.debug('Saving backup light metadata in %s', remote_light_path)
+            self._storage_loader.upload_data(backup.dump_json(light=True), remote_path=remote_light_path)
         except Exception as e:
-            raise StorageError("Failed to upload backup metadata") from e
+            raise StorageError('Failed to upload backup metadata') from e
 
     def upload_database_create_statement(self, backup_name: str, db: Database) -> None:
         """
         Upload database create statement from metadata file.
         """
-        local_path = os.path.join(
-            self._metadata_path, f"{escape_metadata_file_name(db.name)}.sql"
-        )
+        local_path = os.path.join(self._metadata_path, f'{escape_metadata_file_name(db.name)}.sql')
         remote_path = _db_metadata_path(self.get_backup_path(backup_name), db.name)
         try:
-            logging.debug(
-                'Uploading metadata (create statement) for database "%s"', db.name
-            )
-            self._storage_loader.upload_file(
-                local_path, remote_path=remote_path, encryption=True
-            )
+            logging.debug('Uploading metadata (create statement) for database "%s"', db.name)
+            self._storage_loader.upload_file(local_path, remote_path=remote_path, encryption=True)
         except Exception as e:
-            msg = f"Failed to create async upload of {remote_path}"
+            msg = f'Failed to create async upload of {remote_path}'
             raise StorageError(msg) from e
 
-    def upload_table_create_statement(
-        self, backup_name: str, db: Database, table: Table, create_statement: bytes
-    ) -> None:
+    def upload_table_create_statement(self, backup_name: str, db: Database, table: Table,
+                                      create_statement: bytes) -> None:
         """
         Upload table create statement.
         """
         assert db.metadata_path is not None
 
-        remote_path = _table_metadata_path(
-            self.get_backup_path(backup_name), db.name, table.name
-        )
+        remote_path = _table_metadata_path(self.get_backup_path(backup_name), db.name, table.name)
         try:
-            logging.debug(
-                'Uploading metadata (create statement) for table "%s"."%s"',
-                db.name,
-                table.name,
-            )
-            self._storage_loader.upload_data(
-                create_statement, remote_path, is_async=True, encryption=True
-            )
+            logging.debug('Uploading metadata (create statement) for table "%s"."%s"', db.name, table.name)
+            self._storage_loader.upload_data(create_statement, remote_path, is_async=True, encryption=True)
         except Exception as e:
-            msg = f"Failed to create async upload of {remote_path}"
+            msg = f'Failed to create async upload of {remote_path}'
             raise StorageError(msg) from e
 
     def upload_access_control_file(self, backup_name: str, file_name: str) -> None:
@@ -104,33 +82,26 @@ class BackupLayout:
         Upload access control list.
         """
         local_path = os.path.join(self._access_control_path, file_name)
-        remote_path = _access_control_data_path(
-            self.get_backup_path(backup_name), file_name
-        )
+        remote_path = _access_control_data_path(self.get_backup_path(backup_name), file_name)
         try:
             logging.debug('Uploading access control data "%s"', local_path)
-            self._storage_loader.upload_file(
-                local_path=local_path, remote_path=remote_path, encryption=True
-            )
+            self._storage_loader.upload_file(local_path=local_path, remote_path=remote_path, encryption=True)
         except Exception as e:
             msg = f'Failed to upload access control metadata file "{remote_path}"'
             raise StorageError(msg) from e
 
-    def upload_access_control_files(
-        self, backup_name: str, file_names: List[str]
-    ) -> None:
+    def upload_access_control_files(self, backup_name: str, file_names: List[str]) -> None:
         """
         Upload access control list.
         """
         local_path = self._access_control_path
-        remote_path = _access_control_data_path(
-            self.get_backup_path(backup_name), ACCESS_CONTROL_FNAME
-        )
+        remote_path = _access_control_data_path(self.get_backup_path(backup_name), ACCESS_CONTROL_FNAME)
         try:
             logging.debug('Uploading access control data "%s"', local_path)
-            self._storage_loader.upload_files_tarball(
-                self._access_control_path, file_names, remote_path, encryption=True
-            )
+            self._storage_loader.upload_files_tarball(self._access_control_path,
+                                                      file_names,
+                                                      remote_path,
+                                                      encryption=True)
 
         except Exception as e:
             msg = f'Failed to upload access control metadata file "{remote_path}"'
@@ -142,9 +113,7 @@ class BackupLayout:
         """
         remote_path = _udf_data_path(self.get_backup_path(backup_name), file_name)
         try:
-            self._storage_loader.upload_data(
-                data=metadata, remote_path=remote_path, encryption=True
-            )
+            self._storage_loader.upload_data(data=metadata, remote_path=remote_path, encryption=True)
         except Exception as e:
             msg = f'Failed to upload udf metadata "{remote_path}"'
             raise StorageError(msg) from e
@@ -153,68 +122,51 @@ class BackupLayout:
         """
         Upload part data.
         """
-        logging.debug(
-            'Uploading data part %s of "%s"."%s"',
-            fpart.name,
-            fpart.database,
-            fpart.table,
-        )
+        logging.debug('Uploading data part %s of "%s"."%s"', fpart.name, fpart.database, fpart.table)
 
-        remote_dir_path = _part_path(
-            self.get_backup_path(backup_name), fpart.database, fpart.table, fpart.name
-        )
-        remote_path = os.path.join(remote_dir_path, fpart.name + ".tar")
+        remote_dir_path = _part_path(self.get_backup_path(backup_name), fpart.database, fpart.table, fpart.name)
+        remote_path = os.path.join(remote_dir_path, fpart.name + '.tar')
         try:
-            self._storage_loader.upload_files_tarball(
-                dir_path=fpart.path,
-                files=fpart.files,
-                remote_path=remote_path,
-                is_async=True,
-                encryption=True,
-                delete=True,
-            )
+            self._storage_loader.upload_files_tarball(dir_path=fpart.path,
+                                                      files=fpart.files,
+                                                      remote_path=remote_path,
+                                                      is_async=True,
+                                                      encryption=True,
+                                                      delete=True)
         except Exception as e:
-            msg = f"Failed to create async upload of {remote_path}"
+            msg = f'Failed to create async upload of {remote_path}'
             raise StorageError(msg) from e
 
-    def upload_cloud_storage_metadata(
-        self, backup_meta: BackupMetadata, disk: Disk, delete_after_upload: bool = False
-    ) -> bool:
+    def upload_cloud_storage_metadata(self,
+                                      backup_meta: BackupMetadata,
+                                      disk: Disk,
+                                      delete_after_upload: bool = False) -> bool:
         """
         Upload specified disk metadata files from given directory path as a tarball.
         Returns: whether backed up disk had data.
         """
         backup_name = backup_meta.get_sanitized_name()
         remote_path = _disk_metadata_path(self.get_backup_path(backup_name), disk.name)
-        shadow_path = os.path.join(disk.path, "shadow", backup_name)
-        files = list(
-            filter(
-                lambda p: not p.endswith("/frozen_metadata.txt"),
-                list_dir_files(shadow_path),
-            )
-        )
+        shadow_path = os.path.join(disk.path, 'shadow', backup_name)
+        files = list(filter(lambda p: not p.endswith('/frozen_metadata.txt'), list_dir_files(shadow_path)))
         if not files:
             return False
 
         logging.debug(f'Uploading "{shadow_path}" content to "{remote_path}"')
 
         try:
-            self._storage_loader.upload_files_tarball(
-                dir_path=shadow_path,
-                remote_path=remote_path,
-                files=files,
-                is_async=True,
-                encryption=backup_meta.cloud_storage.encrypted,
-                delete=delete_after_upload,
-            )
+            self._storage_loader.upload_files_tarball(dir_path=shadow_path,
+                                                      remote_path=remote_path,
+                                                      files=files,
+                                                      is_async=True,
+                                                      encryption=backup_meta.cloud_storage.encrypted,
+                                                      delete=delete_after_upload)
         except Exception as e:
             msg = f'Failed to upload "{shadow_path}" content to "{remote_path}"'
             raise StorageError(msg) from e
         return True
 
-    def get_udf_create_statement(
-        self, backup_meta: BackupMetadata, filename: str
-    ) -> str:
+    def get_udf_create_statement(self, backup_meta: BackupMetadata, filename: str) -> str:
         """
         Download user defined function create statement
         """
@@ -225,21 +177,14 @@ class BackupLayout:
         """
         Get names of existing backups.
         """
-        return self._storage_loader.list_dir(
-            self._config["path_root"], recursive=False, absolute=False
-        )
+        return self._storage_loader.list_dir(self._config['path_root'], recursive=False, absolute=False)
 
-    def get_backup(
-        self, backup_name: str, use_light_meta: bool = False
-    ) -> Optional[BackupMetadata]:
+    def get_backup(self, backup_name: str, use_light_meta: bool = False) -> Optional[BackupMetadata]:
         """
         Download and return backup metadata.
         """
-        path = (
-            self._backup_light_metadata_path(backup_name)
-            if use_light_meta
-            else self._backup_metadata_path(backup_name)
-        )
+        path = self._backup_light_metadata_path(backup_name) if use_light_meta else self._backup_metadata_path(
+            backup_name)
 
         if not self._storage_loader.path_exists(path):
             return None
@@ -248,16 +193,13 @@ class BackupLayout:
             data = self._storage_loader.download_data(path)
             return BackupMetadata.load_json(data)
         except Exception as e:
-            raise StorageError("Failed to download backup metadata") from e
+            raise StorageError('Failed to download backup metadata') from e
 
     def get_backups(self, use_light_meta: bool = False) -> List[BackupMetadata]:
         """
         Return list of existing backups sorted by start_time in descent order.
         """
-        logging.debug(
-            "Collecting %s of existing backups",
-            "light metadata" if use_light_meta else "metadata",
-        )
+        logging.debug('Collecting %s of existing backups', 'light metadata' if use_light_meta else 'metadata')
 
         backups = []
         for name in self.get_backup_names():
@@ -267,27 +209,20 @@ class BackupLayout:
 
         return sorted(backups, key=lambda b: b.start_time.isoformat(), reverse=True)
 
-    def reload_backup(
-        self, backup: BackupMetadata, use_light_meta: bool = False
-    ) -> BackupMetadata:
+    def reload_backup(self, backup: BackupMetadata, use_light_meta: bool = False) -> BackupMetadata:
         """
         Reload backup metadata.
         """
-        path = (
-            self._backup_light_metadata_path(backup.name)
-            if use_light_meta
-            else self._backup_metadata_path(backup.name)
-        )
+        path = self._backup_light_metadata_path(backup.name) if use_light_meta else self._backup_metadata_path(
+            backup.name)
 
         try:
             data = self._storage_loader.download_data(path)
             return BackupMetadata.load_json(data)
         except Exception as e:
-            raise StorageError("Failed to download backup metadata") from e
+            raise StorageError('Failed to download backup metadata') from e
 
-    def get_database_create_statement(
-        self, backup_meta: BackupMetadata, db_name: str
-    ) -> str:
+    def get_database_create_statement(self, backup_meta: BackupMetadata, db_name: str) -> str:
         """
         Download and return database create statement.
         """
@@ -298,15 +233,11 @@ class BackupLayout:
         """
         Write db sql to metadata file to prepare ATTACH query.
         """
-        metadata_path = os.path.join(
-            self._metadata_path, f"{escape_metadata_file_name(db.name)}.sql"
-        )
-        with open(metadata_path, "w", encoding="utf-8") as f:
+        metadata_path = os.path.join(self._metadata_path, f'{escape_metadata_file_name(db.name)}.sql')
+        with open(metadata_path, 'w', encoding='utf-8') as f:
             f.write(db_sql)
 
-    def get_table_create_statement(
-        self, backup_meta: BackupMetadata, db_name: str, table_name: str
-    ) -> str:
+    def get_table_create_statement(self, backup_meta: BackupMetadata, db_name: str, table_name: str) -> str:
         """
         Download and return table create statement.
         """
@@ -317,84 +248,61 @@ class BackupLayout:
         """
         Download access control object metadata and save on disk.
         """
-        remote_path = _access_control_data_path(
-            self.get_backup_path(backup_name), file_name
-        )
+        remote_path = _access_control_data_path(self.get_backup_path(backup_name), file_name)
         local_path = os.path.join(self._access_control_path, file_name)
-        logging.debug(
-            'Downloading access control metadata "%s" to "%s', remote_path, local_path
-        )
+        logging.debug('Downloading access control metadata "%s" to "%s', remote_path, local_path)
         try:
             self._storage_loader.download_file(remote_path, local_path, encryption=True)
         except Exception as e:
-            msg = f"Failed to download access control metadata file {remote_path}"
+            msg = f'Failed to download access control metadata file {remote_path}'
             raise StorageError(msg) from e
 
     def download_access_control(self, backup_name: str) -> None:
         """
         Download access control object metadata and save on disk.
         """
-        remote_path = _access_control_data_path(
-            self.get_backup_path(backup_name), ACCESS_CONTROL_FNAME
-        )
+        remote_path = _access_control_data_path(self.get_backup_path(backup_name), ACCESS_CONTROL_FNAME)
         local_path = self._access_control_path
-        logging.debug(
-            'Downloading access control metadata "%s" to "%s', remote_path, local_path
-        )
+        logging.debug('Downloading access control metadata "%s" to "%s', remote_path, local_path)
         try:
-            self._storage_loader.download_files(
-                remote_path, local_path, encryption=True
-            )
+            self._storage_loader.download_files(remote_path, local_path, encryption=True)
         except Exception as e:
-            msg = f"Failed to download access control metadata file {remote_path}"
+            msg = f'Failed to download access control metadata file {remote_path}'
             raise StorageError(msg) from e
 
-    def download_data_part(
-        self, backup_meta: BackupMetadata, part: PartMetadata, fs_part_path: str
-    ) -> None:
+    def download_data_part(self, backup_meta: BackupMetadata, part: PartMetadata, fs_part_path: str) -> None:
         """
         Download part data to the specified directory.
         """
-        logging.debug(
-            'Downloading data part %s of "%s"."%s"',
-            part.name,
-            part.database,
-            part.table,
-        )
+        logging.debug('Downloading data part %s of "%s"."%s"', part.name, part.database, part.table)
 
         os.makedirs(fs_part_path, exist_ok=True)
 
-        remote_dir_path = _part_path(
-            part.link or backup_meta.path, part.database, part.table, part.name
-        )
+        remote_dir_path = _part_path(part.link or backup_meta.path, part.database, part.table, part.name)
 
         if part.tarball:
-            remote_path = os.path.join(remote_dir_path, f"{part.name}.tar")
-            logging.debug("Downloading part tarball file: %s", remote_path)
+            remote_path = os.path.join(remote_dir_path, f'{part.name}.tar')
+            logging.debug('Downloading part tarball file: %s', remote_path)
             try:
-                self._storage_loader.download_files(
-                    remote_path=remote_path,
-                    local_path=fs_part_path,
-                    is_async=True,
-                    encryption=True,
-                )
+                self._storage_loader.download_files(remote_path=remote_path,
+                                                    local_path=fs_part_path,
+                                                    is_async=True,
+                                                    encryption=True)
             except Exception as e:
-                msg = f"Failed to download part tarball file {remote_path}"
+                msg = f'Failed to download part tarball file {remote_path}'
                 raise StorageError(msg) from e
         else:
             for filename in part.files:
                 local_path = os.path.join(fs_part_path, filename)
                 remote_path = os.path.join(remote_dir_path, filename)
                 try:
-                    logging.debug("Downloading part file: %s", remote_path)
-                    self._storage_loader.download_file(
-                        remote_path=remote_path,
-                        local_path=local_path,
-                        is_async=True,
-                        encryption=True,
-                    )
+                    logging.debug('Downloading part file: %s', remote_path)
+                    self._storage_loader.download_file(remote_path=remote_path,
+                                                       local_path=local_path,
+                                                       is_async=True,
+                                                       encryption=True)
                 except Exception as e:
-                    msg = f"Failed to download part file {remote_path}"
+                    msg = f'Failed to download part file {remote_path}'
                     raise StorageError(msg) from e
 
     def check_data_part(self, backup_path: str, part: PartMetadata) -> bool:
@@ -402,63 +310,45 @@ class BackupLayout:
         Check availability of part data in storage.
         """
         try:
-            remote_dir_path = _part_path(
-                part.link or backup_path, part.database, part.table, part.name
-            )
+            remote_dir_path = _part_path(part.link or backup_path, part.database, part.table, part.name)
             remote_files = self._storage_loader.list_dir(remote_dir_path)
 
-            if remote_files == [f"{part.name}.tar"]:
-                actual_size = self._storage_loader.get_file_size(
-                    os.path.join(remote_dir_path, f"{part.name}.tar")
-                )
+            if remote_files == [f'{part.name}.tar']:
+                actual_size = self._storage_loader.get_file_size(os.path.join(remote_dir_path, f'{part.name}.tar'))
                 target_size = self._target_part_size(part)
                 if target_size != actual_size:
                     logging.warning(
-                        f"Part {part.name} files stored in tar, size not match {target_size} != {actual_size}"
-                    )
+                        f'Part {part.name} files stored in tar, size not match {target_size} != {actual_size}')
                     return False
                 return True
 
             notfound_files = set(part.files) - set(remote_files)
             if notfound_files:
-                logging.warning(
-                    "Some part files were not found in %s: %s",
-                    remote_dir_path,
-                    ", ".join(notfound_files),
-                )
+                logging.warning('Some part files were not found in %s: %s', remote_dir_path, ', '.join(notfound_files))
                 return False
 
             return True
 
         except S3RetryingError:
-            logging.warning(
-                f"Failed to check data part {part.name}, consider it's broken",
-                exc_info=True,
-            )
+            logging.warning(f"Failed to check data part {part.name}, consider it's broken", exc_info=True)
             return False
 
-    def download_cloud_storage_metadata(
-        self, backup_meta: BackupMetadata, disk: Disk, source_disk_name: str
-    ) -> None:
+    def download_cloud_storage_metadata(self, backup_meta: BackupMetadata, disk: Disk, source_disk_name: str) -> None:
         """
         Download files packed in tarball and unpacks them into specified directory.
         """
         backup_name = backup_meta.get_sanitized_name()
 
-        disk_path = os.path.join(disk.path, "shadow", backup_name)
+        disk_path = os.path.join(disk.path, 'shadow', backup_name)
         os.makedirs(disk_path, exist_ok=True)
-        remote_path = _disk_metadata_path(
-            self.get_backup_path(backup_name), source_disk_name
-        )
+        remote_path = _disk_metadata_path(self.get_backup_path(backup_name), source_disk_name)
 
         logging.debug(f'Downloading "{disk_path}" files from "{remote_path}"')
         try:
-            self._storage_loader.download_files(
-                remote_path=remote_path,
-                local_path=disk_path,
-                is_async=True,
-                encryption=backup_meta.cloud_storage.encrypted,
-            )
+            self._storage_loader.download_files(remote_path=remote_path,
+                                                local_path=disk_path,
+                                                is_async=True,
+                                                encryption=backup_meta.cloud_storage.encrypted)
         except Exception as e:
             msg = f'Failed to download tarball file "{remote_path}"'
             raise StorageError(msg) from e
@@ -469,16 +359,12 @@ class BackupLayout:
         """
         backup_path = self.get_backup_path(backup_name)
 
-        logging.debug("Deleting data in %s", backup_path)
+        logging.debug('Deleting data in %s', backup_path)
 
-        deleting_files = self._storage_loader.list_dir(
-            backup_path, recursive=True, absolute=True
-        )
+        deleting_files = self._storage_loader.list_dir(backup_path, recursive=True, absolute=True)
         self._delete_files(deleting_files)
 
-    def delete_data_parts(
-        self, backup_meta: BackupMetadata, parts: Sequence[PartMetadata]
-    ) -> None:
+    def delete_data_parts(self, backup_meta: BackupMetadata, parts: Sequence[PartMetadata]) -> None:
         """
         Delete backup data parts from storage.
         """
@@ -487,12 +373,10 @@ class BackupLayout:
 
         deleting_files: List[str] = []
         for part in parts:
-            part_path = _part_path(
-                part.link or backup_meta.path, part.database, part.table, part.name
-            )
-            logging.debug("Deleting data part %s", part_path)
+            part_path = _part_path(part.link or backup_meta.path, part.database, part.table, part.name)
+            logging.debug('Deleting data part %s', part_path)
             if part.tarball:
-                deleting_files.append(os.path.join(part_path, f"{part.name}.tar"))
+                deleting_files.append(os.path.join(part_path, f'{part.name}.tar'))
             else:
                 deleting_files.extend(os.path.join(part_path, f) for f in part.files)
 
@@ -504,18 +388,16 @@ class BackupLayout:
         """
         try:
             logging.memory_usage()
-            logging.debug(
-                f"Waiting for completion of async operations with keep_going={keep_going}"
-            )
+            logging.debug(f'Waiting for completion of async operations with keep_going={keep_going}')
             self._storage_loader.wait(keep_going)
         except Exception as e:
-            raise StorageError("Failed to complete async operations") from e
+            raise StorageError('Failed to complete async operations') from e
 
     def get_backup_path(self, backup_name: str) -> str:
         """
         Get backup path by backup name.
         """
-        return os.path.join(self._config["path_root"], backup_name)
+        return os.path.join(self._config['path_root'], backup_name)
 
     def _delete_files(self, remote_paths: Sequence[str]) -> None:
         """
@@ -537,60 +419,54 @@ class BackupLayout:
         """
         Predicts tar archive size after encryption.
         """
-        tar_size = calc_tarball_size(part.raw_metadata["files"], part.size)
-        return calc_encrypted_size(
-            tar_size, self._encryption_chunk_size, self._encryption_metadata_size
-        )
+        tar_size = calc_tarball_size(part.raw_metadata['files'], part.size)
+        return calc_encrypted_size(tar_size, self._encryption_chunk_size, self._encryption_metadata_size)
 
 
 def _access_control_data_path(backup_path: str, file_name: str) -> str:
     """
     Return S3 path to access control data.
     """
-    return os.path.join(backup_path, "access_control", file_name)
+    return os.path.join(backup_path, 'access_control', file_name)
 
 
 def _udf_data_path(backup_path: str, udf_file: str) -> str:
     """
     Return S3 path to UDF data
     """
-    return os.path.join(backup_path, "udf", udf_file)
+    return os.path.join(backup_path, 'udf', udf_file)
 
 
 def _db_metadata_path(backup_path: str, db_name: str) -> str:
     """
     Return S3 path to database metadata.
     """
-    return os.path.join(backup_path, "metadata", _quote(db_name) + ".sql")
+    return os.path.join(backup_path, 'metadata', _quote(db_name) + '.sql')
 
 
 def _table_metadata_path(backup_path: str, db_name: str, table_name: str) -> str:
     """
     Return S3 path to table metadata.
     """
-    return os.path.join(
-        backup_path, "metadata", _quote(db_name), _quote(table_name) + ".sql"
-    )
+    return os.path.join(backup_path, 'metadata', _quote(db_name), _quote(table_name) + '.sql')
 
 
 def _part_path(backup_path: str, db_name: str, table_name: str, part_name: str) -> str:
     """
     Return S3 path to data part.
     """
-    return os.path.join(backup_path, "data", db_name, table_name, part_name)
+    return os.path.join(backup_path, 'data', db_name, table_name, part_name)
 
 
 def _disk_metadata_path(backup_path: str, disk_name: str) -> str:
     """
     Returns path to store tarball with cloud storage shadow metadata.
     """
-    return os.path.join(backup_path, "disks", f"{disk_name}.tar")
+    return os.path.join(backup_path, 'disks', f'{disk_name}.tar')
 
 
 def _quote(value: str) -> str:
-    return quote(value, safe="").translate(
-        {
-            ord("."): "%2E",
-            ord("-"): "%2D",
-        }
-    )
+    return quote(value, safe='').translate({
+        ord('.'): '%2E',
+        ord('-'): '%2D',
+    })

@@ -15,10 +15,8 @@ class DownloadStorageStage(InputHandler):
 
     stype = StageType.STORAGE
 
-    def __init__(
-        self, config: dict, loader: PipeLineCompatibleStorageEngine, remote_path: str
-    ) -> None:
-        self._chunk_size = config["chunk_size"]
+    def __init__(self, config: dict, loader: PipeLineCompatibleStorageEngine, remote_path: str) -> None:
+        self._chunk_size = config['chunk_size']
         self._loader = loader
         self._remote_path = remote_path
         self._download_id: Optional[str] = None
@@ -28,9 +26,7 @@ class DownloadStorageStage(InputHandler):
 
     def __call__(self) -> Iterable[bytes]:
         while True:
-            data = self._loader.download_part(
-                download_id=self._download_id, part_len=self._chunk_size
-            )
+            data = self._loader.download_part(download_id=self._download_id, part_len=self._chunk_size)
             if not data:
                 return
             yield data

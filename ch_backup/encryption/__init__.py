@@ -10,8 +10,8 @@ from ch_backup.encryption.noop import NoopEncryption
 from ch_backup.exceptions import UnknownEncryptionError
 
 SUPPORTED_CRYPTO: Mapping[str, Type[BaseEncryption]] = {
-    "noop": NoopEncryption,
-    "nacl": NaClEncryption,
+    'noop': NoopEncryption,
+    'nacl': NaClEncryption,
 }
 
 

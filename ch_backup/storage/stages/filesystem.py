@@ -13,14 +13,13 @@ from .base import BufferedIterStage, InputStage, IterStage
 
 # pylint: disable=consider-using-with
 
-STAGE_TYPE = "filesystem"
+STAGE_TYPE = 'filesystem'
 
 
 class FileStream:
     """
     Data buffer that stores global offset, but removes data after read.
     """
-
     def __init__(self):
         self.buffer = io.BytesIO()
         self.offset = 0
@@ -96,7 +95,7 @@ class WriteFileStage(BufferedIterStage):
         self._fobj = None
 
     def _pre_process(self, src_key: Any, dst_key: Any) -> bool:
-        self._fobj = open(dst_key, "bw", 0)
+        self._fobj = open(dst_key, 'bw', 0)
         return True
 
     def _process(self, data):
@@ -112,7 +111,6 @@ class State(Enum):
     """
     WriteFilesStage state representation.
     """
-
     READ_HEADER = 1
     # If filename longer than 100 chars special entry created
     # Header with special type L and name @LongLink
@@ -161,25 +159,21 @@ class WriteFilesStage(BufferedIterStage):
         if self._tarstream.len() < BLOCKSIZE:
             return False
         buf = self._tarstream.read(BLOCKSIZE)
-        self._tarinfo = tarfile.TarInfo.frombuf(
-            buf, tarfile.ENCODING, "surrogateescape"
-        )
+        self._tarinfo = tarfile.TarInfo.frombuf(buf, tarfile.ENCODING, "surrogateescape")
         assert self._tarinfo
         assert self._dir
         self._bytes_to_process = self._tarinfo.size
         if self._tarinfo.type == GNUTYPE_LONGNAME:
             self._state = State.READ_LONG_NAME
-            self._name_from_buffer = b""
+            self._name_from_buffer = b''
         else:
             self._state = State.READ_DATA
             if self._name_from_buffer:
-                self._tarinfo.name = self._name_from_buffer[
-                    :-1
-                ].decode()  # ignore string null terminator
+                self._tarinfo.name = self._name_from_buffer[:-1].decode()  # ignore string null terminator
                 self._name_from_buffer = None
             filepath = os.path.join(self._dir, self._tarinfo.name)
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
-            self._fobj = open(filepath, "wb")
+            self._fobj = open(filepath, 'wb')
         return True
 
     def _process_long_name(self) -> bool:
@@ -238,13 +232,13 @@ class ReadFileStage(InputStage):
     stype = STAGE_TYPE
 
     def __init__(self, conf: dict, params: dict) -> None:
-        self._chunk_size = conf["chunk_size"]
+        self._chunk_size = conf['chunk_size']
         self._fobj: Optional[IO] = None
-        self._skip_deleted = params.get("skip_deleted", False)
+        self._skip_deleted = params.get('skip_deleted', False)
 
     def _pre_process(self, src_key: str) -> bool:
         try:
-            self._fobj = open(src_key, "br")
+            self._fobj = open(src_key, 'br')
         except FileNotFoundError:
             if self._skip_deleted:
                 return False
@@ -268,13 +262,13 @@ class ReadFilesStage(InputStage):
     stype = STAGE_TYPE
 
     def __init__(self, conf: dict, params: dict) -> None:
-        self._chunk_size = conf["chunk_size"]
+        self._chunk_size = conf['chunk_size']
         self._tarstream = FileStream()
         self._file_iter: Iterator[str] = iter([])
         self._fobj: Optional[IO] = None
         self._dir_path: Optional[str] = None
         self._tarinfo: Optional[tarfile.TarInfo] = None
-        self._skip_deleted = params.get("skip_deleted", False)
+        self._skip_deleted = params.get('skip_deleted', False)
 
     def _pre_process(self, src_key: Tuple[str, List[str]]) -> bool:
         try:
@@ -304,7 +298,7 @@ class ReadFilesStage(InputStage):
         filepath = os.path.join(self._dir_path, filename)
         if self._fobj:
             self._fobj.close()
-        self._fobj = open(filepath, "br")
+        self._fobj = open(filepath, 'br')
         stat = os.stat(filepath)
         self._tarinfo = tarfile.TarInfo(filename)
         assert self._tarinfo

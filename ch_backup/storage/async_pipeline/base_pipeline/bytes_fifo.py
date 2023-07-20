@@ -10,12 +10,11 @@ class BytesFIFO:
 
     Implemented in terms of circular buffer.
     """
-
     def __init__(self, init_size: int) -> None:
         """
         Create a FIFO of ``init_size`` bytes.
         """
-        self._buffer = io.BytesIO(b"\x00" * init_size)
+        self._buffer = io.BytesIO(b'\x00' * init_size)
         self._size = init_size
         self._filled = 0
         self._read_ptr = 0
@@ -114,12 +113,10 @@ class BytesFIFO:
         buffer is not contracted (yet).
         """
         if new_size < 1:
-            raise ValueError("Cannot resize to zero or less bytes.")
+            raise ValueError('Cannot resize to zero or less bytes.')
 
         if new_size < self._filled:
-            raise ValueError(
-                f"Cannot contract FIFO to less than {self._filled} bytes, or data will be lost."
-            )
+            raise ValueError(f'Cannot contract FIFO to less than {self._filled} bytes, or data will be lost.')
 
         # original data is non-contiguous. we need to copy old data,
         # re-write to the beginning of the buffer, and re-sync

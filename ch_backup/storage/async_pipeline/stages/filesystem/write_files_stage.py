@@ -36,9 +36,7 @@ class WriteFilesStage(Handler):
         self._config = config
 
         if buffer_size < BLOCKSIZE:
-            raise ValueError(
-                f"Size of TAR stream buffer cannot be less than TAR BLOCKSIZE: {BLOCKSIZE}"
-            )
+            raise ValueError(f'Size of TAR stream buffer cannot be less than TAR BLOCKSIZE: {BLOCKSIZE}')
 
         self._dir: Path = dir_path
         self._tarstream = BytesFIFO(buffer_size)
@@ -53,9 +51,8 @@ class WriteFilesStage(Handler):
         written = self._tarstream.write(data)
         if written != len(data):
             raise RuntimeError(
-                f"TAR stream buffer size {len(self._tarstream)} is full. And cannot accept chunk of size {len(data)}. "
-                f"Maybe the buffer size setting is too small"
-            )
+                f'TAR stream buffer size {len(self._tarstream)} is full. And cannot accept chunk of size {len(data)}. '
+                f'Maybe the buffer size setting is too small')
 
         actions = {
             State.READ_HEADER: self._read_header,
@@ -81,18 +78,16 @@ class WriteFilesStage(Handler):
 
         if self._tarinfo.type == GNUTYPE_LONGNAME:
             self._state = State.READ_LONG_NAME
-            self._name_from_buffer = b""
+            self._name_from_buffer = b''
         else:
             self._state = State.READ_DATA
             if self._name_from_buffer:
-                self._tarinfo.name = self._name_from_buffer[
-                    :-1
-                ].decode()  # ignore string null terminator
+                self._tarinfo.name = self._name_from_buffer[:-1].decode()  # ignore string null terminator
                 self._name_from_buffer = None
 
             filepath = self._dir / self._tarinfo.name
             filepath.parent.mkdir(parents=True, exist_ok=True)
-            self._fobj = filepath.open("wb")
+            self._fobj = filepath.open('wb')
 
         return True
 

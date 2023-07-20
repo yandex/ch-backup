@@ -7,8 +7,10 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, Sequence
 
-from ch_backup.backup.metadata.access_control_metadata import AccessControlMetadata
-from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageMetadata
+from ch_backup.backup.metadata.access_control_metadata import \
+    AccessControlMetadata
+from ch_backup.backup.metadata.cloud_storage_metadata import \
+    CloudStorageMetadata
 from ch_backup.backup.metadata.common import BackupStorageFormat
 from ch_backup.backup.metadata.part_metadata import PartMetadata
 from ch_backup.backup.metadata.table_metadata import TableMetadata
@@ -22,11 +24,11 @@ class BackupState(Enum):
     Backup states.
     """
 
-    CREATED = "created"
-    CREATING = "creating"
-    DELETING = "deleting"
-    PARTIALLY_DELETED = "partially_deleted"
-    FAILED = "failed"
+    CREATED = 'created'
+    CREATING = 'creating'
+    DELETING = 'deleting'
+    PARTIALLY_DELETED = 'partially_deleted'
+    FAILED = 'failed'
 
 
 class BackupMetadata:
@@ -37,17 +39,15 @@ class BackupMetadata:
     # pylint: disable=too-many-instance-attributes
     # pylint: disable=too-many-arguments
 
-    def __init__(
-        self,
-        name: str,
-        path: str,
-        version: str,
-        ch_version: str,
-        time_format: str,
-        hostname: str = None,
-        labels: dict = None,
-        schema_only: bool = False,
-    ) -> None:
+    def __init__(self,
+                 name: str,
+                 path: str,
+                 version: str,
+                 ch_version: str,
+                 time_format: str,
+                 hostname: str = None,
+                 labels: dict = None,
+                 schema_only: bool = False) -> None:
         self.name = name
         self.labels = labels
         self.path = path
@@ -109,28 +109,28 @@ class BackupMetadata:
         Serialize backup metadata.
         """
         return {
-            "databases": self._databases if not light else {},
-            "access_controls": self._access_control.dump() if not light else {},
-            "user_defined_functions": self._user_defined_functions if not light else [],
-            "cloud_storage": self.cloud_storage.dump(),
-            "meta": {
-                "name": self.name,
-                "path": self.path,
-                "version": self.version,
-                "ch_version": self.ch_version,
-                "hostname": self.hostname,
-                "time_format": self.time_format,
-                "start_time": self.start_time_str,
-                "end_time": self.end_time_str,
-                "bytes": self.size,
-                "real_bytes": self.real_size,
-                "state": self._state.value,
-                "labels": self.labels,
+            'databases': self._databases if not light else {},
+            'access_controls': self._access_control.dump() if not light else {},
+            'user_defined_functions': self._user_defined_functions if not light else [],
+            'cloud_storage': self.cloud_storage.dump(),
+            'meta': {
+                'name': self.name,
+                'path': self.path,
+                'version': self.version,
+                'ch_version': self.ch_version,
+                'hostname': self.hostname,
+                'time_format': self.time_format,
+                'start_time': self.start_time_str,
+                'end_time': self.end_time_str,
+                'bytes': self.size,
+                'real_bytes': self.real_size,
+                'state': self._state.value,
+                'labels': self.labels,
                 # TODO: clean up backward-compatibility logic (delete 'date_fmt'); it's required changes in int api
                 # to replace 'date_fmt' with 'time_format'.
-                "date_fmt": self.time_format,
-                "schema_only": self.schema_only,
-                "s3_revisions": self.s3_revisions,
+                'date_fmt': self.time_format,
+                'schema_only': self.schema_only,
+                's3_revisions': self.s3_revisions,
             },
         }
 
@@ -138,54 +138,46 @@ class BackupMetadata:
         """
         Return json representation of backup metadata.
         """
-        return json.dumps(self.dump(light), separators=(",", ":"))
+        return json.dumps(self.dump(light), separators=(',', ':'))
 
     @classmethod
-    def load(cls, data: dict) -> "BackupMetadata":
+    def load(cls, data: dict) -> 'BackupMetadata':
         """
         Deserialize backup metadata.
         """
         # pylint: disable=protected-access
         try:
-            meta = data["meta"]
+            meta = data['meta']
 
             backup = cls.__new__(cls)
-            backup.name = meta["name"]
-            backup.path = meta["path"]
-            backup.hostname = meta["hostname"]
-            backup.time_format = meta["time_format"]
-            backup._databases = data["databases"]
+            backup.name = meta['name']
+            backup.path = meta['path']
+            backup.hostname = meta['hostname']
+            backup.time_format = meta['time_format']
+            backup._databases = data['databases']
 
-            if "access_control" in data:
+            if 'access_control' in data:
                 # For backward compatibility
-                backup._access_control = AccessControlMetadata(
-                    data.get("access_control", []),
-                    data.get("access_control_meta", {}),
-                    BackupStorageFormat.PLAIN,
-                )
+                backup._access_control = AccessControlMetadata(data.get('access_control', []),
+                                                               data.get('access_control_meta', {}),
+                                                               BackupStorageFormat.PLAIN)
             else:
                 # Stored under a new name for forward compatibility
-                backup._access_control = AccessControlMetadata.load(
-                    data.get("access_controls", {})
-                )
+                backup._access_control = AccessControlMetadata.load(data.get('access_controls', {}))
 
-            backup.cloud_storage = CloudStorageMetadata.load(
-                data.get("cloud_storage", {})
-            )
-            backup.start_time = cls._load_time(meta, "start_time")
-            backup.end_time = cls._load_time(meta, "end_time")
-            backup.size = meta["bytes"]
-            backup.real_size = meta["real_bytes"]
-            backup._state = BackupState(meta["state"])
-            backup.ch_version = meta["ch_version"]
-            backup.labels = meta["labels"]
-            backup.version = meta["version"]
-            backup.schema_only = meta.get("schema_only", False)
-            backup.s3_revisions = meta.get("s3_revisions", {})
+            backup.cloud_storage = CloudStorageMetadata.load(data.get('cloud_storage', {}))
+            backup.start_time = cls._load_time(meta, 'start_time')
+            backup.end_time = cls._load_time(meta, 'end_time')
+            backup.size = meta['bytes']
+            backup.real_size = meta['real_bytes']
+            backup._state = BackupState(meta['state'])
+            backup.ch_version = meta['ch_version']
+            backup.labels = meta['labels']
+            backup.version = meta['version']
+            backup.schema_only = meta.get('schema_only', False)
+            backup.s3_revisions = meta.get('s3_revisions', {})
             # TODO remove after a several weeks/months, when backups rotated
-            backup._user_defined_functions = data.get(
-                "user_defined_functions", meta.get("user_defined_functions", [])
-            )
+            backup._user_defined_functions = data.get('user_defined_functions', meta.get('user_defined_functions', []))
 
             return backup
 
@@ -210,7 +202,7 @@ class BackupMetadata:
         Get database.
         """
         db_meta = self._databases[db_name]
-        return Database(db_name, db_meta.get("engine"), db_meta.get("metadata_path"))
+        return Database(db_name, db_meta.get('engine'), db_meta.get('metadata_path'))
 
     def add_database(self, db: Database) -> None:
         """
@@ -219,9 +211,9 @@ class BackupMetadata:
         assert db.name not in self._databases
 
         self._databases[db.name] = {
-            "engine": db.engine,
-            "metadata_path": db.metadata_path,
-            "tables": {},
+            'engine': db.engine,
+            'metadata_path': db.metadata_path,
+            'tables': {},
         }
 
     def get_tables(self, db_name: str) -> Sequence[TableMetadata]:
@@ -229,7 +221,7 @@ class BackupMetadata:
         Get tables for the specified database.
         """
         result = []
-        for table_name, raw_metadata in self._databases[db_name]["tables"].items():
+        for table_name, raw_metadata in self._databases[db_name]['tables'].items():
             result.append(TableMetadata.load(db_name, table_name, raw_metadata))
 
         return result
@@ -238,15 +230,13 @@ class BackupMetadata:
         """
         Get the specified table.
         """
-        return TableMetadata.load(
-            db_name, table_name, self._databases[db_name]["tables"][table_name]
-        )
+        return TableMetadata.load(db_name, table_name, self._databases[db_name]['tables'][table_name])
 
     def add_table(self, table: TableMetadata) -> None:
         """
         Add table to backup metadata.
         """
-        tables = self._databases[table.database]["tables"]
+        tables = self._databases[table.database]['tables']
 
         assert table.name not in tables
 
@@ -281,14 +271,12 @@ class BackupMetadata:
 
         return parts
 
-    def find_part(
-        self, db_name: str, table_name: str, part_name: str
-    ) -> Optional[PartMetadata]:
+    def find_part(self, db_name: str, table_name: str, part_name: str) -> Optional[PartMetadata]:
         """
         Find and return data part. If not found, None is returned.
         """
         try:
-            part = self._databases[db_name]["tables"][table_name]["parts"][part_name]
+            part = self._databases[db_name]['tables'][table_name]['parts'][part_name]
             return PartMetadata.load(db_name, table_name, part_name, part)
         except KeyError:
             return None
@@ -307,7 +295,7 @@ class BackupMetadata:
         """
         Remove data parts from backup metadata.
         """
-        _parts = self._databases[table.database]["tables"][table.name]["parts"]
+        _parts = self._databases[table.database]['tables'][table.name]['parts']
 
         for part in parts:
             del _parts[part.name]
@@ -347,7 +335,7 @@ class BackupMetadata:
         ClickHouse will place shadow data under this directory.
         '-' character is replaced to '_' to avoid unnecessary escaping on CH side.
         """
-        return self.name.replace("-", "_")
+        return self.name.replace('-', '_')
 
     def _format_time(self, value: datetime) -> str:
         return value.strftime(self.time_format)
@@ -358,7 +346,7 @@ class BackupMetadata:
         if not attr_value:
             return None
 
-        result = datetime.strptime(attr_value, meta["time_format"])
+        result = datetime.strptime(attr_value, meta['time_format'])
         if result.tzinfo is None:
             result = result.replace(tzinfo=timezone.utc)
 

@@ -14,10 +14,7 @@ class S3MultipartUploader:
     """
     Thread safe S3 multipart object uploader.
     """
-
-    def __init__(
-        self, bucket_name: str, s3_client_factory: S3ClientCachedFactory
-    ) -> None:
+    def __init__(self, bucket_name: str, s3_client_factory: S3ClientCachedFactory) -> None:
         self._bucket_name = bucket_name
         self._s3_client_factory = s3_client_factory
         self._lock = threading.Lock()
@@ -35,9 +32,7 @@ class S3MultipartUploader:
         """
         Initiate multipart upload.
         """
-        resp = self._s3_client.create_multipart_upload(
-            Bucket=self._bucket_name, Key=remote_path
-        )
+        resp = self._s3_client.create_multipart_upload(Bucket=self._bucket_name, Key=remote_path)
         upload_id = resp["UploadId"]
 
         # TODO: limit multipart uploads + clean up expired
@@ -46,21 +41,15 @@ class S3MultipartUploader:
 
         return upload_id
 
-    def upload_part(
-        self,
-        data: bytes,
-        remote_path: str,
-        upload_id: str,
-        part_num: Optional[int] = None,
-    ) -> None:
+    def upload_part(self, data: bytes, remote_path: str, upload_id: str, part_num: Optional[int] = None) -> None:
         """
         Upload part to S3 storage for specified multipart upload.
         """
         if part_num is None:
             with self._lock:
-                upload_parts = self._uploads[upload_id]["Parts"]
+                upload_parts = self._uploads[upload_id]['Parts']
                 try:
-                    part_num = upload_parts[-1]["PartNumber"] + 1
+                    part_num = upload_parts[-1]['PartNumber'] + 1
                 except IndexError:
                     part_num = 1
 
@@ -74,9 +63,7 @@ class S3MultipartUploader:
 
         # save part metadata for complete upload
         with self._lock:
-            self._uploads[upload_id]["Parts"].append(
-                {"ETag": resp["ETag"], "PartNumber": part_num}
-            )
+            self._uploads[upload_id]["Parts"].append({"ETag": resp["ETag"], "PartNumber": part_num})
 
     def complete_multipart_upload(self, remote_path: str, upload_id: str) -> None:
         """
@@ -89,9 +76,7 @@ class S3MultipartUploader:
             Bucket=self._bucket_name,
             Key=remote_path,
             UploadId=upload_id,
-            MultipartUpload={
-                "Parts": sorted(parts, key=operator.itemgetter("PartNumber"))
-            },
+            MultipartUpload={"Parts": sorted(parts, key=operator.itemgetter('PartNumber'))},
             # The parts list must be specified in order of part numbers
         )
 

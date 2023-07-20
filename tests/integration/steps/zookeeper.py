@@ -3,44 +3,37 @@ Steps for interacting with ZooKeeper.
 """
 from behave import given, then, when
 from hamcrest import assert_that, has_length
-from tests.integration.modules.zookeeper import (
-    get_children_list,
-    initialize_zookeeper_roots,
-    write_znode,
-)
+
+from tests.integration.modules.zookeeper import (get_children_list, initialize_zookeeper_roots, write_znode)
 
 
-@given("a working zookeeper on {node:w}")
+@given('a working zookeeper on {node:w}')
 def step_wait_for_zookeeper_alive(context, node):
     initialize_zookeeper_roots(context, node)
 
 
-@when("on {node:w} we create {znode}")
-@then("on {node:w} we create {znode}")
+@when('on {node:w} we create {znode}')
+@then('on {node:w} we create {znode}')
 def step_create_znode(context, node, znode):
-    write_znode(context, node, znode, b"")
+    write_znode(context, node, znode, b'')
 
 
-@when("on {node:w} we create {znode} with data")
-@then("on {node:w} we create {znode} with data")
+@when('on {node:w} we create {znode} with data')
+@then('on {node:w} we create {znode} with data')
 def step_create_znode_with_data(context, node, znode):
     write_znode(context, node, znode, context.text.encode())
 
 
-@when("we execute ZK list query on {node:w}")
+@when('we execute ZK list query on {node:w}')
 def step_zk_list_query(context, node):
     result = get_children_list(context, node, context.text)
     if result is None:
         context.response = []
     else:
-        context.response = ";".join(map(str, result))
+        context.response = ';'.join(map(str, result))
 
 
-@then("we get ZK list with len {length:d}")
+@then('we get ZK list with len {length:d}')
 def step_zk_list_len(context, length):
-    response = (
-        context.response
-        if isinstance(context.response, list)
-        else context.response.split(";")
-    )
+    response = context.response if isinstance(context.response, list) else context.response.split(';')
     assert_that(response, has_length(length))

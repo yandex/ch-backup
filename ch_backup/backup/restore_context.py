@@ -14,18 +14,13 @@ class RestoreContext:
     """
     Backup restore context. Allows continue restore process after errors.
     """
-
     def __init__(self, config: Dict):
-        self._state_file = config["restore_context_path"]
+        self._state_file = config['restore_context_path']
         self._databases: Dict[str, Dict[str, List]] = {}
-        self._failed: Mapping[str, Any] = defaultdict(
-            lambda: defaultdict(
-                lambda: {
-                    "failed_paths": [],
-                    "failed_parts": {},
-                }
-            )
-        )
+        self._failed: Mapping[str, Any] = defaultdict(lambda: defaultdict(lambda: {
+            'failed_paths': [],
+            'failed_parts': {},
+        }))
         self._restarted_disks: List[str] = []
         if exists(self._state_file):
             self._load_state()
@@ -56,13 +51,13 @@ class RestoreContext:
         """
         Save information about failed detached dir chown in context
         """
-        self._failed[database][table]["failed_paths"].append(path)
+        self._failed[database][table]['failed_paths'].append(path)
 
     def add_failed_part(self, part: PartMetadata, e: Exception) -> None:
         """
         Save information about failed to restore part in context
         """
-        self._failed[part.database][part.table]["failed_parts"][part.name] = repr(e)
+        self._failed[part.database][part.table]['failed_parts'][part.name] = repr(e)
 
     def add_restarted_disk(self, disk_name: str) -> None:
         """
@@ -86,18 +81,16 @@ class RestoreContext:
         """
         Dumps restore state to file of disk.
         """
-        with open(self._state_file, "w", encoding="utf-8") as f:
+        with open(self._state_file, 'w', encoding='utf-8') as f:
             json.dump(
                 {
-                    "databases": self._databases,
-                    "failed": self._failed,
-                    "restarted_disks": self._restarted_disks,
-                },
-                f,
-            )
+                    'databases': self._databases,
+                    'failed': self._failed,
+                    'restarted_disks': self._restarted_disks,
+                }, f)
 
     def _load_state(self) -> None:
-        with open(self._state_file, "r", encoding="utf-8") as f:
+        with open(self._state_file, 'r', encoding='utf-8') as f:
             state: Dict[str, Any] = json.load(f)
-            self._databases = state["databases"]
-            self._restarted_disks = state.get("restarted_disks", [])
+            self._databases = state['databases']
+            self._restarted_disks = state.get('restarted_disks', [])

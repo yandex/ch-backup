@@ -12,8 +12,5 @@ from .filesystem.write_file_stage import WriteFileStage
 from .filesystem.write_files_stage import WriteFilesStage
 from .storage.delete_multiple_storage_stage import DeleteMultipleStorageStage
 from .storage.download_storage_stage import DownloadStorageStage
-from .storage.multipart_storage_uploading_stage import (
-    CompleteMultipartUploadStage,
-    StartMultipartUploadStage,
-    StorageUploadingStage,
-)
+from .storage.multipart_storage_uploading_stage import (CompleteMultipartUploadStage, StartMultipartUploadStage,
+                                                        StorageUploadingStage)

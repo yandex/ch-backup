@@ -8,10 +8,7 @@ class CloudStorageMetadata:
     """
     Backup metadata for Cloud Storage.
     """
-
-    def __init__(
-        self, encryption: bool = True, disks: Optional[List[str]] = None
-    ) -> None:
+    def __init__(self, encryption: bool = True, disks: Optional[List[str]] = None) -> None:
         self._encryption: bool = encryption
         self._disks: List[str] = disks or []
 
@@ -49,17 +46,17 @@ class CloudStorageMetadata:
         self._encryption = True
 
     @classmethod
-    def load(cls, data: Dict[str, Any]) -> "CloudStorageMetadata":
+    def load(cls, data: Dict[str, Any]) -> 'CloudStorageMetadata':
         """
         Deserialize Cloud Storage metadata.
         """
-        return cls(encryption=data.get("encryption", True), disks=data.get("disks", []))
+        return cls(encryption=data.get('encryption', True), disks=data.get('disks', []))
 
     def dump(self) -> Dict[str, Any]:
         """
         Serialize Cloud Storage metadata.
         """
         return {
-            "encryption": self._encryption,
-            "disks": self._disks,
+            'encryption': self._encryption,
+            'disks': self._disks,
         }
