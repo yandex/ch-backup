@@ -8,10 +8,15 @@ from typing import Any, AnyStr, Callable, List, Optional, Sequence
 
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ExecPool
 from ch_backup.storage.async_pipeline.pipelines import (
-    delete_multiple_storage_pipeline, download_data_pipeline, download_file_pipeline, download_files_pipeline,
-    upload_data_pipeline, upload_file_pipeline, upload_files_tarball_pipeline)
-from ch_backup.storage.async_pipeline.suppress_exceptions import \
-    suppress_exceptions
+    delete_multiple_storage_pipeline,
+    download_data_pipeline,
+    download_file_pipeline,
+    download_files_pipeline,
+    upload_data_pipeline,
+    upload_file_pipeline,
+    upload_files_tarball_pipeline,
+)
+from ch_backup.storage.async_pipeline.suppress_exceptions import suppress_exceptions
 from ch_backup.util import current_func_name
 
 
@@ -22,6 +27,7 @@ class PipelineExecutor:
     Provide facility for starting pipeline storage operations both in multiprocessing pool
     or in-place(synchronously).
     """
+
     def __init__(self, config: dict) -> None:
         self._config = config
         self._exec_pool: Optional[ExecPool] = None
@@ -30,36 +36,56 @@ class PipelineExecutor:
         if worker_count:
             self._exec_pool = ExecPool(ProcessPoolExecutor(max_workers=worker_count))
 
-    def upload_data(self, data: AnyStr, remote_path: str, is_async: bool, encryption: bool) -> None:
+    def upload_data(
+        self, data: AnyStr, remote_path: str, is_async: bool, encryption: bool
+    ) -> None:
         """
         Upload given bytes or file-like object.
         """
         job_id = self._make_job_id(current_func_name(), "<data>", remote_path)
 
-        pipeline = partial(upload_data_pipeline, self._config, data, remote_path, encryption)
+        pipeline = partial(
+            upload_data_pipeline, self._config, data, remote_path, encryption
+        )
         self._exec_pipeline(job_id, pipeline, is_async)
 
-    def upload_file(self, local_path: str, remote_path: str, is_async: bool, encryption: bool, delete: bool,
-                    params: dict) -> None:
+    def upload_file(
+        self,
+        local_path: str,
+        remote_path: str,
+        is_async: bool,
+        encryption: bool,
+        delete: bool,
+        params: dict,
+    ) -> None:
         """
         Upload file from local filesystem.
         """
         job_id = self._make_job_id(current_func_name(), local_path, remote_path)
 
-        pipeline = partial(upload_file_pipeline,
-                           self._config,
-                           Path(local_path),
-                           remote_path,
-                           encryption,
-                           delete_after=delete)
+        pipeline = partial(
+            upload_file_pipeline,
+            self._config,
+            Path(local_path),
+            remote_path,
+            encryption,
+            delete_after=delete,
+        )
 
-        if params.get('skip_deleted', False):
+        if params.get("skip_deleted", False):
             pipeline = partial(suppress_exceptions, pipeline, [FileNotFoundError])
 
         self._exec_pipeline(job_id, pipeline, is_async)
 
-    def upload_files_tarball(self, dir_path: str, files: List[str], remote_path: str, is_async: bool, encryption: bool,
-                             delete: bool) -> None:
+    def upload_files_tarball(
+        self,
+        dir_path: str,
+        files: List[str],
+        remote_path: str,
+        is_async: bool,
+        encryption: bool,
+        delete: bool,
+    ) -> None:
         """
         Archive to tarball and upload files from local filesystem.
         """
@@ -77,35 +103,57 @@ class PipelineExecutor:
         )
         self._exec_pipeline(job_id, pipeline, is_async)
 
-    def download_data(self, remote_path: str, is_async: bool, encryption: bool) -> bytes:
+    def download_data(
+        self, remote_path: str, is_async: bool, encryption: bool
+    ) -> bytes:
         """
         Download file from storage and return its content as a string.
         """
         job_id = self._make_job_id(current_func_name(), remote_path)
-        pipeline = partial(download_data_pipeline, self._config, remote_path, encryption)
+        pipeline = partial(
+            download_data_pipeline, self._config, remote_path, encryption
+        )
 
         return self._exec_pipeline(job_id, pipeline, is_async)
 
-    def download_file(self, remote_path: str, local_path: str, is_async: bool, encryption: bool) -> None:
+    def download_file(
+        self, remote_path: str, local_path: str, is_async: bool, encryption: bool
+    ) -> None:
         """
         Download file to local filesystem.
         """
         job_id = self._make_job_id(current_func_name(), remote_path, local_path)
 
-        pipeline = partial(download_file_pipeline, self._config, remote_path, Path(local_path), encryption)
+        pipeline = partial(
+            download_file_pipeline,
+            self._config,
+            remote_path,
+            Path(local_path),
+            encryption,
+        )
         self._exec_pipeline(job_id, pipeline, is_async)
 
-    def download_files(self, remote_path: str, local_path: str, is_async: bool, encryption: bool) -> None:
+    def download_files(
+        self, remote_path: str, local_path: str, is_async: bool, encryption: bool
+    ) -> None:
         """
         Download and unarchive tarball to files on local filesystem.
         """
         job_id = self._make_job_id(current_func_name(), remote_path, local_path)
 
-        pipeline = partial(download_files_pipeline, self._config, remote_path, Path(local_path), encryption)
+        pipeline = partial(
+            download_files_pipeline,
+            self._config,
+            remote_path,
+            Path(local_path),
+            encryption,
+        )
         self._exec_pipeline(job_id, pipeline, is_async)
 
     # pylint: disable=unused-argument
-    def delete_files(self, remote_paths: Sequence[str], is_async: bool, encryption: bool) -> None:
+    def delete_files(
+        self, remote_paths: Sequence[str], is_async: bool, encryption: bool
+    ) -> None:
         """
         Delete files from storage.
         """

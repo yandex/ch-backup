@@ -5,14 +5,12 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, Callable, Iterable, Optional, Union
 
+from ch_backup.storage.async_pipeline.base_pipeline.handler import IterableHandler
 from pypeln import utils as pypeln_utils
 from pypeln.thread import Worker
 from pypeln.thread.api.to_stage import to_stage
 from pypeln.thread.stage import Stage
 from pypeln.utils import A, B, Element
-
-from ch_backup.storage.async_pipeline.base_pipeline.handler import \
-    IterableHandler
 
 
 @dataclass
@@ -20,6 +18,7 @@ class FlatMap:
     """
     Flat map wrapper for stage handler.
     """
+
     handler: IterableHandler
 
     def __call__(self, worker: Worker, **kwargs: Any) -> None:
@@ -28,7 +27,7 @@ class FlatMap:
         """
         for idx, value in enumerate(self.process(worker)):
             # pylint: disable=no-value-for-parameter
-            worker.stage_params.output_queues.put(Element(index=(idx, ), value=value))
+            worker.stage_params.output_queues.put(Element(index=(idx,), value=value))
 
     def process(self, worker: Worker) -> Iterable[B]:
         """
@@ -46,7 +45,9 @@ class FlatMap:
 
 def flat_map(
     f: IterableHandler,
-    stage: Union[Stage[A], Iterable[A], pypeln_utils.Undefined] = pypeln_utils.UNDEFINED,
+    stage: Union[
+        Stage[A], Iterable[A], pypeln_utils.Undefined
+    ] = pypeln_utils.UNDEFINED,
     workers: int = 1,
     maxsize: int = 0,
     timeout: float = 0,
@@ -60,16 +61,18 @@ def flat_map(
     Flatten iterables returned from handler methods, i.e. [[a, b], [c, d]] -> [a, b, c, d]
     """
     if isinstance(stage, pypeln_utils.Undefined):
-        return pypeln_utils.Partial(lambda stage: flat_map(
-            f,
-            stage=stage,
-            workers=workers,
-            maxsize=maxsize,
-            timeout=timeout,
-            on_start=on_start,
-            on_done=on_done,
-            use_threads=use_threads,
-        ))
+        return pypeln_utils.Partial(
+            lambda stage: flat_map(
+                f,
+                stage=stage,
+                workers=workers,
+                maxsize=maxsize,
+                timeout=timeout,
+                on_start=on_start,
+                on_done=on_done,
+                use_threads=use_threads,
+            )
+        )
 
     stage = to_stage(stage, maxsize=maxsize)
 

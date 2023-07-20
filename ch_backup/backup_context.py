@@ -28,11 +28,11 @@ class BackupContext:
 
     def __init__(self, config: Config) -> None:
         self._config_root = config
-        self._lock_conf = config.get('lock')
-        self._ch_ctl_conf = config.get('clickhouse')
-        self._main_conf = config.get('main')
-        self._config = config.get('backup')
-        self._zk_config = config.get('zookeeper')
+        self._lock_conf = config.get("lock")
+        self._ch_ctl_conf = config.get("clickhouse")
+        self._main_conf = config.get("main")
+        self._config = config.get("backup")
+        self._zk_config = config.get("zookeeper")
 
     @property
     def config_root(self) -> Config:
@@ -72,7 +72,7 @@ class BackupContext:
         """
         Getter ch_ctl
         """
-        if not hasattr(self, '_ch_ctl'):
+        if not hasattr(self, "_ch_ctl"):
             self._ch_ctl = ClickhouseCTL(self._ch_ctl_conf, self._main_conf)
         return self._ch_ctl
 
@@ -85,7 +85,7 @@ class BackupContext:
         """
         Getter backup_layout
         """
-        if not hasattr(self, '_backup_layout'):
+        if not hasattr(self, "_backup_layout"):
             self._backup_layout = BackupLayout(self._config)
         return self._backup_layout
 
@@ -120,9 +120,9 @@ class BackupContext:
         """
         Getter zk_ctl
         """
-        if not hasattr(self, '_zk_ctl'):
-            if not self._zk_config['hosts']:
-                raise RuntimeError('Cannot init Zookeeper client without hosts')
+        if not hasattr(self, "_zk_ctl"):
+            if not self._zk_config["hosts"]:
+                raise RuntimeError("Cannot init Zookeeper client without hosts")
             self._zk_ctl = ZookeeperCTL(self._zk_config)
         return self._zk_ctl
 
@@ -135,7 +135,7 @@ class BackupContext:
         """
         Getter restore_context
         """
-        if not hasattr(self, '_restore_context'):
+        if not hasattr(self, "_restore_context"):
             self._restore_context = RestoreContext(self._config)
         return self._restore_context
 
@@ -176,8 +176,8 @@ class BackupContext:
         """
         Getter locker
         """
-        if not hasattr(self, '_locker'):
-            zk_ctl = self.zk_ctl if self._zk_config['hosts'] else None
+        if not hasattr(self, "_locker"):
+            zk_ctl = self.zk_ctl if self._zk_config["hosts"] else None
             self._locker = LockManager(self.lock_conf, zk_ctl)
         return self._locker
 

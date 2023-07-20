@@ -5,13 +5,12 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any, Callable, Iterable, Optional, Union
 
+from ch_backup.storage.async_pipeline.base_pipeline.handler import InputHandler
 from pypeln import utils as pypeln_utils
 from pypeln.thread import Worker
 from pypeln.thread.api.to_stage import to_stage
 from pypeln.thread.stage import Stage
 from pypeln.utils import A, B, Element
-
-from ch_backup.storage.async_pipeline.base_pipeline.handler import InputHandler
 
 
 @dataclass
@@ -19,6 +18,7 @@ class Input:
     """
     Input wrapper for stage handler.
     """
+
     handler: InputHandler
 
     def __call__(self, worker: Worker, **kwargs: Any) -> None:
@@ -29,7 +29,9 @@ class Input:
         for value in self.process():
             if value is not None:
                 # pylint: disable=no-value-for-parameter
-                worker.stage_params.output_queues.put(Element(index=(idx, ), value=value))
+                worker.stage_params.output_queues.put(
+                    Element(index=(idx,), value=value)
+                )
                 idx += 1
 
     def process(self) -> Iterable[B]:
@@ -43,7 +45,9 @@ class Input:
 
 def input_(
     f: InputHandler,
-    stage: Union[Stage[A], Iterable[A], pypeln_utils.Undefined] = pypeln_utils.UNDEFINED,
+    stage: Union[
+        Stage[A], Iterable[A], pypeln_utils.Undefined
+    ] = pypeln_utils.UNDEFINED,
     workers: int = 1,
     maxsize: int = 0,
     timeout: float = 0,
@@ -57,14 +61,18 @@ def input_(
     NoneType objects returned from the stage's methods are not forwarded to pipeline.
     """
     if isinstance(stage, pypeln_utils.Undefined):
-        return pypeln_utils.Partial(lambda stage: input_(f,
-                                                         stage=stage,
-                                                         workers=workers,
-                                                         maxsize=maxsize,
-                                                         timeout=timeout,
-                                                         on_start=on_start,
-                                                         on_done=on_done,
-                                                         use_threads=use_threads))
+        return pypeln_utils.Partial(
+            lambda stage: input_(
+                f,
+                stage=stage,
+                workers=workers,
+                maxsize=maxsize,
+                timeout=timeout,
+                on_start=on_start,
+                on_done=on_done,
+                use_threads=use_threads,
+            )
+        )
 
     stage = to_stage(stage, maxsize=maxsize)
 

@@ -19,8 +19,17 @@ class PartDedupInfo:
     """
     Information about data part to use for deduplication / creation incremental backups.
     """
-    def __init__(self, backup_path: str, checksum: str, size: int, files: Sequence[str], tarball: bool, disk_name: str,
-                 verified: bool) -> None:
+
+    def __init__(
+        self,
+        backup_path: str,
+        checksum: str,
+        size: int,
+        files: Sequence[str],
+        tarball: bool,
+        disk_name: str,
+        verified: bool,
+    ) -> None:
         self.backup_path = backup_path
         self.checksum = checksum
         self.size = size
@@ -30,7 +39,7 @@ class PartDedupInfo:
         self.verified = verified
 
     def __repr__(self):
-        return f'PartDedupInfo({self.__dict__})'
+        return f"PartDedupInfo({self.__dict__})"
 
     def __eq__(self, other):
         return self.__dict__ == other.__dict__
@@ -43,6 +52,7 @@ class DatabaseDedupInfo:
     """
     Information about data parts of single database to use for deduplication and creation of incremental backups.
     """
+
     def __init__(self, tables: Dict[str, TableDedupInfo] = None) -> None:
         if tables is None:
             tables = defaultdict(dict)
@@ -55,7 +65,7 @@ class DatabaseDedupInfo:
         return self._tables[table_name]
 
     def __repr__(self):
-        return f'DatabaseDedupInfo({dict(self._tables)})'
+        return f"DatabaseDedupInfo({dict(self._tables)})"
 
     def __eq__(self, other):
         return self.__dict__ == other.__dict__
@@ -65,6 +75,7 @@ class DedupInfo:
     """
     Information about data parts of all databases to use for deduplication and creation of incremental backups.
     """
+
     def __init__(self, databases: Dict[str, DatabaseDedupInfo] = None) -> None:
         if databases is None:
             databases = defaultdict(DatabaseDedupInfo)
@@ -77,14 +88,17 @@ class DedupInfo:
         return self._databases[database_name]
 
     def __repr__(self):
-        return f'DedupInfo({dict(self._databases)})'
+        return f"DedupInfo({dict(self._databases)})"
 
     def __eq__(self, other):
         return self.__dict__ == other.__dict__
 
 
-def collect_dedup_info(context: BackupContext, databases: Sequence[Database],
-                       backups_with_light_meta: List[BackupMetadata]) -> DedupInfo:
+def collect_dedup_info(
+    context: BackupContext,
+    databases: Sequence[Database],
+    backups_with_light_meta: List[BackupMetadata],
+) -> DedupInfo:
     """
     Collect deduplication information for creating incremental backups.
     """
@@ -95,8 +109,10 @@ def collect_dedup_info(context: BackupContext, databases: Sequence[Database],
         return dedup_info
 
     backup_age_limit = None
-    if context.config.get('deduplicate_parts'):
-        backup_age_limit = utcnow() - timedelta(**context.config['deduplication_age_limit'])
+    if context.config.get("deduplicate_parts"):
+        backup_age_limit = utcnow() - timedelta(
+            **context.config["deduplication_age_limit"]
+        )
 
     # Determine backups that can be used for deduplication.
     dedup_backups = []
@@ -109,7 +125,13 @@ def collect_dedup_info(context: BackupContext, databases: Sequence[Database],
 
         dedup_backups.append(backup)
 
-    _populate_dedup_info(dedup_info, context.backup_layout, context.backup_meta.hostname, dedup_backups, databases)
+    _populate_dedup_info(
+        dedup_info,
+        context.backup_layout,
+        context.backup_meta.hostname,
+        dedup_backups,
+        databases,
+    )
 
     return dedup_info
 
@@ -128,8 +150,13 @@ class _DatabaseToHandle:
         return self.replicated_tables_handled and self.nonreplicated_tables_handled
 
 
-def _populate_dedup_info(dedup_info: DedupInfo, layout: BackupLayout, hostname: str,
-                         dedup_backups_with_light_meta: List[BackupMetadata], databases: Sequence[Database]) -> None:
+def _populate_dedup_info(
+    dedup_info: DedupInfo,
+    layout: BackupLayout,
+    hostname: str,
+    dedup_backups_with_light_meta: List[BackupMetadata],
+    databases: Sequence[Database],
+) -> None:
     # pylint: disable=too-many-locals,too-many-branches
     databases_to_handle = {db.name: _DatabaseToHandle(db.name) for db in databases}
     dedup_backup_paths = set(backup.path for backup in dedup_backups_with_light_meta)
@@ -161,7 +188,9 @@ def _populate_dedup_info(dedup_info: DedupInfo, layout: BackupLayout, hostname: 
                 replicated = is_replicated(table.engine)
                 if replicated and db.replicated_tables_handled:
                     continue
-                if not replicated and (db.nonreplicated_tables_handled or only_replicated):
+                if not replicated and (
+                    db.nonreplicated_tables_handled or only_replicated
+                ):
                     continue
 
                 table_dedup_info = db_dedup_info.table(table.name)
@@ -178,19 +207,23 @@ def _populate_dedup_info(dedup_info: DedupInfo, layout: BackupLayout, hostname: 
                         verified = False
                         backup_path = backup.path
 
-                    table_dedup_info[part.name] = PartDedupInfo(backup_path=backup_path,
-                                                                checksum=part.checksum,
-                                                                size=part.size,
-                                                                files=part.files,
-                                                                tarball=part.tarball,
-                                                                disk_name=part.disk_name,
-                                                                verified=verified)
+                    table_dedup_info[part.name] = PartDedupInfo(
+                        backup_path=backup_path,
+                        checksum=part.checksum,
+                        size=part.size,
+                        files=part.files,
+                        tarball=part.tarball,
+                        disk_name=part.disk_name,
+                        verified=verified,
+                    )
 
         if not databases_to_handle:
             break
 
 
-def deduplicate_part(layout: BackupLayout, fpart: FrozenPart, dedup_info: TableDedupInfo) -> Optional[PartMetadata]:
+def deduplicate_part(
+    layout: BackupLayout, fpart: FrozenPart, dedup_info: TableDedupInfo
+) -> Optional[PartMetadata]:
     """
     Deduplicate part if it's possible.
     """
@@ -205,22 +238,30 @@ def deduplicate_part(layout: BackupLayout, fpart: FrozenPart, dedup_info: TableD
     if existing_part.checksum != fpart.checksum:
         return None
 
-    part = PartMetadata(database=fpart.database,
-                        table=fpart.table,
-                        name=part_name,
-                        checksum=existing_part.checksum,
-                        size=existing_part.size,
-                        link=existing_part.backup_path,
-                        files=existing_part.files,
-                        tarball=existing_part.tarball,
-                        disk_name=existing_part.disk_name)
+    part = PartMetadata(
+        database=fpart.database,
+        table=fpart.table,
+        name=part_name,
+        checksum=existing_part.checksum,
+        size=existing_part.size,
+        link=existing_part.backup_path,
+        files=existing_part.files,
+        tarball=existing_part.tarball,
+        disk_name=existing_part.disk_name,
+    )
 
     if not existing_part.verified:
         if not layout.check_data_part(existing_part.backup_path, part):
-            logging.debug('Part "%s" found in "%s", but it\'s invalid, skipping', part_name, existing_part.backup_path)
+            logging.debug(
+                'Part "%s" found in "%s", but it\'s invalid, skipping',
+                part_name,
+                existing_part.backup_path,
+            )
             return None
 
-    logging.debug('Part "%s" found in "%s", reusing', part_name, existing_part.backup_path)
+    logging.debug(
+        'Part "%s" found in "%s", reusing', part_name, existing_part.backup_path
+    )
 
     return part
 
@@ -232,9 +273,11 @@ DatabaseDedupReferences = Dict[str, TableDedupReferences]
 DedupReferences = Dict[str, DatabaseDedupReferences]
 
 
-def collect_dedup_references_for_backup_deletion(layout: BackupLayout,
-                                                 retained_backups_with_light_meta: List[BackupMetadata],
-                                                 deleting_backup_with_light_meta: BackupMetadata) -> DedupReferences:
+def collect_dedup_references_for_backup_deletion(
+    layout: BackupLayout,
+    retained_backups_with_light_meta: List[BackupMetadata],
+    deleting_backup_with_light_meta: BackupMetadata,
+) -> DedupReferences:
     """
     Collect deduplication information for deleting backup. It contains names of data parts that should pe preserved
     during deletion.
@@ -242,21 +285,26 @@ def collect_dedup_references_for_backup_deletion(layout: BackupLayout,
     dedup_refences = collect_dedup_references_for_batch_backup_deletion(
         layout=layout,
         retained_backups_with_light_meta=retained_backups_with_light_meta,
-        deleting_backups_with_light_meta=[deleting_backup_with_light_meta])
+        deleting_backups_with_light_meta=[deleting_backup_with_light_meta],
+    )
 
     return dedup_refences[deleting_backup_with_light_meta.name]
 
 
 def collect_dedup_references_for_batch_backup_deletion(
-        layout: BackupLayout, retained_backups_with_light_meta: List[BackupMetadata],
-        deleting_backups_with_light_meta: List[BackupMetadata]) -> Dict[str, DedupReferences]:
+    layout: BackupLayout,
+    retained_backups_with_light_meta: List[BackupMetadata],
+    deleting_backups_with_light_meta: List[BackupMetadata],
+) -> Dict[str, DedupReferences]:
     """
     Collect deduplication information for deleting multiple backups. It contains names of data parts that should
     pe preserved during deletion.
     """
     dedup_references: Dict[str, DedupReferences] = defaultdict(dict)
 
-    deleting_backup_name_resolver = {b.path: b.name for b in deleting_backups_with_light_meta}
+    deleting_backup_name_resolver = {
+        b.path: b.name for b in deleting_backups_with_light_meta
+    }
     for backup in retained_backups_with_light_meta:
         backup = layout.reload_backup(backup, use_light_meta=False)
 
@@ -275,7 +323,9 @@ def collect_dedup_references_for_batch_backup_deletion(
     return dedup_references
 
 
-def _add_part_to_dedup_references(dedup_references: DedupReferences, part: PartMetadata) -> None:
+def _add_part_to_dedup_references(
+    dedup_references: DedupReferences, part: PartMetadata
+) -> None:
     if part.database not in dedup_references:
         dedup_references[part.database] = {part.table: {part.name}}
         return

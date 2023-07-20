@@ -13,6 +13,7 @@ class ExecPool:
 
     Encapsulate collecting of futures and waiting all submitted tasks.
     """
+
     def __init__(self, executor: Executor) -> None:
         self._futures: Dict[str, Future] = {}
         self._pool = executor
@@ -28,7 +29,7 @@ class ExecPool:
         Schedule job for execution
         """
         if future_id in self._futures:
-            raise Exception('Duplicate')
+            raise Exception("Duplicate")
         future = self._pool.submit(func, *args, **kwargs)
         future.add_done_callback(lambda _: logging.debug('Future "%s" completed', future_id))  # type: ignore[misc]
         self._futures[future_id] = future
@@ -47,11 +48,15 @@ class ExecPool:
                 future.result()
             except Exception:
                 if keep_going:
-                    logging.warning('Future "%s" generated an exception, skipping due to keep_going flag',
-                                    future_id,
-                                    exc_info=True)
+                    logging.warning(
+                        'Future "%s" generated an exception, skipping due to keep_going flag',
+                        future_id,
+                        exc_info=True,
+                    )
                     continue
-                logging.error('Future "%s" generated an exception:', future_id, exc_info=True)
+                logging.error(
+                    'Future "%s" generated an exception:', future_id, exc_info=True
+                )
                 raise
         self._futures = {}
 
