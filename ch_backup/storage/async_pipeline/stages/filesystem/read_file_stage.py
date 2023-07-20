@@ -16,12 +16,12 @@ class ReadFileStage(InputHandler):
     stype = StageType.FILESYSTEM
 
     def __init__(self, config: dict, file_path: Path) -> None:
-        self._chunk_size = config['chunk_size']
+        self._chunk_size = config["chunk_size"]
         self._file_path = file_path
         self._fobj: Optional[BinaryIO] = None
 
     def on_start(self) -> None:
-        self._fobj = self._file_path.open(mode='rb')
+        self._fobj = self._file_path.open(mode="rb")
 
     def __call__(self) -> Iterable[bytes]:
         assert self._fobj

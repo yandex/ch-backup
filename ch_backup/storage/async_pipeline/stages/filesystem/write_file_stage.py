@@ -20,7 +20,7 @@ class WriteFileStage(Handler):
         self._fobj: Optional[BinaryIO] = None
 
     def on_start(self) -> None:
-        self._fobj = self._file_path.open('bw', buffering=0)  # Switch off buffering
+        self._fobj = self._file_path.open("bw", buffering=0)  # Switch off buffering
 
     def __call__(self, data: bytes, index: int) -> None:
         assert self._fobj

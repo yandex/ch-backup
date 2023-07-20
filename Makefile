@@ -27,15 +27,15 @@ build: install-deps ch_backup/version.txt
 all: build lint test-unit test-integration
 
 .PHONY: lint
-lint: install-deps isort yapf flake8 pylint mypy bandit
+lint: install-deps isort black flake8 pylint mypy bandit
 
 .PHONY: isort
 isort: install-deps
-	${TEST_ENV} isort --check-only --ignore-whitespace --diff ch_backup tests
+	${TEST_ENV} isort --check --diff .
 
-.PHONY: yapf
-yapf: install-deps
-	${TEST_ENV} yapf -rpd ch_backup tests
+.PHONY: black
+black: install-deps
+	${TEST_ENV} black --check --diff .
 
 .PHONY: flake8
 flake8: install-deps
@@ -144,8 +144,8 @@ clean_env: stop_env
 
 .PHONY: format
 format: install-deps
-	${TEST_ENV} isort ch_backup tests
-	${TEST_ENV} yapf --recursive --parallel --in-place ch_backup tests
+	${TEST_ENV} isort .
+	${TEST_ENV} black .
 
 
 ch_backup/version.txt:
@@ -166,11 +166,11 @@ help:
 	@echo "Targets:"
 	@echo "  build (default)            Build project. It installs dependencies and generates version.txt."
 	@echo "  all                        Alias for \"build lint test-unit test-integration\"."
-	@echo "  lint                       Run all linter tools. Alias for \"isort yapf flake8 pylint mypy bandit\"."
+	@echo "  lint                       Run all linter tools. Alias for \"isort black flake8 pylint mypy bandit\"."
 	@echo "  test-unit                  Run unit tests."
 	@echo "  test-integration           Run integration tests."
 	@echo "  isort                      Perform isort checks."
-	@echo "  yapf                       Perform yapf checks."
+	@echo "  black                      Perform black checks."
 	@echo "  flake8                     Perform flake8 checks."
 	@echo "  pylint                     Perform pylint checks."
 	@echo "  mypy                       Perform mypy checks.."
@@ -184,7 +184,7 @@ help:
 	@echo "  clean_debuild              Clean up build and test artifacts including ones produced by"
 	@echo "                             debuild target outside the project worksapce."
 	@echo "  format                     Re-format source code to conform style settings enforced by"
-	@echo "                             isort and yapf tools."
+	@echo "                             isort and black tools."
 	@echo "  help                       Show this help message."
 	@echo
 	@echo "Environment Variables:"

@@ -22,8 +22,8 @@ jobs:
         cache: pip
     - name: "lint: isort"
       run: make isort
-    - name: "lint: yapf"
-      run: make yapf
+    - name: "lint: black"
+      run: make black
     - name: "lint: flake8"
       run: make flake8
     - name: "lint: pylint"

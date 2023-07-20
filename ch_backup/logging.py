@@ -15,8 +15,8 @@ def configure(config: dict) -> None:
     """
     Configure logging.
     """
-    for handler in config.get('handlers', {}).values():
-        filename = handler.get('filename')
+    for handler in config.get("handlers", {}).values():
+        filename = handler.get("filename")
         if filename:
             os.makedirs(os.path.dirname(filename), exist_ok=True)
 
@@ -83,12 +83,16 @@ def memory_usage():
 
         total_usage = main_proc_usage + worker_procs_usage
 
-        debug('Memory usage: %s (main process: %s, worker processes: %s)', format_size(total_usage),
-              format_size(main_proc_usage), format_size(worker_procs_usage))
+        debug(
+            "Memory usage: %s (main process: %s, worker processes: %s)",
+            format_size(total_usage),
+            format_size(main_proc_usage),
+            format_size(worker_procs_usage),
+        )
 
     except Exception:
-        warning('Unable to get memory usage', exc_info=True)
+        warning("Unable to get memory usage", exc_info=True)
 
 
 def _get_logger() -> logging.Logger:
-    return logging.getLogger('ch-backup')
+    return logging.getLogger("ch-backup")

@@ -14,9 +14,10 @@ class NaClEncryption(BaseEncryption):
 
     https://pynacl.readthedocs.io/en/latest/secret/
     """
+
     def __init__(self, conf):
         super().__init__(conf)
-        self._box = SecretBox(conf['key'].encode('utf-8'))
+        self._box = SecretBox(conf["key"].encode("utf-8"))
 
     def encrypt(self, data):
         return self._box.encrypt(data)
@@ -31,7 +32,9 @@ class NaClEncryption(BaseEncryption):
         """
 
         # https://pynacl.readthedocs.io/en/latest/secret/#example
-        return SecretBox.NONCE_SIZE + 16  # TODO use SecretBox.MACBYTES after PyNaCl update
+        return (
+            SecretBox.NONCE_SIZE + 16
+        )  # TODO use SecretBox.MACBYTES after PyNaCl update
 
     @staticmethod
     def gen_secret_key(size=None):

@@ -1,9 +1,7 @@
 isort
-yapf==0.32.0
-flake8<4.0
+black
+flake8
 flake8-string-format
-flake8-commas
-flake8-quotes
 flake8-print
 pep8
 pylint==2.13.9

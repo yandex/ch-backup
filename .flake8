@@ -1,9 +1,11 @@
 [flake8]
-; ignoring the checks:
-;   E122 (continuation line missing indentation or outdented),
-;   E126 (continuation line over-indented for hanging indent),
-;   E131 (continuation line unaligned for hanging indent) as indentation is responsibility of yapf
-;   F401 (module imported but unused) in favor of corresponding pylint check
+; Disabling the checks that conflict with "black" and "pylint":
+;   E122 "continuation line missing indentation or outdented"
+;   E126 "continuation line over-indented for hanging indent"
+;   E131 "continuation line unaligned for hanging indent"
+;   E203 "whitespace before ':'"
+;   E501 "line too long (129 > 120 characters)"
+;   W503 "line break before binary operator"
+;   F401 "module imported but unused"
 select = E,F,W,C,S
-ignore = E122,E126,E131,F401
-max-line-length = 120
+ignore = E122,E126,E131,E203,E501,W503,F401

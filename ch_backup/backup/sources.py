@@ -10,6 +10,7 @@ class BackupSources:
     """
     Class responsible for management of backup/restore data sources.
     """
+
     # Perform operation for access control entities
     access: bool = True
     # Perform operation for tables data
@@ -20,12 +21,14 @@ class BackupSources:
     udf: bool = True
 
     @classmethod
-    def for_backup(cls,
-                   access: bool = False,
-                   data: bool = False,
-                   schema: bool = False,
-                   udf: bool = False,
-                   schema_only: bool = False) -> 'BackupSources':
+    def for_backup(
+        cls,
+        access: bool = False,
+        data: bool = False,
+        schema: bool = False,
+        udf: bool = False,
+        schema_only: bool = False,
+    ) -> "BackupSources":
         """
         Setting up sources ready for backup.
 
@@ -40,12 +43,14 @@ class BackupSources:
         return cls(access=access, data=data, schema=schema, udf=udf)
 
     @classmethod
-    def for_restore(cls,
-                    access: bool = False,
-                    data: bool = False,
-                    schema: bool = False,
-                    udf: bool = False,
-                    schema_only: bool = False) -> 'BackupSources':
+    def for_restore(
+        cls,
+        access: bool = False,
+        data: bool = False,
+        schema: bool = False,
+        udf: bool = False,
+        schema_only: bool = False,
+    ) -> "BackupSources":
         """
         Setting up sources ready for restore.
 

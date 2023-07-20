@@ -17,8 +17,10 @@ class ReadFilesTarballStage(InputHandler):
 
     stype = StageType.FILESYSTEM
 
-    def __init__(self, config: dict, base_path: Path, file_relative_paths: List[Path]) -> None:
-        self._chunk_size = config['chunk_size']
+    def __init__(
+        self, config: dict, base_path: Path, file_relative_paths: List[Path]
+    ) -> None:
+        self._chunk_size = config["chunk_size"]
         self._base_path = base_path
         self._file_relative_paths = file_relative_paths
 
@@ -36,7 +38,7 @@ class ReadFilesTarballStage(InputHandler):
         """
         Produce file content by chunks.
         """
-        with file_path.open(mode='rb') as file:
+        with file_path.open(mode="rb") as file:
             for chunk in read_by_chunks(file, self._chunk_size):
                 yield chunk
 

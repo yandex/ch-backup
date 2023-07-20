@@ -18,25 +18,27 @@ def save_logs(context: ContextT) -> None:
     Save logs and support materials.
     """
     try:
-        logs_dir = os.path.join(context.conf['staging_dir'], 'logs')
+        logs_dir = os.path.join(context.conf["staging_dir"], "logs")
 
         for container in get_containers(context):
             _save_container_logs(container, logs_dir)
 
-        with open(os.path.join(logs_dir, 'session_conf.json'), 'w', encoding='utf-8') as out:
+        with open(
+            os.path.join(logs_dir, "session_conf.json"), "w", encoding="utf-8"
+        ) as out:
             json.dump(context.conf, out, default=repr, indent=4)
 
         export_s3_data(context, logs_dir)
     except Exception:
-        logging.exception('Failed to save logs')
+        logging.exception("Failed to save logs")
         raise
 
 
 def _save_container_logs(container: Container, logs_dir: str) -> None:
     base = os.path.join(logs_dir, container.name)
     os.makedirs(base, exist_ok=True)
-    with open(os.path.join(base, 'docker.log'), 'wb') as out:
+    with open(os.path.join(base, "docker.log"), "wb") as out:
         out.write(container.logs(stdout=True, stderr=True, timestamps=True))
 
-    copy_container_dir(container, '/etc', base, exclude_pattern='shadow')
-    copy_container_dir(container, '/var/log', base)
+    copy_container_dir(container, "/etc", base, exclude_pattern="shadow")
+    copy_container_dir(container, "/var/log", base)
