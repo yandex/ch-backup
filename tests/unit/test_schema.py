@@ -243,6 +243,62 @@ def test_is_view(engine, result):
             'result_table_engine': 'MergeTree',
         },
     },
+    {
+        'id': 'add UUID',
+        'args': {
+            'table_schema': "CREATE TABLE `test_db`.`test_table` (partition_id Int32, n Int32)"
+                            " ENGINE = MergeTree PARTITION BY partition_id ORDER BY (partition_id, n)",
+            'table_engine': 'MergeTree',
+            'force_non_replicated_engine': True,
+            'add_uuid': True,
+            'result_table_schema': f"CREATE TABLE `test_db`.`test_table` UUID '{UUID}' (partition_id Int32, n Int32)"
+                                   " ENGINE = MergeTree PARTITION BY partition_id ORDER BY (partition_id, n)",
+            'result_table_engine': 'MergeTree',
+        },
+    },
+    {
+        'id': 'add_uuid=True do not add UUID if schema already contains it',
+        'args': {
+            'table_schema': "CREATE TABLE _ (partition_id Int32, n Int32)"
+                            f" UUID '{INNER_UUID}'"
+                            " ENGINE = MergeTree PARTITION BY partition_id ORDER BY (partition_id, n)",
+            'table_engine': 'MergeTree',
+            'force_non_replicated_engine': True,
+            'add_uuid': True,
+            'result_table_schema': "CREATE TABLE `test_db`.`test_table` (partition_id Int32, n Int32)"
+                                   f" UUID '{INNER_UUID}'"
+                                   " ENGINE = MergeTree PARTITION BY partition_id ORDER BY (partition_id, n)",
+            'result_table_engine': 'MergeTree',
+        },
+    },
+    {
+        'id': 'attach statement add UUID',
+        'args': {
+            'table_schema': "ATTACH TABLE `test_db`.`test_table` (partition_id Int32, n Int32)"
+                            " ENGINE = MergeTree PARTITION BY partition_id ORDER BY (partition_id, n)",
+            'table_engine': 'MergeTree',
+            'force_non_replicated_engine': True,
+            'add_uuid': True,
+            'result_table_schema': f"ATTACH TABLE `test_db`.`test_table` UUID '{UUID}' (partition_id Int32, n Int32)"
+                                   " ENGINE = MergeTree PARTITION BY partition_id ORDER BY (partition_id, n)",
+            'result_table_engine': 'MergeTree',
+        },
+    },
+    {
+        'id': 'attach table add_uuid=True do not add UUID if schema already contains it',
+        'args': {
+            'table_schema': "ATTACH TABLE _ (partition_id Int32, n Int32)"
+                            f" UUID '{INNER_UUID}'"
+                            " ENGINE = MergeTree PARTITION BY partition_id ORDER BY (partition_id, n)",
+            'table_engine': 'MergeTree',
+            'force_non_replicated_engine': True,
+            'add_uuid': True,
+            'result_table_schema': "ATTACH TABLE `test_db`.`test_table` (partition_id Int32, n Int32)"
+                                   f" UUID '{INNER_UUID}'"
+                                   " ENGINE = MergeTree PARTITION BY partition_id ORDER BY (partition_id, n)",
+            'result_table_engine': 'MergeTree',
+        },
+    },
 )
 def test_rewrite_table_schema(table_schema, table_engine, force_non_replicated_engine, add_uuid, result_table_schema,
                               result_table_engine):

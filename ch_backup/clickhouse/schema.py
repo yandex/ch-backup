@@ -128,7 +128,10 @@ def rewrite_database_schema(db: Database,
 
 
 def _add_uuid(table: Table, inner_uuid: str = None) -> None:
-    if table.create_statement.find(f"UUID '{table.uuid}'") != -1:
+    mach_uuid = re.search(r"UUID '\w{8}-\w{4}-\w{4}-\w{4}-\w{12}'", table.create_statement)
+    if mach_uuid is not None:
+        logging.info(f'{mach_uuid.group(0)} already present in table schema.'
+                     f' Metadata UUID is {table.uuid}. return without adding UUID')
         return
 
     if is_view(table.engine):
