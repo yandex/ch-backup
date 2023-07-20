@@ -1,0 +1,26 @@
+name: Link with Startrek
+
+on:
+  pull_request: { branches: [main] }
+
+jobs:
+  link_with_startrek:    
+    runs-on: ubuntu-latest
+    steps:
+      - name: parse_branch_name
+        id: parse_branch_name
+        run: |
+          if [[ ${{ github.head_ref }} =~ ^([A-Za-z]+\-[0-9]+).*$ ]]; then
+              echo issue_number="${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT          
+          fi
+      - name: link_issue
+        if: steps.parse_branch_name.outputs.issue_number
+        uses: fjogeleit/http-request-action@v1
+        with:
+          url: 'https://st-api.yandex-team.ru/v2/issues/${{ steps.parse_branch_name.outputs.issue_number }}'
+          method: 'LINK'
+          customHeaders: >
+            {
+               "Link": "<${{ github.server_url }}/${{ github.repository }}/pull/${{ github.event.number }}>; rel=\"relates\"",
+               "Authorization": "OAuth ${{ secrets.OAUTH_STARTREK }}"
+            }
