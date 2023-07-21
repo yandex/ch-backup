@@ -44,15 +44,7 @@ Commands:
 The regression test suite contains run of static code analysis tools (isort, yapf, flake8, pylint, mypy, bandit),
 unit tests and integration tests.
 
-System requirements are:
-```
-python 3.6
-make
-tox 3
-docker
-```
-
-Once requirements satisfied, the tests can be run by issuing the command:
+The tests can be run by issuing the command:
 
 ```bash
 make all
