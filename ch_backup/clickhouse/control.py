@@ -641,7 +641,7 @@ class ClickhouseCTL:
         for data_path, disk in table.paths_with_disks:
             if disk.name == disk_name:
                 return os.path.join(data_path, "detached")
-        raise Exception("Disk not found: " + disk_name)
+        raise RuntimeError(f"Disk not found: {disk_name}")
 
     def chown_dir(self, dir_path: str) -> None:
         """

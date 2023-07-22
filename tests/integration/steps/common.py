@@ -20,7 +20,7 @@ def step_configuration(context):
     }
     overridden_options = yaml.load(context.text or "", yaml.SafeLoader) or {}
     for key, value in merge(default, overridden_options).items():
-        context.__setattr__(key, value)
+        setattr(context, key, value)
 
     context.version = get_version()
 

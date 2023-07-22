@@ -159,7 +159,7 @@ class ClickHouseTemporaryDisks:
                 )
                 _copy_dir(source_disk.name, source_path, target_disk.name, target_path)
                 return
-        raise Exception(
+        raise RuntimeError(
             f'Disk "{target_disk.name}" path not found for table `{table.database}`.`{table.name}`'
         )
 

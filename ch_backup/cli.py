@@ -135,7 +135,7 @@ def cli(
 
     ch_backup = ClickhouseBackup(cfg)
 
-    ctx.obj = dict(backup=ch_backup)
+    ctx.obj = {"backup": ch_backup}
 
 
 def command(*args, **kwargs):

@@ -29,7 +29,7 @@ class ExecPool:
         Schedule job for execution
         """
         if future_id in self._futures:
-            raise Exception("Duplicate")
+            raise RuntimeError("Duplicate")
         future = self._pool.submit(func, *args, **kwargs)
         future.add_done_callback(lambda _: logging.debug('Future "%s" completed', future_id))  # type: ignore[misc]
         self._futures[future_id] = future
