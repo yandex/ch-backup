@@ -5,6 +5,7 @@ on:
 
 jobs:
   link_with_startrek:    
+    continue-on-error: true
     runs-on: ubuntu-latest
     steps:
       - name: parse_branch_name
@@ -24,3 +25,4 @@ jobs:
                "Link": "<${{ github.server_url }}/${{ github.repository }}/pull/${{ github.event.number }}>; rel=\"relates\"",
                "Authorization": "OAuth ${{ secrets.OAUTH_STARTREK }}"
             }
+          ignoreStatusCodes: 409
