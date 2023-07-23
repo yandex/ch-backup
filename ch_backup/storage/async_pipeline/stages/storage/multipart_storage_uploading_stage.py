@@ -14,6 +14,7 @@ class UploadingPart:
     """
     Passed between uploading stages.
     """
+
     data: bytes
     upload_id: Optional[str] = None
 
@@ -27,8 +28,13 @@ class StartMultipartUploadStage(Handler):
 
     stype = StageType.STORAGE
 
-    def __init__(self, config: dict, chunk_size: int, loader: PipeLineCompatibleStorageEngine,
-                 remote_path: str) -> None:
+    def __init__(
+        self,
+        config: dict,
+        chunk_size: int,
+        loader: PipeLineCompatibleStorageEngine,
+        remote_path: str,
+    ) -> None:
         self._config = config
         self._loader = loader
         self._remote_path = remote_path
@@ -36,11 +42,13 @@ class StartMultipartUploadStage(Handler):
         self._chunk_size = chunk_size
 
     def __call__(self, data: bytes, index: int) -> UploadingPart:
-        assert len(data) <= self._chunk_size, 'Previous chunking stage must ensure this'
+        assert len(data) <= self._chunk_size, "Previous chunking stage must ensure this"
 
         if self._upload_id is None and len(data) == self._chunk_size:
             # If we get the first full chunk we assume there is more data and use multipart upload
-            self._upload_id = self._loader.create_multipart_upload(remote_path=self._remote_path)
+            self._upload_id = self._loader.create_multipart_upload(
+                remote_path=self._remote_path
+            )
 
         return UploadingPart(upload_id=self._upload_id, data=data)  # type: ignore[call-arg]
 
@@ -56,7 +64,9 @@ class StorageUploadingStage(Handler):
 
     stype = StageType.STORAGE
 
-    def __init__(self, config: dict, loader: PipeLineCompatibleStorageEngine, remote_path: str) -> None:
+    def __init__(
+        self, config: dict, loader: PipeLineCompatibleStorageEngine, remote_path: str
+    ) -> None:
         self._config = config
         self._loader = loader
         self._remote_path = remote_path
@@ -64,7 +74,9 @@ class StorageUploadingStage(Handler):
     def __call__(self, part: UploadingPart, index: int) -> UploadingPart:
         if part.upload_id:
             part_num = index + 1  # Loader expects counting from 1
-            self._loader.upload_part(part.data, self._remote_path, part.upload_id, part_num)
+            self._loader.upload_part(
+                part.data, self._remote_path, part.upload_id, part_num
+            )
         else:
             self._loader.upload_data(part.data, self._remote_path)
 
@@ -80,7 +92,9 @@ class CompleteMultipartUploadStage(Handler):
 
     stype = StageType.STORAGE
 
-    def __init__(self, config: dict, loader: PipeLineCompatibleStorageEngine, remote_path: str) -> None:
+    def __init__(
+        self, config: dict, loader: PipeLineCompatibleStorageEngine, remote_path: str
+    ) -> None:
         self._config = config
         self._loader = loader
         self._remote_path = remote_path
@@ -92,4 +106,6 @@ class CompleteMultipartUploadStage(Handler):
 
     def on_done(self) -> None:
         if self._upload_id is not None:
-            self._loader.complete_multipart_upload(remote_path=self._remote_path, upload_id=self._upload_id)
+            self._loader.complete_multipart_upload(
+                remote_path=self._remote_path, upload_id=self._upload_id
+            )

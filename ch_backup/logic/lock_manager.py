@@ -31,11 +31,13 @@ class LockManager:
         Init-method for lock manager
         """
         self._lock_conf = lock_conf
-        self._process_lockfile_path = str(lock_conf.get('flock_path'))
-        self._process_zk_lockfile_path = str(lock_conf.get('zk_flock_path'))
-        self._zk_client: Optional[ZookeeperClient] = zk_ctl.zk_client if zk_ctl else None
+        self._process_lockfile_path = str(lock_conf.get("flock_path"))
+        self._process_zk_lockfile_path = str(lock_conf.get("zk_flock_path"))
+        self._zk_client: Optional[ZookeeperClient] = (
+            zk_ctl.zk_client if zk_ctl else None
+        )
         self._zk_lock: Optional[Lock] = None
-        self._exitcode = lock_conf.get('exitcode')
+        self._exitcode = lock_conf.get("exitcode")
         self._distributed = zk_ctl is None
 
     def __call__(self, distributed: bool = True):  # type: ignore
@@ -49,18 +51,22 @@ class LockManager:
         """
         Enter-method for context manager
         """
-        if self._lock_conf.get('flock'):
+        if self._lock_conf.get("flock"):
             self._flock()
-        if self._distributed and self._lock_conf.get('zk_flock'):
+        if self._distributed and self._lock_conf.get("zk_flock"):
             self._zk_flock()
         return self
 
-    def __exit__(self, exc_type: Optional[Type[BaseException]], exc_inst: Optional[BaseException],
-                 exc_tb: Optional[TracebackType]) -> None:
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_inst: Optional[BaseException],
+        exc_tb: Optional[TracebackType],
+    ) -> None:
         """
         Exit-method for context manager
         """
-        if self._lock_conf.get('flock'):
+        if self._lock_conf.get("flock"):
             os.close(self._fd)
         if self._zk_client and self._zk_lock is not None:
             self._zk_lock.release()
@@ -71,9 +77,9 @@ class LockManager:
         Sets an advisory lock on the process_lockfile_path path
         """
         if not os.path.exists(self._process_lockfile_path):
-            with open(self._process_lockfile_path, 'w+', encoding='utf-8'):
+            with open(self._process_lockfile_path, "w+", encoding="utf-8"):
                 pass
-        self._file = open(self._process_lockfile_path, 'r', encoding='utf-8')
+        self._file = open(self._process_lockfile_path, "r", encoding="utf-8")
         self._fd = self._file.fileno()
         flock(self._fd, LOCK_SH)
 

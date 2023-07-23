@@ -21,9 +21,9 @@ WRITE_FILE_CMD_TEST_COUNT = 100
 PIPELINE_TEST_COUNT = 100
 ENCRYPT_DECRYPT_TEST_COUNT = 100
 
-SECRET_KEY = 'a' * 32
+SECRET_KEY = "a" * 32
 
-DEFAULT_TMP_DIR_PATH = 'staging/tmp_test_data'
+DEFAULT_TMP_DIR_PATH = "staging/tmp_test_data"
 
 
 def get_test_stream(total_size):
@@ -34,7 +34,7 @@ def get_test_stream(total_size):
     data = io.BytesIO()
     line_num = 0
     while True:
-        data.write(f'{line_num}\n'.encode())
+        data.write(f"{line_num}\n".encode())
         if data.tell() >= total_size:
             break
         line_num += 1
@@ -46,6 +46,7 @@ class StreamInter:
     """
     Iterate stream
     """
+
     def __init__(self, chunk_size):
         self._chunk_size = chunk_size
 
@@ -57,7 +58,7 @@ class StreamInter:
             yield chunk
 
 
-@pytest.fixture(scope='module')
+@pytest.fixture(scope="module")
 def tmp_dir_path(dir_path=None):
     """
     Create-delete tmp dir
@@ -73,67 +74,84 @@ def tmp_dir_path(dir_path=None):
 @settings(max_examples=PIPELINE_TEST_COUNT, deadline=None)
 @given(
     file_size=st.integers(1, 1024),
-    read_conf=st.fixed_dictionaries({
-        'chunk_size': st.integers(1, 1024),
-    }),
-    encrypt_conf=st.fixed_dictionaries({
-        'buffer_size': st.integers(1, 1024),
-        'chunk_size': st.integers(1, 1024),
-        'type': st.just('nacl'),
-        'key': st.just(SECRET_KEY),
-    }),  # type: ignore
-    write_conf=st.fixed_dictionaries({key: st.integers(1, 1024)
-                                      for key in ('buffer_size', 'chunk_size')}),
+    read_conf=st.fixed_dictionaries(
+        {
+            "chunk_size": st.integers(1, 1024),
+        }
+    ),
+    encrypt_conf=st.fixed_dictionaries(
+        {
+            "buffer_size": st.integers(1, 1024),
+            "chunk_size": st.integers(1, 1024),
+            "type": st.just("nacl"),
+            "key": st.just(SECRET_KEY),
+        }  # type: ignore
+    ),
+    write_conf=st.fixed_dictionaries(
+        {key: st.integers(1, 1024) for key in ("buffer_size", "chunk_size")}
+    ),
 )
 @example(
     file_size=1024,
-    read_conf={'chunk_size': 128},
+    read_conf={"chunk_size": 128},
     encrypt_conf={
-        'buffer_size': 512,
-        'chunk_size': 256,
-        'type': 'nacl',
-        'key': SECRET_KEY,
+        "buffer_size": 512,
+        "chunk_size": 256,
+        "type": "nacl",
+        "key": SECRET_KEY,
     },
     write_conf={
-        'buffer_size': 512,
-        'chunk_size': 256,
+        "buffer_size": 512,
+        "chunk_size": 256,
     },
 )
 @example(
     file_size=1024,
-    read_conf={'chunk_size': 128},
+    read_conf={"chunk_size": 128},
     encrypt_conf={},
     write_conf={
-        'buffer_size': 512,
-        'chunk_size': 256,
+        "buffer_size": 512,
+        "chunk_size": 256,
     },
 )
-def test_pipeline_roundtrip(tmp_dir_path, file_size, read_conf, encrypt_conf, write_conf):
+def test_pipeline_roundtrip(
+    tmp_dir_path, file_size, read_conf, encrypt_conf, write_conf
+):
     """
     Pipeline
     """
-    with tempfile.NamedTemporaryFile(mode='wb', prefix='test_file_', dir=tmp_dir_path, delete=False) as orig_fobj:
+    with tempfile.NamedTemporaryFile(
+        mode="wb", prefix="test_file_", dir=tmp_dir_path, delete=False
+    ) as orig_fobj:
         test_stream = get_test_stream(file_size)
         test_stream.seek(0)
         orig_fobj.write(test_stream.read())
         original_file_path = orig_fobj.name
 
-    forward_file_path = original_file_path + '-forward'
-    backward_file_name = original_file_path + '-backward'
+    forward_file_path = original_file_path + "-forward"
+    backward_file_name = original_file_path + "-backward"
 
-    run_forward_pl(original_file_path, forward_file_path, read_conf, encrypt_conf, write_conf)
-    run_backward_pl(forward_file_path, backward_file_name, read_conf, encrypt_conf, write_conf)
+    run_forward_pl(
+        original_file_path, forward_file_path, read_conf, encrypt_conf, write_conf
+    )
+    run_backward_pl(
+        forward_file_path, backward_file_name, read_conf, encrypt_conf, write_conf
+    )
 
-    with open(original_file_path, 'rb') as orig_fobj, open(backward_file_name, 'rb') as res_fobj:
+    with open(original_file_path, "rb") as orig_fobj, open(
+        backward_file_name, "rb"
+    ) as res_fobj:
         orig_contents = orig_fobj.read()
         res_contents = res_fobj.read()
 
-        assert orig_contents.decode() == res_contents.decode(), 'Equal contents expected'
+        assert (
+            orig_contents.decode() == res_contents.decode()
+        ), "Equal contents expected"
 
         orig_md5sum = hashlib.md5(orig_contents).digest()
         res_md5sum = hashlib.md5(res_contents).digest()
 
-        assert orig_md5sum == res_md5sum, 'Equal md5sum of contents expected'
+        assert orig_md5sum == res_md5sum, "Equal md5sum of contents expected"
 
 
 def run_forward_pl(in_file_name, out_file_name, read_conf, encrypt_conf, write_conf):
@@ -165,16 +183,18 @@ def run_backward_pl(in_file_name, out_file_name, read_conf, encrypt_conf, write_
 
 
 @settings(max_examples=ENCRYPT_DECRYPT_TEST_COUNT, deadline=None)
-@example(791, 28, {'buffer_size': 562, 'chunk_size': 211})
+@example(791, 28, {"buffer_size": 562, "chunk_size": 211})
 @given(
     incoming_stream_size=st.integers(1, 1024),
     incoming_chunk_size=st.integers(1, 1024),
-    conf=st.fixed_dictionaries({
-        'buffer_size': st.integers(1, 1024),
-        'chunk_size': st.integers(1, 1024),
-        'type': st.just('nacl'),
-        'key': st.just(SECRET_KEY),
-    }),  # type: ignore
+    conf=st.fixed_dictionaries(
+        {
+            "buffer_size": st.integers(1, 1024),
+            "chunk_size": st.integers(1, 1024),
+            "type": st.just("nacl"),
+            "key": st.just(SECRET_KEY),
+        }  # type: ignore
+    ),
 )
 def test_nacl_ecrypt_decrypt(incoming_stream_size, incoming_chunk_size, conf):
     """
@@ -184,8 +204,8 @@ def test_nacl_ecrypt_decrypt(incoming_stream_size, incoming_chunk_size, conf):
     encrypted_stream = io.BytesIO()
     decrypted_stream = io.BytesIO()
 
-    conf['key'] = SECRET_KEY
-    conf['type'] = 'nacl'
+    conf["key"] = SECRET_KEY
+    conf["type"] = "nacl"
 
     encrypt_cmd = EncryptStage(conf, {})
     decrypt_cmd = DecryptStage(conf, {})
@@ -206,14 +226,19 @@ def test_nacl_ecrypt_decrypt(incoming_stream_size, incoming_chunk_size, conf):
     assert test_stream.read().decode() == decrypted_stream.read().decode()
 
 
-@settings(max_examples=WRITE_FILE_CMD_TEST_COUNT,
-          suppress_health_check=[HealthCheck.function_scoped_fixture],
-          deadline=None)
-@example(791, 28, {'buffer_size': 562, 'chunk_size': 211})
-@given(incoming_stream_size=st.integers(1, 1024),
-       incoming_chunk_size=st.integers(1, 1024),
-       conf=st.fixed_dictionaries({key: st.integers(1, 1024)
-                                   for key in ('buffer_size', 'chunk_size')}))
+@settings(
+    max_examples=WRITE_FILE_CMD_TEST_COUNT,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
+    deadline=None,
+)
+@example(791, 28, {"buffer_size": 562, "chunk_size": 211})
+@given(
+    incoming_stream_size=st.integers(1, 1024),
+    incoming_chunk_size=st.integers(1, 1024),
+    conf=st.fixed_dictionaries(
+        {key: st.integers(1, 1024) for key in ("buffer_size", "chunk_size")}
+    ),
+)
 def test_write_file_cmd(monkeypatch, incoming_stream_size, incoming_chunk_size, conf):
     """
     Tests write file stage
@@ -221,10 +246,10 @@ def test_write_file_cmd(monkeypatch, incoming_stream_size, incoming_chunk_size, 
 
     result_stream = io.BytesIO()
 
-    monkeypatch.setattr(WriteFileStage, '_pre_process', lambda x, y, z: True)
-    monkeypatch.setattr(WriteFileStage, '_post_process', lambda x: None)
+    monkeypatch.setattr(WriteFileStage, "_pre_process", lambda x, y, z: True)
+    monkeypatch.setattr(WriteFileStage, "_post_process", lambda x: None)
     write_file_cmd = WriteFileStage(conf, {})
-    monkeypatch.setattr(write_file_cmd, '_fobj', result_stream)
+    monkeypatch.setattr(write_file_cmd, "_fobj", result_stream)
 
     test_stream = get_test_stream(incoming_stream_size)
     stream_iter = StreamInter(chunk_size=incoming_chunk_size)

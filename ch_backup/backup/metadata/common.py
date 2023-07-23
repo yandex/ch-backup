@@ -8,5 +8,6 @@ class BackupStorageFormat(str, Enum):
     """
     Backup storage format.
     """
-    PLAIN = 'plain'
-    TAR = 'tar'
+
+    PLAIN = "plain"
+    TAR = "tar"

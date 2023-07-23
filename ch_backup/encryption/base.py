@@ -9,6 +9,7 @@ class BaseEncryption(metaclass=ABCMeta):
     """
     Encryption base class
     """
+
     def __init__(self, config):
         pass
 

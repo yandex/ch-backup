@@ -19,6 +19,7 @@ class Map:
     """
     Map wrapper for stage handler.
     """
+
     handler: Handler
 
     def __call__(self, worker: Worker, **kwargs: Any) -> None:
@@ -29,7 +30,9 @@ class Map:
         for value in self.process(worker):
             if value is not None:
                 # pylint: disable=no-value-for-parameter
-                worker.stage_params.output_queues.put(Element(index=(idx, ), value=value))
+                worker.stage_params.output_queues.put(
+                    Element(index=(idx,), value=value)
+                )
                 idx += 1
 
     def process(self, worker: Worker) -> Iterable[Optional[B]]:
@@ -46,7 +49,9 @@ class Map:
 
 def map_(
     f: Handler,
-    stage: Union[Stage[A], Iterable[A], pypeln_utils.Undefined] = pypeln_utils.UNDEFINED,
+    stage: Union[
+        Stage[A], Iterable[A], pypeln_utils.Undefined
+    ] = pypeln_utils.UNDEFINED,
     workers: int = 1,
     maxsize: int = 0,
     timeout: float = 0,
@@ -58,14 +63,18 @@ def map_(
     Create map stage.
     """
     if isinstance(stage, pypeln_utils.Undefined):
-        return pypeln_utils.Partial(lambda stage: map_(f,
-                                                       stage=stage,
-                                                       workers=workers,
-                                                       maxsize=maxsize,
-                                                       timeout=timeout,
-                                                       on_start=on_start,
-                                                       on_done=on_done,
-                                                       use_threads=use_threads))
+        return pypeln_utils.Partial(
+            lambda stage: map_(
+                f,
+                stage=stage,
+                workers=workers,
+                maxsize=maxsize,
+                timeout=timeout,
+                on_start=on_start,
+                on_done=on_done,
+                use_threads=use_threads,
+            )
+        )
 
     stage = to_stage(stage, maxsize=maxsize)
 

@@ -8,6 +8,7 @@ class NoopEncryption(BaseEncryption):
     """
     Doing nothing, just for tests.
     """
+
     def encrypt(self, data):
         """
         Do nothing.

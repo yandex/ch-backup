@@ -5,13 +5,22 @@ from pathlib import Path
 from tarfile import BLOCKSIZE
 from typing import Any, AnyStr, List, Sequence
 
-from ch_backup.calculators import (calc_aligned_files_size, calc_encrypted_size, calc_tarball_size)
+from ch_backup.calculators import (
+    calc_aligned_files_size,
+    calc_encrypted_size,
+    calc_tarball_size,
+)
 from ch_backup.encryption import get_encryption
-from ch_backup.storage.async_pipeline.pipeline_builder import (PipelineBuilder, PypelnStage)
+from ch_backup.storage.async_pipeline.pipeline_builder import (
+    PipelineBuilder,
+    PypelnStage,
+)
 from ch_backup.util import exhaust_iterator
 
 
-def upload_data_pipeline(config: dict, data: AnyStr, remote_path: str, encrypt: bool) -> None:
+def upload_data_pipeline(
+    config: dict, data: AnyStr, remote_path: str, encrypt: bool
+) -> None:
     """
     Entrypoint of upload data pipeline.
     """
@@ -27,7 +36,9 @@ def upload_data_pipeline(config: dict, data: AnyStr, remote_path: str, encrypt: 
     run(builder.pipeline())
 
 
-def upload_file_pipeline(config: dict, local_path: Path, remote_path: str, encrypt: bool, delete_after: bool) -> None:
+def upload_file_pipeline(
+    config: dict, local_path: Path, remote_path: str, encrypt: bool, delete_after: bool
+) -> None:
     """
     Entrypoint of upload file pipeline.
     """
@@ -45,8 +56,14 @@ def upload_file_pipeline(config: dict, local_path: Path, remote_path: str, encry
     run(builder.pipeline())
 
 
-def upload_files_tarball_pipeline(config: dict, base_path: Path, file_relative_paths: List[Path], remote_path: str,
-                                  encrypt: bool, delete_after: bool) -> None:
+def upload_files_tarball_pipeline(
+    config: dict,
+    base_path: Path,
+    file_relative_paths: List[Path],
+    remote_path: str,
+    encrypt: bool,
+    delete_after: bool,
+) -> None:
     """
     Entrypoint of upload files tarball pipeline.
     """
@@ -54,7 +71,9 @@ def upload_files_tarball_pipeline(config: dict, base_path: Path, file_relative_p
     file_absolute_paths = [base_path / rel_path for rel_path in file_relative_paths]
 
     estimated_size = calc_aligned_files_size(file_absolute_paths, alignment=BLOCKSIZE)
-    estimated_size = calc_tarball_size([str(f) for f in file_relative_paths], estimated_size)
+    estimated_size = calc_tarball_size(
+        [str(f) for f in file_relative_paths], estimated_size
+    )
     builder.build_read_files_tarball_stage(base_path, file_relative_paths)
     if encrypt:
         builder.build_encrypt_stage()
@@ -80,7 +99,9 @@ def download_data_pipeline(config: dict, remote_path: str, decrypt: bool) -> byt
     return run_and_return_first(builder.pipeline())
 
 
-def download_file_pipeline(config: dict, remote_path: str, local_path: Path, decrypt: bool) -> None:
+def download_file_pipeline(
+    config: dict, remote_path: str, local_path: Path, decrypt: bool
+) -> None:
     """
     Entrypoint of download file pipeline.
     """
@@ -94,7 +115,9 @@ def download_file_pipeline(config: dict, remote_path: str, local_path: Path, dec
     run(builder.pipeline())
 
 
-def download_files_pipeline(config: dict, remote_path: str, local_path: Path, decrypt: bool) -> None:
+def download_files_pipeline(
+    config: dict, remote_path: str, local_path: Path, decrypt: bool
+) -> None:
     """
     Entrypoint of download files pipeline.
     """
@@ -140,8 +163,8 @@ def run_and_return_first(pipeline: PypelnStage) -> Any:
 
 
 def _calc_encrypted_size(config: dict, data_size: int) -> int:
-    enc_conf = config['encryption']
-    chunk_size = enc_conf['chunk_size']
-    metadata_size = get_encryption(enc_conf['type'], enc_conf).metadata_size()
+    enc_conf = config["encryption"]
+    chunk_size = enc_conf["chunk_size"]
+    metadata_size = get_encryption(enc_conf["type"], enc_conf).metadata_size()
 
     return calc_encrypted_size(data_size, chunk_size, metadata_size)

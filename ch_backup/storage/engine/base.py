@@ -10,6 +10,7 @@ class StorageEngine(metaclass=ABCMeta):
     """
     Base class for storage engines.
     """
+
     @abstractmethod
     def upload_file(self, local_path: str, remote_path: str) -> str:
         """
@@ -45,7 +46,9 @@ class StorageEngine(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def list_dir(self, remote_path: str, recursive: bool = False, absolute: bool = False) -> Sequence[str]:
+    def list_dir(
+        self, remote_path: str, recursive: bool = False, absolute: bool = False
+    ) -> Sequence[str]:
         """
         Get directory listing.
         """
@@ -63,6 +66,7 @@ class PipeLineCompatibleStorageEngine(StorageEngine):
     """
     Base class for pipeline-compatible storage engines.
     """
+
     @abstractmethod
     def create_multipart_upload(self, remote_path: str) -> str:
         """
@@ -71,7 +75,13 @@ class PipeLineCompatibleStorageEngine(StorageEngine):
         pass
 
     @abstractmethod
-    def upload_part(self, data: bytes, remote_path: str, upload_id: str, part_num: Optional[int] = None) -> None:
+    def upload_part(
+        self,
+        data: bytes,
+        remote_path: str,
+        upload_id: str,
+        part_num: Optional[int] = None,
+    ) -> None:
         """
         Upload data part in multipart upload.
         """

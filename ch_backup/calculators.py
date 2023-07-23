@@ -35,11 +35,15 @@ def calc_tarball_size(file_names: List[str], aligned_files_size: int) -> int:
         if len(name) < LENGTH_NAME:
             result += BLOCKSIZE  # file header
         else:
-            result += (math.ceil(len(name) / BLOCKSIZE) + 2) * BLOCKSIZE  # long name header + name data + file header
+            result += (
+                math.ceil(len(name) / BLOCKSIZE) + 2
+            ) * BLOCKSIZE  # long name header + name data + file header
     return result
 
 
-def calc_encrypted_size(data_size: int, encrypt_chunk_size: int, encrypt_metadata_size: int) -> int:
+def calc_encrypted_size(
+    data_size: int, encrypt_chunk_size: int, encrypt_metadata_size: int
+) -> int:
     """
     Calculate size of encrypted data.
     """

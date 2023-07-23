@@ -67,7 +67,7 @@ confidence=
 # --disable=W"
 # TODO: exclude similarities below after old pipeline removing
 disable=broad-except,no-self-use,bad-continuation,too-few-public-methods,inconsistent-return-statements,
-        fixme,unnecessary-pass,raise-missing-from,similarities
+        fixme,unnecessary-pass,raise-missing-from,similarities,line-too-long
 
 
 [REPORTS]
