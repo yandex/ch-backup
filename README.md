@@ -1,3 +1,6 @@
+[![license](https://img.shields.io/github/license/yandex/ch-backup)](https://github.com/yandex/ch-backup/blob/main/LICENSE)
+[![tests status](https://img.shields.io/github/actions/workflow/status/yandex/ch-backup/.github%2Fworkflows%2Fworkflow.yml?event=push&label=tests)](https://github.com/yandex/ch-backup/actions/workflows/workflow.yml?query=event%3Apush)
+
 # ch-backup
 
 Backup tool for ClickHouse DBMS.
