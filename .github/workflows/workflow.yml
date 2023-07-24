@@ -39,16 +39,16 @@ jobs:
       fail-fast: false
       matrix:
         target:
-          - {python: "3.6.15", ubuntu: "20.04"}
-          - {python: "3.10.12", ubuntu: "latest"}
+        - python: "3.6"
+          ubuntu: "20.04"
+        - python: "3.10"
+          ubuntu: "latest"
         clickhouse:
         - "21.8.15.7"
         - "22.3.20.29"
-        - "22.8.19.10"
-        - "23.3.4.17"
-        - "23.4.4.16"
-        - "23.5.3.24"
-        - "23.6.1.1524"
+        - "22.8.20.11"
+        - "23.3.8.21"
+        - "23.6.2.18"
     runs-on: ubuntu-${{ matrix.target.ubuntu }}
     steps:
     - uses: actions/checkout@v3
