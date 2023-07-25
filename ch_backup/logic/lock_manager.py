@@ -87,6 +87,8 @@ class LockManager:
         """
         Sets zookeeper lock on the process_zk_lockfile_path path
         """
+        # pylint: disable=unnecessary-dunder-call
+
         if self._zk_client:
             client = self._zk_client.__enter__()
             if not client.exists(self._process_zk_lockfile_path):

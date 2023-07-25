@@ -43,8 +43,8 @@ flake8: install-deps
 
 .PHONY: pylint
 pylint: install-deps
-	${TEST_ENV} pylint --reports=no --score=no ch_backup
-	${TEST_ENV} pylint --disable=redefined-outer-name,missing-docstring,invalid-name --reports=no --score=no tests
+	${TEST_ENV} pylint ch_backup
+	${TEST_ENV} pylint --disable=missing-docstring,invalid-name tests
 
 .PHONY: mypy
 mypy: install-deps

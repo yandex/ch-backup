@@ -25,6 +25,8 @@ SECRET_KEY = "a" * 32
 
 DEFAULT_TMP_DIR_PATH = "staging/tmp_test_data"
 
+# pylint: disable=redefined-outer-name
+
 
 def get_test_stream(total_size):
     """

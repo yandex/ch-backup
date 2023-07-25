@@ -179,8 +179,8 @@ class DeleteMultipleStorageStage(InputStage):
         except StopIteration:
             # Iterator is empty, all needed files are deleted
             return None
-        else:
-            return _delete_files(elem)
+
+        return _delete_files(elem)
 
     def _post_process(self):
         pass

@@ -41,6 +41,8 @@ class S3ClientFactory:
         """
         Get proxy host name via a special handler
         """
+        # pylint: disable=missing-timeout
+
         if resolver_path is None:
             return None
         req = requests.get(resolver_path)
