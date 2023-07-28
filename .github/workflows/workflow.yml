@@ -24,8 +24,8 @@ jobs:
       run: make isort
     - name: "lint: black"
       run: make black
-    - name: "lint: flake8"
-      run: make flake8
+    - name: "lint: ruff"
+      run: make ruff
     - name: "lint: pylint"
       run: make pylint
     - name: "lint: mypy"

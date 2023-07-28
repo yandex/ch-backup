@@ -1,8 +1,6 @@
 isort
 black
-flake8
-flake8-string-format
-flake8-print
+ruff; python_version >="3.7"
 pep8
 pylint
 mypy==0.910

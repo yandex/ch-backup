@@ -27,7 +27,7 @@ build: install-deps ch_backup/version.txt
 all: build lint test-unit test-integration
 
 .PHONY: lint
-lint: install-deps isort black flake8 pylint mypy bandit
+lint: install-deps isort black ruff pylint mypy bandit
 
 .PHONY: isort
 isort: install-deps
@@ -37,9 +37,9 @@ isort: install-deps
 black: install-deps
 	${TEST_ENV} black --check --diff .
 
-.PHONY: flake8
-flake8: install-deps
-	${TEST_ENV} flake8 ch_backup tests
+.PHONY: ruff
+ruff: install-deps
+	${TEST_ENV} ruff check ch_backup tests
 
 .PHONY: pylint
 pylint: install-deps
@@ -157,6 +157,7 @@ install-deps: .install-deps
 
 .install-deps: requirements.txt requirements-dev.txt
 	if [ -z "${NO_VENV}" ]; then ${PYTHON} -m venv venv; fi
+	${TEST_ENV} pip install --upgrade pip
 	${TEST_ENV} pip install --no-cache-dir --disable-pip-version-check -r requirements.txt -r requirements-dev.txt
 	touch .install-deps
 
@@ -166,12 +167,12 @@ help:
 	@echo "Targets:"
 	@echo "  build (default)            Build project. It installs dependencies and generates version.txt."
 	@echo "  all                        Alias for \"build lint test-unit test-integration\"."
-	@echo "  lint                       Run all linter tools. Alias for \"isort black flake8 pylint mypy bandit\"."
+	@echo "  lint                       Run all linter tools. Alias for \"isort black ruff pylint mypy bandit\"."
 	@echo "  test-unit                  Run unit tests."
 	@echo "  test-integration           Run integration tests."
 	@echo "  isort                      Perform isort checks."
 	@echo "  black                      Perform black checks."
-	@echo "  flake8                     Perform flake8 checks."
+	@echo "  ruff                       Perform ruff checks."
 	@echo "  pylint                     Perform pylint checks."
 	@echo "  mypy                       Perform mypy checks.."
 	@echo "  bandit                     Perform bandit checks."
