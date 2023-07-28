@@ -44,7 +44,7 @@ Commands:
 
 ### Regression
 
-The regression test suite contains run of static code analysis tools (isort, black, flake8, pylint, mypy, bandit),
+The regression test suite contains run of static code analysis tools (isort, black, ruff, pylint, mypy, bandit),
 unit tests and integration tests.
 
 The tests can be run by issuing the command:
