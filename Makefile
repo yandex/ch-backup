@@ -2,7 +2,7 @@ export PYTHON?=python3
 export PYTHONIOENCODING?=utf8
 export NO_VENV?=
 export COMPOSE_HTTP_TIMEOUT?=300
-export CLICKHOUSE_VERSION?=23.3.7.5
+export CLICKHOUSE_VERSION?=latest
 
 ifndef NO_VENV
   export PATH := venv/bin:${PATH}
