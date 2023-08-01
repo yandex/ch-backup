@@ -48,7 +48,7 @@ jobs:
         - "22.3.20.29"
         - "22.8.20.11"
         - "23.3.8.21"
-        - "23.6.2.18"
+        - "23.7.1.2470"
     runs-on: ubuntu-${{ matrix.target.ubuntu }}
     steps:
     - uses: actions/checkout@v3
@@ -59,4 +59,4 @@ jobs:
     - name: run unit tests
       run: make test-unit
     - name: run integration tests
-      run: make test-integration
+      run: CLICKHOUSE_VERSION=${{ matrix.clickhouse }} make test-integration
