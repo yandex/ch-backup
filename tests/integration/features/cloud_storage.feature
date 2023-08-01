@@ -36,7 +36,7 @@ Feature: Backup & Clean & Restore
       | num | state   | data_count | link_count | title   |
       | 0   | created | 5          | 0          | deleted |
     And s3 contains 15 objects
-    And s3 bucket cloud-storage-01 contains 10 objects
+    And s3 bucket cloud-storage-01 contains 8 objects
     And we got the following s3 backup directories on clickhouse01
     """
     ["12345678T123456"]
@@ -49,8 +49,7 @@ Feature: Backup & Clean & Restore
     Then we got the following backups on clickhouse01
       | num | state | data_count | link_count | title |
     And s3 contains 0 objects
-    # Some files such as operation logs and schema version are not deleted
-    And s3 bucket cloud-storage-01 contains 3 objects
+    And s3 bucket cloud-storage-01 contains 0 objects
     And we got the following s3 backup directories on clickhouse01
     """
     []
@@ -85,7 +84,7 @@ Feature: Backup & Clean & Restore
       | num | state   | data_count | link_count | title   |
       | 0   | created | 5          | 0          | deleted |
     And s3 contains 15 objects
-    And s3 bucket cloud-storage-01 contains 11 objects
+    And s3 bucket cloud-storage-01 contains 9 objects
     And we got the following s3 backup directories on clickhouse01
     """
     ["12345678T123456"]
@@ -98,8 +97,7 @@ Feature: Backup & Clean & Restore
     Then we got the following backups on clickhouse01
       | num | state | data_count | link_count | title |
     And s3 contains 0 objects
-    # Some files such as operation logs and schema version are not deleted
-    And s3 bucket cloud-storage-01 contains 3 objects
+    And s3 bucket cloud-storage-01 contains 0 objects
     And we got the following s3 backup directories on clickhouse01
     """
     []
@@ -133,7 +131,7 @@ Feature: Backup & Clean & Restore
       | num | state   | data_count | link_count | title   |
       | 0   | created | 5          | 0          | deleted |
     And s3 contains 15 objects
-    And s3 bucket cloud-storage-01 contains 12 objects
+    And s3 bucket cloud-storage-01 contains 10 objects
     And we got the following s3 backup directories on clickhouse01
     """
     ["12345678T123456"]
@@ -146,8 +144,7 @@ Feature: Backup & Clean & Restore
     Then we got the following backups on clickhouse01
       | num | state | data_count | link_count | title |
     And s3 contains 0 objects
-    # Some files such as operation logs and schema version are not deleted
-    And s3 bucket cloud-storage-01 contains 3 objects
+    And s3 bucket cloud-storage-01 contains 0 objects
     And we got the following s3 backup directories on clickhouse01
     """
     []
