@@ -367,5 +367,5 @@ def dataclass_from_dict(type_: Type[T], data: dict) -> T:
 
     Function ignores extra keys and is not recursive.
     """
-    class_fields = {f.name for f in data_fields(type_)}
-    return type_(**{k: v for k, v in data.items() if k in class_fields})  # type: ignore[call-arg]
+    class_fields = {f.name for f in data_fields(type_)}  # type: ignore[arg-type]
+    return type_(**{k: v for k, v in data.items() if k in class_fields})
