@@ -12,7 +12,9 @@ from typing import List, Sequence, Tuple
 from urllib.parse import urlparse
 
 import docker
+from docker.errors import APIError
 from docker.models.containers import Container
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
 from . import utils
 from .typing import ContextT
@@ -33,6 +35,11 @@ def get_containers(context: ContextT) -> Sequence[Container]:
     return containers
 
 
+@retry(
+    retry=retry_if_exception_type(APIError),
+    wait=wait_fixed(0.5),
+    stop=stop_after_attempt(60),
+)
 def get_container(context: ContextT, prefix: str) -> Container:
     """
     Get container object by prefix.
