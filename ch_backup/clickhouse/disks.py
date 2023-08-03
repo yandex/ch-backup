@@ -150,6 +150,8 @@ class ClickHouseTemporaryDisks:
             if disk.name == target_disk.name:
                 table_path = os.path.relpath(path, target_disk.path)
                 target_path = os.path.join(table_path, "detached")
+                if self._ch_ctl.ch_version_ge("23.7"):
+                    target_path = os.path.join(target_path, part.name, "")
                 source_path = os.path.join(
                     "shadow",
                     backup_meta.get_sanitized_name(),
