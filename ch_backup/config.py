@@ -211,6 +211,7 @@ DEFAULT_CONFIG = {
         "root_path": "",
         "user": None,
         "password": None,
+        "randomize_hosts": True,
     },
     "lock": {
         "flock": False,
