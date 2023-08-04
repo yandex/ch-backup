@@ -7,8 +7,10 @@ ARG CLICKHOUSE_VERSION
 
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && \
     apt-get update -qq && \
+    apt-get upgrade -y && \
     apt-get install -y \
         apt-transport-https \
+        ca-certificates \
         tzdata \
         locales \
         python3-pip \
@@ -31,13 +33,12 @@ RUN echo "root:root" | chpasswd && \
 RUN mkdir -p ${CH_TMP_DIR}
 COPY setup.py requirements.txt ${CH_TMP_DIR}/
 
+COPY staging/images/{{instance_name}}/config/clickhouse-keyring.gpg /usr/share/keyrings/clickhouse-keyring.gpg
 RUN cd ${CH_TMP_DIR} && \
     pip3 install -r requirements.txt && \
     mkdir -p /etc/apt/sources.list.d && \
-    echo "deb https://packages.clickhouse.com/deb stable main" | tee /etc/apt/sources.list.d/clickhouse.list && \
-    apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 8919F6BD2B48D754 && \
+    echo "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg] https://packages.clickhouse.com/deb stable main" | tee /etc/apt/sources.list.d/clickhouse.list && \
     apt-get update -qq && \
-    apt-get upgrade -y && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
         clickhouse-common-static=$CLICKHOUSE_VERSION \
         clickhouse-server=$CLICKHOUSE_VERSION \
