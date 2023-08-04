@@ -81,6 +81,12 @@ def _environment(context: ContextT, loader: BaseLoader = None) -> Environment:
     def _ch_version_lt(comparing_version):
         return version_lt(context.conf["ch_version"], comparing_version)
 
+    def _feature_enabled(feature):
+        return feature in context.feature_flags
+
+    def _feature_disabled(feature):
+        return feature not in context.feature_flags
+
     environment = Environment(
         autoescape=False,
         trim_blocks=False,
@@ -95,5 +101,7 @@ def _environment(context: ContextT, loader: BaseLoader = None) -> Environment:
     environment.globals["get_file_size"] = _get_file_size
     environment.globals["ch_version_ge"] = _ch_version_ge
     environment.globals["ch_version_lt"] = _ch_version_lt
+    environment.globals["feature_enabled"] = _feature_enabled
+    environment.globals["feature_disabled"] = _feature_disabled
 
     return environment
