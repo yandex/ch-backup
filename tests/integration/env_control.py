@@ -32,6 +32,10 @@ STAGES = {
         minio.configure_s3_credentials,
         minio.create_s3_buckets,
     ],
+    "update": [
+        docker.prep_images,
+        templates.render_configs,
+    ],
     "restart": [
         compose.shutdown_containers,
         docker.create_network,
@@ -66,6 +70,13 @@ def start(context):
     Start test environment runtime.
     """
     _run_stage("start", context)
+
+
+def update(context):
+    """
+    Update test environment configuration.
+    """
+    _run_stage("update", context)
 
 
 def restart(context):
@@ -104,12 +115,17 @@ def _init_context(context):
     if not hasattr(context, "state_file"):
         context.state_file = SESSION_STATE_CONF
 
+    if not hasattr(context, "feature_flags"):
+        context.feature_flags = set()
+
     try:
         with open(context.state_file, "rb") as session_conf:
             context.conf = pickle.load(session_conf)
     except FileNotFoundError:
         logging.info("creating new test config")
         context.conf = configuration.create()
+
+    context.initialized = True
 
 
 def cli_main():

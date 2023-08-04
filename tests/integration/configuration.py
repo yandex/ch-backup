@@ -79,23 +79,6 @@ def create():
                     "CLICKHOUSE_VERSION": "$CLICKHOUSE_VERSION",
                 },
             },
-            "clickhousenozk": {
-                "db": {
-                    "user": "reader",
-                    "password": "reader_password",
-                },
-                "expose": {
-                    "http": 8123,
-                    "clickhouse": 9000,
-                    "ssh": 22,
-                },
-                "docker_instances": 2,
-                "depends_on": ["minio", "proxy", "proxy-api"],
-                "external_links": [f'{s3["host"]}:minio'],
-                "args": {
-                    "CLICKHOUSE_VERSION": "$CLICKHOUSE_VERSION",
-                },
-            },
             "minio": {
                 "expose": {
                     "http": s3["port"],

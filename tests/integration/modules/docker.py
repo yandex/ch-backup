@@ -115,7 +115,6 @@ def prep_images(context: ContextT) -> None:
             dir_util.copy_tree(
                 f"{images_dir}/{name}",
                 f"{staging_dir}/images/{name}{i:02d}",
-                update=True,
             )
 
 
