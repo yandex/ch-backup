@@ -27,10 +27,14 @@ def startup_containers(context: ContextT) -> None:
     """
     Start up docker containers.
     """
+    command = f"up -d --timeout {COMPOSE_UP_DOWN_TIMEOUT}"
+    for feature_flag in context.feature_flags:
+        command += f" --profile {feature_flag}"
+
     _call_compose(
         context.conf,
         project_name=_project_name(context.conf),
-        command=f"up -d --timeout {COMPOSE_UP_DOWN_TIMEOUT}",
+        command=command,
     )
 
 
@@ -49,47 +53,22 @@ def shutdown_containers(context: ContextT) -> None:
 
 
 @utils.env_stage("create", fail=True)
-def create_config(context: ContextT) -> None:
+def create_configs(context: ContextT) -> None:
     """
-    Generate config file and write it.
+    Generate config files (docker-compose.yml and .env).
     """
-    compose_conf_path = _get_config_path(context.conf)
-    compose_conf = _generate_compose_config(context.conf)
-    _write_config(context, compose_conf_path, compose_conf)
+    compose_config = _generate_compose_config(context)
+    _write_compose_config(context, compose_config)
+
+    env_config = _generate_env_config(context)
+    _write_env_config(context, env_config)
 
 
-def _write_config(context: ContextT, path: str, compose_conf: dict) -> None:
-    """
-    Dumps compose config into a file in Yaml format.
-    """
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as conf_file:
-        yaml.dump(compose_conf, stream=conf_file, default_flow_style=False, indent=4)
-
-    try:
-        _validate_config(context)
-    except subprocess.CalledProcessError as err:
-        raise RuntimeError(f"Unable to write config: validation failed with {err}")
-
-
-def _get_config_path(config: dict) -> str:
-    """
-    Return file path to docker compose config file.
-    """
-    return os.path.join(config["staging_dir"], "docker-compose.yml")
-
-
-def _validate_config(context: ContextT) -> None:
-    """
-    Perform config validation by calling `docker-compose config`
-    """
-    _call_compose(context.conf, command="config")
-
-
-def _generate_compose_config(config: dict) -> dict:
+def _generate_compose_config(context: ContextT) -> dict:
     """
     Create docker compose config.
     """
+    config = context.conf
     services = config["services"]
     network_name = config["network_name"]
 
@@ -178,22 +157,69 @@ def _generate_service_config(
         # https://github.com/moby/moby/issues/12080
         "tmpfs": "/var/run",
         "external_links": instance_config.get("external_links", []),
+        "profiles": instance_config.get("profiles", []),
     }
 
     return service
+
+
+def _write_compose_config(context: ContextT, compose_config: dict) -> None:
+    """
+    Dumps compose config into a file in Yaml format.
+    """
+    config_path = _config_path(context.conf)
+
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+    with open(config_path, "w", encoding="utf-8") as file:
+        yaml.dump(compose_config, stream=file, default_flow_style=False, indent=4)
+
+    try:
+        _validate_config(context)
+    except subprocess.CalledProcessError as err:
+        raise RuntimeError(f"Config validation failed with: {err}")
+
+
+def _validate_config(context: ContextT) -> None:
+    """
+    Perform config validation by calling `docker-compose config`
+    """
+    _call_compose(context.conf, command="config")
+
+
+def _generate_env_config(context: ContextT) -> dict:
+    env_config = {}
+
+    for feature_flag in context.feature_flags:
+        env_config[f"{feature_flag.upper()}_ENABLED"] = "1"
+
+    return env_config
+
+
+def _write_env_config(context: ContextT, env_config: dict) -> None:
+    config_path = os.path.join(context.conf["staging_dir"], ".env")
+    with open(config_path, "w", encoding="utf-8") as file:
+        for key, value in env_config.items():
+            file.write(f"{key} = {value}\n")
 
 
 def _call_compose(conf: dict, *, command: str, project_name: str = None) -> None:
     """
     Execute docker-compose action by invoking `docker-compose`.
     """
-    shell_command = f"docker-compose --file {_get_config_path(conf)}"
+    shell_command = f"docker-compose --file {_config_path(conf)}"
     if project_name:
         shell_command += f" -p {project_name}"
     shell_command += f" {command}"
 
     # Note: build paths are resolved relative to config file location.
     subprocess.check_call(shlex.split(shell_command))
+
+
+def _config_path(config: dict) -> str:
+    """
+    Return file path to docker compose config file.
+    """
+    return os.path.join(config["staging_dir"], "docker-compose.yml")
 
 
 def _project_name(conf):

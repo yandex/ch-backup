@@ -14,16 +14,9 @@ from tests.integration.modules import compose, docker, minio, templates
 SESSION_STATE_CONF = ".session_conf.sav"
 STAGES = {
     "create": [
-        # The order here is important: stages depend on previous` results.
-        # e.g. you wont get much success building from docker-compose
-        # unless you have base image in place.
-        # copy images to staging
         docker.prep_images,
-        # Generate docker-compose.yml
-        compose.create_config,
-        # Render configs using all available contexts
+        compose.create_configs,
         templates.render_configs,
-        # Build docker images
         compose.build_images,
     ],
     "start": [
@@ -34,6 +27,7 @@ STAGES = {
     ],
     "update": [
         docker.prep_images,
+        compose.create_configs,
         templates.render_configs,
     ],
     "restart": [

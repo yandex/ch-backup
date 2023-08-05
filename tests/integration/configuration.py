@@ -73,7 +73,7 @@ def create():
                     "ssh": 22,
                 },
                 "docker_instances": 2,
-                "depends_on": ["minio", "proxy", "proxy-api", "zookeeper"],
+                "depends_on": ["minio", "proxy", "proxy-api"],
                 "external_links": [f'{s3["host"]}:minio', f'{zk["uri"]}:zookeeper'],
                 "args": {
                     "CLICKHOUSE_VERSION": "$CLICKHOUSE_VERSION",
@@ -102,6 +102,7 @@ def create():
                 "environment": [f"NETWORK={network_name}"],
             },
             "zookeeper": {
+                "profiles": ["zookeeper"],
                 "expose": {
                     "tcp": 2181,
                     "tls": 2281,
