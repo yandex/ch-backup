@@ -1,4 +1,4 @@
-FROM ubuntu:bionic
+FROM ubuntu:22.04
 
 RUN apt-get update -qq && apt-get -y install python3-bottle --no-install-recommends
 
