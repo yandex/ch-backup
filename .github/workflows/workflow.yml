@@ -62,4 +62,4 @@ jobs:
     - name: run unit tests
       run: make test-unit
     - name: run integration tests
-      run: CLICKHOUSE_VERSION=${{ matrix.clickhouse }} make test-integration
+      run: CLICKHOUSE_VERSION=${{ matrix.clickhouse }} BEHAVE_ARGS="--color --format pretty" make test-integration
