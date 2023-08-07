@@ -33,6 +33,7 @@ class ZookeeperClient:
             keyfile=config.get("key"),
             ca=config.get("ca"),
             logger=logging.getLogger("zookeeper"),
+            randomize_hosts=config.get("randomize_hosts", True),
         )
         self._zk_user = config.get("user")
         self._zk_password = config.get("password")
