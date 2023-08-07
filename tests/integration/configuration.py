@@ -59,6 +59,7 @@ def create():
             "encrypt_key": generate_random_string(32),
         },
         "ch_version": os.getenv("CLICKHOUSE_VERSION"),
+        "default_feature_flags": ["zookeeper"],
         # A dict with all services that are going to interact in this
         # testing environment.
         "services": {
@@ -75,23 +76,6 @@ def create():
                 "docker_instances": 2,
                 "depends_on": ["minio", "proxy", "proxy-api", "zookeeper"],
                 "external_links": [f'{s3["host"]}:minio', f'{zk["uri"]}:zookeeper'],
-                "args": {
-                    "CLICKHOUSE_VERSION": "$CLICKHOUSE_VERSION",
-                },
-            },
-            "clickhousenozk": {
-                "db": {
-                    "user": "reader",
-                    "password": "reader_password",
-                },
-                "expose": {
-                    "http": 8123,
-                    "clickhouse": 9000,
-                    "ssh": 22,
-                },
-                "docker_instances": 2,
-                "depends_on": ["minio", "proxy", "proxy-api"],
-                "external_links": [f'{s3["host"]}:minio'],
                 "args": {
                     "CLICKHOUSE_VERSION": "$CLICKHOUSE_VERSION",
                 },
