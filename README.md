@@ -61,7 +61,7 @@ The following steps describe how to set up testing infrastructure on top of
 
 1. Create and run docker containers.
 ```
-$ make start_env
+$ make start-env
 ...
 Creating minio01.test_net_711 ...
 Creating clickhouse01.test_net_711 ...
@@ -108,9 +108,9 @@ make all
 Unit tests are implemented based on [pytest](https://docs.pytest.org/en/latest/) testing framework.
 
 The tests can be run as a part of regression test suite with `make all` or
-separately with `make unit_test`. Additionally, `PYTEST_ARGS` parameter
+separately with `make test-unit`. Additionally, `PYTEST_ARGS` parameter
 can be used to pass additional arguments to underlying `py.test` invocation.
-For example, `make unit_tests PYTES_ARGS='-k dedup'` executes only deduplication-realted tests.
+For example, `make test-unit PYTES_ARGS='-k dedup'` executes only deduplication-realted tests.
 
 ### Integration tests
 
@@ -119,7 +119,7 @@ Integration tests verify ch-backup functionality in isolated virtual environment
 [Behave](https://behave.readthedocs.io/en/stable/) as a testing framework.
 
 The tests can be run as a part of regression test suite with `make all` or
-separately with `make integration_test`. Additionally, `BEHAVE_ARGS` parameter
+separately with `make test-integration`. Additionally, `BEHAVE_ARGS` parameter
 can be used to pass additional arguments to underlying `behave` invocation.
-For example, `make integration_test BEHAVE_ARGS='-i ssl_support'` executes
+For example, `make test-integration BEHAVE_ARGS='-i ssl_support'` executes
 tests that belongs to SSL support feature (`ssl_support.feature`).
