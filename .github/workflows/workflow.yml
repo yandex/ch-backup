@@ -60,3 +60,9 @@ jobs:
       run: make test-unit
     - name: run integration tests
       run: CLICKHOUSE_VERSION=${{ matrix.clickhouse }} make test-integration
+    - uses: actions/upload-artifact@v3
+      if: ${{ failure() }}
+      with:
+        name: integration-test-logs-py${{ matrix.target.python }}-clickhouse-${{ matrix.clickhouse }}
+        path: staging/logs/
+        if-no-files-found: ignore
