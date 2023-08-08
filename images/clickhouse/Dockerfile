@@ -90,4 +90,5 @@ COPY staging/images/{{ instance_name }}/entrypoint.py /entrypoint.py
 
 EXPOSE 8123 8443 9000 9440
 
+USER clickhouse
 CMD ["python3", "/entrypoint.py"]

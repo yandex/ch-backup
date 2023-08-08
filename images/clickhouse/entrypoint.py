@@ -12,4 +12,6 @@ if __name__ == "__main__":
     client.ensure_path("/{{ instance_name }}")
     client.stop()
 
-    subprocess.Popen(["supervisord", "-c", "/etc/supervisor/supervisord.conf"]).wait()
+    subprocess.Popen(
+        ["/usr/bin/clickhouse-server", "--config", "/etc/clickhouse-server/config.xml"]
+    ).wait()
