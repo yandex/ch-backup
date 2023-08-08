@@ -117,7 +117,7 @@ class ClickhouseBackup:
 
         If force is True, backup.min_interval config option is ignored.
         """
-        # pylint: disable=too-many-locals,too-many-branches
+        # pylint: disable=too-many-branches
         logging.info(f"Backup sources: {sources}")
         assert not (db_names and tables)
 
@@ -206,7 +206,7 @@ class ClickhouseBackup:
 
         return self._context.backup_meta.name, None
 
-    # pylint: disable=too-many-arguments,too-many-locals,duplicate-code
+    # pylint: disable=too-many-arguments,duplicate-code
     def restore(
         self,
         sources: BackupSources,
@@ -304,7 +304,7 @@ class ClickhouseBackup:
                 keep_going=keep_going,
             )
 
-    # pylint: disable=too-many-locals,too-many-nested-blocks,too-many-branches
+    # pylint: disable=too-many-nested-blocks,too-many-branches
     def fix_s3_oplog(
         self,
         source_cluster_id: str = None,

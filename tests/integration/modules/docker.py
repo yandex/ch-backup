@@ -7,7 +7,6 @@ import os
 import random
 import re
 import tarfile
-from distutils import dir_util  # pylint: disable=deprecated-module
 from typing import List, Sequence, Tuple
 from urllib.parse import urlparse
 
@@ -101,21 +100,6 @@ def get_file_size(container: Container, path: str) -> int:
     """
     output = container.exec_run(f'stat --format "%s" "{path}"')
     return int(output.decode())
-
-
-@utils.env_stage("create", fail=True)
-def prep_images(context: ContextT) -> None:
-    """
-    Prepare images.
-    """
-    images_dir = context.conf["images_dir"]
-    staging_dir = context.conf["staging_dir"]
-    for name, conf in context.conf["services"].items():
-        for i in range(1, conf.get("docker_instances", 1) + 1):
-            dir_util.copy_tree(
-                f"{images_dir}/{name}",
-                f"{staging_dir}/images/{name}{i:02d}",
-            )
 
 
 @utils.env_stage("create", fail=True)
