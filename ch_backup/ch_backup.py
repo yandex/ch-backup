@@ -27,7 +27,6 @@ from ch_backup.exceptions import (
     TerminatingSignal,
 )
 from ch_backup.logic.access import AccessBackup
-from ch_backup.logic.cloud_storage_utils import fix_s3_oplog
 from ch_backup.logic.database import DatabaseBackup
 from ch_backup.logic.table import TableBackup
 from ch_backup.logic.udf import UDFBackup
@@ -303,32 +302,6 @@ class ClickhouseBackup:
                 clean_zookeeper=clean_zookeeper,
                 keep_going=keep_going,
             )
-
-    # pylint: disable=too-many-nested-blocks,too-many-branches
-    def fix_s3_oplog(
-        self,
-        source_cluster_id: str = None,
-        shard: str = None,
-        cloud_storage_source_bucket: str = None,
-        cloud_storage_source_path: str = None,
-        dryrun: bool = False,
-    ) -> None:
-        """
-        Fix S3 operations log.
-        """
-        if not self._context.config.get("cloud_storage"):
-            return
-
-        fix_s3_oplog(
-            self._context.config["cloud_storage"],
-            source_cluster_id
-            if source_cluster_id
-            else self._context.config["restore_from"]["cid"],
-            shard if shard else self._context.config["restore_from"]["shard_name"],
-            cloud_storage_source_bucket,
-            cloud_storage_source_path,
-            dryrun,
-        )
 
     def delete(
         self, backup_name: str, purge_partial: bool
