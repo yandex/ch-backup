@@ -17,7 +17,6 @@ debian/ch-backup*
 debian/changelog
 debian/files
 htmlcov/
-local_configuration.py
 staging/
 venv/
 
