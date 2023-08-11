@@ -11,6 +11,7 @@ from .typing import ContextT
 from .utils import context_to_dict, env_stage, version_ge, version_lt
 
 TEMP_FILE_EXT = "temp~"
+IGNORED_EXT_LIST = [TEMP_FILE_EXT, "gpg"]
 
 
 @env_stage("create", fail=True)
@@ -27,9 +28,9 @@ def render_configs(context: ContextT) -> None:
             context.instance_id = f"{i:02d}"
             context.instance_name = f"{service}{i:02d}"
             for root, _, files in os.walk(instance_dir):
-                for basename in files:
-                    if not basename.endswith(TEMP_FILE_EXT):
-                        _render_file(context, root, basename)
+                for filename in files:
+                    if not _is_ignored(filename):
+                        _render_file(context, root, filename)
     context.instance_name = None
     context.instance_id = None
 
@@ -40,6 +41,14 @@ def render_template(context: ContextT, text: str) -> str:
     """
     template = _environment(context).from_string(text)
     return template.render(context_to_dict(context))
+
+
+def _is_ignored(filename):
+    for ignored_ext in IGNORED_EXT_LIST:
+        if filename.endswith(ignored_ext):
+            return True
+
+    return False
 
 
 def _render_file(context: ContextT, directory: str, basename: str) -> None:
