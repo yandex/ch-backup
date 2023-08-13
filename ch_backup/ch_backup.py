@@ -162,8 +162,10 @@ class ClickhouseBackup:
             ", ".join(map(lambda db: db.name, databases)),
         )
 
+        skip_lock = self._check_schema_only_backup_skip_lock(sources)
+
         try:
-            with self._context.locker():
+            with self._context.locker(disabled=skip_lock):
                 if sources.access:
                     self._access_backup_manager.backup(self._context)
                 if sources.udf:
@@ -581,3 +583,13 @@ class ClickhouseBackup:
             return True
 
         return False
+
+    def _check_schema_only_backup_skip_lock(self, sources: BackupSources) -> bool:
+        if not sources.schema_only:
+            return False
+
+        skip_lock = self._context.config.get("skip_lock_for_schema_only", None)
+        if not skip_lock:
+            return False
+
+        return skip_lock.get("backup", False)

@@ -9,6 +9,7 @@ from typing import IO, Optional, Type
 
 from kazoo.recipe.lock import Lock
 
+from ch_backup import logging
 from ch_backup.zookeeper.zookeeper import ZookeeperClient, ZookeeperCTL
 
 
@@ -39,22 +40,29 @@ class LockManager:
         self._zk_lock: Optional[Lock] = None
         self._exitcode = lock_conf.get("exitcode")
         self._distributed = zk_ctl is None
+        self._disabled = False
 
-    def __call__(self, distributed: bool = True):  # type: ignore
+    def __call__(self, distributed: bool = True, disabled: bool = False):  # type: ignore
         """
         Call-method for context manager
         """
         self._distributed = distributed
+        self._disabled = disabled
         return self
 
     def __enter__(self):  # type: ignore
         """
         Enter-method for context manager
         """
+        if self._disabled:
+            logging.debug("Lock is disabled on enter.")
+            return self
+
         if self._lock_conf.get("flock"):
             self._flock()
         if self._distributed and self._lock_conf.get("zk_flock"):
             self._zk_flock()
+
         return self
 
     def __exit__(
@@ -66,6 +74,10 @@ class LockManager:
         """
         Exit-method for context manager
         """
+        if self._disabled:
+            logging.debug("Lock is disabled on exit.")
+            return
+
         if self._lock_conf.get("flock"):
             os.close(self._fd)
         if self._zk_client and self._zk_lock is not None:
