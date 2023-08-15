@@ -3,22 +3,24 @@ name: Link with Startrek
 on:
   pull_request: { branches: [main] }
 
+env:
+  ISSUE_PATTERN: '[A-Z]+-[0-9]+'
+
 jobs:
-  link_with_startrek:    
-    continue-on-error: true
+  link:
     runs-on: ubuntu-latest
     steps:
-      - name: parse_branch_name
-        id: parse_branch_name
+      - name: Parse issue ID
         run: |
-          if [[ ${{ github.head_ref }} =~ ^([A-Za-z]+\-[0-9]+).*$ ]]; then
-              echo issue_number="${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT          
+          LAST_COMMIT_MESSAGE="$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "${{ github.event.pull_request.commits_url }}" | jq -r .[-1].commit.message)"
+          if [[ "$LAST_COMMIT_MESSAGE" =~ \[($ISSUE_PATTERN)\] || "${{ github.head_ref }}" =~ ^($ISSUE_PATTERN) ]]; then
+              echo ISSUE_NUMBER="${BASH_REMATCH[1]}" >> "${GITHUB_ENV}"          
           fi
-      - name: link_issue
-        if: steps.parse_branch_name.outputs.issue_number
+      - name: Link issue
+        if: env.ISSUE_NUMBER
         uses: fjogeleit/http-request-action@v1
         with:
-          url: 'https://st-api.yandex-team.ru/v2/issues/${{ steps.parse_branch_name.outputs.issue_number }}'
+          url: 'https://st-api.yandex-team.ru/v2/issues/${{ env.ISSUE_NUMBER }}'
           method: 'LINK'
           customHeaders: >
             {
