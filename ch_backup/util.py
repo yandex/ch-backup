@@ -12,7 +12,7 @@ import string
 import time
 from dataclasses import fields as data_fields
 from datetime import datetime, timedelta, timezone
-from functools import partial
+from functools import lru_cache, partial
 from inspect import currentframe
 from itertools import islice
 from typing import (
@@ -369,3 +369,12 @@ def dataclass_from_dict(type_: Type[T], data: dict) -> T:
     """
     class_fields = {f.name for f in data_fields(type_)}
     return type_(**{k: v for k, v in data.items() if k in class_fields})  # type: ignore[call-arg]
+
+
+def cached_property(f):
+    """
+    Analogue for functools.cached_property.
+
+    We could use cached_property from functools when the supported version of python would be >= 3.8.
+    """
+    return property(lru_cache(None)(f))

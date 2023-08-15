@@ -31,8 +31,37 @@ from ch_backup.logic.cloud_storage_utils import fix_s3_oplog
 from ch_backup.logic.database import DatabaseBackup
 from ch_backup.logic.table import TableBackup
 from ch_backup.logic.udf import UDFBackup
-from ch_backup.util import now, utcnow
+from ch_backup.util import cached_property, now, utcnow
 from ch_backup.version import get_version
+
+
+class ContextLazyLoader:
+    """
+    Lazy loader for BackupContext
+    """
+
+    def __init__(self, config: Config) -> None:
+        self._config = config
+
+    @cached_property
+    def context(self) -> BackupContext:
+        """
+        Create and configure BackupContext
+        """
+
+        ctx = BackupContext(self._config)
+        ctx.ch_ctl_conf = self._config["clickhouse"]
+        ctx.main_conf = self._config["main"]
+
+        ctx.ch_ctl = ClickhouseCTL(ctx.ch_ctl_conf, ctx.main_conf)
+        ctx.backup_layout = BackupLayout(self._config)
+
+        ctx.config = self._config["backup"]
+        ctx.zk_config = self._config.get("zookeeper")
+        ctx.restore_context = RestoreContext(ctx.config)
+        ctx.ch_config = ClickhouseConfig(self._config)
+
+        return ctx
 
 
 # pylint: disable=too-many-instance-attributes
@@ -44,26 +73,11 @@ class ClickhouseBackup:
     # pylint: disable=too-many-instance-attributes
 
     def __init__(self, config: Config) -> None:
-        self._context: BackupContext = self._load_context(config)
+        self._context_lazy_loader = ContextLazyLoader(config)
         self._access_backup_manager = AccessBackup()
         self._database_backup_manager = DatabaseBackup()
         self._table_backup_manager = TableBackup()
         self._udf_backup_manager = UDFBackup()
-
-    @staticmethod
-    def _load_context(config: Config) -> BackupContext:
-        ctx = BackupContext(config)
-
-        ctx.ch_ctl_conf = config["clickhouse"]
-        ctx.main_conf = config["main"]
-        ctx.ch_ctl = ClickhouseCTL(ctx.ch_ctl_conf, ctx.main_conf)
-        ctx.backup_layout = BackupLayout(config)
-        ctx.config = config["backup"]
-        ctx.zk_config = config.get("zookeeper")
-        ctx.restore_context = RestoreContext(ctx.config)
-        ctx.ch_config = ClickhouseConfig(config)
-
-        return ctx
 
     @property
     def config(self) -> Config:
@@ -72,12 +86,16 @@ class ClickhouseBackup:
         """
         return self._context.config_root
 
+    @property
+    def _context(self) -> BackupContext:
+        return self._context_lazy_loader.context
+
     def reload_config(self, config: Config) -> None:
         """
         Completely reloads the config.
         """
         logging.info("Reloading config.")
-        self._context = self._load_context(config)
+        self._context_lazy_loader = ContextLazyLoader(config)
         logging.info("Config reloaded.")
 
     def get(self, backup_name: str) -> BackupMetadata:
