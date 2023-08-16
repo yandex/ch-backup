@@ -198,9 +198,6 @@ class BackupManager:
         protocol = context.ch_backup["protocol"]
         self._cmd_base = f"timeout {timeout} {CH_BACKUP_CLI_PATH} --protocol {protocol} --insecure  --config {self._config_path}"
 
-    def get_version(self) -> str:
-        return self._exec("version")
-
     # pylint: disable=too-many-arguments
     def backup(
         self,

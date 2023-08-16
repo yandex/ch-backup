@@ -35,16 +35,30 @@ from ch_backup.util import cached_property, now, utcnow
 from ch_backup.version import get_version
 
 
-class ContextLazyLoader:
+# pylint: disable=too-many-instance-attributes
+class ClickhouseBackup:
     """
-    Lazy loader for BackupContext
+    Clickhouse backup logic
     """
+
+    # pylint: disable=too-many-instance-attributes
 
     def __init__(self, config: Config) -> None:
         self._config = config
+        self._access_backup_manager = AccessBackup()
+        self._database_backup_manager = DatabaseBackup()
+        self._table_backup_manager = TableBackup()
+        self._udf_backup_manager = UDFBackup()
+
+    @property
+    def config(self) -> Config:
+        """
+        Returns current config.
+        """
+        return self._config
 
     @cached_property
-    def context(self) -> BackupContext:
+    def _context(self) -> BackupContext:
         """
         Create and configure BackupContext
         """
@@ -60,42 +74,15 @@ class ContextLazyLoader:
         ctx.zk_config = self._config.get("zookeeper")
         ctx.restore_context = RestoreContext(ctx.config)
         ctx.ch_config = ClickhouseConfig(self._config)
-
         return ctx
-
-
-# pylint: disable=too-many-instance-attributes
-class ClickhouseBackup:
-    """
-    Clickhouse backup logic
-    """
-
-    # pylint: disable=too-many-instance-attributes
-
-    def __init__(self, config: Config) -> None:
-        self._context_lazy_loader = ContextLazyLoader(config)
-        self._access_backup_manager = AccessBackup()
-        self._database_backup_manager = DatabaseBackup()
-        self._table_backup_manager = TableBackup()
-        self._udf_backup_manager = UDFBackup()
-
-    @property
-    def config(self) -> Config:
-        """
-        Returns current config.
-        """
-        return self._context.config_root
-
-    @property
-    def _context(self) -> BackupContext:
-        return self._context_lazy_loader.context
 
     def reload_config(self, config: Config) -> None:
         """
         Completely reloads the config.
         """
         logging.info("Reloading config.")
-        self._context_lazy_loader = ContextLazyLoader(config)
+        del self._context
+        self._config = config
         logging.info("Config reloaded.")
 
     def get(self, backup_name: str) -> BackupMetadata:

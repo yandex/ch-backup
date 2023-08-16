@@ -9,4 +9,4 @@ Feature: Commands with shutted down ch server.
     
   Scenario: Version command without clickhouse server
     When we stop clickhouse at clickhousenozk02
-    Then we got a vaild ch-backup version on clickhousenozk02
+    Then we got a valid ch-backup version on clickhousenozk02

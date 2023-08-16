@@ -191,10 +191,10 @@ def step_check_s3_backup_directory(context, node):
     )
 
 
-@then("we got a vaild ch-backup version on {node:w}")
+@then("we got a valid ch-backup version on {node:w}")
 def step_get_ch_backup_version(context, node):
     assert_that(
-        BackupManager(context, node).get_version(),
+        BackupManager(context, node).version(),
         equal_to(context.version),
-        f"Ch-backup version is {BackupManager(context, node).get_version()}, expected {context.version}",
+        f"Ch-backup version is {BackupManager(context, node).version()}, expected {context.version}",
     )
