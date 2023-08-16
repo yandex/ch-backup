@@ -5,12 +5,7 @@ Variables that influence testing behavior are defined here.
 import os
 import random
 
-from tests.integration.modules.utils import generate_random_string, merge
-
-try:
-    from local_configuration import CONF_OVERRIDE
-except ImportError:
-    CONF_OVERRIDE = {}
+from tests.integration.modules.utils import generate_random_string
 
 
 def create():
@@ -49,7 +44,7 @@ def create():
         "password": "password.password.password",
     }
 
-    config = {
+    return {
         "images_dir": "images",
         "staging_dir": "staging",
         "network_name": network_name,
@@ -126,4 +121,3 @@ def create():
             },
         },
     }
-    return merge(config, CONF_OVERRIDE)
