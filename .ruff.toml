@@ -1,0 +1,9 @@
+select = ["E", "F", "W", "A"]
+
+ignore = [
+    "A003",  # "Class attribute is shadowing a Python builtin"
+    "E501",  # "Line too long"
+]
+
+[per-file-ignores]
+"__init__.py" = ["F401"]  # "Unused import"
