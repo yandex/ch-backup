@@ -153,3 +153,36 @@ Feature: Backup & Restore
     """
     1
     """
+
+  Scenario: Overwrite existing table on destination node when schema is mismatched
+    When we drop all databases at clickhouse01
+    And we drop all databases at clickhouse02    
+    And we execute queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.test_table (partition_id Int32, a Int32)
+    ENGINE MergeTree PARTITION BY partition_id ORDER BY (partition_id, a);
+
+    INSERT INTO test_db.test_table SELECT number % 2, number FROM system.numbers LIMIT 100;
+    """
+    And we create clickhouse01 clickhouse backup  
+    And we execute queries on clickhouse02
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.test_table (partition_id Int32, a Int32, b Int32)
+    ENGINE MergeTree PARTITION BY partition_id ORDER BY (partition_id, a, b);
+
+    INSERT INTO test_db.test_table SELECT number % 2, number, number FROM system.numbers LIMIT 100;
+    """
+    And we put following info in "/etc/clickhouse-server/conf.d/max_table_size_to_drop.xml" at clickhouse02
+    """
+    <yandex>
+      <max_table_size_to_drop>1</max_table_size_to_drop>
+    </yandex>
+    """
+    And we execute query on clickhouse02
+    """
+    SYSTEM RELOAD CONFIG
+    """
+    And we restore clickhouse backup #0 to clickhouse02
+    Then clickhouse02 has same schema as clickhouse01

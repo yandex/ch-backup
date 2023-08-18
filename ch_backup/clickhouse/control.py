@@ -4,6 +4,7 @@ Clickhouse-control classes module
 
 import os
 import shutil
+from contextlib import contextmanager, suppress
 from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE  # type: ignore
@@ -510,11 +511,12 @@ class ClickhouseCTL:
         """
         Drop table. If the specified table doesn't exist, do nothing.
         """
-        self._ch_client.query(
-            DROP_TABLE_IF_EXISTS_SQL.format(
-                db_name=escape(table.database), table_name=escape(table.name)
+        with self._force_drop_table():
+            self._ch_client.query(
+                DROP_TABLE_IF_EXISTS_SQL.format(
+                    db_name=escape(table.database), table_name=escape(table.name)
+                )
             )
-        )
 
     def drop_dictionary_if_exists(self, table: Table) -> None:
         """
@@ -530,9 +532,10 @@ class ClickhouseCTL:
         """
         Drop database. If the specified database doesn't exist, do nothing.
         """
-        self._ch_client.query(
-            DROP_DATABASE_IF_EXISTS_SQL.format(db_name=escape(db_name))
-        )
+        with self._force_drop_table():
+            self._ch_client.query(
+                DROP_DATABASE_IF_EXISTS_SQL.format(db_name=escape(db_name))
+            )
 
     def drop_udf(self, udf_name: str) -> None:
         """
@@ -778,6 +781,25 @@ class ClickhouseCTL:
         Reload ClickHouse configuration query.
         """
         self._ch_client.query(RELOAD_CONFIG_SQL, timeout=self._timeout)
+
+    @staticmethod
+    @contextmanager
+    def _force_drop_table():
+        """
+        Set and clear on exit force_drop_table flag.
+
+        If it has been set before then don't touch it.
+        This flag allows to overcome TABLE_SIZE_EXCEEDS_MAX_DROP_SIZE_LIMIT ClickHouse error.
+        """
+        flag_path = Path("/var/lib/clickhouse/flags/force_drop_table")
+
+        flag_path.touch()
+        try:
+            flag_path.chmod(0o666)
+            yield
+        finally:
+            with suppress(FileNotFoundError):
+                flag_path.unlink()
 
 
 def _get_part_checksum(part_path: str) -> str:
