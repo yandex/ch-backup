@@ -180,5 +180,9 @@ Feature: Backup & Restore
       <max_table_size_to_drop>1</max_table_size_to_drop>
     </yandex>
     """
+    And we execute query on clickhouse02
+    """
+    SYSTEM RELOAD CONFIG
+    """
     And we restore clickhouse backup #0 to clickhouse02
     Then clickhouse02 has same schema as clickhouse01
