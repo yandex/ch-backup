@@ -110,11 +110,23 @@ def normalize_create_query(create_query):
     return create_query
 
 
-def version_ge(version1, version2):
-    """Return True if version1 is greater or equal than version2, or False otherwise."""
-    return parse_version(version1) >= parse_version(version2)  # type: ignore
+def version_ge(current_version, comparing_version):
+    """
+    Return True if `current_version` is greater or equal than `comparing_version`, or False otherwise.
+    """
+    # "latest" is greater or equal than any known version
+    if current_version == "latest":
+        return True
+
+    return parse_version(current_version) >= parse_version(comparing_version)  # type: ignore
 
 
-def version_lt(version1, version2):
-    """Return True if version1 is less than version2, or False otherwise."""
-    return parse_version(version1) < parse_version(version2)  # type: ignore
+def version_lt(current_version, comparing_version):
+    """
+    Return True if `current_version` is less than `comparing_version`, or False otherwise.
+    """
+    # "latest" is not less than any known version
+    if current_version == "latest":
+        return False
+
+    return parse_version(current_version) < parse_version(comparing_version)  # type: ignore

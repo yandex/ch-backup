@@ -3,7 +3,7 @@ FROM ubuntu:bionic
 ENV TZ=Europe/Moscow
 ENV CH_TMP_DIR /var/tmp/ch-backup
 
-ARG CLICKHOUSE_VERSION
+ARG CLICKHOUSE_VERSION=latest
 
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && \
     apt-get update -qq && \
@@ -15,7 +15,8 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone &
         locales \
         python3-pip \
         openssh-server \
-        supervisor && \
+        supervisor \
+        less && \
     pip3 install --upgrade pip && \
     pip3 install kazoo && \
     echo 'en_US.UTF-8 UTF-8' > /etc/locale.gen && \
@@ -39,10 +40,17 @@ RUN cd ${CH_TMP_DIR} && \
     mkdir -p /etc/apt/sources.list.d && \
     echo "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg] https://packages.clickhouse.com/deb stable main" | tee /etc/apt/sources.list.d/clickhouse.list && \
     apt-get update -qq && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        clickhouse-common-static=$CLICKHOUSE_VERSION \
-        clickhouse-server=$CLICKHOUSE_VERSION \
-        clickhouse-client=$CLICKHOUSE_VERSION && \
+    if [ "${CLICKHOUSE_VERSION}" = "latest" ]; then \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            clickhouse-server \
+            clickhouse-client \
+            clickhouse-common-static; \
+    else \
+        DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            clickhouse-server=${CLICKHOUSE_VERSION} \
+            clickhouse-client=${CLICKHOUSE_VERSION} \
+            clickhouse-common-static=${CLICKHOUSE_VERSION}; \
+    fi && \
     rm -rf /var/lib/apt/lists/* /var/cache/debconf && \
     apt-get clean
 

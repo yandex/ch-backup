@@ -22,7 +22,6 @@ Feature: Metadata
     Then metadata of clickhouse01 backup #0 contains
     """
     version: {{ version }}
-    ch_version: {{ conf.ch_version }}
     labels:
       environment: testing
       name: test_backup
@@ -41,6 +40,5 @@ Feature: Metadata
     Then metadata of clickhouse01 backup #0 contains
     """
     version: {{ version }}
-    ch_version: {{ conf.ch_version }}
     schema_only: true
     """
