@@ -1,18 +1,17 @@
 export PYTHON?=python3
 export PYTHONIOENCODING?=utf8
-export NO_VENV?=
 export COMPOSE_HTTP_TIMEOUT?=300
 export CLICKHOUSE_VERSION?=latest
 
-ifndef NO_VENV
-  export PATH := venv/bin:${PATH}
-endif
+VENV = .venv
+POETRY_VENV=.poetry
+POETRY=${POETRY_VENV}/bin/poetry
 
 SESSION_FILE=.session_conf.sav
 INSTALL_DIR=$(DESTDIR)/opt/yandex/ch-backup
 
 TEST_ENV=env \
-    PATH=${PATH} \
+    PATH=${VENV}/bin:${PATH} \
     PYTHONIOENCODING=${PYTHONIOENCODING} \
     CLICKHOUSE_VERSION=${CLICKHOUSE_VERSION} \
     COMPOSE_HTTP_TIMEOUT=${COMPOSE_HTTP_TIMEOUT}
@@ -76,7 +75,8 @@ test-integration: build create_env
 
 .PHONY: clean
 clean: clean_env clean_pycache
-	rm -rf venv *.egg-info htmlcov .coverage* .hypothesis .mypy_cache .pytest_cache .install-deps ch_backup/version.txt
+	rm -rf ${VENV} ${POETRY_VENV} venv *.egg-info htmlcov .coverage* .hypothesis .mypy_cache .pytest_cache \
+	     .ruff_cache .install-deps ch_backup/version.txt
 
 .PHONY: clean_pycache
 clean_pycache:
@@ -161,13 +161,25 @@ ch_backup/version.txt:
 
 
 .PHONY: install-deps
-install-deps: .install-deps
+install-deps: install-poetry .venv
 
-.install-deps: requirements.txt requirements-dev.txt
-	if [ -z "${NO_VENV}" ]; then ${PYTHON} -m venv venv; fi
-	${TEST_ENV} pip install --upgrade pip
-	${TEST_ENV} pip install --no-cache-dir --disable-pip-version-check -r requirements.txt -r requirements-dev.txt
-	touch .install-deps
+.venv: poetry.lock
+	${POETRY} install --no-root
+
+
+.PHONY: update-deps
+update-deps: install-poetry
+	${POETRY} update -vv
+
+
+.PHONY: install-poetry
+install-poetry: ${POETRY_VENV}
+
+${POETRY_VENV}:
+	python -m venv ${POETRY_VENV}
+	${POETRY_VENV}/bin/pip install --upgrade pip
+	# Poetry 1.1.15 is the latest version supporting Python 3.6 and this version is incompatible with urllib3 v2.
+	${POETRY_VENV}/bin/pip install "poetry==1.1.15" "urllib3<2"
 
 
 .PHONY: help
@@ -201,5 +213,4 @@ help:
 	@echo "  PYTHON                     Python executable to use (default: \"$(PYTHON)\")."
 	@echo "  PYTEST_ARGS                Arguments to pass to pytest (unit tests)."
 	@echo "  BEHAVE_ARGS                Arguments to pass to behave (integration tests)."
-	@echo "  NO_VENV                    Disable creation of venv if the variable is set to non-empty value."
 	@echo "  CLICKHOUSE_VERSION         ClickHouse version to use in integration tests (default: \"$(CLICKHOUSE_VERSION)\")."

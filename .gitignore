@@ -8,10 +8,12 @@
 .idea
 .install-deps
 .mypy_cache/
+.poetry/
 .pytest_cache/
 .python-version
 .session_conf.sav
 .tox/
+.venv/
 .vscode
 ch_backup/version.txt
 debian/ch-backup*

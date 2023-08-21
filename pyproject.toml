@@ -1,0 +1,80 @@
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "ch-backup"
+version = "1.0.0"
+license = "MIT"
+description = "Backup tool for ClickHouse DBMS."
+
+authors = [
+    "Pavel Perekalov <pperekalov@yandex-team.ru>",
+    "Alexander Burmak <alex-burmak@yandex-team.ru>",
+    "Grigory Pervakov <pervakovg@yandex-team.ru>",
+    "Pavel Kovalenko <jokserfn@yandex-team.ru>",
+    "Dmitry Starov <dstaroff@yandex-team.ru>",
+    "Anton Ivashkin <iantonspb@yandex-team.ru>",
+    "Anatoly Britkov <anatoly32322@yandex-team.ru>",
+    "Evgenii Kopanev <ekopanev@yandex-team.ru>",
+    "Aleksei Filatov <alexfvk@yandex-team.ru>",
+    "Egor Medvedev <e.medvedew@yandex.ru>",
+]
+
+[tool.poetry.dependencies]
+python = "^3.6.2"
+
+requests = ">2.19"
+boto3 = "<1.19"
+botocore = "<1.22"
+psutil = "*"
+PyYAML = "*"
+PyNaCl = "*"
+click = "*"
+cloup = "*"
+humanfriendly = "*"
+tabulate = "*"
+tenacity = "*"
+kazoo = "*"
+xmltodict = "*"
+pypeln = "*"
+
+[tool.poetry.dev-dependencies]
+# linters
+isort = { version = "*", extras = ["pyproject"], python = ">=3.10" }
+black = { version = "*", python = ">=3.10" }
+ruff = { version = "*", python = ">=3.10" }
+pylint = { version = "*", python = ">=3.10" }
+mypy = { version = "*", python = ">=3.10" }
+mypy-boto3-s3 = { version = "*", python = ">=3.10" }
+types-pyyaml = { version = "*", python = ">=3.10" }
+types-dataclasses = { version = "*", python = ">=3.10" }
+types-requests = { version = "*", python = ">=3.10" }
+types-setuptools = { version = "*", python = ">=3.10" }
+types-tabulate = { version = "*", python = ">=3.10" }
+bandit = { version = "*", python = ">=3.10" }
+codespell = { version = "*", python = ">=3.10" }
+tomli = { version = "*", python = ">=3.10" }
+
+# tests
+pytest = { version = "*"}
+PyHamcrest = { version = "*"}
+hypothesis = { version = "<6.32"}
+behave = { version = "*"}
+docker = { version = "<5.0"}
+docker-compose = { version = "<1.28"}
+Jinja2 = { version = "*"}
+deepdiff = { version = "*"}
+
+[tool.isort]
+profile = "black"
+
+[tool.mypy]
+ignore_missing_imports = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+exclude = ['tests/staging']
+
+[tool.codespell]
+skip = 'poetry.lock'
+ignore-words-list = 'sav'
