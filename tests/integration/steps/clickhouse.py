@@ -183,3 +183,13 @@ def step_dirty_enable_replicated_access(context, node):
     )
     assert container.exec_run("supervisorctl restart clickhouse").exit_code == 0
     assert container.exec_run("rm -rf /var/lib/clickhouse/access").exit_code == 0
+
+
+@when("we stop clickhouse at {node:w}")
+def step_stop_clickhouse(context, node):
+    container = get_container(context, node)
+    result = container.exec_run(
+        ["bash", "-c", "supervisorctl stop clickhouse"], user="root"
+    )
+    context.response = result.output.decode().strip()
+    context.exit_code = result.exit_code
