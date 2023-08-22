@@ -194,6 +194,42 @@ Feature: Backup & Clean & Restore
       | num | state             | data_count | link_count   | title        |
     And s3 contains 0 objects
 
+  Scenario: Attempt to delete backup with purge partially does not delete latest creating backup
+    When we create clickhouse01 clickhouse backup
+      """
+      schema_only: True
+      """
+    When we create clickhouse01 clickhouse backup
+      """
+      schema_only: True
+      """
+    When we create clickhouse01 clickhouse backup
+      """
+      schema_only: True
+      """
+    And metadata of clickhouse01 backup #0 was adjusted with
+      """
+      meta:
+          state: creating
+      """
+    And metadata of clickhouse01 backup #1 was adjusted with
+      """
+      meta:
+          state: creating
+      """
+    Then we got the following backups on clickhouse01
+      | num | state    | data_count | link_count | title       |
+      | 0   | creating | 0          | 0          | schema-only |
+      | 1   | creating | 0          | 0          | schema-only |
+      | 2   | created  | 0          | 0          | schema-only |
+    When we delete clickhouse01 clickhouse backup #2
+      """
+      purge_partial: true
+      """
+    Then we got the following backups on clickhouse01
+      | num | state    | data_count | link_count | title       |
+      | 0   | creating | 0          | 0          | schema-only |
+
   Scenario: Attempt to delete non-existent backup with force flag succeeds
     When we delete clickhouse01 clickhouse backup "non_existent_backup"
     """
