@@ -1,12 +1,14 @@
 """
 Multipart uploading to storage stage.
 """
+import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from ch_backup.storage.async_pipeline.base_pipeline.handler import Handler
 from ch_backup.storage.async_pipeline.stages.types import StageType
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
+from ch_backup.util import RateLimiter
 
 
 @dataclass
@@ -79,6 +81,36 @@ class StorageUploadingStage(Handler):
             )
         else:
             self._loader.upload_data(part.data, self._remote_path)
+
+        return part
+
+
+class TrafficLimitingStage(Handler):
+    """
+    Traffic rate limiting stage.
+
+    A bottleneck for controlling the number of uploading chunks to prevent excessive network loading.
+    Based on tocken bucket algorithm.
+    """
+
+    stype = StageType.STORAGE
+
+    def __init__(
+        self,
+        traffic_limit_per_sec: int,
+        update_interval: float = 0.01,
+        get_time_func: Callable = time.time,
+        sleep_func: Callable = time.sleep,
+    ) -> None:
+        self._update_interval = update_interval
+        self._rate_limiter = RateLimiter(
+            limit_per_sec=traffic_limit_per_sec, get_time_func=get_time_func
+        )
+        self._sleep_func = sleep_func
+
+    def __call__(self, part: UploadingPart, index: int) -> UploadingPart:
+        while not self._rate_limiter.grant(len(part.data)):
+            self._sleep_func(self._update_interval)
 
         return part
 

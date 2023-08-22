@@ -369,3 +369,35 @@ def dataclass_from_dict(type_: Type[T], data: dict) -> T:
     """
     class_fields = {f.name for f in data_fields(type_)}
     return type_(**{k: v for k, v in data.items() if k in class_fields})  # type: ignore[call-arg]
+
+
+class RateLimiter:
+    """
+    Rate limiter based on token bucket algorithm.
+    """
+
+    def __init__(self, limit_per_sec: int, get_time_func: Callable = time.time):
+        self._limit_per_sec = limit_per_sec
+        self._get_time_func = get_time_func
+        self._bucket_tokens = self._limit_per_sec
+        self._bucket_last_update = self._get_time_func()
+
+    def grant(self, tokens=1):
+        """
+        Returns True if there's enough tokens in a bucket to grant
+        requrested number of tokens. Otherwise returns False.
+        """
+
+        if self._limit_per_sec == 0:
+            return True
+        current_time = self._get_time_func()
+        lapse = current_time - self._bucket_last_update
+        self._bucket_tokens = min(
+            self._limit_per_sec, self._bucket_tokens + lapse * self._limit_per_sec
+        )
+        if self._bucket_tokens >= tokens:
+            self._bucket_tokens -= tokens
+            self._bucket_last_update = current_time
+            return True
+
+        return False

@@ -26,6 +26,7 @@ from ch_backup.storage.async_pipeline.stages import (
     ReadFilesTarballStage,
     StartMultipartUploadStage,
     StorageUploadingStage,
+    TrafficLimitingStage,
     WriteFilesStage,
     WriteFileStage,
 )
@@ -134,7 +135,8 @@ class PipelineBuilder:
         buffer_size = stage_config["buffer_size"]
         chunk_size = stage_config["chunk_size"]
         queue_size = stage_config["queue_size"]
-
+        traffic_limit_per_sec = stage_config["uploading_traffic_limit"]
+        traffic_limit_retry_time = stage_config["uploading_traffic_limit_retry_time"]
         storage = get_storage_engine(stage_config)
 
         if source_size > chunk_size:
@@ -149,6 +151,12 @@ class PipelineBuilder:
             thread_map(
                 StartMultipartUploadStage(
                     stage_config, chunk_size, storage, remote_path
+                ),
+                maxsize=queue_size,
+            ),
+            thread_map(
+                TrafficLimitingStage(
+                    traffic_limit_per_sec, update_interval=traffic_limit_retry_time
                 ),
                 maxsize=queue_size,
             ),
