@@ -24,8 +24,8 @@ jobs:
       run: make isort
     - name: "lint: black"
       run: make black
-    - name: "lint: flake8"
-      run: make flake8
+    - name: "lint: ruff"
+      run: make ruff
     - name: "lint: pylint"
       run: make pylint
     - name: "lint: mypy"
@@ -48,7 +48,7 @@ jobs:
         - "22.3.20.29"
         - "22.8.20.11"
         - "23.3.8.21"
-        - "23.7.1.2470"
+        - "latest"
     runs-on: ubuntu-${{ matrix.target.ubuntu }}
     steps:
     - uses: actions/checkout@v3

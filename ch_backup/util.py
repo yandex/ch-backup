@@ -401,3 +401,21 @@ class RateLimiter:
             return True
 
         return False
+
+
+# pylint: disable=invalid-name
+class cached_property:
+    """
+    Analogue for functools.cached_property.
+
+    We could use cached_property from functools when the supported version of python would be >= 3.8.
+    """
+
+    def __init__(self, func):
+        self.func = func
+
+    def __get__(self, obj, cls):
+        if obj is None:
+            return self
+        value = obj.__dict__[self.func.__name__] = self.func(obj)
+        return value
