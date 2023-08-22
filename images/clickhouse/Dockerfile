@@ -34,7 +34,7 @@ RUN echo "root:root" | chpasswd && \
 RUN mkdir -p ${CH_TMP_DIR}
 COPY setup.py requirements.txt ${CH_TMP_DIR}/
 
-COPY staging/images/{{instance_name}}/config/clickhouse-keyring.gpg /usr/share/keyrings/clickhouse-keyring.gpg
+COPY staging/images/{{ instance_name }}/config/clickhouse-keyring.gpg /usr/share/keyrings/clickhouse-keyring.gpg
 RUN cd ${CH_TMP_DIR} && \
     pip3 install -r requirements.txt && \
     mkdir -p /etc/apt/sources.list.d && \
@@ -62,7 +62,7 @@ RUN cd ${CH_TMP_DIR} && \
     rm -rf /etc/supervisor && \
     ln --force -s /config/supervisor /etc/supervisor
 
-COPY staging/images/{{instance_name}}/ssl/ ${CH_TMP_DIR}/ssl/
+COPY staging/images/{{ instance_name }}/ssl/ ${CH_TMP_DIR}/ssl/
 RUN openssl genrsa -out ${CH_TMP_DIR}/ssl/server.key 2048 && \
     openssl req -new -key ${CH_TMP_DIR}/ssl/server.key -out ${CH_TMP_DIR}/ssl/server.csr \
         -subj "/CN=localhost" -days 365 -nodes -x509 && \
