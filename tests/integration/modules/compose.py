@@ -182,7 +182,7 @@ def _call_compose(conf: dict, *, command: str, project_name: str = None) -> None
     """
     Execute docker-compose action by invoking `docker-compose`.
     """
-    shell_command = f"docker-compose --file {_config_path(conf)}"
+    shell_command = f"docker compose --file {_config_path(conf)}"
     if project_name:
         shell_command += f" -p {project_name}"
     shell_command += f" {command}"

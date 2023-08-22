@@ -14,9 +14,7 @@ pytest
 PyHamcrest==2.0.0
 hypothesis
 behave
-docker<5.0
-docker-compose<1.28
-websocket-client<1.0  # required for docker-compose<1.28
+docker
 Jinja2
 deepdiff<5.8
 mypy-boto3-s3==1.21.7  # this is the last version that requires typing-extensions<4.0.0
