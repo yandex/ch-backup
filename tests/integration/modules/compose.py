@@ -2,30 +2,14 @@
 Docker Compose interface.
 """
 
-import copy
 import os
-import random
 import shlex
 import subprocess
-from typing import cast
 
 import yaml
 
 from . import utils
 from .typing import ContextT
-
-# Default invariant config
-BASE_CONF = {
-    "version": "2",
-    "networks": {
-        "test_net": {
-            "external": {
-                "name": "{network}",
-            },
-        },
-    },
-    "services": {},
-}
 
 COMPOSE_UP_DOWN_TIMEOUT = 30
 
@@ -35,7 +19,7 @@ def build_images(context: ContextT) -> None:
     """
     Build docker images.
     """
-    _call_compose(context.conf, "build")
+    _call_compose(context.conf, command="build")
 
 
 @utils.env_stage("start", fail=True)
@@ -43,7 +27,11 @@ def startup_containers(context: ContextT) -> None:
     """
     Start up docker containers.
     """
-    _call_compose(context.conf, f"up -d --timeout {COMPOSE_UP_DOWN_TIMEOUT}")
+    _call_compose(
+        context.conf,
+        project_name=_project_name(context.conf),
+        command=f"up -d --timeout {COMPOSE_UP_DOWN_TIMEOUT}",
+    )
 
 
 @utils.env_stage("stop", fail=False)
@@ -51,68 +39,42 @@ def shutdown_containers(context: ContextT) -> None:
     """
     Shutdown and remove docker containers.
     """
-    _call_compose(context.conf, "kill")
-    _call_compose(context.conf, f"down --volumes --timeout {COMPOSE_UP_DOWN_TIMEOUT}")
+    project_name = _project_name(context.conf)
+    _call_compose(context.conf, project_name=project_name, command="kill")
+    _call_compose(
+        context.conf,
+        project_name=project_name,
+        command=f"down --volumes --timeout {COMPOSE_UP_DOWN_TIMEOUT}",
+    )
 
 
 @utils.env_stage("create", fail=True)
 def create_config(context: ContextT) -> None:
     """
-    Generate config file and write it.
+    Generate docker-compose.yml file.
     """
-    compose_conf_path = _get_config_path(context.conf)
-    compose_conf = _generate_compose_config(context.conf)
-    _write_config(compose_conf_path, compose_conf)
+    compose_config = _generate_compose_config(context)
+    _write_compose_config(context, compose_config)
 
 
-def _write_config(path: str, compose_conf: dict) -> None:
-    """
-    Dumps compose config into a file in Yaml format.
-    """
-    catalog_name = os.path.dirname(path)
-    os.makedirs(catalog_name, exist_ok=True)
-    temp_file_path = (
-        f"{catalog_name}/.docker-compose-conftest-{random.randint(0, 100)}.yaml"
-    )
-    with open(temp_file_path, "w", encoding="utf-8") as conf_file:
-        yaml.dump(compose_conf, stream=conf_file, default_flow_style=False, indent=4)
-    try:
-        _validate_config(temp_file_path)
-        os.rename(temp_file_path, path)
-    except subprocess.CalledProcessError as err:
-        raise RuntimeError(f"Unable to write config: validation failed with {err}")
-
-    # Remove config only if validated ok.
-    try:
-        os.unlink(temp_file_path)
-    except FileNotFoundError:
-        pass
-
-
-def _get_config_path(conf: dict) -> str:
-    """
-    Return file path to docker compose config file.
-    """
-    return os.path.join(conf["staging_dir"], "docker-compose.yml")
-
-
-def _validate_config(config_path: str) -> None:
-    """
-    Perform config validation by calling `docker-compose config`
-    """
-    _call_compose_on_config(config_path, "__config_test", "config")
-
-
-def _generate_compose_config(config: dict) -> dict:
+def _generate_compose_config(context: ContextT) -> dict:
     """
     Create docker compose config.
     """
+    config = context.conf
     services = config["services"]
     network_name = config["network_name"]
 
-    compose_conf = cast(dict, copy.deepcopy(BASE_CONF))
-    # Set net name at global scope so containers will be able to reference it.
-    compose_conf["networks"]["test_net"]["external"]["name"] = network_name
+    compose_conf: dict = {
+        "networks": {
+            "test_net": {
+                "name": network_name,
+                "external": True,
+            },
+        },
+        "services": {},
+    }
+
     # Generate service config for each image`s instance
     # Also relative to config file location.
     for name, props in services.items():
@@ -129,6 +91,7 @@ def _generate_compose_config(config: dict) -> dict:
             # hostname or domainname inside of the other config value.
             service_conf = utils.format_object(service_conf, **service_conf)
             compose_conf["services"].update({instance_name: service_conf})
+
     return compose_conf
 
 
@@ -192,17 +155,48 @@ def _generate_service_config(
     return service
 
 
-def _call_compose(conf: dict, action: str) -> None:
-    conf_path = _get_config_path(conf)
-    project_name = conf["network_name"]
+def _write_compose_config(context: ContextT, compose_config: dict) -> None:
+    """
+    Dumps compose config into a file in Yaml format.
+    """
+    config_path = _config_path(context.conf)
 
-    _call_compose_on_config(conf_path, project_name, action)
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+    with open(config_path, "w", encoding="utf-8") as file:
+        yaml.dump(compose_config, stream=file, default_flow_style=False, indent=4)
+
+    try:
+        _validate_config(context)
+    except subprocess.CalledProcessError as err:
+        raise RuntimeError(f"Config validation failed with: {err}")
 
 
-def _call_compose_on_config(conf_path: str, project_name: str, action: str) -> None:
+def _validate_config(context: ContextT) -> None:
+    """
+    Perform config validation by calling `docker-compose config`
+    """
+    _call_compose(context.conf, command="config")
+
+
+def _call_compose(conf: dict, *, command: str, project_name: str = None) -> None:
     """
     Execute docker-compose action by invoking `docker-compose`.
     """
-    compose_cmd = f"docker-compose --file {conf_path} -p {project_name} {action}"
+    shell_command = f"docker-compose --file {_config_path(conf)}"
+    if project_name:
+        shell_command += f" -p {project_name}"
+    shell_command += f" {command}"
+
     # Note: build paths are resolved relative to config file location.
-    subprocess.check_call(shlex.split(compose_cmd))
+    subprocess.check_call(shlex.split(shell_command))
+
+
+def _config_path(config: dict) -> str:
+    """
+    Return file path to docker compose config file.
+    """
+    return os.path.join(config["staging_dir"], "docker-compose.yml")
+
+
+def _project_name(conf):
+    return conf["network_name"]

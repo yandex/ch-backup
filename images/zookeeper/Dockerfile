@@ -1,6 +1,6 @@
 FROM zookeeper:3.7
 
-COPY staging/images/{{instance_name}}/ssl/ /conf/ssl/
+COPY staging/images/{{ instance_name }}/ssl/ /conf/ssl/
 
 RUN openssl genrsa -out /conf/ssl/server.key 2048 && \
     openssl req -new -key /conf/ssl/server.key -out /conf/ssl/server.csr \
@@ -21,4 +21,4 @@ RUN openssl genrsa -out /conf/ssl/server.key 2048 && \
     dpkg-reconfigure ca-certificates && \
     update-ca-certificates
 
-COPY staging/images/{{instance_name}}/zoo.cfg /conf/zoo.cfg
+COPY staging/images/{{ instance_name }}/zoo.cfg /conf/zoo.cfg
