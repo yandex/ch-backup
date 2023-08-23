@@ -6,6 +6,7 @@ from math import ceil
 from pathlib import Path
 from typing import Any, Iterable, List, Sequence, Union
 
+from humanfriendly import parse_size
 from pypeln import utils as pypeln_utils
 from pypeln.thread.api.from_iterable import from_iterable
 
@@ -22,11 +23,11 @@ from ch_backup.storage.async_pipeline.stages import (
     DeleteMultipleStorageStage,
     DownloadStorageStage,
     EncryptStage,
+    RateLimiterStage,
     ReadFileStage,
     ReadFilesTarballStage,
     StartMultipartUploadStage,
     StorageUploadingStage,
-    TrafficLimitingStage,
     WriteFilesStage,
     WriteFileStage,
 )
@@ -135,8 +136,12 @@ class PipelineBuilder:
         buffer_size = stage_config["buffer_size"]
         chunk_size = stage_config["chunk_size"]
         queue_size = stage_config["queue_size"]
-        traffic_limit_per_sec = stage_config["uploading_traffic_limit"]
-        traffic_limit_retry_time = stage_config["uploading_traffic_limit_retry_time"]
+
+        rate_limiter_config = self._config["rate_limiter"]
+
+        max_upload_rate = parse_size(rate_limiter_config["max_upload_rate"])
+        retry_interval = rate_limiter_config["retry_interval"]
+
         storage = get_storage_engine(stage_config)
 
         if source_size > chunk_size:
@@ -155,12 +160,6 @@ class PipelineBuilder:
                 maxsize=queue_size,
             ),
             thread_map(
-                TrafficLimitingStage(
-                    traffic_limit_per_sec, update_interval=traffic_limit_retry_time
-                ),
-                maxsize=queue_size,
-            ),
-            thread_map(
                 StorageUploadingStage(stage_config, storage, remote_path),
                 maxsize=queue_size,
                 workers=stage_config["uploading_threads"],
@@ -172,6 +171,10 @@ class PipelineBuilder:
         ]
 
         self.append(
+            thread_flat_map(
+                RateLimiterStage(max_upload_rate, update_interval=retry_interval),
+                maxsize=queue_size,
+            ),
             thread_flat_map(ChunkingStage(chunk_size, buffer_size), maxsize=queue_size),
             *stages
         )

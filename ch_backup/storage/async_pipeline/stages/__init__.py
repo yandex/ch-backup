@@ -16,5 +16,5 @@ from .storage.multipart_storage_uploading_stage import (
     CompleteMultipartUploadStage,
     StartMultipartUploadStage,
     StorageUploadingStage,
-    TrafficLimitingStage,
 )
+from .storage.rate_limiter_stage import RateLimiterStage
