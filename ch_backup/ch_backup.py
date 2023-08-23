@@ -339,13 +339,15 @@ class ClickhouseBackup:
         found = False
         deleting_backups = []
         retained_backups = []
-        for backup in self._context.backup_layout.get_backups(use_light_meta=True):
+        for i, backup in enumerate(
+            self._context.backup_layout.get_backups(use_light_meta=True)
+        ):
             if backup.name == backup_name:
                 deleting_backups.append(backup)
                 found = True
                 continue
 
-            if purge_partial and backup.state != BackupState.CREATED:
+            if purge_partial and backup.state != BackupState.CREATED and i != 0:
                 deleting_backups.append(backup)
             else:
                 retained_backups.append(backup)
