@@ -19,28 +19,19 @@ class RateLimiterStage(Handler):
     stype = StageType.STORAGE
 
     def __init__(
-        self,
-        traffic_limit_per_sec: int,
-        update_interval: float = 0.01,
+        self, traffic_limit_per_sec: int, retry_interval: float = 0.01
     ) -> None:
-        self._update_interval = update_interval
-        self._rate_limiter = RateLimiter(
-            limit_per_sec=traffic_limit_per_sec,
-        )
+        self._retry_interval = retry_interval
+        self._rate_limiter = RateLimiter(limit_per_sec=traffic_limit_per_sec)
 
     def __call__(self, value: bytes, index: int) -> Iterator[bytes]:
         while len(value) > 0:
-            available_tokens = self._rate_limiter.extract_available_tokens(len(value))
+            available_tokens = self._rate_limiter.extract_tokens(len(value))
 
             pass_bytes = min(available_tokens, len(value))
-            data_to_pass = value[:pass_bytes]
+
+            yield value[:pass_bytes]
+
             value = value[pass_bytes:]
-
-            yield data_to_pass
-
             if len(value) > 0:
-                remaining_time = self._update_interval - (
-                    time.time() - self._rate_limiter.bucket_last_update
-                )
-                if remaining_time > 0:
-                    time.sleep(remaining_time)
+                time.sleep(self._retry_interval)

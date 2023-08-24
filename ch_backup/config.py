@@ -105,7 +105,7 @@ DEFAULT_CONFIG = {
     "rate_limiter": {
         # Upper bound of network loading per second on the uploading stage. (bytes/sec)
         # If the value is 0, then the traffic rate is unlimited.
-        "max_upload_rate": "0 MiB",
+        "max_upload_rate": 0,
         # The wait time for the next attempt upload the chunk to the storage. The value in seconds.
         "retry_interval": 0.01,
     },

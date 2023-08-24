@@ -7,7 +7,7 @@ from typing import Callable
 
 class RateLimiter:
     """
-    Rate limiter based on token bucket algorithm.
+    Rate limiter based on token bucket algorithm without a separate replenishment process.
     """
 
     def __init__(self, limit_per_sec: int, get_time_func: Callable = time.time):
@@ -15,13 +15,6 @@ class RateLimiter:
         self._get_time_func = get_time_func
         self._bucket_tokens = self._limit_per_sec
         self._bucket_last_update = self._get_time_func()
-
-    @property
-    def bucket_last_update(self):
-        """
-        Get time of last bucket update.
-        """
-        return self._bucket_last_update
 
     def _replenish_bucket(self):
         """
@@ -34,7 +27,7 @@ class RateLimiter:
         )
         self._bucket_last_update = current_time
 
-    def extract_available_tokens(self, desired_quantity):
+    def extract_tokens(self, desired_quantity):
         """
         Extract minimum from available in bucket and wanted number of tokens from the bucket.
         """
@@ -44,14 +37,13 @@ class RateLimiter:
         self._replenish_bucket()
         extracted = min(desired_quantity, self._bucket_tokens)
 
-        self._bucket_last_update = self._get_time_func()
         self._bucket_tokens -= extracted
         return extracted
 
     def grant(self, tokens=1):
         """
-        Returns True if there's enough tokens in a bucket to grant
-        requrested number of tokens. Otherwise returns False.
+        If there's enough tokens in a bucket to grant
+        requrested number of tokens extract them and return True. Otherwise return False.
         """
 
         if self._limit_per_sec == 0:
@@ -59,6 +51,7 @@ class RateLimiter:
         self._replenish_bucket()
 
         if self._bucket_tokens >= tokens:
+            self._bucket_tokens -= tokens
             return True
 
         return False

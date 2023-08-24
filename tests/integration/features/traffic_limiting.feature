@@ -12,7 +12,7 @@
    Given ch-backup configuration on clickhouse01
     """
     rate_limiter:
-      max_upload_rate: "<rate>"
+      max_upload_rate: <rate>
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
@@ -20,12 +20,14 @@
       | 0   | created  | 4          | 0            | shared        |
 
     When we restore clickhouse backup #0 to clickhouse02
-    And we restart clickhouse on clickhouse02
     Given a working clickhouse on clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
     Examples:
       | rate              |
-      | 0 bytes           |
-      | 5 MB              |
-      | 16 MB             |
+      # unlimited
+      | 0                 |
+      #  5MB
+      | 5242880           |
+      # 16 MB
+      | 16777216          |

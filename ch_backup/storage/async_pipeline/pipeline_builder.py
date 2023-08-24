@@ -6,7 +6,6 @@ from math import ceil
 from pathlib import Path
 from typing import Any, Iterable, List, Sequence, Union
 
-from humanfriendly import parse_size
 from pypeln import utils as pypeln_utils
 from pypeln.thread.api.from_iterable import from_iterable
 
@@ -139,7 +138,7 @@ class PipelineBuilder:
 
         rate_limiter_config = self._config["rate_limiter"]
 
-        max_upload_rate = parse_size(rate_limiter_config["max_upload_rate"])
+        max_upload_rate = rate_limiter_config["max_upload_rate"]
         retry_interval = rate_limiter_config["retry_interval"]
 
         storage = get_storage_engine(stage_config)
@@ -172,7 +171,7 @@ class PipelineBuilder:
 
         self.append(
             thread_flat_map(
-                RateLimiterStage(max_upload_rate, update_interval=retry_interval),
+                RateLimiterStage(max_upload_rate, retry_interval),
                 maxsize=queue_size,
             ),
             thread_flat_map(ChunkingStage(chunk_size, buffer_size), maxsize=queue_size),
