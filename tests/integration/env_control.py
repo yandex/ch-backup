@@ -14,9 +14,8 @@ from tests.integration.modules import compose, docker, minio, templates
 SESSION_STATE_CONF = ".session_conf.sav"
 STAGES = {
     "create": [
-        docker.prep_images,
         compose.create_config,
-        templates.render_configs,
+        templates.render_docker_configs,
         compose.build_images,
     ],
     "start": [
@@ -26,9 +25,8 @@ STAGES = {
         minio.create_s3_buckets,
     ],
     "update": [
-        docker.prep_images,
         compose.create_config,
-        templates.render_configs,
+        templates.render_docker_configs,
     ],
     "restart": [
         compose.shutdown_containers,
