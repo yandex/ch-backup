@@ -72,6 +72,7 @@ def create():
                 "depends_on": ["minio", "proxy", "proxy-api", "zookeeper"],
                 "external_links": [f'{s3["host"]}:minio', f'{zk["uri"]}:zookeeper'],
                 "args": {
+                    "PYTHON_VERSION": "$PYTHON_VERSION",
                     "CLICKHOUSE_VERSION": "$CLICKHOUSE_VERSION",
                 },
             },

@@ -36,28 +36,39 @@ jobs:
       run: make bandit
 
   test:
+    name: test (Python ${{ matrix.python }}, ClickHouse ${{ matrix.clickhouse }})
     needs: lint
     strategy:
       fail-fast: false
       matrix:
-        target:
+        include:
         - python: "3.6"
-          ubuntu: "20.04"
+          clickhouse: "latest"
+        - python: "3.7"
+          clickhouse: "latest"
+        - python: "3.8"
+          clickhouse: "latest"
+        - python: "3.9"
+          clickhouse: "latest"
         - python: "3.10"
-          ubuntu: "latest"
-        clickhouse:
-        - "21.8.15.7"
-        - "22.3.20.29"
-        - "22.8.21.38"
-        - "23.3.11.5"
-        - "latest"
-    runs-on: ubuntu-${{ matrix.target.ubuntu }}
+          clickhouse: "21.8.15.7"
+        - python: "3.10"
+          clickhouse: "22.3.20.29"
+        - python: "3.10"
+          clickhouse: "22.8.21.38"
+        - python: "3.10"
+          clickhouse: "23.3.11.5"
+        - python: "3.10"
+          clickhouse: "latest"
+        - python: "3.11"
+          clickhouse: "latest"
+    runs-on: ubuntu-20.04
     steps:
     - uses: actions/checkout@v3
-    - name: set up python ${{ matrix.target.python }}
+    - name: set up python ${{ matrix.python }}
       uses: actions/setup-python@v4
       with:
-        python-version: ${{ matrix.target.python }}
+        python-version: ${{ matrix.python }}
     - name: run unit tests
       run: make test-unit
     - name: run integration tests
@@ -65,6 +76,6 @@ jobs:
     - uses: actions/upload-artifact@v3
       if: ${{ failure() }}
       with:
-        name: integration-test-logs-py${{ matrix.target.python }}-clickhouse-${{ matrix.clickhouse }}
+        name: integration-test-logs-py${{ matrix.python }}-clickhouse-${{ matrix.clickhouse }}
         path: staging/logs/
         if-no-files-found: ignore
