@@ -1,7 +1,7 @@
 """
 ZooKeeper client calls
 """
-
+import logging
 from typing import List, Optional
 
 from kazoo.client import KazooClient
@@ -59,6 +59,9 @@ def get_children_list(context: ContextT, node: str, zk_path: str) -> Optional[Li
 
 
 def _get_zookeeper_client(context: ContextT, node: str) -> KazooClient:
+    # disable logging
+    logging.getLogger("kazoo").setLevel(logging.CRITICAL)
+
     zk_container = get_container(context, node)
     host, port = get_exposed_port(zk_container, 2181)
     return KazooClient(f"{host}:{port}")
