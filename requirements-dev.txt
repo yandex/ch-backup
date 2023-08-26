@@ -1,24 +1,22 @@
-isort
-black
-ruff; python_version >="3.7"
-pep8
-pylint
-mypy==0.910
-types-PyYAML
-types-dataclasses==0.6.6
-types-requests<2.27
-types-setuptools
-types-tabulate
-bandit
+isort;              python_version >="3.8"
+black;              python_version >="3.8"
+ruff;               python_version >="3.8"
+pylint;             python_version >="3.8"
+mypy==1.5.1;        python_version >="3.8"
+mypy-boto3-s3;      python_version >="3.8"
+types-PyYAML;       python_version >="3.8"
+types-dataclasses;  python_version >="3.8"
+types-requests;     python_version >="3.8"
+types-setuptools;   python_version >="3.8"
+types-tabulate;     python_version >="3.8"
+bandit;             python_version >="3.8"
+codespell;          python_version >="3.8"
 pytest
-PyHamcrest==2.0.0
+PyHamcrest
 hypothesis
 behave
 docker<5.0
 docker-compose<1.28
 websocket-client<1.0  # required for docker-compose<1.28
 Jinja2
-deepdiff<5.8
-mypy-boto3-s3==1.21.7  # this is the last version that requires typing-extensions<4.0.0
-codespell; python_version >="3.7"
-tomli; python_version >="3.7"
+deepdiff
