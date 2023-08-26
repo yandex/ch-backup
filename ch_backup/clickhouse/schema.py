@@ -185,7 +185,7 @@ def _add_uuid(table: Table, inner_uuid: str = None) -> None:
     if is_view(table.engine):
         inner_uuid_clause = f"TO INNER UUID '{inner_uuid}'" if inner_uuid else ""
         table.create_statement = re.sub(
-            f"^(?P<statemet>CREATE|ATTACH) (?P<view_type>((MATERIALIZED|LIVE) )?VIEW) "
+            f"^(?P<statement>CREATE|ATTACH) (?P<view_type>((MATERIALIZED|LIVE) )?VIEW) "
             f"(?P<view_name>`?{table.database}`?.`?{table.name}`?) ",
             f"\\g<statement> \\g<view_type> \\g<view_name> UUID '{table.uuid}' {inner_uuid_clause} ",
             table.create_statement,

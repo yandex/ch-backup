@@ -1,5 +1,5 @@
 """
-Management of partical backup or restore sources.
+Management of partial backup or restore sources.
 """
 
 from dataclasses import dataclass
