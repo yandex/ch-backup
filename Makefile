@@ -27,7 +27,7 @@ build: install-deps ch_backup/version.txt
 all: build lint test-unit test-integration
 
 .PHONY: lint
-lint: install-deps isort black ruff pylint mypy bandit
+lint: install-deps isort black codespell ruff pylint mypy bandit
 
 .PHONY: isort
 isort: install-deps
@@ -36,6 +36,14 @@ isort: install-deps
 .PHONY: black
 black: install-deps
 	${TEST_ENV} black --check --diff .
+
+.PHONY: codespell
+codespell: install-deps
+	${TEST_ENV} codespell
+
+.PHONY: fix-codespell-errors
+fix-codespell-errors: install-deps
+	${TEST_ENV} codespell -w
 
 .PHONY: ruff
 ruff: install-deps
@@ -167,11 +175,12 @@ help:
 	@echo "Targets:"
 	@echo "  build (default)            Build project. It installs dependencies and generates version.txt."
 	@echo "  all                        Alias for \"build lint test-unit test-integration\"."
-	@echo "  lint                       Run all linter tools. Alias for \"isort black ruff pylint mypy bandit\"."
+	@echo "  lint                       Run all linter tools. Alias for \"isort black codespell ruff pylint mypy bandit\"."
 	@echo "  test-unit                  Run unit tests."
 	@echo "  test-integration           Run integration tests."
 	@echo "  isort                      Perform isort checks."
 	@echo "  black                      Perform black checks."
+	@echo "  codespell                  Perform codespell checks."
 	@echo "  ruff                       Perform ruff checks."
 	@echo "  pylint                     Perform pylint checks."
 	@echo "  mypy                       Perform mypy checks.."
