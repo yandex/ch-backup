@@ -703,39 +703,6 @@ def restore_command(
     )
 
 
-@command(name="fix-s3-oplog")
-@option(
-    "--cloud-storage-source-bucket",
-    type=str,
-    help="Source bucket name to restore cloud storage data.",
-)
-@option(
-    "--cloud-storage-source-path",
-    type=str,
-    help="Source path to restore cloud storage data.",
-)
-@option("--source-cluster-id", type=str, help="Source cluster ID.")
-@option("--shard", type=str, default="shard1", help="Shard name.")
-@option("--dryrun", is_flag=True, default=False, help="Do not perform any actions.")
-def fix_s3_oplog_command(
-    _ctx: Context,
-    ch_backup: ClickhouseBackup,
-    cloud_storage_source_bucket: str = None,
-    cloud_storage_source_path: str = None,
-    source_cluster_id: str = None,
-    shard: str = "shard1",
-    dryrun: bool = False,
-) -> None:
-    """Fix S3 operations log."""
-    ch_backup.fix_s3_oplog(
-        source_cluster_id,
-        shard,
-        cloud_storage_source_bucket,
-        cloud_storage_source_path,
-        dryrun,
-    )
-
-
 @command(name="restore-access-control")  # type: ignore
 @argument("name", metavar="BACKUP")
 def restore_access_control_command(
