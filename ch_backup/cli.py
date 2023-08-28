@@ -596,11 +596,6 @@ def backup_command(
         "--cloud-storage-source-endpoint", type=str, help="Endpoint for source bucket."
     ),
     option(
-        "--cloud-storage-latest",
-        is_flag=True,
-        help=f'Forces to use {style("revision=0", fg=Color.bright_green)} to cloud storage.',
-    ),
-    option(
         "--skip-cloud-storage",
         is_flag=True,
         help="Forces to skip restoring data on cloud storage.",
@@ -664,7 +659,6 @@ def restore_command(
     cloud_storage_source_bucket: str = None,
     cloud_storage_source_path: str = None,
     cloud_storage_source_endpoint: str = None,
-    cloud_storage_latest: bool = False,
     skip_cloud_storage: bool = False,
     clean_zookeeper: bool = False,
     keep_going: bool = False,
@@ -703,7 +697,6 @@ def restore_command(
         cloud_storage_source_bucket=cloud_storage_source_bucket,
         cloud_storage_source_path=cloud_storage_source_path,
         cloud_storage_source_endpoint=cloud_storage_source_endpoint,
-        cloud_storage_latest=cloud_storage_latest,
         skip_cloud_storage=skip_cloud_storage,
         clean_zookeeper=clean_zookeeper,
         keep_going=keep_going,

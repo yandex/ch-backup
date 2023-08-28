@@ -221,7 +221,6 @@ class ClickhouseBackup:
         cloud_storage_source_bucket: str = None,
         cloud_storage_source_path: str = None,
         cloud_storage_source_endpoint: str = None,
-        cloud_storage_latest: bool = False,
         skip_cloud_storage: bool = False,
         clean_zookeeper: bool = False,
         keep_going: bool = False,
@@ -237,10 +236,7 @@ class ClickhouseBackup:
             and not sources.schema_only
             and not skip_cloud_storage
         ):
-            if (
-                self._context.backup_meta.has_s3_data()
-                or self._context.backup_meta.cloud_storage.enabled
-            ):
+            if self._context.backup_meta.cloud_storage.enabled:
                 raise ClickhouseBackupError(
                     "Cloud storage source bucket must be set if backup has data on S3 disks"
                 )
@@ -297,7 +293,6 @@ class ClickhouseBackup:
                 replica_name=replica_name,
                 cloud_storage_source_bucket=cloud_storage_source_bucket,
                 cloud_storage_source_path=cloud_storage_source_path,
-                cloud_storage_latest=cloud_storage_latest,
                 cloud_storage_source_endpoint=cloud_storage_source_endpoint,
                 skip_cloud_storage=skip_cloud_storage,
                 clean_zookeeper=clean_zookeeper,
@@ -514,7 +509,6 @@ class ClickhouseBackup:
         cloud_storage_source_bucket: Optional[str] = None,
         cloud_storage_source_path: Optional[str] = None,
         cloud_storage_source_endpoint: Optional[str] = None,
-        cloud_storage_latest: bool = False,
         skip_cloud_storage: bool = False,
         clean_zookeeper: bool = False,
         keep_going: bool = False,
@@ -553,7 +547,6 @@ class ClickhouseBackup:
                 cloud_storage_source_bucket=cloud_storage_source_bucket,
                 cloud_storage_source_path=cloud_storage_source_path,
                 cloud_storage_source_endpoint=cloud_storage_source_endpoint,
-                cloud_storage_latest=cloud_storage_latest,
                 skip_cloud_storage=skip_cloud_storage,
                 clean_zookeeper=clean_zookeeper,
                 keep_going=keep_going,
