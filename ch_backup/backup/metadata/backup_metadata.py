@@ -172,7 +172,7 @@ class BackupMetadata:
             backup.cloud_storage = CloudStorageMetadata.load(
                 data.get("cloud_storage", {})
             )
-            backup.start_time = cls._load_time(meta, "start_time")
+            backup.start_time = cls._load_time(meta, "start_time")  # type: ignore[assignment]
             backup.end_time = cls._load_time(meta, "end_time")
             backup.size = meta["bytes"]
             backup.real_size = meta["real_bytes"]
