@@ -43,7 +43,7 @@ class RateLimiter:
     def grant(self, tokens=1):
         """
         If there's enough tokens in a bucket to grant
-        requrested number of tokens extract them and return True. Otherwise return False.
+        requested number of tokens extract them and return True. Otherwise return False.
         """
 
         if self._limit_per_sec == 0:

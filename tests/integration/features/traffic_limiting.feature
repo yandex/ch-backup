@@ -8,7 +8,7 @@
     And clickhouse on clickhouse01 has test schema
     And clickhouse01 has test clickhouse data test1
   
-  Scenario Outline: Test restore sources setted traffic rate limit.
+  Scenario Outline: Test restore sources set traffic rate limit.
    Given ch-backup configuration on clickhouse01
     """
     rate_limiter:
