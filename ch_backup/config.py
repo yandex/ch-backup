@@ -103,7 +103,11 @@ DEFAULT_CONFIG = {
         "queue_size": 10,
     },
     "rate_limiter": {
-        # Upper bound of network loading per second on the uploading stage. (bytes/sec)
+        # Upper bound of network loading per second on the uploading stage for each worker. (bytes/sec)
+        # Example: for following conf:
+        #          workers: 4
+        #          max_upload_rate: 100
+        #          Total upload rate = 400 bytes/sec.
         # If the value is 0, then the traffic rate is unlimited.
         "max_upload_rate": 0,
         # The wait time for the next attempt upload the chunk to the storage. The value in seconds.
