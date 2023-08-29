@@ -19,4 +19,5 @@ features/single_table.feature
 features/ssl_support.feature
 features/table_engines.feature
 features/udf_support.feature
+features/traffic_limiting.feature
 features/backup_misc_commands.feature
