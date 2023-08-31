@@ -21,3 +21,4 @@ features/table_engines.feature
 features/udf_support.feature
 features/backup_misc_commands.feature
 features/lock.feature
+features/traffic_limiting.feature

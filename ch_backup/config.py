@@ -102,6 +102,17 @@ DEFAULT_CONFIG = {
         # The maximum number of objects the stage's input queue can hold simultaneously, `0`is unbounded
         "queue_size": 10,
     },
+    "rate_limiter": {
+        # Upper bound of network loading per second on the uploading stage for each worker. (bytes/sec)
+        # Example: for following conf:
+        #          workers: 4
+        #          max_upload_rate: 100
+        #          Total upload rate = 400 bytes/sec.
+        # If the value is 0, then the traffic rate is unlimited.
+        "max_upload_rate": 0,
+        # The wait time for the next attempt upload the chunk to the storage. The value in seconds.
+        "retry_interval": 0.01,
+    },
     # Same structure as 'storage' section, but for cloud storage
     "cloud_storage": {
         "encryption": True,
