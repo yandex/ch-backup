@@ -13,16 +13,17 @@ Feature: Lock
         skip_lock_for_schema_only:
             backup: true
     lock:
-        zk_flock: false
-        flock: true
-        flock_path: /tmp/flock.lock
+      flock: false
+      zk_flock: true
+      zk_flock_path: /ch_backup/zk_flock_path
     """
-    When we create filesystem lock on clickhouse01 with path /tmp/flock.lock
+    When we acquire zookeeper lock on zookeeper01 with path /ch_backup/zk_flock_path
     And we trying create clickhouse01 clickhouse backup
     """
     schema_only: true
     """
+    And we release zookeeper lock on zookeeper01 with path /ch_backup/zk_flock_path
+
     Then we got the following backups on clickhouse01
       | num | state   | schema_only |
       | 0   | created | True        |
-    And we delete filesystem lock on clickhouse01 with path /tmp/flock.lock

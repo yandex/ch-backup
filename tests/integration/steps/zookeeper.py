@@ -4,8 +4,10 @@ Steps for interacting with ZooKeeper.
 from behave import given, then, when
 from hamcrest import assert_that, has_length
 from tests.integration.modules.zookeeper import (
+    acquire_zookeeper_lock,
     get_children_list,
     initialize_zookeeper_roots,
+    release_zookeeper_lock,
     write_znode,
 )
 
@@ -44,3 +46,13 @@ def step_zk_list_len(context, length):
         else context.response.split(";")
     )
     assert_that(response, has_length(length))
+
+
+@when("we acquire zookeeper lock on {node:w} with path {zk_lock_path}")
+def step_acquire_zookeeper_lock(context, node, zk_lock_path):
+    acquire_zookeeper_lock(context, node, zk_lock_path)
+
+
+@when("we release zookeeper lock on {node:w} with path {zk_lock_path}")
+def step_release_zookeeper_lock(context, node, zk_lock_path):
+    release_zookeeper_lock(context, node, zk_lock_path)

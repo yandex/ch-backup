@@ -3,7 +3,7 @@ Lock manager logic
 """
 import os
 import sys
-from fcntl import LOCK_NB, LOCK_SH, LOCK_UN, flock
+from fcntl import LOCK_SH, flock
 from types import TracebackType
 from typing import IO, Optional, Type
 
@@ -79,7 +79,6 @@ class LockManager:
             return
 
         if self._lock_conf.get("flock"):
-            flock(self._fd, LOCK_UN)
             os.close(self._fd)
         if self._zk_client and self._zk_lock is not None:
             self._zk_lock.release()
@@ -94,11 +93,7 @@ class LockManager:
                 pass
         self._file = open(self._process_lockfile_path, "r", encoding="utf-8")
         self._fd = self._file.fileno()
-
-        try:
-            flock(self._fd, LOCK_SH | LOCK_NB)
-        except Exception:
-            sys.exit(self._exitcode)
+        flock(self._fd, LOCK_SH)
 
     def _zk_flock(self) -> None:
         """
