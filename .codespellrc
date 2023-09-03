@@ -1,3 +1,3 @@
 [codespell]
-skip = venv*
+skip = staging,venv*
 ignore-words-list = sav
