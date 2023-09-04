@@ -174,7 +174,9 @@ GET_MACROS_SQL = strip_query(
 
 GET_ACCESS_CONTROL_OBJECTS_SQL = strip_query(
     """
-    SELECT id, name FROM system.{type} WHERE storage='disk' OR storage='local directory' OR storage='replicated'
+    SELECT id, name
+    FROM system.{type}
+    WHERE storage IN ('disk', 'local directory', 'local_directory', 'replicated')
     FORMAT JSON
 """
 )
