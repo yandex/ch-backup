@@ -42,6 +42,17 @@ def write_znode(context: ContextT, node: str, znode: str, data: bytes) -> None:
     zk.stop()
 
 
+def delete_znode(context: ContextT, node: str, znode: str) -> None:
+    """
+    delete specified zookeeper node
+    """
+    zk = _get_zookeeper_client(context, node)
+    zk.start()
+
+    zk.delete(znode)
+    zk.stop()
+
+
 def get_children_list(context: ContextT, node: str, zk_path: str) -> Optional[List]:
     zk = _get_zookeeper_client(context, node)
     zk_config = context.conf.get("zk", {})
