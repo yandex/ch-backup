@@ -118,11 +118,6 @@ def step_backup_metadata_absent(context, node, backup_id):
     assert_that(backup.meta, not has_entries(expected_meta))
 
 
-@then("we got no backups on {node:w}")
-def step_no_backups(context, node):
-    step_check_backups_conditions(context, node)
-
-
 @then("we got the following backups on {node:w}")
 def step_check_backups_conditions(context, node):
     ch_backup = BackupManager(context, node)
