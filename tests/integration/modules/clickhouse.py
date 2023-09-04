@@ -28,7 +28,7 @@ ACCESS_TYPES = [
 ]
 ACCESS_LIST_QUERY = """
 SELECT name
-FROM system.{type} WHERE storage='disk' or storage='local directory' or storage='replicated'
+FROM system.{type} WHERE storage IN ('disk', 'local directory', 'local_directory', 'replicated')
 FORMAT JSON
 """
 
