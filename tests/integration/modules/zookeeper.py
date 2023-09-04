@@ -69,22 +69,6 @@ def get_children_list(context: ContextT, node: str, zk_path: str) -> Optional[Li
         zk.stop()
 
 
-def acquire_zookeeper_lock(context: ContextT, node: str, zk_lock_path: str) -> None:
-    zk = _get_zookeeper_client(context, node)
-    zk.start()
-    if not zk.exists(zk_lock_path):
-        zk.create(zk_lock_path, makepath=True)
-    zk_lock = zk.Lock(zk_lock_path)
-    zk_lock.acquire()
-
-
-def release_zookeeper_lock(context: ContextT, node: str, zk_lock_path: str) -> None:
-    zk = _get_zookeeper_client(context, node)
-    zk_lock = zk.Lock(zk_lock_path)
-    zk_lock.release()
-    zk.stop()
-
-
 def _get_zookeeper_client(context: ContextT, node: str) -> KazooClient:
     # disable logging
     logging.getLogger("kazoo").setLevel(logging.CRITICAL)
