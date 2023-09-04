@@ -27,7 +27,7 @@ build: install-deps ch_backup/version.txt
 all: build lint test-unit test-integration
 
 .PHONY: lint
-lint: install-deps isort black ruff pylint mypy bandit
+lint: install-deps isort black codespell ruff pylint mypy bandit
 
 .PHONY: isort
 isort: install-deps
@@ -36,6 +36,14 @@ isort: install-deps
 .PHONY: black
 black: install-deps
 	${TEST_ENV} black --check --diff .
+
+.PHONY: codespell
+codespell: install-deps
+	${TEST_ENV} codespell
+
+.PHONY: fix-codespell-errors
+fix-codespell-errors: install-deps
+	${TEST_ENV} codespell -w
 
 .PHONY: ruff
 ruff: install-deps
@@ -61,17 +69,17 @@ test-unit: build
 
 
 .PHONY: test-integration
-test-integration: build create_env
+test-integration: build create-env
 	rm -rf staging/logs
 	${TEST_ENV} behave --show-timings --stop -D skip_setup $(BEHAVE_ARGS) @tests/integration/ch_backup.featureset
 
 
 .PHONY: clean
-clean: clean_env clean_pycache
+clean: clean-env clean-pycache
 	rm -rf venv *.egg-info htmlcov .coverage* .hypothesis .mypy_cache .pytest_cache .install-deps ch_backup/version.txt
 
-.PHONY: clean_pycache
-clean_pycache:
+.PHONY: clean-pycache
+clean-pycache:
 	find . -name __pycache__ -type d -exec rm -rf {} +
 
 
@@ -102,43 +110,43 @@ uninstall:
 
 
 .PHONY: debuild
-debuild: debian_changelog
+debuild: debian-changelog
 	cd debian && \
 	    debuild --check-dirname-level 0 --no-tgz-check --preserve-env -uc -us
 
-.PHONY: debian_changelog
-debian_changelog: build
+.PHONY: debian-changelog
+debian-changelog: build
 	@rm -f debian/changelog
 	dch --create --package ch-backup --distribution stable \
 	    -v `cat ch_backup/version.txt` \
 	    "Yandex autobuild"
 
 
-.PHONY: clean_debuild
-clean_debuild: clean
+.PHONY: clean-debuild
+clean-debuild: clean
 	rm -rf debian/{changelog,files,ch-backup*}
 	rm -f ../ch-backup_*{build,changes,deb,dsc,tar.gz}
 
 
-.PHONY: create_env
-create_env: build ${SESSION_FILE}
+.PHONY: create-env
+create-env: build ${SESSION_FILE}
 
 ${SESSION_FILE}:
 	${INTEGRATION_TEST_TOOL} create
 
 
-.PHONY: start_env
-start_env: create_env
+.PHONY: start-env
+start-env: create-env
 	${INTEGRATION_TEST_TOOL} start
 
 
-.PHONY: stop_env
-stop_env:
+.PHONY: stop-env
+stop-env:
 	test -f ${SESSION_FILE} && ${INTEGRATION_TEST_TOOL} stop || true
 
 
-.PHONY: clean_env
-clean_env: stop_env
+.PHONY: clean-env
+clean-env: stop-env
 	rm -rf staging ${SESSION_FILE}
 
 
@@ -167,22 +175,23 @@ help:
 	@echo "Targets:"
 	@echo "  build (default)            Build project. It installs dependencies and generates version.txt."
 	@echo "  all                        Alias for \"build lint test-unit test-integration\"."
-	@echo "  lint                       Run all linter tools. Alias for \"isort black ruff pylint mypy bandit\"."
+	@echo "  lint                       Run all linter tools. Alias for \"isort black codespell ruff pylint mypy bandit\"."
 	@echo "  test-unit                  Run unit tests."
 	@echo "  test-integration           Run integration tests."
 	@echo "  isort                      Perform isort checks."
 	@echo "  black                      Perform black checks."
+	@echo "  codespell                  Perform codespell checks."
 	@echo "  ruff                       Perform ruff checks."
 	@echo "  pylint                     Perform pylint checks."
 	@echo "  mypy                       Perform mypy checks.."
 	@echo "  bandit                     Perform bandit checks."
 	@echo "  clean                      Clean up build and test artifacts."
-	@echo "  create_env                 Create test environment."
-	@echo "  start_env                  Start test environment runtime."
-	@echo "  stop_env                   Stop test environment runtime."
-	@echo "  clean_env                  Clean up test environment."
+	@echo "  create-env                 Create test environment."
+	@echo "  start-env                  Start test environment runtime."
+	@echo "  stop-env                   Stop test environment runtime."
+	@echo "  clean-env                  Clean up test environment."
 	@echo "  debuild                    Build Debian package."
-	@echo "  clean_debuild              Clean up build and test artifacts including ones produced by"
+	@echo "  clean-debuild              Clean up build and test artifacts including ones produced by"
 	@echo "                             debuild target outside the project worksapce."
 	@echo "  format                     Re-format source code to conform style settings enforced by"
 	@echo "                             isort and black tools."

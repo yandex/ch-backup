@@ -60,7 +60,6 @@ class BackupMetadata:
         self.size = 0
         self.real_size = 0
         self.schema_only = schema_only
-        self.s3_revisions: Dict[str, int] = {}  # S3 disk name -> revision counter.
         self.cloud_storage: CloudStorageMetadata = CloudStorageMetadata()
 
         self._state = BackupState.CREATING
@@ -130,7 +129,6 @@ class BackupMetadata:
                 # to replace 'date_fmt' with 'time_format'.
                 "date_fmt": self.time_format,
                 "schema_only": self.schema_only,
-                "s3_revisions": self.s3_revisions,
             },
         }
 
@@ -172,7 +170,7 @@ class BackupMetadata:
             backup.cloud_storage = CloudStorageMetadata.load(
                 data.get("cloud_storage", {})
             )
-            backup.start_time = cls._load_time(meta, "start_time")
+            backup.start_time = cls._load_time(meta, "start_time")  # type: ignore[assignment]
             backup.end_time = cls._load_time(meta, "end_time")
             backup.size = meta["bytes"]
             backup.real_size = meta["real_bytes"]
@@ -181,7 +179,6 @@ class BackupMetadata:
             backup.labels = meta["labels"]
             backup.version = meta["version"]
             backup.schema_only = meta.get("schema_only", False)
-            backup.s3_revisions = meta.get("s3_revisions", {})
             # TODO remove after a several weeks/months, when backups rotated
             backup._user_defined_functions = data.get(
                 "user_defined_functions", meta.get("user_defined_functions", [])
@@ -334,13 +331,6 @@ class BackupMetadata:
         Build and add access control objects to backup metadata.
         """
         self._access_control = AccessControlMetadata.from_ch_objects(objects)
-
-    def has_s3_data(self) -> bool:
-        """
-        Return True if backup has data on S3 disks.
-        TODO: could be removed after denial of storing S3 revisions
-        """
-        return len(self.s3_revisions) > 0
 
     def get_sanitized_name(self) -> str:
         """

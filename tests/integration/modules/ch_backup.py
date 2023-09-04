@@ -307,7 +307,6 @@ class BackupManager:
         replica_name: str = None,
         cloud_storage_source_bucket: str = None,
         cloud_storage_source_path: str = None,
-        cloud_storage_latest: bool = False,
         access: bool = None,
         data: bool = None,
         schema: bool = None,
@@ -335,8 +334,6 @@ class BackupManager:
             )
         if cloud_storage_source_path:
             options.append(f"--cloud-storage-source-path {cloud_storage_source_path}")
-        if cloud_storage_latest:
-            options.append("--cloud-storage-latest")
         if access:
             options.append("--access")
         if data:

@@ -228,7 +228,6 @@ Feature: Backup & Restore multiple disks and S3
     """
     cloud_storage_source_bucket: 'cloud-storage-01'
     cloud_storage_source_path: 'data'
-    cloud_storage_latest: true
     """
     And we execute query on clickhouse02
     """

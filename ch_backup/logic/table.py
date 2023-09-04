@@ -169,7 +169,6 @@ class TableBackup(BackupManager):
         cloud_storage_source_bucket: Optional[str],
         cloud_storage_source_path: Optional[str],
         cloud_storage_source_endpoint: Optional[str],
-        cloud_storage_latest: bool,
         skip_cloud_storage: bool,
         clean_zookeeper: bool,
         keep_going: bool,
@@ -246,28 +245,6 @@ class TableBackup(BackupManager):
                 "Skipping restoring of table data as --schema-only flag passed"
             )
             return
-
-        # Restore data stored on S3 disks.
-        if context.backup_meta.has_s3_data() and not skip_cloud_storage:
-            cloud_storage_source_bucket = (
-                cloud_storage_source_bucket if cloud_storage_source_bucket else ""
-            )
-            cloud_storage_source_path = (
-                cloud_storage_source_path if cloud_storage_source_path else ""
-            )
-            cloud_storage_source_endpoint = (
-                cloud_storage_source_endpoint if cloud_storage_source_endpoint else ""
-            )
-            self._restore_cloud_storage_data(
-                context,
-                cloud_storage_source_bucket,
-                cloud_storage_source_path,
-                cloud_storage_latest,
-            )
-        else:
-            logging.debug(
-                "Skipping restoring of cloud storage data as --skip-cloud-storage flag passed"
-            )
 
         failed_tables_names = [f"`{t.database}`.`{t.name}`" for t in failed_tables]
         tables_to_restore_data = filter(lambda t: is_merge_tree(t.engine), tables_meta)
@@ -577,34 +554,6 @@ class TableBackup(BackupManager):
         )
 
     @staticmethod
-    def _restore_cloud_storage_data(
-        context: BackupContext,
-        source_bucket: str,
-        source_path: str,
-        cloud_storage_latest: bool,
-    ) -> None:
-        for disk_name, revision in context.backup_meta.s3_revisions.items():
-            logging.debug(f"Restore disk {disk_name} to revision {revision}")
-
-            context.ch_ctl.create_s3_disk_restore_file(
-                disk_name,
-                revision if not cloud_storage_latest else 0,
-                source_bucket,
-                source_path,
-            )
-
-            if context.restore_context.disk_restarted(disk_name):
-                logging.debug(
-                    f"Skip restoring disk {disk_name} as it has already been restored"
-                )
-                continue
-
-            try:
-                context.ch_ctl.restart_disk(disk_name, context.restore_context)
-            finally:
-                context.restore_context.dump_state()
-
-    @staticmethod
     def _restore_data(
         context: BackupContext,
         tables: Iterable[TableMetadata],
@@ -639,29 +588,22 @@ class TableBackup(BackupManager):
                         continue
 
                     try:
-                        if (
-                            part.disk_name
-                            not in context.backup_meta.s3_revisions.keys()
-                        ):
-                            if (
-                                part.disk_name
-                                in context.backup_meta.cloud_storage.disks
-                            ):
-                                if skip_cloud_storage:
-                                    logging.debug(
-                                        f"Skipping restoring of {table.database}.{table.name} part {part.name} "
-                                        "on cloud storage because of --skip-cloud-storage flag"
-                                    )
-                                    continue
+                        if part.disk_name in context.backup_meta.cloud_storage.disks:
+                            if skip_cloud_storage:
+                                logging.debug(
+                                    f"Skipping restoring of {table.database}.{table.name} part {part.name} "
+                                    "on cloud storage because of --skip-cloud-storage flag"
+                                )
+                                continue
 
-                                disks.copy_part(context.backup_meta, table, part)
-                            else:
-                                fs_part_path = context.ch_ctl.get_detached_part_path(
-                                    table, part.disk_name, part.name
-                                )
-                                context.backup_layout.download_data_part(
-                                    context.backup_meta, part, fs_part_path
-                                )
+                            disks.copy_part(context.backup_meta, table, part)
+                        else:
+                            fs_part_path = context.ch_ctl.get_detached_part_path(
+                                table, part.disk_name, part.name
+                            )
+                            context.backup_layout.download_data_part(
+                                context.backup_meta, part, fs_part_path
+                            )
 
                         attach_parts.append(part)
                     except Exception:

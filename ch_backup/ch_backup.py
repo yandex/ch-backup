@@ -27,7 +27,6 @@ from ch_backup.exceptions import (
     TerminatingSignal,
 )
 from ch_backup.logic.access import AccessBackup
-from ch_backup.logic.cloud_storage_utils import fix_s3_oplog
 from ch_backup.logic.database import DatabaseBackup
 from ch_backup.logic.table import TableBackup
 from ch_backup.logic.udf import UDFBackup
@@ -117,7 +116,7 @@ class ClickhouseBackup:
 
         If force is True, backup.min_interval config option is ignored.
         """
-        # pylint: disable=too-many-locals,too-many-branches
+        # pylint: disable=too-many-branches
         logging.info(f"Backup sources: {sources}")
         assert not (db_names and tables)
 
@@ -206,7 +205,7 @@ class ClickhouseBackup:
 
         return self._context.backup_meta.name, None
 
-    # pylint: disable=too-many-arguments,too-many-locals,duplicate-code
+    # pylint: disable=too-many-arguments,duplicate-code
     def restore(
         self,
         sources: BackupSources,
@@ -221,7 +220,6 @@ class ClickhouseBackup:
         cloud_storage_source_bucket: str = None,
         cloud_storage_source_path: str = None,
         cloud_storage_source_endpoint: str = None,
-        cloud_storage_latest: bool = False,
         skip_cloud_storage: bool = False,
         clean_zookeeper: bool = False,
         keep_going: bool = False,
@@ -237,10 +235,7 @@ class ClickhouseBackup:
             and not sources.schema_only
             and not skip_cloud_storage
         ):
-            if (
-                self._context.backup_meta.has_s3_data()
-                or self._context.backup_meta.cloud_storage.enabled
-            ):
+            if self._context.backup_meta.cloud_storage.enabled:
                 raise ClickhouseBackupError(
                     "Cloud storage source bucket must be set if backup has data on S3 disks"
                 )
@@ -297,38 +292,11 @@ class ClickhouseBackup:
                 replica_name=replica_name,
                 cloud_storage_source_bucket=cloud_storage_source_bucket,
                 cloud_storage_source_path=cloud_storage_source_path,
-                cloud_storage_latest=cloud_storage_latest,
                 cloud_storage_source_endpoint=cloud_storage_source_endpoint,
                 skip_cloud_storage=skip_cloud_storage,
                 clean_zookeeper=clean_zookeeper,
                 keep_going=keep_going,
             )
-
-    # pylint: disable=too-many-locals,too-many-nested-blocks,too-many-branches
-    def fix_s3_oplog(
-        self,
-        source_cluster_id: str = None,
-        shard: str = None,
-        cloud_storage_source_bucket: str = None,
-        cloud_storage_source_path: str = None,
-        dryrun: bool = False,
-    ) -> None:
-        """
-        Fix S3 operations log.
-        """
-        if not self._context.config.get("cloud_storage"):
-            return
-
-        fix_s3_oplog(
-            self._context.config["cloud_storage"],
-            source_cluster_id
-            if source_cluster_id
-            else self._context.config["restore_from"]["cid"],
-            shard if shard else self._context.config["restore_from"]["shard_name"],
-            cloud_storage_source_bucket,
-            cloud_storage_source_path,
-            dryrun,
-        )
 
     def delete(
         self, backup_name: str, purge_partial: bool
@@ -514,7 +482,6 @@ class ClickhouseBackup:
         cloud_storage_source_bucket: Optional[str] = None,
         cloud_storage_source_path: Optional[str] = None,
         cloud_storage_source_endpoint: Optional[str] = None,
-        cloud_storage_latest: bool = False,
         skip_cloud_storage: bool = False,
         clean_zookeeper: bool = False,
         keep_going: bool = False,
@@ -553,7 +520,6 @@ class ClickhouseBackup:
                 cloud_storage_source_bucket=cloud_storage_source_bucket,
                 cloud_storage_source_path=cloud_storage_source_path,
                 cloud_storage_source_endpoint=cloud_storage_source_endpoint,
-                cloud_storage_latest=cloud_storage_latest,
                 skip_cloud_storage=skip_cloud_storage,
                 clean_zookeeper=clean_zookeeper,
                 keep_going=keep_going,

@@ -24,6 +24,8 @@ jobs:
       run: make isort
     - name: "lint: black"
       run: make black
+    - name: "lint: codespell"
+      run: make codespell
     - name: "lint: ruff"
       run: make ruff
     - name: "lint: pylint"

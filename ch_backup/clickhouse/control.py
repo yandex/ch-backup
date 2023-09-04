@@ -174,7 +174,9 @@ GET_MACROS_SQL = strip_query(
 
 GET_ACCESS_CONTROL_OBJECTS_SQL = strip_query(
     """
-    SELECT id, name FROM system.{type} WHERE storage='disk' OR storage='local directory' OR storage='replicated'
+    SELECT id, name
+    FROM system.{type}
+    WHERE storage IN ('disk', 'local directory', 'local_directory', 'replicated')
     FORMAT JSON
 """
 )
@@ -207,12 +209,6 @@ GET_UDF_QUERY_SQL = strip_query(
     """
     SELECT name, create_query FROM system.functions WHERE origin == 'SQLUserDefined'
     FORMAT JSON
-"""
-)
-
-RESTART_DISK_SQL = strip_query(
-    """
-    SYSTEM RESTART DISK {disk_name}
 """
 )
 
@@ -752,29 +748,6 @@ class ClickhouseCTL:
 
         with open(file_path, "r", encoding="utf-8") as file:
             return int(file.read().strip())
-
-    def create_s3_disk_restore_file(
-        self, disk_name: str, revision: int, source_bucket: str, source_path: str
-    ) -> None:
-        """
-        Creates file with restore information for S3 disk.
-        """
-        file_path = os.path.join(self._disks[disk_name].path, "restore")
-        with open(file_path, "w", encoding="utf-8") as file:
-            file.write(f"revision={revision}{os.linesep}")
-            file.write(f"source_bucket={source_bucket}{os.linesep}")
-            file.write(f"source_path={source_path}{os.linesep}")
-            file.write(f"detached=true{os.linesep}")
-
-    def restart_disk(self, disk_name: str, context: RestoreContext) -> None:
-        """
-        Restarts ClickHouse and waits till it can process queries.
-        """
-        self._ch_client.query(
-            RESTART_DISK_SQL.format(disk_name=disk_name),
-            timeout=self._restart_disk_timeout,
-        )
-        context.add_restarted_disk(disk_name)
 
     def reload_config(self):
         """

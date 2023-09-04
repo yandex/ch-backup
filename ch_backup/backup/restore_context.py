@@ -26,7 +26,6 @@ class RestoreContext:
                 }
             )
         )
-        self._restarted_disks: List[str] = []
         if exists(self._state_file):
             self._load_state()
 
@@ -64,18 +63,6 @@ class RestoreContext:
         """
         self._failed[part.database][part.table]["failed_parts"][part.name] = repr(e)
 
-    def add_restarted_disk(self, disk_name: str) -> None:
-        """
-        Marks that disk was restarted.
-        """
-        self._restarted_disks.append(disk_name)
-
-    def disk_restarted(self, disk_name: str) -> bool:
-        """
-        Checks if disk was restarted.
-        """
-        return disk_name in self._restarted_disks
-
     def has_failed_parts(self) -> bool:
         """
         Returns whether some parts failed during restore.
@@ -91,7 +78,6 @@ class RestoreContext:
                 {
                     "databases": self._databases,
                     "failed": self._failed,
-                    "restarted_disks": self._restarted_disks,
                 },
                 f,
             )
@@ -100,4 +86,3 @@ class RestoreContext:
         with open(self._state_file, "r", encoding="utf-8") as f:
             state: Dict[str, Any] = json.load(f)
             self._databases = state["databases"]
-            self._restarted_disks = state.get("restarted_disks", [])

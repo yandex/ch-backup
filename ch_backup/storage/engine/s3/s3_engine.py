@@ -36,7 +36,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
         self._multipart_downloads: dict = {}
 
         if config.get("disable_ssl_warnings"):
-            requests.packages.urllib3.disable_warnings()  # pylint: disable=no-member
+            requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
 
         self._bulk_delete_enabled = config.get("bulk_delete_enabled", True)
 

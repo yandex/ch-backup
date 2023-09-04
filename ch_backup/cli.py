@@ -596,11 +596,6 @@ def backup_command(
         "--cloud-storage-source-endpoint", type=str, help="Endpoint for source bucket."
     ),
     option(
-        "--cloud-storage-latest",
-        is_flag=True,
-        help=f'Forces to use {style("revision=0", fg=Color.bright_green)} to cloud storage.',
-    ),
-    option(
         "--skip-cloud-storage",
         is_flag=True,
         help="Forces to skip restoring data on cloud storage.",
@@ -664,7 +659,6 @@ def restore_command(
     cloud_storage_source_bucket: str = None,
     cloud_storage_source_path: str = None,
     cloud_storage_source_endpoint: str = None,
-    cloud_storage_latest: bool = False,
     skip_cloud_storage: bool = False,
     clean_zookeeper: bool = False,
     keep_going: bool = False,
@@ -703,43 +697,9 @@ def restore_command(
         cloud_storage_source_bucket=cloud_storage_source_bucket,
         cloud_storage_source_path=cloud_storage_source_path,
         cloud_storage_source_endpoint=cloud_storage_source_endpoint,
-        cloud_storage_latest=cloud_storage_latest,
         skip_cloud_storage=skip_cloud_storage,
         clean_zookeeper=clean_zookeeper,
         keep_going=keep_going,
-    )
-
-
-@command(name="fix-s3-oplog")
-@option(
-    "--cloud-storage-source-bucket",
-    type=str,
-    help="Source bucket name to restore cloud storage data.",
-)
-@option(
-    "--cloud-storage-source-path",
-    type=str,
-    help="Source path to restore cloud storage data.",
-)
-@option("--source-cluster-id", type=str, help="Source cluster ID.")
-@option("--shard", type=str, default="shard1", help="Shard name.")
-@option("--dryrun", is_flag=True, default=False, help="Do not perform any actions.")
-def fix_s3_oplog_command(
-    _ctx: Context,
-    ch_backup: ClickhouseBackup,
-    cloud_storage_source_bucket: str = None,
-    cloud_storage_source_path: str = None,
-    source_cluster_id: str = None,
-    shard: str = "shard1",
-    dryrun: bool = False,
-) -> None:
-    """Fix S3 operations log."""
-    ch_backup.fix_s3_oplog(
-        source_cluster_id,
-        shard,
-        cloud_storage_source_bucket,
-        cloud_storage_source_path,
-        dryrun,
     )
 
 

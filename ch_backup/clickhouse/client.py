@@ -90,7 +90,6 @@ class ClickhouseClient:
         if settings:
             session.params = settings
 
-        # pylint: disable=no-member
-        requests.packages.urllib3.disable_warnings()
+        requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
 
         return session
