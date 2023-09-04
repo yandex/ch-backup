@@ -158,18 +158,18 @@ class ClickhouseBackup:
             schema_only=sources.schema_only,
         )
 
-        self._context.backup_layout.upload_backup_metadata(self._context.backup_meta)
-
-        logging.debug(
-            'Starting backup "%s" for databases: %s',
-            self._context.backup_meta.name,
-            ", ".join(map(lambda db: db.name, databases)),
-        )
-
         skip_lock = self._check_schema_only_backup_skip_lock(sources)
 
-        try:
-            with self._context.locker(disabled=skip_lock):
+        with self._context.locker(disabled=skip_lock):
+            self._context.backup_layout.upload_backup_metadata(
+                self._context.backup_meta
+            )
+            logging.debug(
+                'Starting backup "%s" for databases: %s',
+                self._context.backup_meta.name,
+                ", ".join(map(lambda db: db.name, databases)),
+            )
+            try:
                 if sources.access:
                     self._access_backup_manager.backup(self._context)
                 if sources.udf:
@@ -190,18 +190,18 @@ class ClickhouseBackup:
                     )
 
                 self._context.backup_meta.state = BackupState.CREATED
-        except (Exception, TerminatingSignal):
-            logging.critical("Backup failed", exc_info=True)
-            self._context.backup_meta.state = BackupState.FAILED
-            raise
-        finally:
-            self._context.backup_meta.update_end_time()
-            self._context.backup_layout.upload_backup_metadata(
-                self._context.backup_meta
-            )
+            except (Exception, TerminatingSignal):
+                logging.critical("Backup failed", exc_info=True)
+                self._context.backup_meta.state = BackupState.FAILED
+                raise
+            finally:
+                self._context.backup_meta.update_end_time()
+                self._context.backup_layout.upload_backup_metadata(
+                    self._context.backup_meta
+                )
 
-            if not self._context.config.get("keep_freezed_data_on_failure"):
-                self._context.ch_ctl.remove_freezed_data()
+                if not self._context.config.get("keep_freezed_data_on_failure"):
+                    self._context.ch_ctl.remove_freezed_data()
 
         return self._context.backup_meta.name, None
 
