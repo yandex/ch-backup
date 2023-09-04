@@ -34,16 +34,6 @@ def step_create_backup(context, node):
     assert_that(name, matches_regexp(name_regexp))
 
 
-@when("we trying create {node:w} clickhouse backup")
-def step_try_to_create_backup(context, node):
-    """
-    The step similar to 'step_create_backup',
-    but here we don't check if a backup has been created.
-    """
-    options = get_step_data(context)
-    BackupManager(context, node).backup(**options)
-
-
 @given("metadata of {node:w} backup #{backup_id:d} was adjusted with")
 @when("metadata of {node:w} backup #{backup_id:d} was adjusted with")
 @given('metadata of {node:w} backup "{backup_id}" was adjusted with')
@@ -126,20 +116,6 @@ def step_backup_metadata_absent(context, node, backup_id):
 
     backup = BackupManager(context, node).get_backup(backup_id)
     assert_that(backup.meta, not has_entries(expected_meta))
-
-
-@then("we got no backups on {node:w}")
-def step_no_backups(context, node):
-    ch_backup = BackupManager(context, node)
-    backup_ids = ch_backup.get_backup_ids()
-
-    backup_count = len(backup_ids)
-
-    assert_that(
-        backup_count,
-        equal_to(0),
-        f"On {node} we got {backup_count} backups, when we expected that there are no backups",
-    )
 
 
 @then("we got the following backups on {node:w}")

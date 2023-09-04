@@ -18,7 +18,7 @@ Feature: Lock
       zk_flock_path: /ch_backup/zk_flock_path
     """
     When we acquire zookeeper lock on zookeeper01 with path /ch_backup/zk_flock_path
-    And we trying create clickhouse01 clickhouse backup
+    And we create clickhouse01 clickhouse backup
     """
     schema_only: true
     """
