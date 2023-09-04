@@ -35,7 +35,7 @@ def step_create_backup(context, node):
 
 
 @when("we can't create {node:w} clickhouse backup")
-def step_try_to_create_backup(context, node):
+def step_cannot_create_backup(context, node):
     options = get_step_data(context)
     name = BackupManager(context, node).backup(**options)
     assert_that(
