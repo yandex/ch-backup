@@ -304,6 +304,7 @@ class ClickhouseCTL:
         if self.ch_version_ge("22.8.5"):
             settings.update(
                 {
+                    "check_table_dependencies": 0,
                     "kafka_disable_num_consumers_limit": 1,
                 }
             )
