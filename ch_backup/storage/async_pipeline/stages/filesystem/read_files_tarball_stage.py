@@ -55,4 +55,4 @@ class ReadFilesTarballStage(InputHandler):
         tarinfo = tarfile.TarInfo(name)
         stat = file_path.stat()
         tarinfo.mtime, tarinfo.size = int(stat.st_mtime), stat.st_size
-        return tarinfo.tobuf()
+        return tarinfo.tobuf(format=tarfile.GNU_FORMAT)
