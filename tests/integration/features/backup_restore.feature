@@ -102,7 +102,6 @@ Feature: Backup & Restore
     When we create clickhouse01 clickhouse backup
     And we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
-# TODO: check deduplication with overdue backups
 
   Scenario: Backup & Restore with non-ascii file names
     When we drop all databases at clickhouse01

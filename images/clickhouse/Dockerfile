@@ -1,9 +1,11 @@
-FROM ubuntu:bionic
+ARG PYTHON_VERSION=3
 
-ENV TZ=Europe/Moscow
-ENV CH_TMP_DIR /var/tmp/ch-backup
+FROM python:${PYTHON_VERSION}-bullseye
 
 ARG CLICKHOUSE_VERSION=latest
+
+ENV TZ=Europe/Moscow
+ENV CH_TMP_DIR=/var/tmp/ch-backup
 
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && \
     apt-get update -qq && \

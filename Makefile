@@ -5,14 +5,16 @@ export COMPOSE_HTTP_TIMEOUT?=300
 export CLICKHOUSE_VERSION?=latest
 
 ifndef NO_VENV
-  export PATH := venv/bin:${PATH}
+  PATH:=venv/bin:${PATH}
 endif
 
+PYTHON_VERSION=$(shell python -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
 SESSION_FILE=.session_conf.sav
 INSTALL_DIR=$(DESTDIR)/opt/yandex/ch-backup
 
 TEST_ENV=env \
     PATH=${PATH} \
+    PYTHON_VERSION=${PYTHON_VERSION} \
     PYTHONIOENCODING=${PYTHONIOENCODING} \
     CLICKHOUSE_VERSION=${CLICKHOUSE_VERSION} \
     COMPOSE_HTTP_TIMEOUT=${COMPOSE_HTTP_TIMEOUT}

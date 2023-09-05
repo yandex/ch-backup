@@ -64,4 +64,4 @@ class ExecPool:
         """
         Shutdown pool explicitly to prevent the program from hanging in case of ungraceful termination.
         """
-        self._pool.shutdown(wait=False)
+        self.shutdown()
