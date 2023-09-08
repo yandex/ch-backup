@@ -16,6 +16,7 @@ from ch_backup.backup.deduplication import (
     deduplicate_part,
 )
 from ch_backup.backup.metadata import PartMetadata, TableMetadata
+from ch_backup.backup.restore_context import PartState
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
@@ -561,6 +562,7 @@ class TableBackup(BackupManager):
         skip_cloud_storage: bool,
         keep_going: bool,
     ) -> None:
+        # pylint: disable=too-many-branches
         logging.info("Restoring tables data")
         for table_meta in tables:
             try:
@@ -570,7 +572,6 @@ class TableBackup(BackupManager):
                     table_meta.name,
                 )
 
-                context.restore_context.add_table(table_meta.database, table_meta.name)
                 maybe_table = context.ch_ctl.get_table(
                     table_meta.database, table_meta.name
                 )
@@ -585,6 +586,13 @@ class TableBackup(BackupManager):
                         logging.debug(
                             f"{table.database}.{table.name} part {part.name} already restored, skipping it"
                         )
+                        continue
+
+                    if context.restore_context.part_downloaded(part):
+                        logging.debug(
+                            f"{table.database}.{table.name} part {part.name} already downloading, only attach it"
+                        )
+                        attach_parts.append(part)
                         continue
 
                     try:
@@ -615,6 +623,8 @@ class TableBackup(BackupManager):
                             raise
 
                 context.backup_layout.wait(keep_going)
+                for part in attach_parts:
+                    context.restore_context.add_part(part, PartState.DOWNLOADED)
 
                 context.ch_ctl.chown_detached_table_parts(
                     table, context.restore_context
@@ -628,7 +638,7 @@ class TableBackup(BackupManager):
                     )
                     try:
                         context.ch_ctl.attach_part(table, part.name)
-                        context.restore_context.add_part(part)
+                        context.restore_context.add_part(part, PartState.RESTORED)
                     except Exception as e:
                         logging.warning(
                             'Attaching "%s.%s" part %s failed: %s',
@@ -638,6 +648,8 @@ class TableBackup(BackupManager):
                             repr(e),
                         )
                         context.restore_context.add_failed_part(part, e)
+                        # if part failed to attach due to corrupted data during download
+                        context.restore_context.add_part(part, PartState.INVALID)
             finally:
                 context.restore_context.dump_state()
 

@@ -4,10 +4,21 @@ Backup restoring context.
 
 import json
 from collections import defaultdict
+from enum import Enum
 from os.path import exists
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, Mapping
 
 from ch_backup.backup.metadata import PartMetadata
+
+
+class PartState(str, Enum):
+    """
+    Represents status of the data part, during restore.
+    """
+
+    INVALID = "invalid"
+    DOWNLOADED = "downloaded"
+    RESTORED = "restored"
 
 
 class RestoreContext:
@@ -17,7 +28,9 @@ class RestoreContext:
 
     def __init__(self, config: Dict):
         self._state_file = config["restore_context_path"]
-        self._databases: Dict[str, Dict[str, List]] = {}
+        self._databases: Dict[str, Dict[str, Dict[str, PartState]]] = defaultdict(
+            lambda: defaultdict(lambda: defaultdict(lambda: PartState.INVALID))
+        )
         self._failed: Mapping[str, Any] = defaultdict(
             lambda: defaultdict(
                 lambda: {
@@ -29,27 +42,26 @@ class RestoreContext:
         if exists(self._state_file):
             self._load_state()
 
-    def add_table(self, database: str, table: str) -> None:
-        """
-        Add table to restore metadata.
-        """
-        if database not in self._databases:
-            self._databases[database] = {}
-
-        if table not in self._databases[database]:
-            self._databases[database][table] = []
-
-    def add_part(self, part: PartMetadata) -> None:
+    def add_part(self, part: PartMetadata, state: PartState) -> None:
         """
         Marks that data part was restored.
         """
-        self._databases[part.database][part.table].append(part.name)
+        self._databases[part.database][part.table][part.name] = state
+
+    def _part(self, part: PartMetadata) -> PartState:
+        return self._databases[part.database][part.table][part.name]
+
+    def part_downloaded(self, part: PartMetadata) -> bool:
+        """
+        Checks if data part was downloaded.
+        """
+        return self._part(part) == PartState.DOWNLOADED
 
     def part_restored(self, part: PartMetadata) -> bool:
         """
         Checks if data part was restored.
         """
-        return part.name in self._databases[part.database][part.table]
+        return self._part(part) == PartState.RESTORED
 
     def add_failed_chown(self, database: str, table: str, path: str) -> None:
         """
@@ -85,4 +97,7 @@ class RestoreContext:
     def _load_state(self) -> None:
         with open(self._state_file, "r", encoding="utf-8") as f:
             state: Dict[str, Any] = json.load(f)
-            self._databases = state["databases"]
+            for db, tables in state.get("databases", {}).items():
+                for table, parts in tables.items():
+                    for part_name, part_state in parts.items():
+                        self._databases[db][table][part_name] = part_state
