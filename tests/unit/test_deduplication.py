@@ -561,8 +561,9 @@ def test_collect_dedup_references_for_batch_backup_deletion(
     assert (
         collect_dedup_references_for_batch_backup_deletion(
             layout=layout_mock(),
-            retained_backups_with_light_meta=retained_backups,
-            deleting_backups_with_light_meta=deleting_backups,
+            retained_backups=retained_backups,
+            deleting_backups=deleting_backups,
+            backups_with_light_meta=True,
         )
         == result
     )

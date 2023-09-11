@@ -284,8 +284,9 @@ def collect_dedup_references_for_backup_deletion(
     """
     dedup_refences = collect_dedup_references_for_batch_backup_deletion(
         layout=layout,
-        retained_backups_with_light_meta=retained_backups_with_light_meta,
-        deleting_backups_with_light_meta=[deleting_backup_with_light_meta],
+        retained_backups=retained_backups_with_light_meta,
+        deleting_backups=[deleting_backup_with_light_meta],
+        backups_with_light_meta=True,
     )
 
     return dedup_refences[deleting_backup_with_light_meta.name]
@@ -293,8 +294,9 @@ def collect_dedup_references_for_backup_deletion(
 
 def collect_dedup_references_for_batch_backup_deletion(
     layout: BackupLayout,
-    retained_backups_with_light_meta: List[BackupMetadata],
-    deleting_backups_with_light_meta: List[BackupMetadata],
+    retained_backups: List[BackupMetadata],
+    deleting_backups: List[BackupMetadata],
+    backups_with_light_meta: bool = False,
 ) -> Dict[str, DedupReferences]:
     """
     Collect deduplication information for deleting multiple backups. It contains names of data parts that should
@@ -302,11 +304,10 @@ def collect_dedup_references_for_batch_backup_deletion(
     """
     dedup_references: Dict[str, DedupReferences] = defaultdict(dict)
 
-    deleting_backup_name_resolver = {
-        b.path: b.name for b in deleting_backups_with_light_meta
-    }
-    for backup in retained_backups_with_light_meta:
-        backup = layout.reload_backup(backup, use_light_meta=False)
+    deleting_backup_name_resolver = {b.path: b.name for b in deleting_backups}
+    for backup in retained_backups:
+        if backups_with_light_meta:
+            backup = layout.reload_backup(backup, use_light_meta=False)
 
         for db_name in backup.get_databases():
             for table in backup.get_tables(db_name):
