@@ -325,10 +325,8 @@ class ClickhouseBackup:
                 raise BackupNotFound(backup_name)
 
             dedup_references = collect_dedup_references_for_batch_backup_deletion(
-                layout=self._context.backup_layout,
                 retained_backups=retained_backups,
                 deleting_backups=deleting_backups,
-                backups_with_light_meta=False,
             )
 
             result: Tuple[Optional[str], Optional[str]] = (None, None)
@@ -389,10 +387,8 @@ class ClickhouseBackup:
                 deleting_backups.append(backup)
 
             dedup_references = collect_dedup_references_for_batch_backup_deletion(
-                layout=self._context.backup_layout,
                 retained_backups=retained_backups,
                 deleting_backups=deleting_backups,
-                backups_with_light_meta=False,
             )
 
             for backup in deleting_backups:
