@@ -513,7 +513,7 @@ def test_collect_dedup_info(config, creating_backup, databases, backups, result)
     {
         "id": "single data part",
         "args": {
-            "retained_backups": [
+            "retained_backups_light_meta": [
                 backup_metadata(
                     name="backup2",
                     state=BackupState.CREATED,
@@ -529,7 +529,7 @@ def test_collect_dedup_info(config, creating_backup, databases, backups, result)
                     },
                 ),
             ],
-            "deleting_backups": [
+            "deleting_backups_light_meta": [
                 backup_metadata(
                     name="backup1",
                     state=BackupState.CREATED,
@@ -556,13 +556,22 @@ def test_collect_dedup_info(config, creating_backup, databases, backups, result)
     }
 )
 def test_collect_dedup_references_for_batch_backup_deletion(
-    retained_backups, deleting_backups, result
+    retained_backups_light_meta, deleting_backups_light_meta, result
 ):
+    layout = layout_mock()
+    retained_backups = [
+        layout.reload_backup(backup_light, False)
+        for backup_light in retained_backups_light_meta
+    ]
+    deleting_backups = [
+        layout.reload_backup(backup_light, False)
+        for backup_light in deleting_backups_light_meta
+    ]
+
     assert (
         collect_dedup_references_for_batch_backup_deletion(
-            layout=layout_mock(),
-            retained_backups_with_light_meta=retained_backups,
-            deleting_backups_with_light_meta=deleting_backups,
+            retained_backups=retained_backups,
+            deleting_backups=deleting_backups,
         )
         == result
     )
