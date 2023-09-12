@@ -71,7 +71,16 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
 
     def delete_file(self, remote_path: str) -> None:
         remote_path = remote_path.lstrip("/")
-        self._s3_client.delete_object(Bucket=self._s3_bucket_name, Key=remote_path)
+        try:
+            self._s3_client.delete_object(Bucket=self._s3_bucket_name, Key=remote_path)
+        except ClientError as e:
+            # delete_object should return success if no such object
+            # https://docs.aws.amazon.com/AmazonS3/latest/API/API_DeleteObject.html
+            # but GCP returns error in this case
+            # https://cloud.google.com/storage/docs/xml-api/delete-object
+            if e.response["Error"]["Code"] == "NoSuchKey":
+                return
+            raise
 
     def delete_files(self, remote_paths: Sequence[str]) -> None:
         """
