@@ -167,7 +167,7 @@ install-deps: check-environment .install-deps
 
 .PHONY: check-environment
 check-environment:
-	@if ! command -v ${PYTHON} > /dev/null; then \
+	@test="$(command -v ${PYTHON})"; if [ $$? -eq 1 ]; then \
 		echo 'Python interpreter "${PYTHON}" ($$PYTHON) not found' >&2; exit 1; \
 	fi
 	@if [ -z "${PYTHON_VERSION}" ]; then \
