@@ -78,7 +78,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
             # https://docs.aws.amazon.com/AmazonS3/latest/API/API_DeleteObject.html
             # but GCP returns error in this case
             # https://cloud.google.com/storage/docs/xml-api/delete-object
-            if e.response['Error']['Code'] == "NoSuchKey":
+            if e.response["Error"]["Code"] == "NoSuchKey":
                 return
             raise
 
