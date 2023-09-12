@@ -8,7 +8,7 @@ ifndef NO_VENV
   PATH:=venv/bin:${PATH}
 endif
 
-PYTHON_VERSION=$(shell python -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
+PYTHON_VERSION=$(shell ${PYTHON} -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
 SESSION_FILE=.session_conf.sav
 INSTALL_DIR=$(DESTDIR)/opt/yandex/ch-backup
 
@@ -163,7 +163,16 @@ ch_backup/version.txt:
 
 
 .PHONY: install-deps
-install-deps: .install-deps
+install-deps: check-environment .install-deps
+
+.PHONY: check-environment
+check-environment:
+	@test="$(command -v ${PYTHON})"; if [ $$? -eq 1 ]; then \
+		echo 'Python interpreter "${PYTHON}" ($$PYTHON) not found' >&2; exit 1; \
+	fi
+	@if [ -z "${PYTHON_VERSION}" ]; then \
+		echo 'Failed to determine version of Python interpreter "${PYTHON}" ($$PYTHON)' >&2; exit 1; \
+	fi
 
 .install-deps: requirements.txt requirements-dev.txt
 	if [ -z "${NO_VENV}" ]; then ${PYTHON} -m venv venv; fi
