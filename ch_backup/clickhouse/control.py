@@ -55,6 +55,20 @@ GET_TABLES_SQL = strip_query(
 """
 )
 
+GET_TABLES_SHORT_SQL = strip_query(
+    """
+    SELECT
+        database,
+        name,
+        create_table_query,
+    FROM system.tables
+    WHERE (empty('{db_name}') OR database = '{db_name}')
+      AND (empty({table_names}) OR has(cast({table_names}, 'Array(String)'), name))
+    ORDER BY metadata_modification_time
+    FORMAT JSON
+"""
+)
+
 CHECK_TABLE_SQL = strip_query(
     """
     SELECT countIf(database = '{db_name}' AND name = '{table_name}')
@@ -431,12 +445,13 @@ class ClickhouseCTL:
         return self._ch_client.query(query_sql)
 
     def get_tables(
-        self, db_name: str = None, tables: Optional[Sequence[str]] = None
+        self, db_name: str = None, tables: Optional[Sequence[str]] = None, short_query : bool = False
     ) -> Sequence[Table]:
         """
         Get database tables.
         """
-        query_sql = GET_TABLES_SQL.format(
+        base_query_sql = GET_TABLES_SHORT_SQL if short_query else GET_TABLES_SQL 
+        query_sql = base_query_sql.format(
             db_name=escape(db_name) if db_name is not None else "",
             table_names=list(map(escape, tables)) if tables is not None else [],
         )  # type: ignore
@@ -727,12 +742,12 @@ class ClickhouseCTL:
         return Table(
             database=record["database"],
             name=record["name"],
-            engine=record["engine"],
+            engine=record.get("engine",None),
             disks=list(self._disks.values()),
-            data_paths=record["data_paths"]
-            if record["engine"].find("MergeTree") != -1
+            data_paths=record.get("data_paths",None)
+            if  ("engine" in record) and (record["engine"].find("MergeTree") != -1)
             else [],
-            metadata_path=record["metadata_path"],
+            metadata_path=record.get("metadata_path",None),
             create_statement=record["create_table_query"],
             uuid=record.get("uuid", None),
         )
