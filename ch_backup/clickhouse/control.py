@@ -445,12 +445,15 @@ class ClickhouseCTL:
         return self._ch_client.query(query_sql)
 
     def get_tables(
-        self, db_name: str = None, tables: Optional[Sequence[str]] = None, short_query : bool = False
+        self,
+        db_name: str = None,
+        tables: Optional[Sequence[str]] = None,
+        short_query: bool = False,
     ) -> Sequence[Table]:
         """
         Get database tables.
         """
-        base_query_sql = GET_TABLES_SHORT_SQL if short_query else GET_TABLES_SQL 
+        base_query_sql = GET_TABLES_SHORT_SQL if short_query else GET_TABLES_SQL
         query_sql = base_query_sql.format(
             db_name=escape(db_name) if db_name is not None else "",
             table_names=list(map(escape, tables)) if tables is not None else [],
@@ -742,12 +745,12 @@ class ClickhouseCTL:
         return Table(
             database=record["database"],
             name=record["name"],
-            engine=record.get("engine",None),
+            engine=record.get("engine", None),
             disks=list(self._disks.values()),
-            data_paths=record.get("data_paths",None)
-            if  ("engine" in record) and (record["engine"].find("MergeTree") != -1)
+            data_paths=record.get("data_paths", None)
+            if ("engine" in record) and (record["engine"].find("MergeTree") != -1)
             else [],
-            metadata_path=record.get("metadata_path",None),
+            metadata_path=record.get("metadata_path", None),
             create_statement=record["create_table_query"],
             uuid=record.get("uuid", None),
         )
