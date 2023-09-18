@@ -60,7 +60,7 @@ GET_TABLES_SHORT_SQL = strip_query(
     SELECT
         database,
         name,
-        create_table_query,
+        create_table_query
     FROM system.tables
     WHERE (empty('{db_name}') OR database = '{db_name}')
       AND (empty({table_names}) OR has(cast({table_names}, 'Array(String)'), name))
