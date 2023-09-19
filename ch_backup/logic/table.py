@@ -458,7 +458,7 @@ class TableBackup(BackupManager):
 
         # Filter out already restored tables.
         existing_tables = {}
-        for table in context.ch_ctl.get_tables():
+        for table in context.ch_ctl.get_tables(short_query=True):
             existing_tables[(table.database, table.name)] = table
 
         result: List[Table] = []

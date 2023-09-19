@@ -185,3 +185,41 @@ Feature: Backup & Restore
     """
     And we restore clickhouse backup #0 to clickhouse02
     Then clickhouse02 has same schema as clickhouse01
+
+  Scenario: Perform retry restore when exist the table based on the table function.
+    Given we execute query on clickhouse01
+    """
+    CREATE DATABASE test_s3
+    """
+    When we put object in S3
+    """
+      bucket: cloud-storage-01
+      path: /data.tsv
+      data: '1'
+    """
+
+    When we execute query on clickhouse01
+    """
+    CREATE TABLE test_s3.s3_test_table (v Int) AS
+    s3('{{conf['s3']['endpoint']}}/cloud-storage-01/data.tsv', '{{conf['s3']['access_key_id']}}', '{{conf['s3']['access_secret_key']}}', 'TSV');
+    """
+
+    And we create clickhouse01 clickhouse backup
+
+    And we delete object in S3
+    """
+      bucket: cloud-storage-01
+      path: /data.tsv
+    """
+    # If we restore the data, the table s3_test_table will be created through StorageProxy
+    # and not all the rows from system.table will be accessible. Check that we can perform the restore operation after restore.
+    And we restore clickhouse backup #0 to clickhouse01
+    And we restore clickhouse backup #0 to clickhouse01
+    And we execute query on clickhouse01
+    """
+    SELECT count(*) FROM system.tables WHERE name='s3_test_table';
+    """
+    Then we get response
+    """
+    1
+    """
