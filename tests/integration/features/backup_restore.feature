@@ -211,7 +211,8 @@ Feature: Backup & Restore
       bucket: cloud-storage-01
       path: /data.tsv
     """
-    # Imitate the retry logic, when the first restore cmd is not finished correctly.
+    # If we restore the data, the table s3_test_table will be created through StorageProxy
+    # and not all the rows from system.table will be accessible. Check that we can perform the restore operation after restore.
     And we restore clickhouse backup #0 to clickhouse01
     And we restore clickhouse backup #0 to clickhouse01
     And we execute query on clickhouse01

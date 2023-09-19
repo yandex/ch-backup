@@ -452,6 +452,9 @@ class ClickhouseCTL:
     ) -> Sequence[Table]:
         """
         Get database tables.
+
+        A short query does not access the source of table if it was built from an external source.
+        Example: CREATE ... AS postgresql() or CREATE ... AS s3().
         """
         base_query_sql = GET_TABLES_SHORT_SQL if short_query else GET_TABLES_SQL
         query_sql = base_query_sql.format(
@@ -748,7 +751,7 @@ class ClickhouseCTL:
             engine=record.get("engine", None),
             disks=list(self._disks.values()),
             data_paths=record.get("data_paths", None)
-            if ("engine" in record) and (record["engine"].find("MergeTree") != -1)
+            if "MergeTree" in record.get("engine", "")
             else [],
             metadata_path=record.get("metadata_path", None),
             create_statement=record["create_table_query"],
