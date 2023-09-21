@@ -9,7 +9,7 @@ from typing import Any
 import yaml
 from humanfriendly import parse_size, parse_timespan
 
-from ch_backup import logging
+from loguru import logger
 
 
 def _as_seconds(t: str) -> int:
@@ -165,17 +165,17 @@ DEFAULT_CONFIG = {
         },
         "handlers": {
             "ch-backup": {
-                "class": "logging.FileHandler",
+                "class": "logger.FileHandler",
                 "filename": "/var/log/ch-backup/ch-backup.log",
                 "formatter": "ch-backup",
             },
             "boto": {
-                "class": "logging.FileHandler",
+                "class": "logger.FileHandler",
                 "filename": "/var/log/ch-backup/boto.log",
                 "formatter": "boto",
             },
             "clickhouse-disks": {
-                "class": "logging.FileHandler",
+                "class": "logger.FileHandler",
                 "filename": "/var/log/ch-backup/clickhouse-disks.log",
                 "formatter": "ch-backup",
             },
@@ -211,6 +211,43 @@ DEFAULT_CONFIG = {
                 "level": "DEBUG",
             },
         },
+    },
+    "loguru": {
+        "handlers": [
+            {
+                'name': 'ch-backup',
+                "sink": "/var/log/ch-backup/ch-backup.log",
+                "format": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} {extra[name]} [{level:8}] {message}",
+                'level': 'DEBUG',
+                'enqueue': True,
+            },
+            {
+                'name': 'zookeper',
+                "sink": "/var/log/ch-backup/ch-backup.log",
+                "format": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} {extra[name]} [{level:8}] {message}",
+                'level': 'DEBUG',
+                'enqueue': True,
+            
+            },
+            {
+                'name': 'boto',
+                "sink": "/var/log/ch-backup/ch-boto.log",
+                "format": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} {extra[name]} [{level:8}] {message}",
+                'level': 'DEBUG',
+                'enqueue': True,
+            },
+            {
+                'name': 'clickhouse-disks',
+                "sink":  "/var/log/ch-backup/clickhouse-disks.log",
+                "format": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} {extra[name]} [{level:8}] {message}",
+                'level': 'INFO',
+                'enqueue': True,
+            },
+            
+        ],
+        "activation": [
+            ("",True),
+        ],
     },
     "zookeeper": {
         "secure": False,
@@ -272,14 +309,14 @@ class Config:
         try:
             return self._conf[item]
         except KeyError:
-            logging.critical('Config item "%s" was not defined', item)
+            logger.critical('Config item "{}" was not defined', item)
             raise
 
     def __setitem__(self, item, value):
         try:
             self._conf[item] = value
         except KeyError:
-            logging.critical('Config item "%s" was not defined', item)
+            logger.critical('Config item "{}" was not defined', item)
             raise
 
     def get(self, key: str, default: Any = None) -> Any:

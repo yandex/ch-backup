@@ -23,7 +23,7 @@ class UDFBackup(BackupManager):
         for udf_name in udf.keys():
             context.backup_meta.add_udf(udf_name)
 
-        logging.debug("Performing UDF backup for: %s", " ,".join(udf.keys()))
+        logging.debug("Performing UDF backup for: {}", " ,".join(udf.keys()))
         for udf_name, udf_statement in udf.items():
             context.backup_layout.upload_udf(
                 context.backup_meta.name, udf_name, udf_statement
@@ -40,13 +40,13 @@ class UDFBackup(BackupManager):
         if not udf_list:
             return
 
-        logging.info("Restoring UDFs: %s", " ,".join(udf_list))
+        logging.info("Restoring UDFs: {}", " ,".join(udf_list))
 
         udf_on_clickhouse = context.ch_ctl.get_udf_query()
         udf_on_clickhouse_list = udf_on_clickhouse.keys()
 
         for udf_name in udf_list:
-            logging.debug("Restoring UDF %s", udf_name)
+            logging.debug("Restoring UDF {}", udf_name)
 
             statement = context.backup_layout.get_udf_create_statement(
                 context.backup_meta, udf_name
@@ -62,7 +62,7 @@ class UDFBackup(BackupManager):
             if udf_name not in udf_on_clickhouse_list:
                 context.ch_ctl.restore_udf(statement)
 
-            logging.debug("UDF %s restored", udf_name)
+            logging.debug("UDF {} restored", udf_name)
 
         logging.info("All UDFs restored")
 

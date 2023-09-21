@@ -229,7 +229,7 @@ def deduplicate_part(
     """
     part_name = fpart.name
 
-    logging.debug('Looking for deduplication of part "%s"', part_name)
+    logging.debug('Looking for deduplication of part "{}"', part_name)
 
     existing_part = dedup_info.get(part_name)
     if not existing_part:
@@ -253,14 +253,14 @@ def deduplicate_part(
     if not existing_part.verified:
         if not layout.check_data_part(existing_part.backup_path, part):
             logging.debug(
-                'Part "%s" found in "%s", but it\'s invalid, skipping',
+                'Part "{}" found in "{}", but it\'s invalid, skipping',
                 part_name,
                 existing_part.backup_path,
             )
             return None
 
     logging.debug(
-        'Part "%s" found in "%s", reusing', part_name, existing_part.backup_path
+        'Part "{}" found in "{}", reusing', part_name, existing_part.backup_path
     )
 
     return part

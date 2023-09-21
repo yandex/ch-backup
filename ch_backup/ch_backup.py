@@ -165,7 +165,7 @@ class ClickhouseBackup:
                 self._context.backup_meta
             )
             logging.debug(
-                'Starting backup "%s" for databases: %s',
+                'Starting backup "{}" for databases: {}',
                 self._context.backup_meta.name,
                 ", ".join(map(lambda db: db.name, databases)),
             )
@@ -191,7 +191,8 @@ class ClickhouseBackup:
 
                 self._context.backup_meta.state = BackupState.CREATED
             except (Exception, TerminatingSignal):
-                logging.critical("Backup failed", exc_info=True)
+                logging.critical("Backup failed")
+                                  #exc_info=True)
                 self._context.backup_meta.state = BackupState.FAILED
                 raise
             finally:
@@ -273,7 +274,7 @@ class ClickhouseBackup:
         ]
         if missed_databases:
             logging.critical(
-                "Required databases %s were not found in backup metadata: %s",
+                "Required databases {} were not found in backup metadata: {}",
                 ", ".join(missed_databases),
                 self._context.backup_meta.path,
             )
@@ -360,13 +361,13 @@ class ClickhouseBackup:
         with self._context.locker():
             for backup in self._context.backup_layout.get_backups(use_light_meta=False):
                 if backup.name not in backup_names:
-                    logging.info("Deleting backup without metadata: %s", backup.name)
+                    logging.info("Deleting backup without metadata: {}", backup.name)
                     self._context.backup_layout.delete_backup(backup.name)
                     continue
 
                 if retain_count > 0:
                     logging.info(
-                        "Preserving backup per retain count policy: %s, state %s",
+                        "Preserving backup per retain count policy: {}, state {}",
                         backup.name,
                         backup.state,
                     )
@@ -377,7 +378,7 @@ class ClickhouseBackup:
 
                 if retain_time_limit and backup.start_time >= retain_time_limit:
                     logging.info(
-                        "Preserving backup per retain time policy: %s, state %s",
+                        "Preserving backup per retain time policy: {}, state {}",
                         backup.name,
                         backup.state,
                     )
@@ -413,7 +414,7 @@ class ClickhouseBackup:
         self, backup: BackupMetadata, dedup_references: DedupReferences
     ) -> Tuple[Optional[str], Optional[str]]:
         logging.info(
-            "Deleting backup %s, state: %s",
+            "Deleting backup {}, state: {}",
             backup.name,
             backup.state,
         )

@@ -386,14 +386,14 @@ class ClickhouseCTL:
         for disk in self._disks.values():
             if disk.type == "local":
                 shadow_path = os.path.join(disk.path, "shadow")
-                logging.debug("Removing shadow data: %s", shadow_path)
+                logging.debug("Removing shadow data: {}", shadow_path)
                 self._remove_shadow_data(shadow_path)
 
     def remove_freezed_part(self, part: FrozenPart) -> None:
         """
         Remove the freezed part.
         """
-        logging.debug("Removing freezed part: %s", part.path)
+        logging.debug("Removing freezed part: {}", part.path)
         self._remove_shadow_data(part.path)
 
     def get_databases(
@@ -607,7 +607,7 @@ class ClickhouseCTL:
         path = os.path.join(disk.path, "shadow", backup_name, table_relative_path)
 
         if not os.path.exists(path):
-            logging.debug("Shadow path %s is empty", path)
+            logging.debug("Shadow path {} is empty", path)
             return []
 
         freezed_parts: List[FrozenPart] = []

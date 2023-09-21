@@ -48,7 +48,7 @@ class ClickhouseClient:
         Execute query.
         """
         try:
-            logging.debug("Executing query: %s", query)
+            logging.debug("Executing query: {}", query)
 
             if timeout is None:
                 timeout = self.timeout

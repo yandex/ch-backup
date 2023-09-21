@@ -2,7 +2,7 @@
 Clickhouse-disks controls temporary cloud storage disks management.
 """
 
-import logging
+
 import os
 from subprocess import PIPE, Popen
 from typing import Dict, List, Optional
@@ -184,7 +184,7 @@ def _copy_dir(from_disk: str, from_path: str, to_disk: str, to_path: str) -> Non
 
 
 def _exec(command: str, common_args: List[str], command_args: List[str]) -> List[str]:
-    logger = logging.getLogger("clickhouse-disks")
+    logger = ch_logging.getLogger("clickhouse-disks")
     command_args = [
         "/usr/bin/clickhouse-disks",
         *common_args,

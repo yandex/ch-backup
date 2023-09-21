@@ -53,7 +53,7 @@ class DatabaseBackup(BackupManager):
                 databases_to_restore[name] = db
                 continue
 
-        logging.info("Restoring databases: %s", ", ".join(databases_to_restore.keys()))
+        logging.info("Restoring databases: {}", ", ".join(databases_to_restore.keys()))
         for db in databases_to_restore.values():
             if db.has_embedded_metadata():
                 db_sql = embedded_schema_db_sql(db)
@@ -86,7 +86,7 @@ class DatabaseBackup(BackupManager):
         """
         Backup database.
         """
-        logging.debug('Performing database backup for "%s"', db.name)
+        logging.debug('Performing database backup for "{}"', db.name)
 
         if not db.has_embedded_metadata():
             context.backup_layout.upload_database_create_statement(

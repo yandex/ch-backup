@@ -2,67 +2,80 @@
 Logging module.
 """
 
-import logging
-import logging.config
 import os
+from typing import Any
 
 import psutil
 
-from ch_backup.util import format_size
+from ch_backup.util import format_size, cached_property
+from loguru import logger
 
 
-def configure(config: dict) -> None:
+class Filter:
+    def __init__(self, name):
+        self._name = name
+
+    def __call__(self, record):
+        return record["extra"].get("name") == self._name
+        
+
+def make_filter(name):
+    return Filter(name)
+
+def configure(config: dict, config_loguru: dict) -> None:
     """
-    Configure logging.
+    Configure logger.
     """
-    for handler in config.get("handlers", {}).values():
-        filename = handler.get("filename")
-        if filename:
-            os.makedirs(os.path.dirname(filename), exist_ok=True)
+    for handler in config_loguru["handlers"]:
+        handler['filter'] = make_filter(handler['name'])
 
-    logging.config.dictConfig(config)
+    config_loguru
+    logger.configure(
+        handlers = config_loguru["handlers"],
+        activation = config_loguru["activation"]
+    )
 
 
 def critical(msg, *args, **kwargs):
     """
     Log a message with severity 'CRITICAL'.
     """
-    _get_logger().critical(msg, *args, **kwargs)
+    getLogger('ch-backup').critical(msg, *args, **kwargs)
 
 
-def error(msg, *args, **kwargs):
+def error(msg, exc_info=False,*args, **kwargs):
     """
     Log a message with severity 'ERROR'.
     """
-    _get_logger().error(msg, *args, **kwargs)
+    getLogger('ch-backup').opt(exception=exc_info).error(msg, *args, **kwargs)
 
 
 def exception(msg, *args, **kwargs):
     """
     Log a message with severity 'ERROR' with exception information.
     """
-    _get_logger().exception(msg, *args, **kwargs)
+    getLogger('ch-backup').exception(msg, *args, **kwargs)
 
 
-def warning(msg, *args, **kwargs):
+def warning(msg, exc_info=False, *args, **kwargs):
     """
     Log a message with severity 'WARNING'.
     """
-    _get_logger().warning(msg, *args, **kwargs)
+    getLogger('ch-backup').opt(exception=exc_info).warning(msg, *args, **kwargs)
 
 
 def info(msg, *args, **kwargs):
     """
     Log a message with severity 'INFO'.
     """
-    _get_logger().info(msg, *args, **kwargs)
+    getLogger('ch-backup').info(msg, *args, **kwargs)
 
 
 def debug(msg, *args, **kwargs):
     """
     Log a message with severity 'DEBUG'.
     """
-    _get_logger().debug(msg, *args, **kwargs)
+    getLogger('ch-backup').debug(msg, *args, **kwargs)
 
 
 def memory_usage():
@@ -84,15 +97,14 @@ def memory_usage():
         total_usage = main_proc_usage + worker_procs_usage
 
         debug(
-            "Memory usage: %s (main process: %s, worker processes: %s)",
+            "Memory usage: {} (main process: {}, worker processes: {})",
             format_size(total_usage),
             format_size(main_proc_usage),
             format_size(worker_procs_usage),
         )
 
     except Exception:
-        warning("Unable to get memory usage", exc_info=True)
+        warning("Unable to get memory usage",exc_info=True)
 
-
-def _get_logger() -> logging.Logger:
-    return logging.getLogger("ch-backup")
+def getLogger(name: str):
+    return logger.bind(name=name)

@@ -127,7 +127,7 @@ def cli(
     if zk_hosts is not None:
         cfg["zookeeper"]["hosts"] = zk_hosts
 
-    logging.configure(cfg["logging"])
+    logging.configure(cfg["logging"],cfg["loguru"])
     setup_environment(cfg["main"])
 
     if not drop_privileges(cfg["main"]):
@@ -149,7 +149,7 @@ def command(*args, **kwargs):
         def wrapper(ctx, *args, **kwargs):
             try:
                 logging.info(
-                    "Executing command '%s', params: %s, args: %s, version: %s",
+                    "Executing command '{}', params: {}, args: {}, version: {}",
                     ctx.command.name,
                     {
                         **ctx.parent.params,
@@ -159,10 +159,10 @@ def command(*args, **kwargs):
                     get_version(),
                 )
                 result = ctx.invoke(f, ctx, ctx.obj["backup"], *args, **kwargs)
-                logging.info("Command '%s' completed", ctx.command.name)
+                logging.info("Command '{}' completed", ctx.command.name)
                 return result
             except (Exception, TerminatingSignal):
-                logging.exception("Command '%s' failed", ctx.command.name)
+                logging.exception("Command '{}' failed", ctx.command.name)
                 raise
 
         return cli.command(*args, **kwargs)(wrapper)
