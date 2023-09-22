@@ -191,8 +191,7 @@ class ClickhouseBackup:
 
                 self._context.backup_meta.state = BackupState.CREATED
             except (Exception, TerminatingSignal):
-                logging.critical("Backup failed")
-                                  #exc_info=True)
+                logging.critical("Backup failed", exc_info=True)
                 self._context.backup_meta.state = BackupState.FAILED
                 raise
             finally:

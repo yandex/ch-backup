@@ -217,32 +217,40 @@ DEFAULT_CONFIG = {
             {
                 'name': 'ch-backup',
                 "sink": "/var/log/ch-backup/ch-backup.log",
-                "format": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} {extra[name]} [{level:8}] {message}",
+                "format": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[name]}: {message}",
                 'level': 'DEBUG',
                 'enqueue': True,
             },
             {
                 'name': 'zookeper',
                 "sink": "/var/log/ch-backup/ch-backup.log",
-                "format": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} {extra[name]} [{level:8}] {message}",
+                "format": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[name]}: {message}",
                 'level': 'DEBUG',
                 'enqueue': True,
             
             },
             {
                 'name': 'boto',
-                "sink": "/var/log/ch-backup/ch-boto.log",
-                "format": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} {extra[name]} [{level:8}] {message}",
+                "sink": "/var/log/ch-backup/boto.log",
+                "format": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[name]}: {message}",
                 'level': 'DEBUG',
                 'enqueue': True,
             },
             {
                 'name': 'clickhouse-disks',
                 "sink":  "/var/log/ch-backup/clickhouse-disks.log",
-                "format": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} {extra[name]} [{level:8}] {message}",
+                "format": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[name]}: {message}",
                 'level': 'INFO',
                 'enqueue': True,
             },
+            {
+                'name': 'urllib3.connectionpool',
+                "sink": "/var/log/ch-backup/boto.log",
+                "format": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[name]}: {message}",
+                'level': 'DEBUG',
+                'enqueue': True,
+            },
+            
             
         ],
         "activation": [

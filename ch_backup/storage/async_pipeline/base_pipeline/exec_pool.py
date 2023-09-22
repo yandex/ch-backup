@@ -50,13 +50,13 @@ class ExecPool:
                 if keep_going:
                     logging.warning(
                         'Future "{}" generated an exception, skipping due to keep_going flag',
-                        # exc_info=True,
                         future_id,
+                        exc_info=True,
                     )
                     continue
                 logging.error(
                     'Future "{}" generated an exception:', future_id
-                    #, exc_info=True
+                    , exc_info=True
                 )
                 raise
         self._futures = {}

@@ -1,8 +1,6 @@
 """
 ZooKeeper-control classes module
 """
-
-import logging
 import os
 from typing import Dict, Iterable, Tuple
 
@@ -10,7 +8,7 @@ from kazoo.client import KazooClient
 from kazoo.exceptions import KazooException, NoNodeError
 from kazoo.handlers.threading import KazooTimeoutError
 
-from ch_backup.logging import debug
+import ch_backup.logging as logging 
 
 from ..clickhouse.models import Table
 from ..util import retry
@@ -102,7 +100,7 @@ class ZookeeperCTL:
                     "replicas",
                     replica,
                 )  # remove leading '/'
-                debug(f'Deleting zk node: "{path}"')
+                logging.debug(f'Deleting zk node: "{path}"')
                 try:
                     client.delete(path, recursive=True)
                 except NoNodeError:
@@ -124,7 +122,7 @@ class ZookeeperCTL:
                 path = os.path.join(
                     self._zk_root_path, zk_path[1:].format(**macros)
                 )  # remove leading '/'
-                debug(f'Deleting zk node: "{path}"')
+                logging.debug(f'Deleting zk node: "{path}"')
                 try:
                     client.delete(path, recursive=True)
                 except NoNodeError:
