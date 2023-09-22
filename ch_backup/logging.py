@@ -2,13 +2,13 @@
 Logging module.
 """
 
-import os
-from typing import Any
-import logging
-import psutil
 import inspect
-from ch_backup.util import format_size, cached_property
+import logging
+
+import psutil
 from loguru import logger
+
+from ch_backup.util import format_size
 
 
 class Filter:
@@ -19,7 +19,10 @@ class Filter:
         if 'name' in record.get('extra', {}):
             return record["extra"].get("name") == self._name
 
-        if record['name'] == self._name:
+        if 'name' not in record:
+            return False
+
+        if record['name'][:len(self._name)] == self._name:
             record["extra"]['name'] = self._name
             return True
         return False
@@ -28,7 +31,15 @@ def make_filter(name):
     return Filter(name)
 
 class InterceptHandler(logging.Handler):
+    """
+    Helper class for logging interception.
+    """
     def emit(self, record: logging.LogRecord) -> None:
+        """
+        Intercept all records from the logging module and redirect them into loguru.
+
+        The handler for loguru will be choosen based on module name.
+        """
         # Get corresponding Loguru level if it exists.
         level: str | int
         try:

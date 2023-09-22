@@ -8,7 +8,7 @@ from kazoo.client import KazooClient
 from kazoo.exceptions import KazooException, NoNodeError
 from kazoo.handlers.threading import KazooTimeoutError
 
-import ch_backup.logging as logging 
+import ch_backup.logging as logging
 
 from ..clickhouse.models import Table
 from ..util import retry
@@ -30,7 +30,6 @@ class ZookeeperClient:
             certfile=config.get("cert"),
             keyfile=config.get("key"),
             ca=config.get("ca"),
-            logger=logging.getLogger("zookeeper"),
             randomize_hosts=config.get("randomize_hosts", True),
         )
         self._zk_user = config.get("user")

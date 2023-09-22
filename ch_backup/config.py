@@ -8,7 +8,6 @@ from typing import Any
 
 import yaml
 from humanfriendly import parse_size, parse_timespan
-
 from loguru import logger
 
 
@@ -153,65 +152,6 @@ DEFAULT_CONFIG = {
         "ca_bundle": [],
         "disable_ssl_warnings": False,
     },
-    "logging": {
-        "version": 1,
-        "formatters": {
-            "ch-backup": {
-                "format": "%(asctime)s %(processName)-11s %(process)-5d [%(levelname)-8s] %(name)s: %(message)s",
-            },
-            "boto": {
-                "format": "%(asctime)s %(processName)-11s %(process)-5d [%(levelname)-8s] %(name)s: %(message)s",
-            },
-        },
-        "handlers": {
-            "ch-backup": {
-                "class": "logger.FileHandler",
-                "filename": "/var/log/ch-backup/ch-backup.log",
-                "formatter": "ch-backup",
-            },
-            "boto": {
-                "class": "logger.FileHandler",
-                "filename": "/var/log/ch-backup/boto.log",
-                "formatter": "boto",
-            },
-            "clickhouse-disks": {
-                "class": "logger.FileHandler",
-                "filename": "/var/log/ch-backup/clickhouse-disks.log",
-                "formatter": "ch-backup",
-            },
-        },
-        "loggers": {
-            "ch-backup": {
-                "handlers": ["ch-backup"],
-                "level": "DEBUG",
-            },
-            "botocore": {
-                "handlers": ["boto"],
-                "level": "INFO",
-            },
-            "botocore.endpoint": {
-                "level": "DEBUG",
-            },
-            "botocore.vendored.requests": {
-                "level": "DEBUG",
-            },
-            "botocore.parsers": {
-                "level": "DEBUG",
-            },
-            "urllib3.connectionpool": {
-                "handlers": ["boto"],
-                "level": "DEBUG",
-            },
-            "clickhouse-disks": {
-                "handlers": ["clickhouse-disks"],
-                "level": "INFO",
-            },
-            "zookeeper": {
-                "handlers": ["ch-backup"],
-                "level": "DEBUG",
-            },
-        },
-    },
     "loguru": {
         "handlers": [
             {
@@ -222,7 +162,7 @@ DEFAULT_CONFIG = {
                 'enqueue': True,
             },
             {
-                'name': 'zookeper',
+                'name': 'kazoo',
                 "sink": "/var/log/ch-backup/ch-backup.log",
                 "format": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[name]}: {message}",
                 'level': 'DEBUG',
