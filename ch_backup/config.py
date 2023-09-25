@@ -15,6 +15,16 @@ def _as_seconds(t: str) -> int:
     return int(parse_timespan(t))
 
 
+def _handler_configuration(name: str, sink: str, level: str) -> dict:
+    return {
+        "name": name,
+        "sink": sink,
+        "format": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[logger_name]}: {message}",
+        "level": level,
+        "enqueue": True,
+    }
+
+
 DEFAULT_CONFIG = {
     "clickhouse": {
         "data_path": "/var/lib/clickhouse",
@@ -154,47 +164,22 @@ DEFAULT_CONFIG = {
     },
     "loguru": {
         "handlers": [
-            {
-                'name': 'ch-backup',
-                "sink": "/var/log/ch-backup/ch-backup.log",
-                "format": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[name]}: {message}",
-                'level': 'DEBUG',
-                'enqueue': True,
-            },
-            {
-                'name': 'kazoo',
-                "sink": "/var/log/ch-backup/ch-backup.log",
-                "format": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[name]}: {message}",
-                'level': 'DEBUG',
-                'enqueue': True,
-            
-            },
-            {
-                'name': 'boto',
-                "sink": "/var/log/ch-backup/boto.log",
-                "format": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[name]}: {message}",
-                'level': 'DEBUG',
-                'enqueue': True,
-            },
-            {
-                'name': 'clickhouse-disks',
-                "sink":  "/var/log/ch-backup/clickhouse-disks.log",
-                "format": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[name]}: {message}",
-                'level': 'INFO',
-                'enqueue': True,
-            },
-            {
-                'name': 'urllib3.connectionpool',
-                "sink": "/var/log/ch-backup/boto.log",
-                "format": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[name]}: {message}",
-                'level': 'DEBUG',
-                'enqueue': True,
-            },
-            
-            
+            _handler_configuration(
+                "ch-backup", "/var/log/ch-backup/ch-backup.log", "DEBUG"
+            ),
+            _handler_configuration(
+                "kazoo", "/var/log/ch-backup/ch-backup.log", "DEBUG"
+            ),
+            _handler_configuration("boto", "/var/log/ch-backup/ch-boto.log", "DEBUG"),
+            _handler_configuration(
+                "clickhouse-disks", "/var/log/ch-backup/clickhouse-disks.log", "INFO"
+            ),
+            _handler_configuration(
+                "urllib3.connectionpool", "/var/log/ch-backup/boto.log", "DEBUG"
+            ),
         ],
         "activation": [
-            ("",True),
+            ("", True),
         ],
     },
     "zookeeper": {

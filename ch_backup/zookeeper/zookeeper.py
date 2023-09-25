@@ -8,7 +8,7 @@ from kazoo.client import KazooClient
 from kazoo.exceptions import KazooException, NoNodeError
 from kazoo.handlers.threading import KazooTimeoutError
 
-import ch_backup.logging as logging
+from ch_backup import logging
 
 from ..clickhouse.models import Table
 from ..util import retry

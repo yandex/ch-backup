@@ -4,6 +4,7 @@ Logging module.
 
 import inspect
 import logging
+from typing import Any
 
 import psutil
 from loguru import logger
@@ -12,36 +13,55 @@ from ch_backup.util import format_size
 
 
 class Filter:
+    """
+    Filter for luguru handler.
+    """
+
     def __init__(self, name):
         self._name = name
 
     def __call__(self, record):
-        if 'name' in record.get('extra', {}):
-            return record["extra"].get("name") == self._name
+        """
+        Filter callback to decide for each logged message whether it should be sent to the sink or not.
 
-        if 'name' not in record:
+        If the log comes from ch-backup code then the logger name will be in `logger_name`.
+        If the log comes from other module and it caught by InterceptHandler then we filtering by the module_name.
+        """
+
+        if "logger_name" in record.get("extra", {}):
+            return record["extra"].get("logger_name") == self._name
+
+        if "module_name" not in record.get("extra", {}):
             return False
 
-        if record['name'][:len(self._name)] == self._name:
-            record["extra"]['name'] = self._name
+        if record["extra"]["module_name"][: len(self._name)] == self._name:
+            record["extra"]["logger_name"] = self._name
             return True
         return False
-        
+
+
 def make_filter(name):
+    """
+    Factory for filter creation.
+    """
+
     return Filter(name)
+
 
 class InterceptHandler(logging.Handler):
     """
     Helper class for logging interception.
     """
+
     def emit(self, record: logging.LogRecord) -> None:
         """
         Intercept all records from the logging module and redirect them into loguru.
 
-        The handler for loguru will be choosen based on module name.
+        The handler for loguru will be chosen based on module name.
         """
+
         # Get corresponding Loguru level if it exists.
-        level: str | int
+        level: int or str  # type: ignore
         try:
             level = logger.level(record.levelname).name
         except ValueError:
@@ -52,22 +72,32 @@ class InterceptHandler(logging.Handler):
         while frame and (depth == 0 or frame.f_code.co_filename == logging.__file__):
             frame = frame.f_back
             depth += 1
-        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+
+        try:
+            frame_name = frame.f_globals["__name__"]  # type: ignore
+        except KeyError:
+            frame_name = None
+
+        logger.bind(module_name=frame_name).opt(
+            depth=depth, exception=record.exc_info
+        ).log(level, record.getMessage())
 
 
-def configure(config: dict, config_loguru: dict) -> None:
+def configure(config_loguru: dict) -> None:
     """
     Configure logger.
     """
+    # Configure loguru.
     for handler in config_loguru["handlers"]:
-        handler['filter'] = make_filter(handler['name'])
-        del handler['name']
-    
-    logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
+        handler["filter"] = make_filter(handler["name"])
+        del handler["name"]
+
     logger.configure(
-        handlers = config_loguru["handlers"],
-        activation = config_loguru["activation"]
+        handlers=config_loguru["handlers"], activation=config_loguru["activation"]
     )
+
+    # Configure logging.
+    logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
 
 
 def critical(msg, *args, **kwargs):
@@ -75,16 +105,15 @@ def critical(msg, *args, **kwargs):
     Log a message with severity 'CRITICAL'.
     """
     with_exception = kwargs.get("exc_info", False)
-    getLogger('ch-backup').opt(exception=with_exception).critical(msg, *args, **kwargs)
+    getLogger("ch-backup").opt(exception=with_exception).critical(msg, *args, **kwargs)
 
 
-def error(msg, exc_info=False,*args, **kwargs):
+def error(msg, *args, **kwargs):
     """
     Log a message with severity 'ERROR'.
     """
     with_exception = kwargs.get("exc_info", False)
-    getLogger('ch-backup').opt(exception=with_exception).error(msg, *args, **kwargs)
-
+    getLogger("ch-backup").opt(exception=with_exception).error(msg, *args, **kwargs)
 
 
 def exception(msg, *args, **kwargs):
@@ -93,15 +122,15 @@ def exception(msg, *args, **kwargs):
     """
 
     with_exception = kwargs.get("exc_info", False)
-    getLogger('ch-backup').opt(exception=with_exception).debug(msg, *args, **kwargs)
+    getLogger("ch-backup").opt(exception=with_exception).debug(msg, *args, **kwargs)
 
 
-def warning(msg, exc_info=False, *args, **kwargs):
+def warning(msg, *args, **kwargs):
     """
     Log a message with severity 'WARNING'.
     """
     with_exception = kwargs.get("exc_info", False)
-    getLogger('ch-backup').opt(exception=with_exception).warning(msg, *args, **kwargs)
+    getLogger("ch-backup").opt(exception=with_exception).warning(msg, *args, **kwargs)
 
 
 def info(msg, *args, **kwargs):
@@ -109,7 +138,7 @@ def info(msg, *args, **kwargs):
     Log a message with severity 'INFO'.
     """
     with_exception = kwargs.get("exc_info", False)
-    getLogger('ch-backup').opt(exception=with_exception).info(msg, *args, **kwargs)
+    getLogger("ch-backup").opt(exception=with_exception).info(msg, *args, **kwargs)
 
 
 def debug(msg, *args, **kwargs):
@@ -117,7 +146,7 @@ def debug(msg, *args, **kwargs):
     Log a message with severity 'DEBUG'.
     """
     with_exception = kwargs.get("exc_info", False)
-    getLogger('ch-backup').opt(exception=with_exception).debug(msg, *args, **kwargs)
+    getLogger("ch-backup").opt(exception=with_exception).debug(msg, *args, **kwargs)
 
 
 def memory_usage():
@@ -146,7 +175,13 @@ def memory_usage():
         )
 
     except Exception:
-        warning("Unable to get memory usage",exc_info=True)
+        warning("Unable to get memory usage", exc_info=True)
 
-def getLogger(name: str):
-    return logger.bind(name=name)
+
+# pylint: disable=invalid-name
+def getLogger(name: str) -> Any:
+    """
+    Get logger with specific name.
+    """
+
+    return logger.bind(logger_name=name)

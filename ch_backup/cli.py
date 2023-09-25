@@ -127,7 +127,7 @@ def cli(
     if zk_hosts is not None:
         cfg["zookeeper"]["hosts"] = zk_hosts
 
-    logging.configure(cfg["logging"],cfg["loguru"])
+    logging.configure(cfg["loguru"])
     setup_environment(cfg["main"])
 
     if not drop_privileges(cfg["main"]):

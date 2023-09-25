@@ -31,7 +31,7 @@ class ExecPool:
         if future_id in self._futures:
             raise RuntimeError("Duplicate")
         future = self._pool.submit(func, *args, **kwargs)
-        future.add_done_callback(lambda _: logging.debug('Future {} completed', future_id))  # type: ignore[misc]
+        future.add_done_callback(lambda _: logging.debug("Future {} completed", future_id))  # type: ignore[misc]
         self._futures[future_id] = future
 
     def wait_all(self, keep_going: bool = False) -> None:
@@ -55,8 +55,7 @@ class ExecPool:
                     )
                     continue
                 logging.error(
-                    'Future "{}" generated an exception:', future_id
-                    , exc_info=True
+                    'Future "{}" generated an exception:', future_id, exc_info=True
                 )
                 raise
         self._futures = {}
