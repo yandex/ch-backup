@@ -1,0 +1,33 @@
+name: external_run_test-integration
+
+run-name: ${{ inputs.prefix }}_${{github.workflow}}_${{ inputs.uuid }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      prefix:
+        description: 'Prefix runtime workflow'
+        required: false
+        type: string
+        default: ""
+      uuid:
+        description: 'UUID that can correct understand start'
+        required: false
+        type: string
+        default: ""
+      clickhouse_version:
+        description: 'Clickhouse version'
+        required: true
+        type: string
+
+jobs:
+  test_integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: set up python
+        uses: actions/setup-python@v4
+        with:
+            python-version: "3.11"
+      - name: run integration tests
+        run: CLICKHOUSE_VERSION=${{ inputs.clickhouse_version }} make test-integration
