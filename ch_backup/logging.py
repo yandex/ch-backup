@@ -97,7 +97,7 @@ def configure(config_loguru: dict) -> None:
     )
 
     # Configure logging.
-    logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
+    logging.basicConfig(handlers=[InterceptHandler()], level=0)
 
 
 def critical(msg, *args, **kwargs):
