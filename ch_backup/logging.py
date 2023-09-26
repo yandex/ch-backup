@@ -23,14 +23,9 @@ class Filter:
     def __call__(self, record):
         """
         Filter callback to decide for each logged message whether it should be sent to the sink or not.
-
-        If the log comes from ch-backup code then the logger name will be in `logger_name`.
-        If the log comes from other module and it caught by InterceptHandler then we filtering by the module_name.
         """
 
-        if "logger_name" not in record.get("extra", {}):
-            return record["extra"].get("logger_name") == self._name
-        return False
+        return record["extra"].get("logger_name") == self._name
 
 
 def make_filter(name):

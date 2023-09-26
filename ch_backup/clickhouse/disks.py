@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 import xmltodict
 
-import ch_backup.logging as ch_logging
+from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
 from ch_backup.clickhouse.config import ClickhouseConfig
@@ -78,13 +78,13 @@ class ClickHouseTemporaryDisks:
 
     def __exit__(self, exc_type, *args, **kwargs):
         if exc_type is not None:
-            ch_logging.warning(
+            logging.warning(
                 f'Omitting tmp cloud storage disk cleanup due to exception: "{exc_type}"'
             )
             return False
 
         for disk in self._created_disks.values():
-            ch_logging.debug(f"Removing tmp disk {disk.name}")
+            logging.debug(f"Removing tmp disk {disk.name}")
             try:
                 os.remove(_get_config_path(self._config_dir, disk.name))
                 return True
@@ -100,7 +100,7 @@ class ClickHouseTemporaryDisks:
         source_endpoint: str,
     ) -> None:
         tmp_disk_name = _get_tmp_disk_name(disk.name)
-        ch_logging.debug(f"Creating tmp disk {tmp_disk_name}")
+        logging.debug(f"Creating tmp disk {tmp_disk_name}")
         disk_config = self._ch_config.config["storage_configuration"]["disks"][
             disk.name
         ]
@@ -129,9 +129,7 @@ class ClickHouseTemporaryDisks:
 
         self._ch_ctl.reload_config()
         source_disk = self._ch_ctl.get_disk(tmp_disk_name)
-        ch_logging.debug(
-            f'Restoring Cloud Storage "shadow" data  of disk "{disk.name}"'
-        )
+        logging.debug(f'Restoring Cloud Storage "shadow" data  of disk "{disk.name}"')
         self._backup_layout.download_cloud_storage_metadata(
             backup_meta, source_disk, disk.name
         )
@@ -180,23 +178,23 @@ def _copy_dir(from_disk: str, from_path: str, to_disk: str, to_path: str) -> Non
         common_args=[],
         command_args=["--diskFrom", from_disk, "--diskTo", to_disk, from_path, to_path],
     )
-    ch_logging.warning(f"clickhouse-disks copy result: {os.linesep.join(result)}")
+    logging.warning(f"clickhouse-disks copy result: {os.linesep.join(result)}")
 
 
 def _exec(command: str, common_args: List[str], command_args: List[str]) -> List[str]:
-    logger = ch_logging.getLogger("clickhouse-disks")
+    ch_disks_logger = logging.getLogger("clickhouse-disks")
     command_args = [
         "/usr/bin/clickhouse-disks",
         *common_args,
         command,
         *command_args,
     ]
-    ch_logging.debug(f'Executing "{" ".join(command_args)}"')
+    logging.debug(f'Executing "{" ".join(command_args)}"')
 
     with Popen(command_args, stdout=PIPE, stderr=PIPE, shell=False) as proc:
         while proc.poll() is None:
             for line in proc.stderr.readlines():  # type: ignore
-                logger.info(line.decode("utf-8").strip())
+                ch_disks_logger.info(line.decode("utf-8").strip())
         if proc.returncode != 0:
             raise ClickHouseDisksException(
                 f"clickhouse-disks call failed with exitcode: {proc.returncode}"

@@ -15,16 +15,6 @@ def _as_seconds(t: str) -> int:
     return int(parse_timespan(t))
 
 
-def _handler_configuration(name: str, sink: str, level: str) -> dict:
-    return {
-        "name": name,
-        "sink": sink,
-        "format": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[logger_name]}: {message}",
-        "level": level,
-        "enqueue": True,
-    }
-
-
 DEFAULT_CONFIG = {
     "clickhouse": {
         "data_path": "/var/lib/clickhouse",
