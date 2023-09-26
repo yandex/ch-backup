@@ -1,0 +1,28 @@
+name: test_clickhouse_version
+
+run-name: ${{github.workflow}}_${{ inputs.clickhouse_version }}_${{ inputs.id || github.run_number }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      clickhouse_version:
+        description: 'ClickHouse version'
+        required: true
+        type: string
+      id:
+        description: 'Run identifier'
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  test_integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: set up python
+        uses: actions/setup-python@v4
+        with:
+            python-version: "3.11"
+      - name: run integration tests
+        run: CLICKHOUSE_VERSION=${{ inputs.clickhouse_version }} make test-integration
