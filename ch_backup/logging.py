@@ -27,16 +27,10 @@ class Filter:
         If the log comes from ch-backup code then the logger name will be in `logger_name`.
         If the log comes from other module and it caught by InterceptHandler then we filtering by the module_name.
         """
-
+        print(record, self._name)
         if "logger_name" in record.get("extra", {}):
             return record["extra"].get("logger_name") == self._name
 
-        if "module_name" not in record.get("extra", {}):
-            return False
-
-        if record["extra"]["module_name"][: len(self._name)] == self._name:
-            record["extra"]["logger_name"] = self._name
-            return True
         return False
 
 
@@ -72,13 +66,8 @@ class InterceptHandler(logging.Handler):
         while frame and (depth == 0 or frame.f_code.co_filename == logging.__file__):
             frame = frame.f_back
             depth += 1
-
-        try:
-            frame_name = frame.f_globals["__name__"]  # type: ignore
-        except KeyError:
-            frame_name = None
-
-        logger.bind(module_name=frame_name).opt(
+        print(record)
+        logger.bind(logger_name=record.name).opt(
             depth=depth, exception=record.exc_info
         ).log(level, record.getMessage())
 
@@ -88,12 +77,20 @@ def configure(config_loguru: dict) -> None:
     Configure logger.
     """
     # Configure loguru.
-    for handler in config_loguru["handlers"]:
-        handler["filter"] = make_filter(handler["name"])
-        del handler["name"]
+    loguru_handlers = []
 
+    for name, value in config_loguru['handlers'].items():
+        handler = {
+            "sink": value['sink'],
+            "level": value['level'],
+            "format": config_loguru['formaters'][value['format']],
+            "filter": make_filter(name),   
+            "enqueue": True,
+        }
+        loguru_handlers.append(handler)
+    
     logger.configure(
-        handlers=config_loguru["handlers"], activation=config_loguru["activation"]
+        handlers=loguru_handlers, activation=[("",True)]
     )
 
     # Configure logging.

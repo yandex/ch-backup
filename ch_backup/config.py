@@ -163,24 +163,36 @@ DEFAULT_CONFIG = {
         "disable_ssl_warnings": False,
     },
     "loguru": {
-        "handlers": [
-            _handler_configuration(
-                "ch-backup", "/var/log/ch-backup/ch-backup.log", "DEBUG"
-            ),
-            _handler_configuration(
-                "kazoo", "/var/log/ch-backup/ch-backup.log", "DEBUG"
-            ),
-            _handler_configuration("boto", "/var/log/ch-backup/ch-boto.log", "DEBUG"),
-            _handler_configuration(
-                "clickhouse-disks", "/var/log/ch-backup/clickhouse-disks.log", "INFO"
-            ),
-            _handler_configuration(
-                "urllib3.connectionpool", "/var/log/ch-backup/boto.log", "DEBUG"
-            ),
-        ],
-        "activation": [
-            ("", True),
-        ],
+        "formaters":{
+            "ch-backup" : "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[logger_name]}: {message}",
+        }, 
+        "handlers": {
+            "ch-backup": { 
+                "sink" : "/var/log/ch-backup/ch-backup.log",
+                "level": "DEBUG",
+                "format": "ch-backup",
+            },
+            "zookeeper": { 
+                "sink" : "/var/log/ch-backup/ch-backup.log",
+                "level": "DEBUG",
+                "format": "ch-backup",
+            },
+            "botocore": { 
+                "sink" : "/var/log/ch-backup/ch-backup.log",
+                "level": "INFO",
+                "format": "ch-backup",
+            },
+            "clickhouse-disks": { 
+                "sink" : "/var/log/ch-backup/clickhouse-disks.log",
+                "level": "DEBUG",
+                "format": "ch-backup",
+            },
+            "urllib3.connectionpool": { 
+                "sink" : "/var/log/ch-backup/boto.log",
+                "level": "DEBUG",
+                "format": "ch-backup",
+            },
+        },
     },
     "zookeeper": {
         "secure": False,

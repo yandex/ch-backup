@@ -2,6 +2,7 @@
 ZooKeeper-control classes module
 """
 import os
+import logging as py_logging
 from typing import Dict, Iterable, Tuple
 
 from kazoo.client import KazooClient
@@ -30,6 +31,7 @@ class ZookeeperClient:
             certfile=config.get("cert"),
             keyfile=config.get("key"),
             ca=config.get("ca"),
+            logger=py_logging.getLogger("zookeeper"),
             randomize_hosts=config.get("randomize_hosts", True),
         )
         self._zk_user = config.get("user")
