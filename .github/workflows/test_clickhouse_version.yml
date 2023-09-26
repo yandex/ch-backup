@@ -1,24 +1,19 @@
 name: test_clickhouse_version
 
-run-name: ${{ inputs.prefix }}_${{github.workflow}}_${{ inputs.uuid }}
+run-name: ${{github.workflow}}_${{ inputs.clickhouse_version }}_${{ inputs.id || github.run_number }}
 
 on:
   workflow_dispatch:
     inputs:
-      prefix:
-        description: 'Prefix runtime workflow'
-        required: false
-        type: string
-        default: ""
-      uuid:
-        description: 'UUID that can correct understand start'
-        required: false
-        type: string
-        default: ""
       clickhouse_version:
-        description: 'Clickhouse version'
+        description: 'ClickHouse version'
         required: true
         type: string
+      id:
+        description: 'Run identifier'
+        required: false
+        type: string
+        default: ""
 
 jobs:
   test_integration:
