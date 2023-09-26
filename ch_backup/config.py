@@ -163,32 +163,37 @@ DEFAULT_CONFIG = {
         "disable_ssl_warnings": False,
     },
     "loguru": {
-        "formaters":{
-            "ch-backup" : "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[logger_name]}: {message}",
-        }, 
+        "formatters": {
+            "ch-backup": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[logger_name]}: {message}",
+        },
         "handlers": {
-            "ch-backup": { 
-                "sink" : "/var/log/ch-backup/ch-backup.log",
+            "ch-backup": {
+                "sink": "/var/log/ch-backup/ch-backup.log",
                 "level": "DEBUG",
                 "format": "ch-backup",
             },
-            "zookeeper": { 
-                "sink" : "/var/log/ch-backup/ch-backup.log",
+            "zookeeper": {
+                "sink": "/var/log/ch-backup/ch-backup.log",
                 "level": "DEBUG",
                 "format": "ch-backup",
             },
-            "botocore": { 
-                "sink" : "/var/log/ch-backup/ch-backup.log",
-                "level": "INFO",
+            "botocore": {
+                "sink": "/var/log/ch-backup/boto.log",
                 "format": "ch-backup",
+                "filter": {
+                    "botocore": "INFO",
+                    "botocore.endpoint": "DEBUG",
+                    "botocore.vendored.requests": "DEBUG",
+                    "botocore.parsers": "DEBUG",
+                },
             },
-            "clickhouse-disks": { 
-                "sink" : "/var/log/ch-backup/clickhouse-disks.log",
+            "clickhouse-disks": {
+                "sink": "/var/log/ch-backup/clickhouse-disks.log",
                 "level": "DEBUG",
                 "format": "ch-backup",
             },
-            "urllib3.connectionpool": { 
-                "sink" : "/var/log/ch-backup/boto.log",
+            "urllib3.connectionpool": {
+                "sink": "/var/log/ch-backup/boto.log",
                 "level": "DEBUG",
                 "format": "ch-backup",
             },

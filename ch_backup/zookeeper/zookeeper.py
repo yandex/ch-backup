@@ -1,8 +1,8 @@
 """
 ZooKeeper-control classes module
 """
-import os
 import logging as py_logging
+import os
 from typing import Dict, Iterable, Tuple
 
 from kazoo.client import KazooClient

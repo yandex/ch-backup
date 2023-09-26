@@ -27,10 +27,9 @@ class Filter:
         If the log comes from ch-backup code then the logger name will be in `logger_name`.
         If the log comes from other module and it caught by InterceptHandler then we filtering by the module_name.
         """
-        print(record, self._name)
-        if "logger_name" in record.get("extra", {}):
-            return record["extra"].get("logger_name") == self._name
 
+        if "logger_name" not in record.get("extra", {}):
+            return record["extra"].get("logger_name") == self._name
         return False
 
 
@@ -66,7 +65,7 @@ class InterceptHandler(logging.Handler):
         while frame and (depth == 0 or frame.f_code.co_filename == logging.__file__):
             frame = frame.f_back
             depth += 1
-        print(record)
+
         logger.bind(logger_name=record.name).opt(
             depth=depth, exception=record.exc_info
         ).log(level, record.getMessage())
@@ -79,22 +78,22 @@ def configure(config_loguru: dict) -> None:
     # Configure loguru.
     loguru_handlers = []
 
-    for name, value in config_loguru['handlers'].items():
+    for name, value in config_loguru["handlers"].items():
         handler = {
-            "sink": value['sink'],
-            "level": value['level'],
-            "format": config_loguru['formaters'][value['format']],
-            "filter": make_filter(name),   
+            "sink": value["sink"],
+            "format": config_loguru["formatters"][value["format"]],
             "enqueue": True,
+            "filter": value["filter"] if "filter" in value else make_filter(name),
         }
+        if "level" in value:
+            handler["level"] = value["level"]
         loguru_handlers.append(handler)
-    
-    logger.configure(
-        handlers=loguru_handlers, activation=[("",True)]
-    )
+
+    logger.configure(handlers=loguru_handlers, activation=[("", True)])
 
     # Configure logging.
     logging.basicConfig(handlers=[InterceptHandler()], level=0)
+    logging.debug("Checkroot")
 
 
 def critical(msg, *args, **kwargs):
