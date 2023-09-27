@@ -78,17 +78,21 @@ def configure(config_loguru: dict) -> None:
             "sink": value["sink"],
             "format": config_loguru["formatters"][value["format"]],
             "enqueue": True,
-            "filter": value["filter"] if "filter" in value else make_filter(name),
         }
         if "level" in value:
             handler["level"] = value["level"]
+
+        if "filter" in value:
+            handler["filter"] = value["filter"]
+            handler["filter"][""] = False
+        else:
+            handler["filter"] = make_filter(name)
         loguru_handlers.append(handler)
 
     logger.configure(handlers=loguru_handlers, activation=[("", True)])
 
     # Configure logging.
     logging.basicConfig(handlers=[InterceptHandler()], level=0)
-    logging.debug("Checkroot")
 
 
 def critical(msg, *args, **kwargs):
