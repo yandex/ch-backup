@@ -18,7 +18,7 @@ class LockManager:
     Lock manager class
     """
 
-    # pylint: disable=consider-using-with
+    # pylint: disable=consider-using-with,too-many-instance-attributes
 
     _lock_conf: dict
     _process_lockfile_path: str
