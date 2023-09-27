@@ -88,7 +88,7 @@ class TableBackup(BackupManager):
             mtime = self._get_mtime(table.metadata_path)
             if mtime is None:
                 logging.warning(
-                    'Cannot get metadata mtime for table "%s"."%s". Skipping it',
+                    'Cannot get metadata mtime for table "{}"."{}". Skipping it',
                     table.database,
                     table.name,
                 )
@@ -200,7 +200,7 @@ class TableBackup(BackupManager):
             ]
             if missed_tables:
                 logging.critical(
-                    "Required tables %s were not found in backup metadata",
+                    "Required tables {} were not found in backup metadata",
                     ", ".join([f"{t.database}.{t.name}" for t in missed_tables]),
                 )
                 raise ClickhouseBackupError(
@@ -279,7 +279,7 @@ class TableBackup(BackupManager):
         """
         if not table.metadata_path:
             logging.debug(
-                'Cannot load a create statement of the table "%s"."%s". Metadata is empty',
+                'Cannot load a create statement of the table "{}"."{}". Metadata is empty',
                 table.database,
                 table.name,
             )
@@ -288,7 +288,7 @@ class TableBackup(BackupManager):
             return Path(table.metadata_path).read_bytes()
         except OSError as e:
             logging.debug(
-                'Cannot load a create statement of the table "%s"."%s": %s',
+                'Cannot load a create statement of the table "{}"."{}": {}',
                 table.database,
                 table.name,
                 str(e),
@@ -311,14 +311,14 @@ class TableBackup(BackupManager):
         Return backup metadata of successfully backuped table, otherwise None.
         """
         logging.debug(
-            'Performing table backup for "%s"."%s"', table.database, table.name
+            'Performing table backup for "{}"."{}"', table.database, table.name
         )
         table_meta = TableMetadata(table.database, table.name, table.engine, table.uuid)
 
         create_statement = self._load_create_statement_from_disk(table)
         if not create_statement:
             logging.warning(
-                'Skipping table backup for "%s"."%s". Local metadata is empty or absent',
+                'Skipping table backup for "{}"."{}". Local metadata is empty or absent',
                 db.name,
                 table.name,
             )
@@ -333,7 +333,7 @@ class TableBackup(BackupManager):
                     raise
 
                 logging.warning(
-                    'Table "%s"."%s" was removed by a user during backup',
+                    'Table "{}"."{}" was removed by a user during backup',
                     table.database,
                     table.name,
                 )
@@ -343,7 +343,7 @@ class TableBackup(BackupManager):
         new_mtime = self._get_mtime(table.metadata_path)
         if new_mtime is None or mtimes[table.name].mtime != new_mtime:
             logging.warning(
-                'Skipping table backup for "%s"."%s". The metadata file was updated or removed during backup',
+                'Skipping table backup for "{}"."{}". The metadata file was updated or removed during backup',
                 table.database,
                 table.name,
             )
@@ -375,13 +375,13 @@ class TableBackup(BackupManager):
         """
         if not is_merge_tree(table.engine):
             logging.info(
-                'Skipping table data backup for non MergeTree table "%s"."%s"',
+                'Skipping table data backup for non MergeTree table "{}"."{}"',
                 table.database,
                 table.name,
             )
             return
 
-        logging.debug('Uploading table data for "%s"."%s"', table.database, table.name)
+        logging.debug('Uploading table data for "{}"."{}"', table.database, table.name)
 
         uploaded_parts = []
         for data_path, disk in table.paths_with_disks:
@@ -390,7 +390,7 @@ class TableBackup(BackupManager):
             )
 
             for fpart in freezed_parts:
-                logging.debug("Working on %s", fpart)
+                logging.debug("Working on {}", fpart)
 
                 if disk.type == "s3":
                     table_meta.add_part(PartMetadata.from_frozen_part(fpart))
@@ -470,7 +470,7 @@ class TableBackup(BackupManager):
                 ):
                     continue
                 logging.warning(
-                    'Table "%s"."%s" will be recreated as its schema mismatches the schema from backup: "%s" != "%s"',
+                    'Table "{}"."{}" will be recreated as its schema mismatches the schema from backup: "{}" != "{}"',
                     table.database,
                     table.name,
                     existing_table.create_statement,
@@ -518,7 +518,7 @@ class TableBackup(BackupManager):
         other_tables = []
         for table in tables:
             logging.debug(
-                "Preparing table %s for restoring", f"{table.database}.{table.name}"
+                "Preparing table {} for restoring", f"{table.database}.{table.name}"
             )
             self._rewrite_table_schema(
                 context, databases[table.database], table, add_uuid_if_required=True
@@ -540,7 +540,7 @@ class TableBackup(BackupManager):
             ]
 
             logging.debug(
-                "Deleting replica metadata for replicated tables: %s",
+                "Deleting replica metadata for replicated tables: {}",
                 ", ".join([f"{t.database}.{t.name}" for t in replicated_tables]),
             )
             context.zk_ctl.delete_replica_metadata(
@@ -567,7 +567,7 @@ class TableBackup(BackupManager):
         for table_meta in tables:
             try:
                 logging.debug(
-                    'Running table "%s.%s" data restore',
+                    'Running table "{}.{}" data restore',
                     table_meta.database,
                     table_meta.name,
                 )
@@ -631,7 +631,7 @@ class TableBackup(BackupManager):
                 )
                 for part in attach_parts:
                     logging.debug(
-                        'Attaching "%s.%s" part: %s',
+                        'Attaching "{}.{}" part: {}',
                         table_meta.database,
                         table.name,
                         part.name,
@@ -641,7 +641,7 @@ class TableBackup(BackupManager):
                         context.restore_context.add_part(part, PartState.RESTORED)
                     except Exception as e:
                         logging.warning(
-                            'Attaching "%s.%s" part %s failed: %s',
+                            'Attaching "{}.{}" part {} failed: {}',
                             table_meta.database,
                             table.name,
                             part.name,
@@ -698,7 +698,7 @@ class TableBackup(BackupManager):
             table = unprocessed.popleft()
             try:
                 logging.debug(
-                    "Trying to restore table object for table %s",
+                    "Trying to restore table object for table {}",
                     f"{table.database}.{table.name}",
                 )
                 self._restore_table_object(context, databases[table.database], table)
@@ -723,7 +723,7 @@ class TableBackup(BackupManager):
 
         if errors:
             logging.error(
-                "Failed to restore tables:\n%s",
+                "Failed to restore tables:\n{}",
                 "\n".join(f'"{v.database}"."{v.name}": {e!r}' for v, e in errors),
             )
 

@@ -2,67 +2,142 @@
 Logging module.
 """
 
+import inspect
 import logging
-import logging.config
-import os
+from typing import Any
 
 import psutil
+from loguru import logger
 
 from ch_backup.util import format_size
 
 
-def configure(config: dict) -> None:
+class Filter:
     """
-    Configure logging.
+    Filter for luguru handler.
     """
-    for handler in config.get("handlers", {}).values():
-        filename = handler.get("filename")
-        if filename:
-            os.makedirs(os.path.dirname(filename), exist_ok=True)
 
-    logging.config.dictConfig(config)
+    def __init__(self, name):
+        self._name = name
+
+    def __call__(self, record):
+        """
+        Filter callback to decide for each logged message whether it should be sent to the sink or not.
+        """
+
+        return record["extra"].get("logger_name") == self._name
+
+
+def make_filter(name):
+    """
+    Factory for filter creation.
+    """
+
+    return Filter(name)
+
+
+class InterceptHandler(logging.Handler):
+    """
+    Helper class for logging interception.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """
+        Intercept all records from the logging module and redirect them into loguru.
+
+        The handler for loguru will be chosen based on module name.
+        """
+
+        # Get corresponding Loguru level if it exists.
+        level: int or str  # type: ignore
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+
+        # Find caller from where originated the logged message.
+        frame, depth = inspect.currentframe(), 0
+        while frame and (depth == 0 or frame.f_code.co_filename == logging.__file__):
+            frame = frame.f_back
+            depth += 1
+
+        logger.bind(logger_name=record.name).opt(
+            depth=depth, exception=record.exc_info
+        ).log(level, record.getMessage())
+
+
+def configure(config_loguru: dict) -> None:
+    """
+    Configure logger.
+    """
+    # Configure loguru.
+    loguru_handlers = []
+
+    for name, value in config_loguru["handlers"].items():
+        handler = {
+            "sink": value["sink"],
+            "format": config_loguru["formatters"][value["format"]],
+            "enqueue": True,
+            "filter": value["filter"] if "filter" in value else make_filter(name),
+        }
+        if "level" in value:
+            handler["level"] = value["level"]
+        loguru_handlers.append(handler)
+
+    logger.configure(handlers=loguru_handlers, activation=[("", True)])
+
+    # Configure logging.
+    logging.basicConfig(handlers=[InterceptHandler()], level=0)
+    logging.debug("Checkroot")
 
 
 def critical(msg, *args, **kwargs):
     """
     Log a message with severity 'CRITICAL'.
     """
-    _get_logger().critical(msg, *args, **kwargs)
+    with_exception = kwargs.get("exc_info", False)
+    getLogger("ch-backup").opt(exception=with_exception).critical(msg, *args, **kwargs)
 
 
 def error(msg, *args, **kwargs):
     """
     Log a message with severity 'ERROR'.
     """
-    _get_logger().error(msg, *args, **kwargs)
+    with_exception = kwargs.get("exc_info", False)
+    getLogger("ch-backup").opt(exception=with_exception).error(msg, *args, **kwargs)
 
 
 def exception(msg, *args, **kwargs):
     """
     Log a message with severity 'ERROR' with exception information.
     """
-    _get_logger().exception(msg, *args, **kwargs)
+
+    with_exception = kwargs.get("exc_info", False)
+    getLogger("ch-backup").opt(exception=with_exception).debug(msg, *args, **kwargs)
 
 
 def warning(msg, *args, **kwargs):
     """
     Log a message with severity 'WARNING'.
     """
-    _get_logger().warning(msg, *args, **kwargs)
+    with_exception = kwargs.get("exc_info", False)
+    getLogger("ch-backup").opt(exception=with_exception).warning(msg, *args, **kwargs)
 
 
 def info(msg, *args, **kwargs):
     """
     Log a message with severity 'INFO'.
     """
-    _get_logger().info(msg, *args, **kwargs)
+    with_exception = kwargs.get("exc_info", False)
+    getLogger("ch-backup").opt(exception=with_exception).info(msg, *args, **kwargs)
 
 
 def debug(msg, *args, **kwargs):
     """
     Log a message with severity 'DEBUG'.
     """
-    _get_logger().debug(msg, *args, **kwargs)
+    with_exception = kwargs.get("exc_info", False)
+    getLogger("ch-backup").opt(exception=with_exception).debug(msg, *args, **kwargs)
 
 
 def memory_usage():
@@ -84,7 +159,7 @@ def memory_usage():
         total_usage = main_proc_usage + worker_procs_usage
 
         debug(
-            "Memory usage: %s (main process: %s, worker processes: %s)",
+            "Memory usage: {} (main process: {}, worker processes: {})",
             format_size(total_usage),
             format_size(main_proc_usage),
             format_size(worker_procs_usage),
@@ -94,5 +169,10 @@ def memory_usage():
         warning("Unable to get memory usage", exc_info=True)
 
 
-def _get_logger() -> logging.Logger:
-    return logging.getLogger("ch-backup")
+# pylint: disable=invalid-name
+def getLogger(name: str) -> Any:
+    """
+    Get logger with specific name.
+    """
+
+    return logger.bind(logger_name=name)

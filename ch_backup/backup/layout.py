@@ -45,11 +45,11 @@ class BackupLayout:
         remote_path = self._backup_metadata_path(backup.name)
         remote_light_path = self._backup_light_metadata_path(backup.name)
         try:
-            logging.debug("Saving backup metadata in %s", remote_path)
+            logging.debug("Saving backup metadata in {}", remote_path)
             self._storage_loader.upload_data(
                 backup.dump_json(light=False), remote_path=remote_path
             )
-            logging.debug("Saving backup light metadata in %s", remote_light_path)
+            logging.debug("Saving backup light metadata in {}", remote_light_path)
             self._storage_loader.upload_data(
                 backup.dump_json(light=True), remote_path=remote_light_path
             )
@@ -66,7 +66,7 @@ class BackupLayout:
         remote_path = _db_metadata_path(self.get_backup_path(backup_name), db.name)
         try:
             logging.debug(
-                'Uploading metadata (create statement) for database "%s"', db.name
+                'Uploading metadata (create statement) for database "{}"', db.name
             )
             self._storage_loader.upload_file(
                 local_path, remote_path=remote_path, encryption=True
@@ -88,7 +88,7 @@ class BackupLayout:
         )
         try:
             logging.debug(
-                'Uploading metadata (create statement) for table "%s"."%s"',
+                'Uploading metadata (create statement) for table "{}"."{}"',
                 db.name,
                 table.name,
             )
@@ -108,7 +108,7 @@ class BackupLayout:
             self.get_backup_path(backup_name), file_name
         )
         try:
-            logging.debug('Uploading access control data "%s"', local_path)
+            logging.debug('Uploading access control data "{}"', local_path)
             self._storage_loader.upload_file(
                 local_path=local_path, remote_path=remote_path, encryption=True
             )
@@ -127,7 +127,7 @@ class BackupLayout:
             self.get_backup_path(backup_name), ACCESS_CONTROL_FNAME
         )
         try:
-            logging.debug('Uploading access control data "%s"', local_path)
+            logging.debug('Uploading access control data "{}"', local_path)
             self._storage_loader.upload_files_tarball(
                 self._access_control_path, file_names, remote_path, encryption=True
             )
@@ -154,7 +154,7 @@ class BackupLayout:
         Upload part data.
         """
         logging.debug(
-            'Uploading data part %s of "%s"."%s"',
+            'Uploading data part {} of "{}"."{}"',
             fpart.name,
             fpart.database,
             fpart.table,
@@ -255,7 +255,7 @@ class BackupLayout:
         Return list of existing backups sorted by start_time in descent order.
         """
         logging.debug(
-            "Collecting %s of existing backups",
+            "Collecting {} of existing backups",
             "light metadata" if use_light_meta else "metadata",
         )
 
@@ -322,7 +322,7 @@ class BackupLayout:
         )
         local_path = os.path.join(self._access_control_path, file_name)
         logging.debug(
-            'Downloading access control metadata "%s" to "%s', remote_path, local_path
+            'Downloading access control metadata "{}" to "{}', remote_path, local_path
         )
         try:
             self._storage_loader.download_file(remote_path, local_path, encryption=True)
@@ -339,7 +339,7 @@ class BackupLayout:
         )
         local_path = self._access_control_path
         logging.debug(
-            'Downloading access control metadata "%s" to "%s', remote_path, local_path
+            'Downloading access control metadata "{}" to "{}', remote_path, local_path
         )
         try:
             self._storage_loader.download_files(
@@ -356,7 +356,7 @@ class BackupLayout:
         Download part data to the specified directory.
         """
         logging.debug(
-            'Downloading data part %s of "%s"."%s"',
+            'Downloading data part {} of "{}"."{}"',
             part.name,
             part.database,
             part.table,
@@ -370,7 +370,7 @@ class BackupLayout:
 
         if part.tarball:
             remote_path = os.path.join(remote_dir_path, f"{part.name}.tar")
-            logging.debug("Downloading part tarball file: %s", remote_path)
+            logging.debug("Downloading part tarball file: {}", remote_path)
             try:
                 self._storage_loader.download_files(
                     remote_path=remote_path,
@@ -386,7 +386,7 @@ class BackupLayout:
                 local_path = os.path.join(fs_part_path, filename)
                 remote_path = os.path.join(remote_dir_path, filename)
                 try:
-                    logging.debug("Downloading part file: %s", remote_path)
+                    logging.debug("Downloading part file: {}", remote_path)
                     self._storage_loader.download_file(
                         remote_path=remote_path,
                         local_path=local_path,
@@ -422,7 +422,7 @@ class BackupLayout:
             notfound_files = set(part.files) - set(remote_files)
             if notfound_files:
                 logging.warning(
-                    "Some part files were not found in %s: %s",
+                    "Some part files were not found in {}: {}",
                     remote_dir_path,
                     ", ".join(notfound_files),
                 )
@@ -469,7 +469,7 @@ class BackupLayout:
         """
         backup_path = self.get_backup_path(backup_name)
 
-        logging.debug("Deleting data in %s", backup_path)
+        logging.debug("Deleting data in {}", backup_path)
 
         deleting_files = self._storage_loader.list_dir(
             backup_path, recursive=True, absolute=True
@@ -490,7 +490,7 @@ class BackupLayout:
             part_path = _part_path(
                 part.link or backup_meta.path, part.database, part.table, part.name
             )
-            logging.debug("Deleting data part %s", part_path)
+            logging.debug("Deleting data part {}", part_path)
             if part.tarball:
                 deleting_files.append(os.path.join(part_path, f"{part.name}.tar"))
             else:

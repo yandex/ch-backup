@@ -8,8 +8,7 @@ from typing import Any
 
 import yaml
 from humanfriendly import parse_size, parse_timespan
-
-from ch_backup import logging
+from loguru import logger
 
 
 def _as_seconds(t: str) -> int:
@@ -153,62 +152,40 @@ DEFAULT_CONFIG = {
         "ca_bundle": [],
         "disable_ssl_warnings": False,
     },
-    "logging": {
-        "version": 1,
+    "loguru": {
         "formatters": {
-            "ch-backup": {
-                "format": "%(asctime)s %(processName)-11s %(process)-5d [%(levelname)-8s] %(name)s: %(message)s",
-            },
-            "boto": {
-                "format": "%(asctime)s %(processName)-11s %(process)-5d [%(levelname)-8s] %(name)s: %(message)s",
-            },
+            "ch-backup": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[logger_name]}: {message}",
         },
         "handlers": {
             "ch-backup": {
-                "class": "logging.FileHandler",
-                "filename": "/var/log/ch-backup/ch-backup.log",
-                "formatter": "ch-backup",
-            },
-            "boto": {
-                "class": "logging.FileHandler",
-                "filename": "/var/log/ch-backup/boto.log",
-                "formatter": "boto",
-            },
-            "clickhouse-disks": {
-                "class": "logging.FileHandler",
-                "filename": "/var/log/ch-backup/clickhouse-disks.log",
-                "formatter": "ch-backup",
-            },
-        },
-        "loggers": {
-            "ch-backup": {
-                "handlers": ["ch-backup"],
+                "sink": "/var/log/ch-backup/ch-backup.log",
                 "level": "DEBUG",
-            },
-            "botocore": {
-                "handlers": ["boto"],
-                "level": "INFO",
-            },
-            "botocore.endpoint": {
-                "level": "DEBUG",
-            },
-            "botocore.vendored.requests": {
-                "level": "DEBUG",
-            },
-            "botocore.parsers": {
-                "level": "DEBUG",
-            },
-            "urllib3.connectionpool": {
-                "handlers": ["boto"],
-                "level": "DEBUG",
-            },
-            "clickhouse-disks": {
-                "handlers": ["clickhouse-disks"],
-                "level": "INFO",
+                "format": "ch-backup",
             },
             "zookeeper": {
-                "handlers": ["ch-backup"],
+                "sink": "/var/log/ch-backup/ch-backup.log",
                 "level": "DEBUG",
+                "format": "ch-backup",
+            },
+            "botocore": {
+                "sink": "/var/log/ch-backup/boto.log",
+                "format": "ch-backup",
+                "filter": {
+                    "botocore": "INFO",
+                    "botocore.endpoint": "DEBUG",
+                    "botocore.vendored.requests": "DEBUG",
+                    "botocore.parsers": "DEBUG",
+                },
+            },
+            "clickhouse-disks": {
+                "sink": "/var/log/ch-backup/clickhouse-disks.log",
+                "level": "DEBUG",
+                "format": "ch-backup",
+            },
+            "urllib3.connectionpool": {
+                "sink": "/var/log/ch-backup/boto.log",
+                "level": "DEBUG",
+                "format": "ch-backup",
             },
         },
     },
@@ -272,14 +249,14 @@ class Config:
         try:
             return self._conf[item]
         except KeyError:
-            logging.critical('Config item "%s" was not defined', item)
+            logger.critical('Config item "{}" was not defined', item)
             raise
 
     def __setitem__(self, item, value):
         try:
             self._conf[item] = value
         except KeyError:
-            logging.critical('Config item "%s" was not defined', item)
+            logger.critical('Config item "{}" was not defined', item)
             raise
 
     def get(self, key: str, default: Any = None) -> Any:

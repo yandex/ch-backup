@@ -206,7 +206,7 @@ def retry(
 
     def _log_retry(retry_state):
         logging.debug(
-            "Retrying %s.%s in %.2fs, attempt: %s, reason: %r",
+            "Retrying {}.{} in {}, attempt: {}, reason: {}",
             retry_state.fn.__module__,
             retry_state.fn.__qualname__,
             retry_state.next_action.sleep,
