@@ -209,6 +209,7 @@ DEFAULT_CONFIG = {
         "flock_path": "/tmp/flock.lock",
         "zk_flock_path": "/tmp/zk_flock.lock",
         "exitcode": 0,
+        "lock_timeout": _as_seconds("1 min"),
     },
 }
 
