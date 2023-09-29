@@ -277,25 +277,14 @@ class ClickhouseCTL:
         self._disks = self.get_disks()
         settings = {
             "allow_experimental_database_materialized_postgresql": 1,
+            "allow_experimental_database_materialized_mysql": 1,
             "allow_experimental_database_replicated": 1,
             "allow_experimental_funnel_functions": 1,
             "allow_experimental_live_view": 1,
+            "allow_experimental_window_view": 1,
             "allow_suspicious_codecs": 1,
             "allow_suspicious_low_cardinality_types": 1,
         }
-        if self.ch_version_ge("21.9"):
-            settings.update(
-                {
-                    "allow_experimental_database_materialized_mysql": 1,
-                    "allow_experimental_nlp_functions": 1,
-                }
-            )
-        if self.ch_version_ge("21.12"):
-            settings.update(
-                {
-                    "allow_experimental_window_view": 1,
-                }
-            )
         if self.ch_version_ge("22.3"):
             settings.update(
                 {
