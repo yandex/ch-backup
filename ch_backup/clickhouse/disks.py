@@ -157,11 +157,43 @@ class ClickHouseTemporaryDisks:
                     part.name,
                     "",
                 )
-                _copy_dir(source_disk.name, source_path, target_disk.name, target_path)
+                self._copy_dir(
+                    source_disk.name, source_path, target_disk.name, target_path
+                )
                 return
         raise RuntimeError(
             f'Disk "{target_disk.name}" path not found for table `{table.database}`.`{table.name}`'
         )
+
+    def _copy_dir(
+        self, from_disk: str, from_path: str, to_disk: str, to_path: str
+    ) -> None:
+        if self._ch_ctl.ch_version_ge("23.9"):
+            command_args = [
+                "--disk-from",
+                from_disk,
+                "--disk-to",
+                to_disk,
+                from_path,
+                to_path,
+            ]
+        else:
+            command_args = [
+                "--diskFrom",
+                from_disk,
+                "--diskTo",
+                to_disk,
+                from_path,
+                to_path,
+            ]
+
+        result = _exec(
+            "copy",
+            common_args=[],
+            command_args=command_args,
+        )
+
+        logging.info(f"clickhouse-disks copy result: {os.linesep.join(result)}")
 
 
 def _get_config_path(config_dir: str, disk_name: str) -> str:
@@ -170,15 +202,6 @@ def _get_config_path(config_dir: str, disk_name: str) -> str:
 
 def _get_tmp_disk_name(disk_name: str) -> str:
     return f"{disk_name}_source"
-
-
-def _copy_dir(from_disk: str, from_path: str, to_disk: str, to_path: str) -> None:
-    result = _exec(
-        "copy",
-        common_args=[],
-        command_args=["--diskFrom", from_disk, "--diskTo", to_disk, from_path, to_path],
-    )
-    logging.warning(f"clickhouse-disks copy result: {os.linesep.join(result)}")
 
 
 def _exec(command: str, common_args: List[str], command_args: List[str]) -> List[str]:

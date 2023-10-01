@@ -57,6 +57,8 @@ jobs:
         - python: "3.10"
           clickhouse: "23.3.13.6"
         - python: "3.10"
+          clickhouse: "23.8.3.48"
+        - python: "3.10"
           clickhouse: "latest"
         - python: "3.11"
           clickhouse: "latest"
