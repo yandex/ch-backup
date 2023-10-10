@@ -78,6 +78,7 @@ def configure(config_loguru: dict) -> None:
             "sink": value["sink"],
             "format": config_loguru["formatters"][value["format"]],
             "enqueue": True,
+            "diagnose": False,
         }
         if "level" in value:
             handler["level"] = value["level"]

@@ -154,7 +154,7 @@ DEFAULT_CONFIG = {
     },
     "loguru": {
         "formatters": {
-            "ch-backup": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[logger_name]}: {message}",
+            "ch-backup": "{time:YYYY-MM-DD HH:mm:ss,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[logger_name]}: {message}",
         },
         "handlers": {
             "ch-backup": {
