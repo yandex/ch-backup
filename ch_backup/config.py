@@ -92,7 +92,7 @@ DEFAULT_CONFIG = {
         # chunk_size will be multiplied on a required number of times
         # to satisfy the limit.
         "max_chunk_count": 10000,
-        # Enable bulk detete (DeleteObjects in S3 API)
+        # Enable bulk delete (DeleteObjects in S3 API)
         "bulk_delete_enabled": True,
         # How many files we can delete by bulk delete operation in one call
         "bulk_delete_chunk_size": 1000,
@@ -154,7 +154,7 @@ DEFAULT_CONFIG = {
     },
     "loguru": {
         "formatters": {
-            "ch-backup": "{time:YYYY-MM-DD H:m:s,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[logger_name]}: {message}",
+            "ch-backup": "{time:YYYY-MM-DD HH:mm:ss,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[logger_name]}: {message}",
         },
         "handlers": {
             "ch-backup": {
