@@ -1,7 +1,7 @@
 isort;              python_version >="3.8"
 black;              python_version >="3.8"
 ruff;               python_version >="3.8"
-pylint;             python_version >="3.8"
+pylint<3.0;         python_version >="3.8"
 mypy==1.5.1;        python_version >="3.8"
 mypy-boto3-s3;      python_version >="3.8"
 types-PyYAML;       python_version >="3.8"
