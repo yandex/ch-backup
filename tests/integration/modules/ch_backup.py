@@ -211,6 +211,7 @@ class BackupManager:
         data: bool = None,
         schema: bool = None,
         udf: bool = None,
+        nc: bool = None,
     ) -> str:
         """
         Execute backup command.
@@ -234,6 +235,8 @@ class BackupManager:
             options.append("--schema")
         if udf:
             options.append("--udf")
+        if nc:
+            options.append("--nc")
         return self._exec(f'backup {" ".join(options)}').strip()
 
     def delete(
@@ -311,6 +314,7 @@ class BackupManager:
         data: bool = None,
         schema: bool = None,
         udf: bool = None,
+        nc: bool = None,
         keep_going: bool = False,
     ) -> str:
         """
@@ -342,6 +346,8 @@ class BackupManager:
             options.append("--schema")
         if udf:
             options.append("--udf")
+        if nc:
+            options.append("--nc")
         if keep_going:
             options.append("--keep-going")
         return self._exec(f'restore {" ".join(options)} {backup_id}')

@@ -436,6 +436,7 @@ def show_command(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> None:
     option(
         "--udf", is_flag=True, help="Perform partial backup of user defined functions."
     ),
+    option("--nc", is_flag=True, help="Perform partial backup of named collections."),
 )
 @option_group(
     "Timeout configuration",
@@ -476,6 +477,7 @@ def show_command(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> None:
 @constraint(mutually_exclusive, ["schema_only", "data"])
 @constraint(mutually_exclusive, ["schema_only", "schema"])
 @constraint(mutually_exclusive, ["schema_only", "udf"])
+@constraint(mutually_exclusive, ["schema_only", "nc"])
 @constraint(mutually_exclusive, ["data", "schema"])
 def backup_command(
     _ctx: Context,
@@ -491,6 +493,7 @@ def backup_command(
     data: bool,
     schema: bool,
     udf: bool,
+    nc: bool,
 ) -> None:
     """Perform backup."""
     # pylint: disable=too-many-arguments,too-many-locals
@@ -507,7 +510,7 @@ def backup_command(
         value = key_value.pop() if key_value else None
         labels[key] = value
 
-    sources = BackupSources.for_backup(access, data, schema, udf, schema_only)
+    sources = BackupSources.for_backup(access, data, schema, udf, nc, schema_only)
     (name, msg) = ch_backup.backup(
         sources, name, db_names=databases, tables=tables, force=force, labels=labels
     )
@@ -629,6 +632,7 @@ def backup_command(
     option(
         "--udf", is_flag=True, help="Perform partial restore of user defined functions."
     ),
+    option("--nc", is_flag=True, help="Perform partial restore of named collections."),
 )
 @option(
     "--keep-going",
@@ -643,6 +647,7 @@ def backup_command(
 @constraint(mutually_exclusive, ["schema_only", "data"])
 @constraint(mutually_exclusive, ["schema_only", "schema"])
 @constraint(mutually_exclusive, ["schema_only", "udf"])
+@constraint(mutually_exclusive, ["schema_only", "nc"])
 @constraint(mutually_exclusive, ["data", "schema"])
 def restore_command(
     ctx: Context,
@@ -666,6 +671,7 @@ def restore_command(
     data: bool = False,
     schema: bool = False,
     udf: bool = False,
+    nc: bool = False,
 ) -> None:
     """Restore data from a particular backup."""
     # pylint: disable=too-many-arguments,too-many-locals
@@ -683,7 +689,7 @@ def restore_command(
         TableMetadata
     ] = _key_values_to_tables_metadata(exclude_tables)
 
-    sources = BackupSources.for_restore(access, data, schema, udf, schema_only)
+    sources = BackupSources.for_restore(access, data, schema, udf, nc, schema_only)
     ch_backup.restore(
         sources=sources,
         backup_name=name,
