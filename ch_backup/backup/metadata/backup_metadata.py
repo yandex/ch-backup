@@ -66,6 +66,7 @@ class BackupMetadata:
         self._databases: Dict[str, dict] = {}
         self._access_control = AccessControlMetadata()
         self._user_defined_functions: List[str] = []
+        self._named_collections: List[str] = []
 
     def __str__(self) -> str:
         return self.dump_json()
@@ -111,6 +112,7 @@ class BackupMetadata:
             "databases": self._databases if not light else {},
             "access_controls": self._access_control.dump() if not light else {},
             "user_defined_functions": self._user_defined_functions if not light else [],
+            "named_collections": self._named_collections if not light else [],
             "cloud_storage": self.cloud_storage.dump(),
             "meta": {
                 "name": self.name,
@@ -180,8 +182,12 @@ class BackupMetadata:
             backup.version = meta["version"]
             backup.schema_only = meta.get("schema_only", False)
             # TODO remove after a several weeks/months, when backups rotated
+            # OR NOT TODO, because of backward compatibility
             backup._user_defined_functions = data.get(
                 "user_defined_functions", meta.get("user_defined_functions", [])
+            )
+            backup._named_collections = data.get(
+                "named_collections", meta.get("named_collections", [])
             )
 
             return backup
@@ -256,14 +262,21 @@ class BackupMetadata:
 
     def add_udf(self, udf_name: str) -> None:
         """
-        Add user defined function in metadata
+        Add user defined function in metadata.
         """
         assert udf_name not in self._user_defined_functions
         self._user_defined_functions.append(udf_name)
 
+    def add_named_collection(self, nc_name: str) -> None:
+        """
+        Add named collection in metadata.
+        """
+        assert nc_name not in self._named_collections
+        self._named_collections.append(nc_name)
+
     def get_udf(self) -> List[str]:
         """
-        Get user defined function data
+        Get user defined function data.
         """
         return self._user_defined_functions
 
@@ -277,6 +290,12 @@ class BackupMetadata:
                 parts.extend(table.get_parts())
 
         return parts
+
+    def get_named_collections(self) -> List[str]:
+        """
+        Get named collections data.
+        """
+        return self._named_collections
 
     def find_part(
         self, db_name: str, table_name: str, part_name: str
