@@ -309,7 +309,7 @@ class ClickhouseBackup:
         retained_backups = []
         with self._context.locker():
             for i, backup in enumerate(
-                self._context.backup_layout.get_backups(use_light_meta=False)
+                self._context.backup_layout.get_backups(use_light_meta=True)
             ):
                 if backup.name == backup_name:
                     deleting_backups.append(backup)
@@ -325,8 +325,9 @@ class ClickhouseBackup:
                 raise BackupNotFound(backup_name)
 
             dedup_references = collect_dedup_references_for_batch_backup_deletion(
-                retained_backups=retained_backups,
-                deleting_backups=deleting_backups,
+                layout=self._context.backup_layout,
+                retained_backups_light_meta=retained_backups,
+                deleting_backups_light_meta=deleting_backups,
             )
 
             result: Tuple[Optional[str], Optional[str]] = (None, None)
@@ -387,8 +388,9 @@ class ClickhouseBackup:
                 deleting_backups.append(backup)
 
             dedup_references = collect_dedup_references_for_batch_backup_deletion(
-                retained_backups=retained_backups,
-                deleting_backups=deleting_backups,
+                layout=self._context.backup_layout,
+                retained_backups_light_meta=retained_backups,
+                deleting_backups_light_meta=deleting_backups,
             )
 
             for backup in deleting_backups:
@@ -410,12 +412,15 @@ class ClickhouseBackup:
             self._access_backup_manager.fix_admin_user(self._context, dry_run)
 
     def _delete(
-        self, backup: BackupMetadata, dedup_references: DedupReferences
+        self, backup_light_meta: BackupMetadata, dedup_references: DedupReferences
     ) -> Tuple[Optional[str], Optional[str]]:
         logging.info(
             "Deleting backup {}, state: {}",
-            backup.name,
-            backup.state,
+            backup_light_meta.name,
+            backup_light_meta.state,
+        )
+        backup = self._context.backup_layout.reload_backup(
+            backup_light_meta, use_light_meta=False
         )
         backup.state = BackupState.DELETING
         self._context.backup_layout.upload_backup_metadata(backup)
