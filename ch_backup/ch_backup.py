@@ -312,6 +312,7 @@ class ClickhouseBackup:
         deleting_backups = []
         retained_backups = []
         with self._context.locker():
+            # Use light metadata in backups iteration to avoid high memory usage.
             for i, backup in enumerate(
                 self._context.backup_layout.get_backups(use_light_meta=True)
             ):
@@ -363,7 +364,8 @@ class ClickhouseBackup:
         deleting_backups: List[BackupMetadata] = []
         backup_names = self._context.backup_layout.get_backup_names()
         with self._context.locker():
-            for backup in self._context.backup_layout.get_backups(use_light_meta=False):
+            # Use light metadata in backups iteration to avoid high memory usage.
+            for backup in self._context.backup_layout.get_backups(use_light_meta=True):
                 if backup.name not in backup_names:
                     logging.info("Deleting backup without metadata: {}", backup.name)
                     self._context.backup_layout.delete_backup(backup.name)
