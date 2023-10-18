@@ -140,6 +140,15 @@ def step_has_same_access(context, node1, node2):
     assert_that(_get_ddl(node1), equal_to(_get_ddl(node2)))
 
 
+@then("{node1:w} has same named collections as {node2:w}")
+def step_has_same_named_collections(context, node1, node2):
+    def _get_ddl(node):
+        ch_client = ClickhouseClient(context, node)
+        return ch_client.get_all_named_collections()
+
+    assert_that(_get_ddl(node1), equal_to(_get_ddl(node2)))
+
+
 @then("on {node:w} tables are empty")
 def step_check_tables_are_empty(context, node):
     ch_client = ClickhouseClient(context, node)

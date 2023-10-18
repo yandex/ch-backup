@@ -31,6 +31,12 @@ SELECT name
 FROM system.{type} WHERE storage IN ('disk', 'local directory', 'local_directory', 'replicated')
 FORMAT JSON
 """
+NAMED_COLLECTIONS_QUERY = """
+SELECT name, collection
+FROM system.named_collections
+ORDER BY name
+FORMAT JSON
+"""
 
 
 class ClickhouseClient:
@@ -183,7 +189,7 @@ class ClickhouseClient:
 
     def get_all_access_objects(self) -> set:
         """
-        Retrieve DDL for users, roles, etc
+        Retrieve DDL for users, roles, etc.
         """
         result = set()
         for table_name, uppercase_name in ACCESS_TYPES:
@@ -198,6 +204,13 @@ class ClickhouseClient:
                 )
 
         return result
+
+    def get_all_named_collections(self) -> dict:
+        """
+        Retrieve DDL for named collections.
+        """
+        ncs = self._query("GET", query=NAMED_COLLECTIONS_QUERY)
+        return {nc["name"]: nc["collection"] for nc in ncs.get("data", [])}
 
     def drop_all_access_objects(self) -> None:
         """

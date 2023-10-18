@@ -19,6 +19,8 @@ class BackupSources:
     schema: bool = True
     # Perform operation for user defined functions
     udf: bool = True
+    # Perform operation for named collections
+    named_collections: bool = True
 
     @classmethod
     def for_backup(
@@ -27,6 +29,7 @@ class BackupSources:
         data: bool = False,
         schema: bool = False,
         udf: bool = False,
+        named_collections: bool = False,
         schema_only: bool = False,
     ) -> "BackupSources":
         """
@@ -34,13 +37,19 @@ class BackupSources:
 
         @todo: `schema_only` is deprecated and will be replaced soon.
         """
-        if any([access, data, schema, udf]):
+        if any([access, data, schema, udf, named_collections]):
             schema = data or schema
         else:
-            access, schema, udf = True, True, True
+            access, schema, udf, named_collections = True, True, True, True
             data = not schema_only
 
-        return cls(access=access, data=data, schema=schema, udf=udf)
+        return cls(
+            access=access,
+            data=data,
+            schema=schema,
+            udf=udf,
+            named_collections=named_collections,
+        )
 
     @classmethod
     def for_restore(
@@ -49,6 +58,7 @@ class BackupSources:
         data: bool = False,
         schema: bool = False,
         udf: bool = False,
+        named_collections: bool = False,
         schema_only: bool = False,
     ) -> "BackupSources":
         """
@@ -57,13 +67,19 @@ class BackupSources:
         @todo: method will be merged with `for_backup` when they'll have similar logic
         @todo: `schema_only` is deprecated and will be replaced soon.
         """
-        if any([access, data, schema, udf]):
+        if any([access, data, schema, udf, named_collections]):
             schema = data or schema
         else:
-            access, schema, udf = False, True, True
+            access, schema, udf, named_collections = False, True, True, True
             data = not schema_only
 
-        return cls(access=access, data=data, schema=schema, udf=udf)
+        return cls(
+            access=access,
+            data=data,
+            schema=schema,
+            udf=udf,
+            named_collections=named_collections,
+        )
 
     def schemas_included(self) -> bool:
         """

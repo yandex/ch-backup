@@ -133,6 +133,12 @@ DROP_UDF_SQL = strip_query(
 """
 )
 
+DROP_NAMED_COLLECTION_SQL = strip_query(
+    """
+    DROP NAMED COLLECTION `{nc_name}`
+"""
+)
+
 RESTORE_REPLICA_SQL = strip_query(
     """
     SYSTEM RESTORE REPLICA `{db_name}`.`{table_name}`
@@ -222,6 +228,13 @@ GET_DISKS_SQL_22_8 = strip_query(
 GET_UDF_QUERY_SQL = strip_query(
     """
     SELECT name, create_query FROM system.functions WHERE origin == 'SQLUserDefined'
+    FORMAT JSON
+"""
+)
+
+GET_NAMED_COLLECTIONS_QUERY_SQL = strip_query(
+    """
+    SELECT name FROM system.named_collections
     FORMAT JSON
 """
 )
@@ -376,7 +389,7 @@ class ClickhouseCTL:
 
     def system_unfreeze(self, backup_name: str) -> None:
         """
-        Unfreeze all partitions from all disks
+        Unfreeze all partitions from all disks.
         """
         if self.ch_version_ge("22.6"):
             query_sql = SYSTEM_UNFREEZE_SQL.format(backup_name=backup_name)
@@ -403,7 +416,7 @@ class ClickhouseCTL:
         self, exclude_dbs: Optional[Sequence[str]] = None
     ) -> Sequence[Database]:
         """
-        Get list of all databases
+        Get list of all databases.
         """
         if not exclude_dbs:
             exclude_dbs = []
@@ -493,9 +506,15 @@ class ClickhouseCTL:
 
     def restore_udf(self, udf_statement):
         """
-        Restore user defined function
+        Restore user defined function.
         """
         self._ch_client.query(udf_statement)
+
+    def restore_named_collection(self, nc_statement):
+        """
+        Restore named collection.
+        """
+        self._ch_client.query(nc_statement)
 
     def create_table(self, table: Table) -> None:
         """
@@ -505,7 +524,7 @@ class ClickhouseCTL:
 
     def restore_replica(self, table: Table) -> None:
         """
-        Call SYSTEM RESTORE REPLICA for table
+        Call SYSTEM RESTORE REPLICA for table.
         """
         assert is_replicated(table.create_statement)
         self._ch_client.query(
@@ -549,6 +568,12 @@ class ClickhouseCTL:
         Drop user defined function.
         """
         self._ch_client.query(DROP_UDF_SQL.format(udf_name=escape(udf_name)))
+
+    def drop_named_collection(self, nc_name: str) -> None:
+        """
+        Drop named collection.
+        """
+        self._ch_client.query(DROP_NAMED_COLLECTION_SQL.format(nc_name=escape(nc_name)))
 
     def get_database_metadata_path(self, database: str) -> str:
         """
@@ -699,10 +724,17 @@ class ClickhouseCTL:
 
     def get_udf_query(self) -> Dict[str, str]:
         """
-        Get udf query from system table
+        Get udf query from system table.
         """
         resp = self._ch_client.query(GET_UDF_QUERY_SQL)
         return {row["name"]: row["create_query"] for row in resp.get("data", [])}
+
+    def get_named_collections_query(self) -> List[str]:
+        """
+        Get named collections query from system table.
+        """
+        resp = self._ch_client.query(GET_NAMED_COLLECTIONS_QUERY_SQL)
+        return [row["name"] for row in resp.get("data", [])]
 
     def get_disk(self, disk_name: str) -> Disk:
         """

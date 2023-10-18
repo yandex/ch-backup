@@ -3,6 +3,7 @@ Management of backup data layout.
 """
 
 import os
+from pathlib import Path
 from typing import List, Optional, Sequence
 from urllib.parse import quote
 
@@ -32,6 +33,7 @@ class BackupLayout:
         self._config = config["backup"]
         self._access_control_path = config["clickhouse"]["access_control_path"]
         self._metadata_path = config["clickhouse"]["metadata_path"]
+        self._named_collections_path = config["clickhouse"]["named_collections_path"]
         enc_conf = config["encryption"]
         self._encryption_chunk_size = enc_conf["chunk_size"]
         self._encryption_metadata_size = get_encryption(
@@ -212,13 +214,60 @@ class BackupLayout:
             raise StorageError(msg) from e
         return True
 
+    def upload_named_collections_create_statement(
+        self, backup_name: str, nc_name: str
+    ) -> None:
+        """
+        Upload named collection create statement file.
+        """
+        local_path = os.path.join(
+            self._named_collections_path, f"{escape_metadata_file_name(nc_name)}.sql"
+        )
+        remote_path = _named_collections_data_path(
+            self.get_backup_path(backup_name), nc_name
+        )
+        try:
+            logging.debug('Uploading named collection create statement "{}"', nc_name)
+            self._storage_loader.upload_file(
+                local_path, remote_path=remote_path, encryption=True
+            )
+        except Exception as e:
+            msg = f"Failed to create async upload of {remote_path}"
+            raise StorageError(msg) from e
+
     def get_udf_create_statement(
         self, backup_meta: BackupMetadata, filename: str
     ) -> str:
         """
-        Download user defined function create statement
+        Download user defined function create statement.
         """
         remote_path = _udf_data_path(backup_meta.path, filename)
+        return self._storage_loader.download_data(remote_path, encryption=True)
+
+    def get_local_nc_create_statement(self, nc_name: str) -> Optional[str]:
+        """
+        Read named collection create statement from local file.
+        """
+        local_path = os.path.join(
+            self._named_collections_path, f"{escape_metadata_file_name(nc_name)}.sql"
+        )
+        try:
+            return Path(local_path).read_bytes().decode("utf-8")
+        except OSError as e:
+            logging.debug(
+                'Cannot load a create statement of the named collection "{}": {}',
+                nc_name,
+                str(e),
+            )
+            return None
+
+    def get_named_collection_create_statement(
+        self, backup_meta: BackupMetadata, filename: str
+    ) -> str:
+        """
+        Download named collection create statement.
+        """
+        remote_path = _named_collections_data_path(backup_meta.path, filename)
         return self._storage_loader.download_data(remote_path, encryption=True)
 
     def get_backup_names(self) -> Sequence[str]:
@@ -571,6 +620,13 @@ def _table_metadata_path(backup_path: str, db_name: str, table_name: str) -> str
     return os.path.join(
         backup_path, "metadata", _quote(db_name), _quote(table_name) + ".sql"
     )
+
+
+def _named_collections_data_path(backup_path: str, nc_name: str) -> str:
+    """
+    Return S3 path to named collections.
+    """
+    return os.path.join(backup_path, "named_collections", _quote(nc_name) + ".sql")
 
 
 def _part_path(backup_path: str, db_name: str, table_name: str, part_name: str) -> str:

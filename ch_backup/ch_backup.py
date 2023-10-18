@@ -28,6 +28,7 @@ from ch_backup.exceptions import (
 )
 from ch_backup.logic.access import AccessBackup
 from ch_backup.logic.database import DatabaseBackup
+from ch_backup.logic.named_collections import NamedCollectionsBackup
 from ch_backup.logic.table import TableBackup
 from ch_backup.logic.udf import UDFBackup
 from ch_backup.util import cached_property, now, utcnow
@@ -48,6 +49,7 @@ class ClickhouseBackup:
         self._database_backup_manager = DatabaseBackup()
         self._table_backup_manager = TableBackup()
         self._udf_backup_manager = UDFBackup()
+        self._nc_backup_manager = NamedCollectionsBackup()
 
     @property
     def config(self) -> Config:
@@ -174,6 +176,8 @@ class ClickhouseBackup:
                     self._access_backup_manager.backup(self._context)
                 if sources.udf:
                     self._udf_backup_manager.backup(self._context)
+                if sources.named_collections:
+                    self._nc_backup_manager.backup(self._context)
                 if sources.schemas_included():
                     self._database_backup_manager.backup(self._context, databases)
                     dedup_info = collect_dedup_info(
@@ -491,6 +495,10 @@ class ClickhouseBackup:
         if sources.udf:
             # Restore UDF
             self._udf_backup_manager.restore(self._context)
+
+        if sources.named_collections:
+            # Restore named collections
+            self._nc_backup_manager.restore(self._context)
 
         if sources.schemas_included():
             databases: Dict[str, Database] = {}

@@ -4,7 +4,7 @@ from ch_backup.backup.sources import BackupSources
 
 
 @pytest.mark.parametrize(
-    ["access", "data", "schema", "udf", "schema_only", "expected"],
+    ["access", "data", "schema", "udf", "named_collections", "schema_only", "expected"],
     [
         # default (all sources)
         (
@@ -13,7 +13,10 @@ from ch_backup.backup.sources import BackupSources
             False,
             False,
             False,
-            BackupSources(access=True, data=True, schema=True, udf=True),
+            False,
+            BackupSources(
+                access=True, data=True, schema=True, udf=True, named_collections=True
+            ),
         ),
         # schema-only
         (
@@ -21,8 +24,11 @@ from ch_backup.backup.sources import BackupSources
             False,
             False,
             False,
+            False,
             True,
-            BackupSources(access=True, data=False, schema=True, udf=True),
+            BackupSources(
+                access=True, data=False, schema=True, udf=True, named_collections=True
+            ),
         ),
         # only access
         (
@@ -31,7 +37,14 @@ from ch_backup.backup.sources import BackupSources
             False,
             False,
             False,
-            BackupSources(access=True, data=False, schema=False, udf=False),
+            False,
+            BackupSources(
+                access=True,
+                data=False,
+                schema=False,
+                udf=False,
+                named_collections=False,
+            ),
         ),
         # only data
         (
@@ -40,7 +53,10 @@ from ch_backup.backup.sources import BackupSources
             False,
             False,
             False,
-            BackupSources(access=False, data=True, schema=True, udf=False),
+            False,
+            BackupSources(
+                access=False, data=True, schema=True, udf=False, named_collections=False
+            ),
         ),
         # only schema
         (
@@ -49,7 +65,14 @@ from ch_backup.backup.sources import BackupSources
             True,
             False,
             False,
-            BackupSources(access=False, data=False, schema=True, udf=False),
+            False,
+            BackupSources(
+                access=False,
+                data=False,
+                schema=True,
+                udf=False,
+                named_collections=False,
+            ),
         ),
         # data & schema (like data)
         (
@@ -58,7 +81,10 @@ from ch_backup.backup.sources import BackupSources
             True,
             False,
             False,
-            BackupSources(access=False, data=True, schema=True, udf=False),
+            False,
+            BackupSources(
+                access=False, data=True, schema=True, udf=False, named_collections=False
+            ),
         ),
         # only udf
         (
@@ -67,7 +93,30 @@ from ch_backup.backup.sources import BackupSources
             False,
             True,
             False,
-            BackupSources(access=False, data=False, schema=False, udf=True),
+            False,
+            BackupSources(
+                access=False,
+                data=False,
+                schema=False,
+                udf=True,
+                named_collections=False,
+            ),
+        ),
+        # only named_collections
+        (
+            False,
+            False,
+            False,
+            False,
+            True,
+            False,
+            BackupSources(
+                access=False,
+                data=False,
+                schema=False,
+                udf=False,
+                named_collections=True,
+            ),
         ),
         # (combinations) access & udf
         (
@@ -76,7 +125,10 @@ from ch_backup.backup.sources import BackupSources
             False,
             True,
             False,
-            BackupSources(access=True, data=False, schema=False, udf=True),
+            False,
+            BackupSources(
+                access=True, data=False, schema=False, udf=True, named_collections=False
+            ),
         ),
         # (combinations) access & udf & schema
         (
@@ -85,7 +137,10 @@ from ch_backup.backup.sources import BackupSources
             True,
             True,
             False,
-            BackupSources(access=True, data=False, schema=True, udf=True),
+            False,
+            BackupSources(
+                access=True, data=False, schema=True, udf=True, named_collections=False
+            ),
         ),
         # (combinations) udf & data
         (
@@ -94,7 +149,22 @@ from ch_backup.backup.sources import BackupSources
             False,
             True,
             False,
-            BackupSources(access=False, data=True, schema=True, udf=True),
+            False,
+            BackupSources(
+                access=False, data=True, schema=True, udf=True, named_collections=False
+            ),
+        ),
+        # (combinations) named_collections & data
+        (
+            False,
+            True,
+            False,
+            False,
+            True,
+            False,
+            BackupSources(
+                access=False, data=True, schema=True, udf=False, named_collections=True
+            ),
         ),
         # all flags (like default)
         (
@@ -102,8 +172,11 @@ from ch_backup.backup.sources import BackupSources
             True,
             True,
             True,
+            True,
             False,
-            BackupSources(access=True, data=True, schema=True, udf=True),
+            BackupSources(
+                access=True, data=True, schema=True, udf=True, named_collections=True
+            ),
         ),
         # schema-only with new args (ignoring)
         (
@@ -112,7 +185,10 @@ from ch_backup.backup.sources import BackupSources
             True,
             True,
             True,
-            BackupSources(access=True, data=True, schema=True, udf=True),
+            True,
+            BackupSources(
+                access=True, data=True, schema=True, udf=True, named_collections=True
+            ),
         ),
         # schema-only with new args (ignoring)
         (
@@ -120,8 +196,15 @@ from ch_backup.backup.sources import BackupSources
             False,
             False,
             False,
+            False,
             True,
-            BackupSources(access=True, data=False, schema=False, udf=False),
+            BackupSources(
+                access=True,
+                data=False,
+                schema=False,
+                udf=False,
+                named_collections=False,
+            ),
         ),
         # schema-only with new args (ignoring)
         (
@@ -129,8 +212,11 @@ from ch_backup.backup.sources import BackupSources
             True,
             False,
             False,
+            False,
             True,
-            BackupSources(access=False, data=True, schema=True, udf=False),
+            BackupSources(
+                access=False, data=True, schema=True, udf=False, named_collections=False
+            ),
         ),
     ],
 )
@@ -139,14 +225,20 @@ def test_sources_for_backup(
     data: bool,
     schema: bool,
     udf: bool,
+    named_collections: bool,
     schema_only: bool,
     expected: BackupSources,
 ) -> None:
-    assert BackupSources.for_backup(access, data, schema, udf, schema_only) == expected
+    assert (
+        BackupSources.for_backup(
+            access, data, schema, udf, named_collections, schema_only
+        )
+        == expected
+    )
 
 
 @pytest.mark.parametrize(
-    ["access", "data", "schema", "udf", "schema_only", "expected"],
+    ["access", "data", "schema", "udf", "named_collections", "schema_only", "expected"],
     [
         # default (all except access)
         (
@@ -155,7 +247,10 @@ def test_sources_for_backup(
             False,
             False,
             False,
-            BackupSources(access=False, data=True, schema=True, udf=True),
+            False,
+            BackupSources(
+                access=False, data=True, schema=True, udf=True, named_collections=True
+            ),
         ),
         # schema-only
         (
@@ -163,8 +258,11 @@ def test_sources_for_backup(
             False,
             False,
             False,
+            False,
             True,
-            BackupSources(access=False, data=False, schema=True, udf=True),
+            BackupSources(
+                access=False, data=False, schema=True, udf=True, named_collections=True
+            ),
         ),
         # only access
         (
@@ -173,7 +271,14 @@ def test_sources_for_backup(
             False,
             False,
             False,
-            BackupSources(access=True, data=False, schema=False, udf=False),
+            False,
+            BackupSources(
+                access=True,
+                data=False,
+                schema=False,
+                udf=False,
+                named_collections=False,
+            ),
         ),
         # only data
         (
@@ -182,7 +287,10 @@ def test_sources_for_backup(
             False,
             False,
             False,
-            BackupSources(access=False, data=True, schema=True, udf=False),
+            False,
+            BackupSources(
+                access=False, data=True, schema=True, udf=False, named_collections=False
+            ),
         ),
         # only schema
         (
@@ -191,7 +299,14 @@ def test_sources_for_backup(
             True,
             False,
             False,
-            BackupSources(access=False, data=False, schema=True, udf=False),
+            False,
+            BackupSources(
+                access=False,
+                data=False,
+                schema=True,
+                udf=False,
+                named_collections=False,
+            ),
         ),
         # data & schema (like data)
         (
@@ -200,7 +315,10 @@ def test_sources_for_backup(
             True,
             False,
             False,
-            BackupSources(access=False, data=True, schema=True, udf=False),
+            False,
+            BackupSources(
+                access=False, data=True, schema=True, udf=False, named_collections=False
+            ),
         ),
         # only udf
         (
@@ -209,7 +327,30 @@ def test_sources_for_backup(
             False,
             True,
             False,
-            BackupSources(access=False, data=False, schema=False, udf=True),
+            False,
+            BackupSources(
+                access=False,
+                data=False,
+                schema=False,
+                udf=True,
+                named_collections=False,
+            ),
+        ),
+        # only named_collections
+        (
+            False,
+            False,
+            False,
+            False,
+            True,
+            False,
+            BackupSources(
+                access=False,
+                data=False,
+                schema=False,
+                udf=False,
+                named_collections=True,
+            ),
         ),
         # (combinations) access & udf
         (
@@ -218,7 +359,10 @@ def test_sources_for_backup(
             False,
             True,
             False,
-            BackupSources(access=True, data=False, schema=False, udf=True),
+            False,
+            BackupSources(
+                access=True, data=False, schema=False, udf=True, named_collections=False
+            ),
         ),
         # (combinations) access & udf & schema
         (
@@ -227,7 +371,10 @@ def test_sources_for_backup(
             True,
             True,
             False,
-            BackupSources(access=True, data=False, schema=True, udf=True),
+            False,
+            BackupSources(
+                access=True, data=False, schema=True, udf=True, named_collections=False
+            ),
         ),
         # (combinations) udf & data
         (
@@ -236,7 +383,22 @@ def test_sources_for_backup(
             False,
             True,
             False,
-            BackupSources(access=False, data=True, schema=True, udf=True),
+            False,
+            BackupSources(
+                access=False, data=True, schema=True, udf=True, named_collections=False
+            ),
+        ),
+        # (combinations) named_collections & data
+        (
+            False,
+            True,
+            False,
+            False,
+            True,
+            False,
+            BackupSources(
+                access=False, data=True, schema=True, udf=False, named_collections=True
+            ),
         ),
         # all flags (like default)
         (
@@ -244,8 +406,11 @@ def test_sources_for_backup(
             True,
             True,
             True,
+            True,
             False,
-            BackupSources(access=True, data=True, schema=True, udf=True),
+            BackupSources(
+                access=True, data=True, schema=True, udf=True, named_collections=True
+            ),
         ),
         # schema-only with new args (ignoring)
         (
@@ -254,7 +419,10 @@ def test_sources_for_backup(
             True,
             True,
             True,
-            BackupSources(access=True, data=True, schema=True, udf=True),
+            True,
+            BackupSources(
+                access=True, data=True, schema=True, udf=True, named_collections=True
+            ),
         ),
         # schema-only with new args (ignoring)
         (
@@ -262,8 +430,15 @@ def test_sources_for_backup(
             False,
             False,
             False,
+            False,
             True,
-            BackupSources(access=True, data=False, schema=False, udf=False),
+            BackupSources(
+                access=True,
+                data=False,
+                schema=False,
+                udf=False,
+                named_collections=False,
+            ),
         ),
         # schema-only with new args (ignoring)
         (
@@ -271,8 +446,11 @@ def test_sources_for_backup(
             True,
             False,
             False,
+            False,
             True,
-            BackupSources(access=False, data=True, schema=True, udf=False),
+            BackupSources(
+                access=False, data=True, schema=True, udf=False, named_collections=False
+            ),
         ),
     ],
 )
@@ -281,7 +459,13 @@ def test_sources_for_restore(
     data: bool,
     schema: bool,
     udf: bool,
+    named_collections: bool,
     schema_only: bool,
     expected: BackupSources,
 ) -> None:
-    assert BackupSources.for_restore(access, data, schema, udf, schema_only) == expected
+    assert (
+        BackupSources.for_restore(
+            access, data, schema, udf, named_collections, schema_only
+        )
+        == expected
+    )
