@@ -274,8 +274,9 @@ DedupReferences = Dict[str, DatabaseDedupReferences]
 
 
 def collect_dedup_references_for_batch_backup_deletion(
-    retained_backups: List[BackupMetadata],
-    deleting_backups: List[BackupMetadata],
+    layout: BackupLayout,
+    retained_backups_light_meta: List[BackupMetadata],
+    deleting_backups_light_meta: List[BackupMetadata],
 ) -> Dict[str, DedupReferences]:
     """
     Collect deduplication information for deleting multiple backups. It contains names of data parts that should
@@ -283,8 +284,11 @@ def collect_dedup_references_for_batch_backup_deletion(
     """
     dedup_references: Dict[str, DedupReferences] = defaultdict(dict)
 
-    deleting_backup_name_resolver = {b.path: b.name for b in deleting_backups}
-    for backup in retained_backups:
+    deleting_backup_name_resolver = {
+        b.path: b.name for b in deleting_backups_light_meta
+    }
+    for backup in retained_backups_light_meta:
+        backup = layout.reload_backup(backup, use_light_meta=False)
         for db_name in backup.get_databases():
             for table in backup.get_tables(db_name):
                 for part in table.get_parts():
