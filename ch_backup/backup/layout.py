@@ -4,7 +4,7 @@ Management of backup data layout.
 
 import os
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Callable, List, Optional, Sequence
 from urllib.parse import quote
 
 from ch_backup import logging
@@ -151,7 +151,9 @@ class BackupLayout:
             msg = f'Failed to upload udf metadata "{remote_path}"'
             raise StorageError(msg) from e
 
-    def upload_data_part(self, backup_name: str, fpart: FrozenPart) -> None:
+    def upload_data_part(
+        self, backup_name: str, fpart: FrozenPart, callback: Callable
+    ) -> None:
         """
         Upload part data.
         """
@@ -174,6 +176,7 @@ class BackupLayout:
                 is_async=True,
                 encryption=True,
                 delete=True,
+                callback=callback,
             )
         except Exception as e:
             msg = f"Failed to create async upload of {remote_path}"
