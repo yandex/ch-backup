@@ -69,6 +69,23 @@ GET_TABLES_SHORT_SQL = strip_query(
 """
 )
 
+GET_TABLE_SQL = strip_query(
+    """
+    SELECT
+        database,
+        name,
+        engine,
+        engine_full,
+        create_table_query,
+        data_paths,
+        metadata_path,
+        uuid
+    FROM system.tables
+    WHERE database = '{db_name}' AND name = '{table_name}'
+    FORMAT JSON
+"""
+)
+
 CHECK_TABLE_SQL = strip_query(
     """
     SELECT countIf(database = '{db_name}' AND name = '{table_name}')
@@ -473,13 +490,13 @@ class ClickhouseCTL:
         """
         Get table by name, returns None if no table has found.
         """
-        query_sql = GET_TABLES_SQL.format(
-            db_name=escape(db_name), table_names=[escape(table_name)]
+        query_sql = GET_TABLE_SQL.format(
+            db_name=escape(db_name), table_name=escape(table_name)
         )
-        tables_raw = self._ch_client.query(query_sql)["data"]
 
-        if tables_raw:
-            return self._make_table(tables_raw[0])
+        result = self._ch_client.query(query_sql)["data"]
+        if result:
+            return self._make_table(result[0])
 
         return None
 
