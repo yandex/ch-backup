@@ -2,8 +2,12 @@
 import time
 from typing import List, Optional
 
+from humanfriendly import parse_timespan
+
 from ch_backup.backup.metadata.part_metadata import PartMetadata
 from ch_backup.backup_context import BackupContext
+
+DEFAULT_INTERVAL = parse_timespan("30 min")
 
 
 class UploadPartObserver:
@@ -18,7 +22,9 @@ class UploadPartObserver:
         self._context = context
         self._last_time = time.time()
         self._uploaded_parts: List[PartMetadata] = []
-        self._interval = self._context.config["update_metadata_interval"]
+        self._interval = self._context.config.get(
+            "update_metadata_interval", DEFAULT_INTERVAL
+        )
 
     def __call__(
         self, part: PartMetadata, exception: Optional[Exception] = None
