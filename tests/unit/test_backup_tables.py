@@ -7,6 +7,7 @@ from ch_backup.backup.deduplication import DedupInfo
 from ch_backup.backup.metadata.backup_metadata import BackupMetadata
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.models import Database, Table
+from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.logic.table import TableBackup
 
 UUID = "fa8ff291-1922-4b7f-afa7-06633d5e16ae"
@@ -26,8 +27,7 @@ def test_backup_table_skipping_if_metadata_updated_during_backup(
     )
 
     # Prepare involved data objects
-    config = {"backup": {"validate_part_after_upload": False}}
-    context = BackupContext(config)  # type: ignore[arg-type]
+    context = BackupContext(DEFAULT_CONFIG)  # type: ignore[arg-type]
     db = Database(db_name, "MergeTree", "/var/lib/clickhouse/metadata/db1.sql")
     dedup_info = DedupInfo()
     table_backup = TableBackup()

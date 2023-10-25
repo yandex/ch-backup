@@ -64,6 +64,7 @@ DEFAULT_CONFIG = {
         "restore_context_path": "/tmp/ch_backup_restore_state.json",  # nosec
         "validate_part_after_upload": False,
         "restore_fail_on_attach_error": False,
+        "update_metadata_interval": _as_seconds("30 min"),
     },
     "storage": {
         "type": "s3",

@@ -2,7 +2,7 @@
 Module providing API for storage management (upload and download data, check
 remote path on existence, etc.).
 """
-from typing import List, Sequence
+from typing import Callable, List, Optional, Sequence
 
 from ch_backup.storage.async_pipeline.pipeline_executor import PipelineExecutor
 from ch_backup.storage.engine import get_storage_engine
@@ -76,6 +76,7 @@ class StorageLoader:
         is_async: bool = False,
         encryption: bool = False,
         delete: bool = False,
+        callback: Optional[Callable] = None,
     ) -> str:
         """
         Upload multiple files as tarball.
@@ -89,6 +90,7 @@ class StorageLoader:
             is_async=is_async,
             encryption=encryption,
             delete=delete,
+            callback=callback,
         )
         return remote_path
 

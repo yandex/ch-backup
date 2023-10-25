@@ -85,6 +85,7 @@ class PipelineExecutor:
         is_async: bool,
         encryption: bool,
         delete: bool,
+        callback: Optional[Callable] = None,
     ) -> None:
         """
         Archive to tarball and upload files from local filesystem.
@@ -101,7 +102,7 @@ class PipelineExecutor:
             encryption,
             delete_after=delete,
         )
-        self._exec_pipeline(job_id, pipeline, is_async)
+        self._exec_pipeline(job_id, pipeline, is_async, callback)
 
     def download_data(
         self, remote_path: str, is_async: bool, encryption: bool
@@ -169,15 +170,24 @@ class PipelineExecutor:
         if self._exec_pool:
             self._exec_pool.wait_all(keep_going)
 
-    def _exec_pipeline(self, job_id: str, pipeline: Callable, is_async: bool) -> Any:
+    def _exec_pipeline(
+        self,
+        job_id: str,
+        pipeline: Callable,
+        is_async: bool,
+        callback: Optional[Callable] = None,
+    ) -> Any:
         """
         Run pipeline inplace or schedule for exec in process pool
         """
 
         if is_async and self._exec_pool:
-            return self._exec_pool.submit(job_id, pipeline)
+            return self._exec_pool.submit(job_id, pipeline, callback)
 
-        return pipeline()
+        result = pipeline()
+        if callback:
+            callback()
+        return result
 
     @staticmethod
     def _make_job_id(job_name: str, *args: Any) -> str:
