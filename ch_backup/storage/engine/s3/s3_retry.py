@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any, Callable, TypeVar, Union
 from botocore.exceptions import BotoCoreError, ClientError
 from urllib3.exceptions import HTTPError
 
+from ch_backup import logging
+
 if TYPE_CHECKING:
     from ch_backup.storage.engine import (
         S3StorageEngine,  # pylint: disable=wrong-import-position
@@ -69,7 +71,23 @@ def retry_exponential(
     multiplier: float = 0.5,
 ) -> Callable:
     """
-    Decorator for thread safe retry logic with expential wait time.
+    Public interface for exponential retry decorator.
+    """
+    return retry_exponential_internal(
+        exception_types, max_attempts, max_interval, multiplier, verbose=True
+    )
+
+
+def retry_exponential_internal(
+    exception_types: Union[type, tuple] = Exception,
+    max_attempts: int = 5,
+    max_interval: float = 5,
+    multiplier: float = 0.5,
+    sleep_function: Callable = sleep,
+    verbose: bool = False,
+) -> Callable:
+    """
+    Internals of decorator for thread safe retry logic with expential wait time.
     """
 
     class RetryExponential:
@@ -84,10 +102,9 @@ def retry_exponential(
             """
             Calculate time to sleep.
             """
-            low_value = 0
 
-            high_value = min(max_interval, 2**retry_count) * multiplier
-            return uniform(low_value, min(high_value, max_interval))  # nosec
+            high_value = (2**retry_count) * multiplier
+            return uniform(0, min(high_value, max_interval))  # nosec
 
         def call(self, fn, *args, **kwargs):
             """
@@ -113,7 +130,19 @@ def retry_exponential(
                     with RetryExponential._lock:
                         retry_count = RetryExponential._retry_count
                         RetryExponential._retry_count += 1
-                    sleep(self.calculate_sleep_time(retry_count))
+
+                    time_to_sleep = self.calculate_sleep_time(retry_count)
+                    if verbose:
+                        logging.debug(
+                            "Exponential retry {}.{} in {}, attempt: {}, reason: {}",
+                            fn.__module__,
+                            fn.__qualname__,
+                            time_to_sleep,
+                            attempts,
+                            exc,
+                        )
+
+                    sleep_function(self.calculate_sleep_time(retry_count))
 
     def wrap(f):
         @wraps(f)
