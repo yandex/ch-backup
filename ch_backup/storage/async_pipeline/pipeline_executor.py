@@ -184,13 +184,7 @@ class PipelineExecutor:
         if is_async and self._exec_pool:
             return self._exec_pool.submit(job_id, pipeline, callback)
 
-        try:
-            result = pipeline()
-        except Exception as ex:
-            if callback:
-                callback(ex)
-            raise
-
+        result = pipeline()
         if callback:
             callback()
         return result

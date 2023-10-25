@@ -67,9 +67,7 @@ class ExecPool:
 
             try:
                 future.result()
-            except Exception as ex:
-                if job.callback:
-                    job.callback(ex)
+            except Exception:
                 if keep_going:
                     logging.warning(
                         'Job "{}" generated an exception, skipping due to keep_going flag',
