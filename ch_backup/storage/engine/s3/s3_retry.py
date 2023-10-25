@@ -5,12 +5,13 @@ from abc import ABCMeta
 from functools import wraps
 from http.client import HTTPException
 from inspect import isfunction
-from typing import TYPE_CHECKING, Any, Callable, TypeVar
+from random import uniform
+from threading import Lock
+from time import sleep
+from typing import TYPE_CHECKING, Any, Callable, TypeVar, Union
 
 from botocore.exceptions import BotoCoreError, ClientError
 from urllib3.exceptions import HTTPError
-
-from ch_backup.util import retry
 
 if TYPE_CHECKING:
     from ch_backup.storage.engine import (
@@ -48,7 +49,9 @@ class S3RetryMeta(ABCMeta):
         """
 
         @wraps(func)
-        @retry(max_attempts=30, max_interval=180, exception_types=S3RetryingError)
+        @retry_exponential(
+            max_attempts=30, max_interval=180, exception_types=S3RetryingError
+        )
         def wrapper(self: "S3StorageEngine", *args: Any, **kwargs: Any) -> RT:
             try:
                 return func(self, *args, **kwargs)
@@ -57,3 +60,66 @@ class S3RetryMeta(ABCMeta):
                 raise S3RetryingError(f"Failed to make S3 operation: {str(e)}") from e
 
         return wrapper
+
+
+def retry_exponential(
+    exception_types: Union[type, tuple] = Exception,
+    max_attempts: int = 5,
+    max_interval: float = 5,
+    multiplier: float = 0.5,
+) -> Callable:
+    """
+    Decorator for thread safe retry logic with expential wait time.
+    """
+
+    class RetryExponential:
+        """
+        Exponential retry.
+        """
+
+        _lock = Lock()
+        _retry_count = 0
+
+        def calculate_sleep_time(self, retry_count):
+            """
+            Calculate time to sleep.
+            """
+            low_value = 0
+
+            high_value = min(max_interval, 2**retry_count) * multiplier
+            return uniform(low_value, min(high_value, max_interval))  # nosec
+
+        def call(self, fn, *args, **kwargs):
+            """
+            Retry logic. If we execute the inner function with an exception then try again
+            until attempts less than max_attempts.
+            """
+            attempts = 0
+
+            while attempts < max_attempts:
+                try:
+                    res = fn(*args, **kwargs)
+                    return res
+                except Exception as exc:
+                    # Unknown exception type
+                    if not isinstance(exc, exception_types):
+                        raise exc
+
+                    attempts += 1
+                    # No attempts left.
+                    if attempts == max_attempts:
+                        raise exc
+
+                    with RetryExponential._lock:
+                        retry_count = RetryExponential._retry_count
+                        RetryExponential._retry_count += 1
+                    sleep(self.calculate_sleep_time(retry_count))
+
+    def wrap(f):
+        @wraps(f)
+        def wrapped_f(*args, **kw):
+            return RetryExponential().call(f, *args, **kw)
+
+        return wrapped_f
+
+    return wrap
