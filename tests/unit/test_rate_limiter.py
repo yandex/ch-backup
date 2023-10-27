@@ -4,7 +4,7 @@ Unit test for RateLimiter.
 from typing import List
 
 import pytest
-from tests.unit.utils import TimeMocker
+from tests.unit.time_mocker import TimeMocker
 
 from ch_backup.storage.async_pipeline.base_pipeline.rate_limiter import RateLimiter
 

@@ -4,9 +4,9 @@ Unit test for RateLimiter.
 from typing import List
 
 import pytest
-from tests.unit.utils import TimeMocker
+from tests.unit.time_mocker import TimeMocker
 
-from ch_backup.storage.engine.s3.s3_retry import retry_exponential_internal
+from ch_backup.storage.engine.s3.s3_retry import retry
 
 
 @pytest.mark.parametrize(
@@ -45,8 +45,13 @@ def test_rate_limiter_extract(
     execution_count = 0
     last_execution_time = 0.0
 
-    @retry_exponential_internal(
-        Exception, max_attempts, max_interval, multiplier, timer.sleep
+    @retry(
+        Exception,
+        max_attempts,
+        max_interval,
+        multiplier,
+        timer.sleep,
+        False,
     )
     def some_s3_function():
         nonlocal execution_count, last_execution_time
