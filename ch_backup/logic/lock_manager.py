@@ -7,6 +7,7 @@ from fcntl import LOCK_SH, flock
 from types import TracebackType
 from typing import IO, Optional, Type
 
+from kazoo.exceptions import LockTimeout
 from kazoo.recipe.lock import Lock
 
 from ch_backup import logging
@@ -107,7 +108,23 @@ class LockManager:
             if not client.exists(self._process_zk_lockfile_path):
                 client.create(self._process_zk_lockfile_path, makepath=True)
             self._zk_lock = client.Lock(self._process_zk_lockfile_path)
-            if not self._zk_lock.acquire(blocking=True, timeout=self._lock_timeout):
-                sys.exit(self._exitcode)
+            force_exit = self._exitcode == 0
+            try:
+                if not self._zk_lock.acquire(blocking=True, timeout=self._lock_timeout):
+                    fail_on_lock_acquiring(force_exit)
+            except LockTimeout as e:
+                fail_on_lock_acquiring(force_exit, e)
         else:
             raise RuntimeError("ZK flock enabled, but zookeeper is not configured")
+
+
+def fail_on_lock_acquiring(force_exit: bool, e: Optional[Exception] = None):
+    """
+    Determines how to exit from the lock acquisition process
+    """
+    if force_exit:
+        sys.exit(0)
+    err = RuntimeError("Lock was not acquired")
+    if e is not None:
+        raise err from e
+    raise err
