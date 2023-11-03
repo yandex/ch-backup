@@ -4,19 +4,9 @@ Unit test for RateLimiter.
 from typing import List
 
 import pytest
+from tests.unit.time_mocker import TimeMocker
 
 from ch_backup.storage.async_pipeline.base_pipeline.rate_limiter import RateLimiter
-
-
-class TimeMocker:
-    def __init__(self) -> None:
-        self._timer = 0.0
-
-    def time(self):
-        return self._timer
-
-    def sleep(self, sleep_time: float) -> None:
-        self._timer = self._timer + sleep_time
 
 
 @pytest.mark.parametrize(
