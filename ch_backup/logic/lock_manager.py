@@ -118,7 +118,7 @@ class LockManager:
             raise RuntimeError("ZK flock enabled, but zookeeper is not configured")
 
 
-def fail_on_lock_acquiring(force_exit: bool, e: Optional[Exception] = None):
+def fail_on_lock_acquiring(force_exit: bool, e: Optional[Exception] = None) -> None:
     """
     Determines how to exit from the lock acquisition process
     """
