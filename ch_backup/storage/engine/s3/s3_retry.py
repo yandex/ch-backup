@@ -112,6 +112,7 @@ class RetryExponential:
     def calculate_sleep_time(self, attempt):
         """
         Calculate time to sleep.
+        Follow https://aws.amazon.com/ru/blogs/architecture/exponential-backoff-and-jitter/
         """
 
         high_value = (2**attempt) * self.multiplier
@@ -121,6 +122,9 @@ class RetryExponential:
         """
         Retry logic. If we execute the inner function with an exception then try again
         until attempts less than max_attempts.
+
+        We don't update state of the instance variables and use only local ones
+        therefore we can use it from the multiple threads.
         """
         attempts = 0
 
