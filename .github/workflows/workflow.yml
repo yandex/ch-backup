@@ -10,6 +10,7 @@ concurrency:
 
 env:
   NO_VENV: true
+  LATEST_CLICKHOUSE_VERSION: 23.9.3.12
 
 jobs:
   lint:
@@ -55,9 +56,9 @@ jobs:
         - python: "3.10"
           clickhouse: "22.8.21.38"
         - python: "3.10"
-          clickhouse: "23.3.14.78"
+          clickhouse: "23.3.15.29"
         - python: "3.10"
-          clickhouse: "23.8.4.69"
+          clickhouse: "23.8.5.16"
         - python: "3.10"
           clickhouse: "latest"
         - python: "3.11"
@@ -72,7 +73,9 @@ jobs:
     - name: run unit tests
       run: make test-unit
     - name: run integration tests
-      run: CLICKHOUSE_VERSION=${{ matrix.clickhouse }} make test-integration
+      run: make test-integration
+      env:
+        CLICKHOUSE_VERSION: ${{ matrix.clickhouse == 'latest' && env.LATEST_CLICKHOUSE_VERSION || matrix.clickhouse }}
     - uses: actions/upload-artifact@v3
       if: ${{ failure() }}
       with:
