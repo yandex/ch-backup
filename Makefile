@@ -88,7 +88,7 @@ clean-pycache:
 .PHONY: install
 install:
 	@echo "Installing into $(INSTALL_DIR)"
-	python3.6 -m venv $(INSTALL_DIR)
+	$(PYTHON) -m venv $(INSTALL_DIR)
 	$(INSTALL_DIR)/bin/pip install -r requirements.txt
 	$(INSTALL_DIR)/bin/pip install .
 	mkdir -p $(DESTDIR)/usr/bin/
