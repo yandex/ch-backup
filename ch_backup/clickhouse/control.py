@@ -300,8 +300,8 @@ class ClickhouseCTL:
         self._shadow_data_path = os.path.join(self._root_data_path, "shadow")
         self._timeout = self._ch_ctl_config["timeout"]
         self._freeze_timeout = self._ch_ctl_config["freeze_timeout"]
-        self._system_unfreeze_timeout = self._ch_ctl_config["system_unfreeze_timeout"]
-        self._restart_disk_timeout = self._ch_ctl_config["restart_disk_timeout"]
+        self._unfreeze_timeout = self._ch_ctl_config["unfreeze_timeout"]
+        self._restore_replica_timeout = self._ch_ctl_config["restore_replica_timeout"]
         self._ch_client = ClickhouseClient(self._ch_ctl_config)
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
         self._disks = self.get_disks()
@@ -410,7 +410,7 @@ class ClickhouseCTL:
         """
         if self.ch_version_ge("22.6"):
             query_sql = SYSTEM_UNFREEZE_SQL.format(backup_name=backup_name)
-            self._ch_client.query(query_sql, timeout=self._system_unfreeze_timeout)
+            self._ch_client.query(query_sql, timeout=self._unfreeze_timeout)
 
     def remove_freezed_data(self) -> None:
         """
@@ -547,7 +547,8 @@ class ClickhouseCTL:
         self._ch_client.query(
             RESTORE_REPLICA_SQL.format(
                 db_name=escape(table.database), table_name=escape(table.name)
-            )
+            ),
+            timeout=self._restore_replica_timeout,
         )
 
     def drop_table_if_exists(self, table: Table) -> None:
