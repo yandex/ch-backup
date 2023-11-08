@@ -108,23 +108,13 @@ class LockManager:
             if not client.exists(self._process_zk_lockfile_path):
                 client.create(self._process_zk_lockfile_path, makepath=True)
             self._zk_lock = client.Lock(self._process_zk_lockfile_path)
-            force_exit = self._exitcode == 0
             try:
-                if not self._zk_lock.acquire(blocking=True, timeout=self._lock_timeout):
-                    fail_on_lock_acquiring(force_exit)
-            except LockTimeout as e:
-                fail_on_lock_acquiring(force_exit, e)
+                _ = self._zk_lock.acquire(blocking=True, timeout=self._lock_timeout)
+                logging.debug("Lock was acquired")
+            except LockTimeout:
+                logging.error(
+                    "Lock was not acquired due to timeout error.", exc_info=True
+                )
+                sys.exit(self._exitcode)
         else:
             raise RuntimeError("ZK flock enabled, but zookeeper is not configured")
-
-
-def fail_on_lock_acquiring(force_exit: bool, e: Optional[Exception] = None) -> None:
-    """
-    Determines how to exit from the lock acquisition process
-    """
-    if force_exit:
-        sys.exit(0)
-    err = RuntimeError("Lock was not acquired")
-    if e is not None:
-        raise err from e
-    raise err
