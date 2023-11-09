@@ -1,6 +1,7 @@
 """
 Clickhouse backup logic
 """
+import platform
 from collections import defaultdict
 from copy import copy
 from datetime import timedelta
@@ -17,6 +18,7 @@ from ch_backup.backup.metadata import BackupMetadata, BackupState, TableMetadata
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.backup.sources import BackupSources
 from ch_backup.backup_context import BackupContext
+from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.models import Database
@@ -104,6 +106,22 @@ class ClickhouseBackup:
 
         return backups
 
+    def _lock_id(self, operation: str) -> Optional[str]:
+        lock_id = operation
+        # if the replica name part of the id starts with '$' it means
+        # we used `platform.node()`
+        missing_shard = "/UNKNOWN"
+        missing_replica = f"/${platform.node()}"
+        lock_id = operation
+        try:
+            shard, replica = self._context.ch_ctl.get_shard_and_replica_name()
+            lock_id += f"/{shard}" if shard else missing_shard
+            lock_id += f"/{replica}" if replica else missing_replica
+        except ClickhouseError:
+            logging.error("Error in forming lock_id.", exc_info=True)
+            lock_id = f"{lock_id}{missing_shard}{missing_replica}"
+        return lock_id
+
     def backup(
         self,
         sources: BackupSources,
@@ -162,7 +180,7 @@ class ClickhouseBackup:
 
         skip_lock = self._check_schema_only_backup_skip_lock(sources)
 
-        with self._context.locker(disabled=skip_lock):
+        with self._context.locker(disabled=skip_lock, lock_id=self._lock_id("BACKUP")):
             self._context.backup_layout.upload_backup_metadata(
                 self._context.backup_meta
             )
@@ -287,7 +305,9 @@ class ClickhouseBackup:
 
         logging.info("All required databases are present in backup.")
 
-        with self._context.locker(distributed=not sources.schema_only):
+        with self._context.locker(
+            distributed=not sources.schema_only, lock_id=self._lock_id("RESTORE")
+        ):
             self._restore(
                 sources=sources,
                 db_names=databases,
@@ -311,7 +331,7 @@ class ClickhouseBackup:
         found = False
         deleting_backups = []
         retained_backups = []
-        with self._context.locker():
+        with self._context.locker(lock_id=self._lock_id("DELETE")):
             # Use light metadata in backups iteration to avoid high memory usage.
             for i, backup in enumerate(
                 self._context.backup_layout.get_backups(use_light_meta=True)
@@ -363,7 +383,8 @@ class ClickhouseBackup:
         retained_backups: List[BackupMetadata] = []
         deleting_backups: List[BackupMetadata] = []
         backup_names = self._context.backup_layout.get_backup_names()
-        with self._context.locker():
+
+        with self._context.locker(lock_id=self._lock_id("PURGE")):
             # Use light metadata in backups iteration to avoid high memory usage.
             for backup in self._context.backup_layout.get_backups(use_light_meta=True):
                 if backup.name not in backup_names:

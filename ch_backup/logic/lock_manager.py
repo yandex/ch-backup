@@ -27,6 +27,7 @@ class LockManager:
     _fd: int
     _zk_lock: Lock
     _file: IO
+    _lock_id: Optional[str]
 
     def __init__(self, lock_conf: dict, zk_ctl: Optional[ZookeeperCTL]) -> None:
         """
@@ -44,18 +45,29 @@ class LockManager:
         self._disabled = False
         self._lock_timeout = lock_conf.get("lock_timeout")
 
-    def __call__(self, distributed: bool = True, disabled: bool = False):  # type: ignore
+    def __call__(self, distributed: bool = True, disabled: bool = False, lock_id: Optional[str] = None):  # type: ignore ## add 3rd parameter with log info (dict)
         """
         Call-method for context manager
         """
         self._distributed = distributed
         self._disabled = disabled
+        self._lock_id = lock_id
         return self
+
+    def _log_msg_with_lock_id(self, msg):
+        """
+        Append the lock id to a log message, if it is not null
+        """
+        if self._lock_id:
+            return f"{msg} Lock id is {self._lock_id}."
+        return msg
 
     def __enter__(self):  # type: ignore
         """
         Enter-method for context manager
         """
+        logging.debug(self._log_msg_with_lock_id("Entering lock."))
+
         if self._disabled:
             logging.debug("Lock is disabled on enter.")
             return self
@@ -86,6 +98,9 @@ class LockManager:
             self._zk_lock.release()
             self._zk_client.__exit__(None, None, None)
 
+        logging.debug(self._log_msg_with_lock_id("Exiting lock."))
+        self._lock_id = None
+
     def _flock(self) -> None:
         """
         Sets an advisory lock on the process_lockfile_path path
@@ -107,14 +122,18 @@ class LockManager:
             client = self._zk_client.__enter__()
             if not client.exists(self._process_zk_lockfile_path):
                 client.create(self._process_zk_lockfile_path, makepath=True)
-            self._zk_lock = client.Lock(self._process_zk_lockfile_path)
+            self._zk_lock = client.Lock(
+                self._process_zk_lockfile_path, identifier=self._lock_id
+            )
             try:
                 _ = self._zk_lock.acquire(blocking=True, timeout=self._lock_timeout)
-                logging.debug("Lock was acquired")
+                logging.debug("Lock was acquired.")
             except LockTimeout:
-                logging.error(
-                    "Lock was not acquired due to timeout error.", exc_info=True
-                )
+                msg = "Lock was not acquired due to timeout error."
+                contenders = self._zk_lock.contenders()
+                if contenders:
+                    msg = f"{msg} Contenders are {', '.join(contenders)}."
+                logging.error(msg, exc_info=True)
                 sys.exit(self._exitcode)
         else:
             raise RuntimeError("ZK flock enabled, but zookeeper is not configured")

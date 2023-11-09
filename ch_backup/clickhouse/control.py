@@ -8,7 +8,7 @@ from contextlib import contextmanager, suppress
 from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE  # type: ignore
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from pkg_resources import parse_version
 
@@ -280,6 +280,17 @@ GET_ZOOKEEPER_ADMIN_UUID = strip_query(
         value
     FROM system.zookeeper
     WHERE (path = '/clickhouse/access/uuid') AND (value LIKE 'ATTACH USER admin%')
+    FORMAT JSON
+"""
+)
+
+GET_SHARD_AND_REPLICA_NAME = strip_query(
+    """
+    SELECT
+        last_value_respect_nullsArray(splitByString('/', zookeeper_path)) AS shard_name,
+        last_value_respect_nullsArray(splitByString('/', replica_path)) AS replica_name
+    FROM system.replicas
+    LIMIT 1
     FORMAT JSON
 """
 )
@@ -815,6 +826,16 @@ class ClickhouseCTL:
         Reload ClickHouse configuration query.
         """
         self._ch_client.query(RELOAD_CONFIG_SQL, timeout=self._timeout)
+
+    def get_shard_and_replica_name(self) -> Tuple[str, str]:
+        """
+        Gets the current shard and replica names
+        """
+        result = self._ch_client.query(
+            GET_SHARD_AND_REPLICA_NAME, timeout=self._timeout
+        )
+        result = result.get("data", [{}])[0]
+        return result.get("shard_name"), result.get("replica_name")
 
     @staticmethod
     @contextmanager
