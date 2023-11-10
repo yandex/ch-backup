@@ -2,15 +2,16 @@
 Lock manager logic
 """
 import os
+import socket
 import sys
 from fcntl import LOCK_SH, flock
 from types import TracebackType
-from typing import IO, Optional, Type
+from typing import IO, Any, Optional, Type
 
 from kazoo.exceptions import LockTimeout
 from kazoo.recipe.lock import Lock
 
-from ch_backup import logging
+from ch_backup.logging import ChBackupLogger
 from ch_backup.zookeeper.zookeeper import ZookeeperClient, ZookeeperCTL
 
 
@@ -27,7 +28,8 @@ class LockManager:
     _fd: int
     _zk_lock: Lock
     _file: IO
-    _lock_id: Optional[str]
+    _lock_id: str
+    _logger: Any
 
     def __init__(self, lock_conf: dict, zk_ctl: Optional[ZookeeperCTL]) -> None:
         """
@@ -45,31 +47,24 @@ class LockManager:
         self._disabled = False
         self._lock_timeout = lock_conf.get("lock_timeout")
 
-    def __call__(self, distributed: bool = True, disabled: bool = False, lock_id: Optional[str] = None):  # type: ignore ## add 3rd parameter with log info (dict)
+    def __call__(self, distributed: bool = True, disabled: bool = False, operation: str = "UNKNOWN"):  # type: ignore
         """
         Call-method for context manager
         """
         self._distributed = distributed
         self._disabled = disabled
-        self._lock_id = lock_id
+        self._lock_id = f"{operation}/{socket.getfqdn()}"
+        self._logger = ChBackupLogger("lock-man", lock_id=self._lock_id)
         return self
-
-    def _log_msg_with_lock_id(self, msg):
-        """
-        Append the lock id to a log message, if it is not null
-        """
-        if self._lock_id:
-            return f"{msg} Lock id is {self._lock_id}."
-        return msg
 
     def __enter__(self):  # type: ignore
         """
         Enter-method for context manager
         """
-        logging.debug(self._log_msg_with_lock_id("Entering lock."))
+        self._logger.debug("Entering lock.")
 
         if self._disabled:
-            logging.debug("Lock is disabled on enter.")
+            self._logger.debug("Lock is disabled on enter.")
             return self
 
         if self._lock_conf.get("flock"):
@@ -89,7 +84,7 @@ class LockManager:
         Exit-method for context manager
         """
         if self._disabled:
-            logging.debug("Lock is disabled on exit.")
+            self._logger.debug("Lock is disabled on exit.")
             return
 
         if self._lock_conf.get("flock"):
@@ -98,8 +93,7 @@ class LockManager:
             self._zk_lock.release()
             self._zk_client.__exit__(None, None, None)
 
-        logging.debug(self._log_msg_with_lock_id("Exiting lock."))
-        self._lock_id = None
+        self._logger.debug("Exiting lock.")
 
     def _flock(self) -> None:
         """
@@ -127,13 +121,12 @@ class LockManager:
             )
             try:
                 _ = self._zk_lock.acquire(blocking=True, timeout=self._lock_timeout)
-                logging.debug("Lock was acquired.")
             except LockTimeout:
-                msg = "Lock was not acquired due to timeout error."
+                msg = "ZK lock was not acquired due to timeout error."
                 contenders = self._zk_lock.contenders()
                 if contenders:
                     msg = f"{msg} Contenders are {', '.join(contenders)}."
-                logging.error(msg, exc_info=True)
+                self._logger.error(msg, exc_info=True)
                 sys.exit(self._exitcode)
         else:
             raise RuntimeError("ZK flock enabled, but zookeeper is not configured")
