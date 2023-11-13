@@ -162,7 +162,7 @@ class ClickhouseBackup:
 
         skip_lock = self._check_schema_only_backup_skip_lock(sources)
 
-        with self._context.locker(disabled=skip_lock):
+        with self._context.locker(disabled=skip_lock, operation="BACKUP"):
             self._context.backup_layout.upload_backup_metadata(
                 self._context.backup_meta
             )
@@ -287,7 +287,9 @@ class ClickhouseBackup:
 
         logging.info("All required databases are present in backup.")
 
-        with self._context.locker(distributed=not sources.schema_only):
+        with self._context.locker(
+            distributed=not sources.schema_only, operation="RESTORE"
+        ):
             self._restore(
                 sources=sources,
                 db_names=databases,
@@ -311,7 +313,7 @@ class ClickhouseBackup:
         found = False
         deleting_backups = []
         retained_backups = []
-        with self._context.locker():
+        with self._context.locker(operation="DELETE"):
             # Use light metadata in backups iteration to avoid high memory usage.
             for i, backup in enumerate(
                 self._context.backup_layout.get_backups(use_light_meta=True)
@@ -363,7 +365,8 @@ class ClickhouseBackup:
         retained_backups: List[BackupMetadata] = []
         deleting_backups: List[BackupMetadata] = []
         backup_names = self._context.backup_layout.get_backup_names()
-        with self._context.locker():
+
+        with self._context.locker(operation="PURGE"):
             # Use light metadata in backups iteration to avoid high memory usage.
             for backup in self._context.backup_layout.get_backups(use_light_meta=True):
                 if backup.name not in backup_names:
