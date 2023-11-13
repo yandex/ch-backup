@@ -11,7 +11,7 @@ from typing import IO, Any, Optional, Type
 from kazoo.exceptions import LockTimeout
 from kazoo.recipe.lock import Lock
 
-from ch_backup.logging import ChBackupLogger
+from ch_backup import logging
 from ch_backup.zookeeper.zookeeper import ZookeeperClient, ZookeeperCTL
 
 
@@ -46,6 +46,13 @@ class LockManager:
         self._distributed = zk_ctl is None
         self._disabled = False
         self._lock_timeout = lock_conf.get("lock_timeout")
+        self._logger = logging.getLogger("ch-backup").patch(self._log_message)
+
+    def _log_message(self, record: dict) -> None:
+        """
+        Patch the log message in order to include the lock id
+        """
+        record["message"] = f"<LockManager@{self._lock_id}> {record['message']}"
 
     def __call__(self, distributed: bool = True, disabled: bool = False, operation: str = "UNKNOWN"):  # type: ignore
         """
@@ -54,7 +61,6 @@ class LockManager:
         self._distributed = distributed
         self._disabled = disabled
         self._lock_id = f"{operation}/{socket.getfqdn()}"
-        self._logger = ChBackupLogger("lock-man", lock_id=self._lock_id)
         return self
 
     def __enter__(self):  # type: ignore
@@ -126,7 +132,7 @@ class LockManager:
                 contenders = self._zk_lock.contenders()
                 if contenders:
                     msg = f"{msg} Contenders are {', '.join(contenders)}."
-                self._logger.error(msg, exc_info=True)
+                self._logger.opt(exception=True).error(msg)
                 sys.exit(self._exitcode)
         else:
             raise RuntimeError("ZK flock enabled, but zookeeper is not configured")
