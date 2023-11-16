@@ -197,7 +197,7 @@ class ClickHouseTemporaryDisks:
         )
         result = _exec(
             "copy",
-            common_args=["-C", ch_disks_config_path, "--log-level", "trace"],
+            common_args=["-C", ch_disks_config_path],
             command_args=command_args,
         )
 
