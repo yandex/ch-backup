@@ -27,7 +27,7 @@ class ClickHouseDisksException(RuntimeError):
     pass
 
 
-CH_DiSK_CONFIG_PATH = "/tmp/clickhouse-disks-config.xml"
+CH_DISK_CONFIG_PATH = "/tmp/clickhouse-disks-config.xml"
 
 
 class ClickHouseTemporaryDisks:
@@ -194,12 +194,12 @@ class ClickHouseTemporaryDisks:
             ]
 
         self._render_disks_config(
-            CH_DiSK_CONFIG_PATH,
+            CH_DISK_CONFIG_PATH,
             {from_disk: self._disks[from_disk], to_disk: self._disks[to_disk]},
         )
         result = _exec(
             "copy",
-            common_args=["-C", CH_DiSK_CONFIG_PATH],
+            common_args=["-C", CH_DISK_CONFIG_PATH],
             command_args=command_args,
         )
 
