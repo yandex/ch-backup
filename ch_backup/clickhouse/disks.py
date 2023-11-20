@@ -27,6 +27,9 @@ class ClickHouseDisksException(RuntimeError):
     pass
 
 
+CH_DiSK_CONFIG_PATH = "/tmp/clickhouse-disks-config.xml"
+
+
 class ClickHouseTemporaryDisks:
     """
     Manages temporary cloud storage disks.
@@ -50,7 +53,6 @@ class ClickHouseTemporaryDisks:
         self._config_dir = config["clickhouse"]["config_dir"]
         self._backup_meta = backup_meta
         self._ch_config = ch_config
-
         self._source_bucket: str = source_bucket or ""
         self._source_path: str = source_path or ""
         self._source_endpoint: str = source_endpoint or ""
@@ -61,6 +63,7 @@ class ClickHouseTemporaryDisks:
 
         self._disks: Dict[str, Dict] = {}
         self._created_disks: Dict[str, Disk] = {}
+        self._ch_availible_disks: Dict[str, Disk] = {}
 
     def __enter__(self):
         self._disks = self._ch_config.config["storage_configuration"]["disks"]
@@ -73,6 +76,7 @@ class ClickHouseTemporaryDisks:
                 self._source_endpoint,
             )
         self._backup_layout.wait()
+        self._ch_availible_disks = self._ch_ctl.get_disks()
         return self
 
     def __exit__(self, exc_type, *args, **kwargs):
@@ -143,10 +147,9 @@ class ClickHouseTemporaryDisks:
         """
         Copy data from temporary cloud storage disk to actual.
         """
-        ch_availible_disks = self._ch_ctl.get_disks()
 
-        target_disk = ch_availible_disks[part.disk_name]
-        source_disk = ch_availible_disks[_get_tmp_disk_name(part.disk_name)]
+        target_disk = self._ch_availible_disks[part.disk_name]
+        source_disk = self._ch_availible_disks[_get_tmp_disk_name(part.disk_name)]
         for path, disk in table.paths_with_disks:
             if disk.name == target_disk.name:
                 table_path = os.path.relpath(path, target_disk.path)
@@ -190,14 +193,13 @@ class ClickHouseTemporaryDisks:
                 to_path,
             ]
 
-        ch_disks_config_path = "/tmp/clickhouse-disks-config.xml"
         self._render_disks_config(
-            ch_disks_config_path,
+            CH_DiSK_CONFIG_PATH,
             {from_disk: self._disks[from_disk], to_disk: self._disks[to_disk]},
         )
         result = _exec(
             "copy",
-            common_args=["-C", ch_disks_config_path],
+            common_args=["-C", CH_DiSK_CONFIG_PATH],
             command_args=command_args,
         )
 
