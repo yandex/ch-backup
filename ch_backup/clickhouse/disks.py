@@ -77,6 +77,14 @@ class ClickHouseTemporaryDisks:
             )
         self._backup_layout.wait()
         self._ch_availible_disks = self._ch_ctl.get_disks()
+        self._render_disks_config(
+            CH_DISK_CONFIG_PATH,
+            {
+                name: conf
+                for name, conf in self._disks.items()
+                if conf.get("type") != "cache"
+            },
+        )
         return self
 
     def __exit__(self, exc_type, *args, **kwargs):
@@ -193,10 +201,6 @@ class ClickHouseTemporaryDisks:
                 to_path,
             ]
 
-        self._render_disks_config(
-            CH_DISK_CONFIG_PATH,
-            {from_disk: self._disks[from_disk], to_disk: self._disks[to_disk]},
-        )
         result = _exec(
             "copy",
             common_args=["-C", CH_DISK_CONFIG_PATH],
