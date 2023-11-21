@@ -2,7 +2,7 @@
 Clickhouse-disks controls temporary cloud storage disks management.
 """
 
-
+import copy
 import os
 from subprocess import PIPE, Popen
 from typing import Dict, List, Optional
@@ -25,6 +25,9 @@ class ClickHouseDisksException(RuntimeError):
     """
 
     pass
+
+
+CH_DISK_CONFIG_PATH = "/tmp/clickhouse-disks-config.xml"
 
 
 class ClickHouseTemporaryDisks:
@@ -50,7 +53,6 @@ class ClickHouseTemporaryDisks:
         self._config_dir = config["clickhouse"]["config_dir"]
         self._backup_meta = backup_meta
         self._ch_config = ch_config
-
         self._source_bucket: str = source_bucket or ""
         self._source_path: str = source_path or ""
         self._source_endpoint: str = source_endpoint or ""
@@ -59,21 +61,30 @@ class ClickHouseTemporaryDisks:
                 "Backup contains cloud storage data, cloud-storage-source-bucket must be set."
             )
 
-        self._disks: Dict[str, Disk] = {}
+        self._disks: Dict[str, Dict] = {}
         self._created_disks: Dict[str, Disk] = {}
+        self._ch_availible_disks: Dict[str, Disk] = {}
 
     def __enter__(self):
-        self._disks = self._ch_ctl.get_disks()
+        self._disks = self._ch_config.config["storage_configuration"]["disks"]
         for disk_name in self._backup_meta.cloud_storage.disks:
-            disk = self._disks[disk_name]
             self._create_temporary_disk(
                 self._backup_meta,
-                disk,
+                disk_name,
                 self._source_bucket,
                 self._source_path,
                 self._source_endpoint,
             )
         self._backup_layout.wait()
+        self._ch_availible_disks = self._ch_ctl.get_disks()
+        self._render_disks_config(
+            CH_DISK_CONFIG_PATH,
+            {
+                name: conf
+                for name, conf in self._disks.items()
+                if conf.get("type") != "cache"
+            },
+        )
         return self
 
     def __exit__(self, exc_type, *args, **kwargs):
@@ -87,53 +98,56 @@ class ClickHouseTemporaryDisks:
             logging.debug(f"Removing tmp disk {disk.name}")
             try:
                 os.remove(_get_config_path(self._config_dir, disk.name))
+                self._disks.pop(disk.name)
                 return True
             except FileNotFoundError:
                 pass
 
-    def _create_temporary_disk(
-        self,
-        backup_meta: BackupMetadata,
-        disk: Disk,
-        source_bucket: str,
-        source_path: str,
-        source_endpoint: str,
-    ) -> None:
-        tmp_disk_name = _get_tmp_disk_name(disk.name)
-        logging.debug(f"Creating tmp disk {tmp_disk_name}")
-        disk_config = self._ch_config.config["storage_configuration"]["disks"][
-            disk.name
-        ]
-
-        endpoint = urlparse(disk_config["endpoint"])
-        endpoint_netloc = source_endpoint or endpoint.netloc
-        disk_config["endpoint"] = os.path.join(
-            f"{endpoint.scheme}://{endpoint_netloc}", source_bucket, source_path, ""
-        )
-        with open(
-            _get_config_path(self._config_dir, tmp_disk_name), "w", encoding="utf-8"
-        ) as f:
+    def _render_disks_config(self, path, disks):
+        with open(path, "w", encoding="utf-8") as f:
             xmltodict.unparse(
                 {
                     "yandex": {
-                        "storage_configuration": {
-                            "disks": {
-                                tmp_disk_name: disk_config,
-                            },
-                        },
+                        "storage_configuration": {"disks": disks},
                     }
                 },
                 f,
                 pretty=True,
             )
 
+    def _create_temporary_disk(
+        self,
+        backup_meta: BackupMetadata,
+        disk_name: str,
+        source_bucket: str,
+        source_path: str,
+        source_endpoint: str,
+    ) -> None:
+        tmp_disk_name = _get_tmp_disk_name(disk_name)
+        logging.debug(f"Creating tmp disk {tmp_disk_name}")
+        disk_config = copy.copy(
+            self._ch_config.config["storage_configuration"]["disks"][disk_name]
+        )
+
+        endpoint = urlparse(disk_config["endpoint"])
+        endpoint_netloc = source_endpoint or endpoint.netloc
+        disk_config["endpoint"] = os.path.join(
+            f"{endpoint.scheme}://{endpoint_netloc}", source_bucket, source_path, ""
+        )
+        self._render_disks_config(
+            _get_config_path(self._config_dir, tmp_disk_name),
+            {tmp_disk_name: disk_config},
+        )
+
         self._ch_ctl.reload_config()
         source_disk = self._ch_ctl.get_disk(tmp_disk_name)
-        logging.debug(f'Restoring Cloud Storage "shadow" data  of disk "{disk.name}"')
+        logging.debug(f'Restoring Cloud Storage "shadow" data  of disk "{disk_name}"')
         self._backup_layout.download_cloud_storage_metadata(
-            backup_meta, source_disk, disk.name
+            backup_meta, source_disk, disk_name
         )
+
         self._created_disks[tmp_disk_name] = source_disk
+        self._disks[tmp_disk_name] = disk_config
 
     def copy_part(
         self, backup_meta: BackupMetadata, table: Table, part: PartMetadata
@@ -141,9 +155,9 @@ class ClickHouseTemporaryDisks:
         """
         Copy data from temporary cloud storage disk to actual.
         """
-        target_disk = self._disks[part.disk_name]
-        source_disk = self._created_disks[_get_tmp_disk_name(part.disk_name)]
 
+        target_disk = self._ch_availible_disks[part.disk_name]
+        source_disk = self._ch_availible_disks[_get_tmp_disk_name(part.disk_name)]
         for path, disk in table.paths_with_disks:
             if disk.name == target_disk.name:
                 table_path = os.path.relpath(path, target_disk.path)
@@ -189,7 +203,7 @@ class ClickHouseTemporaryDisks:
 
         result = _exec(
             "copy",
-            common_args=[],
+            common_args=["-C", CH_DISK_CONFIG_PATH],
             command_args=command_args,
         )
 

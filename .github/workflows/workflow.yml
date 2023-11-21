@@ -10,7 +10,7 @@ concurrency:
 
 env:
   NO_VENV: true
-  LATEST_CLICKHOUSE_VERSION: 23.9.3.12
+  LATEST_CLICKHOUSE_VERSION: latest
 
 jobs:
   lint:
