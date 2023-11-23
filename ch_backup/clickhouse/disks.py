@@ -82,7 +82,7 @@ class ClickHouseTemporaryDisks:
             {
                 name: conf
                 for name, conf in self._disks.items()
-                if conf.get("type") != "cache"
+                if not conf or conf.get("type") != "cache"
             },
         )
         return self
