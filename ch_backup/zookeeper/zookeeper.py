@@ -10,6 +10,7 @@ from kazoo.exceptions import KazooException, NoNodeError
 from kazoo.handlers.threading import KazooTimeoutError
 
 from ch_backup import logging
+from ch_backup.exceptions import ConfigurationError
 
 from ..clickhouse.models import Table
 from ..util import retry
@@ -88,6 +89,13 @@ class ZookeeperCTL:
         """
         if macros is None:
             macros = {}
+        if replica is None:
+            if macros.get("replica") is not None:
+                replica = macros.get("replica")
+            else:
+                raise ConfigurationError(
+                    "Can't get the replica name. Please, specify it through macros or replica_name knob."
+                )
 
         with self._zk_client as client:
             for table, table_path in tables:
