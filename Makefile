@@ -1,8 +1,11 @@
+SHELL := bash
+
 export PYTHON?=python3
 export PYTHONIOENCODING?=utf8
 export NO_VENV?=
 export COMPOSE_HTTP_TIMEOUT?=300
 export CLICKHOUSE_VERSION?=latest
+export PROJECT_NAME ?= ch-backup
 
 ifndef NO_VENV
   PATH:=venv/bin:${PATH}
@@ -11,6 +14,8 @@ endif
 PYTHON_VERSION=$(shell ${PYTHON} -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
 SESSION_FILE=.session_conf.sav
 INSTALL_DIR=$(DESTDIR)/opt/yandex/ch-backup
+SRC_DIR ?= ch_backup
+TESTS_DIR ?= tests
 
 TEST_ENV=env \
     PATH=${PATH} \
@@ -20,6 +25,24 @@ TEST_ENV=env \
     COMPOSE_HTTP_TIMEOUT=${COMPOSE_HTTP_TIMEOUT}
 
 INTEGRATION_TEST_TOOL=${TEST_ENV} python -m tests.integration.env_control
+
+export BUILD_PYTHON_OUTPUT_DIR ?= dist
+export BUILD_DEB_OUTPUT_DIR ?= out
+
+# Different ways of passing signing key for building debian package
+export DEB_SIGN_KEY_ID ?=
+export DEB_SIGN_KEY ?=
+export DEB_SIGN_KEY_PATH ?=
+
+# Platform of image for building debian package according to
+# https://docs.docker.com/build/building/multi-platform/#building-multi-platform-images
+# E.g. linux/amd64, linux/arm64, etc.
+# If platform is not provided Docker uses platform of the host performing the build
+export DEB_TARGET_PLATFORM ?=
+# Name of image (with tag) for building deb package.
+# E.g. ubuntu:22.04, ubuntu:jammy, ubuntu:bionic, etc.
+# If it is not provided, default value in Dockerfile is used
+export DEB_BUILD_DISTRIBUTION ?=
 
 
 .PHONY: build
@@ -33,11 +56,11 @@ lint: install-deps isort black codespell ruff pylint mypy bandit
 
 .PHONY: isort
 isort: install-deps
-	${TEST_ENV} isort --check --diff .
+	${TEST_ENV} isort --check --diff $(SRC_DIR) $(TESTS_DIR)
 
 .PHONY: black
 black: install-deps
-	${TEST_ENV} black --check --diff .
+	${TEST_ENV} black --check --diff $(SRC_DIR) $(TESTS_DIR)
 
 .PHONY: codespell
 codespell: install-deps
@@ -49,16 +72,16 @@ fix-codespell-errors: install-deps
 
 .PHONY: ruff
 ruff: install-deps
-	${TEST_ENV} ruff check ch_backup tests
+	${TEST_ENV} ruff check $(SRC_DIR) $(TESTS_DIR)
 
 .PHONY: pylint
 pylint: install-deps
-	${TEST_ENV} pylint ch_backup
-	${TEST_ENV} pylint --disable=missing-docstring,invalid-name tests
+	${TEST_ENV} pylint $(SRC_DIR)
+	${TEST_ENV} pylint --disable=missing-docstring,invalid-name $(TESTS_DIR)
 
 .PHONY: mypy
 mypy: install-deps
-	${TEST_ENV} mypy ch_backup tests
+	${TEST_ENV} mypy $(SRC_DIR) $(TESTS_DIR)
 
 .PHONY: bandit
 bandit: install-deps
@@ -77,7 +100,7 @@ test-integration: build create-env
 
 
 .PHONY: clean
-clean: clean-env clean-pycache
+clean: clean-env clean-pycache clean-debuild
 	rm -rf venv *.egg-info htmlcov .coverage* .hypothesis .mypy_cache .pytest_cache .install-deps ch_backup/version.txt
 
 .PHONY: clean-pycache
@@ -111,13 +134,20 @@ uninstall:
 	rm -rf $(INSTALL_DIR) $(DESTDIR)/usr/bin/ch-backup $(DESTDIR)/etc/bash_completion.d/ch-backup
 
 
-.PHONY: debuild
-debuild: debian-changelog
-	cd debian && \
-	    debuild --check-dirname-level 0 --no-tgz-check --preserve-env -uc -us
 
-.PHONY: debian-changelog
-debian-changelog: build
+
+.PHONY: build-deb-package
+build-deb-package:
+	./build_deb_in_docker.sh
+
+
+.PHONY: build-deb-package-local
+build-deb-package-local: prepare-changelog
+	./build_deb.sh
+
+
+.PHONY: prepare-changelog
+prepare-changelog: build
 	@rm -f debian/changelog
 	dch --create --package ch-backup --distribution stable \
 	    -v `cat ch_backup/version.txt` \
@@ -125,8 +155,8 @@ debian-changelog: build
 
 
 .PHONY: clean-debuild
-clean-debuild: clean
-	rm -rf debian/{changelog,files,ch-backup*}
+clean-debuild:
+	rm -rf debian/{changelog,files,ch-backup,.debhelper}
 	rm -f ../ch-backup_*{build,changes,deb,dsc,tar.gz}
 
 
