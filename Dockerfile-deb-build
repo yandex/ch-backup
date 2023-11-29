@@ -1,0 +1,42 @@
+ARG BASE_IMAGE=ubuntu:22.04
+FROM --platform=$TARGETPLATFORM $BASE_IMAGE
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN set -ex \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        # Debian packaging tools
+        build-essential \
+        debhelper \
+        devscripts \
+        fakeroot \
+        # Managing keys for debian package signing
+        gpg \
+        gpg-agent \
+        # Python packaging tools
+        python3-dev \
+        python3-pip \
+        python3-setuptools \
+        python3-venv \
+        # Misc
+        curl \
+        locales \
+        # For building PyNacl library
+        libffi-dev libssl-dev libboost-all-dev libsodium-dev \
+    # Configure locales
+    && locale-gen en_US.UTF-8 \
+    && update-locale LANG=en_US.UTF-8 \
+    # Ensure that `python` refers to `python3` so that poetry works. 
+    # It makes sense for ubuntu:18.04
+    && ln -sf /usr/bin/python3 /usr/bin/python
+
+# Project directory must be mounted here
+VOLUME /src
+WORKDIR /src
+
+# For compiling PyNACL library, which is used by ch-backup
+# See https://pynacl.readthedocs.io/en/latest/install/#linux-source-build
+ENV SODIUM_INSTALL=system
+
+CMD ["make", "build-deb-package-local"]

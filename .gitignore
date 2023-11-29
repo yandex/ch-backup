@@ -13,11 +13,13 @@
 .session_conf.sav
 .tox/
 .vscode
+build/
 ch_backup/version.txt
 debian/ch-backup*
 debian/changelog
 debian/files
 htmlcov/
+out/
 staging/
 venv/
 
