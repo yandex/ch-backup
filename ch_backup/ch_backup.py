@@ -225,7 +225,7 @@ class ClickhouseBackup:
         cloud_storage_source_path: str = None,
         cloud_storage_source_endpoint: str = None,
         skip_cloud_storage: bool = False,
-        clean_zookeeper: bool = False,
+        no_clean_zookeeper: bool = False,
         keep_going: bool = False,
     ) -> None:
         """
@@ -300,7 +300,7 @@ class ClickhouseBackup:
                 cloud_storage_source_path=cloud_storage_source_path,
                 cloud_storage_source_endpoint=cloud_storage_source_endpoint,
                 skip_cloud_storage=skip_cloud_storage,
-                clean_zookeeper=clean_zookeeper,
+                no_clean_zookeeper=no_clean_zookeeper,
                 keep_going=keep_going,
             )
 
@@ -490,7 +490,7 @@ class ClickhouseBackup:
         cloud_storage_source_path: Optional[str] = None,
         cloud_storage_source_endpoint: Optional[str] = None,
         skip_cloud_storage: bool = False,
-        clean_zookeeper: bool = False,
+        no_clean_zookeeper: bool = False,
         keep_going: bool = False,
     ) -> None:
         if sources.access:
@@ -532,7 +532,7 @@ class ClickhouseBackup:
                 cloud_storage_source_path=cloud_storage_source_path,
                 cloud_storage_source_endpoint=cloud_storage_source_endpoint,
                 skip_cloud_storage=skip_cloud_storage,
-                clean_zookeeper=clean_zookeeper,
+                no_clean_zookeeper=no_clean_zookeeper,
                 keep_going=keep_going,
             )
 
