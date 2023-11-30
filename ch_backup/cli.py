@@ -476,8 +476,9 @@ def backup_command(
 @option_group(
     "ZooKeeper",
     option(
-        "--clean-zookeeper",
+        "--clean-zookeeper/--no-clean-zookeeper",
         is_flag=True,
+        default=True,
         help="Remove zookeeper metadata for tables to restore",
     ),
 )
