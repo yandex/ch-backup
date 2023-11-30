@@ -476,8 +476,9 @@ def backup_command(
 @option_group(
     "ZooKeeper",
     option(
-        "--no-clean-zookeeper",
+        "--clean-zookeeper/--no-clean-zookeeper",
         is_flag=True,
+        default=True,
         help="Remove zookeeper metadata for tables to restore",
     ),
 )
@@ -534,7 +535,7 @@ def restore_command(
     cloud_storage_source_path: str = None,
     cloud_storage_source_endpoint: str = None,
     skip_cloud_storage: bool = False,
-    no_clean_zookeeper: bool = False,
+    clean_zookeeper: bool = False,
     keep_going: bool = False,
     access: bool = False,
     data: bool = False,
@@ -573,7 +574,7 @@ def restore_command(
         cloud_storage_source_path=cloud_storage_source_path,
         cloud_storage_source_endpoint=cloud_storage_source_endpoint,
         skip_cloud_storage=skip_cloud_storage,
-        no_clean_zookeeper=no_clean_zookeeper,
+        clean_zookeeper=clean_zookeeper,
         keep_going=keep_going,
     )
 

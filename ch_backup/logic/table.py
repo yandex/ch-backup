@@ -171,7 +171,7 @@ class TableBackup(BackupManager):
         cloud_storage_source_path: Optional[str],
         cloud_storage_source_endpoint: Optional[str],
         skip_cloud_storage: bool,
-        no_clean_zookeeper: bool,
+        clean_zookeeper: bool,
         keep_going: bool,
     ) -> None:
         """
@@ -236,7 +236,7 @@ class TableBackup(BackupManager):
             context,
             databases,
             tables_to_restore,
-            no_clean_zookeeper,
+            clean_zookeeper,
             replica_name,
             keep_going,
         )
@@ -506,7 +506,7 @@ class TableBackup(BackupManager):
         context: BackupContext,
         databases: Dict[str, Database],
         tables: Iterable[Table],
-        no_clean_zookeeper: bool = False,
+        clean_zookeeper: bool = False,
         replica_name: Optional[str] = None,
         keep_going: bool = False,
     ) -> List[Table]:
@@ -532,7 +532,8 @@ class TableBackup(BackupManager):
                 view_tables.append(table)
             else:
                 other_tables.append(table)
-        if not no_clean_zookeeper and len(context.zk_config.get("hosts")) > 0:  # type: ignore
+
+        if clean_zookeeper and len(context.zk_config.get("hosts")) > 0:  # type: ignore
             macros = context.ch_ctl.get_macros()
             replicated_tables = [
                 table for table in merge_tree_tables if is_replicated(table.engine)
