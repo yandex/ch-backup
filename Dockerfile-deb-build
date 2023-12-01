@@ -38,5 +38,6 @@ WORKDIR /src
 # For compiling PyNACL library, which is used by ch-backup
 # See https://pynacl.readthedocs.io/en/latest/install/#linux-source-build
 ENV SODIUM_INSTALL=system
+ENV PYTHON=/usr/bin/python3
 
 CMD ["make", "build-deb-package-local"]
