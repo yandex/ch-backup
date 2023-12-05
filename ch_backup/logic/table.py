@@ -2,6 +2,7 @@
 Clickhouse backup logic for tables
 """
 import os
+import shutil
 from collections import deque
 from dataclasses import dataclass
 from functools import partial
@@ -322,20 +323,33 @@ class TableBackup(BackupManager):
             )
             return
 
+        retry_on_existing_dir: bool = context.ch_ctl_conf.get(
+            "retry_on_existing_dir", False
+        )
+        dir_exists_prefix: str = "Code: 84. DB::Exception: Directory "
+
         # Freeze only MergeTree tables
         if not schema_only and is_merge_tree(table.engine):
-            try:
-                context.ch_ctl.freeze_table(backup_name, table)
-            except ClickhouseError:
-                if context.ch_ctl.does_table_exist(table.database, table.name):
-                    raise
+            while True:
+                try:
+                    context.ch_ctl.freeze_table(backup_name, table)
+                except ClickhouseError as e:
+                    if not context.ch_ctl.does_table_exist(table.database, table.name):
+                        logging.warning(
+                            'Table "{}"."{}" was removed by a user during backup',
+                            table.database,
+                            table.name,
+                        )
+                        return
 
-                logging.warning(
-                    'Table "{}"."{}" was removed by a user during backup',
-                    table.database,
-                    table.name,
-                )
-                return
+                    if retry_on_existing_dir and str(e).startswith(dir_exists_prefix):
+                        shutil.rmtree(
+                            str(e).removeprefix(dir_exists_prefix).split(" ")[0]
+                        )
+                        continue
+
+                    raise e
+                break
 
         # Check if table metadata was updated
         new_mtime = self._get_mtime(table.metadata_path)
