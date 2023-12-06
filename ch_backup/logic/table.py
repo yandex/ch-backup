@@ -323,16 +323,20 @@ class TableBackup(BackupManager):
             )
             return
 
-        retry_on_existing_dir: bool = context.ch_ctl_conf.get(
-            "retry_on_existing_dir", False
+        # Sometimes while ALTER FREEZing a table we may get an error that a directory for
+        # part already exists. This clearly is a clickhouse error but to mitigate it on backup
+        # side we can just clear this directory as it doesn't contain actual data, just hardlinks
+        retry_on_existing_dir: int = context.config.get(
+            "retry_on_existing_dir", 0
         )
         dir_exists_prefix: str = "Code: 84. DB::Exception: Directory "
 
         # Freeze only MergeTree tables
         if not schema_only and is_merge_tree(table.engine):
-            while True:
+            for i in range(retry_on_existing_dir + 1):
                 try:
                     context.ch_ctl.freeze_table(backup_name, table)
+                    break
                 except ClickhouseError as e:
                     if not context.ch_ctl.does_table_exist(table.database, table.name):
                         logging.warning(
@@ -342,14 +346,15 @@ class TableBackup(BackupManager):
                         )
                         return
 
-                    if retry_on_existing_dir and str(e).startswith(dir_exists_prefix):
+                    if retry_on_existing_dir > 0 and i == retry_on_existing_dir:
+                        raise ClickhouseError(f"All {retry_on_existing_dir} retries failes") from e
+                    if retry_on_existing_dir > 0 and str(e).startswith(dir_exists_prefix):
                         shutil.rmtree(
                             str(e).removeprefix(dir_exists_prefix).split(" ")[0]
                         )
                         continue
 
                     raise e
-                break
 
         # Check if table metadata was updated
         new_mtime = self._get_mtime(table.metadata_path)
