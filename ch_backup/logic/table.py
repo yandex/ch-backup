@@ -349,9 +349,9 @@ class TableBackup(BackupManager):
                     if retry_on_existing_dir > 0 and i == retry_on_existing_dir:
                         raise ClickhouseError(f"All {retry_on_existing_dir} retries failes") from e
                     if retry_on_existing_dir > 0 and str(e).startswith(dir_exists_prefix):
-                        shutil.rmtree(
-                            str(e).removeprefix(dir_exists_prefix).split(" ")[0]
-                        )
+                        existing_dir = str(e).removeprefix(dir_exists_prefix).split(" ")[0]
+                        shutil.rmtree(existing_dir)
+                        logging.debug(f'Removed existing dir {existing_dir}, retrying')
                         continue
 
                     raise e
