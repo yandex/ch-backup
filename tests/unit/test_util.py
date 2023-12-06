@@ -206,6 +206,33 @@ class TestNormalizeSchema:
             "ENGINE = MergeTree PARTITION BY date ORDER BY date SETTINGS index_granularity = 8192",
             True,
         ],
+        [
+            "CREATE TABLE test_db.table_all (`a` UInt32) "
+            "ENGINE = Distributed('{cluster}', 'test_db', 'table')",
+            "ATTACH TABLE `test_db`.`table_all` (`a` UInt32) "
+            "ENGINE = Distributed('{cluster}', 'test_db', 'table')",
+            True,
+        ],
+        [
+            "CREATE TABLE test_db.table_all (`a` UInt32) "
+            "ENGINE = Distributed('{cluster}', 'test_db', 'table')",
+            "ATTACH TABLE `test_db`.`table_all` UUID 'f8456d96-67fe-45bf-9126-61f83c4b2682' "
+            "(`a` UInt32) ENGINE = Distributed('{cluster}', 'test_db', 'table')",
+            True,
+        ],
+        [
+            "CREATE TABLE test_db.test (`a` UInt32, `b` Date, `c` DateTime, `d` String, `e` UInt8, `f` UInt8) ENGINE = Null",
+            "ATTACH TABLE `test_db`.`test` ("
+            "`a` UInt32, "
+            "`b` Date, "
+            "`c` DateTime, "
+            "`d` String, "
+            "`e` UInt8, "
+            "`f` UInt8"
+            ") "
+            "ENGINE = Null",
+            True,
+        ],
     ]
 
     def test_normalize_schema(self):
