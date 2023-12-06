@@ -3,6 +3,7 @@ Steps related to ch-backup command-line tool.
 """
 import json
 
+import pytest
 from behave import given, then, when
 from hamcrest import (
     any_of,
@@ -49,11 +50,8 @@ def step_cannot_create_backup(context, node):
 @when("we can't create {node:w} clickhouse backup with exception")
 def step_cannot_create_backup_exc(context, node):
     options = get_step_data(context)
-    try:
+    with pytest.raises(Exception):
         BackupManager(context, node).backup(**options)
-        assert False
-    except Exception:
-        pass
 
 
 @given("metadata of {node:w} backup #{backup_id:d} was adjusted with")

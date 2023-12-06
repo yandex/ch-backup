@@ -351,9 +351,9 @@ class TableBackup(BackupManager):
                     if retry_on_existing_dir > 0 and str(e).startswith(
                         dir_exists_prefix
                     ):
-                        existing_dir = (
-                            str(e).removeprefix(dir_exists_prefix).split(" ")[0]
-                        )
+                        existing_dir = str(e)[len(dir_exists_prefix) :].split(
+                            " ", maxsplit=1
+                        )[0]
                         shutil.rmtree(existing_dir)
                         logging.debug(f"Removed existing dir {existing_dir}, retrying")
                         continue
