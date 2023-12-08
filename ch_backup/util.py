@@ -279,8 +279,8 @@ def compare_schema(schema_a: str, schema_b: str) -> bool:
             schema,
         ).lower()
         res = re.sub(
-            r"^attach table `?([^`\.]+)`?\.\`?([^`\.]+)\`( uuid '[^']+')?",
-            r"create table \1.\2",
+            r"^attach ([^`\.]+) `?([^`\.]+)`?\.\`?([^`\.]+)\`( uuid '[^']+')?",
+            r"create \1 \2.\3",
             res,
         )
         res = re.sub(r"\s+", " ", res)
