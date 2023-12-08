@@ -233,6 +233,11 @@ class TestNormalizeSchema:
             "ENGINE = Null",
             True,
         ],
+        [
+            "CREATE MATERIALIZED VIEW test_db.mview TO test_db.base (`number` UInt64) AS SELECT * FROM system.numbers LIMIT 10",
+            "ATTACH MATERIALIZED VIEW `test_db`.`mview` TO test_db.base (`number` UInt64) AS SELECT * FROM system.numbers LIMIT 10",
+            True,
+        ],
     ]
 
     def test_normalize_schema(self):
