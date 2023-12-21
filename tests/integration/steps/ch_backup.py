@@ -3,7 +3,6 @@ Steps related to ch-backup command-line tool.
 """
 import json
 
-import pytest
 from behave import given, then, when
 from hamcrest import (
     any_of,
@@ -19,7 +18,6 @@ from tests.integration.modules.steps import get_step_data
 
 
 @given("ch-backup configuration on {node:w}")
-@when("we update ch-backup configuration on {node:w}")
 def step_update_ch_backup_config(context, node):
     conf = get_step_data(context)
     BackupManager(context, node).update_config(conf)
@@ -45,13 +43,6 @@ def step_cannot_create_backup(context, node):
         equal_to(0),
         f"On {node} created backup with name : {name}, but we assume that the backup can't be created.",
     )
-
-
-@when("we can't create {node:w} clickhouse backup with exception")
-def step_cannot_create_backup_exc(context, node):
-    options = get_step_data(context)
-    with pytest.raises(Exception):
-        BackupManager(context, node).backup(**options)
 
 
 @given("metadata of {node:w} backup #{backup_id:d} was adjusted with")

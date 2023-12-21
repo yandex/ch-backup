@@ -2,7 +2,6 @@
 Clickhouse backup logic for tables
 """
 import os
-import shutil
 from collections import deque
 from dataclasses import dataclass
 from functools import partial
@@ -323,42 +322,20 @@ class TableBackup(BackupManager):
             )
             return
 
-        # Sometimes while ALTER FREEZing a table we may get an error that a directory for
-        # part already exists. This clearly is a clickhouse error but to mitigate it on backup
-        # side we can just clear this directory as it doesn't contain actual data, just hardlinks
-        retry_on_existing_dir: int = context.config.get("retry_on_existing_dir", 0)
-        dir_exists_prefix: str = "Code: 84. DB::Exception: Directory "
-
         # Freeze only MergeTree tables
         if not schema_only and is_merge_tree(table.engine):
-            for i in range(retry_on_existing_dir + 1):
-                try:
-                    context.ch_ctl.freeze_table(backup_name, table)
-                    break
-                except ClickhouseError as e:
-                    if not context.ch_ctl.does_table_exist(table.database, table.name):
-                        logging.warning(
-                            'Table "{}"."{}" was removed by a user during backup',
-                            table.database,
-                            table.name,
-                        )
-                        return
+            try:
+                context.ch_ctl.freeze_table(backup_name, table)
+            except ClickhouseError:
+                if context.ch_ctl.does_table_exist(table.database, table.name):
+                    raise
 
-                    if retry_on_existing_dir > 0 and i == retry_on_existing_dir:
-                        raise ClickhouseError(
-                            f"All {retry_on_existing_dir} retries failed"
-                        ) from e
-                    if retry_on_existing_dir > 0 and str(e).startswith(
-                        dir_exists_prefix
-                    ):
-                        existing_dir = str(e)[len(dir_exists_prefix) :].split(
-                            " ", maxsplit=1
-                        )[0]
-                        shutil.rmtree(existing_dir)
-                        logging.debug(f"Removed existing dir {existing_dir}, retrying")
-                        continue
-
-                    raise e
+                logging.warning(
+                    'Table "{}"."{}" was removed by a user during backup',
+                    table.database,
+                    table.name,
+                )
+                return
 
         # Check if table metadata was updated
         new_mtime = self._get_mtime(table.metadata_path)
