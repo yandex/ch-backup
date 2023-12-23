@@ -207,6 +207,9 @@ class ClickhouseBackup:
                 if not self._context.config.get("keep_freezed_data_on_failure"):
                     self._context.ch_ctl.remove_freezed_data()
 
+            # Upload operations are asynch. Should wait until they are all finished.
+            self._context.backup_layout.wait()
+
         return self._context.backup_meta.name, None
 
     # pylint: disable=too-many-arguments,duplicate-code
