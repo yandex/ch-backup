@@ -312,15 +312,10 @@ class ClickhouseCTL:
             "allow_experimental_funnel_functions": 1,
             "allow_experimental_live_view": 1,
             "allow_experimental_window_view": 1,
+            "allow_experimental_object_type": 1,
             "allow_suspicious_codecs": 1,
             "allow_suspicious_low_cardinality_types": 1,
         }
-        if self.ch_version_ge("22.3"):
-            settings.update(
-                {
-                    "allow_experimental_object_type": 1,
-                }
-            )
         if self.ch_version_ge("22.6"):
             settings.update(
                 {
@@ -352,6 +347,12 @@ class ClickhouseCTL:
             settings.update(
                 {
                     "allow_experimental_inverted_index": 1,
+                }
+            )
+        if self.ch_version_ge("23.12"):
+            settings.update(
+                {
+                    "allow_suspicious_ttl_expressions": 1,
                 }
             )
         self._ch_client.settings.update(settings)
