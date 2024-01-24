@@ -568,6 +568,7 @@ class TableBackup(BackupManager):
     ) -> None:
         # pylint: disable=too-many-branches
         logging.info("Restoring tables data")
+        cloud_storage_parts = []
         for table_meta in tables:
             try:
                 logging.debug(
@@ -607,8 +608,7 @@ class TableBackup(BackupManager):
                                     "on cloud storage because of --skip-cloud-storage flag"
                                 )
                                 continue
-
-                            disks.copy_part(context.backup_meta, table, part)
+                            cloud_storage_parts.append((table, part))
                         else:
                             fs_part_path = context.ch_ctl.get_detached_part_path(
                                 table, part.disk_name, part.name
@@ -625,6 +625,13 @@ class TableBackup(BackupManager):
                             )
                         else:
                             raise
+                disks.copy_parts(
+                    context.backup_meta,
+                    cloud_storage_parts,
+                    context.config_root["multiprocessing"][
+                        "cloud_storage_restore_workers"
+                    ],
+                )
 
                 context.backup_layout.wait(keep_going)
                 for part in attach_parts:
