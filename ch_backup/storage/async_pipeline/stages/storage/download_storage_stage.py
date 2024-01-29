@@ -1,6 +1,7 @@
 """
 Downloading object from a storage stage.
 """
+
 from typing import Iterable, Optional
 
 from ch_backup.storage.async_pipeline.base_pipeline.handler import InputHandler

@@ -1,6 +1,7 @@
 """
 Utility functions for dealing with date and time.
 """
+
 from datetime import datetime, timedelta
 
 from humanfriendly import parse_timespan

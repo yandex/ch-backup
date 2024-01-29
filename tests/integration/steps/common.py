@@ -1,6 +1,7 @@
 """
 Common steps.
 """
+
 import yaml
 from behave import given, when
 from tests.integration.modules.ch_backup import get_version

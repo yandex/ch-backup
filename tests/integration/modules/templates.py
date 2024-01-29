@@ -1,6 +1,7 @@
 """
 Module responsible for template rendering.
 """
+
 import os
 import shutil
 

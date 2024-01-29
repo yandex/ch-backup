@@ -1,6 +1,7 @@
 """
 Pipeline builder.
 """
+
 from functools import reduce
 from math import ceil
 from pathlib import Path

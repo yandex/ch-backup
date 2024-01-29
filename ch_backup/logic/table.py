@@ -1,6 +1,7 @@
 """
 Clickhouse backup logic for tables
 """
+
 import os
 from collections import deque
 from dataclasses import dataclass

@@ -1,6 +1,7 @@
 """
 Stage types.
 """
+
 from enum import Enum
 
 

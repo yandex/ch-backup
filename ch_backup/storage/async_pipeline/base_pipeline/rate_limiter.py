@@ -1,6 +1,7 @@
 """
 Rate limiter module.
 """
+
 import time
 from typing import Callable
 

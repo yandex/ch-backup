@@ -1,6 +1,7 @@
 """
 Clickhouse backup logic for named collections
 """
+
 from typing import List
 
 from ch_backup import logging

@@ -1,6 +1,7 @@
 """
 Unit tests schema module.
 """
+
 from tests.unit.utils import parametrize
 
 from ch_backup.clickhouse.models import Table

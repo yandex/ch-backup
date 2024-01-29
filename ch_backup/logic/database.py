@@ -1,6 +1,7 @@
 """
 Clickhouse backup logic for databases
 """
+
 from typing import Dict, Sequence
 
 from ch_backup import logging

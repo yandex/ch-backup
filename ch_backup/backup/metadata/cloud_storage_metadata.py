@@ -1,6 +1,7 @@
 """
 Backup metadata for Cloud Storage.
 """
+
 from typing import Any, Dict, List, Optional
 
 

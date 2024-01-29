@@ -1,6 +1,7 @@
 """
 New pipelines executor module.
 """
+
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from pathlib import Path

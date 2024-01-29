@@ -1,6 +1,7 @@
 """
 Class for executing callables on specified pool.
 """
+
 from concurrent.futures import Executor, Future, as_completed
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional

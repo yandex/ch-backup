@@ -1,6 +1,7 @@
 """
 Reading files to TAR stream stage.
 """
+
 import tarfile
 from pathlib import Path
 from typing import Iterator, List

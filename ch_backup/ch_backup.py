@@ -1,6 +1,7 @@
 """
 Clickhouse backup logic
 """
+
 from collections import defaultdict
 from copy import copy
 from datetime import timedelta
@@ -247,9 +248,9 @@ class ClickhouseBackup:
                     "Cloud storage source bucket must be set if backup has data on S3 disks"
                 )
 
-        self._context.config[
-            "override_replica_name"
-        ] = override_replica_name or self._context.config.get("override_replica_name")
+        self._context.config["override_replica_name"] = (
+            override_replica_name or self._context.config.get("override_replica_name")
+        )
         self._context.config["force_non_replicated"] = (
             force_non_replicated or self._context.config["force_non_replicated"]
         )

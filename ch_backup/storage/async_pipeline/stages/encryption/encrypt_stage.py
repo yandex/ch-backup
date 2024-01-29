@@ -1,6 +1,7 @@
 """
 Encrypting stage.
 """
+
 from ch_backup.encryption import BaseEncryption
 from ch_backup.storage.async_pipeline.base_pipeline.handler import Handler
 from ch_backup.storage.async_pipeline.stages.types import StageType

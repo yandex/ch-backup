@@ -1,6 +1,7 @@
 """
 Steps related to ch-backup command-line tool.
 """
+
 import json
 
 from behave import given, then, when

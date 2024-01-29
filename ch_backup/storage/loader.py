@@ -2,6 +2,7 @@
 Module providing API for storage management (upload and download data, check
 remote path on existence, etc.).
 """
+
 from typing import Callable, List, Optional, Sequence
 
 from ch_backup.storage.async_pipeline.pipeline_executor import PipelineExecutor

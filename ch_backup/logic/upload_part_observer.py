@@ -1,4 +1,5 @@
 """Uploading part observer."""
+
 import time
 from typing import List
 

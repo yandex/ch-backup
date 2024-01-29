@@ -1,6 +1,7 @@
 """
 ClickHouse client.
 """
+
 from typing import Any
 
 import requests
