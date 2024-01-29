@@ -1,6 +1,7 @@
 """
 Deleting objects from storage stage.
 """
+
 from typing import Sequence
 
 from ch_backup.storage.async_pipeline.base_pipeline.handler import InputHandler

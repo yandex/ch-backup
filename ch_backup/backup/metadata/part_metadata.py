@@ -1,6 +1,7 @@
 """
 Backup metadata for ClickHouse data part.
 """
+
 from types import SimpleNamespace
 from typing import Optional, Sequence
 

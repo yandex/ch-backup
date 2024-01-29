@@ -1,6 +1,7 @@
 """
 S3 client factory.
 """
+
 import socket
 import threading
 from functools import wraps

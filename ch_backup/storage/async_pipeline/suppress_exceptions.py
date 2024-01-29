@@ -1,6 +1,7 @@
 """
 Suppressing pipeline exception auxiliary function.
 """
+
 from typing import Any, Callable, Sequence, Type, TypeVar
 
 from ch_backup import logging

@@ -1,6 +1,7 @@
 """
 Unit tests utils module.
 """
+
 from tests.integration.modules.utils import normalize_create_query
 from tests.unit.utils import parametrize
 

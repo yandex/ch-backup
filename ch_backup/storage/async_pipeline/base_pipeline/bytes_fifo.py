@@ -1,6 +1,7 @@
 """
 Bytes FIFO module.
 """
+
 import io
 
 

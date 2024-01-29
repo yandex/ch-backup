@@ -1,6 +1,7 @@
 """
 Chunking stage.
 """
+
 from typing import Iterator
 
 from ch_backup.storage.async_pipeline.base_pipeline.bytes_fifo import BytesFIFO

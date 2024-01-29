@@ -1,6 +1,7 @@
 """
 Read file stage.
 """
+
 from pathlib import Path
 from typing import BinaryIO, Iterable, Optional
 

@@ -1,6 +1,7 @@
 """
 Writing files from TAR stream stage.
 """
+
 from enum import Enum
 from pathlib import Path
 from tarfile import BLOCKSIZE, ENCODING, GNUTYPE_LONGNAME, NUL, TarInfo

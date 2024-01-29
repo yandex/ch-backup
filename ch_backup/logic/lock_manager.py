@@ -1,6 +1,7 @@
 """
 Lock manager logic
 """
+
 import os
 import socket
 import sys

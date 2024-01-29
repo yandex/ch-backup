@@ -790,9 +790,11 @@ class ClickhouseCTL:
             name=record["name"],
             engine=record.get("engine", None),
             disks=list(self._disks.values()),
-            data_paths=record.get("data_paths", None)
-            if "MergeTree" in record.get("engine", "")
-            else [],
+            data_paths=(
+                record.get("data_paths", None)
+                if "MergeTree" in record.get("engine", "")
+                else []
+            ),
             metadata_path=record.get("metadata_path", None),
             create_statement=record["create_table_query"],
             uuid=record.get("uuid", None),

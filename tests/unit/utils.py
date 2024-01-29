@@ -1,6 +1,7 @@
 """
 Testing utilities.
 """
+
 from collections import defaultdict
 from datetime import timedelta
 from typing import List

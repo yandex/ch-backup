@@ -1,6 +1,7 @@
 """
 Backup metadata.
 """
+
 import json
 import socket
 from datetime import datetime, timezone

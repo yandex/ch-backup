@@ -1,6 +1,7 @@
 """
 Unit test for util module.
 """
+
 import pytest
 
 from ch_backup.clickhouse.models import Table

@@ -1,6 +1,7 @@
 """
 Behave entry point.
 """
+
 import logging
 import re
 

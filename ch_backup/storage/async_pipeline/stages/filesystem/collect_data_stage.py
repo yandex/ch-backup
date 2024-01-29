@@ -1,6 +1,7 @@
 """
 Collecting data stage.
 """
+
 from io import BytesIO
 
 from ch_backup.storage.async_pipeline.base_pipeline.handler import Handler

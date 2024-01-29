@@ -1,6 +1,7 @@
 """
 Unit tests for deduplication module.
 """
+
 from datetime import timedelta
 from unittest.mock import MagicMock
 

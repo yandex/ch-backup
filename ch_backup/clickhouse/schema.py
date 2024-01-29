@@ -1,6 +1,7 @@
 """
 Utilities for schema manipulation.
 """
+
 import re
 
 from ch_backup import logging

@@ -1,6 +1,7 @@
 """
 Clickhouse backup logic for UDFs
 """
+
 from typing import List
 
 from ch_backup import logging

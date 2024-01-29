@@ -1,6 +1,7 @@
 """
 ParamType declarations.
 """
+
 import json
 import re
 import typing

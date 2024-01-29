@@ -1,6 +1,7 @@
 """
 Noop encryption module
 """
+
 from ch_backup.encryption.base import BaseEncryption
 
 

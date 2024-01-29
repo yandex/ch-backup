@@ -1,6 +1,7 @@
 """
 util module defines various auxiliary functions
 """
+
 import collections
 import glob
 import grp

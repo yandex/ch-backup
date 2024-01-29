@@ -1,6 +1,7 @@
 """
 Storage pipeline stages module
 """
+
 import os
 from abc import ABCMeta, abstractmethod
 from math import ceil

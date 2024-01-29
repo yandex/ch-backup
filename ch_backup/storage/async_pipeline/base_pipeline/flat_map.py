@@ -1,6 +1,7 @@
 """
 Flat map runner for stage.
 """
+
 from dataclasses import dataclass
 from functools import partial
 from typing import Any, Callable, Iterable, Optional, Union
