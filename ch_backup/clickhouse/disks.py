@@ -164,7 +164,6 @@ class ClickHouseTemporaryDisks:
         loop.run_until_complete(
             self._copy_part_internal(backup_meta, parts_to_copy, max_proccesses_count)
         )
-        loop.close()
 
     async def _copy_part_internal(
         self,
@@ -201,7 +200,12 @@ class ClickHouseTemporaryDisks:
                 job_index += 1
 
             _, pending = await asyncio.wait(
-                running_proc, return_when=asyncio.FIRST_COMPLETED
+                running_proc,
+                return_when=(
+                    asyncio.ALL_COMPLETED
+                    if job_index == len(parts_to_copy)
+                    else asyncio.FIRST_COMPLETED
+                ),
             )
             running_proc = pending
 
