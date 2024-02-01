@@ -159,7 +159,7 @@ class ClickHouseTemporaryDisks:
         Copy parts from temporary cloud storage disk to actual.
         """
 
-        # We can use asynchio.run when python3.6 will be depricated.
+        # We can use asynchio.run when python3.6 will be deprecated.
         loop = asyncio.get_event_loop()
         loop.run_until_complete(
             self._copy_part_internal(backup_meta, parts_to_copy, max_proccesses_count)
