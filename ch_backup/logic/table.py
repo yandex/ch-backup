@@ -568,8 +568,8 @@ class TableBackup(BackupManager):
     ) -> None:
         # pylint: disable=too-many-branches
         logging.info("Restoring tables data")
-        cloud_storage_parts = []
         for table_meta in tables:
+            cloud_storage_parts = []
             try:
                 logging.debug(
                     'Running table "{}.{}" data restore',
@@ -625,6 +625,7 @@ class TableBackup(BackupManager):
                             )
                         else:
                             raise
+
                 disks.copy_parts(
                     context.backup_meta,
                     cloud_storage_parts,
