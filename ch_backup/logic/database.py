@@ -31,7 +31,9 @@ class DatabaseBackup(BackupManager):
         context.backup_layout.wait()
 
     @staticmethod
-    def restore(context: BackupContext, databases: Dict[str, Database]) -> None:
+    def restore(
+        context: BackupContext, databases: Dict[str, Database], keep_going: bool
+    ) -> None:
         """
         Restore database objects.
         """
@@ -62,24 +64,32 @@ class DatabaseBackup(BackupManager):
                 db_sql = context.backup_layout.get_database_create_statement(
                     context.backup_meta, db.name
                 )
+            try:
+                if db.is_atomic() or db.has_embedded_metadata():
+                    logging.debug(f"Going to restore database `{db.name}` using CREATE")
+                    db_sql = to_create_query(db_sql)
+                    db_sql = rewrite_database_schema(
+                        db,
+                        db_sql,
+                        context.config["force_non_replicated"],
+                        context.config["override_replica_name"],
+                    )
+                    logging.debug(f"Creating database `{db.name}`")
+                    context.ch_ctl.restore_database(db_sql)
+                else:
+                    logging.debug(f"Going to restore database `{db.name}` using ATTACH")
+                    db_sql = to_attach_query(db_sql)
+                    context.backup_layout.write_database_metadata(db, db_sql)
+                    logging.debug(f"Attaching database `{db.name}`")
+                    context.ch_ctl.attach_database(db)
+            except Exception as e:
+                if keep_going:
+                    logging.exception(
+                        f"Restore of database {db.name} failed, skipping due to --keep-going flag. Reason {e}"
+                    )
+                else:
+                    raise
 
-            if db.is_atomic() or db.has_embedded_metadata():
-                logging.debug(f"Going to restore database `{db.name}` using CREATE")
-                db_sql = to_create_query(db_sql)
-                db_sql = rewrite_database_schema(
-                    db,
-                    db_sql,
-                    context.config["force_non_replicated"],
-                    context.config["override_replica_name"],
-                )
-                logging.debug(f"Creating database `{db.name}`")
-                context.ch_ctl.restore_database(db_sql)
-            else:
-                logging.debug(f"Going to restore database `{db.name}` using ATTACH")
-                db_sql = to_attach_query(db_sql)
-                context.backup_layout.write_database_metadata(db, db_sql)
-                logging.debug(f"Attaching database `{db.name}`")
-                context.ch_ctl.attach_database(db)
         logging.info("All databases restored")
 
     @staticmethod

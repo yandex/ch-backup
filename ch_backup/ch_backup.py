@@ -522,7 +522,7 @@ class ClickhouseBackup:
                 databases[db_name] = db
 
             # Restore databases.
-            self._database_backup_manager.restore(self._context, databases)
+            self._database_backup_manager.restore(self._context, databases, keep_going)
 
             # Restore tables and data stored on local disks.
             self._table_backup_manager.restore(
