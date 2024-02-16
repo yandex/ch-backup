@@ -248,9 +248,9 @@ class ClickhouseBackup:
                     "Cloud storage source bucket must be set if backup has data on S3 disks"
                 )
 
-        self._context.config["override_replica_name"] = (
-            override_replica_name or self._context.config.get("override_replica_name")
-        )
+        self._context.config[
+            "override_replica_name"
+        ] = override_replica_name or self._context.config.get("override_replica_name")
         self._context.config["force_non_replicated"] = (
             force_non_replicated or self._context.config["force_non_replicated"]
         )
@@ -522,7 +522,7 @@ class ClickhouseBackup:
                 databases[db_name] = db
 
             # Restore databases.
-            self._database_backup_manager.restore(self._context, databases)
+            self._database_backup_manager.restore(self._context, databases, keep_going)
 
             # Restore tables and data stored on local disks.
             self._table_backup_manager.restore(

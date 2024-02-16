@@ -555,9 +555,9 @@ def restore_command(
     specified_tables: typing.List[TableMetadata] = _key_values_to_tables_metadata(
         tables
     )
-    specified_exclude_tables: typing.List[TableMetadata] = (
-        _key_values_to_tables_metadata(exclude_tables)
-    )
+    specified_exclude_tables: typing.List[
+        TableMetadata
+    ] = _key_values_to_tables_metadata(exclude_tables)
 
     sources = BackupSources.for_restore(access, data, schema, udf, nc, schema_only)
     ch_backup.restore(
