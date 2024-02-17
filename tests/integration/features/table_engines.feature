@@ -309,7 +309,40 @@ Feature: Backup of tables with different engines and configurations
     Then clickhouse02 has same schema as clickhouse01
     And we got same clickhouse data at clickhouse01 clickhouse02
 
-  @require_version_21.1
+  @require_version_23.12
+  @view
+  Scenario: Create backup containing refreshable materialized views
+    Given ClickHouse settings
+    """
+    allow_experimental_refreshable_materialized_view: 1
+    """
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+
+    CREATE TABLE test_db.table_01 (n Int32, s String)
+    ENGINE = MergeTree() PARTITION BY n % 10 ORDER BY n;
+
+    INSERT INTO test_db.table_01 SELECT number, toString(number) FROM system.numbers LIMIT 1000;
+
+    CREATE TABLE test_db.mview_backend_01 (n Int32, n2 Int64)
+    ENGINE = MergeTree() PARTITION BY n % 10 ORDER BY n;
+
+    CREATE MATERIALIZED VIEW test_db.mview_01
+    REFRESH EVERY 1 HOUR TO test_db.mview_backend_01
+    AS SELECT n, n * n AS "n2"
+    FROM test_db.table_01;
+
+    SYSTEM REFRESH VIEW test_db.mview_01;
+    """
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state    | data_count | link_count   |
+      | 0   | created  | 20         | 0            |
+    When we restore clickhouse backup #0 to clickhouse02
+    Then clickhouse02 has same schema as clickhouse01
+    And we got same clickhouse data at clickhouse01 clickhouse02
+
   @rocksdb
   Scenario: Create backup containing tables with EmbeddedRocksDB engine
     Given we have executed queries on clickhouse01
@@ -326,7 +359,6 @@ Feature: Backup of tables with different engines and configurations
     Then clickhouse02 has same schema as clickhouse01
     But on clickhouse02 tables are empty
 
-  @require_version_21.3
   @rabbitmq
   Scenario: Create backup containing tables with RabbitMQ engine
     Given we have executed queries on clickhouse01
@@ -346,7 +378,6 @@ Feature: Backup of tables with different engines and configurations
     When we restore clickhouse backup #0 to clickhouse02
     Then clickhouse02 has same schema as clickhouse01
 
-  @require_version_21.6
   @merge_tree
   Scenario: Create backup containing merge tree tables with projections
     Given we have executed queries on clickhouse01

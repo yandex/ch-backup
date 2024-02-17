@@ -306,36 +306,21 @@ class ClickhouseCTL:
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
         self._disks = self.get_disks()
         settings = {
+            "allow_deprecated_database_ordinary": 1,
+            "allow_deprecated_syntax_for_merge_tree": 1,
             "allow_experimental_database_materialized_postgresql": 1,
             "allow_experimental_database_materialized_mysql": 1,
             "allow_experimental_database_replicated": 1,
             "allow_experimental_funnel_functions": 1,
+            "allow_experimental_hash_functions": 1,
             "allow_experimental_live_view": 1,
             "allow_experimental_window_view": 1,
             "allow_experimental_object_type": 1,
             "allow_suspicious_codecs": 1,
             "allow_suspicious_low_cardinality_types": 1,
+            "check_table_dependencies": 0,
+            "kafka_disable_num_consumers_limit": 1,
         }
-        if self.ch_version_ge("22.6"):
-            settings.update(
-                {
-                    "allow_experimental_hash_functions": 1,
-                }
-            )
-        if self.ch_version_ge("22.7"):
-            settings.update(
-                {
-                    "allow_deprecated_database_ordinary": 1,
-                    "allow_deprecated_syntax_for_merge_tree": 1,
-                }
-            )
-        if self.ch_version_ge("22.8.5"):
-            settings.update(
-                {
-                    "check_table_dependencies": 0,
-                    "kafka_disable_num_consumers_limit": 1,
-                }
-            )
         if self.ch_version_ge("22.9"):
             settings.update(
                 {
@@ -352,6 +337,7 @@ class ClickhouseCTL:
         if self.ch_version_ge("23.12"):
             settings.update(
                 {
+                    "allow_experimental_refreshable_materialized_view": 1,
                     "allow_suspicious_ttl_expressions": 1,
                 }
             )
