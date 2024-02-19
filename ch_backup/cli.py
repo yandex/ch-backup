@@ -45,7 +45,7 @@ def signal_handler(signum, _frame):
     """
     Logs received signal. Useful for troubleshooting.
     """
-    logging.info("Received signal %d", signum)
+    logging.info("Received signal %s", signum)
     # If a signal handler raises an exception, the exception will be propagated to the main
     # thread and may be raised after any bytecode instruction.
     # https://docs.python.org/3/library/signal.html#note-on-signal-handlers-and-exceptions
