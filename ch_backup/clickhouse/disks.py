@@ -4,7 +4,7 @@ Clickhouse-disks controls temporary cloud storage disks management.
 
 import copy
 import os
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from subprocess import PIPE, Popen
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -174,7 +174,7 @@ class ClickHouseTemporaryDisks:
                 ): part[1].name
                 for part in parts_to_copy
             }
-            for future in futures_to_part:
+            for future in as_completed(futures_to_part):
                 try:
                     future.result()
                 except Exception:
