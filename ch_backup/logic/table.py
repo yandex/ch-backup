@@ -632,6 +632,7 @@ class TableBackup(BackupManager):
                     context.config_root["multiprocessing"][
                         "cloud_storage_restore_workers"
                     ],
+                    keep_going,
                 )
 
                 context.backup_layout.wait(keep_going)

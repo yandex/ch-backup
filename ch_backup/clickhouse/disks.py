@@ -2,10 +2,11 @@
 Clickhouse-disks controls temporary cloud storage disks management.
 """
 
-import asyncio
 import copy
 import os
-from typing import Any, Dict, List, Optional, Set, Tuple
+from concurrent.futures import ThreadPoolExecutor
+from subprocess import PIPE, Popen
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import xmltodict
@@ -154,22 +155,7 @@ class ClickHouseTemporaryDisks:
         backup_meta: BackupMetadata,
         parts_to_copy: List[Tuple[Table, PartMetadata]],
         max_proccesses_count: int,
-    ) -> None:
-        """
-        Copy parts from temporary cloud storage disk to actual.
-        """
-
-        # We can use asynchio.run when python3.6 will be deprecated.
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(
-            self._copy_part_internal(backup_meta, parts_to_copy, max_proccesses_count)
-        )
-
-    async def _copy_part_internal(
-        self,
-        backup_meta: BackupMetadata,
-        parts_to_copy: List[Tuple[Table, PartMetadata]],
-        max_proccesses_count: int,
+        keep_going: bool,
     ) -> None:
         """
         Copy parts from temporary cloud storage disk to actual.
@@ -178,50 +164,39 @@ class ClickHouseTemporaryDisks:
         Spawns no more than max_processes_count of clickhouse-disks subproceses to copy part from tmp disk.
         """
 
-        job_index = 0
-        running_proc: Set[asyncio.Future] = set()
-        while running_proc or job_index < len(parts_to_copy):
-            while (
-                job_index < len(parts_to_copy)
-                and len(running_proc) < max_proccesses_count
-            ):
-                table_meta = parts_to_copy[job_index][0]
-                part_meta = parts_to_copy[job_index][1]
-                routine_tag = (
-                    f"{table_meta.database}.{table_meta.name}::{part_meta.name}"
-                )
-                running_proc.add(
-                    asyncio.Task(
-                        self._run_copy_command(
-                            backup_meta, table_meta, part_meta, routine_tag
+        with ThreadPoolExecutor(max_workers=max_proccesses_count) as executor:
+            # Can't use map function here. The map method returns a generator
+            # and it is not possible to resume a generator after an exception occurs.
+            # https://peps.python.org/pep-0255/#specification-generators-and-exception-propagation
+            futures_to_part = {
+                executor.submit(
+                    self._run_copy_command, backup_meta, part[0], part[1]
+                ): part[1].name
+                for part in parts_to_copy
+            }
+            for future in futures_to_part:
+                try:
+                    future.result()
+                except Exception:
+                    if keep_going:
+                        part_name = futures_to_part[future]
+                        logging.exception(
+                            f"Restore of part {part_name} failed, skipping due to --keep-going flag"
                         )
-                    )
-                )
-                job_index += 1
+                    else:
+                        raise
 
-            _, pending = await asyncio.wait(
-                running_proc,
-                return_when=(
-                    asyncio.ALL_COMPLETED
-                    if job_index == len(parts_to_copy)
-                    else asyncio.FIRST_COMPLETED
-                ),
-            )
-            running_proc = pending
-
-    async def _run_copy_command(
-        self,
-        backup_meta: BackupMetadata,
-        table: Table,
-        part: PartMetadata,
-        routine_tag: str,
+    def _run_copy_command(
+        self, backup_meta: BackupMetadata, table: Table, part: PartMetadata
     ) -> None:
         """
         Copy data from temporary cloud storage disk to actual.
         """
+        routine_tag = f"{table.database}.{table.name}::{part.name}"
         target_disk = self._ch_availible_disks[part.disk_name]
         source_disk = self._ch_availible_disks[_get_tmp_disk_name(part.disk_name)]
         for path, disk in table.paths_with_disks:
+            logging.info(f"Target {target_disk.name} current {disk.name}")
             if disk.name == target_disk.name:
                 table_path = os.path.relpath(path, target_disk.path)
                 target_path = os.path.join(table_path, "detached")
@@ -234,19 +209,20 @@ class ClickHouseTemporaryDisks:
                     part.name,
                     "",
                 )
-                await self._copy_dir(
+                self._copy_dir(
                     source_disk.name,
                     source_path,
                     target_disk.name,
                     target_path,
                     routine_tag,
                 )
+                return
 
         raise RuntimeError(
             f'Disk "{target_disk.name}" path not found for table `{table.database}`.`{table.name}`'
         )
 
-    async def _copy_dir(
+    def _copy_dir(
         self,
         from_disk: str,
         from_path: str,
@@ -273,7 +249,7 @@ class ClickHouseTemporaryDisks:
                 to_path,
             ]
 
-        result = await _exec_async(
+        result = _exec(
             routine_tag,
             "copy",
             common_args=["-C", CH_DISK_CONFIG_PATH],
@@ -290,7 +266,7 @@ def _get_tmp_disk_name(disk_name: str) -> str:
     return f"{disk_name}_source"
 
 
-async def _exec_async(
+def _exec(
     routine_tag: str, command: str, common_args: List[str], command_args: List[str]
 ) -> Any:
 
@@ -302,14 +278,15 @@ async def _exec_async(
         *command_args,
     ]
 
-    command_str = " ".join(command_args)
-    logging.debug(f'Executing "{command_str}"')
-    proc = await asyncio.create_subprocess_shell(
-        command_str, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
+    logging.debug(f'Executing "{" ".join(command_args)}"')
 
-    _, stderr = await proc.communicate()
-    for line in stderr.splitlines():  # type: ignore
-        ch_disks_logger.info(line.decode("utf-8").strip())
+    with Popen(command_args, stdout=PIPE, stderr=PIPE, shell=False) as proc:
+        while proc.poll() is None:
+            for line in proc.stderr.readlines():  # type: ignore
+                ch_disks_logger.info(line.decode("utf-8").strip())
+        if proc.returncode != 0:
+            raise ClickHouseDisksException(
+                f"clickhouse-disks call failed with exitcode: {proc.returncode}"
+            )
 
-    return proc.returncode
+        return list(map(lambda b: b.decode("utf-8"), proc.stdout.readlines()))  # type: ignore
