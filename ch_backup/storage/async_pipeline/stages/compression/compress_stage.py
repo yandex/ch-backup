@@ -2,12 +2,9 @@
 Compressing stage.
 """
 
-from typing import Any
 from ch_backup.compression.base import BaseCompression
 from ch_backup.storage.async_pipeline.base_pipeline.handler import Handler
 from ch_backup.storage.async_pipeline.stages.types import StageType
-
-from ch_backup import logging
 
 
 class CompressStage(Handler):

@@ -6,8 +6,6 @@ from pathlib import Path
 from tarfile import BLOCKSIZE
 from typing import Any, AnyStr, List, Sequence
 
-from ch_backup import logging
-
 from ch_backup.calculators import (
     calc_aligned_files_size,
     calc_encrypted_size,

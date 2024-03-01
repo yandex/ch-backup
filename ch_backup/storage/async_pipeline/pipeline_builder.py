@@ -75,19 +75,23 @@ class PipelineBuilder:
         """
         Build compressing stage.
         """
-        # stage_config = self._config[CompressStage.stype]
-        compressor = get_compression()
+        stage_config = self._config[CompressStage.stype]
+        compressor = get_compression(stage_config["type"], stage_config)
 
         self.append(thread_map(CompressStage(compressor)))
+
+        return self
 
     def build_decompress_stage(self) -> "PipelineBuilder":
         """
         Build decompressing stage.
         """
-        # stage_config = self._config[CompressStage.stype]
-        compressor = get_compression()
+        stage_config = self._config[CompressStage.stype]
+        compressor = get_compression(stage_config["type"], stage_config)
 
         self.append(thread_map(DecompressStage(compressor)))
+
+        return self
 
     def build_read_files_tarball_stage(
         self, dir_path: Path, file_relative_paths: List[Path]

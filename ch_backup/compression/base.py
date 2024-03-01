@@ -22,6 +22,9 @@ class BaseCompression(metaclass=ABCMeta):
 
     @abstractmethod
     def flush_compress(self):
+        """
+        Flush compressed buffered data
+        """
         pass
 
     @abstractmethod
@@ -33,4 +36,7 @@ class BaseCompression(metaclass=ABCMeta):
 
     @abstractmethod
     def flush_decompress(self):
+        """
+        Flush decompressed buffered data
+        """
         pass
