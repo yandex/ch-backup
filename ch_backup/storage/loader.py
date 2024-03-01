@@ -78,6 +78,7 @@ class StorageLoader:
         encryption: bool = False,
         delete: bool = False,
         callback: Optional[Callable] = None,
+        compression: bool = False,
     ) -> str:
         """
         Upload multiple files as tarball.
@@ -92,6 +93,7 @@ class StorageLoader:
             encryption=encryption,
             delete=delete,
             callback=callback,
+            compression=compression,
         )
         return remote_path
 
@@ -130,12 +132,17 @@ class StorageLoader:
         local_path: str,
         is_async: bool = False,
         encryption: bool = False,
+        compression: bool = False,
     ) -> None:
         """
         Download file to local filesystem.
         """
         self._ploader.download_files(
-            remote_path, local_path, is_async=is_async, encryption=encryption
+            remote_path,
+            local_path,
+            is_async=is_async,
+            encryption=encryption,
+            compression=compression,
         )
 
     def delete_files(

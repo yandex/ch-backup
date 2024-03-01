@@ -6,6 +6,8 @@ from pathlib import Path
 from tarfile import BLOCKSIZE
 from typing import Any, AnyStr, List, Sequence
 
+from ch_backup import logging
+
 from ch_backup.calculators import (
     calc_aligned_files_size,
     calc_encrypted_size,
@@ -64,6 +66,7 @@ def upload_files_tarball_pipeline(
     remote_path: str,
     encrypt: bool,
     delete_after: bool,
+    compression: bool,
 ) -> None:
     """
     Entrypoint of upload files tarball pipeline.
@@ -76,6 +79,8 @@ def upload_files_tarball_pipeline(
         [str(f) for f in file_relative_paths], estimated_size
     )
     builder.build_read_files_tarball_stage(base_path, file_relative_paths)
+    if compression:
+        builder.build_compress_stage()
     if encrypt:
         builder.build_encrypt_stage()
         estimated_size = _calc_encrypted_size(config, estimated_size)
@@ -117,7 +122,7 @@ def download_file_pipeline(
 
 
 def download_files_pipeline(
-    config: dict, remote_path: str, local_path: Path, decrypt: bool
+    config: dict, remote_path: str, local_path: Path, decrypt: bool, decompress: bool
 ) -> None:
     """
     Entrypoint of download files pipeline.
@@ -127,6 +132,8 @@ def download_files_pipeline(
     builder.build_download_storage_stage(remote_path)
     if decrypt:
         builder.build_decrypt_stage()
+    if decompress:
+        builder.build_decompress_stage()
     builder.build_write_files_stage(local_path)
 
     run(builder.pipeline())

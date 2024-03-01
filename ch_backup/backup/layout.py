@@ -211,6 +211,7 @@ class BackupLayout:
                 is_async=True,
                 encryption=backup_meta.cloud_storage.encrypted,
                 delete=delete_after_upload,
+                compression=True,
             )
         except Exception as e:
             msg = f'Failed to upload "{shadow_path}" content to "{remote_path}"'
@@ -510,6 +511,7 @@ class BackupLayout:
                 local_path=disk_path,
                 is_async=True,
                 encryption=backup_meta.cloud_storage.encrypted,
+                compression=True,
             )
         except Exception as e:
             msg = f'Failed to download tarball file "{remote_path}"'
