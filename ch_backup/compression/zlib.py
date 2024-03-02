@@ -20,7 +20,7 @@ class ZLIBCompression(BaseCompression):
     zlib compression.
     """
 
-    def __init__(self, conf):
+    def __init__(self):
         self._compressobj = compressobj(
             Z_DEFAULT_COMPRESSION, DEFLATED, Z_DEFAULT_WBITS
         )

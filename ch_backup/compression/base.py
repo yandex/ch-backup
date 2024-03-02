@@ -10,7 +10,7 @@ class BaseCompression(metaclass=ABCMeta):
     Compression base class
     """
 
-    def __init__(self, config):
+    def __init__(self):
         pass
 
     @abstractmethod

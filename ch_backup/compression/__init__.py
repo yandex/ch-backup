@@ -13,11 +13,11 @@ SUPPORTED_COMPRESSION: Mapping[str, Type[BaseCompression]] = {
 }
 
 
-def get_compression(type_id: str, config: dict) -> BaseCompression:
+def get_compression(type_id: str) -> BaseCompression:
     """
     Return supported compression
     """
     try:
-        return SUPPORTED_COMPRESSION[type_id](config)
+        return SUPPORTED_COMPRESSION[type_id]()
     except KeyError:
         raise UnknownEncryptionError(f'Unknown encryption type "{type_id}"')

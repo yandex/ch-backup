@@ -76,9 +76,15 @@ class PipelineBuilder:
         Build compressing stage.
         """
         stage_config = self._config[CompressStage.stype]
-        compressor = get_compression(stage_config["type"], stage_config)
+        compressor = get_compression(stage_config["type"])
 
-        self.append(thread_map(CompressStage(compressor)))
+        self.append(
+            thread_map(
+                CompressStage(
+                    compressor, stage_config["chunk_size"], stage_config["buffer_size"]
+                )
+            )
+        )
 
         return self
 
@@ -87,9 +93,15 @@ class PipelineBuilder:
         Build decompressing stage.
         """
         stage_config = self._config[CompressStage.stype]
-        compressor = get_compression(stage_config["type"], stage_config)
+        compressor = get_compression(stage_config["type"])
 
-        self.append(thread_map(DecompressStage(compressor)))
+        self.append(
+            thread_map(
+                DecompressStage(
+                    compressor, stage_config["chunk_size"], stage_config["buffer_size"]
+                )
+            )
+        )
 
         return self
 
