@@ -13,6 +13,13 @@ import pytest
 from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
+from ch_backup.compression import get_compression
+from ch_backup.storage.async_pipeline.stages.compression.compress_stage import (
+    CompressStage,
+)
+from ch_backup.storage.async_pipeline.stages.compression.decompress_stage import (
+    DecompressStage,
+)
 from ch_backup.storage.pipeline import Pipeline
 from ch_backup.storage.stages.encryption import DecryptStage, EncryptStage
 from ch_backup.storage.stages.filesystem import ReadFileStage, WriteFileStage
@@ -20,6 +27,7 @@ from ch_backup.storage.stages.filesystem import ReadFileStage, WriteFileStage
 WRITE_FILE_CMD_TEST_COUNT = 100
 PIPELINE_TEST_COUNT = 100
 ENCRYPT_DECRYPT_TEST_COUNT = 100
+COMPRESS_DECOMPRESS_TEST_COUNT = ENCRYPT_DECRYPT_TEST_COUNT
 
 SECRET_KEY = "a" * 32
 
@@ -226,6 +234,53 @@ def test_nacl_ecrypt_decrypt(incoming_stream_size, incoming_chunk_size, conf):
     decrypted_stream.seek(0)
 
     assert test_stream.read().decode() == decrypted_stream.read().decode()
+
+
+@settings(max_examples=COMPRESS_DECOMPRESS_TEST_COUNT, deadline=None)
+@example(791, 28)
+@given(
+    incoming_stream_size=st.integers(1, 1024),
+    incoming_chunk_size=st.integers(1, 1024),
+)
+def test_gzip_compress_decompress(incoming_stream_size, incoming_chunk_size):
+    """
+    Tests compression stage
+    """
+
+    conf = {"type": "gzip"}
+
+    compressed_stream = io.BytesIO()
+    decompressed_stream = io.BytesIO()
+
+    compressor = get_compression(conf["type"])
+
+    compress_cmd = CompressStage(compressor)
+    decompress_cmd = DecompressStage(compressor)
+
+    test_stream = get_test_stream(incoming_stream_size)
+    stream_iter = StreamInter(chunk_size=incoming_chunk_size)
+
+    for chunk in stream_iter(test_stream):
+        data = compress_cmd(chunk, -1)
+        if data:
+            compressed_stream.write(data)
+    data = compress_cmd.on_done()
+    if data:
+        compressed_stream.write(data)
+
+    compressed_stream.seek(0)
+    for chunk in stream_iter(compressed_stream):
+        data = decompress_cmd(chunk, -1)
+        if data:
+            decompressed_stream.write(data)
+    data = compress_cmd.on_done()
+    if data:
+        decompressed_stream.write(data)
+
+    test_stream.seek(0)
+    decompressed_stream.seek(0)
+
+    assert test_stream.read().decode() == decompressed_stream.read().decode()
 
 
 @settings(
