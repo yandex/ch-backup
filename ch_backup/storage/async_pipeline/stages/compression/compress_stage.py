@@ -12,7 +12,7 @@ from ch_backup.storage.async_pipeline.stages.types import StageType
 
 class CompressStage(Handler):
     """
-    Compresses data.
+    Compresses data and return it by chunks of specified size
     """
 
     stype = StageType.COMPRESSION

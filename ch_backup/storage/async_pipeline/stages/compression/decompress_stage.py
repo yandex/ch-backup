@@ -12,7 +12,7 @@ from ch_backup.storage.async_pipeline.stages.types import StageType
 
 class DecompressStage(Handler):
     """
-    Decompresses data.
+    Decompresses data and return it by chunks of specified size
     """
 
     stype = StageType.COMPRESSION

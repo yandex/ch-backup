@@ -17,7 +17,7 @@ Z_DEFAULT_WBITS = 15
 
 class ZLIBCompression(BaseCompression):
     """
-    zlib compression.
+    zlib compression
     """
 
     def __init__(self):
@@ -39,7 +39,13 @@ class ZLIBCompression(BaseCompression):
         return self._decompressobj.decompress(data)
 
     def flush_compress(self):
+        """
+        Return all buffered compressed data
+        """
         return self._compressobj.flush(Z_FULL_FLUSH)
 
     def flush_decompress(self):
+        """
+        Return all buffered decompressed data
+        """
         return self._decompressobj.flush()
