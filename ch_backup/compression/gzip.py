@@ -1,5 +1,5 @@
 """
-ZLIB compression module
+GZIP compression module
 """
 
 from zlib import (
@@ -12,12 +12,13 @@ from zlib import (
 
 from ch_backup.compression.base import BaseCompression
 
-Z_DEFAULT_WBITS = 15
+# Add gzip header to the compressed data
+Z_DEFAULT_WBITS = 31
 
 
-class ZLIBCompression(BaseCompression):
+class GZIPCompression(BaseCompression):
     """
-    zlib compression
+    gzip compression
     """
 
     def __init__(self):
@@ -26,25 +27,25 @@ class ZLIBCompression(BaseCompression):
         )
         self._decompressobj = decompressobj(Z_DEFAULT_WBITS)
 
-    def compress(self, data):
+    def compress(self, data: bytes) -> bytes:
         """
         Compress given data
         """
         return self._compressobj.compress(data)
 
-    def decompress(self, data):
+    def decompress(self, data: bytes) -> bytes:
         """
         Decompress given data
         """
         return self._decompressobj.decompress(data)
 
-    def flush_compress(self):
+    def flush_compress(self) -> bytes:
         """
         Return all buffered compressed data
         """
         return self._compressobj.flush(Z_FULL_FLUSH)
 
-    def flush_decompress(self):
+    def flush_decompress(self) -> bytes:
         """
         Return all buffered decompressed data
         """

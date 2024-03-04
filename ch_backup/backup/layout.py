@@ -21,7 +21,7 @@ from ch_backup.util import escape_metadata_file_name, list_dir_files
 BACKUP_META_FNAME = "backup_struct.json"
 BACKUP_LIGHT_META_FNAME = "backup_light_struct.json"
 ACCESS_CONTROL_FNAME = "access_control.tar"
-COMPRESSED_EXTENSION = ".zlib"
+COMPRESSED_EXTENSION = ".gz"
 
 
 class BackupLayout:
@@ -515,7 +515,7 @@ class BackupLayout:
                 local_path=disk_path,
                 is_async=True,
                 encryption=backup_meta.cloud_storage.encrypted,
-                compression=True,
+                compression=compression,
             )
         except Exception as e:
             msg = f'Failed to download tarball file "{remote_path}"'

@@ -5,11 +5,11 @@ Compression package
 from typing import Mapping, Type
 
 from ch_backup.compression.base import BaseCompression
-from ch_backup.compression.zlib import ZLIBCompression
+from ch_backup.compression.gzip import GZIPCompression
 from ch_backup.exceptions import UnknownEncryptionError
 
 SUPPORTED_COMPRESSION: Mapping[str, Type[BaseCompression]] = {
-    "zlib": ZLIBCompression,
+    "gzip": GZIPCompression,
 }
 
 
