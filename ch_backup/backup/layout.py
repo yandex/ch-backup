@@ -36,7 +36,6 @@ class BackupLayout:
         self._metadata_path = config["clickhouse"]["metadata_path"]
         self._named_collections_path = config["clickhouse"]["named_collections_path"]
         enc_conf = config["encryption"]
-        logging.debug("Dump {}", config["compression"])
         self._encryption_chunk_size = enc_conf["chunk_size"]
         self._encryption_metadata_size = get_encryption(
             enc_conf["type"], enc_conf

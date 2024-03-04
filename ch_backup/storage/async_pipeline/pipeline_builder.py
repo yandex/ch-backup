@@ -77,12 +77,16 @@ class PipelineBuilder:
         """
         stage_config = self._config[CompressStage.stype]
         compressor = get_compression(stage_config["type"])
+        queue_size = stage_config["queue_size"]
 
         self.append(
             thread_map(
                 CompressStage(
-                    compressor, stage_config["chunk_size"], stage_config["buffer_size"]
-                )
+                    compressor,
+                    stage_config["chunk_size"],
+                    stage_config["buffer_size"],
+                ),
+                maxsize=queue_size,
             )
         )
 
@@ -94,12 +98,16 @@ class PipelineBuilder:
         """
         stage_config = self._config[CompressStage.stype]
         compressor = get_compression(stage_config["type"])
+        queue_size = stage_config["queue_size"]
 
         self.append(
             thread_map(
                 DecompressStage(
-                    compressor, stage_config["chunk_size"], stage_config["buffer_size"]
-                )
+                    compressor,
+                    stage_config["chunk_size"],
+                    stage_config["buffer_size"],
+                ),
+                maxsize=queue_size,
             )
         )
 
