@@ -14,28 +14,28 @@ class BaseCompression(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def compress(self, data):
+    def compress(self, data: bytes) -> bytes:
         """
         Compress given data
         """
         pass
 
     @abstractmethod
-    def flush_compress(self):
+    def flush_compress(self) -> bytes:
         """
         Return all buffered compressed data
         """
         pass
 
     @abstractmethod
-    def decompress(self, data):
+    def decompress(self, data: bytes) -> bytes:
         """
         Decompress given data
         """
         pass
 
     @abstractmethod
-    def flush_decompress(self):
+    def flush_decompress(self) -> bytes:
         """
         Return all buffered decompressed data
         """

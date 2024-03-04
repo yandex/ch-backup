@@ -13,7 +13,7 @@ class CloudStorageMetadata:
     def __init__(
         self,
         encryption: bool = True,
-        compression: bool = True,
+        compression: bool = False,
         disks: Optional[List[str]] = None,
     ) -> None:
         self._encryption: bool = encryption
@@ -60,6 +60,12 @@ class CloudStorageMetadata:
         """
         self._encryption = True
 
+    def compress(self) -> None:
+        """
+        Encrypt Cloud Storage data within the backup.
+        """
+        self._compression = True
+
     @classmethod
     def load(cls, data: Dict[str, Any]) -> "CloudStorageMetadata":
         """
@@ -67,7 +73,7 @@ class CloudStorageMetadata:
         """
         return cls(
             encryption=data.get("encryption", True),
-            compression=data.get("compression", True),
+            compression=data.get("compression", False),
             disks=data.get("disks", []),
         )
 

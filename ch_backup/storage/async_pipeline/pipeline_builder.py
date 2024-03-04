@@ -83,8 +83,6 @@ class PipelineBuilder:
             thread_map(
                 CompressStage(
                     compressor,
-                    stage_config["chunk_size"],
-                    stage_config["buffer_size"],
                 ),
                 maxsize=queue_size,
             )
@@ -104,8 +102,6 @@ class PipelineBuilder:
             thread_map(
                 DecompressStage(
                     compressor,
-                    stage_config["chunk_size"],
-                    stage_config["buffer_size"],
                 ),
                 maxsize=queue_size,
             )

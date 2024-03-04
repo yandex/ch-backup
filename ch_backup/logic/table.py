@@ -146,6 +146,9 @@ class TableBackup(BackupManager):
         if context.config.get("cloud_storage", {}).get("encryption", True):
             logging.debug('Cloud Storage "shadow" backup will be encrypted')
             context.backup_meta.cloud_storage.encrypt()
+        if context.config.get("cloud_storage", {}).get("compression", False):
+            logging.debug('Cloud Storage "shadow" backup will be compressed')
+            context.backup_meta.cloud_storage.compress()
 
         logging.debug('Backing up Cloud Storage disks "shadow" directory')
         disks = context.ch_ctl.get_disks()

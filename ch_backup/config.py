@@ -117,14 +117,10 @@ DEFAULT_CONFIG = {
     # Same structure as 'storage' section, but for cloud storage
     "cloud_storage": {
         "encryption": True,
-        "compression": True,
+        "compression": False,
     },
     "compression": {
-        "type": "zlib",
-        # Chunk size used when compressing / decompressing data, in bytes.
-        "chunk_size": parse_size("8 MiB"),
-        # Buffer size, in bytes.
-        "buffer_size": parse_size("32 MiB"),
+        "type": "gzip",
         # The maximum number of objects the stage's input queue can hold simultaneously, `0` is unbounded
         "queue_size": 10,
     },
