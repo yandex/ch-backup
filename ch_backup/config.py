@@ -117,7 +117,7 @@ DEFAULT_CONFIG = {
     # Same structure as 'storage' section, but for cloud storage
     "cloud_storage": {
         "encryption": True,
-        "compression": False,
+        "compression": True,
     },
     "compression": {
         "type": "gzip",

@@ -13,7 +13,7 @@ class CloudStorageMetadata:
     def __init__(
         self,
         encryption: bool = True,
-        compression: bool = False,
+        compression: bool = True,
         disks: Optional[List[str]] = None,
     ) -> None:
         self._encryption: bool = encryption
