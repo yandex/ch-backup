@@ -10,6 +10,7 @@ from typing import Any, Iterable, List, Sequence, Union
 from pypeln import utils as pypeln_utils
 from pypeln.thread.api.from_iterable import from_iterable
 
+from ch_backup.compression import get_compression
 from ch_backup.encryption import get_encryption
 from ch_backup.storage.async_pipeline import thread_flat_map
 from ch_backup.storage.async_pipeline.base_pipeline.input import thread_input
@@ -18,6 +19,8 @@ from ch_backup.storage.async_pipeline.stages import (
     ChunkingStage,
     CollectDataStage,
     CompleteMultipartUploadStage,
+    CompressStage,
+    DecompressStage,
     DecryptStage,
     DeleteFilesStage,
     DeleteMultipleStorageStage,
@@ -64,6 +67,44 @@ class PipelineBuilder:
 
         self.append(
             thread_input(ReadFileStage(stage_config, file_path), maxsize=queue_size)
+        )
+
+        return self
+
+    def build_compress_stage(self) -> "PipelineBuilder":
+        """
+        Build compressing stage.
+        """
+        stage_config = self._config[CompressStage.stype]
+        compressor = get_compression(stage_config["type"])
+        queue_size = stage_config["queue_size"]
+
+        self.append(
+            thread_map(
+                CompressStage(
+                    compressor,
+                ),
+                maxsize=queue_size,
+            )
+        )
+
+        return self
+
+    def build_decompress_stage(self) -> "PipelineBuilder":
+        """
+        Build decompressing stage.
+        """
+        stage_config = self._config[CompressStage.stype]
+        compressor = get_compression(stage_config["type"])
+        queue_size = stage_config["queue_size"]
+
+        self.append(
+            thread_map(
+                DecompressStage(
+                    compressor,
+                ),
+                maxsize=queue_size,
+            )
         )
 
         return self

@@ -86,6 +86,7 @@ class PipelineExecutor:
         is_async: bool,
         encryption: bool,
         delete: bool,
+        compression: bool,
         callback: Optional[Callable] = None,
     ) -> None:
         """
@@ -102,6 +103,7 @@ class PipelineExecutor:
             remote_path,
             encryption,
             delete_after=delete,
+            compression=compression,
         )
         self._exec_pipeline(job_id, pipeline, is_async, callback)
 
@@ -136,7 +138,12 @@ class PipelineExecutor:
         self._exec_pipeline(job_id, pipeline, is_async)
 
     def download_files(
-        self, remote_path: str, local_path: str, is_async: bool, encryption: bool
+        self,
+        remote_path: str,
+        local_path: str,
+        is_async: bool,
+        encryption: bool,
+        compression: bool,
     ) -> None:
         """
         Download and unarchive tarball to files on local filesystem.
@@ -149,6 +156,7 @@ class PipelineExecutor:
             remote_path,
             Path(local_path),
             encryption,
+            compression,
         )
         self._exec_pipeline(job_id, pipeline, is_async)
 

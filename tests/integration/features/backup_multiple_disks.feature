@@ -36,8 +36,13 @@ Feature: Backup & Restore multiple disks and S3
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
   @require_version_22.8
-  Scenario: Backup table with S3 storage policy
-    Given we have executed queries on clickhouse01
+  Scenario Outline: Backup table with S3 storage policy
+    Given ch-backup configuration on clickhouse01
+    """
+    cloud_storage:
+        compression: <compression>
+    """
+    And we have executed queries on clickhouse01
     """
     CREATE DATABASE IF NOT EXISTS test_db;
     CREATE TABLE test_db.table_01 (
@@ -70,6 +75,11 @@ Feature: Backup & Restore multiple disks and S3
     2
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
+
+    Examples:
+      | compression       |
+      | True              |
+      | False             |
 
   @require_version_22.8
   Scenario: Backup table with S3-cold storage policy
@@ -110,8 +120,13 @@ Feature: Backup & Restore multiple disks and S3
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
   @require_version_22.8
-  Scenario: Backup multiple tables with S3 storage policy
-    Given we have executed queries on clickhouse01
+  Scenario Outline:: Backup multiple tables with S3 storage policy
+    Given ch-backup configuration on clickhouse01
+    """
+    cloud_storage:
+        compression: <compression>
+    """
+    And we have executed queries on clickhouse01
     """
     CREATE DATABASE IF NOT EXISTS test_db;
 
@@ -152,6 +167,11 @@ Feature: Backup & Restore multiple disks and S3
     6
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
+
+    Examples:
+      | compression       |
+      | True              |
+      | False             |
 
   @require_version_22.8
   Scenario: Multiple backups with S3 storage policy
@@ -198,8 +218,13 @@ Feature: Backup & Restore multiple disks and S3
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
   @require_version_22.8
-  Scenario: Resetup with S3 storage policy
-    Given we have executed queries on clickhouse01
+  Scenario Outline: Resetup with S3 storage policy
+    Given ch-backup configuration on clickhouse01
+    """
+    cloud_storage:
+        compression: <compression>
+    """
+    And we have executed queries on clickhouse01
     """
     CREATE DATABASE IF NOT EXISTS test_db;
     CREATE TABLE test_db.table_01 (
@@ -238,3 +263,8 @@ Feature: Backup & Restore multiple disks and S3
     2
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
+
+    Examples:
+      | compression       |
+      | True              |
+      | False             |

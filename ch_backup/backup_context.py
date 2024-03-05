@@ -34,6 +34,7 @@ class BackupContext:
         self._main_conf = config.get("main")
         self._config = config.get("backup")
         self._zk_config = config.get("zookeeper")
+        self._cloud_conf = config.get("cloud_storage")
 
     @property
     def config_root(self) -> Config:
@@ -45,6 +46,17 @@ class BackupContext:
     @config_root.setter
     def config_root(self, config: Config) -> None:
         self._config = config
+
+    @property
+    def cloud_conf(self) -> Config:
+        """
+        Getter config_root
+        """
+        return self._cloud_conf
+
+    @cloud_conf.setter
+    def cloud_conf(self, cloud_conf: dict) -> None:
+        self._cloud_conf = cloud_conf
 
     @property
     def ch_ctl_conf(self) -> dict:

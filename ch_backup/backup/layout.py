@@ -21,6 +21,7 @@ from ch_backup.util import escape_metadata_file_name, list_dir_files
 BACKUP_META_FNAME = "backup_struct.json"
 BACKUP_LIGHT_META_FNAME = "backup_light_struct.json"
 ACCESS_CONTROL_FNAME = "access_control.tar"
+COMPRESSED_EXTENSION = ".gz"
 
 
 class BackupLayout:
@@ -190,7 +191,10 @@ class BackupLayout:
         Returns: whether backed up disk had data.
         """
         backup_name = backup_meta.get_sanitized_name()
-        remote_path = _disk_metadata_path(self.get_backup_path(backup_name), disk.name)
+        compression = backup_meta.cloud_storage.compressed
+        remote_path = _disk_metadata_path(
+            self.get_backup_path(backup_name), disk.name, compression
+        )
         shadow_path = os.path.join(disk.path, "shadow", backup_name)
         files = list(
             filter(
@@ -211,6 +215,7 @@ class BackupLayout:
                 is_async=True,
                 encryption=backup_meta.cloud_storage.encrypted,
                 delete=delete_after_upload,
+                compression=compression,
             )
         except Exception as e:
             msg = f'Failed to upload "{shadow_path}" content to "{remote_path}"'
@@ -496,11 +501,11 @@ class BackupLayout:
         Download files packed in tarball and unpacks them into specified directory.
         """
         backup_name = backup_meta.get_sanitized_name()
-
+        compression = backup_meta.cloud_storage.compressed
         disk_path = os.path.join(disk.path, "shadow", backup_name)
         os.makedirs(disk_path, exist_ok=True)
         remote_path = _disk_metadata_path(
-            self.get_backup_path(backup_name), source_disk_name
+            self.get_backup_path(backup_name), source_disk_name, compression
         )
 
         logging.debug(f'Downloading "{disk_path}" files from "{remote_path}"')
@@ -510,6 +515,7 @@ class BackupLayout:
                 local_path=disk_path,
                 is_async=True,
                 encryption=backup_meta.cloud_storage.encrypted,
+                compression=compression,
             )
         except Exception as e:
             msg = f'Failed to download tarball file "{remote_path}"'
@@ -639,11 +645,16 @@ def _part_path(backup_path: str, db_name: str, table_name: str, part_name: str) 
     return os.path.join(backup_path, "data", db_name, table_name, part_name)
 
 
-def _disk_metadata_path(backup_path: str, disk_name: str) -> str:
+def _disk_metadata_path(
+    backup_path: str, disk_name: str, compressed: bool = False
+) -> str:
     """
     Returns path to store tarball with cloud storage shadow metadata.
     """
-    return os.path.join(backup_path, "disks", f"{disk_name}.tar")
+    extension = ".tar"
+    if compressed:
+        extension += COMPRESSED_EXTENSION
+    return os.path.join(backup_path, "disks", f"{disk_name}{extension}")
 
 
 def _quote(value: str) -> str:

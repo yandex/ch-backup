@@ -2,6 +2,8 @@
 Stages package.
 """
 
+from .compression.compress_stage import CompressStage
+from .compression.decompress_stage import DecompressStage
 from .encryption.decrypt_stage import DecryptStage
 from .encryption.encrypt_stage import EncryptStage
 from .filesystem.chunking_stage import ChunkingStage

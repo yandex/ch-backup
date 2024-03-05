@@ -11,9 +11,13 @@ class CloudStorageMetadata:
     """
 
     def __init__(
-        self, encryption: bool = True, disks: Optional[List[str]] = None
+        self,
+        encryption: bool = True,
+        compression: bool = True,
+        disks: Optional[List[str]] = None,
     ) -> None:
         self._encryption: bool = encryption
+        self._compression: bool = compression
         self._disks: List[str] = disks or []
 
     @property
@@ -43,18 +47,35 @@ class CloudStorageMetadata:
         """
         return self._encryption
 
+    @property
+    def compressed(self) -> bool:
+        """
+        Return True if Cloud Storage backup is compressed.
+        """
+        return self._compression
+
     def encrypt(self) -> None:
         """
         Encrypt Cloud Storage data within the backup.
         """
         self._encryption = True
 
+    def compress(self) -> None:
+        """
+        Encrypt Cloud Storage data within the backup.
+        """
+        self._compression = True
+
     @classmethod
     def load(cls, data: Dict[str, Any]) -> "CloudStorageMetadata":
         """
         Deserialize Cloud Storage metadata.
         """
-        return cls(encryption=data.get("encryption", True), disks=data.get("disks", []))
+        return cls(
+            encryption=data.get("encryption", True),
+            compression=data.get("compression", False),
+            disks=data.get("disks", []),
+        )
 
     def dump(self) -> Dict[str, Any]:
         """
@@ -62,5 +83,6 @@ class CloudStorageMetadata:
         """
         return {
             "encryption": self._encryption,
+            "compression": self._compression,
             "disks": self._disks,
         }
