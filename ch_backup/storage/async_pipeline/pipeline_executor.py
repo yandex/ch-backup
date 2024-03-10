@@ -15,6 +15,7 @@ from ch_backup.storage.async_pipeline.pipelines import (
     download_files_pipeline,
     upload_data_pipeline,
     upload_file_pipeline,
+    upload_files_tarball_in_memory_pipeline,
     upload_files_tarball_pipeline,
 )
 from ch_backup.storage.async_pipeline.suppress_exceptions import suppress_exceptions
@@ -81,7 +82,6 @@ class PipelineExecutor:
     def upload_files_tarball(
         self,
         dir_path: str,
-        files: List[str],
         remote_path: str,
         is_async: bool,
         encryption: bool,
@@ -92,14 +92,40 @@ class PipelineExecutor:
         """
         Archive to tarball and upload files from local filesystem.
         """
-        paths = [Path(file) for file in files]
         job_id = self._make_job_id(current_func_name(), remote_path)
 
         pipeline = partial(
             upload_files_tarball_pipeline,
             self._config,
             Path(dir_path),
-            paths,
+            remote_path,
+            encryption,
+            delete_after=delete,
+            compression=compression,
+        )
+        self._exec_pipeline(job_id, pipeline, is_async, callback)
+
+    def upload_files_tarball_in_memory(
+        self,
+        dir_path: str,
+        remote_path: str,
+        is_async: bool,
+        encryption: bool,
+        delete: bool,
+        compression: bool,
+        files: List[str],
+        callback: Optional[Callable] = None,
+    ) -> None:
+        """
+        Archive to tarball and upload files from local filesystem.
+        """
+        job_id = self._make_job_id(current_func_name(), remote_path)
+
+        pipeline = partial(
+            upload_files_tarball_in_memory_pipeline,
+            self._config,
+            Path(dir_path),
+            files,
             remote_path,
             encryption,
             delete_after=delete,

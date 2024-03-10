@@ -4,9 +4,9 @@ from unittest.mock import Mock
 import pytest
 
 from ch_backup.calculators import (
-    calc_aligned_files_size,
+    calc_aligned_files_size_in_memory,
     calc_encrypted_size,
-    calc_tarball_size,
+    calc_tarball_size_in_memory,
 )
 
 LENGTH_NAME = 100
@@ -37,7 +37,7 @@ def test_calc_aligned_file_size(
         file.stat.return_value.st_size = file_size
         files.append(file)
 
-    assert calc_aligned_files_size(files, alignment) == expected_size  # type: ignore[arg-type]
+    assert calc_aligned_files_size_in_memory(files, alignment) == expected_size  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -71,7 +71,7 @@ def test_calc_tarball_size(
 ) -> None:
     names = ["0" * name_len for name_len in name_lens]
 
-    assert calc_tarball_size(names, data_size) == expected_size
+    assert calc_tarball_size_in_memory(names, data_size) == expected_size
 
 
 @pytest.mark.parametrize(

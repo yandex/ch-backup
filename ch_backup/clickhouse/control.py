@@ -15,7 +15,7 @@ from pkg_resources import parse_version
 from ch_backup import logging
 from ch_backup.backup.metadata import TableMetadata
 from ch_backup.backup.restore_context import RestoreContext
-from ch_backup.calculators import calc_aligned_files_size
+from ch_backup.calculators import calc_aligned_files_size_in_memory
 from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.clickhouse.schema import is_replicated
@@ -657,7 +657,7 @@ class ClickhouseCTL:
             rel_paths = list_dir_files(part_path)
             abs_paths = [Path(part_path) / file for file in rel_paths]
 
-            size = calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE)
+            size = calc_aligned_files_size_in_memory(abs_paths, alignment=BLOCKSIZE)
             logging.debug(
                 f"list_freezed_parts: {table.name} -> {escape(table.name)} \n {part}"
             )

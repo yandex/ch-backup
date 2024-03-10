@@ -9,14 +9,21 @@ from urllib.parse import quote
 
 from ch_backup import logging
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
-from ch_backup.calculators import calc_encrypted_size, calc_tarball_size
+from ch_backup.calculators import (
+    calc_encrypted_size,
+    calc_tarball_size_in_memory,
+    file_filter,
+)
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.config import Config
 from ch_backup.encryption import get_encryption
 from ch_backup.exceptions import StorageError
 from ch_backup.storage import StorageLoader
 from ch_backup.storage.engine.s3 import S3RetryingError
-from ch_backup.util import escape_metadata_file_name, list_dir_files
+from ch_backup.util import (
+    dir_is_empty,
+    escape_metadata_file_name,
+)
 
 BACKUP_META_FNAME = "backup_struct.json"
 BACKUP_LIGHT_META_FNAME = "backup_light_struct.json"
@@ -131,8 +138,11 @@ class BackupLayout:
         )
         try:
             logging.debug('Uploading access control data "{}"', local_path)
-            self._storage_loader.upload_files_tarball(
-                self._access_control_path, file_names, remote_path, encryption=True
+            self._storage_loader.upload_files_tarball_in_memory(
+                self._access_control_path,
+                remote_path,
+                files=file_names,
+                encryption=True,
             )
 
         except Exception as e:
@@ -170,7 +180,7 @@ class BackupLayout:
         )
         remote_path = os.path.join(remote_dir_path, fpart.name + ".tar")
         try:
-            self._storage_loader.upload_files_tarball(
+            self._storage_loader.upload_files_tarball_in_memory(
                 dir_path=fpart.path,
                 files=fpart.files,
                 remote_path=remote_path,
@@ -196,13 +206,7 @@ class BackupLayout:
             self.get_backup_path(backup_name), disk.name, compression
         )
         shadow_path = os.path.join(disk.path, "shadow", backup_name)
-        files = list(
-            filter(
-                lambda p: not p.endswith("/frozen_metadata.txt"),
-                list_dir_files(shadow_path),
-            )
-        )
-        if not files:
+        if dir_is_empty(shadow_path, file_filter):
             return False
 
         logging.debug(f'Uploading "{shadow_path}" content to "{remote_path}"')
@@ -211,7 +215,6 @@ class BackupLayout:
             self._storage_loader.upload_files_tarball(
                 dir_path=shadow_path,
                 remote_path=remote_path,
-                files=files,
                 is_async=True,
                 encryption=backup_meta.cloud_storage.encrypted,
                 delete=delete_after_upload,
@@ -595,7 +598,7 @@ class BackupLayout:
         """
         Predicts tar archive size after encryption.
         """
-        tar_size = calc_tarball_size(part.raw_metadata["files"], part.size)
+        tar_size = calc_tarball_size_in_memory(part.raw_metadata["files"], part.size)
         return calc_encrypted_size(
             tar_size, self._encryption_chunk_size, self._encryption_metadata_size
         )

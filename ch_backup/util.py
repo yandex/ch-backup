@@ -6,6 +6,7 @@ import collections
 import glob
 import grp
 import os
+from pathlib import Path
 import pwd
 import re
 import shutil
@@ -85,6 +86,44 @@ def list_dir_files(dir_path: str) -> List[str]:
         file[len(dir_path) + 1 :]
         for file in filter(os.path.isfile, glob.iglob(dir_path + "/**", recursive=True))
     ]
+
+
+def scan_dir_files(dir_path: Path, file_filter: Callable = None) -> Iterable[str]:
+    """
+    Yields relative file paths in a given directory and filters them by path
+    """
+
+    def scan_recursive(dir_path: Path, relative_prefix: Path = None) -> Iterable[str]:
+        with os.scandir(dir_path) as scan:
+            for dir_entry in scan:
+                if dir_entry.is_file():
+                    if file_filter is None or file_filter(dir_entry.path):
+                        yield (
+                            str(relative_prefix / dir_entry.name)
+                            if relative_prefix
+                            else dir_entry.name
+                        )
+                elif dir_entry.is_dir():
+                    next_relative_prefix = (
+                        relative_prefix / dir_entry.name
+                        if relative_prefix
+                        else Path(dir_entry.name)
+                    )
+                    yield from scan_recursive(Path(dir_entry.path), next_relative_prefix)
+
+    yield from scan_recursive(dir_path)
+
+
+def dir_is_empty(dir_path: str, file_filter: Callable = None) -> bool:
+    """
+    Returns True if directory contains some files satisfying given filter
+    """
+    try:
+        for _ in scan_dir_files(Path(dir_path), file_filter):
+            return False
+        return True
+    except FileNotFoundError:
+        return True
 
 
 def setup_environment(config: dict) -> None:
