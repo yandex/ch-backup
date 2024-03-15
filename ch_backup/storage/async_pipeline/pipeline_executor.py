@@ -19,6 +19,7 @@ from ch_backup.storage.async_pipeline.pipelines import (
 )
 from ch_backup.storage.async_pipeline.suppress_exceptions import suppress_exceptions
 from ch_backup.util import current_func_name
+from ch_backup.profile import profile
 
 
 class PipelineExecutor:
@@ -191,7 +192,7 @@ class PipelineExecutor:
         """
 
         if is_async and self._exec_pool:
-            return self._exec_pool.submit(job_id, pipeline, callback)
+            return self._exec_pool.submit(job_id, profile(10)(pipeline), callback)
 
         result = pipeline()
         if callback:

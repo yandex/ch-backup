@@ -34,6 +34,7 @@ from .backup.sources import BackupSources
 from .ch_backup import ClickhouseBackup
 from .config import DEFAULT_CONFIG, Config
 from .params import JsonParamType, KeyValues, KeyValuesList, List, String, TimeSpan
+from .profile import profile
 from .util import drop_privileges, setup_environment, utcnow
 from .version import get_version
 
@@ -161,6 +162,7 @@ def command(*args, **kwargs):
     def decorator(f):
         @pass_context
         @wraps(f)
+        @profile(10)
         def wrapper(ctx, *args, **kwargs):
             try:
                 logging.info(
