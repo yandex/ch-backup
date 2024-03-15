@@ -1,3 +1,7 @@
+"""
+profile module to collect memory usage info.
+"""
+
 import os
 import time
 import tracemalloc
@@ -6,9 +10,13 @@ from functools import partial, wraps
 from . import logging
 
 
-next_snapshot = 0
+class ProfileDecorator:
+    """
+    Class ProfileDecorator memory profiling.
+    """
 
-class ProfileDecorator(object):
+    next_snapshot = 0
+
     def __init__(self, func, limit, interval):
         self.func = func
         self.limit = limit
@@ -30,28 +38,37 @@ class ProfileDecorator(object):
                 snapshot = tracemalloc.take_snapshot()
                 self.log_top(snapshot)
             else:
-                global next_snapshot
                 now = time.time()
-                if now >= next_snapshot:
-                    next_snapshot = (next_snapshot if next_snapshot else now) + self.interval
+                if now >= ProfileDecorator.next_snapshot:
+                    ProfileDecorator.next_snapshot = (
+                        ProfileDecorator.next_snapshot
+                        if ProfileDecorator.next_snapshot
+                        else now
+                    ) + self.interval
                     snapshot = tracemalloc.take_snapshot()
                     self.log_top(snapshot)
         return result
 
     def log_top(self, snapshot):
-        # based on https://docs.python.org/3/library/tracemalloc.html#pretty-top
-        snapshot = snapshot.filter_traces((
-            tracemalloc.Filter(False, "<frozen importlib._bootstrap>"),
-            tracemalloc.Filter(False, "<unknown>"),
-        ))
-        top_stats = snapshot.statistics('traceback')
+        """
+        Write info form snapshot to log.
+        Based on https://docs.python.org/3/library/tracemalloc.html#pretty-top
+        """
+
+        snapshot = snapshot.filter_traces(
+            (
+                tracemalloc.Filter(False, "<frozen importlib._bootstrap>"),
+                tracemalloc.Filter(False, "<unknown>"),
+            )
+        )
+        top_stats = snapshot.statistics("traceback")
 
         logging.info("TraceMalloc top {} lines", self.limit)
-        for index, stat in enumerate(top_stats[:self.limit], 1):
+        for index, stat in enumerate(top_stats[: self.limit], 1):
             logging.info("  #{}: {} B", index, stat.size)
             for line in stat.traceback.format():
                 logging.info("    {}", line)
-        other = top_stats[self.limit:]
+        other = top_stats[self.limit :]
         if other:
             size = sum(stat.size for stat in other)
             logging.info("    {} other: {} B", len(other), size)
@@ -60,7 +77,12 @@ class ProfileDecorator(object):
 
 
 def profile(limit, interval=0):
+    """
+    Decorator to profile memory usage after function completed.
+    """
+
     def decorator(func):
         td = ProfileDecorator(func=func, limit=limit, interval=interval)
         return wraps(func)(td)
+
     return decorator

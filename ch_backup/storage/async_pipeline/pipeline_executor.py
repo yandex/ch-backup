@@ -7,6 +7,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, AnyStr, Callable, List, Optional, Sequence
 
+from ch_backup.profile import profile
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ExecPool
 from ch_backup.storage.async_pipeline.pipelines import (
     delete_multiple_storage_pipeline,
@@ -19,7 +20,6 @@ from ch_backup.storage.async_pipeline.pipelines import (
 )
 from ch_backup.storage.async_pipeline.suppress_exceptions import suppress_exceptions
 from ch_backup.util import current_func_name
-from ch_backup.profile import profile
 
 
 class PipelineExecutor:
