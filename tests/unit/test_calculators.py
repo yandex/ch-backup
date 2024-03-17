@@ -1,3 +1,6 @@
+import os
+import shutil
+from pathlib import Path
 from typing import List
 from unittest.mock import Mock
 
@@ -6,7 +9,9 @@ import pytest
 from ch_backup.calculators import (
     calc_aligned_files_size_in_memory,
     calc_encrypted_size,
+    calc_tarball_size,
     calc_tarball_size_in_memory,
+    file_filter,
 )
 
 LENGTH_NAME = 100
@@ -69,7 +74,23 @@ def test_calc_aligned_file_size(
 def test_calc_tarball_size(
     name_lens: List[int], data_size: int, expected_size: int
 ) -> None:
-    names = ["0" * name_len for name_len in name_lens]
+    try:
+        # Assuming name_lens size is less than 10
+        names = [f"{i}" * name_len for i, name_len in enumerate(name_lens)]
+        cwd = Path(__file__).parent.resolve()
+        test_dir_path = cwd / "test"
+        os.mkdir(test_dir_path)
+        for name in names:
+            with open(test_dir_path / name, "w", encoding="utf-8") as _:
+                continue
+        assert calc_tarball_size(test_dir_path, file_filter, data_size) == expected_size
+    except OSError as e:
+        # open() will raise file name too long in some cases
+        if e.errno != 36:
+            raise
+    finally:
+        if test_dir_path.is_dir():
+            shutil.rmtree(test_dir_path)
 
     assert calc_tarball_size_in_memory(names, data_size) == expected_size
 

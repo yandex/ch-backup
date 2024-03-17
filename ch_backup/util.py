@@ -6,7 +6,6 @@ import collections
 import glob
 import grp
 import os
-from pathlib import Path
 import pwd
 import re
 import shutil
@@ -17,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from functools import partial
 from inspect import currentframe
 from itertools import islice
+from pathlib import Path
 from typing import (
     BinaryIO,
     Callable,
@@ -109,7 +109,9 @@ def scan_dir_files(dir_path: Path, file_filter: Callable = None) -> Iterable[str
                         if relative_prefix
                         else Path(dir_entry.name)
                     )
-                    yield from scan_recursive(Path(dir_entry.path), next_relative_prefix)
+                    yield from scan_recursive(
+                        Path(dir_entry.path), next_relative_prefix
+                    )
 
     yield from scan_recursive(dir_path)
 

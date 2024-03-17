@@ -20,10 +20,7 @@ from ch_backup.encryption import get_encryption
 from ch_backup.exceptions import StorageError
 from ch_backup.storage import StorageLoader
 from ch_backup.storage.engine.s3 import S3RetryingError
-from ch_backup.util import (
-    dir_is_empty,
-    escape_metadata_file_name,
-)
+from ch_backup.util import dir_is_empty, escape_metadata_file_name
 
 BACKUP_META_FNAME = "backup_struct.json"
 BACKUP_LIGHT_META_FNAME = "backup_light_struct.json"

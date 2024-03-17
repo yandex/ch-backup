@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 from tarfile import BLOCKSIZE, LENGTH_NAME
 from typing import Callable, List
+
 from ch_backup.util import scan_dir_files
 
 
@@ -60,7 +61,7 @@ def calc_tarball_size(
     """
     result = aligned_files_size
     for name in scan_dir_files(dir_path):
-        if file_filter_(name):
+        if file_filter_ is None or file_filter_(name):
             if len(name) < LENGTH_NAME:
                 result += BLOCKSIZE  # file header
             else:
