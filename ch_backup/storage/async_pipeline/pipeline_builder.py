@@ -5,7 +5,7 @@ Pipeline builder.
 from functools import reduce
 from math import ceil
 from pathlib import Path
-from typing import Any, Callable, Iterable, List, Sequence, Union
+from typing import Any, Iterable, List, Optional, Sequence, Union
 
 from pypeln import utils as pypeln_utils
 from pypeln.thread.api.from_iterable import from_iterable
@@ -22,14 +22,14 @@ from ch_backup.storage.async_pipeline.stages import (
     CompressStage,
     DecompressStage,
     DecryptStage,
+    DeleteFilesScanStage,
     DeleteFilesStage,
-    DeleteFilesStageInMemory,
     DeleteMultipleStorageStage,
     DownloadStorageStage,
     EncryptStage,
     RateLimiterStage,
     ReadFileStage,
-    ReadFilesTarbalInMemoryStage,
+    ReadFilesTarballScanStage,
     ReadFilesTarballStage,
     StartMultipartUploadStage,
     StorageUploadingStage,
@@ -112,7 +112,7 @@ class PipelineBuilder:
         return self
 
     def build_read_files_tarball_scan_stage(
-        self, dir_path: Path, file_filter: Callable
+        self, dir_path: Path, exclude_file_names: Optional[list[str]] = None
     ) -> "PipelineBuilder":
         """
         Build reading files to tarball stage.
@@ -122,7 +122,7 @@ class PipelineBuilder:
 
         self.append(
             thread_input(
-                ReadFilesTarballStage(stage_config, dir_path, file_filter),
+                ReadFilesTarballScanStage(stage_config, dir_path, exclude_file_names),
                 maxsize=queue_size,
             )
         )
@@ -140,9 +140,7 @@ class PipelineBuilder:
 
         self.append(
             thread_input(
-                ReadFilesTarbalInMemoryStage(
-                    stage_config, dir_path, file_relative_paths
-                ),
+                ReadFilesTarballStage(stage_config, dir_path, file_relative_paths),
                 maxsize=queue_size,
             )
         )
@@ -244,14 +242,18 @@ class PipelineBuilder:
         return self
 
     def build_delete_files_scan_stage(
-        self, base_path: Path, file_filter: Callable
+        self, base_path: Path, exclude_file_names: Optional[list[str]] = None
     ) -> "PipelineBuilder":
         """
         Build deleting files stage.
         """
         stage_config = self._config[DeleteFilesStage.stype]
 
-        self.append(thread_map(DeleteFilesStage(stage_config, base_path, file_filter)))
+        self.append(
+            thread_map(
+                DeleteFilesScanStage(stage_config, base_path, exclude_file_names)
+            )
+        )
         return self
 
     def build_delete_files_stage(self, files: List[Path]) -> "PipelineBuilder":
@@ -260,7 +262,7 @@ class PipelineBuilder:
         """
         stage_config = self._config[DeleteFilesStage.stype]
 
-        self.append(thread_map(DeleteFilesStageInMemory(stage_config, files)))
+        self.append(thread_map(DeleteFilesStage(stage_config, files)))
         return self
 
     def build_download_storage_stage(self, remote_path: str) -> "PipelineBuilder":

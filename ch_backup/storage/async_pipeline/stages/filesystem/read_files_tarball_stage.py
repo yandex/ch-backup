@@ -4,30 +4,37 @@ Reading files to TAR stream stage.
 
 import tarfile
 from pathlib import Path
-from typing import Callable, Iterator, List
+from typing import Iterator, List, Optional
 
 from ch_backup.storage.async_pipeline.base_pipeline.handler import InputHandler
 from ch_backup.storage.async_pipeline.stages.types import StageType
 from ch_backup.util import read_by_chunks, scan_dir_files
 
 
-class ReadFilesTarballStage(InputHandler):
+class ReadFilesTarballScanStage(InputHandler):
     """
     Read and archive files to TAR stream.
     """
 
     stype = StageType.FILESYSTEM
 
-    def __init__(self, config: dict, base_path: Path, file_filter: Callable) -> None:
+    def __init__(
+        self,
+        config: dict,
+        base_path: Path,
+        exclude_file_names: Optional[list[str]] = None,
+    ) -> None:
         self._chunk_size = config["chunk_size"]
         self._base_path = base_path
-        self._file_filter = file_filter
+        self._exclude_file_names = exclude_file_names
 
     def __call__(self) -> Iterator[bytes]:
         """
         Read files and yield them as TAR stream.
         """
-        for file_relative_path in scan_dir_files(self._base_path, self._file_filter):
+        for file_relative_path in scan_dir_files(
+            self._base_path, self._exclude_file_names
+        ):
             file_path = self._base_path / file_relative_path
 
             yield self.make_tar_header(str(file_relative_path), file_path)
@@ -57,7 +64,7 @@ class ReadFilesTarballStage(InputHandler):
         return tarinfo.tobuf(format=tarfile.GNU_FORMAT)
 
 
-class ReadFilesTarbalInMemoryStage(InputHandler):
+class ReadFilesTarballStage(InputHandler):
     """
     Read and archive files to TAR stream.
     """

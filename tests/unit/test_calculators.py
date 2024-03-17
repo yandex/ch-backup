@@ -11,7 +11,6 @@ from ch_backup.calculators import (
     calc_encrypted_size,
     calc_tarball_size,
     calc_tarball_size_scan,
-    file_filter,
 )
 
 LENGTH_NAME = 100
@@ -83,10 +82,7 @@ def test_calc_tarball_size(
         for name in names:
             with open(test_dir_path / name, "w", encoding="utf-8") as _:
                 continue
-        assert (
-            calc_tarball_size_scan(test_dir_path, file_filter, data_size)
-            == expected_size
-        )
+        assert calc_tarball_size_scan(test_dir_path, data_size) == expected_size
     except OSError as e:
         # open() will raise file name too long in some cases
         if e.errno != 36:

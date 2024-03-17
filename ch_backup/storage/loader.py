@@ -73,6 +73,7 @@ class StorageLoader:
         self,
         dir_path: str,
         remote_path: str,
+        exclude_file_names: Optional[list[str]] = None,
         is_async: bool = False,
         encryption: bool = False,
         delete: bool = False,
@@ -87,6 +88,7 @@ class StorageLoader:
         self._ploader.upload_files_tarball_scan(
             dir_path,
             remote_path,
+            exclude_file_names=exclude_file_names,
             is_async=is_async,
             encryption=encryption,
             delete=delete,

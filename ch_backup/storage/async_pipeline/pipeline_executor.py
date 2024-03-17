@@ -87,6 +87,7 @@ class PipelineExecutor:
         encryption: bool,
         delete: bool,
         compression: bool,
+        exclude_file_names: Optional[list[str]] = None,
         callback: Optional[Callable] = None,
     ) -> None:
         """
@@ -102,6 +103,7 @@ class PipelineExecutor:
             encryption,
             delete_after=delete,
             compression=compression,
+            exclude_file_names=exclude_file_names,
         )
         self._exec_pipeline(job_id, pipeline, is_async, callback)
 

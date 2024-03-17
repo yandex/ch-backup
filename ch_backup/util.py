@@ -23,6 +23,7 @@ from typing import (
     Iterable,
     Iterator,
     List,
+    Optional,
     Tuple,
     Type,
     TypeVar,
@@ -88,7 +89,9 @@ def list_dir_files(dir_path: str) -> List[str]:
     ]
 
 
-def scan_dir_files(dir_path: Path, file_filter: Callable = None) -> Iterable[str]:
+def scan_dir_files(
+    dir_path: Path, exclude_file_names: Optional[list[str]] = None
+) -> Iterable[str]:
     """
     Yields relative file paths in a given directory and filters them by path
     """
@@ -97,7 +100,10 @@ def scan_dir_files(dir_path: Path, file_filter: Callable = None) -> Iterable[str
         with os.scandir(dir_path) as scan:
             for dir_entry in scan:
                 if dir_entry.is_file():
-                    if file_filter is None or file_filter(dir_entry.path):
+                    if (
+                        exclude_file_names is None
+                        or dir_entry.name not in exclude_file_names
+                    ):
                         yield (
                             str(relative_prefix / dir_entry.name)
                             if relative_prefix
@@ -116,12 +122,12 @@ def scan_dir_files(dir_path: Path, file_filter: Callable = None) -> Iterable[str
     yield from scan_recursive(dir_path)
 
 
-def dir_is_empty(dir_path: str, file_filter: Callable = None) -> bool:
+def dir_is_empty(dir_path: str, exclude_file_names: Optional[list[str]] = None) -> bool:
     """
     Returns True if directory contains some files satisfying given filter
     """
     try:
-        for _ in scan_dir_files(Path(dir_path), file_filter):
+        for _ in scan_dir_files(Path(dir_path), exclude_file_names):
             return False
         return True
     except FileNotFoundError:

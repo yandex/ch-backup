@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 from ch_backup import logging
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
-from ch_backup.calculators import calc_encrypted_size, calc_tarball_size, file_filter
+from ch_backup.calculators import calc_encrypted_size, calc_tarball_size
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.config import Config
 from ch_backup.encryption import get_encryption
@@ -199,7 +199,8 @@ class BackupLayout:
             self.get_backup_path(backup_name), disk.name, compression
         )
         shadow_path = os.path.join(disk.path, "shadow", backup_name)
-        if dir_is_empty(shadow_path, file_filter):
+        exclude_file_names = ["frozen_metadata.txt"]
+        if dir_is_empty(shadow_path, exclude_file_names):
             return False
 
         logging.debug(f'Uploading "{shadow_path}" content to "{remote_path}"')
@@ -208,6 +209,7 @@ class BackupLayout:
             self._storage_loader.upload_files_tarball_scan(
                 dir_path=shadow_path,
                 remote_path=remote_path,
+                exclude_file_names=exclude_file_names,
                 is_async=True,
                 encryption=backup_meta.cloud_storage.encrypted,
                 delete=delete_after_upload,

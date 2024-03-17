@@ -4,7 +4,7 @@ Free functions that create and run pipelines. Can be started in multiprocessing 
 
 from pathlib import Path
 from tarfile import BLOCKSIZE
-from typing import Any, AnyStr, List, Sequence
+from typing import Any, AnyStr, List, Optional, Sequence
 
 from ch_backup.calculators import (
     calc_aligned_files_size,
@@ -12,7 +12,6 @@ from ch_backup.calculators import (
     calc_encrypted_size,
     calc_tarball_size,
     calc_tarball_size_scan,
-    file_filter,
 )
 from ch_backup.encryption import get_encryption
 from ch_backup.storage.async_pipeline.pipeline_builder import (
@@ -67,6 +66,7 @@ def upload_files_tarball_scan_pipeline(
     encrypt: bool,
     delete_after: bool,
     compression: bool,
+    exclude_file_names: Optional[list[str]] = None,
 ) -> None:
     """
     Entrypoint of upload files tarball pipeline.
@@ -74,10 +74,12 @@ def upload_files_tarball_scan_pipeline(
     builder = PipelineBuilder(config)
 
     estimated_size = calc_aligned_files_size_scan(
-        base_path, file_filter, alignment=BLOCKSIZE
+        base_path, exclude_file_names, alignment=BLOCKSIZE
     )
-    estimated_size = calc_tarball_size_scan(base_path, file_filter, estimated_size)
-    builder.build_read_files_tarball_scan_stage(base_path, file_filter)
+    estimated_size = calc_tarball_size_scan(
+        base_path, estimated_size, exclude_file_names
+    )
+    builder.build_read_files_tarball_scan_stage(base_path, exclude_file_names)
     if compression:
         builder.build_compress_stage()
     if encrypt:
@@ -87,7 +89,7 @@ def upload_files_tarball_scan_pipeline(
     # If it is not, number of chunks may exceed the maximum allowed count and upload will fail
     builder.build_uploading_stage(remote_path, estimated_size)
     if delete_after:
-        builder.build_delete_files_scan_stage(base_path, file_filter)
+        builder.build_delete_files_scan_stage(base_path, exclude_file_names)
 
     run(builder.pipeline())
 
