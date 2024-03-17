@@ -2,11 +2,20 @@
 Unit test for util module.
 """
 
+from pathlib import Path
+
 import pytest
 
 from ch_backup.clickhouse.models import Table
 from ch_backup.exceptions import ClickhouseBackupError
-from ch_backup.util import compare_schema, get_table_zookeeper_paths, retry, strip_query
+from ch_backup.util import (
+    compare_schema,
+    get_table_zookeeper_paths,
+    list_dir_files,
+    retry,
+    scan_dir_files,
+    strip_query,
+)
 
 from . import ExpectedException, UnexpectedException
 
@@ -244,3 +253,19 @@ class TestNormalizeSchema:
     def test_normalize_schema(self):
         for schema in self.schemas:
             assert compare_schema(str(schema[0]), str(schema[1])) == bool(schema[2])
+
+
+class TestScanDir:
+    """
+    Tests for scan_dir_files() function.
+    """
+
+    def test_scan_same_as_list(self):
+        # tests directory
+        dir_path = Path(__file__).parent.parent.resolve()
+        expected = list_dir_files(str(dir_path))
+        actual = []
+        for file_name in scan_dir_files(dir_path):
+            actual.append(file_name)
+
+        assert actual == expected
