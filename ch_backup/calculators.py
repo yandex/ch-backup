@@ -50,9 +50,10 @@ def calc_tarball_size_scan(
     Calculate tarball (TAR archive) size.
 
     Args:
-        file_names: Names of files archived in the tarball.
+        dir_path: Directory with files archived in the tarball.
         aligned_files_size: Summed size of all files including padding on BLOCKSIZE boundary
             for each file.
+        exclude_file_names: File names that will not be included in tarball.
     """
     result = aligned_files_size
     for name in scan_dir_files(dir_path, exclude_file_names):

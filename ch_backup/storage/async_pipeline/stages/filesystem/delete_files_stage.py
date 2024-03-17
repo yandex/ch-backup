@@ -13,6 +13,7 @@ from ch_backup.util import scan_dir_files
 class DeleteFilesScanStage(Handler):
     """
     Delete files from local filesystem.
+    Do not load all file names in memory.
     """
 
     stype = StageType.FILESYSTEM

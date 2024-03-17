@@ -81,7 +81,8 @@ class StorageLoader:
         compression: bool = False,
     ) -> str:
         """
-        Upload multiple files as tarball.
+        Scan given directory for files a upload them as tarball.
+        Do not load all file names in memory.
 
         If delete is True, the file will be deleted after upload.
         """

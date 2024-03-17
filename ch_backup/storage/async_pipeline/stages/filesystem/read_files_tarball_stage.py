@@ -13,7 +13,8 @@ from ch_backup.util import read_by_chunks, scan_dir_files
 
 class ReadFilesTarballScanStage(InputHandler):
     """
-    Read and archive files to TAR stream.
+    Read and archive files from a directory to TAR stream.
+    Do not load all file names in memory.
     """
 
     stype = StageType.FILESYSTEM

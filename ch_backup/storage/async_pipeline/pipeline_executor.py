@@ -92,6 +92,7 @@ class PipelineExecutor:
     ) -> None:
         """
         Archive to tarball and upload files from local filesystem.
+        Do not load all file names in memory.
         """
         job_id = self._make_job_id(current_func_name(), remote_path)
 

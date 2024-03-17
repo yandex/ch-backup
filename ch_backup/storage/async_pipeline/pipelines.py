@@ -119,6 +119,8 @@ def upload_files_tarball_pipeline(
     if encrypt:
         builder.build_encrypt_stage()
         estimated_size = _calc_encrypted_size(config, estimated_size)
+    # Assuming actual size after compression is not larger than estimated_size
+    # If it is not, number of chunks may exceed the maximum allowed count and upload will fail
     builder.build_uploading_stage(remote_path, estimated_size)
     if delete_after:
         builder.build_delete_files_stage(file_absolute_paths)
