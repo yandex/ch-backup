@@ -69,7 +69,7 @@ class StorageLoader:
         )
         return remote_path
 
-    def upload_files_tarball(
+    def upload_files_tarball_scan(
         self,
         dir_path: str,
         remote_path: str,
@@ -84,7 +84,7 @@ class StorageLoader:
 
         If delete is True, the file will be deleted after upload.
         """
-        self._ploader.upload_files_tarball(
+        self._ploader.upload_files_tarball_scan(
             dir_path,
             remote_path,
             is_async=is_async,
@@ -95,7 +95,7 @@ class StorageLoader:
         )
         return remote_path
 
-    def upload_files_tarball_in_memory(
+    def upload_files_tarball(
         self,
         dir_path: str,
         remote_path: str,
@@ -111,7 +111,7 @@ class StorageLoader:
 
         If delete is True, the file will be deleted after upload.
         """
-        self._ploader.upload_files_tarball_in_memory(
+        self._ploader.upload_files_tarball(
             dir_path,
             remote_path,
             files=files,

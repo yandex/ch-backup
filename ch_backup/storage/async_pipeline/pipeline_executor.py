@@ -15,8 +15,8 @@ from ch_backup.storage.async_pipeline.pipelines import (
     download_files_pipeline,
     upload_data_pipeline,
     upload_file_pipeline,
-    upload_files_tarball_in_memory_pipeline,
     upload_files_tarball_pipeline,
+    upload_files_tarball_scan_pipeline,
 )
 from ch_backup.storage.async_pipeline.suppress_exceptions import suppress_exceptions
 from ch_backup.util import current_func_name
@@ -79,7 +79,7 @@ class PipelineExecutor:
 
         self._exec_pipeline(job_id, pipeline, is_async)
 
-    def upload_files_tarball(
+    def upload_files_tarball_scan(
         self,
         dir_path: str,
         remote_path: str,
@@ -95,7 +95,7 @@ class PipelineExecutor:
         job_id = self._make_job_id(current_func_name(), remote_path)
 
         pipeline = partial(
-            upload_files_tarball_pipeline,
+            upload_files_tarball_scan_pipeline,
             self._config,
             Path(dir_path),
             remote_path,
@@ -105,7 +105,7 @@ class PipelineExecutor:
         )
         self._exec_pipeline(job_id, pipeline, is_async, callback)
 
-    def upload_files_tarball_in_memory(
+    def upload_files_tarball(
         self,
         dir_path: str,
         remote_path: str,
@@ -122,7 +122,7 @@ class PipelineExecutor:
         job_id = self._make_job_id(current_func_name(), remote_path)
 
         pipeline = partial(
-            upload_files_tarball_in_memory_pipeline,
+            upload_files_tarball_pipeline,
             self._config,
             Path(dir_path),
             files,

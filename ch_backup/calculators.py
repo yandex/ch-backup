@@ -17,7 +17,7 @@ def file_filter(p: str) -> bool:
     return not p.endswith("/frozen_metadata.txt")
 
 
-def calc_aligned_files_size(
+def calc_aligned_files_size_scan(
     base_path: Path, file_filter_: Callable = None, alignment: int = 1
 ) -> int:
     """
@@ -34,7 +34,7 @@ def calc_aligned_files_size(
     return size
 
 
-def calc_aligned_files_size_in_memory(files: List[Path], alignment: int = 1) -> int:
+def calc_aligned_files_size(files: List[Path], alignment: int = 1) -> int:
     """
     Calculate total size of files on disk with padding added after each file.
     """
@@ -48,7 +48,7 @@ def calc_aligned_files_size_in_memory(files: List[Path], alignment: int = 1) -> 
     return size
 
 
-def calc_tarball_size(
+def calc_tarball_size_scan(
     dir_path: Path, file_filter_: Callable, aligned_files_size: int
 ) -> int:
     """
@@ -71,7 +71,7 @@ def calc_tarball_size(
     return result
 
 
-def calc_tarball_size_in_memory(file_names: List[str], aligned_files_size: int) -> int:
+def calc_tarball_size(file_names: List[str], aligned_files_size: int) -> int:
     """
     Calculate tarball (TAR archive) size.
 

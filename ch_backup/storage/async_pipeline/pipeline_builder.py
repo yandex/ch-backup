@@ -111,7 +111,7 @@ class PipelineBuilder:
 
         return self
 
-    def build_read_files_tarball_stage(
+    def build_read_files_tarball_scan_stage(
         self, dir_path: Path, file_filter: Callable
     ) -> "PipelineBuilder":
         """
@@ -129,7 +129,7 @@ class PipelineBuilder:
 
         return self
 
-    def build_read_files_tarball_stage_in_memory(
+    def build_read_files_tarball_stage(
         self, dir_path: Path, file_relative_paths: List[Path]
     ) -> "PipelineBuilder":
         """
@@ -243,7 +243,7 @@ class PipelineBuilder:
         )
         return self
 
-    def build_delete_files_stage(
+    def build_delete_files_scan_stage(
         self, base_path: Path, file_filter: Callable
     ) -> "PipelineBuilder":
         """
@@ -254,9 +254,7 @@ class PipelineBuilder:
         self.append(thread_map(DeleteFilesStage(stage_config, base_path, file_filter)))
         return self
 
-    def build_delete_files_stage_in_memory(
-        self, files: List[Path]
-    ) -> "PipelineBuilder":
+    def build_delete_files_stage(self, files: List[Path]) -> "PipelineBuilder":
         """
         Build deleting files stage.
         """

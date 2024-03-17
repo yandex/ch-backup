@@ -9,11 +9,7 @@ from urllib.parse import quote
 
 from ch_backup import logging
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
-from ch_backup.calculators import (
-    calc_encrypted_size,
-    calc_tarball_size_in_memory,
-    file_filter,
-)
+from ch_backup.calculators import calc_encrypted_size, calc_tarball_size, file_filter
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.config import Config
 from ch_backup.encryption import get_encryption
@@ -135,7 +131,7 @@ class BackupLayout:
         )
         try:
             logging.debug('Uploading access control data "{}"', local_path)
-            self._storage_loader.upload_files_tarball_in_memory(
+            self._storage_loader.upload_files_tarball(
                 self._access_control_path,
                 remote_path,
                 files=file_names,
@@ -177,7 +173,7 @@ class BackupLayout:
         )
         remote_path = os.path.join(remote_dir_path, fpart.name + ".tar")
         try:
-            self._storage_loader.upload_files_tarball_in_memory(
+            self._storage_loader.upload_files_tarball(
                 dir_path=fpart.path,
                 files=fpart.files,
                 remote_path=remote_path,
@@ -209,7 +205,7 @@ class BackupLayout:
         logging.debug(f'Uploading "{shadow_path}" content to "{remote_path}"')
 
         try:
-            self._storage_loader.upload_files_tarball(
+            self._storage_loader.upload_files_tarball_scan(
                 dir_path=shadow_path,
                 remote_path=remote_path,
                 is_async=True,
@@ -595,7 +591,7 @@ class BackupLayout:
         """
         Predicts tar archive size after encryption.
         """
-        tar_size = calc_tarball_size_in_memory(part.raw_metadata["files"], part.size)
+        tar_size = calc_tarball_size(part.raw_metadata["files"], part.size)
         return calc_encrypted_size(
             tar_size, self._encryption_chunk_size, self._encryption_metadata_size
         )

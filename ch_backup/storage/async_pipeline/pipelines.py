@@ -8,10 +8,10 @@ from typing import Any, AnyStr, List, Sequence
 
 from ch_backup.calculators import (
     calc_aligned_files_size,
-    calc_aligned_files_size_in_memory,
+    calc_aligned_files_size_scan,
     calc_encrypted_size,
     calc_tarball_size,
-    calc_tarball_size_in_memory,
+    calc_tarball_size_scan,
     file_filter,
 )
 from ch_backup.encryption import get_encryption
@@ -48,19 +48,19 @@ def upload_file_pipeline(
     """
     builder = PipelineBuilder(config)
 
-    estimated_size = calc_aligned_files_size_in_memory([local_path])
+    estimated_size = calc_aligned_files_size([local_path])
     builder.build_read_file_stage(file_path=local_path)
     if encrypt:
         builder.build_encrypt_stage()
         estimated_size = _calc_encrypted_size(config, estimated_size)
     builder.build_uploading_stage(remote_path, estimated_size)
     if delete_after:
-        builder.build_delete_files_stage_in_memory([local_path])
+        builder.build_delete_files_stage([local_path])
 
     run(builder.pipeline())
 
 
-def upload_files_tarball_pipeline(
+def upload_files_tarball_scan_pipeline(
     config: dict,
     base_path: Path,
     remote_path: str,
@@ -73,11 +73,11 @@ def upload_files_tarball_pipeline(
     """
     builder = PipelineBuilder(config)
 
-    estimated_size = calc_aligned_files_size(
+    estimated_size = calc_aligned_files_size_scan(
         base_path, file_filter, alignment=BLOCKSIZE
     )
-    estimated_size = calc_tarball_size(base_path, file_filter, estimated_size)
-    builder.build_read_files_tarball_stage(base_path, file_filter)
+    estimated_size = calc_tarball_size_scan(base_path, file_filter, estimated_size)
+    builder.build_read_files_tarball_scan_stage(base_path, file_filter)
     if compression:
         builder.build_compress_stage()
     if encrypt:
@@ -87,12 +87,12 @@ def upload_files_tarball_pipeline(
     # If it is not, number of chunks may exceed the maximum allowed count and upload will fail
     builder.build_uploading_stage(remote_path, estimated_size)
     if delete_after:
-        builder.build_delete_files_stage(base_path, file_filter)
+        builder.build_delete_files_scan_stage(base_path, file_filter)
 
     run(builder.pipeline())
 
 
-def upload_files_tarball_in_memory_pipeline(
+def upload_files_tarball_pipeline(
     config: dict,
     base_path: Path,
     file_relative_paths: List[Path],
@@ -107,13 +107,11 @@ def upload_files_tarball_in_memory_pipeline(
     builder = PipelineBuilder(config)
     file_absolute_paths = [base_path / rel_path for rel_path in file_relative_paths]
 
-    estimated_size = calc_aligned_files_size_in_memory(
-        file_absolute_paths, alignment=BLOCKSIZE
-    )
-    estimated_size = calc_tarball_size_in_memory(
+    estimated_size = calc_aligned_files_size(file_absolute_paths, alignment=BLOCKSIZE)
+    estimated_size = calc_tarball_size(
         [str(f) for f in file_relative_paths], estimated_size
     )
-    builder.build_read_files_tarball_stage_in_memory(base_path, file_relative_paths)
+    builder.build_read_files_tarball_stage(base_path, file_relative_paths)
     if compression:
         builder.build_compress_stage()
     if encrypt:
@@ -121,7 +119,7 @@ def upload_files_tarball_in_memory_pipeline(
         estimated_size = _calc_encrypted_size(config, estimated_size)
     builder.build_uploading_stage(remote_path, estimated_size)
     if delete_after:
-        builder.build_delete_files_stage_in_memory(file_absolute_paths)
+        builder.build_delete_files_stage(file_absolute_paths)
 
     run(builder.pipeline())
 

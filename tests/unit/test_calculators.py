@@ -7,10 +7,10 @@ from unittest.mock import Mock
 import pytest
 
 from ch_backup.calculators import (
-    calc_aligned_files_size_in_memory,
+    calc_aligned_files_size,
     calc_encrypted_size,
     calc_tarball_size,
-    calc_tarball_size_in_memory,
+    calc_tarball_size_scan,
     file_filter,
 )
 
@@ -42,7 +42,7 @@ def test_calc_aligned_file_size(
         file.stat.return_value.st_size = file_size
         files.append(file)
 
-    assert calc_aligned_files_size_in_memory(files, alignment) == expected_size  # type: ignore[arg-type]
+    assert calc_aligned_files_size(files, alignment) == expected_size  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -83,7 +83,10 @@ def test_calc_tarball_size(
         for name in names:
             with open(test_dir_path / name, "w", encoding="utf-8") as _:
                 continue
-        assert calc_tarball_size(test_dir_path, file_filter, data_size) == expected_size
+        assert (
+            calc_tarball_size_scan(test_dir_path, file_filter, data_size)
+            == expected_size
+        )
     except OSError as e:
         # open() will raise file name too long in some cases
         if e.errno != 36:
@@ -92,7 +95,7 @@ def test_calc_tarball_size(
         if test_dir_path.is_dir():
             shutil.rmtree(test_dir_path)
 
-    assert calc_tarball_size_in_memory(names, data_size) == expected_size
+    assert calc_tarball_size(names, data_size) == expected_size
 
 
 @pytest.mark.parametrize(
