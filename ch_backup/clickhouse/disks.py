@@ -164,6 +164,11 @@ class ClickHouseTemporaryDisks:
         Spawns no more than max_processes_count of clickhouse-disks subproceses to copy part from tmp disk.
         """
 
+        if max_proccesses_count > 1 and not self._ch_ctl.ch_version_ge("23.3"):
+            logging.warning(
+                "It is unsafe to use cloud_storage_restore_workers > 1 with clickhouse version < 23.3"
+                f"(cloud_storage_restore_workers: {max_proccesses_count}, ch_version: {self._ch_ctl.get_version()}"
+            )
         with ThreadPoolExecutor(max_workers=max_proccesses_count) as executor:
             # Can't use map function here. The map method returns a generator
             # and it is not possible to resume a generator after an exception occurs.
@@ -196,7 +201,6 @@ class ClickHouseTemporaryDisks:
         target_disk = self._ch_availible_disks[part.disk_name]
         source_disk = self._ch_availible_disks[_get_tmp_disk_name(part.disk_name)]
         for path, disk in table.paths_with_disks:
-            logging.info(f"Target {target_disk.name} current {disk.name}")
             if disk.name == target_disk.name:
                 table_path = os.path.relpath(path, target_disk.path)
                 target_path = os.path.join(table_path, "detached")
