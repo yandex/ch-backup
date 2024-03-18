@@ -6,7 +6,8 @@ import copy
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from subprocess import PIPE, Popen
-from typing import Any, Dict, List, Optional, Tuple
+from types import TracebackType
+from typing import Any, Dict, List, Optional, Tuple, Type
 from urllib.parse import urlparse
 
 import xmltodict
@@ -88,10 +89,15 @@ class ClickHouseTemporaryDisks:
         )
         return self
 
-    def __exit__(self, exc_type, *args, **kwargs):
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        value: Optional[BaseException],
+        traceback: Optional[TracebackType],
+    ) -> bool:
         if exc_type is not None:
             logging.warning(
-                f'Omitting tmp cloud storage disk cleanup due to exception: "{exc_type}"'
+                f'Omitting tmp cloud storage disk cleanup due to exception: "{exc_type.__name__}: {value}"'
             )
             return False
 
@@ -103,6 +109,7 @@ class ClickHouseTemporaryDisks:
                 return True
             except FileNotFoundError:
                 pass
+        return True
 
     def _render_disks_config(self, path, disks):
         with open(path, "w", encoding="utf-8") as f:
