@@ -96,6 +96,9 @@ def setup_environment(config: dict) -> None:
         os.environ["REQUESTS_CA_BUNDLE"] = env_value
     except KeyError:
         pass
+    use_tracemalloc = config.get("tracemalloc", 0)
+    if use_tracemalloc > 0:
+        os.environ["PYTHONTRACEMALLOC"] = str(use_tracemalloc)
 
 
 def demote_group(new_group: str) -> None:

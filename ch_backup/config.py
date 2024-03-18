@@ -161,6 +161,7 @@ DEFAULT_CONFIG = {
         "drop_privileges": True,
         "ca_bundle": [],
         "disable_ssl_warnings": False,
+        "tracemalloc": 0,
     },
     "loguru": {
         "formatters": {

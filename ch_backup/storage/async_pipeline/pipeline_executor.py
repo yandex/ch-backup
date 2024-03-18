@@ -7,6 +7,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, AnyStr, Callable, List, Optional, Sequence
 
+from ch_backup.profile import profile
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ExecPool
 from ch_backup.storage.async_pipeline.pipelines import (
     delete_multiple_storage_pipeline,
@@ -191,7 +192,7 @@ class PipelineExecutor:
         """
 
         if is_async and self._exec_pool:
-            return self._exec_pool.submit(job_id, pipeline, callback)
+            return self._exec_pool.submit(job_id, profile(10)(pipeline), callback)
 
         result = pipeline()
         if callback:
