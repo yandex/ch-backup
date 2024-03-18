@@ -8,6 +8,7 @@ import tracemalloc
 from functools import partial, wraps
 
 from . import logging
+from .util import format_size
 
 
 class ProfileDecorator:
@@ -18,6 +19,14 @@ class ProfileDecorator:
     next_snapshot = 0
 
     def __init__(self, func, limit, interval):
+        """
+        func - function to decorate, snapshot is taken after function execution.
+        limit - write to log top 'limit' memory usages.
+        interval - minimum time interval between snapshots in seconds (per process).
+                   Making snapshot takes 5-10 seconds, so often calls can
+                   drammaticaly reduce performance.
+                   0 for snapshot on every call (for single called functions)
+        """
         self.func = func
         self.limit = limit
         self.interval = interval
@@ -31,22 +40,24 @@ class ProfileDecorator:
         use_tracemalloc = int(os.environ.get("PYTHONTRACEMALLOC", "0"))
         if use_tracemalloc > 0:
             if not tracemalloc.is_tracing():
-                tracemalloc.start()
-        result = self.func(*args, **kwargs)
-        if use_tracemalloc > 0:
-            if not self.interval:
-                snapshot = tracemalloc.take_snapshot()
-                self.log_top(snapshot)
-            else:
-                now = time.time()
-                if now >= ProfileDecorator.next_snapshot:
-                    ProfileDecorator.next_snapshot = (
-                        ProfileDecorator.next_snapshot
-                        if ProfileDecorator.next_snapshot
-                        else now
-                    ) + self.interval
+                tracemalloc.start(use_tracemalloc)
+        try:
+            result = self.func(*args, **kwargs)
+        finally:
+            if use_tracemalloc > 0:
+                if not self.interval:
                     snapshot = tracemalloc.take_snapshot()
                     self.log_top(snapshot)
+                else:
+                    now = time.time()
+                    if now >= ProfileDecorator.next_snapshot:
+                        ProfileDecorator.next_snapshot = (
+                            ProfileDecorator.next_snapshot
+                            if ProfileDecorator.next_snapshot
+                            else now
+                        ) + self.interval
+                        snapshot = tracemalloc.take_snapshot()
+                        self.log_top(snapshot)
         return result
 
     def log_top(self, snapshot):
@@ -63,20 +74,20 @@ class ProfileDecorator:
         )
         top_stats = snapshot.statistics("traceback")
 
-        logging.info("TraceMalloc top {} lines", self.limit)
+        logging.debug("TraceMalloc top {} lines", self.limit)
         for index, stat in enumerate(top_stats[: self.limit], 1):
-            logging.info("  #{}: {} B", index, stat.size)
+            logging.debug("  #{}: {}", index, format_size(stat.size))
             for line in stat.traceback.format():
-                logging.info("    {}", line)
+                logging.debug("    {}", line)
         other = top_stats[self.limit :]
         if other:
             size = sum(stat.size for stat in other)
-            logging.info("    {} other: {} B", len(other), size)
+            logging.debug("    {} other: {}", len(other), format_size(size))
         total = sum(stat.size for stat in top_stats)
-        logging.info("    Total allocated size: {} B", total)
+        logging.debug("    Total allocated size: {}", format_size(total))
 
 
-def profile(limit, interval=0):
+def profile(limit=10, interval=0):
     """
     Decorator to profile memory usage after function completed.
     """
