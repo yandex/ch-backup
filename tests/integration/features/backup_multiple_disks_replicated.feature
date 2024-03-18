@@ -235,3 +235,47 @@ Feature: Backup & Restore multiple disks and S3 with replication
       | compression       |
       | True              |
       | False             |
+
+  Scenario Outline: Backup from object storage and <number> workers on restore.
+    Given ch-backup configuration on clickhouse01
+    """
+      multiprocessing:
+        cloud_storage_restore_workers: <number>
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+
+    CREATE TABLE test_db.table_01 (CounterID UInt32, UserID UInt32)
+    ENGINE = MergeTree() ORDER BY UserID SETTINGS storage_policy = 's3';
+
+    CREATE TABLE test_db.table_02 (CounterID UInt32, UserID UInt32)
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_02', '{replica}')
+    ORDER BY UserID
+    SETTINGS storage_policy = 's3';
+
+    INSERT INTO test_db.table_01 SELECT number%30, number FROM system.numbers LIMIT 1000;
+    INSERT INTO test_db.table_02 SELECT number%30, number FROM system.numbers LIMIT 1000;
+    """
+    When we create clickhouse01 clickhouse backup
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    cloud_storage_source_bucket: 'cloud-storage-01'
+    cloud_storage_source_path: 'data'
+    """
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
+    @require_version_22.8
+    Examples:
+    | number |
+    | 1      |
+
+    @require_version_23.3
+    Examples:
+    | number |
+    | 4      |
+
+    @require_version_24.2
+    Examples:
+    | number |
+    | 8      |

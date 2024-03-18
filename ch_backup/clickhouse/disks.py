@@ -4,8 +4,9 @@ Clickhouse-disks controls temporary cloud storage disks management.
 
 import copy
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from subprocess import PIPE, Popen
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import xmltodict
@@ -149,13 +150,54 @@ class ClickHouseTemporaryDisks:
         self._created_disks[tmp_disk_name] = source_disk
         self._disks[tmp_disk_name] = disk_config
 
-    def copy_part(
+    def copy_parts(
+        self,
+        backup_meta: BackupMetadata,
+        parts_to_copy: List[Tuple[Table, PartMetadata]],
+        max_proccesses_count: int,
+        keep_going: bool,
+    ) -> None:
+        """
+        Copy parts from temporary cloud storage disk to actual.
+
+        If clickhouse greater or equal than 24.1 then we are able to use s3-server-side copy.
+        Spawns no more than max_processes_count of clickhouse-disks subproceses to copy part from tmp disk.
+        """
+
+        if max_proccesses_count > 1 and not self._ch_ctl.ch_version_ge("23.3"):
+            logging.warning(
+                "It is unsafe to use cloud_storage_restore_workers > 1 with clickhouse version < 23.3"
+                f"(cloud_storage_restore_workers: {max_proccesses_count}, ch_version: {self._ch_ctl.get_version()}"
+            )
+        with ThreadPoolExecutor(max_workers=max_proccesses_count) as executor:
+            # Can't use map function here. The map method returns a generator
+            # and it is not possible to resume a generator after an exception occurs.
+            # https://peps.python.org/pep-0255/#specification-generators-and-exception-propagation
+            futures_to_part = {
+                executor.submit(
+                    self._run_copy_command, backup_meta, part[0], part[1]
+                ): part[1].name
+                for part in parts_to_copy
+            }
+            for future in as_completed(futures_to_part):
+                try:
+                    future.result()
+                except Exception:
+                    if keep_going:
+                        part_name = futures_to_part[future]
+                        logging.exception(
+                            f"Restore of part {part_name} failed, skipping due to --keep-going flag"
+                        )
+                    else:
+                        raise
+
+    def _run_copy_command(
         self, backup_meta: BackupMetadata, table: Table, part: PartMetadata
     ) -> None:
         """
         Copy data from temporary cloud storage disk to actual.
         """
-
+        routine_tag = f"{table.database}.{table.name}::{part.name}"
         target_disk = self._ch_availible_disks[part.disk_name]
         source_disk = self._ch_availible_disks[_get_tmp_disk_name(part.disk_name)]
         for path, disk in table.paths_with_disks:
@@ -172,15 +214,25 @@ class ClickHouseTemporaryDisks:
                     "",
                 )
                 self._copy_dir(
-                    source_disk.name, source_path, target_disk.name, target_path
+                    source_disk.name,
+                    source_path,
+                    target_disk.name,
+                    target_path,
+                    routine_tag,
                 )
                 return
+
         raise RuntimeError(
             f'Disk "{target_disk.name}" path not found for table `{table.database}`.`{table.name}`'
         )
 
     def _copy_dir(
-        self, from_disk: str, from_path: str, to_disk: str, to_path: str
+        self,
+        from_disk: str,
+        from_path: str,
+        to_disk: str,
+        to_path: str,
+        routine_tag: str,
     ) -> None:
         if self._ch_ctl.ch_version_ge("23.9"):
             command_args = [
@@ -202,12 +254,12 @@ class ClickHouseTemporaryDisks:
             ]
 
         result = _exec(
+            routine_tag,
             "copy",
             common_args=["-C", CH_DISK_CONFIG_PATH],
             command_args=command_args,
         )
-
-        logging.info(f"clickhouse-disks copy result: {os.linesep.join(result)}")
+        logging.info(f"clickhouse-disks copy result for {routine_tag}: {result}")
 
 
 def _get_config_path(config_dir: str, disk_name: str) -> str:
@@ -218,14 +270,18 @@ def _get_tmp_disk_name(disk_name: str) -> str:
     return f"{disk_name}_source"
 
 
-def _exec(command: str, common_args: List[str], command_args: List[str]) -> List[str]:
-    ch_disks_logger = logging.getLogger("clickhouse-disks")
+def _exec(
+    routine_tag: str, command: str, common_args: List[str], command_args: List[str]
+) -> Any:
+
+    ch_disks_logger = logging.getLogger("clickhouse-disks").bind(tag=routine_tag)
     command_args = [
         "/usr/bin/clickhouse-disks",
         *common_args,
         command,
         *command_args,
     ]
+
     logging.debug(f'Executing "{" ".join(command_args)}"')
 
     with Popen(command_args, stdout=PIPE, stderr=PIPE, shell=False) as proc:

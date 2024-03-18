@@ -148,6 +148,8 @@ DEFAULT_CONFIG = {
         # The number of processes allocating for data processing. If set to 0, all processing will be performed
         # in the main process.
         "workers": 4,
+        # The number of processes for parts restoring from S3 disks.
+        "cloud_storage_restore_workers": 4,
     },
     "pipeline": {
         # Is asynchronous pipelines used (based on Pypeln library)
@@ -164,6 +166,7 @@ DEFAULT_CONFIG = {
     "loguru": {
         "formatters": {
             "ch-backup": "{time:YYYY-MM-DD HH:mm:ss,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[logger_name]}: {message}",
+            "clickhouse-disks": "{time:YYYY-MM-DD HH:mm:ss,SSS} {extra[tag]} {process.id:5} [{level:8}]: {message}",
         },
         "handlers": {
             "ch-backup": {
@@ -189,7 +192,7 @@ DEFAULT_CONFIG = {
             "clickhouse-disks": {
                 "sink": "/var/log/ch-backup/clickhouse-disks.log",
                 "level": "DEBUG",
-                "format": "ch-backup",
+                "format": "clickhouse-disks",
             },
             "urllib3.connectionpool": {
                 "sink": "/var/log/ch-backup/boto.log",
