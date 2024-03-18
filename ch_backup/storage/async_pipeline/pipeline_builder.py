@@ -112,7 +112,7 @@ class PipelineBuilder:
         return self
 
     def build_read_files_tarball_scan_stage(
-        self, dir_path: Path, exclude_file_names: Optional[list[str]] = None
+        self, dir_path: Path, exclude_file_names: Optional[List[str]] = None
     ) -> "PipelineBuilder":
         """
         Build reading files to tarball stage.
@@ -242,7 +242,7 @@ class PipelineBuilder:
         return self
 
     def build_delete_files_scan_stage(
-        self, base_path: Path, exclude_file_names: Optional[list[str]] = None
+        self, base_path: Path, exclude_file_names: Optional[List[str]] = None
     ) -> "PipelineBuilder":
         """
         Build deleting files stage.

@@ -22,7 +22,7 @@ class DeleteFilesScanStage(Handler):
         self,
         config: dict,
         base_path: Path,
-        exclude_file_names: Optional[list[str]] = None,
+        exclude_file_names: Optional[List[str]] = None,
     ) -> None:
         self._config = config
         self._base_path = base_path

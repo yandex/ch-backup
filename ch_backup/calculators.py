@@ -11,7 +11,7 @@ from ch_backup.util import scan_dir_files
 
 
 def calc_aligned_files_size_scan(
-    base_path: Path, exclude_file_names: Optional[list[str]] = None, alignment: int = 1
+    base_path: Path, exclude_file_names: Optional[List[str]] = None, alignment: int = 1
 ) -> int:
     """
     Calculate total size of files on disk with padding added after each file.
@@ -44,7 +44,7 @@ def calc_aligned_files_size(files: List[Path], alignment: int = 1) -> int:
 def calc_tarball_size_scan(
     dir_path: Path,
     aligned_files_size: int,
-    exclude_file_names: Optional[list[str]] = None,
+    exclude_file_names: Optional[List[str]] = None,
 ) -> int:
     """
     Calculate tarball (TAR archive) size.

@@ -73,7 +73,7 @@ class StorageLoader:
         self,
         dir_path: str,
         remote_path: str,
-        exclude_file_names: Optional[list[str]] = None,
+        exclude_file_names: Optional[List[str]] = None,
         is_async: bool = False,
         encryption: bool = False,
         delete: bool = False,

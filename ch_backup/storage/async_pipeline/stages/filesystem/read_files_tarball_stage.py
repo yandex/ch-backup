@@ -23,7 +23,7 @@ class ReadFilesTarballScanStage(InputHandler):
         self,
         config: dict,
         base_path: Path,
-        exclude_file_names: Optional[list[str]] = None,
+        exclude_file_names: Optional[List[str]] = None,
     ) -> None:
         self._chunk_size = config["chunk_size"]
         self._base_path = base_path

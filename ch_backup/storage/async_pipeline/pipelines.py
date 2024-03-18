@@ -66,7 +66,7 @@ def upload_files_tarball_scan_pipeline(
     encrypt: bool,
     delete_after: bool,
     compression: bool,
-    exclude_file_names: Optional[list[str]] = None,
+    exclude_file_names: Optional[List[str]] = None,
 ) -> None:
     """
     Entrypoint of upload files tarball pipeline.

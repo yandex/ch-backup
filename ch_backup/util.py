@@ -90,7 +90,7 @@ def list_dir_files(dir_path: str) -> List[str]:
 
 
 def scan_dir_files(
-    dir_path: Path, exclude_file_names: Optional[list[str]] = None
+    dir_path: Path, exclude_file_names: Optional[List[str]] = None
 ) -> Iterable[str]:
     """
     Yields relative file paths in a given directory and excludes files with given names
@@ -122,7 +122,7 @@ def scan_dir_files(
     yield from scan_recursive(dir_path)
 
 
-def dir_is_empty(dir_path: str, exclude_file_names: Optional[list[str]] = None) -> bool:
+def dir_is_empty(dir_path: str, exclude_file_names: Optional[List[str]] = None) -> bool:
     """
     Returns True if directory contains some files other than excluded
     """

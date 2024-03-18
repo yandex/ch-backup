@@ -87,7 +87,7 @@ class PipelineExecutor:
         encryption: bool,
         delete: bool,
         compression: bool,
-        exclude_file_names: Optional[list[str]] = None,
+        exclude_file_names: Optional[List[str]] = None,
         callback: Optional[Callable] = None,
     ) -> None:
         """
