@@ -48,8 +48,8 @@ GET_TABLES_SQL = strip_query(
         metadata_path,
         uuid
     FROM system.tables
-    WHERE (empty('{db_name}') OR database = '{db_name}')
-      AND (empty({table_names}) OR has(cast({table_names}, 'Array(String)'), name))
+    WHERE ({db_condition})
+      AND ({tables_condition})
     ORDER BY metadata_modification_time
     FORMAT JSON
 """
@@ -62,8 +62,8 @@ GET_TABLES_SHORT_SQL = strip_query(
         name,
         create_table_query
     FROM system.tables
-    WHERE (empty('{db_name}') OR database = '{db_name}')
-      AND (empty({table_names}) OR has(cast({table_names}, 'Array(String)'), name))
+    WHERE ({db_condition})
+      AND ({tables_condition})
     ORDER BY metadata_modification_time
     FORMAT JSON
 """
@@ -88,8 +88,9 @@ GET_TABLE_SQL = strip_query(
 
 CHECK_TABLE_SQL = strip_query(
     """
-    SELECT countIf(database = '{db_name}' AND name = '{table_name}')
+    SELECT count()
     FROM system.tables
+    WHERE database = '{db_name}' AND name = '{table_name}'
     FORMAT TSVRaw
 """
 )
@@ -462,10 +463,16 @@ class ClickhouseCTL:
         A short query does not access the source of table if it was built from an external source.
         Example: CREATE ... AS postgresql() or CREATE ... AS s3().
         """
+        db_condition = f"database = '{escape(db_name)}'" if db_name else "1"
+        tables_condition = (
+            f"has(cast({list(map(escape, tables))}, 'Array(String)'), name)"
+            if tables
+            else "1"
+        )
         base_query_sql = GET_TABLES_SHORT_SQL if short_query else GET_TABLES_SQL
         query_sql = base_query_sql.format(
-            db_name=escape(db_name) if db_name is not None else "",
-            table_names=list(map(escape, tables)) if tables is not None else [],
+            db_condition=db_condition,
+            tables_condition=tables_condition,
         )  # type: ignore
         result: List[Table] = []
         for row in self._ch_client.query(query_sql)["data"]:
