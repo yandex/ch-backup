@@ -100,12 +100,15 @@ class RestoreContext:
         """
         Dumps restore state to file of disk.
         """
+        # Using _databases property with empty dict might cause loading of the state file
+        # So use it here before file is opened
+        json_dict = {
+            "databases": self._databases,
+            "failed": self._failed,
+        }
         with open(self._state_file, "w", encoding="utf-8") as f:
             json.dump(
-                {
-                    "databases": self._databases,
-                    "failed": self._failed,
-                },
+                json_dict,
                 f,
             )
 
