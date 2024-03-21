@@ -28,7 +28,7 @@ class RestoreContext:
 
     def __init__(self, config: Dict):
         self._state_file = config["restore_context_path"]
-        self._databases: Dict[str, Dict[str, Dict[str, PartState]]] = defaultdict(
+        self._databases_dict: Dict[str, Dict[str, Dict[str, PartState]]] = defaultdict(
             lambda: defaultdict(lambda: defaultdict(lambda: PartState.INVALID))
         )
         self._failed: Mapping[str, Any] = defaultdict(
@@ -39,8 +39,23 @@ class RestoreContext:
                 }
             )
         )
-        if exists(self._state_file):
-            self._load_state()
+
+    @property
+    def _databases(self) -> Dict[str, Dict[str, Dict[str, PartState]]]:
+        """
+        Databases property with lazy load.
+        """
+        if not self._databases_dict:
+            if exists(self._state_file):
+                self._load_state()
+        return self._databases_dict
+
+    @_databases.setter
+    def _databases(self, databases: Dict[str, Dict[str, Dict[str, PartState]]]) -> None:
+        """
+        Databases property setter.
+        """
+        self._databases_dict = databases
 
     def add_part(self, part: PartMetadata, state: PartState) -> None:
         """
@@ -85,19 +100,26 @@ class RestoreContext:
         """
         Dumps restore state to file of disk.
         """
+        # Using _databases property with empty dict might cause loading of the state file
+        # So use it here before file is opened
+        json_dict = {
+            "databases": self._databases,
+            "failed": self._failed,
+        }
         with open(self._state_file, "w", encoding="utf-8") as f:
             json.dump(
-                {
-                    "databases": self._databases,
-                    "failed": self._failed,
-                },
+                json_dict,
                 f,
             )
 
     def _load_state(self) -> None:
         with open(self._state_file, "r", encoding="utf-8") as f:
             state: Dict[str, Any] = json.load(f)
+            databases: Dict[str, Dict[str, Dict[str, PartState]]] = defaultdict(
+                lambda: defaultdict(lambda: defaultdict(lambda: PartState.INVALID))
+            )
             for db, tables in state.get("databases", {}).items():
                 for table, parts in tables.items():
                     for part_name, part_state in parts.items():
-                        self._databases[db][table][part_name] = part_state
+                        databases[db][table][part_name] = part_state
+            self._databases = databases
