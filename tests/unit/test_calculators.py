@@ -1,6 +1,6 @@
-import os
-import shutil
+import errno
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import List
 from unittest.mock import Mock
 
@@ -73,24 +73,20 @@ def test_calc_aligned_file_size(
 def test_calc_tarball_size(
     name_lens: List[int], data_size: int, expected_size: int
 ) -> None:
-    try:
-        # Assuming name_lens size is less than 10
-        names = [f"{i}" * name_len for i, name_len in enumerate(name_lens)]
-        cwd = Path(__file__).parent.resolve()
-        test_dir_path = cwd / "test"
-        os.mkdir(test_dir_path)
-        for name in names:
-            with open(test_dir_path / name, "w", encoding="utf-8") as _:
-                continue
-        assert calc_tarball_size_scan(test_dir_path, data_size) == expected_size
-    except OSError as e:
-        # open() will raise file name too long in some cases
-        if e.errno != 36:
-            raise
-    finally:
-        if test_dir_path.is_dir():
-            shutil.rmtree(test_dir_path)
-
+    # Assuming name_lens size is less than 10
+    names = [f"{i}" * name_len for i, name_len in enumerate(name_lens)]
+    cwd = Path(__file__).parent.resolve()
+    with TemporaryDirectory(prefix=str(cwd) + "/") as dir_name:
+        try:
+            dir_path = Path(dir_name)
+            for name in names:
+                with open(dir_path / name, "w", encoding="utf-8") as _:
+                    continue
+            assert calc_tarball_size_scan(dir_path, data_size) == expected_size
+        except OSError as e:
+            # open() will raise file name too long in some cases
+            if e.errno != errno.ENAMETOOLONG:
+                raise
     assert calc_tarball_size(names, data_size) == expected_size
 
 
