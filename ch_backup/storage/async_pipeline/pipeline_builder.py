@@ -5,7 +5,7 @@ Pipeline builder.
 from functools import reduce
 from math import ceil
 from pathlib import Path
-from typing import Any, Iterable, List, Sequence, Union
+from typing import Any, Iterable, List, Optional, Sequence, Union
 
 from pypeln import utils as pypeln_utils
 from pypeln.thread.api.from_iterable import from_iterable
@@ -22,12 +22,14 @@ from ch_backup.storage.async_pipeline.stages import (
     CompressStage,
     DecompressStage,
     DecryptStage,
+    DeleteFilesScanStage,
     DeleteFilesStage,
     DeleteMultipleStorageStage,
     DownloadStorageStage,
     EncryptStage,
     RateLimiterStage,
     ReadFileStage,
+    ReadFilesTarballScanStage,
     ReadFilesTarballStage,
     StartMultipartUploadStage,
     StorageUploadingStage,
@@ -103,6 +105,24 @@ class PipelineBuilder:
                 DecompressStage(
                     compressor,
                 ),
+                maxsize=queue_size,
+            )
+        )
+
+        return self
+
+    def build_read_files_tarball_scan_stage(
+        self, dir_path: Path, exclude_file_names: Optional[List[str]] = None
+    ) -> "PipelineBuilder":
+        """
+        Build reading files to tarball stage.
+        """
+        stage_config = self._config[ReadFilesTarballStage.stype]
+        queue_size = stage_config["queue_size"]
+
+        self.append(
+            thread_input(
+                ReadFilesTarballScanStage(stage_config, dir_path, exclude_file_names),
                 maxsize=queue_size,
             )
         )
@@ -218,6 +238,21 @@ class PipelineBuilder:
             ),
             thread_flat_map(ChunkingStage(chunk_size, buffer_size), maxsize=queue_size),
             *stages
+        )
+        return self
+
+    def build_delete_files_scan_stage(
+        self, base_path: Path, exclude_file_names: Optional[List[str]] = None
+    ) -> "PipelineBuilder":
+        """
+        Build deleting files stage.
+        """
+        stage_config = self._config[DeleteFilesStage.stype]
+
+        self.append(
+            thread_map(
+                DeleteFilesScanStage(stage_config, base_path, exclude_file_names)
+            )
         )
         return self
 

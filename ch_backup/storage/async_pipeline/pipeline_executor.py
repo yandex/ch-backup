@@ -17,6 +17,7 @@ from ch_backup.storage.async_pipeline.pipelines import (
     upload_data_pipeline,
     upload_file_pipeline,
     upload_files_tarball_pipeline,
+    upload_files_tarball_scan_pipeline,
 )
 from ch_backup.storage.async_pipeline.suppress_exceptions import suppress_exceptions
 from ch_backup.util import current_func_name
@@ -79,28 +80,56 @@ class PipelineExecutor:
 
         self._exec_pipeline(job_id, pipeline, is_async)
 
-    def upload_files_tarball(
+    def upload_files_tarball_scan(
         self,
         dir_path: str,
-        files: List[str],
         remote_path: str,
         is_async: bool,
         encryption: bool,
         delete: bool,
         compression: bool,
+        exclude_file_names: Optional[List[str]] = None,
+        callback: Optional[Callable] = None,
+    ) -> None:
+        """
+        Archive to tarball and upload files from local filesystem.
+        Do not load all file names in memory.
+        """
+        job_id = self._make_job_id(current_func_name(), remote_path)
+
+        pipeline = partial(
+            upload_files_tarball_scan_pipeline,
+            self._config,
+            Path(dir_path),
+            remote_path,
+            encryption,
+            delete_after=delete,
+            compression=compression,
+            exclude_file_names=exclude_file_names,
+        )
+        self._exec_pipeline(job_id, pipeline, is_async, callback)
+
+    def upload_files_tarball(
+        self,
+        dir_path: str,
+        remote_path: str,
+        is_async: bool,
+        encryption: bool,
+        delete: bool,
+        compression: bool,
+        files: List[str],
         callback: Optional[Callable] = None,
     ) -> None:
         """
         Archive to tarball and upload files from local filesystem.
         """
-        paths = [Path(file) for file in files]
         job_id = self._make_job_id(current_func_name(), remote_path)
 
         pipeline = partial(
             upload_files_tarball_pipeline,
             self._config,
             Path(dir_path),
-            paths,
+            files,
             remote_path,
             encryption,
             delete_after=delete,

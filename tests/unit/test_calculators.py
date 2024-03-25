@@ -1,3 +1,6 @@
+import errno
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import List
 from unittest.mock import Mock
 
@@ -7,6 +10,7 @@ from ch_backup.calculators import (
     calc_aligned_files_size,
     calc_encrypted_size,
     calc_tarball_size,
+    calc_tarball_size_scan,
 )
 
 LENGTH_NAME = 100
@@ -69,8 +73,19 @@ def test_calc_aligned_file_size(
 def test_calc_tarball_size(
     name_lens: List[int], data_size: int, expected_size: int
 ) -> None:
-    names = ["0" * name_len for name_len in name_lens]
-
+    # Assuming name_lens size is less than 10
+    names = [f"{i}" * name_len for i, name_len in enumerate(name_lens)]
+    with TemporaryDirectory() as dir_name:
+        try:
+            dir_path = Path(dir_name)
+            for name in names:
+                with open(dir_path / name, "w", encoding="utf-8") as _:
+                    continue
+            assert calc_tarball_size_scan(dir_path, data_size) == expected_size
+        except OSError as e:
+            # open() will raise file name too long in some cases
+            if e.errno != errno.ENAMETOOLONG:
+                raise
     assert calc_tarball_size(names, data_size) == expected_size
 
 

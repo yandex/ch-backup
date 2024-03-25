@@ -16,7 +16,7 @@ from ch_backup.encryption import get_encryption
 from ch_backup.exceptions import StorageError
 from ch_backup.storage import StorageLoader
 from ch_backup.storage.engine.s3 import S3RetryingError
-from ch_backup.util import escape_metadata_file_name, list_dir_files
+from ch_backup.util import dir_is_empty, escape_metadata_file_name
 
 BACKUP_META_FNAME = "backup_struct.json"
 BACKUP_LIGHT_META_FNAME = "backup_light_struct.json"
@@ -132,7 +132,10 @@ class BackupLayout:
         try:
             logging.debug('Uploading access control data "{}"', local_path)
             self._storage_loader.upload_files_tarball(
-                self._access_control_path, file_names, remote_path, encryption=True
+                self._access_control_path,
+                remote_path,
+                files=file_names,
+                encryption=True,
             )
 
         except Exception as e:
@@ -196,22 +199,17 @@ class BackupLayout:
             self.get_backup_path(backup_name), disk.name, compression
         )
         shadow_path = os.path.join(disk.path, "shadow", backup_name)
-        files = list(
-            filter(
-                lambda p: not p.endswith("/frozen_metadata.txt"),
-                list_dir_files(shadow_path),
-            )
-        )
-        if not files:
+        exclude_file_names = ["frozen_metadata.txt"]
+        if dir_is_empty(shadow_path, exclude_file_names):
             return False
 
         logging.debug(f'Uploading "{shadow_path}" content to "{remote_path}"')
 
         try:
-            self._storage_loader.upload_files_tarball(
+            self._storage_loader.upload_files_tarball_scan(
                 dir_path=shadow_path,
                 remote_path=remote_path,
-                files=files,
+                exclude_file_names=exclude_file_names,
                 is_async=True,
                 encryption=backup_meta.cloud_storage.encrypted,
                 delete=delete_after_upload,

@@ -16,12 +16,14 @@ from datetime import datetime, timedelta, timezone
 from functools import partial
 from inspect import currentframe
 from itertools import islice
+from pathlib import Path
 from typing import (
     BinaryIO,
     Callable,
     Iterable,
     Iterator,
     List,
+    Optional,
     Tuple,
     Type,
     TypeVar,
@@ -85,6 +87,51 @@ def list_dir_files(dir_path: str) -> List[str]:
         file[len(dir_path) + 1 :]
         for file in filter(os.path.isfile, glob.iglob(dir_path + "/**", recursive=True))
     ]
+
+
+def scan_dir_files(
+    dir_path: Path, exclude_file_names: Optional[List[str]] = None
+) -> Iterable[str]:
+    """
+    Yields relative file paths in a given directory and excludes files with given names
+    """
+
+    def scan_recursive(dir_path: Path, relative_prefix: Path = None) -> Iterable[str]:
+        with os.scandir(dir_path) as scan:
+            for dir_entry in scan:
+                if dir_entry.is_file():
+                    if (
+                        exclude_file_names is None
+                        or dir_entry.name not in exclude_file_names
+                    ):
+                        yield (
+                            str(relative_prefix / dir_entry.name)
+                            if relative_prefix
+                            else dir_entry.name
+                        )
+                elif dir_entry.is_dir():
+                    next_relative_prefix = (
+                        relative_prefix / dir_entry.name
+                        if relative_prefix
+                        else Path(dir_entry.name)
+                    )
+                    yield from scan_recursive(
+                        Path(dir_entry.path), next_relative_prefix
+                    )
+
+    yield from scan_recursive(dir_path)
+
+
+def dir_is_empty(dir_path: str, exclude_file_names: Optional[List[str]] = None) -> bool:
+    """
+    Returns True if directory contains some files other than excluded
+    """
+    try:
+        for _ in scan_dir_files(Path(dir_path), exclude_file_names):
+            return False
+        return True
+    except FileNotFoundError:
+        return True
 
 
 def setup_environment(config: dict) -> None:

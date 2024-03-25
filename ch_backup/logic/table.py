@@ -387,11 +387,9 @@ class TableBackup(BackupManager):
         upload_observer = UploadPartObserver(context)
 
         for data_path, disk in table.paths_with_disks:
-            freezed_parts = context.ch_ctl.list_frozen_parts(
+            for fpart in context.ch_ctl.scan_frozen_parts(
                 table, disk, data_path, backup_name
-            )
-
-            for fpart in freezed_parts:
+            ):
                 logging.debug("Working on {}", fpart)
                 part = PartMetadata.from_frozen_part(fpart)
 

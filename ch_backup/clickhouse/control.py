@@ -8,7 +8,7 @@ from contextlib import contextmanager, suppress
 from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE  # type: ignore
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
 
 from pkg_resources import parse_version
 
@@ -644,11 +644,11 @@ class ClickhouseCTL:
         return {item["name"]: item["value"] for item in result}
 
     @staticmethod
-    def list_frozen_parts(
+    def scan_frozen_parts(
         table: Table, disk: Disk, data_path: str, backup_name: str
-    ) -> Sequence[FrozenPart]:
+    ) -> Iterable[FrozenPart]:
         """
-        List frozen parts from specific disk and path.
+        Yield frozen parts from specific disk and path.
         """
         table_relative_path = os.path.relpath(data_path, disk.path)
         path = os.path.join(disk.path, "shadow", backup_name, table_relative_path)
@@ -657,31 +657,28 @@ class ClickhouseCTL:
             logging.debug("Shadow path {} is empty", path)
             return []
 
-        freezed_parts: List[FrozenPart] = []
-        for part in os.listdir(path):
-            part_path = os.path.join(path, part)
+        for dir_entry in os.scandir(path):
+            part = dir_entry.name
+            part_path = dir_entry.path
             checksum = _get_part_checksum(part_path)
             rel_paths = list_dir_files(part_path)
             abs_paths = [Path(part_path) / file for file in rel_paths]
 
             size = calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE)
             logging.debug(
-                f"list_freezed_parts: {table.name} -> {escape(table.name)} \n {part}"
-            )
-            freezed_parts.append(
-                FrozenPart(
-                    table.database,
-                    table.name,
-                    part,
-                    disk.name,
-                    part_path,
-                    checksum,
-                    size,
-                    rel_paths,
-                )
+                f"scan_freezed_parts: {table.name} -> {escape(table.name)} \n {part}"
             )
 
-        return freezed_parts
+            yield FrozenPart(
+                table.database,
+                table.name,
+                part,
+                disk.name,
+                part_path,
+                checksum,
+                size,
+                rel_paths,
+            )
 
     @staticmethod
     def _get_table_detached_path(table: Table, disk_name: str) -> str:
