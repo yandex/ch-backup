@@ -64,6 +64,7 @@ class BackupMetadata:
         self.cloud_storage: CloudStorageMetadata = CloudStorageMetadata()
 
         self._state = BackupState.CREATING
+        self._fail_reason: Optional[str] = None
         self._databases: Dict[str, dict] = {}
         self._access_control = AccessControlMetadata()
         self._user_defined_functions: List[str] = []
@@ -84,6 +85,17 @@ class BackupMetadata:
         if value not in BackupState:
             raise UnknownBackupStateError
         self._state = value
+
+    @property
+    def fail_reason(self) -> Optional[str]:
+        """
+        Exception type and message for failed backup.
+        """
+        return self._fail_reason
+
+    @fail_reason.setter
+    def fail_reason(self, value: Optional[str]) -> None:
+        self._fail_reason = value
 
     @property
     def start_time_str(self) -> str:
@@ -127,6 +139,7 @@ class BackupMetadata:
                 "bytes": self.size,
                 "real_bytes": self.real_size,
                 "state": self._state.value,
+                "fail_reason": self._fail_reason,
                 "labels": self.labels,
                 # TODO: clean up backward-compatibility logic (delete 'date_fmt'); it's required changes in int api
                 # to replace 'date_fmt' with 'time_format'.
@@ -178,6 +191,7 @@ class BackupMetadata:
             backup.size = meta["bytes"]
             backup.real_size = meta["real_bytes"]
             backup._state = BackupState(meta["state"])
+            backup._fail_reason = meta["fail_reason"]
             backup.ch_version = meta["ch_version"]
             backup.labels = meta["labels"]
             backup.version = meta["version"]
