@@ -191,7 +191,7 @@ class BackupMetadata:
             backup.size = meta["bytes"]
             backup.real_size = meta["real_bytes"]
             backup._state = BackupState(meta["state"])
-            backup._fail_reason = meta["fail_reason"]
+            backup._fail_reason = meta["fail_reason"] if "fail_reason" in meta else None
             backup.ch_version = meta["ch_version"]
             backup.labels = meta["labels"]
             backup.version = meta["version"]
