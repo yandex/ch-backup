@@ -227,6 +227,14 @@ GET_DISK_SQL = strip_query(
 """
 )
 
+GET_DISK_SQL_24_3 = strip_query(
+    """
+    SELECT name, path, type, object_storage_type, metadata_type, cache_path FROM system.disks
+    WHERE name = '{disk_name}'
+    FORMAT JSON
+"""
+)
+
 GET_DISKS_SQL = strip_query(
     """
     SELECT name, path, type FROM system.disks
@@ -238,6 +246,14 @@ GET_DISKS_SQL = strip_query(
 GET_DISKS_SQL_22_8 = strip_query(
     """
     SELECT name, path, type, cache_path FROM system.disks
+    ORDER BY length(path) DESC
+    FORMAT JSON
+"""
+)
+
+GET_DISKS_SQL_24_3 = strip_query(
+    """
+    SELECT name, path, type, object_storage_type, metadata_type, cache_path FROM system.disks
     ORDER BY length(path) DESC
     FORMAT JSON
 """
@@ -749,22 +765,48 @@ class ClickhouseCTL:
         """
         Get disk by name.
         """
-        resp = self._ch_client.query(GET_DISK_SQL.format(disk_name=disk_name)).get(
-            "data"
-        )
+        if self.ch_version_ge("24.3"):
+            resp = resp = self._ch_client.query(
+                GET_DISK_SQL_24_3.format(disk_name=disk_name)
+            ).get("data")
+        else:
+            resp = self._ch_client.query(GET_DISK_SQL.format(disk_name=disk_name)).get(
+                "data"
+            )
+
         assert resp, f"disk '{disk_name}' not found"
         resp = resp[0]
-        return Disk(resp["name"], resp["path"], resp["type"], resp["cache_path"])
+        return Disk(
+            resp.get("name"),
+            resp.get("path"),
+            resp.get("type"),
+            resp.get("object_storage_type"),
+            resp.get("metadata_type"),
+            resp.get("cache_path"),
+        )
 
     def get_disks(self) -> Dict[str, Disk]:
         """
         Get all configured disks.
         """
+        if self.ch_version_ge("24.3"):
+            disks_resp = self._ch_client.query(GET_DISKS_SQL_24_3)
+            return {
+                row["name"]: Disk(
+                    row["name"],
+                    row["path"],
+                    row["type"],
+                    row["object_storage_type"],
+                    row["metadata_type"],
+                    row["cache_path"],
+                )
+                for row in disks_resp.get("data", [])
+            }
         if self.ch_version_ge("22.8"):
             disks_resp = self._ch_client.query(GET_DISKS_SQL_22_8)
             return {
                 row["name"]: Disk(
-                    row["name"], row["path"], row["type"], row["cache_path"]
+                    row["name"], row["path"], row["type"], cache_path=row["cache_path"]
                 )
                 for row in disks_resp.get("data", [])
             }

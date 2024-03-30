@@ -14,12 +14,37 @@ class Disk(SimpleNamespace):
     ClickHouse disk.
     """
 
-    def __init__(self, name: str, path: str, disk_type: str, cache_path: str = ""):
+    def __init__(
+        self,
+        name: str,
+        path: str,
+        disk_type: str,
+        object_storage_type: Optional[str] = None,
+        metadata_storage_type: Optional[str] = None,
+        cache_path: Optional[str] = None,
+    ):
         super().__init__()
         self.name = name
         self.path = path
-        self.type = disk_type
+        self._type = disk_type
+        self._object_storage_type = object_storage_type
+        self._metadata_storage_type = metadata_storage_type
         self.cache_path = cache_path
+
+    @property
+    def type(self) -> str:
+        """
+        Returns disk type.
+        It can be RAM, Local or some kind of ObjectStorage
+        """
+        if self._type == "ObjectStorage":
+            assert self._object_storage_type
+            return self._object_storage_type.lower()
+        return self._type.lower()
+
+    @type.setter
+    def type(self, value: str) -> None:
+        self._type = value
 
 
 class Table(SimpleNamespace):
