@@ -199,7 +199,7 @@ class ClickhouseBackup:
             except (Exception, TerminatingSignal) as e:
                 logging.critical("Backup failed", exc_info=True)
                 self._context.backup_meta.state = BackupState.FAILED
-                self._context.backup_meta.fail_reason = f"{type(e).__name__}: {e}"
+                self._context.backup_meta.exception = f"{type(e).__name__}: {e}"
                 raise
             finally:
                 self._context.backup_meta.update_end_time()
@@ -466,7 +466,7 @@ class ClickhouseBackup:
         except (Exception, TerminatingSignal) as e:
             logging.critical("Delete failed", exc_info=True)
             backup.state = BackupState.FAILED
-            backup.fail_reason = f"{type(e).__name__}: {e}"
+            backup.exception = f"{type(e).__name__}: {e}"
             raise
 
         finally:
