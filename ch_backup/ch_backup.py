@@ -120,6 +120,7 @@ class ClickhouseBackup:
         If force is True, backup.min_interval config option is ignored.
         """
         # pylint: disable=too-many-branches
+        # pylint: disable=too-many-locals
         logging.info(f"Backup sources: {sources}")
         assert not (db_names and tables)
 
@@ -195,9 +196,10 @@ class ClickhouseBackup:
                     )
 
                 self._context.backup_meta.state = BackupState.CREATED
-            except (Exception, TerminatingSignal):
+            except (Exception, TerminatingSignal) as e:
                 logging.critical("Backup failed", exc_info=True)
                 self._context.backup_meta.state = BackupState.FAILED
+                self._context.backup_meta.exception = f"{type(e).__name__}: {e}"
                 raise
             finally:
                 self._context.backup_meta.update_end_time()
@@ -461,9 +463,10 @@ class ClickhouseBackup:
                 "deduplication settings.",
             )
 
-        except (Exception, TerminatingSignal):
+        except (Exception, TerminatingSignal) as e:
             logging.critical("Delete failed", exc_info=True)
             backup.state = BackupState.FAILED
+            backup.exception = f"{type(e).__name__}: {e}"
             raise
 
         finally:

@@ -12,6 +12,7 @@ from hamcrest import (
     equal_to,
     has_entries,
     matches_regexp,
+    starts_with,
 )
 from tests.integration.modules.ch_backup import BackupManager
 from tests.integration.modules.docker import get_container
@@ -33,6 +34,15 @@ def step_create_backup(context, node):
     name_regexp = name_regexp.replace("{timestamp}", "[0-9]{8}T[0-9]{6}")
     name_regexp = name_regexp.replace("{uuid}", "[0-9a-f-]{36}")
     assert_that(name, matches_regexp(name_regexp))
+
+
+@when("we try to create {node:w} clickhouse backup")
+def step_try_create_backup(context, node):
+    options = get_step_data(context)
+    try:
+        BackupManager(context, node).backup(**options)
+    except Exception:
+        pass
 
 
 @when("we can't create {node:w} clickhouse backup")
@@ -119,6 +129,16 @@ def step_backup_metadata(context, node, backup_id):
 
     backup = BackupManager(context, node).get_backup(backup_id)
     assert_that(backup.meta, has_entries(expected_meta))
+
+
+@then(
+    'metadata of {node:w} backup #{backup_id:d} contains value for "{field:w}" which begins with'
+)
+def step_backup_metadata_value(context, node, backup_id, field):
+    expected_value = context.text
+
+    backup = BackupManager(context, node).get_backup(backup_id)
+    assert_that(backup.meta[field], starts_with(expected_value))
 
 
 @then("metadata of {node:w} backup #{backup_id:d} contains no")
