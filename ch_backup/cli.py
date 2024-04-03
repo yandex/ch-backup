@@ -256,8 +256,8 @@ def show_command(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> None:
         type=String(
             regexp=r"(?a)[\w-]+",
             macros={
-                "{timestamp}": TIMESTAMP,
-                "{uuid}": UUID,
+                "timestamp": TIMESTAMP,
+                "uuid": UUID,
             },
         ),
         help="Name of creating backup. The value can contain macros:"

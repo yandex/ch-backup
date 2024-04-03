@@ -12,6 +12,7 @@ from ch_backup.util import (
     compare_schema,
     get_table_zookeeper_paths,
     list_dir_files,
+    replace_macros,
     retry,
     scan_dir_files,
     strip_query,
@@ -269,3 +270,10 @@ class TestScanDir:
             actual.append(file_name)
 
         assert actual == expected
+
+
+def test_replace_macros():
+    assert replace_macros("{a}/{b}", {"a": "1", "b": "2"}) == "1/2"
+    assert replace_macros("{a},{c}", {"a": "1", "b": "2"}) == "1,{c}"
+    assert replace_macros(" } {a} { ", {"a": "1", "b": "2"}) == " } 1 { "
+    assert replace_macros("", {"a": "1", "b": "2"}) == ""

@@ -14,7 +14,7 @@ from ch_backup import logging
 from ch_backup.exceptions import ConfigurationError
 
 from ..clickhouse.models import Table
-from ..util import retry
+from ..util import replace_macros, retry
 
 KAZOO_RETRIES = retry(
     (KazooException, KazooTimeoutError), max_attempts=5, max_interval=60
@@ -106,7 +106,7 @@ class ZookeeperCTL:
                 table_macros.update(macros)
                 path = os.path.join(
                     self._zk_root_path,
-                    table_path[1:].format(**table_macros),
+                    replace_macros(table_path[1:], table_macros),
                     "replicas",
                     replica,
                 )  # remove leading '/'
@@ -130,7 +130,7 @@ class ZookeeperCTL:
         with self._zk_client as client:
             for zk_path in databases:
                 path = os.path.join(
-                    self._zk_root_path, zk_path[1:].format(**macros)
+                    self._zk_root_path, replace_macros(zk_path[1:], macros)
                 )  # remove leading '/'
                 logging.debug(f'Deleting zk node: "{path}"')
                 try:

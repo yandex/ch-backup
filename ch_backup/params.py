@@ -11,6 +11,8 @@ from click import ParamType
 from click.types import StringParamType
 from humanfriendly import InvalidTimespan, parse_timespan
 
+from ch_backup.util import replace_macros
+
 
 class List(ParamType):
     """
@@ -130,8 +132,7 @@ class String(StringParamType):
         Parse input value.
         """
         if self.macros:
-            for macro, replacement in self.macros.items():
-                value = value.replace(macro, replacement)
+            value = replace_macros(value, self.macros)
 
         if self.regexp:
             if self.regexp.fullmatch(value) is None:
