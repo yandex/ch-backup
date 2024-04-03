@@ -9,7 +9,6 @@ import os
 import pwd
 import re
 import shutil
-import string
 import time
 from dataclasses import fields as data_fields
 from datetime import datetime, timedelta, timezone
@@ -17,6 +16,7 @@ from functools import partial
 from inspect import currentframe
 from itertools import islice
 from pathlib import Path
+from string import ascii_letters, digits
 from typing import (
     BinaryIO,
     Callable,
@@ -41,7 +41,7 @@ T = TypeVar("T")
 LOCAL_TZ = timezone(
     timedelta(seconds=-1 * (time.altzone if time.daylight else time.timezone))
 )
-_ALLOWED_NAME_CHARS = set(["_"] + list(string.ascii_letters) + list(string.digits))
+_ALLOWED_NAME_CHARS = set(["_"] + list(ascii_letters) + list(digits))
 _HEX_UPPERCASE_TABLE = [
     "0",
     "1",
@@ -438,3 +438,18 @@ class cached_property:
             return self
         value = obj.__dict__[self.func.__name__] = self.func(obj)
         return value
+
+
+def replace_macros(string: str, macros: dict) -> str:
+    """
+    Substitute macros in the specified string. Macros in string are specified in the form "{macro_name}".
+
+    Example:
+    >>> replace_macros('{a} and {b}', {'a': '1', 'b': '2'})
+    1 and 2
+    """
+    return re.sub(
+        string=string,
+        pattern=r"{([^{}]+)}",
+        repl=lambda m: macros.get(m.group(1), m.group(0)),
+    )
