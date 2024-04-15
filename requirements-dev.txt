@@ -17,6 +17,6 @@ hypothesis
 behave
 docker<5.0
 docker-compose<1.28
-websocket-client<1.0  # required for docker-compose<1.28
+websocket-client<2.0  # required for docker-compose<1.28
 Jinja2
 deepdiff<7.1.0  # 6.4.0 version contains a bug https://github.com/seperman/deepdiff/issues/415
