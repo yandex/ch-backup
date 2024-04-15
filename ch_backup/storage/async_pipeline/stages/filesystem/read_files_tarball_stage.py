@@ -42,8 +42,7 @@ class ReadFilesTarballStageBase(InputHandler):
         Produce file content by chunks.
         """
         with file_path.open(mode="rb") as file:
-            for chunk in read_by_chunks(file, self._chunk_size):
-                yield chunk
+            yield from read_by_chunks(file, self._chunk_size)
 
             # Fill padding for last file's TAR block
             remainder = file_path.stat().st_size % tarfile.BLOCKSIZE

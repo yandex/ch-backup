@@ -35,14 +35,12 @@ class FlatMap:
         """
         Process flat map handler.
         """
-        for value in self.handler.on_start() or []:
-            yield value
+        yield from self.handler.on_start() or []
 
         for elem in worker.stage_params.input_queue:
             yield from self.handler(elem.value, elem.index[0]) or []
 
-        for value in self.handler.on_done() or []:
-            yield value
+        yield from self.handler.on_done() or []
 
 
 def flat_map(

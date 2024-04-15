@@ -9,7 +9,7 @@ from typing import Any
 import psutil
 from loguru import logger
 
-from ch_backup.util import format_size
+from ch_backup.formatting import format_size
 
 
 class Filter:

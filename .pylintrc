@@ -427,6 +427,7 @@ confidence=HIGH,
 # no Warning level messages displayed, use "--disable=all --enable=classes
 # --disable=W".
 disable=broad-exception-caught,
+        duplicate-code,
         fixme,
         inconsistent-return-statements,
         line-too-long,
