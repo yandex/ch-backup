@@ -1,3 +1,4 @@
+[lint]
 select = ["E", "F", "W", "A"]
 
 ignore = [
@@ -5,5 +6,5 @@ ignore = [
     "E501",  # "Line too long"
 ]
 
-[per-file-ignores]
+[lint.per-file-ignores]
 "__init__.py" = ["F401"]  # "Unused import"
