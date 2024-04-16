@@ -8,7 +8,7 @@ import tracemalloc
 from functools import partial, wraps
 
 from . import logging
-from .util import format_size
+from .formatting import format_size
 
 
 class ProfileDecorator:

@@ -30,7 +30,6 @@ from typing import (
     Union,
 )
 
-import humanfriendly
 import tenacity
 
 from ch_backup import logging
@@ -343,13 +342,6 @@ def compare_schema(schema_a: str, schema_b: str) -> bool:
     return _normalize(schema_a) == _normalize(schema_b)
 
 
-def format_size(value: int) -> str:
-    """
-    Format a value in bytes to human-friendly representation.
-    """
-    return humanfriendly.format_size(value, binary=True)
-
-
 def escape_metadata_file_name(name: str) -> str:
     """
     Escape object name to use for metadata file.
@@ -392,8 +384,7 @@ def read_by_chunks(file: BinaryIO, chunk_size: int) -> Iterator[bytes]:
     """
     Read and yield file-like object by chunks.
     """
-    for chunk in iter(partial(file.read, chunk_size), b""):
-        yield chunk
+    yield from iter(partial(file.read, chunk_size), b"")
 
 
 def current_func_name() -> str:
