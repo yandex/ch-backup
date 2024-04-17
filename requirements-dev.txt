@@ -15,7 +15,7 @@ pytest
 PyHamcrest
 hypothesis
 behave
-docker<5.0
+docker<8.0
 docker-compose<1.28
 websocket-client<2.0  # required for docker-compose<1.28
 Jinja2
