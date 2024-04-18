@@ -1,5 +1,5 @@
 requests>2.19
-boto3<1.19
+boto3<1.30
 botocore<1.35
 psutil
 PyYAML<5.4
