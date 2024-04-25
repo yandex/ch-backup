@@ -27,7 +27,7 @@ RUN set -ex \
     # Configure locales
     && locale-gen en_US.UTF-8 \
     && update-locale LANG=en_US.UTF-8 \
-    # Ensure that `python` refers to `python3` so that poetry works. 
+    # Ensure that `python` refers to `python3` so that poetry works.
     # It makes sense for ubuntu:18.04
     && ln -sf /usr/bin/python3 /usr/bin/python
 
@@ -35,9 +35,6 @@ RUN set -ex \
 VOLUME /src
 WORKDIR /src
 
-# For compiling PyNACL library, which is used by ch-backup
-# See https://pynacl.readthedocs.io/en/latest/install/#linux-source-build
-ENV SODIUM_INSTALL=system
 ENV PYTHON=/usr/bin/python3
 
 CMD ["make", "build-deb-package-local"]
