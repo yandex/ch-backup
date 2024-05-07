@@ -1,0 +1,41 @@
+ARG BASE_IMAGE=ubuntu:18.04
+FROM --platform=$TARGETPLATFORM $BASE_IMAGE
+
+RUN set -ex && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install \
+        -y --no-install-recommends \
+        build-essential \
+        libbz2-dev \
+        libffi-dev \
+        libgdbm-dev \
+        libncurses5-dev \
+        libnss3-dev \
+        libreadline-dev \
+        libsqlite3-dev \
+        libssl-dev \
+        wget \
+        zlib1g-dev \
+    && \
+    apt-get clean
+
+ARG PY_VERSION=3.12.3
+ARG PYTHON_SRC=/src/python
+
+RUN mkdir -p $PYTHON_SRC
+
+RUN set -ex && \
+    wget --no-check-certificate "https://www.python.org/ftp/python/$PY_VERSION/Python-$PY_VERSION.tgz" && \
+    tar -xf Python-$PY_VERSION.tgz && \
+    cd Python-$PY_VERSION/ && \
+    ./configure \
+        --build="$(dpkg-architecture --query DEB_BUILD_GNU_TYPE)" \
+        --prefix=$PYTHON_SRC \
+        --enable-optimizations \
+    && \
+    make -j $(nproc) && \
+    make altinstall && \
+    rm /Python-$PY_VERSION.tgz && \
+    rm -rf /Python-$PY_VERSION
+
+WORKDIR /src

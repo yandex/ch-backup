@@ -11,7 +11,8 @@ PYTHON_TO := $(PYTHON_MAJOR).$(shell echo $$(( $(PYTHON_MINOR) + 1 )))
 # but package for Jammy requires python3.10.
 # All this is due to the fact that we put the entire virtual environment in a deb package
 # and that venv links to the system python
-SUBSTVARS := -Vpython:Depends="python3 (>= $(PYTHON_FROM)), python3 (<< $(PYTHON_TO))"
+# SUBSTVARS := -Vpython:Depends="python3 (>= $(PYTHON_FROM)), python3 (<< $(PYTHON_TO))"
+SUBSTVARS := -Vpython:Depends="python3 (>= 3.6), python3 (<< 3.13)"
 
 %:
 	dh $@

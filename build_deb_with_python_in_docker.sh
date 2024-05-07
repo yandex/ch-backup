@@ -15,6 +15,13 @@ if [[ -n "${DEB_BUILD_DISTRIBUTION}" ]]; then
     BUILD_ARGS+=(--build-arg BASE_IMAGE=${DEB_BUILD_DISTRIBUTION})
     BUILD_IMAGE="${BUILD_IMAGE}-${DEB_BUILD_DISTRIBUTION}"
 fi
+if [[ -n "${PYTHON_BUILD_NAME}" ]]; then
+    BUILD_ARGS+=(--build-arg PYTHON_BUILD_NAME=${PYTHON_BUILD_NAME})
+fi
+if [[ -n "${TARGET_PYTHON_VERSION}" ]]; then
+    BUILD_ARGS+=(--build-arg TARGET_PYTHON_VERSION=${TARGET_PYTHON_VERSION})
+fi
+
 # Normalize docker image name
 BUILD_IMAGE=$(echo ${BUILD_IMAGE} | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g')
 
@@ -32,5 +39,6 @@ if [[ -n "${DEB_SIGN_KEY_PATH}" ]]; then
     )
 fi
 
-docker build "${BUILD_ARGS[@]}" -t "${BUILD_IMAGE}" -f Dockerfile-deb-build .
+echo "Build args: ${BUILD_ARGS[@]}"
+docker build "${BUILD_ARGS[@]}" -t "${BUILD_IMAGE}" -f Dockerfile-deb-python-build .
 docker run "${RUN_ARGS[@]}" "${BUILD_IMAGE}"

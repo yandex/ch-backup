@@ -1,0 +1,38 @@
+FROM my_python:latest as pybuild
+
+FROM ubuntu:18.04
+
+RUN mkdir -p /opt/yandex/ch-backup
+
+COPY --from=pybuild /usr/local/bin /opt/yandex/ch-backup/bin
+COPY --from=pybuild /usr/local/lib /opt/yandex/ch-backup/lib
+
+WORKDIR /src
+
+CMD ["bash"]
+
+
+# ARG TARGET_PYTHON=3.10
+
+# FROM python:$TARGET_PYTHON as pybuild
+
+# # ARG BASE_IMAGE=ubuntu:22.04
+# # FROM --platform=$TARGETPLATFORM $BASE_IMAGE
+# FROM ubuntu:18.04
+
+# RUN mkdir -p /opt/yandex/ch-backup
+
+# # COPY --from=pybuild /usr/local/bin/python3.12 /opt/yandex/ch-backup/bin/python3.12
+# COPY --from=pybuild /usr/local/bin/python$TARGET_PYTHON /usr/local/bin/python$TARGET_PYTHON
+
+# COPY --from=pybuild /usr/local/lib/ /usr/local/lib/
+
+# # COPY --from=pybuild /usr/local/lib/libpython3.12.so /usr/local/lib/libpython3.12.so
+# # COPY --from=pybuild /usr/local/lib/libpython3.12.so.1.0 /usr/local/lib/libpython3.12.so.1.0
+# # COPY --from=pybuild /usr/local/lib/libpython3.so /usr/local/lib/libpython3.so
+
+# # Project directory must be mounted here
+# VOLUME /src
+# WORKDIR /src
+
+# CMD ["bash"]
