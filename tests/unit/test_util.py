@@ -10,6 +10,7 @@ from ch_backup.clickhouse.models import Table
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.util import (
     compare_schema,
+    contains_unusual_characters,
     get_table_zookeeper_paths,
     list_dir_files,
     replace_macros,
@@ -277,3 +278,23 @@ def test_replace_macros():
     assert replace_macros("{a},{c}", {"a": "1", "b": "2"}) == "1,{c}"
     assert replace_macros(" } {a} { ", {"a": "1", "b": "2"}) == " } 1 { "
     assert replace_macros("", {"a": "1", "b": "2"}) == ""
+
+
+class TestUnusualCharacters:
+    """
+    Tests for contains_unusual_characters() function.
+    """
+
+    def test(self):
+        usual_paths = [
+            "a/b",
+            "/a/b/10.tar",
+            "metadata/some%07data",
+            "a~!@#$%^&*()-_=+<>./b",
+        ]
+        unusual_paths = ["/a/some\x07data", "abc\x1f", "\x7f"]
+
+        for path in usual_paths:
+            assert not contains_unusual_characters(path)
+        for path in unusual_paths:
+            assert contains_unusual_characters(path)

@@ -41,6 +41,7 @@ LOCAL_TZ = timezone(
     timedelta(seconds=-1 * (time.altzone if time.daylight else time.timezone))
 )
 _ALLOWED_NAME_CHARS = set(["_"] + list(ascii_letters) + list(digits))
+_UNUSUAL_CHARS_REGEX = re.compile(r"[^\u0020-\u007e]")
 _HEX_UPPERCASE_TABLE = [
     "0",
     "1",
@@ -59,6 +60,13 @@ _HEX_UPPERCASE_TABLE = [
     "E",
     "F",
 ]
+
+
+def contains_unusual_characters(path: str) -> bool:
+    """
+    Check if given string contains unusual characters
+    """
+    return _UNUSUAL_CHARS_REGEX.search(path) is not None
 
 
 def chown_dir_contents(
