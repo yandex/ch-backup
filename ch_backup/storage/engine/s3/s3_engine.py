@@ -18,7 +18,6 @@ from ch_backup.storage.engine.s3.s3_client_factory import (
 from ch_backup.storage.engine.s3.s3_multipart_uploader import S3MultipartUploader
 from ch_backup.storage.engine.s3.s3_retry import S3RetryMeta
 from ch_backup.type_hints.boto3.s3 import S3Client
-from ch_backup.util import contains_unusual_characters
 
 
 class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
@@ -88,12 +87,16 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
         """
         Delete multiple files from S3
         """
-        # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/s3.html#S3.Client.delete_objects
-        if not self._bulk_delete_enabled:
+
+        def delete_by_one(remote_paths: Sequence[str]) -> None:
             for remote_path in remote_paths:
                 self.delete_file(remote_path)
+
+        if not self._bulk_delete_enabled:
+            delete_by_one(remote_paths)
             return
 
+        # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/s3.html#S3.Client.delete_objects
         try:
             objects_to_delete: list = [
                 {"Key": path.lstrip("/")} for path in remote_paths
@@ -104,22 +107,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
         except ClientError as e:
             if "MalformedXML" not in repr(e):
                 raise
-
-            objects_to_delete_single: list = []
-            objects_to_delete_bulk: list = []
-            for path in remote_paths:
-                if contains_unusual_characters(path):
-                    objects_to_delete_single.append(path)
-                else:
-                    objects_to_delete_bulk.append({"Key": path.lstrip("/")})
-
-            if objects_to_delete_bulk:
-                self._s3_client.delete_objects(
-                    Bucket=self._s3_bucket_name,
-                    Delete={"Objects": objects_to_delete_bulk},
-                )
-            for remote_path in objects_to_delete_single:
-                self.delete_file(remote_path)
+            delete_by_one(remote_paths)
 
     def list_dir(
         self, remote_path: str, recursive: bool = False, absolute: bool = False
