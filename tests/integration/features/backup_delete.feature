@@ -111,17 +111,17 @@ Feature: Backup & Clean & Restore
       | 6   | created  | 4          | 0            | shared        |
 
   Scenario: Create "unusual_char" backup
-    When we execute command on clickhouse01
+    When we execute query on clickhouse01
     """
-    echo -e 'CREATE DATABASE unusual_char;' | clickhouse-client
+    CREATE DATABASE unusual_char;
     """
-    And we execute command on clickhouse01
+    And we execute query on clickhouse01
     """
-    echo -e 'CREATE TABLE unusual_char."tab\x07l./-_e" (n UInt64) ENGINE = MergeTree() ORDER BY n;' | clickhouse-client
+    CREATE TABLE unusual_char."tab\x07l./-_e" (n UInt64) ENGINE = MergeTree() ORDER BY n;
     """
-    And we execute command on clickhouse01
+    And we execute query on clickhouse01
     """
-    echo -e 'INSERT INTO unusual_char."tab\x07l./-_e" VALUES (1234);' | clickhouse-client
+    INSERT INTO unusual_char."tab\x07l./-_e" VALUES (1234);
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
