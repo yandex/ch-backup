@@ -39,6 +39,5 @@ if [[ -n "${DEB_SIGN_KEY_PATH}" ]]; then
     )
 fi
 
-echo "Build args: ${BUILD_ARGS[@]}"
 docker build "${BUILD_ARGS[@]}" -t "${BUILD_IMAGE}" -f Dockerfile-deb-python-build .
 docker run "${RUN_ARGS[@]}" "${BUILD_IMAGE}"

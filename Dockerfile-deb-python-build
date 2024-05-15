@@ -8,9 +8,7 @@ FROM --platform=$TARGETPLATFORM $BASE_IMAGE
 ARG DEBIAN_FRONTEND=noninteractive
 ARG TARGET_PYTHON_VERSION
 
-# todo: use args
 RUN mkdir -p /opt/yandex/ch-backup/python
-
 COPY --from=pybuild /opt/yandex/ch-backup/python /opt/yandex/ch-backup/python
 
 RUN set -ex \
@@ -25,9 +23,7 @@ RUN set -ex \
         gpg \
         gpg-agent \
         # Python packaging tools
-        # python3-dev \
         python3-pip \
-        # python3-setuptools \
         python3-venv \
         # Misc
         curl \
@@ -42,11 +38,6 @@ RUN set -ex \
     && ln -sf /opt/yandex/ch-backup/python/bin/python3.12 /usr/bin/python \
     && ln -sf /opt/yandex/ch-backup/python/bin/python3.12 /usr/bin/python3
 
-# install extra dependencies
-# RUN /usr/bin/python3 -m pip install setuptools
-
-# COPY --from=pybuild /usr/local/bin /opt/yandex/ch-backup/bin
-
 # Project directory must be mounted here
 VOLUME /src
 WORKDIR /src
@@ -54,6 +45,7 @@ WORKDIR /src
 # For compiling PyNACL library, which is used by ch-backup
 # See https://pynacl.readthedocs.io/en/latest/install/#linux-source-build
 ENV SODIUM_INSTALL=system
+
 ENV PYTHON=/opt/yandex/ch-backup/python/bin/python3.12
 ENV TARGET_PYTHON_VERSION=$TARGET_PYTHON_VERSION
 
