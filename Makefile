@@ -212,7 +212,7 @@ check-environment:
 
 .PHONY: build-python
 build-python:
-	PYTHON_SRC=${INSTALL_DIR}/python ./build_python_in_docker.sh
+	PYTHON_INSTALL_PREFIX=${INSTALL_DIR}/python ./build_python_in_docker.sh
 
 .PHONY: .copy-target-python
 .copy-target-python:

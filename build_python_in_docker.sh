@@ -15,10 +15,10 @@ if [[ -n "${DEB_BUILD_DISTRIBUTION}" ]]; then
     BUILD_ARGS+=(--build-arg BASE_IMAGE=${DEB_BUILD_DISTRIBUTION})
 fi
 if [[ -n "${TARGET_PYTHON_VERSION}" ]]; then
-    BUILD_ARGS+=(--build-arg PY_VERSION=${TARGET_PYTHON_VERSION})
+    BUILD_ARGS+=(--build-arg PYTHON_VERSION=${TARGET_PYTHON_VERSION})
 fi
-if [[ -n "${PYTHON_SRC}" ]]; then
-    BUILD_ARGS+=(--build-arg PYTHON_SRC=${PYTHON_SRC})
+if [[ -n "${PYTHON_INSTALL_PREFIX}" ]]; then
+    BUILD_ARGS+=(--build-arg PYTHON_INSTALL_PREFIX=${PYTHON_INSTALL_PREFIX})
 fi
 
 docker build "${BUILD_ARGS[@]}" -t "${BUILD_IMAGE}" -f Dockerfile-python-build .
