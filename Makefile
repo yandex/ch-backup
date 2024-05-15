@@ -188,7 +188,8 @@ format: install-deps
 
 
 ch_backup/version.txt:
-	@echo "0.0.0.8" > ch_backup/version.txt
+	@echo "0.0.0.10" > ch_backup/version.txt
+#	@echo "2.$$(git rev-list HEAD --count).$$(git rev-parse --short HEAD | perl -ne 'print hex $$_')" > ch_backup/version.txt
 
 
 .PHONY: install-deps

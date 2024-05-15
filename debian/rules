@@ -7,12 +7,16 @@ PYTHON_MINOR := $(shell $(PYTHON) -c 'import sys; print(sys.version_info[1])')
 PYTHON_FROM := $(PYTHON_MAJOR).$(PYTHON_MINOR)
 PYTHON_TO := $(PYTHON_MAJOR).$(shell echo $$(( $(PYTHON_MINOR) + 1 )))
 
+# In case of using built-in python version (which is expected to have at least 3.12)
+# we don't care about this dependency and it can be removed at all later.
+ifeq ($(PYTHON_MINOR),12)
+	PYTHON_FROM="3.6"
+endif
 # Use conditional python3 dependency because package for Bionic requires python3.6,
 # but package for Jammy requires python3.10.
 # All this is due to the fact that we put the entire virtual environment in a deb package
 # and that venv links to the system python
-# SUBSTVARS := -Vpython:Depends="python3 (>= $(PYTHON_FROM)), python3 (<< $(PYTHON_TO))"
-SUBSTVARS := -Vpython:Depends="python3 (>= 3.6), python3 (<< 3.13)"
+SUBSTVARS := -Vpython:Depends="python3 (>= $(PYTHON_FROM)), python3 (<< $(PYTHON_TO))"
 
 %:
 	dh $@
