@@ -82,3 +82,27 @@ jobs:
         name: integration-test-logs-py${{ matrix.python }}-clickhouse-${{ matrix.clickhouse }}
         path: staging/logs/
         if-no-files-found: ignore
+
+  test_build_with_python:
+    name: test build with custom python version
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: ["amd64"]
+        distro: ["bionic"]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    - name: Build with custom python
+      shell: bash
+      env:
+        PYTHON_BUILD_NAME: ${{ matrix.distro }}-python-${{ matrix.arch }}
+        TARGET_PYTHON_VERSION: 3.12.3
+        DEB_TARGET_PLATFORM: linux/${{ matrix.arch }}
+        DEB_BUILD_DISTRIBUTION: ubuntu:${{ matrix.distro }}
+        DOCKER_BUILDKIT: 1
+      run: |
+        make build-python
