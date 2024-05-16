@@ -44,7 +44,6 @@ export DEB_TARGET_PLATFORM ?=
 # If it is not provided, default value in Dockerfile is used
 export DEB_BUILD_DISTRIBUTION ?=
 
-
 .PHONY: build
 build: install-deps ch_backup/version.txt
 
@@ -109,7 +108,7 @@ clean-pycache:
 
 
 .PHONY: install
-install:
+install: .copy-target-python
 	@echo "Installing into $(INSTALL_DIR)"
 	$(PYTHON) -m venv $(INSTALL_DIR)
 	$(INSTALL_DIR)/bin/pip install -r requirements.txt
@@ -211,10 +210,26 @@ check-environment:
 	touch .install-deps
 
 
+.PHONY: build-python
+build-python:
+	PYTHON_INSTALL_PREFIX=${INSTALL_DIR}/python ./build_python_in_docker.sh
+
+.PHONY: .copy-target-python
+.copy-target-python:
+	@echo "Target python version: ${TARGET_PYTHON_VERSION}"
+	@if [[ -n "${TARGET_PYTHON_VERSION}" ]]; then \
+		echo "Copying custom python to ${INSTALL_DIR}/python"; \
+		mkdir -p ${INSTALL_DIR}/python; \
+		cp -R /opt/yandex/ch-backup/python ${INSTALL_DIR}; \
+	else \
+		echo "Custom target python version is not set."; \
+	fi
+
 .PHONY: help
 help:
 	@echo "Targets:"
 	@echo "  build (default)            Build project. It installs dependencies and generates version.txt."
+	@echo "  build-python               Build docker image with custom python version."
 	@echo "  all                        Alias for \"build lint test-unit test-integration\"."
 	@echo "  lint                       Run all linter tools. Alias for \"isort black codespell ruff pylint mypy bandit\"."
 	@echo "  test-unit                  Run unit tests."
