@@ -9,7 +9,7 @@ PYTHON_TO := $(PYTHON_MAJOR).$(shell echo $$(( $(PYTHON_MINOR) + 1 )))
 
 # In case of using built-in python version (which is expected to have at least 3.12)
 # we don't care about this dependency and it can be removed at all later.
-ifeq ($(PYTHON_MINOR),12)
+ifeq ($(shell test $(PYTHON_MAJOR) -ge 3 && test $(PYTHON_MINOR) -ge 12; echo $$?),0)
 	PYTHON_FROM="3.6"
 endif
 # Use conditional python3 dependency because package for Bionic requires python3.6,

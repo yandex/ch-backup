@@ -229,6 +229,7 @@ build-python:
 help:
 	@echo "Targets:"
 	@echo "  build (default)            Build project. It installs dependencies and generates version.txt."
+	@echo "  build-python               Build docker image with custom python version."
 	@echo "  all                        Alias for \"build lint test-unit test-integration\"."
 	@echo "  lint                       Run all linter tools. Alias for \"isort black codespell ruff pylint mypy bandit\"."
 	@echo "  test-unit                  Run unit tests."
