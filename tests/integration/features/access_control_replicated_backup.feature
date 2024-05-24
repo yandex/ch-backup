@@ -45,14 +45,7 @@ Feature: Backup and restore functionality of replicated access control entities
     Then we got the following backups on clickhouse01
       | num | state   | data_count | link_count |
       | 0   | created | 1          | 0          |
-    When we execute command on clickhouse01
-    """
-    find /var/lib/clickhouse/access -name "*.sql" | wc -l
-    """
-    Then we get response
-    """
-    5
-    """
+
 
   @require_version_22.3
   Scenario: check ZK data after restore to replicated storage

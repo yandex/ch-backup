@@ -120,19 +120,18 @@ class BackupLayout:
             raise StorageError(msg) from e
 
     def upload_access_control_files(
-        self, backup_name: str, file_names: List[str]
+        self, path: str, backup_name: str, local_path: str, file_names: List[str]
     ) -> None:
         """
         Upload access control list.
         """
-        local_path = self._access_control_path
         remote_path = _access_control_data_path(
             self.get_backup_path(backup_name), ACCESS_CONTROL_FNAME
         )
         try:
             logging.debug('Uploading access control data "{}"', local_path)
             self._storage_loader.upload_files_tarball(
-                self._access_control_path,
+                path,
                 remote_path,
                 files=file_names,
                 encryption=True,
@@ -368,14 +367,16 @@ class BackupLayout:
         remote_path = _table_metadata_path(backup_meta.path, db_name, table_name)
         return self._storage_loader.download_data(remote_path, encryption=True)
 
-    def download_access_control_file(self, backup_name: str, file_name: str) -> None:
+    def download_access_control_file(
+        self, local_path: str, backup_name: str, file_name: str
+    ) -> None:
         """
         Download access control object metadata and save on disk.
         """
         remote_path = _access_control_data_path(
             self.get_backup_path(backup_name), file_name
         )
-        local_path = os.path.join(self._access_control_path, file_name)
+        local_path = os.path.join(local_path, file_name)
         logging.debug(
             'Downloading access control metadata "{}" to "{}', remote_path, local_path
         )
@@ -385,14 +386,13 @@ class BackupLayout:
             msg = f"Failed to download access control metadata file {remote_path}"
             raise StorageError(msg) from e
 
-    def download_access_control(self, backup_name: str) -> None:
+    def download_access_control(self, local_path: str, backup_name: str) -> None:
         """
         Download access control object metadata and save on disk.
         """
         remote_path = _access_control_data_path(
             self.get_backup_path(backup_name), ACCESS_CONTROL_FNAME
         )
-        local_path = self._access_control_path
         logging.debug(
             'Downloading access control metadata "{}" to "{}', remote_path, local_path
         )

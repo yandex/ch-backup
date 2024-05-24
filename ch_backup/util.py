@@ -466,3 +466,49 @@ class Slotted:
             if not getattr(self, slot) == getattr(other, slot):
                 return False
         return True
+def chown_path(path: str, user: str, group: str) -> None:
+    """
+    Interface for chown
+    """
+    shutil.chown(path, user, group)
+
+
+def copy_directory_content(from_path_dir: str, to_path_dir: str) -> None:
+    """
+    Copy all files from one directory to another.
+    """
+    if to_path_dir[-1] != "/":
+        to_path_dir += "/"
+    for subpath in os.listdir(from_path_dir):
+        subpath = os.path.join(from_path_dir, subpath)
+        shutil.copy(subpath, to_path_dir)
+
+
+def create_dir(path: str, user: str, group: str) -> None:
+    """
+    Create dir and chown it.
+    """
+    os.makedirs(path, exist_ok=True)
+    chown_path(path, user, group)
+
+
+class temporary_directory:
+    """
+    Class to automatically create and remove temporary directory.
+
+    In case of exception, do not remove the folder.
+    """
+
+    def __init__(self, path: str, user: str, group: str):
+        self._path = path
+        self._user = user
+        self._group = group
+
+    def __enter__(self) -> None:
+        create_dir(self._path, self._user, self._group)
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if exc_type is not None:
+            logging.warning("Dont remove tmp dir {} due to exception.", self._path)
+            return
+        shutil.rmtree(self._path)
