@@ -460,6 +460,8 @@ class Slotted:
         return f"{type(self).__name__}({repr_})"
 
     def __eq__(self, other):
+        if not isinstance(other, self.__class__):
+            return False
         for slot in self.__slots__:  # type: ignore
             if not getattr(self, slot) == getattr(other, slot):
                 return False

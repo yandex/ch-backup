@@ -15,6 +15,8 @@ from ch_backup.util import Slotted
 class UploadingPart(Slotted):
     """
     Passed between uploading stages.
+
+    We could use dataclass(slots=true) from functools when the supported version of python would be >= 3.10.
     """
 
     __slots__ = "data", "upload_id"
