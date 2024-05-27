@@ -30,7 +30,7 @@ class ClickHouseDisksException(RuntimeError):
 
 
 CH_DISK_CONFIG_PATH = "/tmp/clickhouse-disks-config.xml"
-CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS = 3600000
+CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS = 1 * 60 * 60 * 1000
 
 
 class ClickHouseTemporaryDisks:
