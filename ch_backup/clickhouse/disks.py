@@ -156,6 +156,10 @@ class ClickHouseTemporaryDisks:
                     "#text": str(CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS),
                 }
             }
+            if self._disks:
+                self._disks[disk_name]["request_timeout_ms"] = str(
+                    CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS
+                )
 
         self._render_disks_config(
             _get_config_path(self._config_dir, tmp_disk_name),
@@ -170,7 +174,7 @@ class ClickHouseTemporaryDisks:
         )
 
         self._created_disks[tmp_disk_name] = source_disk
-        self._disks[tmp_disk_name] = disk_config
+        self._disks[tmp_disk_name] = disks_config[tmp_disk_name]
 
     def copy_parts(
         self,
