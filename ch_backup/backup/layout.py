@@ -120,7 +120,7 @@ class BackupLayout:
             raise StorageError(msg) from e
 
     def upload_access_control_files(
-        self, path: str, backup_name: str, local_path: str, file_names: List[str]
+        self, local_path: str, backup_name: str, file_names: List[str]
     ) -> None:
         """
         Upload access control list.
@@ -131,7 +131,7 @@ class BackupLayout:
         try:
             logging.debug('Uploading access control data "{}"', local_path)
             self._storage_loader.upload_files_tarball(
-                path,
+                local_path,
                 remote_path,
                 files=file_names,
                 encryption=True,

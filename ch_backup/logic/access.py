@@ -4,6 +4,7 @@ Clickhouse backup logic for access entities.
 
 import os
 import re
+import shutil
 from typing import Any, Dict, List, Sequence, Union
 
 from kazoo.client import KazooClient
@@ -15,9 +16,7 @@ from ch_backup.backup_context import BackupContext
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.util import (
     chown_dir_contents,
-    chown_path,
     copy_directory_content,
-    create_dir,
     temporary_directory,
 )
 
@@ -41,7 +40,9 @@ class AccessBackup(BackupManager):
         user = context.ch_ctl_conf["user"]
         group = context.ch_ctl_conf["group"]
 
-        create_dir(clickhouse_access_path, user, group)
+        os.makedirs(clickhouse_access_path, exist_ok=True)
+        shutil.chown(clickhouse_access_path, user, group)
+
         with temporary_directory(backup_tmp_path, user, group):
             objects = context.ch_ctl.get_access_control_objects()
             context.backup_meta.set_access_control(objects)
@@ -63,7 +64,6 @@ class AccessBackup(BackupManager):
             context.backup_layout.upload_access_control_files(
                 backup_tmp_path,
                 context.backup_meta.name,
-                backup_tmp_path,
                 acl_file_names,
             )
 
@@ -87,20 +87,14 @@ class AccessBackup(BackupManager):
         user = context.ch_ctl_conf["user"]
         group = context.ch_ctl_conf["group"]
 
-        create_dir(clickhouse_access_path, user, group)
+        if os.path.exists(clickhouse_access_path):
+            shutil.rmtree(clickhouse_access_path)
+
+        os.makedirs(clickhouse_access_path)
+        shutil.chown(clickhouse_access_path, user, group)
+
         with temporary_directory(restore_tmp_path, user, group):
-            if (
-                context.backup_meta.access_control.backup_format
-                == BackupStorageFormat.TAR
-            ):
-                context.backup_layout.download_access_control(
-                    restore_tmp_path, context.backup_meta.name
-                )
-            else:
-                for name in _get_access_control_files(acl_ids):
-                    context.backup_layout.download_access_control_file(
-                        restore_tmp_path, context.backup_meta.name, name
-                    )
+            self._download_access_control_list(context, restore_tmp_path, acl_ids)
 
             if has_replicated_access:
                 self._restore_replicated(restore_tmp_path, acl_ids, acl_meta, context)
@@ -177,6 +171,19 @@ class AccessBackup(BackupManager):
                         os.remove(file_path)
                 except FileNotFoundError:
                     logging.debug(f"File {file_path} not found.")
+
+    def _download_access_control_list(
+        self, context: BackupContext, restore_tmp_path: str, acl_ids: List[str]
+    ) -> None:
+        if context.backup_meta.access_control.backup_format == BackupStorageFormat.TAR:
+            context.backup_layout.download_access_control(
+                restore_tmp_path, context.backup_meta.name
+            )
+        else:
+            for name in _get_access_control_files(acl_ids):
+                context.backup_layout.download_access_control_file(
+                    restore_tmp_path, context.backup_meta.name, name
+                )
 
     def _clean_user_uuid(self, raw_str: str) -> str:
         return re.sub(r"EXCEPT ID\('(.+)'\)", "", raw_str)
@@ -263,7 +270,7 @@ class AccessBackup(BackupManager):
         mark_file = os.path.join(clickhouse_access_path, CH_MARK_FILE)
         with open(mark_file, "a", encoding="utf-8"):
             pass
-        chown_path(mark_file, user, group)
+        shutil.chown(mark_file, user, group)
 
     def _has_replicated_access(self, context: BackupContext) -> bool:
         return (
