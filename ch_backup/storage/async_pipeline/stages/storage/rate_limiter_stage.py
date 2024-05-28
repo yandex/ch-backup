@@ -13,7 +13,7 @@ from ch_backup.storage.async_pipeline.stages.types import StageType
 class RateLimiterStage(Handler):
     """
     A bottleneck for controlling the number of data to prevent excessive loading.
-    Based on tocken bucket algorithm.
+    Based on token bucket algorithm.
     """
 
     stype = StageType.STORAGE
