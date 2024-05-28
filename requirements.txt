@@ -1,4 +1,4 @@
-requests<2.32.0
+requests>2.19,<2.32
 boto3<1.19
 botocore<1.22
 psutil
