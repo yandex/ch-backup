@@ -8,16 +8,20 @@ from typing import Optional
 from ch_backup.storage.async_pipeline.base_pipeline.handler import Handler
 from ch_backup.storage.async_pipeline.stages.types import StageType
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
+from ch_backup.util import Slotted
 
 
 @dataclass
-class UploadingPart:
+class UploadingPart(Slotted):
     """
     Passed between uploading stages.
+
+    We could use dataclass(slots=true) from functools when the supported version of python would be >= 3.10.
     """
 
+    __slots__ = "data", "upload_id"
     data: bytes
-    upload_id: Optional[str] = None
+    upload_id: Optional[str]
 
 
 class StartMultipartUploadStage(Handler):

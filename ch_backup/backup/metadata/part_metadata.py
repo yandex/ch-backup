@@ -2,16 +2,42 @@
 Backup metadata for ClickHouse data part.
 """
 
-from types import SimpleNamespace
 from typing import Optional, Sequence
 
 from ch_backup.clickhouse.models import FrozenPart
+from ch_backup.util import Slotted
 
 
-class PartMetadata(SimpleNamespace):
+class RawMetadata(Slotted):
+    """
+    Raw metadata for ClickHouse data part.
+    """
+
+    __slots__ = "checksum", "size", "files", "tarball", "link", "disk_name"
+
+    def __init__(
+        self,
+        checksum: str,
+        size: int,
+        files: Sequence[str],
+        tarball: bool,
+        link: str = None,
+        disk_name: str = None,
+    ) -> None:
+        self.checksum = checksum
+        self.size = size
+        self.files = files
+        self.tarball = tarball
+        self.link = link
+        self.disk_name = disk_name
+
+
+class PartMetadata(Slotted):
     """
     Backup metadata for ClickHouse data part.
     """
+
+    __slots__ = "database", "table", "name", "raw_metadata"
 
     # pylint: disable=too-many-arguments
     def __init__(
@@ -26,60 +52,54 @@ class PartMetadata(SimpleNamespace):
         link: str = None,
         disk_name: str = None,
     ) -> None:
-        super().__init__()
         self.database: str = database
         self.table: str = table
         self.name: str = name
-        self.raw_metadata: dict = {
-            "checksum": checksum,
-            "size": size,
-            "files": files,
-            "tarball": tarball,
-            "link": link,
-            "disk_name": disk_name,
-        }
+        self.raw_metadata: RawMetadata = RawMetadata(
+            checksum, size, files, tarball, link, disk_name
+        )
 
     @property
     def checksum(self) -> str:
         """
         Return data part checksum.
         """
-        return self.raw_metadata["checksum"]
+        return self.raw_metadata.checksum
 
     @property
     def size(self) -> int:
         """
         Return data part size.
         """
-        return self.raw_metadata["size"]
+        return self.raw_metadata.size
 
     @property
     def files(self) -> Sequence[str]:
         """
         Return data part files.
         """
-        return self.raw_metadata["files"]
+        return self.raw_metadata.files
 
     @property
     def link(self) -> Optional[str]:
         """
         For deduplicated data parts it returns link to the source backup (its path). Otherwise None is returned.
         """
-        return self.raw_metadata["link"]
+        return self.raw_metadata.link
 
     @property
     def disk_name(self) -> str:
         """
         Return disk name where part is stored.
         """
-        return self.raw_metadata.get("disk_name", "default")
+        return self.raw_metadata.disk_name if self.raw_metadata.disk_name else "default"
 
     @property
     def tarball(self) -> bool:
         """
         Returns true if part files stored as single tarball.
         """
-        return self.raw_metadata["tarball"]
+        return self.raw_metadata.tarball
 
     @classmethod
     def load(

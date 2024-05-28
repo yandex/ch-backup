@@ -13,13 +13,23 @@ from ch_backup.backup.metadata import BackupMetadata, BackupState, PartMetadata
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.models import Database, FrozenPart
 from ch_backup.clickhouse.schema import is_replicated
-from ch_backup.util import utcnow
+from ch_backup.util import Slotted, utcnow
 
 
-class PartDedupInfo:
+class PartDedupInfo(Slotted):
     """
     Information about data part to use for deduplication / creation incremental backups.
     """
+
+    __slots__ = (
+        "backup_path",
+        "checksum",
+        "size",
+        "files",
+        "tarball",
+        "disk_name",
+        "verified",
+    )
 
     def __init__(
         self,
@@ -38,12 +48,6 @@ class PartDedupInfo:
         self.tarball = tarball
         self.disk_name = disk_name
         self.verified = verified
-
-    def __repr__(self):
-        return f"PartDedupInfo({self.__dict__})"
-
-    def __eq__(self, other):
-        return self.__dict__ == other.__dict__
 
 
 TableDedupInfo = Dict[str, PartDedupInfo]

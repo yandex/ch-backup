@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import List, Optional, Tuple
 
 import ch_backup.logging
+from ch_backup.util import Slotted
 
 
 class Disk(SimpleNamespace):
@@ -163,10 +164,21 @@ class Database(SimpleNamespace):
             self.engine = match.group("engine")
 
 
-class FrozenPart(SimpleNamespace):
+class FrozenPart(Slotted):
     """
     Freezed data part.
     """
+
+    __slots__ = (
+        "database",
+        "table",
+        "name",
+        "disk_name",
+        "path",
+        "checksum",
+        "size",
+        "files",
+    )
 
     def __init__(
         self,

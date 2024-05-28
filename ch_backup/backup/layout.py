@@ -593,7 +593,7 @@ class BackupLayout:
         """
         Predicts tar archive size after encryption.
         """
-        tar_size = calc_tarball_size(part.raw_metadata["files"], part.size)
+        tar_size = calc_tarball_size(list(part.raw_metadata.files), part.size)
         return calc_encrypted_size(
             tar_size, self._encryption_chunk_size, self._encryption_metadata_size
         )

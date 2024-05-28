@@ -444,3 +444,25 @@ def replace_macros(string: str, macros: dict) -> str:
         pattern=r"{([^{}]+)}",
         repl=lambda m: macros.get(m.group(1), m.group(0)),
     )
+
+
+class Slotted:
+    """
+    Allow to explicitly declare data members and deny the creation of __dict__ and __weakref__.
+    The space saved over using __dict__ can be significant. Attribute lookup speed can be significantly improved as well.
+    All child classes must declare __slots__.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self):
+        repr_ = [f"{attr}: {getattr(self, attr)}" for attr in self.__slots__]  # type: ignore
+        return f"{type(self).__name__}({repr_})"
+
+    def __eq__(self, other):
+        if not isinstance(other, self.__class__):
+            return False
+        for slot in self.__slots__:  # type: ignore
+            if not getattr(self, slot) == getattr(other, slot):
+                return False
+        return True
