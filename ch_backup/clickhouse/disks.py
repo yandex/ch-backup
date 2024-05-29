@@ -30,6 +30,7 @@ class ClickHouseDisksException(RuntimeError):
 
 
 CH_DISK_CONFIG_PATH = "/tmp/clickhouse-disks-config.xml"
+CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS = 1 * 60 * 60 * 1000
 
 
 class ClickHouseTemporaryDisks:
@@ -115,7 +116,7 @@ class ClickHouseTemporaryDisks:
         with open(path, "w", encoding="utf-8") as f:
             xmltodict.unparse(
                 {
-                    "yandex": {
+                    "clickhouse": {
                         "storage_configuration": {"disks": disks},
                     }
                 },
@@ -142,9 +143,27 @@ class ClickHouseTemporaryDisks:
         disk_config["endpoint"] = os.path.join(
             f"{endpoint.scheme}://{endpoint_netloc}", source_bucket, source_path, ""
         )
+        disks_config = {tmp_disk_name: disk_config}
+
+        request_timeout_ms = int(disk_config.get("request_timeout_ms", 0))
+        if request_timeout_ms < CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS:
+            disks_config[tmp_disk_name]["request_timeout_ms"] = str(
+                CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS
+            )
+            disks_config[disk_name] = {
+                "request_timeout_ms": {
+                    "@replace": "replace",
+                    "#text": str(CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS),
+                }
+            }
+            if self._disks:
+                self._disks[disk_name]["request_timeout_ms"] = str(
+                    CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS
+                )
+
         self._render_disks_config(
             _get_config_path(self._config_dir, tmp_disk_name),
-            {tmp_disk_name: disk_config},
+            disks_config,
         )
 
         self._ch_ctl.reload_config()
@@ -155,7 +174,7 @@ class ClickHouseTemporaryDisks:
         )
 
         self._created_disks[tmp_disk_name] = source_disk
-        self._disks[tmp_disk_name] = disk_config
+        self._disks[tmp_disk_name] = disks_config[tmp_disk_name]
 
     def copy_parts(
         self,
