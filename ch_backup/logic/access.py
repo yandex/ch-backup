@@ -5,6 +5,8 @@ Clickhouse backup logic for access entities.
 import os
 import re
 import shutil
+from contextlib import contextmanager
+from tempfile import TemporaryDirectory, mkdtemp
 from typing import Any, Dict, List, Sequence, Union
 
 from kazoo.client import KazooClient
@@ -14,13 +16,28 @@ from ch_backup import logging
 from ch_backup.backup.metadata import BackupStorageFormat
 from ch_backup.backup_context import BackupContext
 from ch_backup.logic.backup_manager import BackupManager
-from ch_backup.util import (
-    chown_dir_contents,
-    copy_directory_content,
-    temporary_directory,
-)
+from ch_backup.util import chown_dir_contents, copy_directory_content
 
 CH_MARK_FILE = "need_rebuild_lists.mark"
+
+
+@contextmanager
+def access_control_temp_directory(
+    directory_path: str, backup_name: str, keep_on_exception: bool = False
+) -> Any:
+    """
+    Class to automatically create and remove temporary directory.
+
+    If keep flag is set, then in case of exception, do not remove the folder.
+    """
+    _prefix = backup_name + "_tmp_"
+    if keep_on_exception:
+        tmpdir = mkdtemp(prefix=_prefix, dir=directory_path)
+        yield tmpdir
+        shutil.rmtree(tmpdir)
+    else:
+        with TemporaryDirectory(prefix=_prefix, dir=directory_path) as tmpdir:
+            yield tmpdir
 
 
 class AccessBackup(BackupManager):
@@ -34,16 +51,17 @@ class AccessBackup(BackupManager):
         """
 
         clickhouse_access_path = context.ch_ctl_conf["access_control_path"]
-        backup_tmp_path = os.path.join(
-            context.ch_ctl_conf["tmp_path"], context.backup_meta.name
-        )
         user = context.ch_ctl_conf["user"]
         group = context.ch_ctl_conf["group"]
 
-        os.makedirs(clickhouse_access_path, exist_ok=True)
-        shutil.chown(clickhouse_access_path, user, group)
+        self._prepare_folder(clickhouse_access_path, user, group)
+        self._prepare_folder(context.ch_ctl_conf["tmp_path"], user, group, False)
 
-        with temporary_directory(backup_tmp_path, user, group):
+        with access_control_temp_directory(
+            context.ch_ctl_conf["tmp_path"],
+            context.backup_meta.name,
+            keep_on_exception=True,
+        ) as backup_tmp_path:
             objects = context.ch_ctl.get_access_control_objects()
             context.backup_meta.set_access_control(objects)
             access_control = context.backup_meta.access_control
@@ -81,19 +99,18 @@ class AccessBackup(BackupManager):
         has_replicated_access = self._has_replicated_access(context)
 
         clickhouse_access_path = context.ch_ctl_conf["access_control_path"]
-        restore_tmp_path = os.path.join(
-            context.ch_ctl_conf["tmp_path"], context.backup_meta.name
-        )
         user = context.ch_ctl_conf["user"]
         group = context.ch_ctl_conf["group"]
 
-        if os.path.exists(clickhouse_access_path):
-            shutil.rmtree(clickhouse_access_path)
+        self._prepare_folder(clickhouse_access_path, user, group, True)
+        self._prepare_folder(context.ch_ctl_conf["tmp_path"], user, group, False)
 
-        os.makedirs(clickhouse_access_path)
-        shutil.chown(clickhouse_access_path, user, group)
+        with access_control_temp_directory(
+            context.ch_ctl_conf["tmp_path"],
+            context.backup_meta.name,
+            keep_on_exception=True,
+        ) as restore_tmp_path:
 
-        with temporary_directory(restore_tmp_path, user, group):
             self._download_access_control_list(context, restore_tmp_path, acl_ids)
 
             if has_replicated_access:
@@ -171,6 +188,15 @@ class AccessBackup(BackupManager):
                         os.remove(file_path)
                 except FileNotFoundError:
                     logging.debug(f"File {file_path} not found.")
+
+    def _prepare_folder(
+        self, path: str, user: str, group: str, cleanup: bool = False
+    ) -> None:
+        if cleanup and os.path.exists(path):
+            shutil.rmtree(path)
+
+        os.makedirs(path, exist_ok=True)
+        shutil.chown(path, user, group)
 
     def _download_access_control_list(
         self, context: BackupContext, restore_tmp_path: str, acl_ids: List[str]

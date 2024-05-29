@@ -485,36 +485,3 @@ def copy_directory_content(from_path_dir: str, to_path_dir: str) -> None:
         subpath_to = os.path.join(to_path_dir, subpath)
         if not os.path.exists(subpath_to):
             shutil.copy(subpath_from, to_path_dir)
-
-
-# tempfile.TemporaryDirectory : https://docs.python.org/3.11/library/tempfile.html#tempfile.TemporaryDirectory
-# It is not possible to keep directory content only when exception occurs.
-class temporary_directory:
-    """
-    Class to automatically create and remove temporary directory.
-
-    In case of exception, do not remove the folder.
-    """
-
-    def __init__(self, path: str, user: str, group: str):
-        self._path = path
-        self._user = user
-        self._group = group
-
-    def __enter__(self) -> None:
-        if os.path.exists(self._path):
-            shutil.rmtree(self._path)
-
-        os.makedirs(self._path)
-        shutil.chown(self._path, self._user, self._group)
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        if exc_type is not None:
-            logging.warning(
-                "Dont remove tmp dir {} due to exception. {}: {}",
-                self._path,
-                exc_type.__name__,
-                exc_value,
-            )
-            return
-        shutil.rmtree(self._path)
