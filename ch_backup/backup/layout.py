@@ -328,6 +328,16 @@ class BackupLayout:
         """
         Reload backup metadata.
         """
+        return BackupMetadata.load_json(
+            self.reload_backup_raw(backup, use_light_meta, "utf-8")
+        )
+
+    def reload_backup_raw(
+        self, backup: BackupMetadata, use_light_meta: bool = False, encoding: str = None
+    ) -> str | bytes | None:  # pylint: disable=unsupported-binary-operation
+        """
+        Reload backup metadata as raw bytes.
+        """
         path = (
             self._backup_light_metadata_path(backup.name)
             if use_light_meta
@@ -335,8 +345,7 @@ class BackupLayout:
         )
 
         try:
-            data = self._storage_loader.download_data(path)
-            return BackupMetadata.load_json(data)
+            return self._storage_loader.download_data(path, encoding=encoding)
         except Exception as e:
             raise StorageError("Failed to download backup metadata") from e
 

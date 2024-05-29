@@ -15,3 +15,4 @@ pypeln==0.4.9
 dataclasses>=0.7,<0.8; python_version <"3.7"  # required for pypeln==0.4.9
 typing_extensions>=3.7.4,<4.0; python_version <"3.8"  # required for pypeln==0.4.9
 loguru
+ijson

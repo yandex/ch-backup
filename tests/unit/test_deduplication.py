@@ -20,6 +20,7 @@ from ch_backup.backup.deduplication import (
     collect_dedup_references_for_batch_backup_deletion,
 )
 from ch_backup.backup.metadata import BackupState
+from ch_backup.backup.metadata.backup_metadata import BackupMetadata
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.models import Database
 
@@ -582,4 +583,8 @@ def test_collect_dedup_references_for_batch_backup_deletion(
 def layout_mock():
     layout = MagicMock()
     layout.reload_backup = lambda backup, use_light_meta: backup
+    # Passing str to ijson causes deprecation warning
+    layout.reload_backup_raw = lambda backup, use_light_meta: bytes(
+        BackupMetadata.dump_json(backup), "utf-8"
+    )
     return layout

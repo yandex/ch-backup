@@ -2,14 +2,18 @@
 Data part deduplication.
 """
 
+import gc
 from collections import defaultdict
 from copy import copy
 from datetime import timedelta
 from typing import Dict, List, Optional, Sequence, Set
 
+import ijson
+
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, BackupState, PartMetadata
+from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.models import Database, FrozenPart
 from ch_backup.clickhouse.schema import is_replicated
@@ -165,31 +169,29 @@ def _populate_dedup_info(
     # pylint: disable=too-many-locals,too-many-branches
     databases_to_handle = {db.name: _DatabaseToHandle(db.name) for db in databases}
     dedup_backup_paths = set(backup.path for backup in dedup_backups_with_light_meta)
-    for backup in dedup_backups_with_light_meta:
-        backup = layout.reload_backup(backup, use_light_meta=False)
+    for backup_light in dedup_backups_with_light_meta:
+        backup_raw = layout.reload_backup_raw(backup_light, use_light_meta=False)
 
         # Process only replicated tables if backup is created on replica.
-        only_replicated = hostname != backup.hostname
+        only_replicated = hostname != backup_light.hostname
 
-        databases_to_iterate = []
-        for db_name in backup.get_databases():
+        for db_name, database_backup_info in ijson.kvitems(backup_raw, "databases"):
             db = databases_to_handle.get(db_name)
             if not db:
                 continue
 
-            databases_to_iterate.append(copy(db))
-
-            if backup.state == BackupState.CREATED:
-                db.replicated_tables_handled = True
+            db_copy = copy(db)
+            if backup_light.state == BackupState.CREATED:
+                db_copy.replicated_tables_handled = True
                 if not only_replicated:
-                    db.nonreplicated_tables_handled = True
+                    db_copy.nonreplicated_tables_handled = True
 
-                if db.handled:
+                if db_copy.handled:
                     del databases_to_handle[db_name]
 
-        for db in databases_to_iterate:
             db_dedup_info = dedup_info.database(db.name)
-            for table in backup.get_tables(db.name):
+            for table_name, raw_metadata in database_backup_info["tables"].items():
+                table = TableMetadata.load(db_name, table_name, raw_metadata)
                 replicated = is_replicated(table.engine)
                 if replicated and db.replicated_tables_handled:
                     continue
@@ -210,7 +212,7 @@ def _populate_dedup_info(
                             continue
                     else:
                         verified = False
-                        backup_path = backup.path
+                        backup_path = backup_light.path
 
                     table_dedup_info[part.name] = PartDedupInfo(
                         backup_path=backup_path,
@@ -221,6 +223,8 @@ def _populate_dedup_info(
                         disk_name=part.disk_name,
                         verified=verified,
                     )
+
+            gc.collect()
 
         if not databases_to_handle:
             break
@@ -292,10 +296,11 @@ def collect_dedup_references_for_batch_backup_deletion(
     deleting_backup_name_resolver = {
         b.path: b.name for b in deleting_backups_light_meta
     }
-    for backup in retained_backups_light_meta:
-        backup = layout.reload_backup(backup, use_light_meta=False)
-        for db_name in backup.get_databases():
-            for table in backup.get_tables(db_name):
+    for backup_light in retained_backups_light_meta:
+        backup_raw = layout.reload_backup_raw(backup_light, use_light_meta=False)
+        for db_name, database_backup_info in ijson.kvitems(backup_raw, "databases"):
+            for table_name, raw_metadata in database_backup_info["tables"].items():
+                table = TableMetadata.load(db_name, table_name, raw_metadata)
                 for part in table.get_parts():
                     if not part.link:
                         continue
@@ -305,6 +310,8 @@ def collect_dedup_references_for_batch_backup_deletion(
                         continue
 
                     _add_part_to_dedup_references(dedup_references[backup_name], part)
+
+        gc.collect()
 
     return dedup_references
 
