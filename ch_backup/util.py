@@ -467,6 +467,7 @@ class Slotted:
                 return False
         return True
 
+
 def chown_path(path: str, user: str, group: str) -> None:
     """
     Interface for chown
