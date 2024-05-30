@@ -466,3 +466,16 @@ class Slotted:
             if not getattr(self, slot) == getattr(other, slot):
                 return False
         return True
+
+
+def copy_directory_content(from_path_dir: str, to_path_dir: str) -> None:
+    """
+    Copy all files from one directory to another.
+    """
+    if to_path_dir[-1] != "/":
+        to_path_dir += "/"
+    for subpath in os.listdir(from_path_dir):
+        subpath_from = os.path.join(from_path_dir, subpath)
+        subpath_to = os.path.join(to_path_dir, subpath)
+        if not os.path.exists(subpath_to):
+            shutil.copy(subpath_from, to_path_dir)

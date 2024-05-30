@@ -20,6 +20,7 @@ DEFAULT_CONFIG = {
         "data_path": "/var/lib/clickhouse",
         "metadata_path": "/var/lib/clickhouse/metadata",
         "access_control_path": "/var/lib/clickhouse/access",
+        "tmp_path": "/var/lib/clickhouse/_mdb_tmp",
         "zk_access_control_path": "/clickhouse/access",
         "config_dir": "/etc/clickhouse-server/config.d/",
         "preprocessed_config_path": "/var/lib/clickhouse/preprocessed_configs/config.xml",

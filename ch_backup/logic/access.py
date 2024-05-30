@@ -5,6 +5,8 @@ Clickhouse backup logic for access entities.
 import os
 import re
 import shutil
+from contextlib import contextmanager
+from tempfile import TemporaryDirectory, mkdtemp
 from typing import Any, Dict, List, Sequence, Union
 
 from kazoo.client import KazooClient
@@ -14,9 +16,28 @@ from ch_backup import logging
 from ch_backup.backup.metadata import BackupStorageFormat
 from ch_backup.backup_context import BackupContext
 from ch_backup.logic.backup_manager import BackupManager
-from ch_backup.util import chown_dir_contents
+from ch_backup.util import chown_dir_contents, copy_directory_content
 
 CH_MARK_FILE = "need_rebuild_lists.mark"
+
+
+@contextmanager
+def access_control_temp_directory(
+    directory_path: str, backup_name: str, keep_on_exception: bool = False
+) -> Any:
+    """
+    Class to automatically create and remove temporary directory.
+
+    If keep flag is set, then in case of exception, do not remove the folder.
+    """
+    _prefix = backup_name + "_tmp_"
+    if keep_on_exception:
+        tmpdir = mkdtemp(prefix=_prefix, dir=directory_path)
+        yield tmpdir
+        shutil.rmtree(tmpdir)
+    else:
+        with TemporaryDirectory(prefix=_prefix, dir=directory_path) as tmpdir:
+            yield tmpdir
 
 
 class AccessBackup(BackupManager):
@@ -28,13 +49,41 @@ class AccessBackup(BackupManager):
         """
         Backup access control entities.
         """
-        objects = context.ch_ctl.get_access_control_objects()
-        context.backup_meta.set_access_control(objects)
-        access_control = context.backup_meta.access_control
 
-        if self._has_replicated_access(context):
-            self._backup_replicated(access_control.acl_ids, context)
-        self._backup_local(access_control.acl_ids, context)
+        clickhouse_access_path = context.ch_ctl_conf["access_control_path"]
+        user = context.ch_ctl_conf["user"]
+        group = context.ch_ctl_conf["group"]
+
+        self._prepare_folder(clickhouse_access_path, user, group)
+        self._prepare_folder(context.ch_ctl_conf["tmp_path"], user, group, False)
+
+        with access_control_temp_directory(
+            context.ch_ctl_conf["tmp_path"],
+            context.backup_meta.name,
+            keep_on_exception=True,
+        ) as backup_tmp_path:
+            objects = context.ch_ctl.get_access_control_objects()
+            context.backup_meta.set_access_control(objects)
+            access_control = context.backup_meta.access_control
+
+            if self._has_replicated_access(context):
+                self._backup_replicated(
+                    backup_tmp_path, access_control.acl_ids, context
+                )
+            self._backup_local(clickhouse_access_path, backup_tmp_path)
+
+            assert (
+                context.backup_meta.access_control.backup_format
+                == BackupStorageFormat.TAR
+            )
+            chown_dir_contents(user, group, backup_tmp_path)
+
+            acl_file_names = _get_access_control_files(access_control.acl_ids)
+            context.backup_layout.upload_access_control_files(
+                backup_tmp_path,
+                context.backup_meta.name,
+                acl_file_names,
+            )
 
     def restore(self, context: BackupContext) -> None:
         """
@@ -48,11 +97,28 @@ class AccessBackup(BackupManager):
             return
 
         has_replicated_access = self._has_replicated_access(context)
-        mark_to_rebuild = not has_replicated_access
 
-        self._restore_local(acl_ids, context, mark_to_rebuild=mark_to_rebuild)
-        if has_replicated_access:
-            self._restore_replicated(acl_ids, acl_meta, context)
+        clickhouse_access_path = context.ch_ctl_conf["access_control_path"]
+        user = context.ch_ctl_conf["user"]
+        group = context.ch_ctl_conf["group"]
+
+        self._prepare_folder(clickhouse_access_path, user, group, True)
+        self._prepare_folder(context.ch_ctl_conf["tmp_path"], user, group, False)
+
+        with access_control_temp_directory(
+            context.ch_ctl_conf["tmp_path"],
+            context.backup_meta.name,
+            keep_on_exception=True,
+        ) as restore_tmp_path:
+
+            self._download_access_control_list(context, restore_tmp_path, acl_ids)
+
+            if has_replicated_access:
+                self._restore_replicated(restore_tmp_path, acl_ids, acl_meta, context)
+            else:
+                self._restore_local(
+                    restore_tmp_path, clickhouse_access_path, user, group
+                )
 
     def fix_admin_user(self, context: BackupContext, dry_run: bool = True) -> None:
         """
@@ -109,7 +175,9 @@ class AccessBackup(BackupManager):
                     logging.debug(f"Node {zk_path} not found.")
 
                 # cleanup SQL file
-                file_path = _get_access_file_path(context, f"{uuid}.sql")
+                file_path = os.path.join(
+                    context.ch_ctl_conf["access_control_path"], f"{uuid}.sql"
+                )
                 logging.debug(f"Removing file {file_path}")
                 try:
                     if dry_run:
@@ -121,30 +189,47 @@ class AccessBackup(BackupManager):
                 except FileNotFoundError:
                     logging.debug(f"File {file_path} not found.")
 
+    def _prepare_folder(
+        self, path: str, user: str, group: str, cleanup: bool = False
+    ) -> None:
+        if cleanup and os.path.exists(path):
+            shutil.rmtree(path)
+
+        os.makedirs(path, exist_ok=True)
+        shutil.chown(path, user, group)
+
+    def _download_access_control_list(
+        self, context: BackupContext, restore_tmp_path: str, acl_ids: List[str]
+    ) -> None:
+        if context.backup_meta.access_control.backup_format == BackupStorageFormat.TAR:
+            context.backup_layout.download_access_control(
+                restore_tmp_path, context.backup_meta.name
+            )
+        else:
+            for name in _get_access_control_files(acl_ids):
+                context.backup_layout.download_access_control_file(
+                    restore_tmp_path, context.backup_meta.name, name
+                )
+
     def _clean_user_uuid(self, raw_str: str) -> str:
         return re.sub(r"EXCEPT ID\('(.+)'\)", "", raw_str)
 
-    def _backup_local(self, acl_ids: Sequence[str], context: BackupContext) -> None:
+    def _backup_local(self, clickhouse_access_path: str, backup_tmp_path: str) -> None:
         """
-        Backup access entities from local storage.
+        Backup access entities from local storage to temporary folder.
         """
-        assert (
-            context.backup_meta.access_control.backup_format == BackupStorageFormat.TAR
-        )
 
-        logging.debug(f"Backupping {len(acl_ids)} access entities from local storage")
-        acl_file_names = _get_access_control_files(acl_ids)
-        context.backup_layout.upload_access_control_files(
-            context.backup_meta.name, acl_file_names
+        logging.debug(
+            "Backupping access entities from local storage to {}", backup_tmp_path
         )
+        copy_directory_content(clickhouse_access_path, backup_tmp_path)
 
     def _backup_replicated(
-        self, acl_list: Sequence[str], context: BackupContext
+        self, backup_tmp_path: str, acl_list: Sequence[str], context: BackupContext
     ) -> None:
         """
         Backup access entities from replicated storage (ZK/CK).
         """
-        _ensure_access_control_path(context)
         logging.debug(
             f"Backupping {len(acl_list)} access entities from replicated storage"
         )
@@ -152,34 +237,24 @@ class AccessBackup(BackupManager):
             for uuid in acl_list:
                 uuid_zk_path = _get_access_zk_path(context, f"/uuid/{uuid}")
                 data, _ = zk_client.get(uuid_zk_path)
-                _file_create(context, f"{uuid}.sql", data.decode())
-        _chown_access_control_dir(context)
+                _create_access_file(backup_tmp_path, f"{uuid}.sql", data.decode())
 
     def _restore_local(
         self,
-        acl_list: Sequence[str],
-        context: BackupContext,
-        mark_to_rebuild: bool = True,
+        restore_tmp_path: str,
+        clickhouse_access_path: str,
+        user: str,
+        group: str,
     ) -> None:
         """
         Restore access entities to local storage.
         """
-        _ensure_access_control_path(context)
-        logging.debug(f"Restoring {len(acl_list)} access entities to local storage")
-
-        if context.backup_meta.access_control.backup_format == BackupStorageFormat.TAR:
-            context.backup_layout.download_access_control(context.backup_meta.name)
-        else:
-            for name in _get_access_control_files(acl_list):
-                context.backup_layout.download_access_control_file(
-                    context.backup_meta.name, name
-                )
-
-        if mark_to_rebuild:
-            self._mark_to_rebuild(context)
+        copy_directory_content(restore_tmp_path, clickhouse_access_path)
+        self._mark_to_rebuild(clickhouse_access_path, user, group)
 
     def _restore_replicated(
         self,
+        restore_tmp_path: str,
         acl_list: Sequence[str],
         acl_meta: Dict[str, Dict[str, Any]],
         context: BackupContext,
@@ -202,7 +277,7 @@ class AccessBackup(BackupManager):
                 name, obj_char = meta_data["name"], meta_data["char"]
 
                 # restore object data
-                file_path = _get_access_file_path(context, f"{uuid}.sql")
+                file_path = os.path.join(restore_tmp_path, f"{uuid}.sql")
                 with open(file_path, "r", encoding="utf-8") as file:
                     data = file.read()
                     uuid_zk_path = _get_access_zk_path(context, f"/uuid/{uuid}")
@@ -212,14 +287,16 @@ class AccessBackup(BackupManager):
                 uuid_zk_path = _get_access_zk_path(context, f"/{obj_char}/{name}")
                 _zk_upsert_data(zk_client, uuid_zk_path, uuid)
 
-    def _mark_to_rebuild(self, context: BackupContext) -> None:
+    def _mark_to_rebuild(
+        self, clickhouse_access_path: str, user: str, group: str
+    ) -> None:
         """
         Creates special mark file to rebuild the lists.
         """
-        mark_file = _get_access_file_path(context, CH_MARK_FILE)
+        mark_file = os.path.join(clickhouse_access_path, CH_MARK_FILE)
         with open(mark_file, "a", encoding="utf-8"):
             pass
-        _chown_path(context, mark_file)
+        shutil.chown(mark_file, user, group)
 
     def _has_replicated_access(self, context: BackupContext) -> bool:
         return (
@@ -232,11 +309,8 @@ def _get_access_control_files(objects: Sequence[str]) -> List[str]:
     """
     Return list of file to be backuped/restored.
     """
+
     return [f"{obj}.sql" for obj in objects]
-
-
-def _get_access_file_path(context: BackupContext, file_name: str) -> str:
-    return os.path.join(context.ch_ctl_conf["access_control_path"], file_name)
 
 
 def _get_access_zk_path(context: BackupContext, zk_path: str) -> str:
@@ -259,28 +333,12 @@ def _zk_upsert_data(zk: KazooClient, path: str, value: Union[str, bytes]) -> Non
         zk.create(path, value, makepath=True)
 
 
-def _file_create(context: BackupContext, file_name: str, file_content: str = "") -> str:
-    file_path = _get_access_file_path(context, file_name)
+def _create_access_file(
+    backup_tmp_path: str, file_name: str, file_content: str = ""
+) -> str:
+    file_path = os.path.join(backup_tmp_path, file_name)
     logging.debug(f'Creating "{file_path}" access entity file')
     with open(file_path, "w", encoding="utf-8") as file:
         file.write(file_content)
 
     return file_path
-
-
-def _ensure_access_control_path(context: BackupContext) -> None:
-    acl_path = context.ch_ctl_conf["access_control_path"]
-    os.makedirs(acl_path, exist_ok=True)
-    _chown_path(context, acl_path)
-
-
-def _chown_access_control_dir(context: BackupContext) -> None:
-    ch_config = context.ch_ctl_conf
-    chown_dir_contents(
-        ch_config["user"], ch_config["group"], ch_config["access_control_path"]
-    )
-
-
-def _chown_path(context: BackupContext, path: str) -> None:
-    ch_config = context.ch_ctl_conf
-    shutil.chown(path, ch_config["user"], ch_config["group"])
