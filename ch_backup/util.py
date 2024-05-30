@@ -468,13 +468,6 @@ class Slotted:
         return True
 
 
-def chown_path(path: str, user: str, group: str) -> None:
-    """
-    Interface for chown
-    """
-    shutil.chown(path, user, group)
-
-
 def copy_directory_content(from_path_dir: str, to_path_dir: str) -> None:
     """
     Copy all files from one directory to another.
