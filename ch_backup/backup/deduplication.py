@@ -80,9 +80,7 @@ def _create_dedup_references() -> DedupReferences:
     """
     Create empy dedup references
     """
-    return DedupReferences(
-        lambda: DatabaseDedupReferences(lambda: TableDedupReferences())
-    )
+    return DedupReferences(lambda: DatabaseDedupReferences(TableDedupReferences))
 
 
 def collect_dedup_info(
@@ -223,56 +221,51 @@ def _populate_dedup_info(
             break
 
 
-def deduplicate_part(
-    layout: BackupLayout, fpart: FrozenPart, dedup_info: TableDedupInfo
-) -> Optional[PartMetadata]:
+def deduplicate_parts(
+    context: BackupContext,
+    database: str,
+    table: str,
+    frozen_parts: Dict[str, FrozenPart],
+) -> Dict[str, PartMetadata]:
     """
     Deduplicate part if it's possible.
     """
-    part_name = fpart.name
+    layout = context.backup_layout
 
-    logging.debug('Looking for deduplication of part "{}"', part_name)
-
-    existing_part = dedup_info.get(part_name)
-    if not existing_part:
-        return None
-
-    if existing_part.checksum != fpart.checksum:
-        return None
-
-    part = PartMetadata(
-        database=fpart.database,
-        table=fpart.table,
-        name=part_name,
-        checksum=existing_part.checksum,
-        size=existing_part.size,
-        link=existing_part.backup_path,
-        files=existing_part.files,
-        tarball=existing_part.tarball,
-        disk_name=existing_part.disk_name,
+    existing_parts = context.ch_ctl.get_deduplication_info(
+        database, table, frozen_parts
     )
+    deduplicated_parts: Dict[str, PartMetadata] = {}
 
-    if not existing_part.verified:
-        if not layout.check_data_part(existing_part.backup_path, part):
-            logging.debug(
-                'Part "{}" found in "{}", but it\'s invalid, skipping',
-                part_name,
-                existing_part.backup_path,
-            )
-            return None
+    for existing_part in existing_parts:
+        part = PartMetadata(
+            database=database,
+            table=table,
+            name=existing_part["name"],
+            checksum=existing_part["checksum"],
+            size=int(existing_part["size"]),
+            link=existing_part["backup_path"],
+            files=existing_part["files"],
+            tarball=existing_part["tarball"],
+            disk_name=existing_part["disk_name"],
+        )
 
-    logging.debug(
-        'Part "{}" found in "{}", reusing', part_name, existing_part.backup_path
-    )
+        if not existing_part["verified"]:
+            if not layout.check_data_part(existing_part["backup_path"], part):
+                logging.debug(
+                    'Part "{}" found in "{}", but it\'s invalid, skipping',
+                    part.name,
+                    existing_part["backup_path"],
+                )
+                continue
 
-    return part
+        deduplicated_parts[part.name] = part
 
+        logging.debug(
+            'Part "{}" found in "{}", reusing', part.name, existing_part["backup_path"]
+        )
 
-TableDedupReferences = Set[str]
-
-DatabaseDedupReferences = Dict[str, TableDedupReferences]
-
-DedupReferences = Dict[str, DatabaseDedupReferences]
+    return deduplicated_parts
 
 
 def collect_dedup_references_for_batch_backup_deletion(
@@ -284,7 +277,7 @@ def collect_dedup_references_for_batch_backup_deletion(
     Collect deduplication information for deleting multiple backups. It contains names of data parts that should
     pe preserved during deletion.
     """
-    dedup_references: Dict[str, DedupReferences] = defaultdict(dict)
+    dedup_references: Dict[str, DedupReferences] = defaultdict(_create_dedup_references)
 
     deleting_backup_name_resolver = {
         b.path: b.name for b in deleting_backups_light_meta
@@ -309,13 +302,4 @@ def collect_dedup_references_for_batch_backup_deletion(
 def _add_part_to_dedup_references(
     dedup_references: DedupReferences, part: PartMetadata
 ) -> None:
-    if part.database not in dedup_references:
-        dedup_references[part.database] = {part.table: {part.name}}
-        return
-
-    db_dedup_references = dedup_references[part.database]
-    if part.table not in db_dedup_references:
-        db_dedup_references[part.table] = {part.name}
-        return
-
-    db_dedup_references[part.table].add(part.name)
+    dedup_references[part.database][part.table].add(part.name)

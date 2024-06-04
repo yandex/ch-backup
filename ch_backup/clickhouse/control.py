@@ -14,7 +14,6 @@ from pkg_resources import parse_version
 
 from ch_backup import logging
 from ch_backup.backup.metadata import TableMetadata
-from ch_backup.backup.metadata.part_metadata import PartMetadata
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.calculators import calc_aligned_files_size
 from ch_backup.clickhouse.client import ClickhouseClient
@@ -178,6 +177,9 @@ GET_DATABASES_SQL = strip_query(
 
 CREATE_SYSTEM_DB_SQL = strip_query("CREATE DATABASE IF NOT EXISTS _system")
 DROP_DEDUP_TABLE_SQL = strip_query("DROP TABLE IF EXISTS _system._deduplication_info")
+DROP_DEDUP_TABLE_CURRENT_SQL = strip_query(
+    "DROP TABLE IF EXISTS _system._deduplication_info_current"
+)
 CREATE_DEDUP_TABLE_SQL = strip_query(
     """
     CREATE TABLE _system._deduplication_info (
@@ -196,9 +198,33 @@ CREATE_DEDUP_TABLE_SQL = strip_query(
     ORDER BY (database, table, name)
 """
 )
+CREATE_DEDUP_TABLE_CURRENT_SQL = strip_query(
+    """
+    CREATE TABLE _system._deduplication_info_current (
+        name String,
+        checksum String,
+    )
+    ENGINE = MergeTree()
+    ORDER BY name
+"""
+)
 
 INSERT_DEDUP_INFO_SQL = strip_query(
     "INSERT INTO _system._deduplication_info VALUES {batch}"
+)
+INSERT_DEDUP_INFO_CURRENT_SQL = strip_query(
+    "INSERT INTO _system._deduplication_info_current VALUES {batch}"
+)
+
+GET_DEDUPLICATED_PARTS_SQL = strip_query(
+    """
+    SELECT _system._deduplication_info.* FROM _system._deduplication_info
+    JOIN _system._deduplication_info_current
+    ON _deduplication_info.name = _deduplication_info_current.name
+        AND _deduplication_info.checksum = _deduplication_info_current.checksum
+    WHERE database='{database}' AND table='{table}'
+    FORMAT JSON
+"""
 )
 
 SHOW_CREATE_DATABASE_SQL = strip_query(
@@ -885,11 +911,30 @@ class ClickhouseCTL:
         self._ch_client.query(DROP_DEDUP_TABLE_SQL)
         self._ch_client.query(CREATE_DEDUP_TABLE_SQL)
 
-    def insert_deduplication_info(self, batch: List[Any]) -> None:
+    def insert_deduplication_info(self, batch: List[str]) -> None:
         """
         Insert deduplication info in batch
         """
         self._ch_client.query(INSERT_DEDUP_INFO_SQL.format(batch=",".join(batch)))
+
+    def get_deduplication_info(
+        self, database: str, table: str, frozen_parts: Dict[str, FrozenPart]
+    ) -> List[Dict]:
+        """
+        Get deduplication info for given frozen parts of a table
+        """
+        self._ch_client.query(DROP_DEDUP_TABLE_CURRENT_SQL)
+        self._ch_client.query(CREATE_DEDUP_TABLE_CURRENT_SQL)
+
+        batch = [f"('{part.name}','{part.checksum}')" for part in frozen_parts.values()]
+        self._ch_client.query(
+            INSERT_DEDUP_INFO_CURRENT_SQL.format(batch=",".join(batch))
+        )
+        result_json = self._ch_client.query(
+            GET_DEDUPLICATED_PARTS_SQL.format(database=database, table=table)
+        )
+
+        return result_json["data"]
 
     @staticmethod
     @contextmanager

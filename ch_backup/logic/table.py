@@ -11,9 +11,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ch_backup import logging
-from ch_backup.backup.deduplication import (
-    deduplicate_parts,
-)
+from ch_backup.backup.deduplication import DEDUP_BATCH_SIZE, deduplicate_parts
 from ch_backup.backup.metadata import PartMetadata, TableMetadata
 from ch_backup.backup.restore_context import PartState
 from ch_backup.backup_context import BackupContext
@@ -365,6 +363,39 @@ class TableBackup(BackupManager):
         """
         Backup table with data opposed to schema only.
         """
+
+        def deduplicate_parts_in_batch(
+            context: BackupContext,
+            upload_observer: UploadPartObserver,
+            frozen_parts: Dict[str, FrozenPart],
+        ) -> None:
+            logging.debug(
+                "Working on deduplication of {} frozen parts", len(frozen_parts)
+            )
+            deduplicated_parts = deduplicate_parts(
+                context, table.database, table.name, frozen_parts
+            )
+            logging.debug(
+                "{} out of {} parts are deduplicated",
+                len(deduplicated_parts),
+                len(frozen_parts),
+            )
+
+            for part_name in frozen_parts:
+                if deduplicated_parts.get(part_name, None):
+                    context.ch_ctl.remove_freezed_part(fpart)
+                    context.backup_meta.add_part(deduplicated_parts[part_name])
+                else:
+                    context.backup_layout.upload_data_part(
+                        context.backup_meta.name,
+                        frozen_parts[part_name],
+                        partial(
+                            upload_observer,
+                            PartMetadata.from_frozen_part(frozen_parts[part_name]),
+                        ),
+                    )
+            frozen_parts.clear()
+
         if not is_merge_tree(table.engine):
             logging.info(
                 'Skipping table data backup for non MergeTree table "{}"."{}"',
@@ -377,30 +408,23 @@ class TableBackup(BackupManager):
 
         upload_observer = UploadPartObserver(context)
 
+        frozen_parts_batch: Dict[str, FrozenPart] = {}
         for data_path, disk in table.paths_with_disks:
             for fpart in context.ch_ctl.scan_frozen_parts(
                 table, disk, data_path, backup_name
             ):
                 logging.debug("Working on {}", fpart)
-                part = PartMetadata.from_frozen_part(fpart)
-
                 if disk.type == "s3":
-                    context.backup_meta.add_part(part)
+                    context.backup_meta.add_part(PartMetadata.from_frozen_part(fpart))
                     continue
 
-                # trying to find part in storage
-                deduplicated_part = deduplicate_part(
-                    context.backup_layout, fpart, dedup_info
-                )
-                if deduplicated_part:
-                    context.ch_ctl.remove_freezed_part(fpart)
-                    context.backup_meta.add_part(deduplicated_part)
-                else:
-                    context.backup_layout.upload_data_part(
-                        context.backup_meta.name,
-                        fpart,
-                        partial(upload_observer, part),
+                frozen_parts_batch[fpart.name] = fpart
+                if len(frozen_parts_batch) >= DEDUP_BATCH_SIZE:
+                    deduplicate_parts_in_batch(
+                        context, upload_observer, frozen_parts_batch
                     )
+        if frozen_parts_batch:
+            deduplicate_parts_in_batch(context, upload_observer, frozen_parts_batch)
 
         context.backup_layout.wait()
 
