@@ -5,7 +5,7 @@ Data part deduplication.
 from collections import defaultdict
 from copy import copy
 from datetime import timedelta
-from typing import Dict, List, Optional, Sequence, Set
+from typing import DefaultDict, Dict, List, Sequence
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
@@ -15,6 +15,8 @@ from ch_backup.clickhouse.models import Database, FrozenPart
 from ch_backup.clickhouse.schema import is_replicated
 from ch_backup.util import Slotted, utcnow
 
+DEDUP_BATCH_SIZE = 500
+
 
 class PartDedupInfo(Slotted):
     """
@@ -22,6 +24,9 @@ class PartDedupInfo(Slotted):
     """
 
     __slots__ = (
+        "database",
+        "table",
+        "name",
         "backup_path",
         "checksum",
         "size",
@@ -31,8 +36,12 @@ class PartDedupInfo(Slotted):
         "verified",
     )
 
+    # pylint: disable=too-many-arguments
     def __init__(
         self,
+        database: str,
+        table: str,
+        name: str,
         backup_path: str,
         checksum: str,
         size: int,
@@ -41,6 +50,9 @@ class PartDedupInfo(Slotted):
         disk_name: str,
         verified: bool,
     ) -> None:
+        self.database = database
+        self.table = table
+        self.name = name
         self.backup_path = backup_path
         self.checksum = checksum
         self.size = size
@@ -49,69 +61,43 @@ class PartDedupInfo(Slotted):
         self.disk_name = disk_name
         self.verified = verified
 
-
-TableDedupInfo = Dict[str, PartDedupInfo]
-
-
-class DatabaseDedupInfo:
-    """
-    Information about data parts of single database to use for deduplication and creation of incremental backups.
-    """
-
-    def __init__(self, tables: Dict[str, TableDedupInfo] = None) -> None:
-        if tables is None:
-            tables = defaultdict(dict)
-        self._tables = tables
-
-    def table(self, table_name: str) -> TableDedupInfo:
+    def to_sql(self):
         """
-        Return deduplication information for the table.
+        Convert to string to use it in insert query
         """
-        return self._tables[table_name]
-
-    def __repr__(self):
-        return f"DatabaseDedupInfo({dict(self._tables)})"
-
-    def __eq__(self, other):
-        return self.__dict__ == other.__dict__
+        files_array = "[" + ",".join(f"'{file}'" for file in self.files) + "]"
+        return f"('{self.database}','{self.table}','{self.name}','{self.backup_path}','{self.checksum}',{self.size},{files_array},{int(self.tarball)},'{self.disk_name}',{int(self.verified)})"
 
 
-class DedupInfo:
+TableDedupReferences = set[str]
+
+DatabaseDedupReferences = DefaultDict[str, TableDedupReferences]
+
+DedupReferences = DefaultDict[str, DatabaseDedupReferences]
+
+
+def _create_dedup_references() -> DedupReferences:
     """
-    Information about data parts of all databases to use for deduplication and creation of incremental backups.
+    Create empy dedup references
     """
-
-    def __init__(self, databases: Dict[str, DatabaseDedupInfo] = None) -> None:
-        if databases is None:
-            databases = defaultdict(DatabaseDedupInfo)
-        self._databases = databases
-
-    def database(self, database_name: str) -> DatabaseDedupInfo:
-        """
-        Return deduplication information for the database.
-        """
-        return self._databases[database_name]
-
-    def __repr__(self):
-        return f"DedupInfo({dict(self._databases)})"
-
-    def __eq__(self, other):
-        return self.__dict__ == other.__dict__
+    return DedupReferences(
+        lambda: DatabaseDedupReferences(lambda: TableDedupReferences())
+    )
 
 
 def collect_dedup_info(
     context: BackupContext,
     databases: Sequence[Database],
     backups_with_light_meta: List[BackupMetadata],
-) -> DedupInfo:
+) -> None:
     """
     Collect deduplication information for creating incremental backups.
     """
-    dedup_info = DedupInfo()
+    context.ch_ctl.create_deduplication_table()
 
     # Do not populate DedupInfo if we are creating schema-only backup.
     if context.backup_meta.schema_only:
-        return dedup_info
+        return
 
     backup_age_limit = None
     if context.config.get("deduplicate_parts"):
@@ -131,14 +117,10 @@ def collect_dedup_info(
         dedup_backups.append(backup)
 
     _populate_dedup_info(
-        dedup_info,
-        context.backup_layout,
-        context.backup_meta.hostname,
+        context,
         dedup_backups,
         databases,
     )
-
-    return dedup_info
 
 
 class _DatabaseToHandle:
@@ -156,20 +138,21 @@ class _DatabaseToHandle:
 
 
 def _populate_dedup_info(
-    dedup_info: DedupInfo,
-    layout: BackupLayout,
-    hostname: str,
+    context: BackupContext,
     dedup_backups_with_light_meta: List[BackupMetadata],
     databases: Sequence[Database],
 ) -> None:
     # pylint: disable=too-many-locals,too-many-branches
+    layout = context.backup_layout
+    dedup_info = _create_dedup_references()
+
     databases_to_handle = {db.name: _DatabaseToHandle(db.name) for db in databases}
     dedup_backup_paths = set(backup.path for backup in dedup_backups_with_light_meta)
     for backup in dedup_backups_with_light_meta:
         backup = layout.reload_backup(backup, use_light_meta=False)
 
         # Process only replicated tables if backup is created on replica.
-        only_replicated = hostname != backup.hostname
+        only_replicated = context.backup_meta.hostname != backup.hostname
 
         databases_to_iterate = []
         for db_name in backup.get_databases():
@@ -187,8 +170,9 @@ def _populate_dedup_info(
                 if db.handled:
                     del databases_to_handle[db_name]
 
+        dedup_info_batch = []
         for db in databases_to_iterate:
-            db_dedup_info = dedup_info.database(db.name)
+            db_dedup_info = dedup_info[db.name]
             for table in backup.get_tables(db.name):
                 replicated = is_replicated(table.engine)
                 if replicated and db.replicated_tables_handled:
@@ -198,7 +182,7 @@ def _populate_dedup_info(
                 ):
                     continue
 
-                table_dedup_info = db_dedup_info.table(table.name)
+                table_dedup_info = db_dedup_info[table.name]
                 for part in table.get_parts():
                     if part.name in table_dedup_info:
                         continue
@@ -212,7 +196,10 @@ def _populate_dedup_info(
                         verified = False
                         backup_path = backup.path
 
-                    table_dedup_info[part.name] = PartDedupInfo(
+                    part_dedup = PartDedupInfo(
+                        database=db.name,
+                        table=table.name,
+                        name=part.name,
                         backup_path=backup_path,
                         checksum=part.checksum,
                         size=part.size,
@@ -221,6 +208,16 @@ def _populate_dedup_info(
                         disk_name=part.disk_name,
                         verified=verified,
                     )
+
+                    table_dedup_info.add(part.name)
+                    dedup_info_batch.append(part_dedup.to_sql())
+
+                    if len(dedup_info_batch) >= DEDUP_BATCH_SIZE:
+                        context.ch_ctl.insert_deduplication_info(dedup_info_batch)
+                        dedup_info_batch.clear()
+
+        if dedup_info_batch:
+            context.ch_ctl.insert_deduplication_info(dedup_info_batch)
 
         if not databases_to_handle:
             break

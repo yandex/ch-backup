@@ -12,17 +12,14 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ch_backup import logging
 from ch_backup.backup.deduplication import (
-    DatabaseDedupInfo,
-    DedupInfo,
-    TableDedupInfo,
-    deduplicate_part,
+    deduplicate_parts,
 )
 from ch_backup.backup.metadata import PartMetadata, TableMetadata
 from ch_backup.backup.restore_context import PartState
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
-from ch_backup.clickhouse.models import Database, Table
+from ch_backup.clickhouse.models import Database, FrozenPart, Table
 from ch_backup.clickhouse.schema import (
     is_distributed,
     is_materialized_view,
@@ -59,7 +56,6 @@ class TableBackup(BackupManager):
         context: BackupContext,
         databases: Sequence[Database],
         db_tables: Dict[str, list],
-        dedup_info: DedupInfo,
         schema_only: bool,
     ) -> None:
         """
@@ -73,7 +69,6 @@ class TableBackup(BackupManager):
                 db,
                 db_tables[db.name],
                 backup_name,
-                dedup_info.database(db.name),
                 schema_only,
             )
         self._backup_cloud_storage_metadata(context)
@@ -109,7 +104,6 @@ class TableBackup(BackupManager):
         db: Database,
         tables: Sequence[str],
         backup_name: str,
-        dedup_info: DatabaseDedupInfo,
         schema_only: bool,
     ) -> None:
         """
@@ -132,7 +126,6 @@ class TableBackup(BackupManager):
                     table,
                     backup_name,
                     schema_only,
-                    dedup_info.table(table.name),
                     mtimes,
                 )
 
@@ -306,7 +299,6 @@ class TableBackup(BackupManager):
         table: Table,
         backup_name: str,
         schema_only: bool,
-        dedup_info: TableDedupInfo,
         mtimes: Dict[str, TableMetadataMtime],
     ) -> None:
         """
@@ -362,14 +354,13 @@ class TableBackup(BackupManager):
         )
         # Backup table data
         if not schema_only:
-            self._backup_frozen_table_data(context, table, backup_name, dedup_info)
+            self._backup_frozen_table_data(context, table, backup_name)
 
     def _backup_frozen_table_data(
         self,
         context: BackupContext,
         table: Table,
         backup_name: str,
-        dedup_info: TableDedupInfo,
     ) -> None:
         """
         Backup table with data opposed to schema only.

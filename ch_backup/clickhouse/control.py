@@ -14,6 +14,7 @@ from pkg_resources import parse_version
 
 from ch_backup import logging
 from ch_backup.backup.metadata import TableMetadata
+from ch_backup.backup.metadata.part_metadata import PartMetadata
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.calculators import calc_aligned_files_size
 from ch_backup.clickhouse.client import ClickhouseClient
@@ -173,6 +174,31 @@ GET_DATABASES_SQL = strip_query(
     WHERE name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA')
     FORMAT JSON
 """
+)
+
+CREATE_SYSTEM_DB_SQL = strip_query("CREATE DATABASE IF NOT EXISTS _system")
+DROP_DEDUP_TABLE_SQL = strip_query("DROP TABLE IF EXISTS _system._deduplication_info")
+CREATE_DEDUP_TABLE_SQL = strip_query(
+    """
+    CREATE TABLE _system._deduplication_info (
+        database String,
+        table String,
+        name String,
+        backup_path String,
+        checksum String,
+        size Int64,
+        files Array(String),
+        tarball Bool,
+        disk_name String,
+        verified Bool
+    )
+    ENGINE = MergeTree()
+    ORDER BY (database, table, name)
+"""
+)
+
+INSERT_DEDUP_INFO_SQL = strip_query(
+    "INSERT INTO _system._deduplication_info VALUES {batch}"
 )
 
 SHOW_CREATE_DATABASE_SQL = strip_query(
@@ -850,6 +876,20 @@ class ClickhouseCTL:
         Reload ClickHouse configuration query.
         """
         self._ch_client.query(RELOAD_CONFIG_SQL, timeout=self._timeout)
+
+    def create_deduplication_table(self):
+        """
+        Create ClickHouse table for deduplication info
+        """
+        self._ch_client.query(CREATE_SYSTEM_DB_SQL)
+        self._ch_client.query(DROP_DEDUP_TABLE_SQL)
+        self._ch_client.query(CREATE_DEDUP_TABLE_SQL)
+
+    def insert_deduplication_info(self, batch: List[Any]) -> None:
+        """
+        Insert deduplication info in batch
+        """
+        self._ch_client.query(INSERT_DEDUP_INFO_SQL.format(batch=",".join(batch)))
 
     @staticmethod
     @contextmanager
