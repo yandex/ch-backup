@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ch_backup import logging
-from ch_backup.backup.deduplication import DEDUP_BATCH_SIZE, deduplicate_parts
+from ch_backup.backup.deduplication import deduplicate_parts
 from ch_backup.backup.metadata import PartMetadata, TableMetadata
 from ch_backup.backup.restore_context import PartState
 from ch_backup.backup_context import BackupContext
@@ -382,8 +382,8 @@ class TableBackup(BackupManager):
             )
 
             for part_name in frozen_parts:
-                if deduplicated_parts.get(part_name, None):
-                    context.ch_ctl.remove_freezed_part(fpart)
+                if part_name in deduplicated_parts:
+                    context.ch_ctl.remove_freezed_part(frozen_parts[part_name])
                     context.backup_meta.add_part(deduplicated_parts[part_name])
                 else:
                     context.backup_layout.upload_data_part(
@@ -409,6 +409,7 @@ class TableBackup(BackupManager):
         upload_observer = UploadPartObserver(context)
 
         frozen_parts_batch: Dict[str, FrozenPart] = {}
+        dedup_batch_size = context.config["deduplication_batch_size"]
         for data_path, disk in table.paths_with_disks:
             for fpart in context.ch_ctl.scan_frozen_parts(
                 table, disk, data_path, backup_name
@@ -419,7 +420,7 @@ class TableBackup(BackupManager):
                     continue
 
                 frozen_parts_batch[fpart.name] = fpart
-                if len(frozen_parts_batch) >= DEDUP_BATCH_SIZE:
+                if len(frozen_parts_batch) >= dedup_batch_size:
                     deduplicate_parts_in_batch(
                         context, upload_observer, frozen_parts_batch
                     )

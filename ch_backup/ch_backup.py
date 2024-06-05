@@ -69,7 +69,7 @@ class ClickhouseBackup:
         ctx.ch_ctl_conf = self._config["clickhouse"]
         ctx.main_conf = self._config["main"]
 
-        ctx.ch_ctl = ClickhouseCTL(ctx.ch_ctl_conf, ctx.main_conf)
+        ctx.ch_ctl = ClickhouseCTL(ctx.ch_ctl_conf, ctx.main_conf, ctx.config)
         ctx.backup_layout = BackupLayout(self._config)
 
         ctx.config = self._config["backup"]

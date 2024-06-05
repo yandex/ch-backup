@@ -170,7 +170,7 @@ GET_DATABASES_SQL = strip_query(
         engine,
         metadata_path
     FROM system.databases
-    WHERE name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA')
+    WHERE name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', '{system_db}')
     FORMAT JSON
 """
 )
@@ -362,9 +362,12 @@ class ClickhouseCTL:
 
     # pylint: disable=too-many-instance-attributes
 
-    def __init__(self, ch_ctl_config: dict, main_config: dict) -> None:
+    def __init__(
+        self, ch_ctl_config: dict, main_config: dict, backup_config: dict
+    ) -> None:
         self._ch_ctl_config = ch_ctl_config
         self._main_config = main_config
+        self._backup_config = backup_config
         self._root_data_path = self._ch_ctl_config["data_path"]
         self._shadow_data_path = os.path.join(self._root_data_path, "shadow")
         self._timeout = self._ch_ctl_config["timeout"]
@@ -495,7 +498,10 @@ class ClickhouseCTL:
             exclude_dbs = []
 
         result: List[Database] = []
-        ch_resp = self._ch_client.query(GET_DATABASES_SQL)
+        system_database = self._backup_config["system_database"]
+        ch_resp = self._ch_client.query(
+            GET_DATABASES_SQL.format(system_db=system_database)
+        )
         if "data" in ch_resp:
             result = [
                 Database(row["name"], row["engine"], row["metadata_path"])

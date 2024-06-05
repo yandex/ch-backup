@@ -15,8 +15,6 @@ from ch_backup.clickhouse.models import Database, FrozenPart
 from ch_backup.clickhouse.schema import is_replicated
 from ch_backup.util import Slotted, utcnow
 
-DEDUP_BATCH_SIZE = 500
-
 
 class PartDedupInfo(Slotted):
     """
@@ -143,6 +141,7 @@ def _populate_dedup_info(
     # pylint: disable=too-many-locals,too-many-branches
     layout = context.backup_layout
     dedup_info = _create_dedup_references()
+    dedup_batch_size = context.config["deduplication_batch_size"]
 
     databases_to_handle = {db.name: _DatabaseToHandle(db.name) for db in databases}
     dedup_backup_paths = set(backup.path for backup in dedup_backups_with_light_meta)
@@ -210,7 +209,7 @@ def _populate_dedup_info(
                     table_dedup_info.add(part.name)
                     dedup_info_batch.append(part_dedup.to_sql())
 
-                    if len(dedup_info_batch) >= DEDUP_BATCH_SIZE:
+                    if len(dedup_info_batch) >= dedup_batch_size:
                         context.ch_ctl.insert_deduplication_info(dedup_info_batch)
                         dedup_info_batch.clear()
 
