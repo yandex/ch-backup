@@ -76,7 +76,7 @@ DedupReferences = DefaultDict[str, DatabaseDedupReferences]
 
 def _create_dedup_references() -> DedupReferences:
     """
-    Create empy dedup references
+    Create empty dedup references
     """
     return DedupReferences(lambda: DatabaseDedupReferences(TableDedupReferences))
 
