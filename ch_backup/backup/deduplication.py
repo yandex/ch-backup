@@ -67,7 +67,7 @@ class PartDedupInfo(Slotted):
         return f"('{self.database}','{self.table}','{self.name}','{self.backup_path}','{self.checksum}',{self.size},{files_array},{int(self.tarball)},'{self.disk_name}',{int(self.verified)})"
 
 
-TableDedupReferences = set[str]
+TableDedupReferences = set
 
 DatabaseDedupReferences = DefaultDict[str, TableDedupReferences]
 
