@@ -9,7 +9,6 @@ from typing import List
 import pytest
 from deepdiff import DeepDiff
 
-from ch_backup.backup.deduplication import PartDedupInfo
 from ch_backup.backup.metadata import BackupMetadata, BackupState
 from ch_backup.util import utcnow
 
@@ -148,25 +147,6 @@ def parts(count: int, link: str = None) -> dict:
             "link": link,
             "disk_name": "default",
         }
-
-    return result
-
-
-def parts_dedup_info(backup_path: str, count: int, verified: bool = False) -> dict:
-    """
-    Build and return parts deduplication info.
-    """
-    result = {}
-    for name, part in parts(count).items():
-        result[name] = PartDedupInfo(
-            backup_path=backup_path,
-            checksum=part["checksum"],
-            size=part["bytes"],
-            files=part["files"],
-            tarball=True,
-            disk_name=part["disk_name"],
-            verified=verified,
-        )
 
     return result
 

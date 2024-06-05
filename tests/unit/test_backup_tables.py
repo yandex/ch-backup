@@ -3,7 +3,6 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from ch_backup.backup.deduplication import DedupInfo
 from ch_backup.backup.metadata.backup_metadata import BackupMetadata
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.models import Database, Table
@@ -29,7 +28,6 @@ def test_backup_table_skipping_if_metadata_updated_during_backup(
     # Prepare involved data objects
     context = BackupContext(DEFAULT_CONFIG)  # type: ignore[arg-type]
     db = Database(db_name, "MergeTree", "/var/lib/clickhouse/metadata/db1.sql")
-    dedup_info = DedupInfo()
     table_backup = TableBackup()
     backup_meta = BackupMetadata(
         name="20181017T210300",
@@ -68,9 +66,7 @@ def test_backup_table_skipping_if_metadata_updated_during_backup(
     with patch("os.path.getmtime", side_effect=mtime), patch(
         "ch_backup.logic.table.Path", read_bytes=read_bytes_mock
     ):
-        table_backup.backup(
-            context, [db], {db_name: [table_name]}, dedup_info, schema_only=False
-        )
+        table_backup.backup(context, [db], {db_name: [table_name]}, schema_only=False)
 
     assert len(context.backup_meta.get_tables(db_name)) == backups_expected
     assert clickhouse_ctl_mock.remove_freezed_data.call_count == 1

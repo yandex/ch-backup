@@ -52,6 +52,45 @@ Feature: Deduplication
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
+    Scenario: Create backup with deduplication in multiple batches
+    Given ch-backup configuration on clickhouse01
+    """
+    backup:
+        deduplication_batch_size: 10
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    backup:
+        deduplication_batch_size: 10
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE TABLE test_db1.test_table_batch (partition_id Int32, n Int32)
+    ENGINE = MergeTree() PARTITION BY partition_id ORDER BY (partition_id, n);
+
+    INSERT INTO test_db1.test_table_batch SELECT number, -1 * number FROM system.numbers LIMIT 35;
+    """
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state    | data_count | link_count   |
+      | 0   | created  | 38         | 2            |
+      | 1   | created  | 2          | 0            |
+    When we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
+    Given we have executed queries on clickhouse01
+    """
+    INSERT INTO test_db1.test_table_batch SELECT number + 50, number FROM system.numbers LIMIT 15;
+    """
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state    | data_count | link_count   |
+      | 0   | created  | 15         | 40           |
+      | 1   | created  | 38         | 2            |
+      | 2   | created  | 2          | 0            |
+    When we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
   Scenario Outline: Failed backups are used in deduplication
     Given we have executed queries on clickhouse01
     """
