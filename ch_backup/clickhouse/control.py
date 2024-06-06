@@ -176,12 +176,6 @@ GET_DATABASES_SQL = strip_query(
 )
 
 CREATE_SYSTEM_DB_SQL = strip_query("CREATE DATABASE IF NOT EXISTS {system_db}")
-DROP_DEDUP_TABLE_SQL = strip_query(
-    "DROP TABLE IF EXISTS {system_db}._deduplication_info"
-)
-DROP_DEDUP_TABLE_CURRENT_SQL = strip_query(
-    "DROP TABLE IF EXISTS {system_db}._deduplication_info_current"
-)
 CREATE_DEDUP_TABLE_SQL = strip_query(
     """
     CREATE TABLE {system_db}._deduplication_info (
@@ -211,11 +205,8 @@ CREATE_DEDUP_TABLE_CURRENT_SQL = strip_query(
 """
 )
 
-INSERT_DEDUP_INFO_SQL = strip_query(
-    "INSERT INTO {system_db}._deduplication_info VALUES {batch}"
-)
-INSERT_DEDUP_INFO_CURRENT_SQL = strip_query(
-    "INSERT INTO {system_db}._deduplication_info_current VALUES {batch}"
+INSERT_DEDUP_INFO_BATCH_SQL = strip_query(
+    "INSERT INTO {system_db}.{table} VALUES {batch}"
 )
 
 GET_DEDUPLICATED_PARTS_SQL = strip_query(
@@ -917,17 +908,18 @@ class ClickhouseCTL:
         """
         self._ch_client.query(
             CREATE_SYSTEM_DB_SQL.format(
-                system_db=self._backup_config["system_database"]
+                system_db=escape(self._backup_config["system_database"])
             )
         )
         self._ch_client.query(
-            DROP_DEDUP_TABLE_SQL.format(
-                system_db=self._backup_config["system_database"]
+            DROP_TABLE_IF_EXISTS_SQL.format(
+                db_name=escape(self._backup_config["system_database"]),
+                table_name="_deduplication_info",
             )
         )
         self._ch_client.query(
             CREATE_DEDUP_TABLE_SQL.format(
-                system_db=self._backup_config["system_database"]
+                system_db=escape(self._backup_config["system_database"])
             )
         )
 
@@ -936,8 +928,10 @@ class ClickhouseCTL:
         Insert deduplication info in batch
         """
         self._ch_client.query(
-            INSERT_DEDUP_INFO_SQL.format(
-                system_db=self._backup_config["system_database"], batch=",".join(batch)
+            INSERT_DEDUP_INFO_BATCH_SQL.format(
+                system_db=escape(self._backup_config["system_database"]),
+                table="_deduplication_info",
+                batch=",".join(batch),
             )
         )
 
@@ -948,27 +942,30 @@ class ClickhouseCTL:
         Get deduplication info for given frozen parts of a table
         """
         self._ch_client.query(
-            DROP_DEDUP_TABLE_CURRENT_SQL.format(
-                system_db=self._backup_config["system_database"]
+            DROP_TABLE_IF_EXISTS_SQL.format(
+                db_name=escape(self._backup_config["system_database"]),
+                table_name="_deduplication_info_current",
             )
         )
         self._ch_client.query(
             CREATE_DEDUP_TABLE_CURRENT_SQL.format(
-                system_db=self._backup_config["system_database"]
+                system_db=escape(self._backup_config["system_database"])
             )
         )
 
         batch = [f"('{part.name}','{part.checksum}')" for part in frozen_parts.values()]
         self._ch_client.query(
-            INSERT_DEDUP_INFO_CURRENT_SQL.format(
-                system_db=self._backup_config["system_database"], batch=",".join(batch)
+            INSERT_DEDUP_INFO_BATCH_SQL.format(
+                system_db=escape(self._backup_config["system_database"]),
+                table="_deduplication_info_current",
+                batch=",".join(batch),
             )
         )
         result_json = self._ch_client.query(
             GET_DEDUPLICATED_PARTS_SQL.format(
-                system_db=self._backup_config["system_database"],
-                database=database,
-                table=table,
+                system_db=escape(self._backup_config["system_database"]),
+                database=escape(database),
+                table=escape(table),
             )
         )
 
