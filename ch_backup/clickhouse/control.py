@@ -932,7 +932,8 @@ class ClickhouseCTL:
                 system_db=escape(self._backup_config["system_database"]),
                 table="_deduplication_info",
                 batch=",".join(batch),
-            )
+            ),
+            log_entry_length=150,
         )
 
     def get_deduplication_info(
@@ -959,7 +960,8 @@ class ClickhouseCTL:
                 system_db=escape(self._backup_config["system_database"]),
                 table="_deduplication_info_current",
                 batch=",".join(batch),
-            )
+            ),
+            log_entry_length=150,
         )
         result_json = self._ch_client.query(
             GET_DEDUPLICATED_PARTS_SQL.format(
