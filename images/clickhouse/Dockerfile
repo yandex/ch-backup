@@ -40,6 +40,7 @@ COPY staging/images/{{ instance_name }}/config/clickhouse-keyring.gpg /usr/share
 RUN cd ${CH_TMP_DIR} && \
     pip3 install -r requirements.txt && \
     mkdir -p /etc/apt/sources.list.d && \
+    apt-get update -qq && \
     echo "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg] https://packages.clickhouse.com/deb stable main" | tee /etc/apt/sources.list.d/clickhouse.list && \
     apt-get update -qq && \
     if [ "${CLICKHOUSE_VERSION}" = "latest" ]; then \
