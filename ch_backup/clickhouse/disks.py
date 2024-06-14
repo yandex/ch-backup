@@ -4,6 +4,7 @@ Clickhouse-disks controls temporary cloud storage disks management.
 
 import copy
 import os
+import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from subprocess import PIPE, Popen
 from types import TracebackType
@@ -49,6 +50,7 @@ class ClickHouseTemporaryDisks:
         source_path: Optional[str],
         source_endpoint: Optional[str],
         ch_config: ClickhouseConfig,
+        use_local_copy: bool = False,
     ):
         self._ch_ctl = ch_ctl
         self._backup_layout = backup_layout
@@ -56,6 +58,7 @@ class ClickHouseTemporaryDisks:
         self._config_dir = config["clickhouse"]["config_dir"]
         self._backup_meta = backup_meta
         self._ch_config = ch_config
+        self._use_local_copy = use_local_copy
         self._source_bucket: str = source_bucket or ""
         self._source_path: str = source_path or ""
         self._source_endpoint: str = source_endpoint or ""
@@ -253,6 +256,33 @@ class ClickHouseTemporaryDisks:
         )
 
     def _copy_dir(
+        self,
+        from_disk: str,
+        from_path: str,
+        to_disk: str,
+        to_path: str,
+        routine_tag: str,
+    ) -> None:
+        if self._use_local_copy:
+            self._os_copy(from_disk, from_path, to_disk, to_path, routine_tag)
+        else:
+            self._ch_disks_copy(from_disk, from_path, to_disk, to_path, routine_tag)
+
+    def _os_copy(
+        self,
+        from_disk: str,
+        from_path: str,
+        to_disk: str,
+        to_path: str,
+        routine_tag: str,
+    ) -> None:
+        from_full_path = os.path.join(self._ch_ctl.get_disk(from_disk).path, from_path)
+        to_full_path = os.path.join(self._ch_ctl.get_disk(to_disk).path, to_path)
+        shutil.copytree(from_full_path, to_full_path)
+
+        logging.debug(f"os copy with tag {routine_tag} have finished successfully")
+
+    def _ch_disks_copy(
         self,
         from_disk: str,
         from_path: str,
