@@ -289,7 +289,12 @@ class ClickHouseTemporaryDisks:
     ) -> None:
         from_full_path = os.path.join(self._ch_ctl.get_disk(from_disk).path, from_path)
         to_full_path = os.path.join(self._ch_ctl.get_disk(to_disk).path, to_path)
-        shutil.copytree(from_full_path, to_full_path, dirs_exist_ok=True)
+        
+        # Since python ver will be >=3.8 we can use `dirs_exist_ok=True` for copytree. 
+        if os.path.exists(to_full_path):
+            shutil.rmtree(to_full_path)
+
+        shutil.copytree(from_full_path, to_full_path)
 
         logging.debug(f"os copy with tag {routine_tag} have finished successfully")
 
