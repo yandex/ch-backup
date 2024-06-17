@@ -69,7 +69,7 @@ class ClickhouseBackup:
         ctx.ch_ctl_conf = self._config["clickhouse"]
         ctx.main_conf = self._config["main"]
 
-        ctx.ch_ctl = ClickhouseCTL(ctx.ch_ctl_conf, ctx.main_conf)
+        ctx.ch_ctl = ClickhouseCTL(ctx.ch_ctl_conf, ctx.main_conf, ctx.config)
         ctx.backup_layout = BackupLayout(self._config)
 
         ctx.config = self._config["backup"]
@@ -182,7 +182,7 @@ class ClickhouseBackup:
                     self._nc_backup_manager.backup(self._context)
                 if sources.schemas_included():
                     self._database_backup_manager.backup(self._context, databases)
-                    dedup_info = collect_dedup_info(
+                    collect_dedup_info(
                         context=self._context,
                         backups_with_light_meta=backups_with_light_meta,
                         databases=databases,
@@ -191,7 +191,6 @@ class ClickhouseBackup:
                         self._context,
                         databases,
                         db_tables,
-                        dedup_info,
                         schema_only=sources.schema_only,
                     )
 
@@ -450,10 +449,10 @@ class ClickhouseBackup:
 
             logging.info("Removing non-shared backup data parts")
             for db_name in backup.get_databases():
-                db_dedup_references = dedup_references.get(db_name, {})
+                db_dedup_references = dedup_references[db_name]
                 for table in backup.get_tables(db_name):
                     self._delete_data_parts(
-                        backup, table, db_dedup_references.get(table.name)
+                        backup, table, db_dedup_references[table.name]
                     )
 
             self._context.ch_ctl.system_unfreeze(backup.name)

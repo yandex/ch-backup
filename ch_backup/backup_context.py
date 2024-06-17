@@ -86,7 +86,9 @@ class BackupContext:
         Getter ch_ctl
         """
         if not hasattr(self, "_ch_ctl"):
-            self._ch_ctl = ClickhouseCTL(self._ch_ctl_conf, self._main_conf)
+            self._ch_ctl = ClickhouseCTL(
+                self._ch_ctl_conf, self._main_conf, self._config
+            )
         return self._ch_ctl
 
     @ch_ctl.setter

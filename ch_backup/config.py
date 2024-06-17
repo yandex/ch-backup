@@ -40,12 +40,14 @@ DEFAULT_CONFIG = {
         "clickhouse_password": None,
     },
     "backup": {
+        "system_database": "_system",
         "exclude_dbs": [],
         "path_root": None,
         "deduplicate_parts": True,
         "deduplication_age_limit": {
             "days": 7,
         },
+        "deduplication_batch_size": 500,
         "min_interval": {
             "minutes": 0,
         },

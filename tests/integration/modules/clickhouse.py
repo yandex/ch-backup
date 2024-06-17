@@ -59,6 +59,7 @@ class ClickhouseClient:
         self._user = user
         self._password = password
         self._settings = context.clickhouse_settings
+        self._system_database = context.conf["ch_backup"]["system_database"]
 
     def ping(self) -> None:
         """
@@ -154,14 +155,14 @@ class ClickhouseClient:
         """
         Retrieve DDL for user schemas.
         """
-        query = """
+        query = f"""
             SELECT
                 database,
                 name,
                 create_table_query
             FROM system.tables
             WHERE database NOT IN ('system', '_temporary_and_external_tables',
-                                   'information_schema', 'INFORMATION_SCHEMA')
+                                   'information_schema', 'INFORMATION_SCHEMA', '{self._system_database}')
             FORMAT JSON
             """
         tables = self._query("GET", query)["data"]
@@ -176,11 +177,11 @@ class ClickhouseClient:
         """
         Get user databases.
         """
-        query = """
+        query = f"""
             SELECT name
             FROM system.databases
             WHERE name NOT IN ('system', '_temporary_and_external_tables',
-                               'information_schema', 'INFORMATION_SCHEMA')
+                               'information_schema', 'INFORMATION_SCHEMA', '{self._system_database}')
             FORMAT JSONCompact
             """
 
@@ -251,7 +252,7 @@ class ClickhouseClient:
         self._query("POST", query)
 
     def _get_tables_for_data_comparisson(self) -> dict:
-        query = """
+        query = f"""
             SELECT
                 database,
                 table,
@@ -259,7 +260,7 @@ class ClickhouseClient:
             FROM system.tables t
             JOIN system.columns c ON (t.database = c.database AND t.name = c.table)
             WHERE database NOT IN ('system', '_temporary_and_external_tables',
-                                   'information_schema', 'INFORMATION_SCHEMA')
+                                   'information_schema', 'INFORMATION_SCHEMA', '{self._system_database}')
               AND t.engine NOT IN ('View', 'MaterializedView', 'Distributed')
             GROUP BY database, table
             ORDER BY database, table

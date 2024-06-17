@@ -2,6 +2,8 @@
 Clickhouse-control classes module
 """
 
+# pylint: disable=too-many-lines
+
 import os
 import shutil
 from contextlib import contextmanager, suppress
@@ -157,6 +159,12 @@ DROP_NAMED_COLLECTION_SQL = strip_query(
 """
 )
 
+TRUNCATE_TABLE_IF_EXISTS_SQL = strip_query(
+    """
+    TRUNCATE TABLE IF EXISTS `{db_name}`.`{table_name}`
+"""
+)
+
 RESTORE_REPLICA_SQL = strip_query(
     """
     SYSTEM RESTORE REPLICA `{db_name}`.`{table_name}`
@@ -170,7 +178,54 @@ GET_DATABASES_SQL = strip_query(
         engine,
         metadata_path
     FROM system.databases
-    WHERE name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA')
+    WHERE name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', '{system_db}')
+    FORMAT JSON
+"""
+)
+
+CREATE_IF_NOT_EXISTS_SYSTEM_DB_SQL = strip_query(
+    "CREATE DATABASE IF NOT EXISTS `{system_db}`"
+)
+CREATE_IF_NOT_EXISTS_DEDUP_TABLE_SQL = strip_query(
+    """
+    CREATE TABLE IF NOT EXISTS `{system_db}`._deduplication_info (
+        database String,
+        table String,
+        name String,
+        backup_path String,
+        checksum String,
+        size Int64,
+        files Array(String),
+        tarball Bool,
+        disk_name String,
+        verified Bool
+    )
+    ENGINE = MergeTree()
+    ORDER BY (database, table, name, checksum)
+"""
+)
+CREATE_IF_NOT_EXISTS_DEDUP_TABLE_CURRENT_SQL = strip_query(
+    """
+    CREATE TABLE IF NOT EXISTS `{system_db}`._deduplication_info_current (
+        name String,
+        checksum String,
+    )
+    ENGINE = MergeTree()
+    ORDER BY (name, checksum)
+"""
+)
+
+INSERT_DEDUP_INFO_BATCH_SQL = strip_query(
+    "INSERT INTO `{system_db}`.`{table}` VALUES {batch}"
+)
+
+GET_DEDUPLICATED_PARTS_SQL = strip_query(
+    """
+    SELECT `{system_db}`._deduplication_info.* FROM `{system_db}`._deduplication_info
+    JOIN `{system_db}`._deduplication_info_current
+    ON _deduplication_info.name = _deduplication_info_current.name
+        AND _deduplication_info.checksum = _deduplication_info_current.checksum
+    WHERE database='{database}' AND table='{table}'
     FORMAT JSON
 """
 )
@@ -310,9 +365,12 @@ class ClickhouseCTL:
 
     # pylint: disable=too-many-instance-attributes
 
-    def __init__(self, ch_ctl_config: dict, main_config: dict) -> None:
+    def __init__(
+        self, ch_ctl_config: dict, main_config: dict, backup_config: dict
+    ) -> None:
         self._ch_ctl_config = ch_ctl_config
         self._main_config = main_config
+        self._backup_config = backup_config
         self._root_data_path = self._ch_ctl_config["data_path"]
         self._shadow_data_path = os.path.join(self._root_data_path, "shadow")
         self._timeout = self._ch_ctl_config["timeout"]
@@ -443,7 +501,10 @@ class ClickhouseCTL:
             exclude_dbs = []
 
         result: List[Database] = []
-        ch_resp = self._ch_client.query(GET_DATABASES_SQL)
+        system_database = self._backup_config["system_database"]
+        ch_resp = self._ch_client.query(
+            GET_DATABASES_SQL.format(system_db=system_database)
+        )
         if "data" in ch_resp:
             result = [
                 Database(row["name"], row["engine"], row["metadata_path"])
@@ -850,6 +911,77 @@ class ClickhouseCTL:
         Reload ClickHouse configuration query.
         """
         self._ch_client.query(RELOAD_CONFIG_SQL, timeout=self._timeout)
+
+    def create_deduplication_table(self):
+        """
+        Create ClickHouse table for deduplication info
+        """
+        self._ch_client.query(
+            CREATE_IF_NOT_EXISTS_SYSTEM_DB_SQL.format(
+                system_db=escape(self._backup_config["system_database"])
+            )
+        )
+        self._ch_client.query(
+            TRUNCATE_TABLE_IF_EXISTS_SQL.format(
+                db_name=escape(self._backup_config["system_database"]),
+                table_name="_deduplication_info",
+            )
+        )
+        self._ch_client.query(
+            CREATE_IF_NOT_EXISTS_DEDUP_TABLE_SQL.format(
+                system_db=escape(self._backup_config["system_database"])
+            )
+        )
+
+    def insert_deduplication_info(self, batch: List[str]) -> None:
+        """
+        Insert deduplication info in batch
+        """
+        self._ch_client.query(
+            INSERT_DEDUP_INFO_BATCH_SQL.format(
+                system_db=escape(self._backup_config["system_database"]),
+                table="_deduplication_info",
+                batch=",".join(batch),
+            ),
+            log_entry_length=150,
+        )
+
+    def get_deduplication_info(
+        self, database: str, table: str, frozen_parts: Dict[str, FrozenPart]
+    ) -> List[Dict]:
+        """
+        Get deduplication info for given frozen parts of a table
+        """
+        self._ch_client.query(
+            TRUNCATE_TABLE_IF_EXISTS_SQL.format(
+                db_name=escape(self._backup_config["system_database"]),
+                table_name="_deduplication_info_current",
+            )
+        )
+        self._ch_client.query(
+            CREATE_IF_NOT_EXISTS_DEDUP_TABLE_CURRENT_SQL.format(
+                system_db=escape(self._backup_config["system_database"])
+            )
+        )
+
+        batch = [f"('{part.name}','{part.checksum}')" for part in frozen_parts.values()]
+        self._ch_client.query(
+            INSERT_DEDUP_INFO_BATCH_SQL.format(
+                system_db=escape(self._backup_config["system_database"]),
+                table="_deduplication_info_current",
+                batch=",".join(batch),
+            ),
+            log_entry_length=150,
+        )
+        result_json = self._ch_client.query(
+            GET_DEDUPLICATED_PARTS_SQL.format(
+                system_db=escape(self._backup_config["system_database"]),
+                database=escape(database),
+                table=escape(table),
+            )
+        )
+
+        return result_json["data"]
 
     @staticmethod
     @contextmanager

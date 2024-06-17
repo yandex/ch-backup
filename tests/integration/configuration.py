@@ -52,6 +52,7 @@ def create():
         "zk": zk,
         "ch_backup": {
             "encrypt_key": generate_random_string(32),
+            "system_database": "_system",
         },
         "ch_version": os.getenv("CLICKHOUSE_VERSION"),
         "default_feature_flags": ["zookeeper"],
