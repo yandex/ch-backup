@@ -4,7 +4,6 @@ Clickhouse-disks controls temporary cloud storage disks management.
 
 import copy
 import os
-import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from subprocess import PIPE, Popen
 from types import TracebackType
@@ -290,13 +289,12 @@ class ClickHouseTemporaryDisks:
         from_full_path = os.path.join(self._ch_ctl.get_disk(from_disk).path, from_path)
         to_full_path = os.path.join(self._ch_ctl.get_disk(to_disk).path, to_path)
 
-        # Since python ver will be >=3.8 we can use `dirs_exist_ok=True` for copytree.
-        if os.path.exists(to_full_path):
-            shutil.rmtree(to_full_path)
-
-        shutil.copytree(from_full_path, to_full_path)
-
-        logging.debug(f"os copy with tag {routine_tag} have finished successfully")
+        result = _exec(
+            routine_tag,
+            exe="/bin/cp",
+            common_args=["-rf", from_full_path, to_full_path],
+        )
+        logging.info(f"os copy result for {routine_tag}: {result}")
 
     def _ch_disks_copy(
         self,
@@ -327,8 +325,9 @@ class ClickHouseTemporaryDisks:
 
         result = _exec(
             routine_tag,
-            "copy",
+            exe="/usr/bin/clickhouse-disks",
             common_args=["-C", CH_DISK_CONFIG_PATH],
+            command="copy",
             command_args=command_args,
         )
         logging.info(f"clickhouse-disks copy result for {routine_tag}: {result}")
@@ -343,26 +342,33 @@ def _get_tmp_disk_name(disk_name: str) -> str:
 
 
 def _exec(
-    routine_tag: str, command: str, common_args: List[str], command_args: List[str]
+    routine_tag: str,
+    exe: str,
+    common_args: List[str],
+    command: Optional[str] = None,
+    command_args: Optional[List[str]] = None,
 ) -> Any:
 
-    ch_disks_logger = logging.getLogger("clickhouse-disks").bind(tag=routine_tag)
-    command_args = [
-        "/usr/bin/clickhouse-disks",
+    proc_logger = logging.getLogger("clickhouse-disks").bind(tag=routine_tag)
+    args = [
+        exe,
         *common_args,
-        command,
-        *command_args,
     ]
+    if command:
+        args += [  # type: ignore
+            command,
+            *command_args,
+        ]
 
-    logging.debug(f'Executing "{" ".join(command_args)}"')
+    logging.debug(f'Executing "{" ".join(args)}"')
 
-    with Popen(command_args, stdout=PIPE, stderr=PIPE, shell=False) as proc:
+    with Popen(args, stdout=PIPE, stderr=PIPE, shell=False) as proc:
         while proc.poll() is None:
             for line in proc.stderr.readlines():  # type: ignore
-                ch_disks_logger.info(line.decode("utf-8").strip())
+                proc_logger.info(line.decode("utf-8").strip())
         if proc.returncode != 0:
             raise ClickHouseDisksException(
-                f"clickhouse-disks call failed with exitcode: {proc.returncode}"
+                f"{exe} call failed with exitcode: {proc.returncode}"
             )
 
         return list(map(lambda b: b.decode("utf-8"), proc.stdout.readlines()))  # type: ignore
