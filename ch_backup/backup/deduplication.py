@@ -5,7 +5,7 @@ Data part deduplication.
 from collections import defaultdict
 from copy import copy
 from datetime import timedelta
-from typing import DefaultDict, Dict, List, Sequence
+from typing import Dict, List, Sequence, Set
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
@@ -67,18 +67,18 @@ class PartDedupInfo(Slotted):
         return f"('{self.database}','{self.table}','{self.name}','{self.backup_path}','{self.checksum}',{self.size},{files_array},{int(self.tarball)},'{self.disk_name}',{int(self.verified)})"
 
 
-TableDedupReferences = set
+TableDedupReferences = Set[str]
 
-DatabaseDedupReferences = DefaultDict[str, TableDedupReferences]
+DatabaseDedupReferences = Dict[str, TableDedupReferences]
 
-DedupReferences = DefaultDict[str, DatabaseDedupReferences]
+DedupReferences = Dict[str, DatabaseDedupReferences]
 
 
-def _create_dedup_references() -> DedupReferences:
+def _create_empty_dedup_references() -> DedupReferences:
     """
     Create empty dedup references
     """
-    return DedupReferences(lambda: DatabaseDedupReferences(TableDedupReferences))
+    return defaultdict(lambda: defaultdict(set))
 
 
 def collect_dedup_info(
@@ -89,11 +89,11 @@ def collect_dedup_info(
     """
     Collect deduplication information for creating incremental backups.
     """
-    context.ch_ctl.create_deduplication_table()
-
     # Do not populate DedupInfo if we are creating schema-only backup.
     if context.backup_meta.schema_only:
         return
+
+    context.ch_ctl.create_deduplication_table()
 
     backup_age_limit = None
     if context.config.get("deduplicate_parts"):
