@@ -143,9 +143,20 @@ class ClickHouseTemporaryDisks:
 
         endpoint = urlparse(disk_config["endpoint"])
         endpoint_netloc = source_endpoint or endpoint.netloc
-        disk_config["endpoint"] = os.path.join(
+
+        tmp_disk_enpoint = os.path.join(
             f"{endpoint.scheme}://{endpoint_netloc}", source_bucket, source_path, ""
         )
+        orig_disk_enpoint = self._ch_config.config["storage_configuration"]["disks"][
+            disk_name
+        ]["endpoint"]
+        if self._use_local_copy and tmp_disk_enpoint != orig_disk_enpoint:
+            raise RuntimeError(
+                f"Endpoint of tmp object storage disk is not equal to original (original {orig_disk_enpoint}  tmp: {tmp_disk_enpoint})."
+                "It is required for inplace restore mode."
+            )
+
+        disk_config["endpoint"] = tmp_disk_enpoint
         disks_config = {tmp_disk_name: disk_config}
 
         request_timeout_ms = int(disk_config.get("request_timeout_ms", 0))
@@ -278,7 +289,7 @@ class ClickHouseTemporaryDisks:
     ) -> None:
         from_full_path = os.path.join(self._ch_ctl.get_disk(from_disk).path, from_path)
         to_full_path = os.path.join(self._ch_ctl.get_disk(to_disk).path, to_path)
-        shutil.copytree(from_full_path, to_full_path)
+        shutil.copytree(from_full_path, to_full_path, dirs_exist_ok=True)
 
         logging.debug(f"os copy with tag {routine_tag} have finished successfully")
 
