@@ -140,7 +140,8 @@ def _populate_dedup_info(
 ) -> None:
     # pylint: disable=too-many-locals,too-many-branches
     layout = context.backup_layout
-    dedup_info = _create_dedup_references()
+    # Used to check if part is already collected for deduplication
+    dedup_info = _create_empty_dedup_references()
     dedup_batch_size = context.config["deduplication_batch_size"]
 
     databases_to_handle = {db.name: _DatabaseToHandle(db.name) for db in databases}
@@ -276,7 +277,9 @@ def collect_dedup_references_for_batch_backup_deletion(
     Collect deduplication information for deleting multiple backups. It contains names of data parts that should
     pe preserved during deletion.
     """
-    dedup_references: Dict[str, DedupReferences] = defaultdict(_create_dedup_references)
+    dedup_references: Dict[str, DedupReferences] = defaultdict(
+        _create_empty_dedup_references
+    )
 
     deleting_backup_name_resolver = {
         b.path: b.name for b in deleting_backups_light_meta

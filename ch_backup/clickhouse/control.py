@@ -2,6 +2,8 @@
 Clickhouse-control classes module
 """
 
+# pylint: disable=too-many-lines
+
 import os
 import shutil
 from contextlib import contextmanager, suppress
@@ -157,6 +159,12 @@ DROP_NAMED_COLLECTION_SQL = strip_query(
 """
 )
 
+TRUNCATE_TABLE_IF_EXISTS_SQL = strip_query(
+    """
+    TRUNCATE TABLE IF EXISTS `{db_name}`.`{table_name}`
+"""
+)
+
 RESTORE_REPLICA_SQL = strip_query(
     """
     SYSTEM RESTORE REPLICA `{db_name}`.`{table_name}`
@@ -175,10 +183,12 @@ GET_DATABASES_SQL = strip_query(
 """
 )
 
-CREATE_SYSTEM_DB_SQL = strip_query("CREATE DATABASE IF NOT EXISTS {system_db}")
-CREATE_DEDUP_TABLE_SQL = strip_query(
+CREATE_IF_NOT_EXISTS_SYSTEM_DB_SQL = strip_query(
+    "CREATE DATABASE IF NOT EXISTS `{system_db}`"
+)
+CREATE_IF_NOT_EXISTS_DEDUP_TABLE_SQL = strip_query(
     """
-    CREATE TABLE {system_db}._deduplication_info (
+    CREATE TABLE IF NOT EXISTS `{system_db}`._deduplication_info (
         database String,
         table String,
         name String,
@@ -191,28 +201,28 @@ CREATE_DEDUP_TABLE_SQL = strip_query(
         verified Bool
     )
     ENGINE = MergeTree()
-    ORDER BY (database, table, name)
+    ORDER BY (database, table, name, checksum)
 """
 )
-CREATE_DEDUP_TABLE_CURRENT_SQL = strip_query(
+CREATE_IF_NOT_EXISTS_DEDUP_TABLE_CURRENT_SQL = strip_query(
     """
-    CREATE TABLE {system_db}._deduplication_info_current (
+    CREATE TABLE IF NOT EXISTS `{system_db}`._deduplication_info_current (
         name String,
         checksum String,
     )
     ENGINE = MergeTree()
-    ORDER BY name
+    ORDER BY (name, checksum)
 """
 )
 
 INSERT_DEDUP_INFO_BATCH_SQL = strip_query(
-    "INSERT INTO {system_db}.{table} VALUES {batch}"
+    "INSERT INTO `{system_db}`.`{table}` VALUES {batch}"
 )
 
 GET_DEDUPLICATED_PARTS_SQL = strip_query(
     """
-    SELECT {system_db}._deduplication_info.* FROM {system_db}._deduplication_info
-    JOIN {system_db}._deduplication_info_current
+    SELECT `{system_db}`._deduplication_info.* FROM `{system_db}`._deduplication_info
+    JOIN `{system_db}`._deduplication_info_current
     ON _deduplication_info.name = _deduplication_info_current.name
         AND _deduplication_info.checksum = _deduplication_info_current.checksum
     WHERE database='{database}' AND table='{table}'
@@ -907,18 +917,18 @@ class ClickhouseCTL:
         Create ClickHouse table for deduplication info
         """
         self._ch_client.query(
-            CREATE_SYSTEM_DB_SQL.format(
+            CREATE_IF_NOT_EXISTS_SYSTEM_DB_SQL.format(
                 system_db=escape(self._backup_config["system_database"])
             )
         )
         self._ch_client.query(
-            DROP_TABLE_IF_EXISTS_SQL.format(
+            TRUNCATE_TABLE_IF_EXISTS_SQL.format(
                 db_name=escape(self._backup_config["system_database"]),
                 table_name="_deduplication_info",
             )
         )
         self._ch_client.query(
-            CREATE_DEDUP_TABLE_SQL.format(
+            CREATE_IF_NOT_EXISTS_DEDUP_TABLE_SQL.format(
                 system_db=escape(self._backup_config["system_database"])
             )
         )
@@ -943,13 +953,13 @@ class ClickhouseCTL:
         Get deduplication info for given frozen parts of a table
         """
         self._ch_client.query(
-            DROP_TABLE_IF_EXISTS_SQL.format(
+            TRUNCATE_TABLE_IF_EXISTS_SQL.format(
                 db_name=escape(self._backup_config["system_database"]),
                 table_name="_deduplication_info_current",
             )
         )
         self._ch_client.query(
-            CREATE_DEDUP_TABLE_CURRENT_SQL.format(
+            CREATE_IF_NOT_EXISTS_DEDUP_TABLE_CURRENT_SQL.format(
                 system_db=escape(self._backup_config["system_database"])
             )
         )
