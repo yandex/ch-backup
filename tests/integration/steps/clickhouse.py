@@ -202,3 +202,16 @@ def step_stop_clickhouse(context, node):
     )
     context.response = result.output.decode().strip()
     context.exit_code = result.exit_code
+
+
+@when("we save all user's data in context on {node:w}")
+def step_save_user_data(context, node):
+    ch_client = ClickhouseClient(context, node)
+    context.user_data = ch_client.get_all_user_data()
+
+
+@then("the user's data equal to saved one on {node:w}")
+def step_check_data_equal(context, node):
+    ch_client = ClickhouseClient(context, node)
+    new_user_data = ch_client.get_all_user_data()
+    assert new_user_data == context.user_data
