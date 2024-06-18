@@ -69,6 +69,9 @@ DEFAULT_CONFIG = {
         "restore_fail_on_attach_error": False,
         "update_metadata_interval": _as_seconds("30 min"),
     },
+    "restore": {
+        "use_inplace_cloud_restore": False,
+    },
     "storage": {
         "type": "s3",
         "credentials": {

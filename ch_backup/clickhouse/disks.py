@@ -49,6 +49,7 @@ class ClickHouseTemporaryDisks:
         source_path: Optional[str],
         source_endpoint: Optional[str],
         ch_config: ClickhouseConfig,
+        use_local_copy: bool = False,
     ):
         self._ch_ctl = ch_ctl
         self._backup_layout = backup_layout
@@ -56,6 +57,7 @@ class ClickHouseTemporaryDisks:
         self._config_dir = config["clickhouse"]["config_dir"]
         self._backup_meta = backup_meta
         self._ch_config = ch_config
+        self._use_local_copy = use_local_copy
         self._source_bucket: str = source_bucket or ""
         self._source_path: str = source_path or ""
         self._source_endpoint: str = source_endpoint or ""
@@ -140,9 +142,20 @@ class ClickHouseTemporaryDisks:
 
         endpoint = urlparse(disk_config["endpoint"])
         endpoint_netloc = source_endpoint or endpoint.netloc
-        disk_config["endpoint"] = os.path.join(
+
+        tmp_disk_enpoint = os.path.join(
             f"{endpoint.scheme}://{endpoint_netloc}", source_bucket, source_path, ""
         )
+        orig_disk_enpoint = self._ch_config.config["storage_configuration"]["disks"][
+            disk_name
+        ]["endpoint"]
+        if self._use_local_copy and tmp_disk_enpoint != orig_disk_enpoint:
+            raise RuntimeError(
+                f"Endpoint of tmp object storage disk is not equal to original (original {orig_disk_enpoint}  tmp: {tmp_disk_enpoint})."
+                "It is required for inplace restore mode."
+            )
+
+        disk_config["endpoint"] = tmp_disk_enpoint
         disks_config = {tmp_disk_name: disk_config}
 
         request_timeout_ms = int(disk_config.get("request_timeout_ms", 0))
@@ -260,6 +273,37 @@ class ClickHouseTemporaryDisks:
         to_path: str,
         routine_tag: str,
     ) -> None:
+        if self._use_local_copy:
+            self._os_copy(from_disk, from_path, to_disk, to_path, routine_tag)
+        else:
+            self._ch_disks_copy(from_disk, from_path, to_disk, to_path, routine_tag)
+
+    def _os_copy(
+        self,
+        from_disk: str,
+        from_path: str,
+        to_disk: str,
+        to_path: str,
+        routine_tag: str,
+    ) -> None:
+        from_full_path = os.path.join(self._ch_ctl.get_disk(from_disk).path, from_path)
+        to_full_path = os.path.join(self._ch_ctl.get_disk(to_disk).path, to_path)
+
+        result = _exec(
+            routine_tag,
+            exe="/bin/cp",
+            common_args=["-rf", from_full_path, to_full_path],
+        )
+        logging.info(f"os copy result for {routine_tag}: {result}")
+
+    def _ch_disks_copy(
+        self,
+        from_disk: str,
+        from_path: str,
+        to_disk: str,
+        to_path: str,
+        routine_tag: str,
+    ) -> None:
         if self._ch_ctl.ch_version_ge("23.9"):
             command_args = [
                 "--disk-from",
@@ -281,8 +325,9 @@ class ClickHouseTemporaryDisks:
 
         result = _exec(
             routine_tag,
-            "copy",
+            exe="/usr/bin/clickhouse-disks",
             common_args=["-C", CH_DISK_CONFIG_PATH],
+            command="copy",
             command_args=command_args,
         )
         logging.info(f"clickhouse-disks copy result for {routine_tag}: {result}")
@@ -297,26 +342,33 @@ def _get_tmp_disk_name(disk_name: str) -> str:
 
 
 def _exec(
-    routine_tag: str, command: str, common_args: List[str], command_args: List[str]
+    routine_tag: str,
+    exe: str,
+    common_args: List[str],
+    command: Optional[str] = None,
+    command_args: Optional[List[str]] = None,
 ) -> Any:
 
-    ch_disks_logger = logging.getLogger("clickhouse-disks").bind(tag=routine_tag)
-    command_args = [
-        "/usr/bin/clickhouse-disks",
+    proc_logger = logging.getLogger("clickhouse-disks").bind(tag=routine_tag)
+    args = [
+        exe,
         *common_args,
-        command,
-        *command_args,
     ]
+    if command:
+        args += [  # type: ignore
+            command,
+            *command_args,
+        ]
 
-    logging.debug(f'Executing "{" ".join(command_args)}"')
+    logging.debug(f'Executing "{" ".join(args)}"')
 
-    with Popen(command_args, stdout=PIPE, stderr=PIPE, shell=False) as proc:
+    with Popen(args, stdout=PIPE, stderr=PIPE, shell=False) as proc:
         while proc.poll() is None:
             for line in proc.stderr.readlines():  # type: ignore
-                ch_disks_logger.info(line.decode("utf-8").strip())
+                proc_logger.info(line.decode("utf-8").strip())
         if proc.returncode != 0:
             raise ClickHouseDisksException(
-                f"clickhouse-disks call failed with exitcode: {proc.returncode}"
+                f"{exe} call failed with exitcode: {proc.returncode}"
             )
 
         return list(map(lambda b: b.decode("utf-8"), proc.stdout.readlines()))  # type: ignore

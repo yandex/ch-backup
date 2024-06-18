@@ -249,6 +249,10 @@ class TableBackup(BackupManager):
             tables_to_restore_data,
         )
 
+        use_inplace_cloud_restore = context.config_root["restore"][
+            "use_inplace_cloud_restore"
+        ]
+
         with ClickHouseTemporaryDisks(
             context.ch_ctl,
             context.backup_layout,
@@ -258,6 +262,7 @@ class TableBackup(BackupManager):
             cloud_storage_source_path,
             cloud_storage_source_endpoint,
             context.ch_config,
+            use_local_copy=use_inplace_cloud_restore,
         ) as disks:
             self._restore_data(
                 context,

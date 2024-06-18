@@ -5,7 +5,7 @@ Common steps.
 import yaml
 from behave import given, when
 from tests.integration.modules.ch_backup import get_version
-from tests.integration.modules.docker import get_container
+from tests.integration.modules.docker import copy_between_containers, get_container
 from tests.integration.modules.steps import get_step_data
 from tests.integration.modules.utils import merge
 
@@ -48,3 +48,18 @@ def step_command(context, node):
         f'"{context.command}" failed with exit code {context.exit_code},'
         f" output:\n {context.response}"
     )
+
+
+@given("we use the same object storage bucket for {dst_node:w} as on {src_node:w}")
+def step_sync_storage_config(context, dst_node, src_node):
+    container_from = get_container(context, src_node)
+    container_to = get_container(context, dst_node)
+    storage_config_dir = "/config/"
+    copy_between_containers(
+        container_from,
+        storage_config_dir + "/storage_configuration.xml",
+        container_to,
+        storage_config_dir,
+    )
+
+    assert container_to.exec_run("supervisorctl restart clickhouse").exit_code == 0

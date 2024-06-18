@@ -54,6 +54,13 @@ def get_exposed_port(container: Container, port: int) -> Tuple[str, int]:
     return host, binding[0]["HostPort"]
 
 
+def copy_between_containers(
+    container_from: Container, path_from: str, container_to: Container, path_to: str
+) -> None:
+    data, _ = container_from.get_archive(path_from)
+    assert container_to.put_archive(path=path_to, data=data)
+
+
 def put_file(container: Container, data: bytes, path: str) -> None:
     """
     Put provided bytes data to given path

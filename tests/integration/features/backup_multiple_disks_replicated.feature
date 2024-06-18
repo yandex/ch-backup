@@ -279,3 +279,71 @@ Feature: Backup & Restore multiple disks and S3 with replication
     Examples:
     | number |
     | 8      |
+
+Scenario: Inplace data restore on the another host.
+  Given we use the same object storage bucket for clickhouse01 as on clickhouse02
+  And ch-backup configuration on clickhouse02
+  """
+    restore:
+      use_inplace_cloud_restore: True
+  """
+  
+  And we have executed queries on clickhouse01
+  """
+  CREATE DATABASE IF NOT EXISTS test_db;
+
+  CREATE TABLE test_db.table_01 (CounterID UInt32, UserID UInt32)
+  ENGINE = MergeTree() ORDER BY UserID SETTINGS storage_policy = 's3';
+
+  CREATE TABLE test_db.table_02 (CounterID UInt32, UserID UInt32)
+  ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_02', '{replica}')
+  ORDER BY UserID
+  SETTINGS storage_policy = 's3';
+
+  INSERT INTO test_db.table_01 SELECT number%30, number FROM system.numbers LIMIT 1000;
+  INSERT INTO test_db.table_02 SELECT number%30, number FROM system.numbers LIMIT 1000;
+  """
+  When we create clickhouse01 clickhouse backup
+  When we restore clickhouse backup #0 to clickhouse02
+  """
+  cloud_storage_source_bucket: 'cloud-storage-02'
+  cloud_storage_source_path: 'data'
+  """
+  Then we got same clickhouse data at clickhouse01 clickhouse02
+
+Scenario: Inplace data restore on the same host.
+  Given ch-backup configuration on clickhouse02
+  """
+    restore:
+      use_inplace_cloud_restore: True
+  """
+
+  And we have executed queries on clickhouse02
+  """
+  CREATE DATABASE IF NOT EXISTS test_db;
+
+  CREATE TABLE test_db.table_01 (CounterID UInt32, UserID UInt32)
+  ENGINE = MergeTree() ORDER BY UserID SETTINGS storage_policy = 's3';
+
+  CREATE TABLE test_db.table_02 (CounterID UInt32, UserID UInt32)
+  ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_02', '{replica}')
+  ORDER BY UserID
+  SETTINGS storage_policy = 's3';
+
+  INSERT INTO test_db.table_01 SELECT number%30, number FROM system.numbers LIMIT 1000;
+  INSERT INTO test_db.table_02 SELECT number%30, number FROM system.numbers LIMIT 1000;
+  """
+
+  When we save all user's data in context on clickhouse02
+  And we create clickhouse02 clickhouse backup
+  And we execute query on clickhouse02
+  """
+  DROP DATABASE test_db SYNC;
+  """
+
+  When we restore clickhouse backup #0 to clickhouse02
+  """
+  cloud_storage_source_bucket: 'cloud-storage-02'
+  cloud_storage_source_path: 'data'
+  """
+  Then the user's data equal to saved one on clickhouse02
