@@ -4,6 +4,7 @@ Clickhouse backup logic for tables
 
 import os
 from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
 from itertools import chain
@@ -49,6 +50,36 @@ class TableBackup(BackupManager):
     Table backup class
     """
 
+    def __init__(self):
+        self._freeze_executor: Optional[ThreadPoolExecutor] = None
+        self._backup_executor: Optional[ThreadPoolExecutor] = None
+        self._backup_futures: Optional[List[Future]] = None
+
+    def _init_backup_executors(self):
+        self._freeze_executor = ThreadPoolExecutor(max_workers=1)
+        self._backup_executor = ThreadPoolExecutor(max_workers=1)
+        self._backup_futures = []
+
+    def _shutdown_backup_executors(self):
+        if self._freeze_executor:
+            self._freeze_executor.shutdown()
+        if self._backup_executor:
+            self._backup_executor.shutdown()
+        if self._backup_futures:
+            self._wait_backup_executors()
+            self._backup_futures.clear()
+
+    def _wait_backup_executors(self):
+        if not self._backup_futures:
+            return
+
+        for freeze_future in self._backup_futures:
+            backup_future = freeze_future.result(timeout=30)
+            if backup_future is not None:
+                backup_future.result(timeout=30)
+
+        self._backup_futures.clear()
+
     def backup(
         self,
         context: BackupContext,
@@ -59,6 +90,8 @@ class TableBackup(BackupManager):
         """
         Backup tables metadata, MergeTree data and Cloud storage metadata.
         """
+        self._init_backup_executors()
+
         backup_name = context.backup_meta.get_sanitized_name()
 
         for db in databases:
@@ -69,6 +102,9 @@ class TableBackup(BackupManager):
                 backup_name,
                 schema_only,
             )
+
+        self._shutdown_backup_executors()
+
         self._backup_cloud_storage_metadata(context)
 
     def _collect_local_metadata_mtime(
@@ -118,14 +154,29 @@ class TableBackup(BackupManager):
                 if table.name not in mtimes:
                     continue
 
-                self._backup_table(
-                    context,
-                    db,
-                    table,
-                    backup_name,
-                    schema_only,
-                    mtimes,
+                logging.debug(
+                    'Adding "{}"."{}" to the freeze and backup queue',
+                    table.database,
+                    table.name,
                 )
+
+                assert (
+                    self._backup_futures is not None
+                    and self._freeze_executor is not None
+                )
+                self._backup_futures.append(
+                    self._freeze_executor.submit(
+                        self._backup_table,
+                        context,
+                        db,
+                        table,
+                        backup_name,
+                        schema_only,
+                        mtimes,
+                    )
+                )
+
+        self._wait_backup_executors()
 
         context.backup_layout.upload_backup_metadata(context.backup_meta)
 
@@ -303,15 +354,8 @@ class TableBackup(BackupManager):
         backup_name: str,
         schema_only: bool,
         mtimes: Dict[str, TableMetadataMtime],
-    ) -> None:
-        """
-        Make backup of metadata and data of single table.
-
-        Return backup metadata of successfully backuped table, otherwise None.
-        """
-        logging.debug(
-            'Performing table backup for "{}"."{}"', table.database, table.name
-        )
+    ) -> Optional[Future]:
+        logging.debug('Trying to freeze "{}"."{}"', table.database, table.name)
         create_statement = self._load_create_statement_from_disk(table)
         if not create_statement:
             logging.warning(
@@ -319,7 +363,7 @@ class TableBackup(BackupManager):
                 db.name,
                 table.name,
             )
-            return
+            return None
 
         # Freeze only MergeTree tables
         if not schema_only and is_merge_tree(table.engine):
@@ -334,8 +378,30 @@ class TableBackup(BackupManager):
                     table.database,
                     table.name,
                 )
-                return
+                return None
 
+        assert self._backup_executor is not None
+        return self._backup_executor.submit(
+            self._backup_table_after_freeze,
+            context,
+            db,
+            table,
+            backup_name,
+            schema_only,
+            mtimes,
+            create_statement,
+        )
+
+    def _backup_table_after_freeze(
+        self,
+        context: BackupContext,
+        db: Database,
+        table: Table,
+        backup_name: str,
+        schema_only: bool,
+        mtimes: Dict[str, TableMetadataMtime],
+        create_statement: bytes,
+    ) -> None:
         # Check if table metadata was updated
         new_mtime = self._get_mtime(table.metadata_path)
         if new_mtime is None or mtimes[table.name].mtime != new_mtime:
@@ -347,6 +413,9 @@ class TableBackup(BackupManager):
             context.ch_ctl.remove_freezed_data()
             return
 
+        logging.debug(
+            'Performing table backup for "{}"."{}"', table.database, table.name
+        )
         # Add table metadata to backup metadata
         context.backup_meta.add_table(
             TableMetadata(table.database, table.name, table.engine, table.uuid)
