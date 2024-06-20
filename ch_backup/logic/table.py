@@ -50,13 +50,14 @@ class TableBackup(BackupManager):
     Table backup class
     """
 
-    def __init__(self):
+    def __init__(self, freeze_workers: int = 1):
         self._freeze_executor: Optional[ThreadPoolExecutor] = None
         self._backup_executor: Optional[ThreadPoolExecutor] = None
         self._backup_futures: Optional[List[Future]] = None
+        self._freeze_workers: int = freeze_workers
 
     def _init_backup_executors(self):
-        self._freeze_executor = ThreadPoolExecutor(max_workers=1)
+        self._freeze_executor = ThreadPoolExecutor(max_workers=self._freeze_workers)
         self._backup_executor = ThreadPoolExecutor(max_workers=1)
         self._backup_futures = []
 
@@ -70,13 +71,16 @@ class TableBackup(BackupManager):
             self._backup_futures.clear()
 
     def _wait_backup_executors(self):
+        """
+        Wait for freeze tasks to finish and return backup futures, when wait for backup tasks.
+        """
         if not self._backup_futures:
             return
 
         for freeze_future in self._backup_futures:
-            backup_future = freeze_future.result(timeout=30)
+            backup_future = freeze_future.result()
             if backup_future is not None:
-                backup_future.result(timeout=30)
+                backup_future.result()
 
         self._backup_futures.clear()
 
@@ -357,6 +361,9 @@ class TableBackup(BackupManager):
         schema_only: bool,
         mtimes: Dict[str, TableMetadataMtime],
     ) -> Optional[Future]:
+        """
+        Freeze table and submit backup task to the backup executor.
+        """
         logging.debug('Trying to freeze "{}"."{}"', table.database, table.name)
         create_statement = self._load_create_statement_from_disk(table)
         if not create_statement:
