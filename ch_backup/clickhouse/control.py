@@ -474,15 +474,23 @@ class ClickhouseCTL:
             query_sql = SYSTEM_UNFREEZE_SQL.format(backup_name=backup_name)
             self._ch_client.query(query_sql, timeout=self._unfreeze_timeout)
 
-    def remove_freezed_data(self) -> None:
+    def remove_freezed_data(self, backup_name: Optional[str] = None, table: Optional[Table] = None) -> None:
         """
         Remove all freezed partitions from all local disks.
         """
-        for disk in self._disks.values():
-            if disk.type == "local":
-                shadow_path = os.path.join(disk.path, "shadow")
-                logging.debug("Removing shadow data: {}", shadow_path)
-                self._remove_shadow_data(shadow_path)
+        if backup_name and table:
+            for table_data_path, disk in table.paths_with_disks:
+                if disk.type == "local":
+                    table_relative_path = os.path.relpath(table_data_path, disk.path)
+                    shadow_path = os.path.join(disk.path, "shadow", backup_name, table_relative_path)
+                    logging.debug("Removing shadow data: {}", shadow_path)
+                    self._remove_shadow_data(shadow_path)
+        else:
+            for disk in self._disks.values():
+                if disk.type == "local":
+                    shadow_path = os.path.join(disk.path, "shadow")
+                    logging.debug("Removing shadow data: {}", shadow_path)
+                    self._remove_shadow_data(shadow_path)
 
     def remove_freezed_part(self, part: FrozenPart) -> None:
         """

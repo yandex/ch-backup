@@ -176,7 +176,9 @@ class TableBackup(BackupManager):
                     )
                 )
 
-        self._wait_backup_executors()
+            self._wait_backup_executors()
+
+            context.ch_ctl.remove_freezed_data()
 
         context.backup_layout.upload_backup_metadata(context.backup_meta)
 
@@ -410,7 +412,7 @@ class TableBackup(BackupManager):
                 table.database,
                 table.name,
             )
-            context.ch_ctl.remove_freezed_data()
+            context.ch_ctl.remove_freezed_data(backup_name, table)
             return
 
         logging.debug(
@@ -505,7 +507,7 @@ class TableBackup(BackupManager):
 
         self._validate_uploaded_parts(context, upload_observer.uploaded_parts)
 
-        context.ch_ctl.remove_freezed_data()
+        context.ch_ctl.remove_freezed_data(backup_name, table)
 
     @staticmethod
     def _validate_uploaded_parts(context: BackupContext, uploaded_parts: list) -> None:
