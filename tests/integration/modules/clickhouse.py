@@ -110,10 +110,11 @@ class ClickhouseClient:
                         date Date,
                         datetime DateTime,
                         int_num UInt32,
+                        prefix String,
                         str String
                     )
                     ENGINE MergeTree
-                    PARTITION BY date
+                    PARTITION BY (date, prefix)
                     ORDER BY int_num
                     """
                 self._query("POST", query)
@@ -367,7 +368,8 @@ class ClickhouseClient:
                 date.strftime("%Y-%m-%d"),
                 date.strftime("%Y-%m-%d %H:%M:%S"),
                 str(row_num),
-                f"{str_prefix}{rand_str}",
+                f"{str_prefix}",
+                f"{rand_str}",
             )
             rows.append(", ".join(row))
 
