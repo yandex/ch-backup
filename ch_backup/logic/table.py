@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from functools import partial
 from itertools import chain
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ch_backup import logging
 from ch_backup.backup.deduplication import deduplicate_parts
@@ -50,39 +50,77 @@ class TableBackup(BackupManager):
     Table backup class
     """
 
+    class BackupExecutor:
+        """
+        Allows to freeze and backup tables in parallel.
+        """
+
+        def __init__(self, freeze_workers):
+            self._freeze_executor: Optional[ThreadPoolExecutor] = None
+            self._backup_executor: Optional[ThreadPoolExecutor] = None
+            self._freeze_futures: Optional[List[Future]] = None
+            self._freeze_workers: int = freeze_workers
+
+        def init(self):
+            """
+            Init executors.
+            """
+            self._freeze_executor = ThreadPoolExecutor(max_workers=self._freeze_workers)
+            self._backup_executor = ThreadPoolExecutor(max_workers=1)
+            self._freeze_futures = []
+
+        def shutdown(self):
+            """
+            Shutdown executors to clean-up associated resources.
+            """
+            if self._freeze_executor:
+                self._freeze_executor.shutdown()
+            if self._backup_executor:
+                self._backup_executor.shutdown()
+            if self._freeze_futures:
+                self.wait()
+                self._freeze_futures.clear()
+
+        def wait(self):
+            """
+            Wait for freeze tasks to finish and return backup futures, when wait for backup futures to finish.
+            """
+            if not self._freeze_futures:
+                return
+
+            for freeze_future in self._freeze_futures:
+                backup_future = freeze_future.result()
+                if backup_future is not None:
+                    backup_future.result()
+
+            self._freeze_futures.clear()
+
+        def submit_freeze_task(
+            self, fn: Callable, /, *args: Any, **kwargs: Any
+        ) -> Future:
+            """
+            Submit freeze task to the executor.
+            Task is expected to submit backup task to the backup executor as a result.
+            """
+            assert (
+                self._freeze_futures is not None and self._freeze_executor is not None
+            )
+            result = self._freeze_executor.submit(fn, *args, **kwargs)
+            self._freeze_futures.append(result)
+            return result
+
+        def submit_backup_task(
+            self, fn: Callable, /, *args: Any, **kwargs: Any
+        ) -> Future:
+            """
+            Submit backup task to the executor.
+            This method is expected to be used inside freeze task.
+            """
+            assert self._backup_executor is not None
+            return self._backup_executor.submit(fn, *args, **kwargs)
+
     def __init__(self, freeze_workers: int = 1):
-        self._freeze_executor: Optional[ThreadPoolExecutor] = None
-        self._backup_executor: Optional[ThreadPoolExecutor] = None
-        self._backup_futures: Optional[List[Future]] = None
-        self._freeze_workers: int = freeze_workers
-
-    def _init_backup_executors(self):
-        self._freeze_executor = ThreadPoolExecutor(max_workers=self._freeze_workers)
-        self._backup_executor = ThreadPoolExecutor(max_workers=1)
-        self._backup_futures = []
-
-    def _shutdown_backup_executors(self):
-        if self._freeze_executor:
-            self._freeze_executor.shutdown()
-        if self._backup_executor:
-            self._backup_executor.shutdown()
-        if self._backup_futures:
-            self._wait_backup_executors()
-            self._backup_futures.clear()
-
-    def _wait_backup_executors(self):
-        """
-        Wait for freeze tasks to finish and return backup futures, when wait for backup tasks.
-        """
-        if not self._backup_futures:
-            return
-
-        for freeze_future in self._backup_futures:
-            backup_future = freeze_future.result()
-            if backup_future is not None:
-                backup_future.result()
-
-        self._backup_futures.clear()
+        self._backup_executor = self.BackupExecutor(freeze_workers)
 
     def backup(
         self,
@@ -94,7 +132,7 @@ class TableBackup(BackupManager):
         """
         Backup tables metadata, MergeTree data and Cloud storage metadata.
         """
-        self._init_backup_executors()
+        self._backup_executor.init()
 
         backup_name = context.backup_meta.get_sanitized_name()
 
@@ -107,7 +145,7 @@ class TableBackup(BackupManager):
                 schema_only,
             )
 
-        self._shutdown_backup_executors()
+        self._backup_executor.shutdown()
 
         self._backup_cloud_storage_metadata(context)
 
@@ -164,23 +202,17 @@ class TableBackup(BackupManager):
                     table.name,
                 )
 
-                assert (
-                    self._backup_futures is not None
-                    and self._freeze_executor is not None
-                )
-                self._backup_futures.append(
-                    self._freeze_executor.submit(
-                        self._backup_table,
-                        context,
-                        db,
-                        table,
-                        backup_name,
-                        schema_only,
-                        mtimes,
-                    )
+                self._backup_executor.submit_freeze_task(
+                    self._backup_table,
+                    context,
+                    db,
+                    table,
+                    backup_name,
+                    schema_only,
+                    mtimes,
                 )
 
-            self._wait_backup_executors()
+            self._backup_executor.wait()
 
             context.ch_ctl.remove_freezed_data()
 
@@ -389,8 +421,7 @@ class TableBackup(BackupManager):
                 )
                 return None
 
-        assert self._backup_executor is not None
-        return self._backup_executor.submit(
+        return self._backup_executor.submit_backup_task(
             self._backup_table_after_freeze,
             context,
             db,
