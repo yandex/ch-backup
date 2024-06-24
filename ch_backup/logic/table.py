@@ -95,9 +95,7 @@ class TableBackup(BackupManager):
 
             self._freeze_futures.clear()
 
-        def submit_freeze_task(
-            self, fn: Callable, /, *args: Any, **kwargs: Any
-        ) -> Future:
+        def submit_freeze_task(self, fn: Callable, *args: Any, **kwargs: Any) -> Future:
             """
             Submit freeze task to the executor.
             Task is expected to submit backup task to the backup executor as a result.
@@ -109,9 +107,7 @@ class TableBackup(BackupManager):
             self._freeze_futures.append(result)
             return result
 
-        def submit_backup_task(
-            self, fn: Callable, /, *args: Any, **kwargs: Any
-        ) -> Future:
+        def submit_backup_task(self, fn: Callable, *args: Any, **kwargs: Any) -> Future:
             """
             Submit backup task to the executor.
             This method is expected to be used inside freeze task.
