@@ -146,7 +146,7 @@ class ClickhouseClient:
                     data="\n".join(rows),
                 )
 
-                # Make all possible merges to make tests more determinated
+                # Make all possible merges to make tests more determined
                 self._query("POST", f"OPTIMIZE TABLE `{db_name}`.`{table_name}`")
 
     def get_all_user_data(self) -> Tuple[int, dict]:
