@@ -4,12 +4,12 @@ Clickhouse backup logic for tables
 
 import os
 from collections import deque
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from functools import partial
 from itertools import chain
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ch_backup import logging
 from ch_backup.backup.deduplication import deduplicate_parts
@@ -50,73 +50,8 @@ class TableBackup(BackupManager):
     Table backup class
     """
 
-    class BackupExecutor:
-        """
-        Allows to freeze and backup tables in parallel.
-        """
-
-        def __init__(self, freeze_workers):
-            self._freeze_executor: Optional[ThreadPoolExecutor] = None
-            self._backup_executor: Optional[ThreadPoolExecutor] = None
-            self._freeze_futures: Optional[List[Future]] = None
-            self._freeze_workers: int = freeze_workers
-
-        def init(self):
-            """
-            Init executors.
-            """
-            self._freeze_executor = ThreadPoolExecutor(max_workers=self._freeze_workers)
-            self._backup_executor = ThreadPoolExecutor(max_workers=1)
-            self._freeze_futures = []
-
-        def shutdown(self):
-            """
-            Shutdown executors to clean-up associated resources.
-            """
-            if self._freeze_executor:
-                self._freeze_executor.shutdown()
-            if self._backup_executor:
-                self._backup_executor.shutdown()
-            if self._freeze_futures:
-                self.wait()
-                self._freeze_futures.clear()
-
-        def wait(self):
-            """
-            Wait for freeze tasks to finish and return backup futures, when wait for backup futures to finish.
-            """
-            if not self._freeze_futures:
-                return
-
-            for freeze_future in self._freeze_futures:
-                backup_future = freeze_future.result()
-                if backup_future is not None:
-                    backup_future.result()
-
-            self._freeze_futures.clear()
-
-        def submit_freeze_task(self, fn: Callable, *args: Any, **kwargs: Any) -> Future:
-            """
-            Submit freeze task to the executor.
-            Task is expected to submit backup task to the backup executor as a result.
-            """
-            assert (
-                self._freeze_futures is not None and self._freeze_executor is not None
-            )
-            result = self._freeze_executor.submit(fn, *args, **kwargs)
-            self._freeze_futures.append(result)
-            return result
-
-        def submit_backup_task(self, fn: Callable, *args: Any, **kwargs: Any) -> Future:
-            """
-            Submit backup task to the executor.
-            This method is expected to be used inside freeze task.
-            """
-            assert self._backup_executor is not None
-            return self._backup_executor.submit(fn, *args, **kwargs)
-
     def __init__(self, freeze_workers: int = 1):
-        self._backup_executor = self.BackupExecutor(freeze_workers)
+        self._freeze_workers = freeze_workers
 
     def backup(
         self,
@@ -128,7 +63,6 @@ class TableBackup(BackupManager):
         """
         Backup tables metadata, MergeTree data and Cloud storage metadata.
         """
-        self._backup_executor.init()
 
         backup_name = context.backup_meta.get_sanitized_name()
 
@@ -140,8 +74,6 @@ class TableBackup(BackupManager):
                 backup_name,
                 schema_only,
             )
-
-        self._backup_executor.shutdown()
 
         self._backup_cloud_storage_metadata(context)
 
@@ -188,29 +120,37 @@ class TableBackup(BackupManager):
             # See https://en.wikipedia.org/wiki/Optimistic_concurrency_control
             mtimes = self._collect_local_metadata_mtime(context, db, tables)
 
-            for table in context.ch_ctl.get_tables(db.name, tables):
-                if table.name not in mtimes:
-                    continue
+            with ThreadPoolExecutor(max_workers=self._freeze_workers) as freeze_executor:
+                freeze_futures = []
 
-                logging.debug(
-                    'Adding "{}"."{}" to the freeze and backup queue',
-                    table.database,
-                    table.name,
-                )
+                for table in context.ch_ctl.get_tables(db.name, tables):
+                    if table.name not in mtimes:
+                        continue
 
-                self._backup_executor.submit_freeze_task(
-                    self._backup_table,
-                    context,
-                    db,
-                    table,
-                    backup_name,
-                    schema_only,
-                    mtimes,
-                )
+                    logging.debug(
+                        'Adding "{}"."{}" to the freeze and backup queue',
+                        table.database,
+                        table.name,
+                    )
 
-            self._backup_executor.wait()
+                    freeze_futures.append(
+                        freeze_executor.submit(
+                            self._freeze_table,
+                            context,
+                            db,
+                            table,
+                            backup_name,
+                            schema_only,
+                            mtimes,
+                        )
+                    )
 
-            context.ch_ctl.remove_freezed_data()
+                for freeze_future in as_completed(freeze_futures):
+                    backup_freezed_table = freeze_future.result()
+                    if backup_freezed_table is not None:
+                        backup_freezed_table()
+
+                context.ch_ctl.remove_freezed_data()
 
         context.backup_layout.upload_backup_metadata(context.backup_meta)
 
@@ -380,7 +320,7 @@ class TableBackup(BackupManager):
             )
             return None
 
-    def _backup_table(
+    def _freeze_table(
         self,
         context: BackupContext,
         db: Database,
@@ -388,9 +328,9 @@ class TableBackup(BackupManager):
         backup_name: str,
         schema_only: bool,
         mtimes: Dict[str, TableMetadataMtime],
-    ) -> Optional[Future]:
+    ) -> Optional[Callable]:
         """
-        Freeze table and submit backup task to the backup executor.
+        Freeze table and return function which backups freezed table.
         """
         logging.debug('Trying to freeze "{}"."{}"', table.database, table.name)
         create_statement = self._load_create_statement_from_disk(table)
@@ -417,7 +357,7 @@ class TableBackup(BackupManager):
                 )
                 return None
 
-        return self._backup_executor.submit_backup_task(
+        return partial(
             self._backup_table_after_freeze,
             context,
             db,
