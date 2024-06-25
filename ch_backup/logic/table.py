@@ -120,7 +120,9 @@ class TableBackup(BackupManager):
             # See https://en.wikipedia.org/wiki/Optimistic_concurrency_control
             mtimes = self._collect_local_metadata_mtime(context, db, tables)
 
-            with ThreadPoolExecutor(max_workers=self._freeze_workers) as freeze_executor:
+            with ThreadPoolExecutor(
+                max_workers=self._freeze_workers
+            ) as freeze_executor:
                 freeze_futures = []
 
                 for table in context.ch_ctl.get_tables(db.name, tables):
