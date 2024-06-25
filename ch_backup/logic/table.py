@@ -120,6 +120,10 @@ class TableBackup(BackupManager):
             # See https://en.wikipedia.org/wiki/Optimistic_concurrency_control
             mtimes = self._collect_local_metadata_mtime(context, db, tables)
 
+            # Create shadow/increment.txt if not exists manually to avoid
+            # race condition with parallel freeze
+            context.ch_ctl.create_shadow_increment()
+
             with ThreadPoolExecutor(
                 max_workers=self._freeze_workers
             ) as freeze_executor:

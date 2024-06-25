@@ -24,6 +24,7 @@ from ch_backup.clickhouse.schema import is_replicated
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.util import (
     chown_dir_contents,
+    chown_file,
     escape,
     list_dir_files,
     retry,
@@ -787,6 +788,26 @@ class ClickhouseCTL:
             dir_path,
             need_recursion,
         )
+
+    def create_shadow_increment(self) -> None:
+        """
+        Create shadow/increment.txt to fix race condition with parallel freeze.
+        Must be used before freezing more than one table at once.
+        """
+        default_shadow_path = Path(self._root_data_path) / "shadow"
+        increment_path = default_shadow_path / "increment.txt"
+        if os.path.exists(increment_path):
+            return
+        if not os.path.exists(default_shadow_path):
+            os.mkdir(default_shadow_path)
+            self.chown_dir(str(default_shadow_path))
+        with open(increment_path, "w", encoding="utf-8") as file:
+            file.write("0")
+            chown_file(
+                self._ch_ctl_config["user"],
+                self._ch_ctl_config["group"],
+                str(increment_path),
+            )
 
     @retry(OSError)
     def _remove_shadow_data(self, path: str) -> None:
