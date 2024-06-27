@@ -121,7 +121,7 @@ def exception(msg, *args, **kwargs):
     Log a message with severity 'ERROR' with exception information.
     """
 
-    with_exception = kwargs.get("exc_info", False)
+    with_exception = kwargs.get("exc_info", True)
     getLogger("ch-backup").opt(exception=with_exception).debug(msg, *args, **kwargs)
 
 
