@@ -210,9 +210,12 @@ CREATE_IF_NOT_EXISTS_DEDUP_TABLE_CURRENT_SQL = strip_query(
     CREATE TABLE IF NOT EXISTS `{system_db}`._deduplication_info_current (
         name String,
         checksum String,
+        database String,
+        table String,
     )
     ENGINE = MergeTree()
     ORDER BY (name, checksum)
+    PARTITION BY (database, table)
 """
 )
 
@@ -954,12 +957,13 @@ class ClickhouseCTL:
                 system_db=escape(self._backup_config["system_database"])
             )
         )
-        self._ch_client.query(
-            TRUNCATE_TABLE_IF_EXISTS_SQL.format(
-                db_name=escape(self._backup_config["system_database"]),
-                table_name="_deduplication_info",
+        for table_name in ["_deduplication_info", "_deduplication_info_current"]:
+            self._ch_client.query(
+                TRUNCATE_TABLE_IF_EXISTS_SQL.format(
+                    db_name=escape(self._backup_config["system_database"]),
+                    table_name=table_name,
+                )
             )
-        )
         self._ch_client.query(
             CREATE_IF_NOT_EXISTS_DEDUP_TABLE_SQL.format(
                 system_db=escape(self._backup_config["system_database"])
@@ -986,18 +990,15 @@ class ClickhouseCTL:
         Get deduplication info for given frozen parts of a table
         """
         self._ch_client.query(
-            TRUNCATE_TABLE_IF_EXISTS_SQL.format(
-                db_name=escape(self._backup_config["system_database"]),
-                table_name="_deduplication_info_current",
-            )
-        )
-        self._ch_client.query(
             CREATE_IF_NOT_EXISTS_DEDUP_TABLE_CURRENT_SQL.format(
                 system_db=escape(self._backup_config["system_database"])
             )
         )
 
-        batch = [f"('{part.name}','{part.checksum}')" for part in frozen_parts.values()]
+        batch = [
+            f"('{part.name}','{part.checksum}','{database}','{table}')"
+            for part in frozen_parts.values()
+        ]
         self._ch_client.query(
             INSERT_DEDUP_INFO_BATCH_SQL.format(
                 system_db=escape(self._backup_config["system_database"]),

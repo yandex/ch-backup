@@ -1,4 +1,4 @@
-Feature: Parallel freeze
+Feature: Parallel freeze and backup
 
   Background:
     Given default configuration
@@ -9,11 +9,11 @@ Feature: Parallel freeze
     And clickhouse on clickhouse01 has test schema with 5 databases and 10 tables
     And clickhouse01 has test clickhouse data test1 with 5 databases, 10 tables, 100 rows and 5 partitions
 
-  Scenario: Create backup with single freeze worker
+  Scenario: Create backup with single backup thread
     Given ch-backup configuration on clickhouse01
     """
     multiprocessing:
-        freeze_workers: 1
+        backup_threads: 1
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
@@ -22,7 +22,7 @@ Feature: Parallel freeze
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
-  Scenario: Create backup with default number of freeze workers
+  Scenario: Create backup with default number of backup threads
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
       | num | state    | data_count | link_count   | title         |
