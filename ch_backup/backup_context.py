@@ -101,7 +101,7 @@ class BackupContext:
         Getter backup_layout
         """
         if not hasattr(self, "_backup_layout"):
-            self._backup_layout = BackupLayout(self._config)
+            self._backup_layout = BackupLayout(self._config_root)
         return self._backup_layout
 
     @backup_layout.setter
@@ -151,7 +151,7 @@ class BackupContext:
         Getter restore_context
         """
         if not hasattr(self, "_restore_context"):
-            self._restore_context = RestoreContext(self._config)
+            self._restore_context = RestoreContext(self.config)
         return self._restore_context
 
     @restore_context.setter
@@ -208,6 +208,8 @@ class BackupContext:
         """
         Getter ch_config
         """
+        if not hasattr(self, "_ch_config"):
+            self._ch_config = ClickhouseConfig(self._config_root)
         return self._ch_config
 
     @ch_config.setter

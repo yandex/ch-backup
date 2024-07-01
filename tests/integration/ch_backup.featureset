@@ -23,3 +23,4 @@ features/backup_misc_commands.feature
 features/lock.feature
 features/traffic_limiting.feature
 features/named_collections.feature
+features/operations_without_ch.feature
