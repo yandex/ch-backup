@@ -616,7 +616,7 @@ class BackupLayout:
         self, path_function: Callable, *args: Any, **kwargs: Any
     ) -> str:
         """
-        Return escaped path if if exists. Otherwise return regular path.
+        Return escaped path if it exists. Otherwise return regular path.
         """
         path = path_function(*args, escape_names=True, **kwargs)
         if self._storage_loader.path_exists(path, is_dir=True):
