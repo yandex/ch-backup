@@ -13,13 +13,9 @@ from ch_backup.backup.deduplication import (
     collect_dedup_info,
     collect_dedup_references_for_batch_backup_deletion,
 )
-from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, BackupState, TableMetadata
-from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.backup.sources import BackupSources
 from ch_backup.backup_context import BackupContext
-from ch_backup.clickhouse.config import ClickhouseConfig
-from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.models import Database
 from ch_backup.config import Config
 from ch_backup.exceptions import (
@@ -64,18 +60,7 @@ class ClickhouseBackup:
         """
         Create and configure BackupContext
         """
-
         ctx = BackupContext(self._config)
-        ctx.ch_ctl_conf = self._config["clickhouse"]
-        ctx.main_conf = self._config["main"]
-
-        ctx.ch_ctl = ClickhouseCTL(ctx.ch_ctl_conf, ctx.main_conf, ctx.config)
-        ctx.backup_layout = BackupLayout(self._config)
-
-        ctx.config = self._config["backup"]
-        ctx.zk_config = self._config.get("zookeeper")
-        ctx.restore_context = RestoreContext(ctx.config)
-        ctx.ch_config = ClickhouseConfig(self._config)
         return ctx
 
     def reload_config(self, config: Config) -> None:
