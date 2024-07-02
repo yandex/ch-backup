@@ -78,6 +78,13 @@ def chown_dir_contents(
             shutil.chown(os.path.join(dir_path, path), user, group)
 
 
+def chown_file(user: str, group: str, file_path: str) -> None:
+    """
+    Change directory user/group
+    """
+    shutil.chown(file_path, user, group)
+
+
 def list_dir_files(dir_path: str) -> List[str]:
     """
     Returns paths of all files of directory (recursively), relative to its path

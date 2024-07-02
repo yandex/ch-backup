@@ -24,6 +24,7 @@ from ch_backup.clickhouse.schema import is_replicated
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.util import (
     chown_dir_contents,
+    chown_file,
     escape,
     list_dir_files,
     retry,
@@ -209,9 +210,12 @@ CREATE_IF_NOT_EXISTS_DEDUP_TABLE_CURRENT_SQL = strip_query(
     CREATE TABLE IF NOT EXISTS `{system_db}`._deduplication_info_current (
         name String,
         checksum String,
+        database String,
+        table String,
     )
     ENGINE = MergeTree()
     ORDER BY (name, checksum)
+    PARTITION BY (database, table)
 """
 )
 
@@ -474,15 +478,27 @@ class ClickhouseCTL:
             query_sql = SYSTEM_UNFREEZE_SQL.format(backup_name=backup_name)
             self._ch_client.query(query_sql, timeout=self._unfreeze_timeout)
 
-    def remove_freezed_data(self) -> None:
+    def remove_freezed_data(
+        self, backup_name: Optional[str] = None, table: Optional[Table] = None
+    ) -> None:
         """
         Remove all freezed partitions from all local disks.
         """
-        for disk in self._disks.values():
-            if disk.type == "local":
-                shadow_path = os.path.join(disk.path, "shadow")
-                logging.debug("Removing shadow data: {}", shadow_path)
-                self._remove_shadow_data(shadow_path)
+        if backup_name and table:
+            for table_data_path, disk in table.paths_with_disks:
+                if disk.type == "local":
+                    table_relative_path = os.path.relpath(table_data_path, disk.path)
+                    shadow_path = os.path.join(
+                        disk.path, "shadow", backup_name, table_relative_path
+                    )
+                    logging.debug("Removing shadow data: {}", shadow_path)
+                    self._remove_shadow_data(shadow_path)
+        else:
+            for disk in self._disks.values():
+                if disk.type == "local":
+                    shadow_path = os.path.join(disk.path, "shadow")
+                    logging.debug("Removing shadow data: {}", shadow_path)
+                    self._remove_shadow_data(shadow_path)
 
     def remove_freezed_part(self, part: FrozenPart) -> None:
         """
@@ -776,6 +792,26 @@ class ClickhouseCTL:
             need_recursion,
         )
 
+    def create_shadow_increment(self) -> None:
+        """
+        Create shadow/increment.txt to fix race condition with parallel freeze.
+        Must be used before freezing more than one table at once.
+        """
+        default_shadow_path = Path(self._root_data_path) / "shadow"
+        increment_path = default_shadow_path / "increment.txt"
+        if os.path.exists(increment_path):
+            return
+        if not os.path.exists(default_shadow_path):
+            os.mkdir(default_shadow_path)
+            self.chown_dir(str(default_shadow_path))
+        with open(increment_path, "w", encoding="utf-8") as file:
+            file.write("0")
+            chown_file(
+                self._ch_ctl_config["user"],
+                self._ch_ctl_config["group"],
+                str(increment_path),
+            )
+
     @retry(OSError)
     def _remove_shadow_data(self, path: str) -> None:
         if path.find("/shadow") == -1:
@@ -921,12 +957,13 @@ class ClickhouseCTL:
                 system_db=escape(self._backup_config["system_database"])
             )
         )
-        self._ch_client.query(
-            TRUNCATE_TABLE_IF_EXISTS_SQL.format(
-                db_name=escape(self._backup_config["system_database"]),
-                table_name="_deduplication_info",
+        for table_name in ["_deduplication_info", "_deduplication_info_current"]:
+            self._ch_client.query(
+                TRUNCATE_TABLE_IF_EXISTS_SQL.format(
+                    db_name=escape(self._backup_config["system_database"]),
+                    table_name=table_name,
+                )
             )
-        )
         self._ch_client.query(
             CREATE_IF_NOT_EXISTS_DEDUP_TABLE_SQL.format(
                 system_db=escape(self._backup_config["system_database"])
@@ -953,18 +990,15 @@ class ClickhouseCTL:
         Get deduplication info for given frozen parts of a table
         """
         self._ch_client.query(
-            TRUNCATE_TABLE_IF_EXISTS_SQL.format(
-                db_name=escape(self._backup_config["system_database"]),
-                table_name="_deduplication_info_current",
-            )
-        )
-        self._ch_client.query(
             CREATE_IF_NOT_EXISTS_DEDUP_TABLE_CURRENT_SQL.format(
                 system_db=escape(self._backup_config["system_database"])
             )
         )
 
-        batch = [f"('{part.name}','{part.checksum}')" for part in frozen_parts.values()]
+        batch = [
+            f"('{part.name}','{part.checksum}','{database}','{table}')"
+            for part in frozen_parts.values()
+        ]
         self._ch_client.query(
             INSERT_DEDUP_INFO_BATCH_SQL.format(
                 system_db=escape(self._backup_config["system_database"]),

@@ -4,6 +4,7 @@ Clickhouse backup logic for tables
 
 import os
 from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from functools import partial
 from itertools import chain
@@ -49,6 +50,9 @@ class TableBackup(BackupManager):
     Table backup class
     """
 
+    def __init__(self, backup_threads: int = 1):
+        self._backup_threads = backup_threads
+
     def backup(
         self,
         context: BackupContext,
@@ -59,6 +63,7 @@ class TableBackup(BackupManager):
         """
         Backup tables metadata, MergeTree data and Cloud storage metadata.
         """
+
         backup_name = context.backup_meta.get_sanitized_name()
 
         for db in databases:
@@ -69,6 +74,7 @@ class TableBackup(BackupManager):
                 backup_name,
                 schema_only,
             )
+
         self._backup_cloud_storage_metadata(context)
 
     def _collect_local_metadata_mtime(
@@ -114,20 +120,82 @@ class TableBackup(BackupManager):
             # See https://en.wikipedia.org/wiki/Optimistic_concurrency_control
             mtimes = self._collect_local_metadata_mtime(context, db, tables)
 
-            for table in context.ch_ctl.get_tables(db.name, tables):
-                if table.name not in mtimes:
-                    continue
+            # Create shadow/increment.txt if not exists manually to avoid
+            # race condition with parallel freeze
+            context.ch_ctl.create_shadow_increment()
 
-                self._backup_table(
-                    context,
-                    db,
-                    table,
-                    backup_name,
-                    schema_only,
-                    mtimes,
+            with ThreadPoolExecutor(
+                max_workers=self._backup_threads
+            ) as backup_executor:
+                backup_futures: List[Future] = []
+                upload_observers: List[UploadPartObserver] = []
+
+                for table in context.ch_ctl.get_tables(db.name, tables):
+                    if table.name not in mtimes:
+                        continue
+
+                    logging.debug(
+                        'Adding "{}"."{}" to the freeze and backup queue',
+                        table.database,
+                        table.name,
+                    )
+
+                    backup_futures.append(
+                        backup_executor.submit(
+                            self._backup_table,
+                            context,
+                            db,
+                            table,
+                            backup_name,
+                            schema_only,
+                            mtimes,
+                        )
+                    )
+
+                for backup_future in as_completed(backup_futures):
+                    upload_observer = backup_future.result()
+                    if upload_observer:
+                        upload_observers.append(upload_observer)
+
+                context.backup_layout.wait()
+
+                logging.debug(
+                    'All tables from "{}" are processed, validating uploaded parts.',
+                    db.name,
                 )
+                for upload_observer in upload_observers:
+                    self._validate_uploaded_parts(
+                        context, upload_observer.uploaded_parts
+                    )
+
+                context.ch_ctl.remove_freezed_data()
 
         context.backup_layout.upload_backup_metadata(context.backup_meta)
+
+    def _backup_table(
+        self,
+        context: BackupContext,
+        db: Database,
+        table: Table,
+        backup_name: str,
+        schema_only: bool,
+        mtimes: Dict[str, TableMetadataMtime],
+    ) -> Optional[UploadPartObserver]:
+        create_statement = self._load_create_statement_from_disk(table)
+        if not create_statement:
+            logging.warning(
+                'Skipping table backup for "{}"."{}". Local metadata is empty or absent',
+                db.name,
+                table.name,
+            )
+            return None
+        # Freeze only MergeTree tables
+        if not schema_only and is_merge_tree(table.engine):
+            if not self._freeze_table(context, table, backup_name):
+                return None
+        return self._backup_table_after_freeze(
+            context, db, table, backup_name, schema_only, mtimes, create_statement
+        )
 
     @staticmethod
     def _backup_cloud_storage_metadata(context: BackupContext) -> None:
@@ -295,7 +363,32 @@ class TableBackup(BackupManager):
             )
             return None
 
-    def _backup_table(
+    def _freeze_table(
+        self,
+        context: BackupContext,
+        table: Table,
+        backup_name: str,
+    ) -> bool:
+        """
+        Freeze table.
+        """
+        logging.debug('Trying to freeze "{}"."{}"', table.database, table.name)
+
+        try:
+            context.ch_ctl.freeze_table(backup_name, table)
+        except ClickhouseError:
+            if context.ch_ctl.does_table_exist(table.database, table.name):
+                raise
+
+            logging.warning(
+                'Table "{}"."{}" was removed by a user during backup',
+                table.database,
+                table.name,
+            )
+            return False
+        return True
+
+    def _backup_table_after_freeze(
         self,
         context: BackupContext,
         db: Database,
@@ -303,39 +396,8 @@ class TableBackup(BackupManager):
         backup_name: str,
         schema_only: bool,
         mtimes: Dict[str, TableMetadataMtime],
-    ) -> None:
-        """
-        Make backup of metadata and data of single table.
-
-        Return backup metadata of successfully backuped table, otherwise None.
-        """
-        logging.debug(
-            'Performing table backup for "{}"."{}"', table.database, table.name
-        )
-        create_statement = self._load_create_statement_from_disk(table)
-        if not create_statement:
-            logging.warning(
-                'Skipping table backup for "{}"."{}". Local metadata is empty or absent',
-                db.name,
-                table.name,
-            )
-            return
-
-        # Freeze only MergeTree tables
-        if not schema_only and is_merge_tree(table.engine):
-            try:
-                context.ch_ctl.freeze_table(backup_name, table)
-            except ClickhouseError:
-                if context.ch_ctl.does_table_exist(table.database, table.name):
-                    raise
-
-                logging.warning(
-                    'Table "{}"."{}" was removed by a user during backup',
-                    table.database,
-                    table.name,
-                )
-                return
-
+        create_statement: bytes,
+    ) -> Optional[UploadPartObserver]:
         # Check if table metadata was updated
         new_mtime = self._get_mtime(table.metadata_path)
         if new_mtime is None or mtimes[table.name].mtime != new_mtime:
@@ -344,9 +406,11 @@ class TableBackup(BackupManager):
                 table.database,
                 table.name,
             )
-            context.ch_ctl.remove_freezed_data()
-            return
+            return None
 
+        logging.debug(
+            'Performing table backup for "{}"."{}"', table.database, table.name
+        )
         # Add table metadata to backup metadata
         context.backup_meta.add_table(
             TableMetadata(table.database, table.name, table.engine, table.uuid)
@@ -357,14 +421,15 @@ class TableBackup(BackupManager):
         )
         # Backup table data
         if not schema_only:
-            self._backup_frozen_table_data(context, table, backup_name)
+            return self._backup_frozen_table_data(context, table, backup_name)
+        return None
 
     def _backup_frozen_table_data(
         self,
         context: BackupContext,
         table: Table,
         backup_name: str,
-    ) -> None:
+    ) -> Optional[UploadPartObserver]:
         """
         Backup table with data opposed to schema only.
         """
@@ -375,7 +440,9 @@ class TableBackup(BackupManager):
             frozen_parts: Dict[str, FrozenPart],
         ) -> None:
             logging.debug(
-                "Working on deduplication of {} frozen parts", len(frozen_parts)
+                'Working on deduplication of {} frozen parts of "{}"',
+                len(frozen_parts),
+                table.name,
             )
             deduplicated_parts = deduplicate_parts(
                 context, table.database, table.name, frozen_parts
@@ -407,7 +474,7 @@ class TableBackup(BackupManager):
                 table.database,
                 table.name,
             )
-            return
+            return None
 
         logging.debug('Uploading table data for "{}"."{}"', table.database, table.name)
 
@@ -432,11 +499,7 @@ class TableBackup(BackupManager):
         if frozen_parts_batch:
             deduplicate_parts_in_batch(context, upload_observer, frozen_parts_batch)
 
-        context.backup_layout.wait()
-
-        self._validate_uploaded_parts(context, upload_observer.uploaded_parts)
-
-        context.ch_ctl.remove_freezed_data()
+        return upload_observer
 
     @staticmethod
     def _validate_uploaded_parts(context: BackupContext, uploaded_parts: list) -> None:

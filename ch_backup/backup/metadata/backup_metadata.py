@@ -6,6 +6,7 @@ import json
 import socket
 from datetime import datetime, timezone
 from enum import Enum
+from threading import Lock
 from typing import Any, Dict, List, Optional, Sequence
 
 from ch_backup.backup.metadata.access_control_metadata import AccessControlMetadata
@@ -69,6 +70,8 @@ class BackupMetadata:
         self._access_control = AccessControlMetadata()
         self._user_defined_functions: List[str] = []
         self._named_collections: List[str] = []
+
+        self._lock = Lock()
 
     def __str__(self) -> str:
         return self.dump_json()
@@ -264,16 +267,17 @@ class BackupMetadata:
         """
         Add table to backup metadata.
         """
-        tables = self._databases[table.database]["tables"]
+        with self._lock:
+            tables = self._databases[table.database]["tables"]
 
-        assert table.name not in tables
+            assert table.name not in tables
 
-        tables[table.name] = table.raw_metadata
+            tables[table.name] = table.raw_metadata
 
-        for part in table.get_parts():
-            self.size += part.size
-            if not part.link:
-                self.real_size += part.size
+            for part in table.get_parts():
+                self.size += part.size
+                if not part.link:
+                    self.real_size += part.size
 
     def add_udf(self, udf_name: str) -> None:
         """
@@ -328,11 +332,12 @@ class BackupMetadata:
         """
         Add data part to backup metadata.
         """
-        self.get_table(part.database, part.table).add_part(part)
+        with self._lock:
+            self.get_table(part.database, part.table).add_part(part)
 
-        self.size += part.size
-        if not part.link:
-            self.real_size += part.size
+            self.size += part.size
+            if not part.link:
+                self.real_size += part.size
 
     def remove_parts(self, table: TableMetadata, parts: List[PartMetadata]) -> None:
         """
