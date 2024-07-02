@@ -203,11 +203,11 @@ class StorageLoader:
             remote_path, recursive=recursive, absolute=absolute
         )
 
-    def path_exists(self, remote_path: str) -> bool:
+    def path_exists(self, remote_path: str, is_dir: bool = False) -> bool:
         """
         Check whether a remote path exists or not.
         """
-        return self._engine.path_exists(remote_path)
+        return self._engine.path_exists(remote_path, is_dir)
 
     def get_file_size(self, remote_path: str) -> int:
         """

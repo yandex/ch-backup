@@ -55,7 +55,7 @@ class StorageEngine(metaclass=ABCMeta):
         pass
 
     @abstractmethod
-    def path_exists(self, remote_path: str) -> bool:
+    def path_exists(self, remote_path: str, is_dir: bool = False) -> bool:
         """
         Check if remote path exists.
         """

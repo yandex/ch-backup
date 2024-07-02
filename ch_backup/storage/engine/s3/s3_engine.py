@@ -142,10 +142,12 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
 
         return contents
 
-    def path_exists(self, remote_path: str) -> bool:
+    def path_exists(self, remote_path: str, is_dir: bool = False) -> bool:
         """
         Check if remote path exists.
         """
+        if is_dir:
+            return self._directory_exists(remote_path)
         try:
             self._s3_client.head_object(Bucket=self._s3_bucket_name, Key=remote_path)
             return True
@@ -154,6 +156,24 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
             if code == 404:
                 return False
             raise ce
+
+    def _directory_exists(self, remote_path: str) -> bool:
+        """
+        Check if remote directory exists.
+        """
+        remote_path = remote_path.rstrip("/")
+        resp = self._s3_client.list_objects(
+            Bucket=self._s3_bucket_name, Prefix=remote_path, Delimiter="/"
+        )
+        # CommonPrefixes contains all (if there are any) keys between
+        # Prefix and the next occurrence of the string specified by the delimiter.
+        # If there are more than 1000 keys which satisfy given Prefix this may not work,
+        # but there should be almost never more than one such key in our cases.
+        # https://boto3.amazonaws.com/v1/documentation/api/latest/reference/services/s3/client/list_objects.html
+        for prefix in resp.get("CommonPrefixes", []):
+            if prefix["Prefix"].rstrip("/") == remote_path:
+                return True
+        return False
 
     def create_multipart_upload(self, remote_path: str) -> str:
         return self._multipart_uploader.create_multipart_upload(remote_path)
