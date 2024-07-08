@@ -4,12 +4,12 @@ Clickhouse backup logic for tables
 
 import os
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from functools import partial
 from itertools import chain
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ch_backup import logging
 from ch_backup.backup.deduplication import deduplicate_parts
@@ -33,6 +33,50 @@ from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.logic.upload_part_observer import UploadPartObserver
 from ch_backup.util import compare_schema, get_table_zookeeper_paths
+
+
+class TableFreezePool:
+    """
+    Class to freeze tables in parallel.
+    """
+
+    def __init__(self, threads: int):
+        self._futures: List[Future] = []
+        self._thread_pool: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=threads)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        self.shutdown()
+        return True
+
+    def submit(self, fn: Callable, *args: Any, **kwargs: Any) -> None:
+        """
+        Submit freeze task to the executor.
+        Task is expected to return callable for table backup.
+        """
+        result = self._thread_pool.submit(fn, *args, **kwargs)
+        self._futures.append(result)
+
+    def wait(self) -> List[Callable]:
+        """
+        Wait for all submitted tables to freeze and return callables to backup frozen tables.
+        """
+        result = []
+        for future in as_completed(self._futures):
+            backup_freezed_table = future.result()
+            if backup_freezed_table is not None:
+                result.append(backup_freezed_table)
+        self._futures.clear()
+        return result
+
+    def shutdown(self):
+        """
+        Clean-up the resources associated with the thread pool.
+        """
+        self._thread_pool.shutdown(wait=False)
+        self._futures.clear()
 
 
 @dataclass
@@ -66,14 +110,16 @@ class TableBackup(BackupManager):
 
         backup_name = context.backup_meta.get_sanitized_name()
 
-        for db in databases:
-            self._backup(
-                context,
-                db,
-                db_tables[db.name],
-                backup_name,
-                schema_only,
-            )
+        with TableFreezePool(self._freeze_threads) as freeze_pool:
+            for db in databases:
+                self._backup(
+                    freeze_pool,
+                    context,
+                    db,
+                    db_tables[db.name],
+                    backup_name,
+                    schema_only,
+                )
 
         self._backup_cloud_storage_metadata(context)
 
@@ -104,6 +150,7 @@ class TableBackup(BackupManager):
 
     def _backup(
         self,
+        freeze_pool: TableFreezePool,
         context: BackupContext,
         db: Database,
         tables: Sequence[str],
@@ -124,45 +171,34 @@ class TableBackup(BackupManager):
             # race condition with parallel freeze
             context.ch_ctl.create_shadow_increment()
 
-            with ThreadPoolExecutor(
-                max_workers=self._freeze_threads
-            ) as freeze_executor:
-                freeze_futures = []
-                backup_functions = []
+            for table in context.ch_ctl.get_tables(db.name, tables):
+                if table.name not in mtimes:
+                    continue
 
-                for table in context.ch_ctl.get_tables(db.name, tables):
-                    if table.name not in mtimes:
-                        continue
+                logging.debug(
+                    'Adding "{}"."{}" to the freeze queue',
+                    table.database,
+                    table.name,
+                )
 
-                    logging.debug(
-                        'Adding "{}"."{}" to the freeze queue',
-                        table.database,
-                        table.name,
-                    )
+                freeze_pool.submit(
+                    self._freeze_table,
+                    context,
+                    db,
+                    table,
+                    backup_name,
+                    schema_only,
+                    mtimes,
+                )
 
-                    freeze_futures.append(
-                        freeze_executor.submit(
-                            self._freeze_table,
-                            context,
-                            db,
-                            table,
-                            backup_name,
-                            schema_only,
-                            mtimes,
-                        )
-                    )
+            backup_functions = freeze_pool.wait()
 
-                for freeze_future in as_completed(freeze_futures):
-                    backup_freezed_table = freeze_future.result()
-                    if backup_freezed_table is not None:
-                        backup_functions.append(backup_freezed_table)
+            logging.debug("All tables from {} are frozen", db.name)
 
-                logging.debug("All tables from {} are frozen", db.name)
+            for backup_freezed_table in backup_functions:
+                backup_freezed_table()
 
-                for backup_freezed_table in backup_functions:
-                    backup_freezed_table()
-
-                context.ch_ctl.remove_freezed_data()
+            context.ch_ctl.remove_freezed_data()
 
         context.backup_layout.upload_backup_metadata(context.backup_meta)
 
