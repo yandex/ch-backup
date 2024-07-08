@@ -75,6 +75,9 @@ class TableFreezer:
         """
         Submit table to the freeze pool.
         """
+        # Create shadow/increment.txt if not exists manually to avoid
+        # race condition with parallel freeze
+        context.ch_ctl.create_shadow_increment()
         future = self._thread_pool.submit(
             self._freeze_table,
             context,
@@ -235,10 +238,6 @@ class TableBackup(BackupManager):
             # To ensure consistency between metadata and data backups.
             # See https://en.wikipedia.org/wiki/Optimistic_concurrency_control
             mtimes = self._collect_local_metadata_mtime(context, db, tables)
-
-            # Create shadow/increment.txt if not exists manually to avoid
-            # race condition with parallel freeze
-            context.ch_ctl.create_shadow_increment()
 
             for table in context.ch_ctl.get_tables(db.name, tables):
                 if table.name not in mtimes:
