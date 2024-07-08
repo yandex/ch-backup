@@ -1,3 +1,4 @@
+import copy
 from typing import List
 from unittest.mock import Mock, patch
 
@@ -15,18 +16,15 @@ DB_NAME = "test_db"
 TABLE_NAME = "test_table"
 ENGINE = "MergeTree"
 BACKUP_NAME = "TestBackup"
+BACKUP_META = BackupMetadata(
+    name=BACKUP_NAME,
+    path=f"ch_backup/{BACKUP_NAME}",
+    version="1.0.100",
+    ch_version="19.1.16",
+    time_format="%Y-%m-%dT%H:%M:%S%Z",
+    hostname="clickhouse01.test_net_711",
+)
 DB = Database(DB_NAME, ENGINE, f"/var/lib/clickhouse/metadata/{DB_NAME}.sql")
-
-
-def create_backup_meta() -> BackupMetadata:
-    return BackupMetadata(
-        name=BACKUP_NAME,
-        path=f"ch_backup/{BACKUP_NAME}",
-        version="1.0.100",
-        ch_version="19.1.16",
-        time_format="%Y-%m-%dT%H:%M:%S%Z",
-        hostname="clickhouse01.test_net_711",
-    )
 
 
 @parametrize(
@@ -84,7 +82,7 @@ def test_observer(
 ) -> None:
     config = {"backup": {"update_metadata_interval": interval}}
 
-    backup_meta = create_backup_meta()
+    backup_meta = copy.deepcopy(BACKUP_META)
     backup_meta.add_database(DB)
 
     context = BackupContext(config)  # type: ignore[arg-type]

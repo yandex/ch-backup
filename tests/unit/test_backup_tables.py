@@ -71,4 +71,4 @@ def test_backup_table_skipping_if_metadata_updated_during_backup(
 
     assert len(context.backup_meta.get_tables(db_name)) == backups_expected
     # One call after each table and one after database is backuped
-    assert clickhouse_ctl_mock.remove_freezed_data.call_count == 1
+    assert clickhouse_ctl_mock.remove_freezed_data.call_count == 2
