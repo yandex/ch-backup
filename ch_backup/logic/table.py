@@ -50,8 +50,8 @@ class TableBackup(BackupManager):
     Table backup class
     """
 
-    def __init__(self, freeze_workers: int = 1):
-        self._freeze_workers = freeze_workers
+    def __init__(self, freeze_threads: int = 1):
+        self._freeze_threads = freeze_threads
 
     def backup(
         self,
@@ -125,16 +125,17 @@ class TableBackup(BackupManager):
             context.ch_ctl.create_shadow_increment()
 
             with ThreadPoolExecutor(
-                max_workers=self._freeze_workers
+                max_workers=self._freeze_threads
             ) as freeze_executor:
                 freeze_futures = []
+                backup_functions = []
 
                 for table in context.ch_ctl.get_tables(db.name, tables):
                     if table.name not in mtimes:
                         continue
 
                     logging.debug(
-                        'Adding "{}"."{}" to the freeze and backup queue',
+                        'Adding "{}"."{}" to the freeze queue',
                         table.database,
                         table.name,
                     )
@@ -154,7 +155,12 @@ class TableBackup(BackupManager):
                 for freeze_future in as_completed(freeze_futures):
                     backup_freezed_table = freeze_future.result()
                     if backup_freezed_table is not None:
-                        backup_freezed_table()
+                        backup_functions.append(backup_freezed_table)
+
+                logging.debug("All tables from {} are frozen", db.name)
+
+                for backup_freezed_table in backup_functions:
+                    backup_freezed_table()
 
                 context.ch_ctl.remove_freezed_data()
 

@@ -13,7 +13,7 @@ Feature: Parallel freeze
     Given ch-backup configuration on clickhouse01
     """
     multiprocessing:
-        freeze_workers: 1
+        freeze_threads: 1
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01

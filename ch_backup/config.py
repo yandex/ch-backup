@@ -156,8 +156,8 @@ DEFAULT_CONFIG = {
         "workers": 4,
         # The number of processes for parts restoring from S3 disks.
         "cloud_storage_restore_workers": 4,
-        # The number of processes for parallel freeze of tables
-        "freeze_workers": 4,
+        # The number of threads for parallel freeze of tables
+        "freeze_threads": 4,
     },
     "pipeline": {
         # Is asynchronous pipelines used (based on Pypeln library)
