@@ -49,7 +49,7 @@ class ClickhouseBackup:
         self._access_backup_manager = AccessBackup()
         self._database_backup_manager = DatabaseBackup()
         self._table_backup_manager = TableBackup(
-            self._config.get("multiprocessing").get("backup_threads", 1)
+            self._config.get("multiprocessing").get("freeze_workers", 1)
         )
         self._udf_backup_manager = UDFBackup()
         self._nc_backup_manager = NamedCollectionsBackup()

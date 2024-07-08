@@ -29,7 +29,7 @@ def test_backup_table_skipping_if_metadata_updated_during_backup(
     context = BackupContext(DEFAULT_CONFIG)  # type: ignore[arg-type]
     db = Database(db_name, "MergeTree", "/var/lib/clickhouse/metadata/db1.sql")
     multiprocessing_conf: Dict[str, int] = DEFAULT_CONFIG.get("multiprocessing")  # type: ignore[assignment]
-    table_backup = TableBackup(multiprocessing_conf.get("backup_threads", 1))
+    table_backup = TableBackup(multiprocessing_conf.get("freeze_workers", 1))
     backup_meta = BackupMetadata(
         name="20181017T210300",
         path="ch_backup/20181017T210300",
