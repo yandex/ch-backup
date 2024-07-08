@@ -50,7 +50,7 @@ class TableFreezer:
     def __exit__(self, *exc: Any) -> bool:
         self._thread_pool.shutdown(wait=False)
         self._futures.clear()
-        return True
+        return False
 
     def wait(self) -> List[Tuple[Table, bytes]]:
         """
