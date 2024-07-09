@@ -48,9 +48,7 @@ class ClickhouseBackup:
         self._config = config
         self._access_backup_manager = AccessBackup()
         self._database_backup_manager = DatabaseBackup()
-        self._table_backup_manager = TableBackup(
-            self._config["multiprocessing"]["freeze_threads"]
-        )
+        self._table_backup_manager = TableBackup()
         self._udf_backup_manager = UDFBackup()
         self._nc_backup_manager = NamedCollectionsBackup()
 
@@ -194,6 +192,9 @@ class ClickhouseBackup:
                         databases,
                         db_tables,
                         schema_only=sources.schema_only,
+                        freeze_threads=self._config["multiprocessing"][
+                            "freeze_threads"
+                        ],
                     )
 
                 self._context.backup_meta.state = BackupState.CREATED

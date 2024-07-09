@@ -1,4 +1,4 @@
-from typing import Dict, List
+from typing import List
 from unittest.mock import Mock, patch
 
 import pytest
@@ -28,8 +28,7 @@ def test_backup_table_skipping_if_metadata_updated_during_backup(
     # Prepare involved data objects
     context = BackupContext(DEFAULT_CONFIG)  # type: ignore[arg-type]
     db = Database(db_name, "MergeTree", "/var/lib/clickhouse/metadata/db1.sql")
-    multiprocessing_conf: Dict[str, int] = DEFAULT_CONFIG.get("multiprocessing")  # type: ignore[assignment]
-    table_backup = TableBackup(multiprocessing_conf.get("freeze_threads", 1))
+    table_backup = TableBackup()
     backup_meta = BackupMetadata(
         name="20181017T210300",
         path="ch_backup/20181017T210300",
@@ -67,7 +66,15 @@ def test_backup_table_skipping_if_metadata_updated_during_backup(
     with patch("os.path.getmtime", side_effect=mtime), patch(
         "ch_backup.logic.table.Path", read_bytes=read_bytes_mock
     ):
-        table_backup.backup(context, [db], {db_name: [table_name]}, schema_only=False)
+        table_backup.backup(
+            context,
+            [db],
+            {db_name: [table_name]},
+            schema_only=False,
+            freeze_threads=DEFAULT_CONFIG["multiprocessing"][
+                "freeze_threads"
+            ],  # type: ignore
+        )
 
     assert len(context.backup_meta.get_tables(db_name)) == backups_expected
     # One call after each table and one after database is backuped

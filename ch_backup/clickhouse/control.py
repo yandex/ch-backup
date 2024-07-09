@@ -481,6 +481,11 @@ class ClickhouseCTL:
         """
         Remove all freezed partitions from all local disks.
         """
+        if not (backup_name is None) == (table is None):
+            raise RuntimeError(
+                "Both backup_name and table should be None or not None at the same time"
+            )
+
         if backup_name and table:
             for table_data_path, disk in table.paths_with_disks:
                 if disk.type == "local":
@@ -793,6 +798,7 @@ class ClickhouseCTL:
         """
         Create shadow/increment.txt to fix race condition with parallel freeze.
         Must be used before freezing more than one table at once.
+        https://github.com/ClickHouse/ClickHouse/blob/597a72fd9afd88984abc10b284624c6b4d08368b/src/Common/Increment.h#L20
         """
         default_shadow_path = Path(self._root_data_path) / "shadow"
         increment_path = default_shadow_path / "increment.txt"

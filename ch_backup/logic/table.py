@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from functools import partial
 from itertools import chain
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ch_backup import logging
 from ch_backup.backup.deduplication import deduplicate_parts
@@ -35,61 +35,155 @@ from ch_backup.logic.upload_part_observer import UploadPartObserver
 from ch_backup.util import compare_schema, get_table_zookeeper_paths
 
 
-class TableFreezer:
+@dataclass
+class TableMetadataMtime:
     """
-    Class to freeze tables in parallel.
+    Class contains timestamp of table metadata last modification.
     """
 
-    def __init__(self, threads: int):
-        self._futures: List[Future] = []
-        self._thread_pool: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=threads)
+    metadata_path: str
+    mtime: float
 
-    def __enter__(self):
-        return self
 
-    def __exit__(self, *exc: Any) -> bool:  # type: ignore
-        self._thread_pool.shutdown(wait=False)
-        self._futures.clear()
-        return False
+class TableBackup(BackupManager):
+    """
+    Table backup class
+    """
 
-    def wait(self) -> List[Tuple[Table, bytes]]:
+    def backup(
+        self,
+        context: BackupContext,
+        databases: Sequence[Database],
+        db_tables: Dict[str, list],
+        schema_only: bool,
+        freeze_threads: int,
+    ) -> None:
         """
-        Wait for all submitted tables to freeze and return create statements.
+        Backup tables metadata, MergeTree data and Cloud storage metadata.
         """
-        result = []
-        for future in as_completed(self._futures):
-            backup_freezed_table = future.result()
-            if backup_freezed_table is not None:
-                result.append(backup_freezed_table)
-        self._futures.clear()
-        return result
 
-    def freeze_table(
+        backup_name = context.backup_meta.get_sanitized_name()
+
+        for db in databases:
+            self._backup(
+                context,
+                db,
+                db_tables[db.name],
+                backup_name,
+                schema_only,
+                freeze_threads,
+            )
+
+        self._backup_cloud_storage_metadata(context)
+
+    def _collect_local_metadata_mtime(
+        self, context: BackupContext, db: Database, tables: Sequence[str]
+    ) -> Dict[str, TableMetadataMtime]:
+        """
+        Collect modification timestamps of table metadata files.
+        """
+        logging.debug("Collecting local metadata modification times")
+        res = {}
+
+        for table in context.ch_ctl.get_tables(db.name, tables):
+            mtime = self._get_mtime(table.metadata_path)
+            if mtime is None:
+                logging.warning(
+                    'Cannot get metadata mtime for table "{}"."{}". Skipping it',
+                    table.database,
+                    table.name,
+                )
+                continue
+
+            res[table.name] = TableMetadataMtime(
+                metadata_path=table.metadata_path, mtime=mtime
+            )
+
+        return res
+
+    def _backup(
         self,
         context: BackupContext,
         db: Database,
-        table: Table,
+        tables: Sequence[str],
         backup_name: str,
         schema_only: bool,
+        freeze_threads: int,
     ) -> None:
         """
-        Submit table to the freeze pool.
+        Backup single database tables.
+        """
+        if not db.is_external_db_engine():
+            # Collect modification timestamps of table metadata files for optimistic concurrency
+            # control of backup creation.
+            # To ensure consistency between metadata and data backups.
+            # See https://en.wikipedia.org/wiki/Optimistic_concurrency_control
+            mtimes = self._collect_local_metadata_mtime(context, db, tables)
+            tables_ = list(
+                filter(
+                    lambda table: table.name in mtimes,
+                    context.ch_ctl.get_tables(db.name, tables),
+                )
+            )
+
+            freezed_tables = self._freeze_tables(
+                context, db, tables_, backup_name, schema_only, freeze_threads
+            )
+
+            logging.debug('All tables from "{}" are frozen', db.name)
+
+            for table, create_statement in freezed_tables:
+                self._backup_freezed_table(
+                    context,
+                    db,
+                    table,
+                    backup_name,
+                    schema_only,
+                    mtimes,
+                    create_statement,
+                )
+
+            context.ch_ctl.remove_freezed_data()
+
+        context.backup_layout.upload_backup_metadata(context.backup_meta)
+
+    @staticmethod
+    def _freeze_tables(
+        context: BackupContext,
+        db: Database,
+        tables: Sequence[Table],
+        backup_name: str,
+        schema_only: bool,
+        threads: int,
+    ) -> List[Tuple[Table, bytes]]:
+        """
+        Freeze tables in parallel.
         """
         # Create shadow/increment.txt if not exists manually to avoid
         # race condition with parallel freeze
         context.ch_ctl.create_shadow_increment()
-        future = self._thread_pool.submit(
-            self._freeze_table,
-            context,
-            db,
-            table,
-            backup_name,
-            schema_only,
-        )
-        self._futures.append(future)
+        futures: List[Future] = []
+        with ThreadPoolExecutor(max_workers=threads) as pool:
+            for table in tables:
+                future = pool.submit(
+                    TableBackup._freeze_table,
+                    context,
+                    db,
+                    table,
+                    backup_name,
+                    schema_only,
+                )
+                futures.append(future)
 
+            result: List[Tuple[Table, bytes]] = []
+            for future in as_completed(futures):
+                table_and_statement = future.result()
+                if table_and_statement is not None:
+                    result.append(table_and_statement)
+            return result
+
+    @staticmethod
     def _freeze_table(
-        self,
         context: BackupContext,
         db: Database,
         table: Table,
@@ -101,7 +195,7 @@ class TableFreezer:
         """
         logging.debug('Trying to freeze "{}"."{}"', table.database, table.name)
 
-        create_statement = self._load_create_statement_from_disk(table)
+        create_statement = TableBackup._load_create_statement_from_disk(table)
         if not create_statement:
             logging.warning(
                 'Skipping table backup for "{}"."{}". Local metadata is empty or absent',
@@ -149,133 +243,6 @@ class TableFreezer:
                 str(e),
             )
             return None
-
-
-@dataclass
-class TableMetadataMtime:
-    """
-    Class contains timestamp of table metadata last modification.
-    """
-
-    metadata_path: str
-    mtime: float
-
-
-class TableBackup(BackupManager):
-    """
-    Table backup class
-    """
-
-    def __init__(self, freeze_threads: int = 1):
-        self._freeze_threads = freeze_threads
-
-    def backup(
-        self,
-        context: BackupContext,
-        databases: Sequence[Database],
-        db_tables: Dict[str, list],
-        schema_only: bool,
-    ) -> None:
-        """
-        Backup tables metadata, MergeTree data and Cloud storage metadata.
-        """
-
-        backup_name = context.backup_meta.get_sanitized_name()
-
-        with TableFreezer(self._freeze_threads) as table_freezer:
-            for db in databases:
-                self._backup(
-                    table_freezer,
-                    context,
-                    db,
-                    db_tables[db.name],
-                    backup_name,
-                    schema_only,
-                )
-
-        self._backup_cloud_storage_metadata(context)
-
-    def _collect_local_metadata_mtime(
-        self, context: BackupContext, db: Database, tables: Sequence[str]
-    ) -> Dict[str, TableMetadataMtime]:
-        """
-        Collect modification timestamps of table metadata files.
-        """
-        logging.debug("Collecting local metadata modification times")
-        res = {}
-
-        for table in context.ch_ctl.get_tables(db.name, tables):
-            mtime = self._get_mtime(table.metadata_path)
-            if mtime is None:
-                logging.warning(
-                    'Cannot get metadata mtime for table "{}"."{}". Skipping it',
-                    table.database,
-                    table.name,
-                )
-                continue
-
-            res[table.name] = TableMetadataMtime(
-                metadata_path=table.metadata_path, mtime=mtime
-            )
-
-        return res
-
-    def _backup(
-        self,
-        table_freezer: TableFreezer,
-        context: BackupContext,
-        db: Database,
-        tables: Sequence[str],
-        backup_name: str,
-        schema_only: bool,
-    ) -> None:
-        """
-        Backup single database tables.
-        """
-        if not db.is_external_db_engine():
-            # Collect modification timestamps of table metadata files for optimistic concurrency
-            # control of backup creation.
-            # To ensure consistency between metadata and data backups.
-            # See https://en.wikipedia.org/wiki/Optimistic_concurrency_control
-            mtimes = self._collect_local_metadata_mtime(context, db, tables)
-
-            for table in context.ch_ctl.get_tables(db.name, tables):
-                if table.name not in mtimes:
-                    continue
-
-                logging.debug(
-                    'Adding "{}"."{}" to the freeze queue',
-                    table.database,
-                    table.name,
-                )
-
-                table_freezer.freeze_table(
-                    context,
-                    db,
-                    table,
-                    backup_name,
-                    schema_only,
-                )
-
-            # Wait until all tables are freezed
-            freezed_tables = table_freezer.wait()
-
-            logging.debug('All tables from "{}" are frozen', db.name)
-
-            for table, create_statement in freezed_tables:
-                self._backup_freezed_table(
-                    context,
-                    db,
-                    table,
-                    backup_name,
-                    schema_only,
-                    mtimes,
-                    create_statement,
-                )
-
-            context.ch_ctl.remove_freezed_data()
-
-        context.backup_layout.upload_backup_metadata(context.backup_meta)
 
     @staticmethod
     def _backup_cloud_storage_metadata(context: BackupContext) -> None:
