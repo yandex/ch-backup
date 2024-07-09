@@ -47,7 +47,7 @@ class TableFreezer:
     def __enter__(self):
         return self
 
-    def __exit__(self, *exc: Any) -> bool: # type: ignore
+    def __exit__(self, *exc: Any) -> bool:  # type: ignore
         self._thread_pool.shutdown(wait=False)
         self._futures.clear()
         return False
