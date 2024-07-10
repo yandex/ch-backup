@@ -177,6 +177,9 @@ class ClickhouseBackup:
                         databases,
                         db_tables,
                         schema_only=sources.schema_only,
+                        freeze_threads=self._config["multiprocessing"][
+                            "freeze_threads"
+                        ],
                     )
 
                 self._context.backup_meta.state = BackupState.CREATED

@@ -4,8 +4,8 @@ ClickHouse client.
 
 import logging
 from copy import copy
-from datetime import datetime
-from typing import Any, Sequence, Tuple, Union
+from datetime import datetime, timedelta
+from typing import Any, List, Sequence, Tuple, Union
 from urllib.parse import urljoin
 
 from pkg_resources import parse_version
@@ -18,6 +18,7 @@ from .utils import generate_random_string, normalize_create_query
 DB_COUNT = 2
 TABLE_COUNT = 2
 ROWS_COUNT = 3
+PARTITIONS_COUNT = 1
 
 ACCESS_TYPES = [
     ("users", "USER"),
@@ -91,47 +92,62 @@ class ClickhouseClient:
         """
         return parse_version(self.get_version()) >= parse_version(comparing_version)  # type: ignore
 
-    def init_schema(self) -> None:
+    def init_schema(
+        self,
+        db_count: int = DB_COUNT,
+        table_count: int = TABLE_COUNT,
+    ) -> None:
         """
         Create test schema.
         """
-        for db_num in range(1, DB_COUNT + 1):
+        for db_num in range(1, db_count + 1):
             db_name = f"test_db_{db_num:02d}"
             self._query("POST", f"CREATE DATABASE IF NOT EXISTS {db_name}")
-            for table_num in range(1, TABLE_COUNT + 1):
+            for table_num in range(1, table_count + 1):
                 table_name = f"test_table_{table_num:02d}"
                 query = f"""
                     CREATE TABLE IF NOT EXISTS `{db_name}`.`{table_name}` (
                         date Date,
                         datetime DateTime,
                         int_num UInt32,
+                        prefix String,
                         str String
                     )
                     ENGINE MergeTree
-                    PARTITION BY date
+                    PARTITION BY (date, prefix)
                     ORDER BY int_num
                     """
                 self._query("POST", query)
 
-    def init_data(self, mark: str) -> None:
+    def init_data(
+        self,
+        mark: str,
+        db_count: int = DB_COUNT,
+        table_count: int = TABLE_COUNT,
+        rows_count: int = ROWS_COUNT,
+        partitions_count: int = PARTITIONS_COUNT,
+    ) -> None:
         """
         Fill test schema with data
         """
-        for db_num in range(1, DB_COUNT + 1):
+        for db_num in range(1, db_count + 1):
             db_name = self._get_test_db_name(db_num)
-            for table_num in range(1, TABLE_COUNT + 1):
-                rows = []
+            for table_num in range(1, table_count + 1):
                 table_name = self._get_test_table_name(table_num)
-                for row_num in range(1, ROWS_COUNT + 1):
-                    rows.append(
-                        ", ".join(self._gen_record(row_num=row_num, str_prefix=mark))
-                    )
+                rows = self._gen_rows(
+                    rows_count=rows_count,
+                    str_prefix=mark,
+                    partitions_count=partitions_count,
+                )
 
                 self._query(
                     "POST",
-                    f"INSERT INTO {db_name}.{table_name} FORMAT CSV",
+                    f"INSERT INTO `{db_name}`.`{table_name}` FORMAT CSV",
                     data="\n".join(rows),
                 )
+
+                # Make all possible merges to make tests more determined
+                self._query("POST", f"OPTIMIZE TABLE `{db_name}`.`{table_name}`")
 
     def get_all_user_data(self) -> Tuple[int, dict]:
         """
@@ -322,23 +338,39 @@ class ClickhouseClient:
         return f"test_table_{table_num:02d}"
 
     @staticmethod
-    def _gen_record(row_num=0, str_len=5, str_prefix=None):
+    def _gen_rows(
+        rows_count=ROWS_COUNT,
+        str_len=5,
+        str_prefix=None,
+        partitions_count=PARTITIONS_COUNT,
+    ):
         """
-        Generate test record.
+        Generate test rows.
         """
+        rows: List[str] = []
+
         if str_prefix is None:
             str_prefix = ""
         else:
             str_prefix = f"{str_prefix}_"
 
-        rand_str = generate_random_string(str_len)
-
+        dates: List[datetime] = []
         dt_now = datetime.utcnow()
-        row = (
-            dt_now.strftime("%Y-%m-%d"),
-            dt_now.strftime("%Y-%m-%d %H:%M:%S"),
-            str(row_num),
-            f"{str_prefix}{rand_str}",
-        )
+        # PARTITION BY date
+        for i in range(partitions_count):
+            date = dt_now + timedelta(days=i)
+            dates.append(date)
 
-        return row
+        for row_num in range(1, rows_count + 1):
+            rand_str = generate_random_string(str_len)
+            date = dates[row_num % partitions_count]
+            row = (
+                date.strftime("%Y-%m-%d"),
+                date.strftime("%Y-%m-%d %H:%M:%S"),
+                str(row_num),
+                f"{str_prefix}",
+                f"{rand_str}",
+            )
+            rows.append(", ".join(row))
+
+        return rows

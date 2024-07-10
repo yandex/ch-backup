@@ -30,6 +30,19 @@ def step_init_test_schema(context, node):
     ClickhouseClient(context, node).init_schema()
 
 
+@given(
+    "clickhouse on {node:w} has test schema with {db_count:d} databases and {tables_count:d} tables"
+)
+@when(
+    "clickhouse on {node:w} has test schema with {db_count:d} databases and {tables_count:d} tables"
+)
+def step_init_test_schema_custom(context, node, db_count, tables_count):
+    """
+    Load test schema to clickhouse.
+    """
+    ClickhouseClient(context, node).init_schema(db_count, tables_count)
+
+
 @when('we put following info in "{path}" at {node:w}')
 def step_put_file(context, path, node):
     container = get_container(context, node)
@@ -43,6 +56,33 @@ def step_fill_with_test_data(context, node, test_name):
     Load test data to clickhouse.
     """
     ClickhouseClient(context, node).init_data(mark=test_name)
+
+
+@given(
+    "{node:w} has test clickhouse data {test_name:w} with {db_count:d} databases, {tables_count:d} tables, {rows_count:d} rows and {partitions_count:d} partitions"
+)
+@when(
+    "{node:w} has test clickhouse data {test_name:w} with {db_count:d} databases, {tables_count:d} tables, {rows_count:d} rows and {partitions_count:d} partitions"
+)
+def step_fill_with_test_data_custom(
+    context,
+    node,
+    test_name,
+    db_count,
+    tables_count,
+    rows_count,
+    partitions_count,
+):
+    """
+    Load test data to clickhouse.
+    """
+    ClickhouseClient(context, node).init_data(
+        mark=test_name,
+        db_count=db_count,
+        table_count=tables_count,
+        rows_count=rows_count,
+        partitions_count=partitions_count,
+    )
 
 
 @given("we execute query on {node:w}")
