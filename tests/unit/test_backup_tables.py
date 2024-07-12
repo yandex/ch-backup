@@ -66,7 +66,16 @@ def test_backup_table_skipping_if_metadata_updated_during_backup(
     with patch("os.path.getmtime", side_effect=mtime), patch(
         "ch_backup.logic.table.Path", read_bytes=read_bytes_mock
     ):
-        table_backup.backup(context, [db], {db_name: [table_name]}, schema_only=False)
+        table_backup.backup(
+            context,
+            [db],
+            {db_name: [table_name]},
+            schema_only=False,
+            freeze_threads=DEFAULT_CONFIG["multiprocessing"][
+                "freeze_threads"
+            ],  # type: ignore
+        )
 
     assert len(context.backup_meta.get_tables(db_name)) == backups_expected
-    assert clickhouse_ctl_mock.remove_freezed_data.call_count == 1
+    # One call after each table and one after database is backuped
+    assert clickhouse_ctl_mock.remove_freezed_data.call_count == 2

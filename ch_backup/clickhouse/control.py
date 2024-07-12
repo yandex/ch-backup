@@ -23,6 +23,7 @@ from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.util import (
     chown_dir_contents,
+    chown_file,
     escape,
     list_dir_files,
     retry,
@@ -473,15 +474,32 @@ class ClickhouseCTL:
             query_sql = SYSTEM_UNFREEZE_SQL.format(backup_name=backup_name)
             self._ch_client.query(query_sql, timeout=self._unfreeze_timeout)
 
-    def remove_freezed_data(self) -> None:
+    def remove_freezed_data(
+        self, backup_name: Optional[str] = None, table: Optional[Table] = None
+    ) -> None:
         """
         Remove all freezed partitions from all local disks.
         """
-        for disk in self._disks.values():
-            if disk.type == "local":
-                shadow_path = os.path.join(disk.path, "shadow")
-                logging.debug("Removing shadow data: {}", shadow_path)
-                self._remove_shadow_data(shadow_path)
+        if not (backup_name is None) == (table is None):
+            raise RuntimeError(
+                "Both backup_name and table should be None or not None at the same time"
+            )
+
+        if backup_name and table:
+            for table_data_path, disk in table.paths_with_disks:
+                if disk.type == "local":
+                    table_relative_path = os.path.relpath(table_data_path, disk.path)
+                    shadow_path = os.path.join(
+                        disk.path, "shadow", backup_name, table_relative_path
+                    )
+                    logging.debug("Removing shadow data: {}", shadow_path)
+                    self._remove_shadow_data(shadow_path)
+        else:
+            for disk in self._disks.values():
+                if disk.type == "local":
+                    shadow_path = os.path.join(disk.path, "shadow")
+                    logging.debug("Removing shadow data: {}", shadow_path)
+                    self._remove_shadow_data(shadow_path)
 
     def remove_freezed_part(self, part: FrozenPart) -> None:
         """
@@ -774,6 +792,27 @@ class ClickhouseCTL:
             dir_path,
             need_recursion,
         )
+
+    def create_shadow_increment(self) -> None:
+        """
+        Create shadow/increment.txt to fix race condition with parallel freeze.
+        Must be used before freezing more than one table at once.
+        https://github.com/ClickHouse/ClickHouse/blob/597a72fd9afd88984abc10b284624c6b4d08368b/src/Common/Increment.h#L20
+        """
+        default_shadow_path = Path(self._root_data_path) / "shadow"
+        increment_path = default_shadow_path / "increment.txt"
+        if os.path.exists(increment_path):
+            return
+        if not os.path.exists(default_shadow_path):
+            os.mkdir(default_shadow_path)
+            self.chown_dir(str(default_shadow_path))
+        with open(increment_path, "w", encoding="utf-8") as file:
+            file.write("0")
+            chown_file(
+                self._ch_ctl_config["user"],
+                self._ch_ctl_config["group"],
+                str(increment_path),
+            )
 
     @retry(OSError)
     def _remove_shadow_data(self, path: str) -> None:
