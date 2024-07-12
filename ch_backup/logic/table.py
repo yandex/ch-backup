@@ -200,7 +200,7 @@ class TableBackup(BackupManager):
             return None
 
         # Freeze only MergeTree tables
-        if not schema_only and is_merge_tree(table.engine):
+        if not schema_only and table.is_merge_tree():
             try:
                 context.ch_ctl.freeze_table(backup_name, table)
             except ClickhouseError:
