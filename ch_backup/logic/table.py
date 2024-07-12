@@ -19,11 +19,6 @@ from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
 from ch_backup.clickhouse.models import Database, FrozenPart, Table
 from ch_backup.clickhouse.schema import (
-    is_distributed,
-    is_materialized_view,
-    is_merge_tree,
-    is_replicated,
-    is_view,
     rewrite_table_schema,
     to_attach_query,
     to_create_query,
@@ -243,10 +238,9 @@ class TableBackup(BackupManager):
             return
 
         failed_tables_names = [f"`{t.database}`.`{t.name}`" for t in failed_tables]
-        tables_to_restore_data = filter(lambda t: is_merge_tree(t.engine), tables_meta)
         tables_to_restore_data = filter(
             lambda t: f"`{t.database}`.`{t.name}`" not in failed_tables_names,
-            tables_to_restore_data,
+            tables_meta,
         )
 
         use_inplace_cloud_restore = context.config_root["restore"][
@@ -322,7 +316,7 @@ class TableBackup(BackupManager):
             return
 
         # Freeze only MergeTree tables
-        if not schema_only and is_merge_tree(table.engine):
+        if not schema_only and table.is_merge_tree():
             try:
                 context.ch_ctl.freeze_table(backup_name, table)
             except ClickhouseError:
@@ -401,7 +395,7 @@ class TableBackup(BackupManager):
                     )
             frozen_parts.clear()
 
-        if not is_merge_tree(table.engine):
+        if not table.is_merge_tree():
             logging.info(
                 'Skipping table data backup for non MergeTree table "{}"."{}"',
                 table.database,
@@ -547,11 +541,11 @@ class TableBackup(BackupManager):
                 context, databases[table.database], table, add_uuid_if_required=True
             )
 
-            if is_merge_tree(table.engine):
+            if table.is_merge_tree():
                 merge_tree_tables.append(table)
-            elif is_distributed(table.engine):
+            elif table.is_distributed():
                 distributed_tables.append(table)
-            elif is_view(table.engine):
+            elif table.is_view():
                 view_tables.append(table)
             else:
                 other_tables.append(table)
@@ -559,7 +553,7 @@ class TableBackup(BackupManager):
         if clean_zookeeper and len(context.zk_config.get("hosts")) > 0:  # type: ignore
             macros = context.ch_ctl.get_macros()
             replicated_tables = [
-                table for table in merge_tree_tables if is_replicated(table.engine)
+                table for table in merge_tree_tables if table.is_replicated()
             ]
 
             logging.debug(
@@ -603,6 +597,13 @@ class TableBackup(BackupManager):
                     maybe_table is not None
                 ), f"Table not found {table_meta.database}.{table_meta.name}"
                 table: Table = maybe_table
+                if not table.is_merge_tree():
+                    logging.debug(
+                        'Skiptable "{}.{}" data restore, because it is not MergeTree like.',
+                        table.database,
+                        table.name,
+                    )
+                    continue
 
                 attach_parts = []
                 for part in table_meta.get_parts():
@@ -664,7 +665,7 @@ class TableBackup(BackupManager):
                 for part in attach_parts:
                     logging.debug(
                         'Attaching "{}.{}" part: {}',
-                        table_meta.database,
+                        table.database,
                         table.name,
                         part.name,
                     )
@@ -674,7 +675,7 @@ class TableBackup(BackupManager):
                     except Exception as e:
                         logging.warning(
                             'Attaching "{}.{}" part {} failed: {}',
-                            table_meta.database,
+                            table.database,
                             table.name,
                             part.name,
                             repr(e),
@@ -699,9 +700,7 @@ class TableBackup(BackupManager):
         if add_uuid_if_required and table.uuid and db.is_atomic():
             add_uuid = True
             # Starting with 21.4 it's required to explicitly set inner table UUID for materialized views.
-            if is_materialized_view(table.engine) and context.ch_ctl.ch_version_ge(
-                "21.4"
-            ):
+            if table.is_materialized_view() and context.ch_ctl.ch_version_ge("21.4"):
                 inner_table = context.ch_ctl.get_table(
                     table.database, f".inner_id.{table.uuid}"
                 )
@@ -781,22 +780,17 @@ class TableBackup(BackupManager):
         context: BackupContext, db: Database, table: Table
     ) -> None:
         try:
-            try:
+            if table.is_merge_tree() or table.is_view():
                 logging.debug(
                     f"Trying to restore table `{db.name}`.`{table.name}` by ATTACH method"
                 )
                 table.create_statement = to_attach_query(table.create_statement)
                 context.ch_ctl.create_table(table)
-                if (
-                    is_replicated(table.create_statement)
-                    and not is_materialized_view(table.engine)
-                    and context.ch_ctl.ch_version_ge("21.8")
-                ):
-                    context.ch_ctl.restore_replica(table)
-            except Exception as e:
-                logging.warning(
-                    f"Failed to restore table `{db.name}`.`{table.name}` using ATTACH method, "
-                    f"fallback to CREATE. Exception: {e}"
+                if table.is_replicated():
+                    return context.ch_ctl.restore_replica(table)
+            else:
+                logging.debug(
+                    f"Trying to restore table `{db.name}`.`{table.name}` by CREATE method"
                 )
                 table.create_statement = to_create_query(table.create_statement)
                 context.ch_ctl.create_table(table)

@@ -9,75 +9,6 @@ from ch_backup.clickhouse.models import Database, Table
 from ch_backup.util import escape
 
 
-def is_merge_tree(engine: str) -> bool:
-    """
-    Return True if table engine belongs to merge tree table engine family, or False otherwise.
-    """
-    return engine.find("MergeTree") != -1
-
-
-def is_replicated(engine: str) -> bool:
-    """
-    Return True if table engine belongs to replicated merge tree table engine family, or False otherwise.
-    """
-    return engine.find("Replicated") != -1
-
-
-def is_distributed(engine: str) -> bool:
-    """
-    Return True if it's Distributed table engine, or False otherwise.
-    """
-    return engine == "Distributed"
-
-
-def is_view(engine: str) -> bool:
-    """
-    Return True if table engine is a view (either View or MaterializedView), or False otherwise.
-    """
-    return engine in ("View", "LiveView", "MaterializedView")
-
-
-def is_materialized_view(engine: str) -> bool:
-    """
-    Return True if it's MaterializedView table engine, or False otherwise.
-    """
-    return engine == "MaterializedView"
-
-
-def is_external_engine(engine: str) -> bool:
-    """
-    Return True if the specified table engine is intended to use for integration with external systems.
-    """
-    return engine in (
-        "COSN",
-        "ExternalDistributed",
-        "HDFS",
-        "Hive",
-        "JDBC",
-        "Kafka",
-        "MeiliSearch",
-        "MongoDB",
-        "MySQL",
-        "ODBC",
-        "PostgreSQL",
-        "RabbitMQ",
-        "S3",
-        "URL",
-    )
-
-
-def is_external_db_engine(db_engine: str) -> bool:
-    """
-    Return True if the specified database engine is intended to use for integration with external systems.
-    """
-    return db_engine in (
-        "MySQL",
-        "MaterializedMySQL",
-        "PostgreSQL",
-        "MaterializedPostgreSQL",
-    )
-
-
 def to_attach_query(create_query: str) -> str:
     """
     Convert CREATE table query to ATTACH one.
@@ -117,7 +48,7 @@ def rewrite_table_schema(
                 )
                 create_statement = create_statement.replace("MergeTree()", "MergeTree")
                 table.create_statement = create_statement
-            if is_replicated(table.engine):
+            if table.is_replicated():
                 table.engine = table.engine.replace("Replicated", "")
 
     if override_replica_name:
@@ -182,8 +113,7 @@ def _add_uuid(table: Table, inner_uuid: str = None) -> None:
             f" Metadata UUID is {table.uuid}. return without adding UUID"
         )
         return
-
-    if is_view(table.engine):
+    if table.is_view():
         inner_uuid_clause = f"TO INNER UUID '{inner_uuid}'" if inner_uuid else ""
         table.create_statement = re.sub(
             f"^(?P<statement>CREATE|ATTACH) (?P<view_type>((MATERIALIZED|LIVE) )?VIEW) "

@@ -20,7 +20,6 @@ from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.calculators import calc_aligned_files_size
 from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
-from ch_backup.clickhouse.schema import is_replicated
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.util import (
     chown_dir_contents,
@@ -614,7 +613,7 @@ class ClickhouseCTL:
         """
         Call SYSTEM RESTORE REPLICA for table.
         """
-        assert is_replicated(table.create_statement)
+        assert table.is_replicated()
         self._ch_client.query(
             RESTORE_REPLICA_SQL.format(
                 db_name=escape(table.database), table_name=escape(table.name)
