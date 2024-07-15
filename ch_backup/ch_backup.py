@@ -229,7 +229,7 @@ class ClickhouseBackup:
 
         if (
             cloud_storage_source_bucket is None
-            and not sources.schema_only
+            and sources.data
             and not skip_cloud_storage
         ):
             if self._context.backup_meta.cloud_storage.enabled:
