@@ -11,7 +11,7 @@ from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, BackupState, PartMetadata
 from ch_backup.backup_context import BackupContext
-from ch_backup.clickhouse.models import Database, FrozenPart
+from ch_backup.clickhouse.models import Database, FrozenPart, Table
 from ch_backup.util import Slotted, utcnow
 
 
@@ -171,7 +171,7 @@ def _populate_dedup_info(
         for db in databases_to_iterate:
             db_dedup_info = dedup_info[db.name]
             for table in backup.get_tables(db.name):
-                replicated = table.is_replicated()
+                replicated = Table.engine_is_replicated(table.engine)
                 if replicated and db.replicated_tables_handled:
                     continue
                 if not replicated and (
