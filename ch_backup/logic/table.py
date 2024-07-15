@@ -844,7 +844,12 @@ class TableBackup(BackupManager):
         context: BackupContext, db: Database, table: Table
     ) -> None:
         try:
-            if table.is_merge_tree() or table.is_view():
+            if (
+                table.is_merge_tree()
+                or table.is_view()
+                or table.is_external_engine()
+                or table.is_distributed()
+            ):
                 logging.debug(
                     f"Trying to restore table `{db.name}`.`{table.name}` by ATTACH method"
                 )
