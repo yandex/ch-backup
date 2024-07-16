@@ -648,27 +648,33 @@ class TableBackup(BackupManager):
         for table_meta in tables:
             cloud_storage_parts = []
             try:
+                maybe_table_short = context.ch_ctl.get_table(
+                    table_meta.database, table_meta.name, short_query=True
+                )
+                assert (
+                    maybe_table_short is not None
+                ), f"Table not found {table_meta.database}.{table_meta.name}"
+
+                # We have to check table engine on short Table version
+                # because some of columns might be inaccessbible, for old ch versions.
+                # Fix https://github.com/ClickHouse/ClickHouse/pull/55540 is pesented since 23.8.
+                if not maybe_table_short.is_merge_tree():
+                    logging.debug(
+                        'Skiptable "{}.{}" data restore, because it is not MergeTree like.',
+                        table_meta.database,
+                        table_meta.name,
+                    )
+                    continue
+
                 logging.debug(
                     'Running table "{}.{}" data restore',
                     table_meta.database,
                     table_meta.name,
                 )
 
-                maybe_table = context.ch_ctl.get_table(
+                table: Table = context.ch_ctl.get_table(
                     table_meta.database, table_meta.name
-                )
-                assert (
-                    maybe_table is not None
-                ), f"Table not found {table_meta.database}.{table_meta.name}"
-                table: Table = maybe_table
-                if not table.is_merge_tree():
-                    logging.debug(
-                        'Skiptable "{}.{}" data restore, because it is not MergeTree like.',
-                        table.database,
-                        table.name,
-                    )
-                    continue
-
+                )  # type: ignore
                 attach_parts = []
                 for part in table_meta.get_parts():
                     if context.restore_context.part_restored(part):
