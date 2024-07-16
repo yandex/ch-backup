@@ -37,7 +37,7 @@ class ClickhouseClient:
         """
         return self._session.params
 
-    @retry(requests.exceptions.ConnectionError)
+    @retry((requests.exceptions.ConnectionError, ClickhouseError))
     def query(
         self,
         query: str,
