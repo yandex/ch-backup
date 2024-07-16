@@ -87,14 +87,14 @@ class Table(SimpleNamespace):
         """
         Return True if table engine belongs to replicated merge tree table engine family, or False otherwise.
         """
-        return self.is_merge_tree() and self.engine.find("Replicated") != -1
+        return Table.engine_is_replicated(self.engine)
 
     @staticmethod
     def engine_is_replicated(engine: str) -> bool:
         """
         A static method for determining whether an engine is replicated or not.
         """
-        return Table("", "", engine, [], [], "", "", None).is_replicated()
+        return "MergeTree" in engine and "Replicated" in engine
 
     def is_merge_tree(self) -> bool:
         """

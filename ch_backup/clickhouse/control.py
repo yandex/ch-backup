@@ -62,7 +62,6 @@ GET_TABLES_SHORT_SQL = strip_query(
     SELECT
         database,
         name,
-        create_table_query,
         engine,
         create_table_query
     FROM system.tables
@@ -566,6 +565,12 @@ class ClickhouseCTL:
         Get table by name, returns None if no table has found.
         """
         tables = self.get_tables(db_name, [table_name], short_query)
+
+        if len(tables) > 1:
+            raise RuntimeError(
+                f"Found several tables, when expected to find single table: database {db_name}, table {table_name}"
+            )
+
         return tables[0] if len(tables) == 1 else None
 
     def does_table_exist(self, db_name: str, table_name: str) -> bool:

@@ -651,16 +651,17 @@ class TableBackup(BackupManager):
                 maybe_table_short = context.ch_ctl.get_table(
                     table_meta.database, table_meta.name, short_query=True
                 )
-                assert (
-                    maybe_table_short is not None
-                ), f"Table not found {table_meta.database}.{table_meta.name}"
+                if not maybe_table_short:
+                    raise ClickhouseBackupError(
+                        f"Table not found {table_meta.database}.{table_meta.name}"
+                    )
 
                 # We have to check table engine on short Table version
                 # because some of columns might be inaccessbible, for old ch versions.
                 # Fix https://github.com/ClickHouse/ClickHouse/pull/55540 is pesented since 23.8.
                 if not maybe_table_short.is_merge_tree():
                     logging.debug(
-                        'Skiptable "{}.{}" data restore, because it is not MergeTree like.',
+                        'Skip table "{}.{}" data restore, because it is not MergeTree family.',
                         table_meta.database,
                         table_meta.name,
                     )
