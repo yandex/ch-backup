@@ -106,6 +106,14 @@ class ClickhouseBackup:
         """
         # pylint: disable=too-many-branches
         # pylint: disable=too-many-locals
+        backups_with_light_meta = self._context.backup_layout.get_backups(
+            use_light_meta=True
+        )
+
+        for backup in backups_with_light_meta:
+            if name == backup.name:
+                raise ClickhouseBackupError(f"Backup with name {name} already exists")
+
         logging.info(f"Backup sources: {sources}")
         assert not (db_names and tables)
 
@@ -126,10 +134,6 @@ class ClickhouseBackup:
         )
         if db_names is not None:
             databases = [db for db in databases if db.name in db_names]
-
-        backups_with_light_meta = self._context.backup_layout.get_backups(
-            use_light_meta=True
-        )
 
         last_backup = next(iter(backups_with_light_meta), None)
         if last_backup and not self._check_min_interval(last_backup, force):
