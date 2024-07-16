@@ -5,7 +5,7 @@ Unit tests schema module.
 from tests.unit.utils import parametrize
 
 from ch_backup.clickhouse.models import Table
-from ch_backup.clickhouse.schema import is_merge_tree, is_view, rewrite_table_schema
+from ch_backup.clickhouse.schema import rewrite_table_schema
 
 UUID = "223b4576-76f0-4ed3-976f-46db82af82a9"
 INNER_UUID = "fa8ff291-1922-4b7f-afa7-06633d5e16ae"
@@ -42,7 +42,8 @@ INNER_UUID = "fa8ff291-1922-4b7f-afa7-06633d5e16ae"
     },
 )
 def test_is_merge_tree(engine, result):
-    assert is_merge_tree(engine) == result
+    table = Table("test", "test", engine, [], [], "", "", None)
+    assert table.is_merge_tree() == result
 
 
 @parametrize(
@@ -76,7 +77,8 @@ def test_is_merge_tree(engine, result):
     },
 )
 def test_is_view(engine, result):
-    assert is_view(engine) == result
+    table = Table("test", "test", engine, [], [], "", "", None)
+    assert table.is_view() == result
 
 
 @parametrize(

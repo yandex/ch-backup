@@ -20,7 +20,6 @@ from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.calculators import calc_aligned_files_size
 from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
-from ch_backup.clickhouse.schema import is_replicated
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.util import (
     chown_dir_contents,
@@ -63,28 +62,12 @@ GET_TABLES_SHORT_SQL = strip_query(
     SELECT
         database,
         name,
+        engine,
         create_table_query
     FROM system.tables
     WHERE ({db_condition})
       AND ({tables_condition})
     ORDER BY metadata_modification_time
-    FORMAT JSON
-"""
-)
-
-GET_TABLE_SQL = strip_query(
-    """
-    SELECT
-        database,
-        name,
-        engine,
-        engine_full,
-        create_table_query,
-        data_paths,
-        metadata_path,
-        uuid
-    FROM system.tables
-    WHERE database = '{db_name}' AND name = '{table_name}'
     FORMAT JSON
 """
 )
@@ -575,19 +558,20 @@ class ClickhouseCTL:
 
         return result
 
-    def get_table(self, db_name: str, table_name: str) -> Optional[Table]:
+    def get_table(
+        self, db_name: str, table_name: str, short_query: bool = False
+    ) -> Optional[Table]:
         """
         Get table by name, returns None if no table has found.
         """
-        query_sql = GET_TABLE_SQL.format(
-            db_name=escape(db_name), table_name=escape(table_name)
-        )
+        tables = self.get_tables(db_name, [table_name], short_query)
 
-        result = self._ch_client.query(query_sql)["data"]
-        if result:
-            return self._make_table(result[0])
+        if len(tables) > 1:
+            raise RuntimeError(
+                f"Found several tables, when expected to find single table: database {db_name}, table {table_name}"
+            )
 
-        return None
+        return tables[0] if len(tables) == 1 else None
 
     def does_table_exist(self, db_name: str, table_name: str) -> bool:
         """
@@ -632,7 +616,7 @@ class ClickhouseCTL:
         """
         Call SYSTEM RESTORE REPLICA for table.
         """
-        assert is_replicated(table.create_statement)
+        assert table.is_replicated()
         self._ch_client.query(
             RESTORE_REPLICA_SQL.format(
                 db_name=escape(table.database), table_name=escape(table.name)
@@ -923,7 +907,7 @@ class ClickhouseCTL:
             engine=record.get("engine", None),
             disks=list(self._disks.values()),
             data_paths=(
-                record.get("data_paths", None)
+                record.get("data_paths", [])
                 if "MergeTree" in record.get("engine", "")
                 else []
             ),

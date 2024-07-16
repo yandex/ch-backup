@@ -83,6 +83,64 @@ class Table(SimpleNamespace):
             )
         )
 
+    def is_replicated(self) -> bool:
+        """
+        Return True if table engine belongs to replicated merge tree table engine family, or False otherwise.
+        """
+        return Table.engine_is_replicated(self.engine)
+
+    @staticmethod
+    def engine_is_replicated(engine: str) -> bool:
+        """
+        A static method for determining whether an engine is replicated or not.
+        """
+        return "MergeTree" in engine and "Replicated" in engine
+
+    def is_merge_tree(self) -> bool:
+        """
+        Return True if table engine belongs to merge tree table engine family, or False otherwise.
+        """
+        return self.engine.find("MergeTree") != -1
+
+    def is_view(self) -> bool:
+        """
+        Return True if table engine is a view (either View or MaterializedView), or False otherwise.
+        """
+        return self.engine in ("View", "LiveView", "MaterializedView")
+
+    def is_distributed(self) -> bool:
+        """
+        Return True if it's Distributed table engine, or False otherwise.
+        """
+        return self.engine == "Distributed"
+
+    def is_materialized_view(self) -> bool:
+        """
+        Return True if it's MaterializedView table engine, or False otherwise.
+        """
+        return self.engine == "MaterializedView"
+
+    def is_external_engine(self) -> bool:
+        """
+        Return True if the specified table engine is intended to use for integration with external systems.
+        """
+        return self.engine in (
+            "COSN",
+            "ExternalDistributed",
+            "HDFS",
+            "Hive",
+            "JDBC",
+            "Kafka",
+            "MeiliSearch",
+            "MongoDB",
+            "MySQL",
+            "ODBC",
+            "PostgreSQL",
+            "RabbitMQ",
+            "S3",
+            "URL",
+        )
+
     def __hash__(self):
         return hash((self.database, self.name))
 

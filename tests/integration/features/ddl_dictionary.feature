@@ -72,14 +72,14 @@ Feature: Backup dictionary created by ddl
     """
     CREATE DATABASE test_db Engine=Ordinary;
 
-    CREATE TABLE test_db.table_01 (n1 UInt32, n2 UInt32)
+    CREATE TABLE test_db.table_01 (n1 UInt64, n2 UInt32)
     ENGINE MergeTree PARTITION BY tuple() ORDER BY n1;
 
-    CREATE DICTIONARY test_db.test_dictionary (n1 UInt32, n2 UInt32)
+    CREATE DICTIONARY test_db.test_dictionary (n1 UInt64, n2 UInt32)
     PRIMARY KEY n1 LAYOUT(hashed()) LIFETIME(MIN 1 MAX 10)
     SOURCE(CLICKHOUSE(HOST 'localhost' PORT 9000 DB 'test_db' TABLE 'table_01' USER 'default'));
 
-    ATTACH TABLE test_db.dict_table (`n1` UInt32, `n2` UInt32) ENGINE = Dictionary('test_db.test_dictionary');
+    ATTACH TABLE test_db.dict_table (`n1` UInt64, `n2` UInt32) ENGINE = Dictionary('test_db.test_dictionary');
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
