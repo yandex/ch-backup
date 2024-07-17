@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Callable, List, Optional, Sequence
 from urllib.parse import quote
 
+from nacl.exceptions import CryptoError
+
 from ch_backup import logging
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
 from ch_backup.calculators import calc_encrypted_size, calc_tarball_size
@@ -50,7 +52,7 @@ class BackupLayout:
         try:
             logging.debug("Saving backup metadata in {}", remote_path)
             self._storage_loader.upload_data(
-                backup.dump_json(light=False), remote_path=remote_path
+                backup.dump_json(light=False), remote_path=remote_path, encryption=True
             )
             logging.debug("Saving backup light metadata in {}", remote_light_path)
             self._storage_loader.upload_data(
@@ -283,6 +285,15 @@ class BackupLayout:
             self._config["path_root"], recursive=False, absolute=False
         )
 
+    def _load_metadata(self, path: str, encryption: bool) -> BackupMetadata:
+        try:
+            data = self._storage_loader.download_data(path, encryption=encryption)
+            return BackupMetadata.load_json(data)
+        except CryptoError:
+            raise
+        except Exception as e:
+            raise StorageError("Failed to download backup metadata") from e
+
     def get_backup(
         self, backup_name: str, use_light_meta: bool = False
     ) -> Optional[BackupMetadata]:
@@ -298,11 +309,16 @@ class BackupLayout:
         if not self._storage_loader.path_exists(path):
             return None
 
+        # New backup metadata is encrypted
+        # Retry in case it is old and not encrypted
         try:
-            data = self._storage_loader.download_data(path)
-            return BackupMetadata.load_json(data)
-        except Exception as e:
-            raise StorageError("Failed to download backup metadata") from e
+            return self._load_metadata(path, not use_light_meta)
+        except CryptoError:
+            logging.exception(
+                "Attempt to download encrypted metadata from {} has failed. Will try to download it as not encrypted",
+                path,
+            )
+            return self._load_metadata(path, False)
 
     def get_backups(self, use_light_meta: bool = False) -> List[BackupMetadata]:
         """
@@ -333,11 +349,12 @@ class BackupLayout:
             else self._backup_metadata_path(backup.name)
         )
 
+        # New backup metadata is encrypted
+        # Retry in case it is old and not encrypted
         try:
-            data = self._storage_loader.download_data(path)
-            return BackupMetadata.load_json(data)
-        except Exception as e:
-            raise StorageError("Failed to download backup metadata") from e
+            return self._load_metadata(path, not use_light_meta)
+        except CryptoError:
+            return self._load_metadata(path, False)
 
     def get_database_create_statement(
         self, backup_meta: BackupMetadata, db_name: str
