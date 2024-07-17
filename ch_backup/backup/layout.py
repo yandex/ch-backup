@@ -314,6 +314,10 @@ class BackupLayout:
         try:
             return self._load_metadata(path, not use_light_meta)
         except CryptoError:
+            logging.exception(
+                "Attempt to download encrypted metadata from {} has failed. Will try to download it as not encrypted",
+                path,
+            )
             return self._load_metadata(path, False)
 
     def get_backups(self, use_light_meta: bool = False) -> List[BackupMetadata]:
