@@ -246,7 +246,7 @@ class BackupLayout:
         """
         Download user defined function create statement.
         """
-        remote_path = self._try_get_escaped_path(
+        remote_path = self._get_escaped_if_exists(
             _udf_data_path, backup_meta.path, filename
         )
         return self._storage_loader.download_data(remote_path, encryption=True)
@@ -421,7 +421,7 @@ class BackupLayout:
 
         os.makedirs(fs_part_path, exist_ok=True)
 
-        remote_dir_path = self._try_get_escaped_path(
+        remote_dir_path = self._get_escaped_if_exists(
             _part_path,
             part.link or backup_meta.path,
             part.database,
@@ -463,7 +463,7 @@ class BackupLayout:
         Check availability of part data in storage.
         """
         try:
-            remote_dir_path = self._try_get_escaped_path(
+            remote_dir_path = self._get_escaped_if_exists(
                 _part_path,
                 part.link or backup_path,
                 part.database,
@@ -553,7 +553,7 @@ class BackupLayout:
 
         deleting_files: List[str] = []
         for part in parts:
-            part_path = self._try_get_escaped_path(
+            part_path = self._get_escaped_if_exists(
                 _part_path,
                 part.link or backup_meta.path,
                 part.database,
@@ -612,7 +612,7 @@ class BackupLayout:
             tar_size, self._encryption_chunk_size, self._encryption_metadata_size
         )
 
-    def _try_get_escaped_path(
+    def _get_escaped_if_exists(
         self, path_function: Callable, *args: Any, **kwargs: Any
     ) -> str:
         """
