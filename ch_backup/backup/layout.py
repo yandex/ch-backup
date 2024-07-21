@@ -4,7 +4,7 @@ Management of backup data layout.
 
 import os
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence
+from typing import Any, Callable, List, Optional, Sequence
 from urllib.parse import quote
 
 from ch_backup import logging
@@ -246,8 +246,9 @@ class BackupLayout:
         """
         Download user defined function create statement.
         """
-        remote_path = _udf_data_path(backup_meta.path, filename, escape_names=False)
-        remote_path = self._get_escaped_if_exists(remote_path)
+        remote_path = self._try_get_escaped_path(
+            _udf_data_path, backup_meta.path, filename
+        )
         return self._storage_loader.download_data(remote_path, encryption=True)
 
     def get_local_nc_create_statement(self, nc_name: str) -> Optional[str]:
@@ -420,14 +421,13 @@ class BackupLayout:
 
         os.makedirs(fs_part_path, exist_ok=True)
 
-        remote_dir_path = _part_path(
+        remote_dir_path = self._try_get_escaped_path(
+            _part_path,
             part.link or backup_meta.path,
             part.database,
             part.table,
             part.name,
-            escape_names=False,
         )
-        remote_dir_path = self._get_escaped_if_exists(remote_dir_path)
 
         if part.tarball:
             remote_path = os.path.join(remote_dir_path, f"{part.name}.tar")
@@ -463,14 +463,13 @@ class BackupLayout:
         Check availability of part data in storage.
         """
         try:
-            remote_dir_path = _part_path(
+            remote_dir_path = self._try_get_escaped_path(
+                _part_path,
                 part.link or backup_path,
                 part.database,
                 part.table,
                 part.name,
-                escape_names=False,
             )
-            remote_dir_path = self._get_escaped_if_exists(remote_dir_path)
             remote_files = self._storage_loader.list_dir(remote_dir_path)
 
             if remote_files == [f"{part.name}.tar"]:
@@ -554,14 +553,13 @@ class BackupLayout:
 
         deleting_files: List[str] = []
         for part in parts:
-            part_path = _part_path(
+            part_path = self._try_get_escaped_path(
+                _part_path,
                 part.link or backup_meta.path,
                 part.database,
                 part.table,
                 part.name,
-                escape_names=False,
             )
-            part_path = self._get_escaped_if_exists(part_path)
             logging.debug("Deleting data part {}", part_path)
             if part.tarball:
                 deleting_files.append(os.path.join(part_path, f"{part.name}.tar"))
@@ -614,14 +612,16 @@ class BackupLayout:
             tar_size, self._encryption_chunk_size, self._encryption_metadata_size
         )
 
-    def _get_escaped_if_exists(self, unescaped_path: str) -> str:
+    def _try_get_escaped_path(
+        self, path_function: Callable, *args: Any, **kwargs: Any
+    ) -> str:
         """
         Return escaped path if it exists. Otherwise return regular path.
         """
-        escaped_path = _quote(unescaped_path)
-        if self._storage_loader.path_exists(escaped_path, is_dir=True):
-            return escaped_path
-        return unescaped_path
+        path = path_function(*args, escape_names=True, **kwargs)
+        if self._storage_loader.path_exists(path, is_dir=True):
+            return path
+        return path_function(*args, escape_names=False, **kwargs)
 
 
 def _access_control_data_path(backup_path: str, file_name: str) -> str:
