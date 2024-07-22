@@ -6,6 +6,7 @@ import json
 import os
 from copy import copy
 from typing import Sequence, Set, Union
+from urllib.parse import quote
 
 import yaml
 
@@ -172,8 +173,8 @@ class Backup:
                     part_path = os.path.join(
                         part_obj.get("link") or backup_path,
                         "data",
-                        db_name,
-                        table_name,
+                        _quote(db_name),
+                        _quote(table_name),
                         part_name,
                     )
                     if part_obj.get("tarball", False):
@@ -443,3 +444,12 @@ def get_version() -> str:
     """
     with open("ch_backup/version.txt", encoding="utf-8") as f:
         return f.read().strip()
+
+
+def _quote(value: str) -> str:
+    return quote(value, safe="").translate(
+        {
+            ord("."): "%2E",
+            ord("-"): "%2D",
+        }
+    )

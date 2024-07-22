@@ -4,7 +4,7 @@ Management of backup data layout.
 
 import os
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence
+from typing import Any, Callable, List, Optional, Sequence
 from urllib.parse import quote
 
 from nacl.exceptions import CryptoError
@@ -248,7 +248,9 @@ class BackupLayout:
         """
         Download user defined function create statement.
         """
-        remote_path = _udf_data_path(backup_meta.path, filename)
+        remote_path = self._get_escaped_if_exists(
+            _udf_data_path, backup_meta.path, filename
+        )
         return self._storage_loader.download_data(remote_path, encryption=True)
 
     def get_local_nc_create_statement(self, nc_name: str) -> Optional[str]:
@@ -436,8 +438,12 @@ class BackupLayout:
 
         os.makedirs(fs_part_path, exist_ok=True)
 
-        remote_dir_path = _part_path(
-            part.link or backup_meta.path, part.database, part.table, part.name
+        remote_dir_path = self._get_escaped_if_exists(
+            _part_path,
+            part.link or backup_meta.path,
+            part.database,
+            part.table,
+            part.name,
         )
 
         if part.tarball:
@@ -474,8 +480,12 @@ class BackupLayout:
         Check availability of part data in storage.
         """
         try:
-            remote_dir_path = _part_path(
-                part.link or backup_path, part.database, part.table, part.name
+            remote_dir_path = self._get_escaped_if_exists(
+                _part_path,
+                part.link or backup_path,
+                part.database,
+                part.table,
+                part.name,
             )
             remote_files = self._storage_loader.list_dir(remote_dir_path)
 
@@ -560,8 +570,12 @@ class BackupLayout:
 
         deleting_files: List[str] = []
         for part in parts:
-            part_path = _part_path(
-                part.link or backup_meta.path, part.database, part.table, part.name
+            part_path = self._get_escaped_if_exists(
+                _part_path,
+                part.link or backup_meta.path,
+                part.database,
+                part.table,
+                part.name,
             )
             logging.debug("Deleting data part {}", part_path)
             if part.tarball:
@@ -615,6 +629,17 @@ class BackupLayout:
             tar_size, self._encryption_chunk_size, self._encryption_metadata_size
         )
 
+    def _get_escaped_if_exists(
+        self, path_function: Callable, *args: Any, **kwargs: Any
+    ) -> str:
+        """
+        Return escaped path if it exists. Otherwise return regular path.
+        """
+        path = path_function(*args, escape_names=True, **kwargs)
+        if self._storage_loader.path_exists(path, is_dir=True):
+            return path
+        return path_function(*args, escape_names=False, **kwargs)
+
 
 def _access_control_data_path(backup_path: str, file_name: str) -> str:
     """
@@ -623,10 +648,12 @@ def _access_control_data_path(backup_path: str, file_name: str) -> str:
     return os.path.join(backup_path, "access_control", file_name)
 
 
-def _udf_data_path(backup_path: str, udf_file: str) -> str:
+def _udf_data_path(backup_path: str, udf_file: str, escape_names: bool = True) -> str:
     """
     Return S3 path to UDF data
     """
+    if escape_names:
+        return os.path.join(backup_path, "udf", _quote(udf_file))
     return os.path.join(backup_path, "udf", udf_file)
 
 
@@ -653,10 +680,20 @@ def _named_collections_data_path(backup_path: str, nc_name: str) -> str:
     return os.path.join(backup_path, "named_collections", _quote(nc_name) + ".sql")
 
 
-def _part_path(backup_path: str, db_name: str, table_name: str, part_name: str) -> str:
+def _part_path(
+    backup_path: str,
+    db_name: str,
+    table_name: str,
+    part_name: str,
+    escape_names: bool = True,
+) -> str:
     """
     Return S3 path to data part.
     """
+    if escape_names:
+        return os.path.join(
+            backup_path, "data", _quote(db_name), _quote(table_name), part_name
+        )
     return os.path.join(backup_path, "data", db_name, table_name, part_name)
 
 
