@@ -8,7 +8,7 @@ click
 cloup
 humanfriendly
 tabulate
-tenacity<8.4.0
+tenacity<9.1.0
 kazoo
 xmltodict
 pypeln==0.4.9
