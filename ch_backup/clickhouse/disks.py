@@ -304,7 +304,18 @@ class ClickHouseTemporaryDisks:
         to_path: str,
         routine_tag: str,
     ) -> None:
-        if self._ch_ctl.ch_version_ge("23.9"):
+        common_args = ["-C", CH_DISK_CONFIG_PATH]
+        if self._ch_ctl.ch_version_ge("24.7"):
+            command_args = [
+                "--disk-from",
+                from_disk,
+                "--disk-to",
+                to_disk,
+                from_path,
+                to_path,
+            ]
+            common_args.append("--query")
+        elif self._ch_ctl.ch_version_ge("23.9"):
             command_args = [
                 "--disk-from",
                 from_disk,
@@ -326,7 +337,7 @@ class ClickHouseTemporaryDisks:
         result = _exec(
             routine_tag,
             exe="/usr/bin/clickhouse-disks",
-            common_args=["-C", CH_DISK_CONFIG_PATH],
+            common_args=common_args,
             command="copy",
             command_args=command_args,
         )
