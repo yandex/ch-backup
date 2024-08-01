@@ -30,6 +30,7 @@ class ClickHouseDisksException(RuntimeError):
 
 
 CH_DISK_CONFIG_PATH = "/tmp/clickhouse-disks-config.xml"
+CH_DISK_HISTORY_FILE_PATH = "/tmp/.disks-file-history"
 CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS = 1 * 60 * 60 * 1000
 
 
@@ -120,7 +121,8 @@ class ClickHouseTemporaryDisks:
                 {
                     "clickhouse": {
                         "storage_configuration": {"disks": disks},
-                    }
+                        "history-file": CH_DISK_HISTORY_FILE_PATH,
+                    },
                 },
                 f,
                 pretty=True,
@@ -304,9 +306,10 @@ class ClickHouseTemporaryDisks:
         to_path: str,
         routine_tag: str,
     ) -> None:
-        common_args = ["-C", CH_DISK_CONFIG_PATH]
+        common_args = ["--config", CH_DISK_CONFIG_PATH]
         if self._ch_ctl.ch_version_ge("24.7"):
             command_args = [
+                "--recursive",
                 "--disk-from",
                 from_disk,
                 "--disk-to",
@@ -366,10 +369,9 @@ def _exec(
         *common_args,
     ]
     if command:
-        args += [  # type: ignore
-            command,
-            *command_args,
-        ]
+        command_with_args = [command, *command_args] if command_args else [command]
+        command_with_args = " ".join(command_with_args)  # type: ignore
+        args.append(command_with_args)  # type: ignore
 
     logging.debug(f'Executing "{" ".join(args)}"')
 
