@@ -30,6 +30,7 @@ class ClickHouseDisksException(RuntimeError):
 
 
 CH_DISK_CONFIG_PATH = "/tmp/clickhouse-disks-config.xml"
+CH_DISK_HISTORY_FILE_PATH = "/tmp/.disks-file-history"
 CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS = 1 * 60 * 60 * 1000
 
 
@@ -120,7 +121,8 @@ class ClickHouseTemporaryDisks:
                 {
                     "clickhouse": {
                         "storage_configuration": {"disks": disks},
-                    }
+                        "history-file": CH_DISK_HISTORY_FILE_PATH,
+                    },
                 },
                 f,
                 pretty=True,
@@ -304,7 +306,23 @@ class ClickHouseTemporaryDisks:
         to_path: str,
         routine_tag: str,
     ) -> None:
-        if self._ch_ctl.ch_version_ge("23.9"):
+        command = "copy"
+        common_args = ["--config", CH_DISK_CONFIG_PATH]
+        if self._ch_ctl.ch_version_ge("24.7"):
+            command_args = [
+                "--recursive",
+                "--disk-from",
+                from_disk,
+                "--disk-to",
+                to_disk,
+                from_path,
+                to_path,
+                "'",
+            ]
+            common_args.append("--query")
+            # Changes in disks interface require passing command with args in quotes
+            command = "'" + command
+        elif self._ch_ctl.ch_version_ge("23.9"):
             command_args = [
                 "--disk-from",
                 from_disk,
@@ -326,8 +344,8 @@ class ClickHouseTemporaryDisks:
         result = _exec(
             routine_tag,
             exe="/usr/bin/clickhouse-disks",
-            common_args=["-C", CH_DISK_CONFIG_PATH],
-            command="copy",
+            common_args=common_args,
+            command=command,
             command_args=command_args,
         )
         logging.info(f"clickhouse-disks copy result for {routine_tag}: {result}")
@@ -355,14 +373,13 @@ def _exec(
         *common_args,
     ]
     if command:
-        args += [  # type: ignore
-            command,
-            *command_args,
-        ]
+        command_with_args = [command, *command_args] if command_args else [command]
+        args += command_with_args  # type: ignore
 
-    logging.debug(f'Executing "{" ".join(args)}"')
+    args = " ".join(args)  # type: ignore
+    logging.debug(f'Executing "{args}"')
 
-    with Popen(args, stdout=PIPE, stderr=PIPE, shell=False) as proc:
+    with Popen(args, stdout=PIPE, stderr=PIPE, shell=True) as proc:  # nosec
         while proc.poll() is None:
             for line in proc.stderr.readlines():  # type: ignore
                 proc_logger.info(line.decode("utf-8").strip())
