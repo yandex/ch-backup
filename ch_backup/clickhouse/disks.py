@@ -306,6 +306,7 @@ class ClickHouseTemporaryDisks:
         to_path: str,
         routine_tag: str,
     ) -> None:
+        command = "copy"
         common_args = ["--config", CH_DISK_CONFIG_PATH]
         if self._ch_ctl.ch_version_ge("24.7"):
             command_args = [
@@ -316,8 +317,11 @@ class ClickHouseTemporaryDisks:
                 to_disk,
                 from_path,
                 to_path,
+                "'",
             ]
             common_args.append("--query")
+            # Changes in disks interface require passing command with args in quotes
+            command = "'" + command
         elif self._ch_ctl.ch_version_ge("23.9"):
             command_args = [
                 "--disk-from",
@@ -341,7 +345,7 @@ class ClickHouseTemporaryDisks:
             routine_tag,
             exe="/usr/bin/clickhouse-disks",
             common_args=common_args,
-            command="copy",
+            command=command,
             command_args=command_args,
         )
         logging.info(f"clickhouse-disks copy result for {routine_tag}: {result}")
@@ -370,12 +374,12 @@ def _exec(
     ]
     if command:
         command_with_args = [command, *command_args] if command_args else [command]
-        command_with_args = " ".join(command_with_args)  # type: ignore
-        args.append(command_with_args)  # type: ignore
+        args += command_with_args  # type: ignore
 
-    logging.debug(f'Executing "{" ".join(args)}"')
+    args = " ".join(args)  # type: ignore
+    logging.debug(f'Executing "{args}"')
 
-    with Popen(args, stdout=PIPE, stderr=PIPE, shell=False) as proc:
+    with Popen(args, stdout=PIPE, stderr=PIPE, shell=True) as proc:  # nosec
         while proc.poll() is None:
             for line in proc.stderr.readlines():  # type: ignore
                 proc_logger.info(line.decode("utf-8").strip())
