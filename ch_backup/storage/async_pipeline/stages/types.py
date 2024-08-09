@@ -14,3 +14,4 @@ class StageType(str, Enum):
     FILESYSTEM = "filesystem"
     ENCRYPTION = "encryption"
     COMPRESSION = "compression"
+    BACKUP = "backup"

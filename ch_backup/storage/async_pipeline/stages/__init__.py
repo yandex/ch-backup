@@ -2,6 +2,9 @@
 Stages package.
 """
 
+from .backup.deduplicate_stage import DeduplicateStage
+from .backup.freeze_table_stage import FreezeTableStage
+from .backup.upload_part_stage import UploadPartStage
 from .compression.compress_stage import CompressStage
 from .compression.decompress_stage import DecompressStage
 from .encryption.decrypt_stage import DecryptStage

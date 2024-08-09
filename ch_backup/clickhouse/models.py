@@ -32,6 +32,9 @@ class Disk(SimpleNamespace):
         self._metadata_storage_type = metadata_storage_type
         self.cache_path = cache_path
 
+    def __reduce__(self):
+        return (self.__class__, (self.name, self.path, self._type, self._object_storage_type, self._metadata_storage_type, self.cache_path))
+
     @property
     def type(self) -> str:
         """
@@ -70,8 +73,13 @@ class Table(SimpleNamespace):
         self.engine = engine
         self.create_statement = create_statement
         self.uuid = uuid
-        self.paths_with_disks = self._map_paths_to_disks(disks, data_paths)
+        self._disks = disks
+        self._data_paths = data_paths
+        self.paths_with_disks = self._map_paths_to_disks(self._disks, self._data_paths)
         self.metadata_path = metadata_path
+
+    def __reduce__(self):
+       return (self.__class__, (self.database, self.name, self.engine, self._disks, self._data_paths, self.metadata_path, self.create_statement, self.uuid))
 
     def _map_paths_to_disks(
         self, disks: List[Disk], data_paths: List[str]
@@ -173,6 +181,9 @@ class Database(SimpleNamespace):
         self.name = name
         self.engine = engine
         self.metadata_path = metadata_path
+
+    def __reduce__(self):
+        return (self.__class__, (self.name, self.engine, self.metadata_path))
 
     def is_atomic(self) -> bool:
         """

@@ -17,6 +17,7 @@ from inspect import currentframe
 from itertools import islice
 from pathlib import Path
 from string import ascii_letters, digits
+from types import SimpleNamespace
 from typing import (
     BinaryIO,
     Callable,

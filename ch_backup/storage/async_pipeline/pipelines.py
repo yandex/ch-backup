@@ -5,7 +5,9 @@ Free functions that create and run pipelines. Can be started in multiprocessing 
 from pathlib import Path
 from tarfile import BLOCKSIZE
 from typing import Any, AnyStr, List, Optional, Sequence
+from queue import Queue
 
+from ch_backup import logging
 from ch_backup.calculators import (
     calc_aligned_files_size,
     calc_aligned_files_size_scan,
@@ -13,12 +15,31 @@ from ch_backup.calculators import (
     calc_tarball_size,
     calc_tarball_size_scan,
 )
+from ch_backup.clickhouse.models import Database, Table
 from ch_backup.encryption import get_encryption
 from ch_backup.storage.async_pipeline.pipeline_builder import (
     PipelineBuilder,
     PypelnStage,
 )
 from ch_backup.util import exhaust_iterator
+
+
+def _add_upload_data_pipeline(
+    builder: PipelineBuilder,
+    config: dict,
+    data: AnyStr,
+    remote_path: str,
+    encrypt: bool,
+) -> None:
+    """
+    Add upload data pipeline to given builder.
+    """
+    estimated_size = len(data)
+    builder.build_iterable_stage([data])
+    if encrypt:
+        builder.build_encrypt_stage()
+        estimated_size = _calc_encrypted_size(config, estimated_size)
+    builder.build_uploading_stage(remote_path, estimated_size)
 
 
 def upload_data_pipeline(
@@ -28,14 +49,7 @@ def upload_data_pipeline(
     Entrypoint of upload data pipeline.
     """
     builder = PipelineBuilder(config)
-
-    estimated_size = len(data)
-    builder.build_iterable_stage([data])
-    if encrypt:
-        builder.build_encrypt_stage()
-        estimated_size = _calc_encrypted_size(config, estimated_size)
-    builder.build_uploading_stage(remote_path, estimated_size)
-
+    _add_upload_data_pipeline(builder, config, data, remote_path, encrypt)
     run(builder.pipeline())
 
 
@@ -183,6 +197,39 @@ def delete_multiple_storage_pipeline(config: dict, remote_paths: Sequence[str]) 
     builder = PipelineBuilder(config)
 
     builder.build_delete_multiple_storage_stage(remote_paths)
+
+    run(builder.pipeline())
+
+
+def backup_table_pipeline(
+    config: dict,
+    ch_ctl: Any,
+    db: Database,
+    table: Table,
+    create_statement: bytes,
+    remote_path: str,
+    mtimes,
+    backup_name: str,
+    schema_only: bool,
+):
+    """ """
+    builder = PipelineBuilder(config)
+
+    # Upload create statement
+    _add_upload_data_pipeline(
+        builder, config, create_statement, remote_path, encrypt=True
+    )
+
+    # Freeze only MergeTree tables
+    if not schema_only and table.is_merge_tree():
+        builder.build_freeze_table_stage(
+            ch_ctl, db, table, backup_name, mtimes
+        )
+        builder.build_deduplicate_stage(ch_ctl, db, table)
+        # Used to pass part info between stages avoiding some stages
+        part_metadata_pipeline_queue = Queue()
+        builder.build_upload_part_stage(ch_ctl, db, table, part_metadata_pipeline_queue)
+        #builder.build_complete_part_upload_stage(ch_ctl, db, table, part_metadata_pipeline_queue)
 
     run(builder.pipeline())
 

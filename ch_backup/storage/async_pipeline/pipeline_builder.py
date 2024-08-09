@@ -5,11 +5,13 @@ Pipeline builder.
 from functools import reduce
 from math import ceil
 from pathlib import Path
+from queue import Queue
 from typing import Any, Iterable, List, Optional, Sequence, Union
 
 from pypeln import utils as pypeln_utils
 from pypeln.thread.api.from_iterable import from_iterable
 
+from ch_backup.clickhouse.models import Database, Table
 from ch_backup.compression import get_compression
 from ch_backup.encryption import get_encryption
 from ch_backup.storage.async_pipeline import thread_flat_map
@@ -22,17 +24,20 @@ from ch_backup.storage.async_pipeline.stages import (
     CompressStage,
     DecompressStage,
     DecryptStage,
+    DeduplicateStage,
     DeleteFilesScanStage,
     DeleteFilesStage,
     DeleteMultipleStorageStage,
     DownloadStorageStage,
     EncryptStage,
+    FreezeTableStage,
     RateLimiterStage,
     ReadFileStage,
     ReadFilesTarballScanStage,
     ReadFilesTarballStage,
     StartMultipartUploadStage,
     StorageUploadingStage,
+    UploadPartStage,
     WriteFilesStage,
     WriteFileStage,
 )
@@ -324,6 +329,38 @@ class PipelineBuilder:
 
         self.append(
             thread_map(DeleteMultipleStorageStage(stage_config, remote_paths, storage))
+        )
+        return self
+
+    def build_freeze_table_stage(
+        self, ch_ctl: Any, db: Database, table: Table, backup_name: str, mtimes
+    ) -> "PipelineBuilder":
+        self.append(
+            thread_input(FreezeTableStage(ch_ctl, db, table, backup_name, mtimes))
+        )
+        return self
+
+    def build_deduplicate_stage(
+        self, ch_ctl: Any, db: Database, table: Table
+    ) -> "PipelineBuilder":
+        stage_config = self._config[DeduplicateStage.stype]
+        self.append(
+            thread_flat_map(DeduplicateStage(stage_config, ch_ctl, db, table)),
+            thread_map(UploadPartStage(ch_ctl, db, table)),
+        )
+        return self
+
+    def build_upload_part_stage(
+        self,
+        ch_ctl: Any,
+        db: Database,
+        table: Table,
+        part_metadata_pipeline_queue: Queue,
+    ) -> "PipelineBuilder":
+        self.append(
+            thread_flat_map(
+                UploadPartStage(ch_ctl, db, table, part_metadata_pipeline_queue)
+            )
         )
         return self
 
