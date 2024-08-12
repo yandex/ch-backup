@@ -50,11 +50,11 @@ class BackupMetadata:
         schema_only: bool = False,
     ) -> None:
         self.name = name
-        self.labels = labels
         self.path = path
         self.version = version
         self.ch_version = ch_version
         self.hostname = hostname or socket.getfqdn()
+        self.labels = labels or {}
         self.time_format = time_format
         self.start_time = now()
         self.end_time: Optional[datetime] = None

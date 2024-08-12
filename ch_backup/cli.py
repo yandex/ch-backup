@@ -191,6 +191,7 @@ def command(*args, **kwargs):
 @option(
     "-a",
     "--all",
+    "all_",
     is_flag=True,
     default=False,
     help="List all backups. The default is to show only successfully created backups.",
@@ -198,15 +199,20 @@ def command(*args, **kwargs):
 @option("-v", "--verbose", is_flag=True, default=False, help="Verbose output.")
 @option(
     "--format",
+    "format_",
     type=Choice(["table", "json"]),
     default="table",
     help='Output format. The default is "table" format.',
 )
 def list_command(
-    _ctx: Context, ch_backup: ClickhouseBackup, verbose: bool, **kwargs: dict
+    _ctx: Context,
+    ch_backup: ClickhouseBackup,
+    verbose: bool,
+    all_: bool,
+    format_: str,
 ) -> None:
     """List existing backups."""
-    state = None if kwargs["all"] else BackupState.CREATED
+    state = None if all_ else BackupState.CREATED
 
     backups = ch_backup.list(state)
 
@@ -216,23 +222,28 @@ def list_command(
 
     records = []
     for backup in backups:
-        records.append(
-            OrderedDict(
-                (
-                    ("name", backup.name),
-                    ("state", backup.state.value),
-                    ("start_time", backup.start_time_str),
-                    ("end_time", backup.end_time_str),
-                    ("size", backup.size),
-                    ("real_size", backup.real_size),
-                    ("ch_version", backup.ch_version),
-                    ("cloud_disks", backup.cloud_storage.disks),
-                    ("labels", backup.labels),
-                )
+        record: dict = OrderedDict(
+            (
+                ("name", backup.name),
+                ("state", backup.state.value),
+                ("start_time", backup.start_time_str),
+                ("end_time", backup.end_time_str),
+                ("size", backup.size),
+                ("real_size", backup.real_size),
+                ("ch_version", backup.ch_version),
             )
         )
+        if format_ == "json":
+            record["labels"] = backup.labels
+            record["cloud_disks"] = backup.cloud_storage.disks
+            record["exception"] = backup.exception
+        else:
+            record["labels"] = "\n".join(
+                f"{name}: {value}" for name, value in backup.labels.items()
+            )
+        records.append(record)
 
-    if kwargs["format"] == "json":
+    if format_ == "json":
         json.dump(records, sys.stdout, indent=2)
         print()
     else:
