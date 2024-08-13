@@ -67,6 +67,7 @@ def chown_dir_contents(
     """
     Recursively change directory user/group
     """
+    shutil.chown(dir_path, user, group)
     if need_recursion:
         for path, dirs, files in os.walk(dir_path):
             for directory in dirs:
