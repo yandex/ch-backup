@@ -219,6 +219,7 @@ class PipelineExecutor:
         job_id = self._make_job_id("backup_table", db.name, table.name)
         remote_path = context.backup_layout.get_table_metadata_path(context.backup_meta.name, db, table)
         backup_name_sanitized = context.backup_meta.get_sanitized_name()
+        backup_path = context.backup_layout.get_backup_path(backup_name_sanitized)
         pipeline = partial(
             backup_table_pipeline,
             self._config,
@@ -229,6 +230,7 @@ class PipelineExecutor:
             remote_path,
             mtimes,
             backup_name_sanitized,
+            backup_path,
             schema_only,
         )
         self._exec_pipeline(job_id, pipeline, is_async)

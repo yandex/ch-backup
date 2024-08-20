@@ -5,11 +5,11 @@ Stages package.
 from .backup.deduplicate_stage import DeduplicateStage
 from .backup.freeze_table_stage import FreezeTableStage
 from .backup.upload_part_stage import UploadPartStage
-from .compression.compress_stage import CompressStage
+from .compression.compress_stage import CompressStage, CompressPartStage
 from .compression.decompress_stage import DecompressStage
 from .encryption.decrypt_stage import DecryptStage
-from .encryption.encrypt_stage import EncryptStage
-from .filesystem.chunking_stage import ChunkingStage
+from .encryption.encrypt_stage import EncryptStage, EncryptPartStage
+from .filesystem.chunking_stage import ChunkingStage, ChunkingPartStage
 from .filesystem.collect_data_stage import CollectDataStage
 from .filesystem.delete_files_stage import DeleteFilesScanStage, DeleteFilesStage
 from .filesystem.read_file_stage import ReadFileStage
@@ -17,6 +17,7 @@ from .filesystem.read_files_tarball_stage import (
     ReadFilesTarballScanStage,
     ReadFilesTarballStage,
 )
+from .filesystem.read_files_tarball_pipeline_stage import ReadFilesTarballPipelineStage
 from .filesystem.write_file_stage import WriteFileStage
 from .filesystem.write_files_stage import WriteFilesStage
 from .storage.delete_multiple_storage_stage import DeleteMultipleStorageStage
@@ -26,4 +27,9 @@ from .storage.multipart_storage_uploading_stage import (
     StartMultipartUploadStage,
     StorageUploadingStage,
 )
-from .storage.rate_limiter_stage import RateLimiterStage
+from .storage.multipart_storage_uploading_part_stage import (
+    CompleteMultipartUploadPartStage,
+    StartMultipartUploadPartStage,
+    StorageUploadingPartStage,
+)
+from .storage.rate_limiter_stage import RateLimiterStage, RateLimiterPartStage

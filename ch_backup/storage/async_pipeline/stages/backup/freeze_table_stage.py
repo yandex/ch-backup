@@ -9,7 +9,7 @@ from typing import Any, Iterable, Optional, Tuple
 from ch_backup import logging
 from ch_backup.backup.metadata.part_metadata import PartMetadata
 from ch_backup.clickhouse.client import ClickhouseError
-from ch_backup.clickhouse.models import Database, Table
+from ch_backup.clickhouse.models import Database, FrozenPart, Table
 from ch_backup.storage.async_pipeline.base_pipeline.handler import InputHandler
 from ch_backup.storage.async_pipeline.stages.types import StageType
 
@@ -31,7 +31,7 @@ class FreezeTableStage(InputHandler):
     def on_start(self) -> None:
         logging.debug('Trying to freeze "{}"."{}"', self.db.name, self.table.name)
         try:
-            return self.ch_ctl.freeze_table(self.backup_name, self.table)
+            self.ch_ctl.freeze_table(self.backup_name, self.table)
         except ClickhouseError:
             if self.ch_ctl.does_table_exist(self.table.database, self.table.name):
                 raise
@@ -44,7 +44,7 @@ class FreezeTableStage(InputHandler):
             # TODO: error
             raise
 
-    def __call__(self) -> Iterable[Tuple[str, PartMetadata]]:
+    def __call__(self) -> Iterable[Tuple[str, FrozenPart]]:
         # Check if table metadata was updated
         new_mtime = self._get_mtime(self.table.metadata_path)
         if new_mtime is None or self.mtimes[self.table.name].mtime != new_mtime:
@@ -62,8 +62,7 @@ class FreezeTableStage(InputHandler):
                 self.table, disk, data_path, self.backup_name
             ):
                 # TODO: add disk or disk type to metadata?
-                logging.debug("YELDING 2 {}", fpart.name)
-                yield disk.type, PartMetadata.from_frozen_part(fpart)
+                yield disk.type, fpart
 
     @staticmethod
     def _get_mtime(file_name: str) -> Optional[float]:

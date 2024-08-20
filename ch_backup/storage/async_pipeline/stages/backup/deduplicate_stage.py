@@ -23,24 +23,24 @@ class DeduplicateStage(IterableHandler):
         self.ch_ctl = ch_ctl
         self.db = db
         self.table = table
-        self.frozen_parts_batch: Dict[str, PartMetadata] = {}
+        self.frozen_parts_batch: Dict[str, FrozenPart] = {}
         self.dedup_batch_size = config["deduplication_batch_size"]
 
-    def __call__(self, value: Tuple[str, PartMetadata], index: int) -> Optional[Iterable[PartMetadata]]:
-        disk_type, part_metadata = value
+    def __call__(self, value: Tuple[str, FrozenPart], index: int) -> Optional[Iterable[FrozenPart]]:
+        disk_type, frozen_part = value
         if disk_type == "s3":
-            yield part_metadata
+            yield frozen_part
         else:
-            self.frozen_parts_batch[part_metadata.name] = part_metadata
+            self.frozen_parts_batch[frozen_part.name] = frozen_part
             if len(self.frozen_parts_batch) >= self.dedup_batch_size:
-                for part in self.deduplicate_batch():
-                    yield part
+                for fpart in self.deduplicate_batch():
+                    yield fpart
                 self.frozen_parts_batch.clear()
 
     def on_done(self) -> Optional[Iterable[PartMetadata]]:
         if self.frozen_parts_batch:
-            for part in self.deduplicate_batch():
-                yield part
+            for fpart in self.deduplicate_batch():
+                yield fpart
 
     def deduplicate_batch(self): #-> Dict[str, PartMetadata]:
         return self.frozen_parts_batch.values()

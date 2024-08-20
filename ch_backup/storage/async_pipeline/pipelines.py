@@ -210,9 +210,25 @@ def backup_table_pipeline(
     remote_path: str,
     mtimes,
     backup_name: str,
+    backup_path: str,
     schema_only: bool,
 ):
     """ """
+    def calc_estimated_part_size(
+        dir_path: str,
+        file_relative_paths: List[str],
+    ) -> int:
+        """
+        Calculate estimated part size.
+        """
+        file_absolute_paths = [Path(dir_path) / rel_path for rel_path in file_relative_paths]
+
+        estimated_size = calc_aligned_files_size(file_absolute_paths, alignment=BLOCKSIZE)
+        estimated_size = calc_tarball_size(
+            [str(f) for f in file_relative_paths], estimated_size
+        )
+        if True: #encrypt:
+            estimated_size = _calc_encrypted_size(config, estimated_size)
     builder = PipelineBuilder(config)
 
     # Upload create statement
@@ -222,14 +238,9 @@ def backup_table_pipeline(
 
     # Freeze only MergeTree tables
     if not schema_only and table.is_merge_tree():
-        builder.build_freeze_table_stage(
-            ch_ctl, db, table, backup_name, mtimes
-        )
+        builder.build_freeze_table_stage(ch_ctl, db, table, backup_name, mtimes)
         builder.build_deduplicate_stage(ch_ctl, db, table)
-        # Used to pass part info between stages avoiding some stages
-        part_metadata_pipeline_queue = Queue()
-        builder.build_upload_part_stage(ch_ctl, db, table, part_metadata_pipeline_queue)
-        #builder.build_complete_part_upload_stage(ch_ctl, db, table, part_metadata_pipeline_queue)
+        builder.build_upload_part_stage(ch_ctl, backup_path, db, table, calc_estimated_part_size)
 
     run(builder.pipeline())
 

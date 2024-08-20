@@ -9,7 +9,7 @@ from pathlib import Path
 from itertools import chain
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from ch_backup.storage.async_pipeline.stages.backup.queues import part_metadata_queue
+from ch_backup.storage.async_pipeline.stages.backup.stage_communication import part_metadata_queue
 
 from ch_backup import logging
 from ch_backup.backup.deduplication import deduplicate_parts
