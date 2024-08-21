@@ -3,17 +3,16 @@ Compressing stage.
 """
 
 import os
-from threading import Condition
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Iterable, List, Tuple
 from urllib.parse import quote
 
-from ch_backup import logging
 from ch_backup.backup.metadata.part_metadata import PartMetadata
-from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.clickhouse.models import Database, FrozenPart, Table
 from ch_backup.storage.async_pipeline.base_pipeline.handler import IterableHandler
+from ch_backup.storage.async_pipeline.stages.backup.stage_communication import (
+    PartPipelineInfo,
+)
 from ch_backup.storage.async_pipeline.stages.types import StageType
-from ch_backup.storage.async_pipeline.stages.backup.stage_communication import PartPipelineInfo
 
 
 class UploadPartStage(IterableHandler):
@@ -35,12 +34,19 @@ class UploadPartStage(IterableHandler):
         self.backup_path = backup_path
         self.calc_estimated_part_size = calc_estimated_part_size
 
-    def __call__(self, value: FrozenPart, index: int) -> Iterable[Tuple[List[str], PartPipelineInfo]]:
+    def __call__(
+        self, value: FrozenPart, index: int
+    ) -> Iterable[Tuple[List[str], PartPipelineInfo]]:
         part_metadata = PartMetadata.from_frozen_part(value)
         part_path = self._part_path(value.name)
         remote_path = os.path.join(part_path, value.name + ".tar")
         estimated_size = self.calc_estimated_part_size(value.path, value.files)
-        yield (value.files, PartPipelineInfo(part_metadata, self.table.name, value.path, remote_path, estimated_size))
+        yield (
+            value.files,
+            PartPipelineInfo(
+                part_metadata, self.table.name, value.path, remote_path, estimated_size
+            ),
+        )
 
     def _part_path(
         self,

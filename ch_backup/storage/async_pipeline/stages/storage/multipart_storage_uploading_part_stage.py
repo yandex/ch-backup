@@ -3,18 +3,13 @@ Multipart uploading to storage stage.
 """
 
 from dataclasses import dataclass
-from queue import Queue
-from typing import Iterable, List, Optional
+from typing import Optional
 
-from ch_backup import logging
-from ch_backup.storage.async_pipeline.base_pipeline.handler import (
-    IterableHandler,
-    Handler,
-)
+import ch_backup.storage.async_pipeline.stages.backup.stage_communication as stage_communication
+from ch_backup.storage.async_pipeline.base_pipeline.handler import Handler
 from ch_backup.storage.async_pipeline.stages.types import StageType
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
 from ch_backup.util import Slotted
-import ch_backup.storage.async_pipeline.stages.backup.stage_communication as stage_communication
 
 
 @dataclass
@@ -51,6 +46,7 @@ class StartMultipartUploadPartStage(Handler):
         self._loader = loader
         self._chunk_size = chunk_size
         self._last_part_info: Optional[stage_communication.PartPipelineInfo] = None
+        self._upload_id = None
 
     def __call__(
         self, value: tuple[bytes, stage_communication.PartPipelineInfo], index: int
@@ -74,8 +70,7 @@ class StartMultipartUploadPartStage(Handler):
             self._last_part_info = part_info
             return UploadingPart(data, self._upload_id, part_info)  # type: ignore[call-arg]
         # Continue uploading current part
-        else:
-            return UploadingPart(data, self._upload_id, part_info)  # type: ignore[call-arg]self._last_part_info
+        return UploadingPart(data, self._upload_id, part_info)  # type: ignore[call-arg]self._last_part_info
 
     def _is_new_part(self, part_info: stage_communication.PartPipelineInfo):
         return (
@@ -143,9 +138,7 @@ class CompleteMultipartUploadPartStage(Handler):
                     remote_path=self._last_part_info.part_info.remote_path,
                     upload_id=self._last_part_info.upload_id,
                 )
-            stage_communication.part_metadata_queue.put(
-                self._last_part_info.part_info
-            )
+            stage_communication.part_metadata_queue.put(self._last_part_info.part_info)
             self._last_part_info = part
 
     def on_done(self) -> None:
@@ -157,5 +150,12 @@ class CompleteMultipartUploadPartStage(Handler):
             )
         stage_communication.part_metadata_queue.put(self._last_part_info.part_info)
         stage_communication.part_metadata_queue.put(
-            stage_communication.PartPipelineInfo(table=self._last_part_info.part_info.table, all_parts_done=True)
+            stage_communication.PartPipelineInfo(
+                None,
+                self._last_part_info.part_info.table,
+                None,
+                None,
+                None,
+                all_parts_done=True,
+            )
         )

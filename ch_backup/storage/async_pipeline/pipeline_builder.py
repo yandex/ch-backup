@@ -5,7 +5,6 @@ Pipeline builder.
 from functools import reduce
 from math import ceil
 from pathlib import Path
-from queue import Queue
 from typing import Any, Callable, Iterable, List, Optional, Sequence, Union
 
 from pypeln import utils as pypeln_utils
@@ -18,13 +17,13 @@ from ch_backup.storage.async_pipeline import thread_flat_map
 from ch_backup.storage.async_pipeline.base_pipeline.input import thread_input
 from ch_backup.storage.async_pipeline.base_pipeline.map import thread_map
 from ch_backup.storage.async_pipeline.stages import (
-    ChunkingStage,
     ChunkingPartStage,
+    ChunkingStage,
     CollectDataStage,
-    CompleteMultipartUploadStage,
     CompleteMultipartUploadPartStage,
-    CompressStage,
+    CompleteMultipartUploadStage,
     CompressPartStage,
+    CompressStage,
     DecompressStage,
     DecryptStage,
     DeduplicateStage,
@@ -32,18 +31,18 @@ from ch_backup.storage.async_pipeline.stages import (
     DeleteFilesStage,
     DeleteMultipleStorageStage,
     DownloadStorageStage,
-    EncryptStage,
     EncryptPartStage,
+    EncryptStage,
     FreezeTableStage,
-    RateLimiterStage,
     RateLimiterPartStage,
+    RateLimiterStage,
     ReadFileStage,
     ReadFilesTarballScanStage,
     ReadFilesTarballStage,
-    StartMultipartUploadStage,
     StartMultipartUploadPartStage,
-    StorageUploadingStage,
+    StartMultipartUploadStage,
     StorageUploadingPartStage,
+    StorageUploadingStage,
     UploadPartStage,
     WriteFilesStage,
     WriteFileStage,
@@ -319,7 +318,7 @@ class PipelineBuilder:
         """
         stage_config = self._config[StorageUploadingStage.stype]
 
-        max_chunk_count = stage_config["max_chunk_count"]
+        # max_chunk_count = stage_config["max_chunk_count"]
         buffer_size = stage_config["buffer_size"]
         chunk_size = stage_config["chunk_size"]
         queue_size = stage_config["queue_size"]
@@ -336,15 +335,15 @@ class PipelineBuilder:
                 StartMultipartUploadPartStage(stage_config, chunk_size, storage),
                 maxsize=queue_size,
             ),
-            # thread_map(
-            #     StorageUploadingPartStage(stage_config, storage),
-            #     maxsize=queue_size,
-            #     workers=stage_config["uploading_threads"],
-            # ),
-            # thread_map(
-            #     CompleteMultipartUploadPartStage(stage_config, storage),
-            #     maxsize=queue_size,
-            # ),
+            thread_map(
+                StorageUploadingPartStage(stage_config, storage),
+                maxsize=queue_size,
+                workers=stage_config["uploading_threads"],
+            ),
+            thread_map(
+                CompleteMultipartUploadPartStage(stage_config, storage),
+                maxsize=queue_size,
+            ),
         ]
 
         self.append(

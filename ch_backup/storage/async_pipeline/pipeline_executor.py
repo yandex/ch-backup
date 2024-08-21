@@ -7,7 +7,6 @@ from functools import partial
 from pathlib import Path
 from typing import Any, AnyStr, Callable, Dict, List, Optional, Sequence
 
-from ch_backup import logging
 from ch_backup.clickhouse.models import Database, Table
 from ch_backup.profile import profile
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ExecPool
@@ -217,7 +216,9 @@ class PipelineExecutor:
     ) -> None:
         """ """
         job_id = self._make_job_id("backup_table", db.name, table.name)
-        remote_path = context.backup_layout.get_table_metadata_path(context.backup_meta.name, db, table)
+        remote_path = context.backup_layout.get_table_metadata_path(
+            context.backup_meta.name, db, table
+        )
         backup_name_sanitized = context.backup_meta.get_sanitized_name()
         backup_path = context.backup_layout.get_backup_path(backup_name_sanitized)
         pipeline = partial(

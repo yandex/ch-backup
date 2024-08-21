@@ -5,9 +5,7 @@ Free functions that create and run pipelines. Can be started in multiprocessing 
 from pathlib import Path
 from tarfile import BLOCKSIZE
 from typing import Any, AnyStr, List, Optional, Sequence
-from queue import Queue
 
-from ch_backup import logging
 from ch_backup.calculators import (
     calc_aligned_files_size,
     calc_aligned_files_size_scan,
@@ -214,6 +212,7 @@ def backup_table_pipeline(
     schema_only: bool,
 ):
     """ """
+
     def calc_estimated_part_size(
         dir_path: str,
         file_relative_paths: List[str],
@@ -221,14 +220,19 @@ def backup_table_pipeline(
         """
         Calculate estimated part size.
         """
-        file_absolute_paths = [Path(dir_path) / rel_path for rel_path in file_relative_paths]
+        file_absolute_paths = [
+            Path(dir_path) / rel_path for rel_path in file_relative_paths
+        ]
 
-        estimated_size = calc_aligned_files_size(file_absolute_paths, alignment=BLOCKSIZE)
+        estimated_size = calc_aligned_files_size(
+            file_absolute_paths, alignment=BLOCKSIZE
+        )
         estimated_size = calc_tarball_size(
             [str(f) for f in file_relative_paths], estimated_size
         )
-        if True: #encrypt:
+        if True:  # encrypt:
             estimated_size = _calc_encrypted_size(config, estimated_size)
+
     builder = PipelineBuilder(config)
 
     # Upload create statement
@@ -240,7 +244,9 @@ def backup_table_pipeline(
     if not schema_only and table.is_merge_tree():
         builder.build_freeze_table_stage(ch_ctl, db, table, backup_name, mtimes)
         builder.build_deduplicate_stage(ch_ctl, db, table)
-        builder.build_upload_part_stage(ch_ctl, backup_path, db, table, calc_estimated_part_size)
+        builder.build_upload_part_stage(
+            ch_ctl, backup_path, db, table, calc_estimated_part_size
+        )
 
     run(builder.pipeline())
 

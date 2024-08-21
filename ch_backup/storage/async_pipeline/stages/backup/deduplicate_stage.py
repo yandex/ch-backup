@@ -2,18 +2,13 @@
 Compressing stage.
 """
 
-import os
-from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Tuple
 
-from ch_backup import logging
+import ch_backup.storage.async_pipeline.stages.backup.stage_communication as stage_communication
 from ch_backup.backup.metadata.part_metadata import PartMetadata
-from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.models import Database, FrozenPart, Table
 from ch_backup.storage.async_pipeline.base_pipeline.handler import IterableHandler
 from ch_backup.storage.async_pipeline.stages.types import StageType
-
-import ch_backup.storage.async_pipeline.stages.backup.stage_communication as stage_communication
 
 
 class DeduplicateStage(IterableHandler):

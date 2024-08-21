@@ -4,7 +4,6 @@ Chunking stage.
 
 from typing import Iterator, Optional, Tuple
 
-from ch_backup import logging
 from ch_backup.storage.async_pipeline.base_pipeline.bytes_fifo import BytesFIFO
 from ch_backup.storage.async_pipeline.base_pipeline.handler import Handler
 from ch_backup.storage.async_pipeline.stages.backup.stage_communication import (
@@ -68,7 +67,10 @@ class ChunkingPartStage(Handler):
     ) -> Iterator[Tuple[bytes, PartPipelineInfo]]:
         data, part_info = value
         # New part is passed, yield all previous part data
-        if self._last_part_info is not None and part_info.part_metadata.name != self._last_part_info.part_metadata.name:
+        if (
+            self._last_part_info is not None
+            and part_info.part_metadata.name != self._last_part_info.part_metadata.name
+        ):
             while len(self._buffer) >= self._chunk_size:
                 result_data = self._buffer.read(self._chunk_size)
                 yield (result_data, self._last_part_info)

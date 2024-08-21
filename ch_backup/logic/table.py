@@ -5,20 +5,17 @@ Clickhouse backup logic for tables
 import os
 from collections import deque
 from dataclasses import dataclass
-from pathlib import Path
 from itertools import chain
+from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import ch_backup.storage.async_pipeline.stages.backup.stage_communication as stage_communication
-
 from ch_backup import logging
-from ch_backup.backup.deduplication import deduplicate_parts
-from ch_backup.backup.metadata import PartMetadata, TableMetadata
+from ch_backup.backup.metadata import TableMetadata
 from ch_backup.backup.restore_context import PartState
 from ch_backup.backup_context import BackupContext
-from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
-from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
+from ch_backup.clickhouse.models import Database, Table
 from ch_backup.clickhouse.schema import (
     rewrite_table_schema,
     to_attach_query,
@@ -153,15 +150,18 @@ class TableBackup(BackupManager):
                 TableMetadata(table.database, table.name, table.engine, table.uuid)
             )
 
-        tables_to_backup = set([table.name for table in tables])
+        tables_to_backup = {table.name for table in tables}
         upload_observer = UploadPartObserver(context)
         while tables_to_backup:
+            logging.debug("Waiting part")
             part_info: stage_communication.PartPipelineInfo = (
                 stage_communication.part_metadata_queue.get()
             )
             if part_info.all_parts_done:
+                logging.debug("Done part")
                 tables_to_backup.remove(part_info.table)
             else:
+                logging.debug("Add part")
                 context.backup_meta.add_part(part_info.part_metadata)
                 upload_observer(part_info.part_metadata)
                 # TODO: remove freezed part ?

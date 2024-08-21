@@ -3,12 +3,13 @@ Data rate limiting stage.
 """
 
 import time
-from typing import Iterator, Optional, Tuple
+from typing import Iterator, Tuple
 
-from ch_backup import logging
 from ch_backup.storage.async_pipeline.base_pipeline.handler import Handler
 from ch_backup.storage.async_pipeline.base_pipeline.rate_limiter import RateLimiter
-from ch_backup.storage.async_pipeline.stages.backup.stage_communication import PartPipelineInfo
+from ch_backup.storage.async_pipeline.stages.backup.stage_communication import (
+    PartPipelineInfo,
+)
 from ch_backup.storage.async_pipeline.stages.types import StageType
 
 
@@ -53,7 +54,9 @@ class RateLimiterPartStage(Handler):
         self._retry_interval = retry_interval
         self._rate_limiter = RateLimiter(limit_per_sec=traffic_limit_per_sec)
 
-    def __call__(self, value: Tuple[bytes, PartPipelineInfo], index: int) -> Iterator[Tuple[bytes, PartPipelineInfo]]:
+    def __call__(
+        self, value: Tuple[bytes, PartPipelineInfo], index: int
+    ) -> Iterator[Tuple[bytes, PartPipelineInfo]]:
         data, part_info = value
         while len(data) > 0:
             available_tokens = self._rate_limiter.extract_tokens(len(data))

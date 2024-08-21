@@ -4,11 +4,12 @@ Reading files to TAR stream stage.
 
 import tarfile
 from pathlib import Path
-from typing import Any, Iterable, Iterator, List, Optional, Tuple
+from typing import Iterator, List, Tuple
 
-from ch_backup import logging
 from ch_backup.storage.async_pipeline.base_pipeline.handler import IterableHandler
-from ch_backup.storage.async_pipeline.stages.backup.stage_communication import PartPipelineInfo
+from ch_backup.storage.async_pipeline.stages.backup.stage_communication import (
+    PartPipelineInfo,
+)
 from ch_backup.storage.async_pipeline.stages.types import StageType
 from ch_backup.util import read_by_chunks
 
@@ -26,7 +27,9 @@ class ReadFilesTarballPipelineStage(IterableHandler):
     ) -> None:
         self._chunk_size = config["chunk_size"]
 
-    def __call__(self, files_and_info: Tuple[List[str], PartPipelineInfo], index: int) -> Iterator[Tuple[bytes, PartPipelineInfo]]:
+    def __call__(
+        self, files_and_info: Tuple[List[str], PartPipelineInfo], index: int
+    ) -> Iterator[Tuple[bytes, PartPipelineInfo]]:
         """
         Read files and yield them as TAR stream.
         """

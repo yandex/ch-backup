@@ -3,11 +3,9 @@ Compressing stage.
 """
 
 import os
-from pathlib import Path
 from typing import Any, Iterable, Optional, Tuple
 
 from ch_backup import logging
-from ch_backup.backup.metadata.part_metadata import PartMetadata
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.models import Database, FrozenPart, Table
 from ch_backup.storage.async_pipeline.base_pipeline.handler import InputHandler
