@@ -9,7 +9,7 @@ from pathlib import Path
 from itertools import chain
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from ch_backup.storage.async_pipeline.stages.backup.stage_communication import part_metadata_queue
+import ch_backup.storage.async_pipeline.stages.backup.stage_communication as stage_communication
 
 from ch_backup import logging
 from ch_backup.backup.deduplication import deduplicate_parts
@@ -120,13 +120,14 @@ class TableBackup(BackupManager):
                     context.ch_ctl.get_tables(db.name, tables),
                 )
             )
-            self._backup_tables(context, db, tables_, mtimes, schema_only)
+            self._backup_tables(context, backup_name, db, tables_, mtimes, schema_only)
 
         context.backup_layout.upload_backup_metadata(context.backup_meta)
 
     def _backup_tables(
         self,
         context: BackupContext,
+        backup_name: str,
         db: Database,
         tables: Sequence[Table],
         mtimes: Dict[str, TableMetadataMtime],
@@ -135,8 +136,6 @@ class TableBackup(BackupManager):
         # Create shadow/increment.txt if not exists manually to avoid
         # race condition with parallel freeze
         context.ch_ctl.create_shadow_increment()
-        uploaded_parts = []
-        backuped_tables = []
         for table in tables:
             create_statement = self._load_create_statement_from_disk(table)
             if not create_statement:
@@ -149,12 +148,31 @@ class TableBackup(BackupManager):
             context.backup_layout._storage_loader._ploader.backup_table(
                 context, db, table, create_statement, mtimes, schema_only, is_async=True
             )
-        context.backup_layout.wait()
-        # Add table metadata to backup
-        for table in tables:
+            # TODO: some tables are skipped ?
             context.backup_meta.add_table(
                 TableMetadata(table.database, table.name, table.engine, table.uuid)
             )
+
+        tables_to_backup = set([table.name for table in tables])
+        upload_observer = UploadPartObserver(context)
+        while tables_to_backup:
+            part_info: stage_communication.PartPipelineInfo = (
+                stage_communication.part_metadata_queue.get()
+            )
+            if part_info.all_parts_done:
+                tables_to_backup.remove(part_info.table)
+            else:
+                context.backup_meta.add_part(part_info.part_metadata)
+                upload_observer(part_info.part_metadata)
+                # TODO: remove freezed part ?
+
+        context.backup_layout.wait()
+
+        self._validate_uploaded_parts(context, upload_observer.uploaded_parts)
+
+        # TODO: some tables are skipped ?
+        for table in tables:
+            context.ch_ctl.remove_freezed_data(backup_name, table)
 
     @staticmethod
     def _load_create_statement_from_disk(table: Table) -> Optional[bytes]:
@@ -332,25 +350,25 @@ class TableBackup(BackupManager):
             logging.debug(f"Failed to get mtime of {file_name}: {str(e)}")
             return None
 
-    # @staticmethod
-    # def _validate_uploaded_parts(context: BackupContext, uploaded_parts: list) -> None:
-    #     if context.config["validate_part_after_upload"]:
-    #         invalid_parts = []
+    @staticmethod
+    def _validate_uploaded_parts(context: BackupContext, uploaded_parts: list) -> None:
+        if context.config["validate_part_after_upload"]:
+            invalid_parts = []
 
-    #         for part in uploaded_parts:
-    #             if not context.backup_layout.check_data_part(
-    #                 context.backup_meta.path, part
-    #             ):
-    #                 invalid_parts.append(part)
+            for part in uploaded_parts:
+                if not context.backup_layout.check_data_part(
+                    context.backup_meta.path, part
+                ):
+                    invalid_parts.append(part)
 
-    #         if invalid_parts:
-    #             for part in invalid_parts:
-    #                 logging.error(
-    #                     f"Uploaded part is broken, {part.database}.{part.table}: {part.name}"
-    #                 )
-    #             raise RuntimeError(
-    #                 f'Uploaded parts are broken, {", ".join(map(lambda p: p.name, invalid_parts))}'
-    #             )
+            if invalid_parts:
+                for part in invalid_parts:
+                    logging.error(
+                        f"Uploaded part is broken, {part.database}.{part.table}: {part.name}"
+                    )
+                raise RuntimeError(
+                    f'Uploaded parts are broken, {", ".join(map(lambda p: p.name, invalid_parts))}'
+                )
 
     def _preprocess_tables_to_restore(
         self,

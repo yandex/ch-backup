@@ -52,7 +52,9 @@ class StartMultipartUploadPartStage(Handler):
         self._chunk_size = chunk_size
         self._last_part_info: Optional[stage_communication.PartPipelineInfo] = None
 
-    def __call__(self, value: tuple[bytes, stage_communication.PartPipelineInfo], index: int) -> UploadingPart:
+    def __call__(
+        self, value: tuple[bytes, stage_communication.PartPipelineInfo], index: int
+    ) -> UploadingPart:
         data, part_info = value
         assert len(data) <= self._chunk_size, "Previous chunking stage must ensure this"
 
@@ -74,9 +76,12 @@ class StartMultipartUploadPartStage(Handler):
         # Continue uploading current part
         else:
             return UploadingPart(data, self._upload_id, part_info)  # type: ignore[call-arg]self._last_part_info
-        
+
     def _is_new_part(self, part_info: stage_communication.PartPipelineInfo):
-        return self._last_part_info is None or self._last_part_info.part_metadata.name != part_info.part_metadata.name
+        return (
+            self._last_part_info is None
+            or self._last_part_info.part_metadata.name != part_info.part_metadata.name
+        )
 
 
 class StorageUploadingPartStage(Handler):
@@ -101,7 +106,7 @@ class StorageUploadingPartStage(Handler):
             # New part
             if self._upload_id != part.upload_id:
                 self._upload_id = part.upload_id
-                self._part_num = 1 # Loader expects counting from 1
+                self._part_num = 1  # Loader expects counting from 1
             self._loader.upload_part(
                 part.data, part.part_info.remote_path, part.upload_id, self._part_num
             )
@@ -112,32 +117,45 @@ class StorageUploadingPartStage(Handler):
         return part
 
 
-# class CompleteMultipartUploadPartStage(Handler):
-#     """
-#     Complete multipart uploading if needed.
+class CompleteMultipartUploadPartStage(Handler):
+    """
+    Complete multipart uploading if needed.
 
-#     This stage must be started in a single worker.
-#     """
+    This stage must be started in a single worker.
+    """
 
-#     stype = StageType.STORAGE
+    stype = StageType.STORAGE
 
-#     def __init__(
-#         self,
-#         config: dict,
-#         loader: PipeLineCompatibleStorageEngine,
-#     ) -> None:
-#         self._config = config
-#         self._loader = loader
-#         self._upload_id: Optional[str] = None
+    def __init__(
+        self,
+        config: dict,
+        loader: PipeLineCompatibleStorageEngine,
+    ) -> None:
+        self._config = config
+        self._loader = loader
+        self._last_part_info: UploadingPart = None
 
-#     def __call__(self, part: UploadingPart, index: int) -> None:
-#             self._upload_id = part.upload_id
-#             self.on_done()
+    def __call__(self, part: UploadingPart, index: int) -> None:
+        # New part
+        if self._last_part_info.upload_id != part.upload_id:
+            if self._last_part_info.upload_id is not None:
+                self._loader.complete_multipart_upload(
+                    remote_path=self._last_part_info.part_info.remote_path,
+                    upload_id=self._last_part_info.upload_id,
+                )
+            stage_communication.part_metadata_queue.put(
+                self._last_part_info.part_info
+            )
+            self._last_part_info = part
 
-#     def on_done(self) -> None:
-#         if self._upload_id is not None:
-#             self._loader.complete_multipart_upload(
-#                 remote_path=, upload_id=self._upload_id
-#             )
-#         # Pass to main process
-#         stage_communication.part_metadata_queue.put(stage_communication.current_part_pipeline_info.part_metadata)
+    def on_done(self) -> None:
+        # Pass last part and signal that all parts are uploaded
+        if self._last_part_info.upload_id is not None:
+            self._loader.complete_multipart_upload(
+                remote_path=self._last_part_info.part_info.remote_path,
+                upload_id=self._last_part_info.upload_id,
+            )
+        stage_communication.part_metadata_queue.put(self._last_part_info.part_info)
+        stage_communication.part_metadata_queue.put(
+            stage_communication.PartPipelineInfo(table=self._last_part_info.part_info.table, all_parts_done=True)
+        )

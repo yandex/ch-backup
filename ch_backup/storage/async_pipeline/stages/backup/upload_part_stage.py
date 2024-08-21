@@ -40,7 +40,7 @@ class UploadPartStage(IterableHandler):
         part_path = self._part_path(value.name)
         remote_path = os.path.join(part_path, value.name + ".tar")
         estimated_size = self.calc_estimated_part_size(value.path, value.files)
-        yield (value.files, PartPipelineInfo(part_metadata, value.path, remote_path, estimated_size))
+        yield (value.files, PartPipelineInfo(part_metadata, self.table.name, value.path, remote_path, estimated_size))
 
     def _part_path(
         self,
