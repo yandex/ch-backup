@@ -12,7 +12,6 @@ features/cloud_storage.feature
 features/database_engines.feature
 features/ddl_dictionary.feature
 features/deduplication.feature
-features/disable_kms_encryption.feature
 features/freeze_parallel.feature
 features/incremental_restore.feature
 features/metadata.feature
@@ -26,3 +25,4 @@ features/lock.feature
 features/traffic_limiting.feature
 features/named_collections.feature
 features/operations_without_ch.feature
+features/partially_encrypted_backups.feature

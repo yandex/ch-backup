@@ -28,6 +28,7 @@ from ch_backup.logic.database import DatabaseBackup
 from ch_backup.logic.named_collections import NamedCollectionsBackup
 from ch_backup.logic.table import TableBackup
 from ch_backup.logic.udf import UDFBackup
+from ch_backup.storage.async_pipeline.stages import EncryptStage
 from ch_backup.util import cached_property, now, utcnow
 from ch_backup.version import get_version
 
@@ -149,6 +150,9 @@ class ClickhouseBackup:
             ch_version=self._context.ch_ctl.get_version(),
             time_format=self._context.config["time_format"],
             schema_only=sources.schema_only,
+            is_encryption_enabled=self._config.get(
+                EncryptStage.stype, {}
+            ).get("is_enabled", True),
         )
 
         skip_lock = self._check_schema_only_backup_skip_lock(sources)

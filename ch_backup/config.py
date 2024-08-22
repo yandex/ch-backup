@@ -122,7 +122,7 @@ DEFAULT_CONFIG = {
     },
     # Same structure as 'storage' section, but for cloud storage
     "cloud_storage": {
-        "encryption": False,
+        "encryption": True,
         "compression": True,
     },
     "compression": {
@@ -131,6 +131,7 @@ DEFAULT_CONFIG = {
         "queue_size": 10,
     },
     "encryption": {
+        "is_enabled": True,
         "type": "nacl",
         # Chunk size used when encrypting / decrypting data, in bytes.
         "chunk_size": parse_size("8 MiB"),
