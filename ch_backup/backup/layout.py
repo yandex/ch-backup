@@ -113,7 +113,7 @@ class BackupLayout:
                 create_statement,
                 remote_path,
                 is_async=True,
-                encryption=backup_meta,
+                encryption=backup_meta.is_encryption_enabled,
             )
         except Exception as e:
             msg = f"Failed to create async upload of {remote_path}"
