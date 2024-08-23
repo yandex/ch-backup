@@ -52,15 +52,11 @@ class BackupLayout:
         try:
             logging.debug("Saving backup metadata in {}", remote_path)
             self._storage_loader.upload_data(
-                backup.dump_json(light=False),
-                remote_path=remote_path,
-                encryption=backup.is_encryption_enabled,
+                backup.dump_json(light=False), remote_path=remote_path
             )
             logging.debug("Saving backup light metadata in {}", remote_light_path)
             self._storage_loader.upload_data(
-                backup.dump_json(light=True),
-                remote_path=remote_light_path,
-                encryption=backup.is_encryption_enabled,
+                backup.dump_json(light=True), remote_path=remote_light_path
             )
         except Exception as e:
             raise StorageError("Failed to upload backup metadata") from e
