@@ -411,7 +411,7 @@ class TableBackup(BackupManager):
         )
         # Backup table metadata
         context.backup_layout.upload_table_create_statement(
-            context.backup_meta.name, db, table, create_statement
+            context.backup_meta, db, table, create_statement
         )
         # Backup table data
         if not schema_only:
@@ -450,7 +450,7 @@ class TableBackup(BackupManager):
                     context.backup_meta.add_part(deduplicated_parts[part_name])
                 else:
                     context.backup_layout.upload_data_part(
-                        context.backup_meta.name,
+                        context.backup_meta,
                         frozen_parts[part_name],
                         partial(
                             upload_observer,

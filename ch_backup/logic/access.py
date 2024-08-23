@@ -81,7 +81,7 @@ class AccessBackup(BackupManager):
             acl_file_names = _get_access_control_files(access_control.acl_ids)
             context.backup_layout.upload_access_control_files(
                 backup_tmp_path,
-                context.backup_meta.name,
+                context.backup_meta,
                 acl_file_names,
             )
 
@@ -203,12 +203,12 @@ class AccessBackup(BackupManager):
     ) -> None:
         if context.backup_meta.access_control.backup_format == BackupStorageFormat.TAR:
             context.backup_layout.download_access_control(
-                restore_tmp_path, context.backup_meta.name
+                restore_tmp_path, context.backup_meta
             )
         else:
             for name in _get_access_control_files(acl_ids):
                 context.backup_layout.download_access_control_file(
-                    restore_tmp_path, context.backup_meta.name, name
+                    restore_tmp_path, context.backup_meta, name
                 )
 
     def _clean_user_uuid(self, raw_str: str) -> str:

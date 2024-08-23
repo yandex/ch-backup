@@ -65,15 +65,16 @@ class BackupLayout:
         except Exception as e:
             raise StorageError("Failed to upload backup metadata") from e
 
-    def upload_database_create_statement(self, backup_name: str, db: Database) -> None:
+    def upload_database_create_statement(
+        self, backup_meta: BackupMetadata, db: Database
+    ) -> None:
         """
         Upload database create statement from metadata file.
         """
         local_path = os.path.join(
             self._metadata_path, f"{escape_metadata_file_name(db.name)}.sql"
         )
-        remote_path = _db_metadata_path(self.get_backup_path(backup_name), db.name)
-        backup_meta = self.get_backup(backup_name)
+        remote_path = _db_metadata_path(self.get_backup_path(backup_meta.name), db.name)
         try:
             logging.debug(
                 'Uploading metadata (create statement) for database "{}"', db.name
@@ -81,16 +82,18 @@ class BackupLayout:
             self._storage_loader.upload_file(
                 local_path,
                 remote_path=remote_path,
-                encryption=(
-                    True if backup_meta is None else backup_meta.is_encryption_enabled
-                ),
+                encryption=backup_meta.is_encryption_enabled,
             )
         except Exception as e:
             msg = f"Failed to create async upload of {remote_path}"
             raise StorageError(msg) from e
 
     def upload_table_create_statement(
-        self, backup_name: str, db: Database, table: Table, create_statement: bytes
+        self,
+        backup_meta: BackupMetadata,
+        db: Database,
+        table: Table,
+        create_statement: bytes,
     ) -> None:
         """
         Upload table create statement.
@@ -98,9 +101,8 @@ class BackupLayout:
         assert db.metadata_path is not None
 
         remote_path = _table_metadata_path(
-            self.get_backup_path(backup_name), db.name, table.name
+            self.get_backup_path(backup_meta.name), db.name, table.name
         )
-        backup_meta = self.get_backup(backup_name)
         try:
             logging.debug(
                 'Uploading metadata (create statement) for table "{}"."{}"',
@@ -111,81 +113,74 @@ class BackupLayout:
                 create_statement,
                 remote_path,
                 is_async=True,
-                encryption=(
-                    True if backup_meta is None else backup_meta.is_encryption_enabled
-                ),
+                encryption=backup_meta,
             )
         except Exception as e:
             msg = f"Failed to create async upload of {remote_path}"
             raise StorageError(msg) from e
 
-    def upload_access_control_file(self, backup_name: str, file_name: str) -> None:
+    def upload_access_control_file(
+        self, backup_meta: BackupMetadata, file_name: str
+    ) -> None:
         """
         Upload access control list.
         """
         local_path = os.path.join(self._access_control_path, file_name)
         remote_path = _access_control_data_path(
-            self.get_backup_path(backup_name), file_name
+            self.get_backup_path(backup_meta.name), file_name
         )
-        backup_meta = self.get_backup(backup_name)
         try:
             logging.debug('Uploading access control data "{}"', local_path)
             self._storage_loader.upload_file(
                 local_path=local_path,
                 remote_path=remote_path,
-                encryption=(
-                    True if backup_meta is None else backup_meta.is_encryption_enabled
-                ),
+                encryption=backup_meta.is_encryption_enabled,
             )
         except Exception as e:
             msg = f'Failed to upload access control metadata file "{remote_path}"'
             raise StorageError(msg) from e
 
     def upload_access_control_files(
-        self, local_path: str, backup_name: str, file_names: List[str]
+        self, local_path: str, backup_meta: BackupMetadata, file_names: List[str]
     ) -> None:
         """
         Upload access control list.
         """
         remote_path = _access_control_data_path(
-            self.get_backup_path(backup_name), ACCESS_CONTROL_FNAME
+            self.get_backup_path(backup_meta.name), ACCESS_CONTROL_FNAME
         )
-        backup_meta = self.get_backup(backup_name)
         try:
             logging.debug('Uploading access control data "{}"', local_path)
             self._storage_loader.upload_files_tarball(
                 local_path,
                 remote_path,
                 files=file_names,
-                encryption=(
-                    True if backup_meta is None else backup_meta.is_encryption_enabled
-                ),
+                encryption=backup_meta.is_encryption_enabled,
             )
 
         except Exception as e:
             msg = f'Failed to upload access control metadata file "{remote_path}"'
             raise StorageError(msg) from e
 
-    def upload_udf(self, backup_name: str, file_name: str, metadata: str) -> None:
+    def upload_udf(
+        self, backup_meta: BackupMetadata, file_name: str, metadata: str
+    ) -> None:
         """
         Upload user defined function data
         """
-        remote_path = _udf_data_path(self.get_backup_path(backup_name), file_name)
-        backup_meta = self.get_backup(backup_name)
+        remote_path = _udf_data_path(self.get_backup_path(backup_meta.name), file_name)
         try:
             self._storage_loader.upload_data(
                 data=metadata,
                 remote_path=remote_path,
-                encryption=(
-                    True if backup_meta is None else backup_meta.is_encryption_enabled
-                ),
+                encryption=backup_meta.is_encryption_enabled,
             )
         except Exception as e:
             msg = f'Failed to upload udf metadata "{remote_path}"'
             raise StorageError(msg) from e
 
     def upload_data_part(
-        self, backup_name: str, fpart: FrozenPart, callback: Callable
+        self, backup_meta: BackupMetadata, fpart: FrozenPart, callback: Callable
     ) -> None:
         """
         Upload part data.
@@ -198,19 +193,19 @@ class BackupLayout:
         )
 
         remote_dir_path = _part_path(
-            self.get_backup_path(backup_name), fpart.database, fpart.table, fpart.name
+            self.get_backup_path(backup_meta.name),
+            fpart.database,
+            fpart.table,
+            fpart.name,
         )
         remote_path = os.path.join(remote_dir_path, fpart.name + ".tar")
-        backup_meta = self.get_backup(backup_name)
         try:
             self._storage_loader.upload_files_tarball(
                 dir_path=fpart.path,
                 files=fpart.files,
                 remote_path=remote_path,
                 is_async=True,
-                encryption=(
-                    True if backup_meta is None else backup_meta.is_encryption_enabled
-                ),
+                encryption=backup_meta.is_encryption_enabled,
                 delete=True,
                 callback=callback,
             )
@@ -253,7 +248,7 @@ class BackupLayout:
         return True
 
     def upload_named_collections_create_statement(
-        self, backup_name: str, nc_name: str
+        self, backup_meta: BackupMetadata, nc_name: str
     ) -> None:
         """
         Upload named collection create statement file.
@@ -262,17 +257,14 @@ class BackupLayout:
             self._named_collections_path, f"{escape_metadata_file_name(nc_name)}.sql"
         )
         remote_path = _named_collections_data_path(
-            self.get_backup_path(backup_name), nc_name
+            self.get_backup_path(backup_meta.name), nc_name
         )
-        backup_meta = self.get_backup(backup_name)
         try:
             logging.debug('Uploading named collection create statement "{}"', nc_name)
             self._storage_loader.upload_file(
                 local_path,
                 remote_path=remote_path,
-                encryption=(
-                    True if backup_meta is None else backup_meta.is_encryption_enabled
-                ),
+                encryption=backup_meta.is_encryption_enabled,
             )
         except Exception as e:
             msg = f"Failed to create async upload of {remote_path}"
@@ -435,49 +427,45 @@ class BackupLayout:
         )
 
     def download_access_control_file(
-        self, local_path: str, backup_name: str, file_name: str
+        self, local_path: str, backup_meta: BackupMetadata, file_name: str
     ) -> None:
         """
         Download access control object metadata and save on disk.
         """
         remote_path = _access_control_data_path(
-            self.get_backup_path(backup_name), file_name
+            self.get_backup_path(backup_meta.name), file_name
         )
         local_path = os.path.join(local_path, file_name)
         logging.debug(
             'Downloading access control metadata "{}" to "{}', remote_path, local_path
         )
-        backup_meta = self.get_backup(backup_name)
         try:
             self._storage_loader.download_file(
                 remote_path,
                 local_path,
-                encryption=(
-                    True if backup_meta is None else backup_meta.is_encryption_enabled
-                ),
+                encryption=backup_meta.is_encryption_enabled,
             )
         except Exception as e:
             msg = f"Failed to download access control metadata file {remote_path}"
             raise StorageError(msg) from e
 
-    def download_access_control(self, local_path: str, backup_name: str) -> None:
+    def download_access_control(
+        self, local_path: str, backup_meta: BackupMetadata
+    ) -> None:
         """
         Download access control object metadata and save on disk.
         """
         remote_path = _access_control_data_path(
-            self.get_backup_path(backup_name), ACCESS_CONTROL_FNAME
+            self.get_backup_path(backup_meta.name), ACCESS_CONTROL_FNAME
         )
         logging.debug(
             'Downloading access control metadata "{}" to "{}', remote_path, local_path
         )
-        backup_meta = self.get_backup(backup_name)
         try:
             self._storage_loader.download_files(
                 remote_path,
                 local_path,
-                encryption=(
-                    True if backup_meta is None else backup_meta.is_encryption_enabled
-                ),
+                encryption=backup_meta.is_encryption_enabled,
             )
         except Exception as e:
             msg = f"Failed to download access control metadata file {remote_path}"
