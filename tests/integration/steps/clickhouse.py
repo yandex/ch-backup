@@ -4,7 +4,7 @@ Steps for interacting with ClickHouse DBMS.
 
 import yaml
 from behave import given, then, when
-from hamcrest import assert_that, equal_to, has_length, calling, raises
+from hamcrest import assert_that, calling, equal_to, has_length, raises
 from tenacity import retry, stop_after_attempt, wait_fixed
 from tests.integration.modules.clickhouse import ClickhouseClient
 from tests.integration.modules.docker import get_container, put_file
@@ -133,8 +133,7 @@ def step_same_clickhouse_data(context, nodes):
 @then("we got not same clickhouse data at {nodes}")
 def step_not_same_clickhouse_data(context, nodes):
     assert_that(
-        calling(step_same_clickhouse_data).with_args(context, nodes),
-        raises(Exception)
+        calling(step_same_clickhouse_data).with_args(context, nodes), raises(Exception)
     )
 
 
