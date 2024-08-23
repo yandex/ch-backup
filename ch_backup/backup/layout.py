@@ -52,7 +52,7 @@ class BackupLayout:
         try:
             logging.debug("Saving backup metadata in {}", remote_path)
             self._storage_loader.upload_data(
-                backup.dump_json(light=False), remote_path=remote_path
+                backup.dump_json(light=False), remote_path=remote_path, encryption=True
             )
             logging.debug("Saving backup light metadata in {}", remote_light_path)
             self._storage_loader.upload_data(
