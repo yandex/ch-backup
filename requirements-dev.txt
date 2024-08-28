@@ -19,4 +19,4 @@ docker<8.0
 docker-compose<1.29
 websocket-client<2.0  # required for docker-compose<1.29
 Jinja2
-deepdiff<7.1.0
+deepdiff<8.1.0
