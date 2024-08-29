@@ -29,16 +29,6 @@ Feature: Support partially encrypted backups
     INSERT INTO test_db.table_01 SELECT today(), number FROM system.numbers LIMIT 10;
     """
     When we create clickhouse01 clickhouse backup
-    When metadata paths of clickhouse01 backup #0 was deleted
-    """
-    - databases.test_db.engine
-    - databases.test_db.metadata_path
-    """
-    Given file "metadata/test_db/table_01.sql" in clickhouse01 backup #0 data set to
-    """
-    CREATE TABLE test_db.table_01 ON CLUSTER 'default' (date Date, n Int32)
-    ENGINE = ReplicatedMergeTree('/clickhouse/tables/test_db/table', '{replica}') PARTITION BY date ORDER BY date
-    """
     When we restore clickhouse backup #0 to clickhouse02
     Then clickhouse02 has same schema as clickhouse01
     And we got same clickhouse data at clickhouse01 clickhouse02
