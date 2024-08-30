@@ -220,7 +220,7 @@ class PipelineExecutor:
             context.backup_meta.name, db, table
         )
         backup_name_sanitized = context.backup_meta.get_sanitized_name()
-        backup_path = context.backup_layout.get_backup_path(backup_name_sanitized)
+        backup_path = context.backup_layout.get_backup_path(context.backup_meta.name)
         pipeline = partial(
             backup_table_pipeline,
             self._config,

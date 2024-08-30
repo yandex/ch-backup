@@ -20,7 +20,7 @@ class UploadingPart(Slotted):
     We could use dataclass(slots=true) from functools when the supported version of python would be >= 3.10.
     """
 
-    __slots__ = "data", "upload_id"
+    __slots__ = "data", "upload_id", "part_info"
     data: bytes
     upload_id: Optional[str]
     part_info: stage_communication.PartPipelineInfo
@@ -70,7 +70,7 @@ class StartMultipartUploadPartStage(Handler):
             self._last_part_info = part_info
             return UploadingPart(data, self._upload_id, part_info)  # type: ignore[call-arg]
         # Continue uploading current part
-        return UploadingPart(data, self._upload_id, part_info)  # type: ignore[call-arg]self._last_part_info
+        return UploadingPart(data, self._upload_id, part_info)  # type: ignore[call-arg]
 
     def _is_new_part(self, part_info: stage_communication.PartPipelineInfo):
         return (
@@ -131,8 +131,11 @@ class CompleteMultipartUploadPartStage(Handler):
         self._last_part_info: UploadingPart = None
 
     def __call__(self, part: UploadingPart, index: int) -> None:
+        # First part
+        if self._last_part_info is None:
+            self._last_part_info = part
         # New part
-        if self._last_part_info.upload_id != part.upload_id:
+        elif self._last_part_info.upload_id != part.upload_id:
             if self._last_part_info.upload_id is not None:
                 self._loader.complete_multipart_upload(
                     remote_path=self._last_part_info.part_info.remote_path,

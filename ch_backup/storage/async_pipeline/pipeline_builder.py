@@ -481,7 +481,6 @@ class PipelineBuilder:
             )
         )
         self.build_read_files_pipeline_tarball_stage()
-        self.build_compress_part_stage()
         self.build_encrypt_part_stage()
         self.build_uploading_part_stage()
         return self

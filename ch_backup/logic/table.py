@@ -162,7 +162,6 @@ class TableBackup(BackupManager):
                 tables_to_backup.remove(part_info.table)
             else:
                 logging.debug("Add part")
-                context.backup_meta.add_part(part_info.part_metadata)
                 upload_observer(part_info.part_metadata)
                 # TODO: remove freezed part ?
 
