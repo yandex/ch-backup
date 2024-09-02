@@ -71,7 +71,7 @@ class ChunkingPartStage(Handler):
             self._last_part_info is not None
             and part_info.part_metadata.name != self._last_part_info.part_metadata.name
         ):
-            while len(self._buffer) >= self._chunk_size:
+            while len(self._buffer) > 0:
                 result_data = self._buffer.read(self._chunk_size)
                 yield (result_data, self._last_part_info)
 

@@ -131,18 +131,15 @@ class CompleteMultipartUploadPartStage(Handler):
         self._last_part_info: UploadingPart = None
 
     def __call__(self, part: UploadingPart, index: int) -> None:
-        # First part
-        if self._last_part_info is None:
-            self._last_part_info = part
-        # New part
-        elif self._last_part_info.upload_id != part.upload_id:
+        # Next part, but not first
+        if self._last_part_info is not None and self._last_part_info.part_info.part_metadata.name != part.part_info.part_metadata.name:
             if self._last_part_info.upload_id is not None:
                 self._loader.complete_multipart_upload(
                     remote_path=self._last_part_info.part_info.remote_path,
                     upload_id=self._last_part_info.upload_id,
                 )
             stage_communication.part_metadata_queue.put(self._last_part_info.part_info)
-            self._last_part_info = part
+        self._last_part_info = part
 
     def on_done(self) -> None:
         # Pass last part and signal that all parts are uploaded
@@ -151,14 +148,5 @@ class CompleteMultipartUploadPartStage(Handler):
                 remote_path=self._last_part_info.part_info.remote_path,
                 upload_id=self._last_part_info.upload_id,
             )
+        self._last_part_info.part_info.all_parts_done = True
         stage_communication.part_metadata_queue.put(self._last_part_info.part_info)
-        stage_communication.part_metadata_queue.put(
-            stage_communication.PartPipelineInfo(
-                None,
-                self._last_part_info.part_info.table,
-                None,
-                None,
-                None,
-                all_parts_done=True,
-            )
-        )

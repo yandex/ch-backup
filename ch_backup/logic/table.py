@@ -153,17 +153,13 @@ class TableBackup(BackupManager):
         tables_to_backup = {table.name for table in tables}
         upload_observer = UploadPartObserver(context)
         while tables_to_backup:
-            logging.debug("Waiting part")
             part_info: stage_communication.PartPipelineInfo = (
                 stage_communication.part_metadata_queue.get()
             )
+            upload_observer(part_info.part_metadata)
             if part_info.all_parts_done:
-                logging.debug("Done part")
                 tables_to_backup.remove(part_info.table)
-            else:
-                logging.debug("Add part")
-                upload_observer(part_info.part_metadata)
-                # TODO: remove freezed part ?
+            # TODO: remove freezed part ?
 
         context.backup_layout.wait()
 
