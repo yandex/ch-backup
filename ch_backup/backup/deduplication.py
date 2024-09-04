@@ -220,53 +220,6 @@ def _populate_dedup_info(
             break
 
 
-def deduplicate_parts(
-    context: BackupContext,
-    database: str,
-    table: str,
-    frozen_parts: Dict[str, FrozenPart],
-) -> Dict[str, PartMetadata]:
-    """
-    Deduplicate part if it's possible.
-    """
-    layout = context.backup_layout
-
-    existing_parts = context.ch_ctl.get_deduplication_info(
-        database, table, frozen_parts
-    )
-    deduplicated_parts: Dict[str, PartMetadata] = {}
-
-    for existing_part in existing_parts:
-        part = PartMetadata(
-            database=database,
-            table=table,
-            name=existing_part["name"],
-            checksum=existing_part["checksum"],
-            size=int(existing_part["size"]),
-            link=existing_part["backup_path"],
-            files=existing_part["files"],
-            tarball=existing_part["tarball"],
-            disk_name=existing_part["disk_name"],
-        )
-
-        if not existing_part["verified"]:
-            if not layout.check_data_part(existing_part["backup_path"], part):
-                logging.debug(
-                    'Part "{}" found in "{}", but it\'s invalid, skipping',
-                    part.name,
-                    existing_part["backup_path"],
-                )
-                continue
-
-        deduplicated_parts[part.name] = part
-
-        logging.debug(
-            'Part "{}" found in "{}", reusing', part.name, existing_part["backup_path"]
-        )
-
-    return deduplicated_parts
-
-
 def collect_dedup_references_for_batch_backup_deletion(
     layout: BackupLayout,
     retained_backups_light_meta: List[BackupMetadata],

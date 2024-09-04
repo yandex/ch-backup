@@ -5,6 +5,7 @@ Clickhouse backup logic for tables
 import os
 from collections import deque
 from dataclasses import dataclass
+from functools import partial
 from itertools import chain
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -12,6 +13,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import ch_backup.storage.async_pipeline.stages.backup.stage_communication as stage_communication
 from ch_backup import logging
 from ch_backup.backup.metadata import TableMetadata
+from ch_backup.backup.metadata.part_metadata import PartMetadata
 from ch_backup.backup.restore_context import PartState
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
@@ -142,27 +144,46 @@ class TableBackup(BackupManager):
                     table.name,
                 )
                 continue
-            context.backup_layout._storage_loader._ploader.backup_table(
-                context, db, table, create_statement, mtimes, schema_only, is_async=True
+            # Freeze only MergeTree tables
+            if not schema_only and table.is_merge_tree():
+                context.backup_layout._storage_loader._ploader.freeze_and_get_parts(
+                    context, db, table, mtimes, is_async=False
+                )
+            context.backup_layout.upload_table_create_statement(
+                context.backup_meta.name, db, table, create_statement
             )
-            # TODO: some tables are skipped ?
             context.backup_meta.add_table(
                 TableMetadata(table.database, table.name, table.engine, table.uuid)
             )
 
         tables_to_backup = {table.name for table in tables}
         upload_observer = UploadPartObserver(context)
-        while tables_to_backup:
-            part_info: stage_communication.PartPipelineInfo = (
+
+        while tables_to_backup and not schema_only:
+            part_info: stage_communication.FrozenPartInfo = (
                 stage_communication.part_metadata_queue.get()
             )
-            upload_observer(part_info.part_metadata)
             if part_info.all_parts_done:
                 tables_to_backup.remove(part_info.table)
-            # TODO: remove freezed part ?
+            else:
+                part_metadata = PartMetadata.from_frozen_part(part_info.frozen_part)
+                if part_info.s3_part:
+                    context.backup_meta.add_part(part_metadata)
+                elif part_info.deduplicated_metadata:
+                    context.backup_meta.add_part(part_info.deduplicated_metadata)
+                else:
+                    context.backup_layout.upload_data_part(
+                        context.backup_meta.name,
+                        part_info.frozen_part,
+                        partial(
+                            upload_observer,
+                            part_metadata,
+                        ),
+                    )
 
         context.backup_layout.wait()
 
+        # TODO: validate parts in batches
         self._validate_uploaded_parts(context, upload_observer.uploaded_parts)
 
         # TODO: some tables are skipped ?

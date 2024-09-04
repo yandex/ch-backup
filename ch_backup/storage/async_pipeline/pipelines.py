@@ -22,24 +22,6 @@ from ch_backup.storage.async_pipeline.pipeline_builder import (
 from ch_backup.util import exhaust_iterator
 
 
-def _add_upload_data_pipeline(
-    builder: PipelineBuilder,
-    config: dict,
-    data: AnyStr,
-    remote_path: str,
-    encrypt: bool,
-) -> None:
-    """
-    Add upload data pipeline to given builder.
-    """
-    estimated_size = len(data)
-    builder.build_iterable_stage([data])
-    if encrypt:
-        builder.build_encrypt_stage()
-        estimated_size = _calc_encrypted_size(config, estimated_size)
-    builder.build_uploading_stage(remote_path, estimated_size)
-
-
 def upload_data_pipeline(
     config: dict, data: AnyStr, remote_path: str, encrypt: bool
 ) -> None:
@@ -47,7 +29,13 @@ def upload_data_pipeline(
     Entrypoint of upload data pipeline.
     """
     builder = PipelineBuilder(config)
-    _add_upload_data_pipeline(builder, config, data, remote_path, encrypt)
+    estimated_size = len(data)
+    builder.build_iterable_stage([data])
+    if encrypt:
+        builder.build_encrypt_stage()
+        estimated_size = _calc_encrypted_size(config, estimated_size)
+    builder.build_uploading_stage(remote_path, estimated_size)
+
     run(builder.pipeline())
 
 
@@ -199,54 +187,21 @@ def delete_multiple_storage_pipeline(config: dict, remote_paths: Sequence[str]) 
     run(builder.pipeline())
 
 
-def backup_table_pipeline(
+def freeze_table_pipeline(
     config: dict,
     ch_ctl: Any,
     db: Database,
     table: Table,
-    create_statement: bytes,
-    remote_path: str,
     mtimes,
     backup_name: str,
-    backup_path: str,
-    schema_only: bool,
 ):
-    """ """
-
-    def calc_estimated_part_size(
-        dir_path: str,
-        file_relative_paths: List[str],
-    ) -> int:
-        """
-        Calculate estimated part size.
-        """
-        file_absolute_paths = [
-            Path(dir_path) / rel_path for rel_path in file_relative_paths
-        ]
-
-        estimated_size = calc_aligned_files_size(
-            file_absolute_paths, alignment=BLOCKSIZE
-        )
-        estimated_size = calc_tarball_size(
-            [str(f) for f in file_relative_paths], estimated_size
-        )
-        if True:  # encrypt:
-            estimated_size = _calc_encrypted_size(config, estimated_size)
-
+    """
+    Freeze table and return deduplicated freezed parts
+    """
     builder = PipelineBuilder(config)
 
-    # Upload create statement
-    _add_upload_data_pipeline(
-        builder, config, create_statement, remote_path, encrypt=True
-    )
-
-    # Freeze only MergeTree tables
-    if not schema_only and table.is_merge_tree():
-        builder.build_freeze_table_stage(ch_ctl, db, table, backup_name, mtimes)
-        builder.build_deduplicate_stage(ch_ctl, db, table)
-        builder.build_upload_part_stage(
-            ch_ctl, backup_path, db, table, calc_estimated_part_size
-        )
+    builder.build_freeze_table_stage(ch_ctl, db, table, backup_name, mtimes)
+    builder.build_deduplicate_stage(ch_ctl, db, table)
 
     run(builder.pipeline())
 

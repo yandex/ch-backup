@@ -11,11 +11,11 @@ from ch_backup.clickhouse.models import Database, Table
 from ch_backup.profile import profile
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ExecPool
 from ch_backup.storage.async_pipeline.pipelines import (
-    backup_table_pipeline,
     delete_multiple_storage_pipeline,
     download_data_pipeline,
     download_file_pipeline,
     download_files_pipeline,
+    freeze_table_pipeline,
     upload_data_pipeline,
     upload_file_pipeline,
     upload_files_tarball_pipeline,
@@ -204,35 +204,27 @@ class PipelineExecutor:
         pipeline = partial(delete_multiple_storage_pipeline, self._config, remote_paths)
         self._exec_pipeline(job_id, pipeline, is_async)
 
-    def backup_table(
+    def freeze_and_get_parts(
         self,
         context: Any,
         db: Database,
         table: Table,
-        create_statement: bytes,
         mtimes: Dict[str, Any],
-        schema_only: bool,
         is_async: bool,
     ) -> None:
-        """ """
-        job_id = self._make_job_id("backup_table", db.name, table.name)
-        remote_path = context.backup_layout.get_table_metadata_path(
-            context.backup_meta.name, db, table
-        )
+        """
+        Freeze table, deduplicate and put frozen parts to the queue
+        """
+        job_id = self._make_job_id("freeze_table", db.name, table.name)
         backup_name_sanitized = context.backup_meta.get_sanitized_name()
-        backup_path = context.backup_layout.get_backup_path(context.backup_meta.name)
         pipeline = partial(
-            backup_table_pipeline,
+            freeze_table_pipeline,
             self._config,
             context.ch_ctl,
             db,
             table,
-            create_statement,
-            remote_path,
             mtimes,
             backup_name_sanitized,
-            backup_path,
-            schema_only,
         )
         self._exec_pipeline(job_id, pipeline, is_async)
 

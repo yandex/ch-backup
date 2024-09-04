@@ -80,13 +80,6 @@ class BackupLayout:
             msg = f"Failed to create async upload of {remote_path}"
             raise StorageError(msg) from e
 
-    def get_table_metadata_path(self, backup_name: str, db: Database, table: Table):
-        """ """
-        assert db.metadata_path is not None
-        return _table_metadata_path(
-            self.get_backup_path(backup_name), db.name, table.name
-        )
-
     def upload_table_create_statement(
         self, backup_name: str, db: Database, table: Table, create_statement: bytes
     ) -> None:

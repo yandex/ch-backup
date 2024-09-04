@@ -3,15 +3,15 @@ from multiprocessing import Queue
 from typing import Optional
 
 from ch_backup.backup.metadata.part_metadata import PartMetadata
+from ch_backup.clickhouse.models import FrozenPart
 
 
 @dataclass
-class PartPipelineInfo:
-    part_metadata: Optional[PartMetadata]
-    table: Optional[str]
-    part_path: Optional[str]
-    remote_path: Optional[str]
-    estimated_size: Optional[int]
+class FrozenPartInfo:
+    frozen_part: Optional[FrozenPart]
+    table: str
+    deduplicated_metadata: Optional[PartMetadata] = None
+    s3_part: bool = False
     all_parts_done: bool = False
 
 

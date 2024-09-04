@@ -5,7 +5,7 @@ Pipeline builder.
 from functools import reduce
 from math import ceil
 from pathlib import Path
-from typing import Any, Callable, Iterable, List, Optional, Sequence, Union
+from typing import Any, Iterable, List, Optional, Sequence, Union
 
 from pypeln import utils as pypeln_utils
 from pypeln.thread.api.from_iterable import from_iterable
@@ -17,12 +17,9 @@ from ch_backup.storage.async_pipeline import thread_flat_map
 from ch_backup.storage.async_pipeline.base_pipeline.input import thread_input
 from ch_backup.storage.async_pipeline.base_pipeline.map import thread_map
 from ch_backup.storage.async_pipeline.stages import (
-    ChunkingPartStage,
     ChunkingStage,
     CollectDataStage,
-    CompleteMultipartUploadPartStage,
     CompleteMultipartUploadStage,
-    CompressPartStage,
     CompressStage,
     DecompressStage,
     DecryptStage,
@@ -31,24 +28,16 @@ from ch_backup.storage.async_pipeline.stages import (
     DeleteFilesStage,
     DeleteMultipleStorageStage,
     DownloadStorageStage,
-    EncryptPartStage,
     EncryptStage,
     FreezeTableStage,
-    RateLimiterPartStage,
     RateLimiterStage,
     ReadFileStage,
     ReadFilesTarballScanStage,
     ReadFilesTarballStage,
-    StartMultipartUploadPartStage,
     StartMultipartUploadStage,
-    StorageUploadingPartStage,
     StorageUploadingStage,
-    UploadPartStage,
     WriteFilesStage,
     WriteFileStage,
-)
-from ch_backup.storage.async_pipeline.stages.filesystem.read_files_tarball_pipeline_stage import (
-    ReadFilesTarballPipelineStage,
 )
 from ch_backup.storage.engine import get_storage_engine
 
@@ -98,25 +87,6 @@ class PipelineBuilder:
         self.append(
             thread_map(
                 CompressStage(
-                    compressor,
-                ),
-                maxsize=queue_size,
-            )
-        )
-
-        return self
-
-    def build_compress_part_stage(self) -> "PipelineBuilder":
-        """
-        Build compressing stage.
-        """
-        stage_config = self._config[CompressPartStage.stype]
-        compressor = get_compression(stage_config["type"])
-        queue_size = stage_config["queue_size"]
-
-        self.append(
-            thread_flat_map(
-                CompressPartStage(
                     compressor,
                 ),
                 maxsize=queue_size,
@@ -180,22 +150,6 @@ class PipelineBuilder:
 
         return self
 
-    def build_read_files_pipeline_tarball_stage(self) -> "PipelineBuilder":
-        """
-        Build reading files to tarball stage.
-        """
-        stage_config = self._config[ReadFilesTarballStage.stype]
-        queue_size = stage_config["queue_size"]
-
-        self.append(
-            thread_flat_map(
-                ReadFilesTarballPipelineStage(stage_config),
-                maxsize=queue_size,
-            )
-        )
-
-        return self
-
     def build_encrypt_stage(self) -> "PipelineBuilder":
         """
         Build encrypting stage.
@@ -210,26 +164,6 @@ class PipelineBuilder:
         self.append(
             thread_flat_map(ChunkingStage(chunk_size, buffer_size), maxsize=queue_size),
             thread_map(EncryptStage(crypto), maxsize=queue_size),
-        )
-
-        return self
-
-    def build_encrypt_part_stage(self) -> "PipelineBuilder":
-        """
-        Build encrypting stage.
-        """
-        stage_config = self._config[EncryptStage.stype]
-
-        buffer_size = stage_config["buffer_size"]
-        chunk_size = stage_config["chunk_size"]
-        queue_size = stage_config["queue_size"]
-        crypto = get_encryption(stage_config["type"], stage_config)
-
-        self.append(
-            thread_flat_map(
-                ChunkingPartStage(chunk_size, buffer_size), maxsize=queue_size
-            ),
-            thread_map(EncryptPartStage(crypto), maxsize=queue_size),
         )
 
         return self
@@ -306,54 +240,6 @@ class PipelineBuilder:
                 maxsize=queue_size,
             ),
             thread_flat_map(ChunkingStage(chunk_size, buffer_size), maxsize=queue_size),
-            *stages
-        )
-        return self
-
-    def build_uploading_part_stage(
-        self,
-    ) -> "PipelineBuilder":
-        """
-        Build uploading stage.
-        """
-        stage_config = self._config[StorageUploadingStage.stype]
-
-        # max_chunk_count = stage_config["max_chunk_count"]
-        buffer_size = stage_config["buffer_size"]
-        chunk_size = stage_config["chunk_size"]
-        queue_size = stage_config["queue_size"]
-
-        rate_limiter_config = self._config["rate_limiter"]
-
-        max_upload_rate = rate_limiter_config["max_upload_rate"]
-        retry_interval = rate_limiter_config["retry_interval"]
-
-        storage = get_storage_engine(stage_config)
-
-        stages = [
-            thread_map(
-                StartMultipartUploadPartStage(stage_config, chunk_size, storage),
-                maxsize=queue_size,
-            ),
-            thread_map(
-                StorageUploadingPartStage(stage_config, storage),
-                maxsize=queue_size,
-                workers=stage_config["uploading_threads"],
-            ),
-            thread_map(
-                CompleteMultipartUploadPartStage(stage_config, storage),
-                maxsize=queue_size,
-            ),
-        ]
-
-        self.append(
-            thread_flat_map(
-                RateLimiterPartStage(max_upload_rate, retry_interval),
-                maxsize=queue_size,
-            ),
-            thread_flat_map(
-                ChunkingPartStage(chunk_size, buffer_size), maxsize=queue_size
-            ),
             *stages
         )
         return self
@@ -459,30 +345,6 @@ class PipelineBuilder:
         self.append(
             thread_flat_map(DeduplicateStage(stage_config, ch_ctl, db, table)),
         )
-        return self
-
-    def build_upload_part_stage(
-        self,
-        ch_ctl: Any,
-        backup_path: str,
-        db: Database,
-        table: Table,
-        calc_estimated_part_size: Callable,
-    ) -> "PipelineBuilder":
-        self.append(
-            thread_flat_map(
-                UploadPartStage(
-                    ch_ctl,
-                    db,
-                    table,
-                    backup_path,
-                    calc_estimated_part_size,
-                )
-            )
-        )
-        self.build_read_files_pipeline_tarball_stage()
-        self.build_encrypt_part_stage()
-        self.build_uploading_part_stage()
         return self
 
     def append(self, *stages: PypelnStage) -> None:
