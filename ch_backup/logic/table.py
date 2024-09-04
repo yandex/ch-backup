@@ -50,7 +50,6 @@ class TableBackup(BackupManager):
         databases: Sequence[Database],
         db_tables: Dict[str, list],
         schema_only: bool,
-        freeze_threads: int,
     ) -> None:
         """
         Backup tables metadata, MergeTree data and Cloud storage metadata.
@@ -65,7 +64,6 @@ class TableBackup(BackupManager):
                 db_tables[db.name],
                 backup_name,
                 schema_only,
-                freeze_threads,
             )
 
         self._backup_cloud_storage_metadata(context)
@@ -102,7 +100,6 @@ class TableBackup(BackupManager):
         tables: Sequence[str],
         backup_name: str,
         schema_only: bool,
-        freeze_threads: int,
     ) -> None:
         """
         Backup single database tables.
@@ -147,7 +144,7 @@ class TableBackup(BackupManager):
             # Freeze only MergeTree tables
             if not schema_only and table.is_merge_tree():
                 context.backup_layout._storage_loader._ploader.freeze_and_get_parts(
-                    context, db, table, mtimes, is_async=False
+                    context, db, table, mtimes, is_async=True
                 )
             context.backup_layout.upload_table_create_statement(
                 context.backup_meta.name, db, table, create_statement

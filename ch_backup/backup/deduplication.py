@@ -7,11 +7,10 @@ from copy import copy
 from datetime import timedelta
 from typing import Dict, List, Sequence, Set
 
-from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, BackupState, PartMetadata
 from ch_backup.backup_context import BackupContext
-from ch_backup.clickhouse.models import Database, FrozenPart, Table
+from ch_backup.clickhouse.models import Database, Table
 from ch_backup.util import Slotted, utcnow
 
 

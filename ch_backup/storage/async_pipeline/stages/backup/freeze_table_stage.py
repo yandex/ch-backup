@@ -13,7 +13,9 @@ from ch_backup.storage.async_pipeline.stages.types import StageType
 
 
 class FreezeTableStage(InputHandler):
-    """ """
+    """
+    Freeze table and return it's frozen parts
+    """
 
     stype = StageType.BACKUP
 

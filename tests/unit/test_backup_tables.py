@@ -71,9 +71,6 @@ def test_backup_table_skipping_if_metadata_updated_during_backup(
             [db],
             {db_name: [table_name]},
             schema_only=False,
-            freeze_threads=DEFAULT_CONFIG["multiprocessing"][
-                "freeze_threads"
-            ],  # type: ignore
         )
 
     assert len(context.backup_meta.get_tables(db_name)) == backups_expected

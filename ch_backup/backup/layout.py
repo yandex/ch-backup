@@ -5,13 +5,12 @@ Management of backup data layout.
 import os
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Sequence
-from urllib.parse import quote
 
 from nacl.exceptions import CryptoError
 
 from ch_backup import logging
+from ch_backup.backup.layout_utils import part_path, quote, target_part_size
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
-from ch_backup.calculators import calc_encrypted_size, calc_tarball_size
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.config import Config
 from ch_backup.encryption import get_encryption
@@ -169,7 +168,7 @@ class BackupLayout:
             fpart.table,
         )
 
-        remote_dir_path = _part_path(
+        remote_dir_path = part_path(
             self.get_backup_path(backup_name), fpart.database, fpart.table, fpart.name
         )
         remote_path = os.path.join(remote_dir_path, fpart.name + ".tar")
@@ -439,7 +438,7 @@ class BackupLayout:
         os.makedirs(fs_part_path, exist_ok=True)
 
         remote_dir_path = self._get_escaped_if_exists(
-            _part_path,
+            part_path,
             part.link or backup_meta.path,
             part.database,
             part.table,
@@ -481,7 +480,7 @@ class BackupLayout:
         """
         try:
             remote_dir_path = self._get_escaped_if_exists(
-                _part_path,
+                part_path,
                 part.link or backup_path,
                 part.database,
                 part.table,
@@ -493,7 +492,9 @@ class BackupLayout:
                 actual_size = self._storage_loader.get_file_size(
                     os.path.join(remote_dir_path, f"{part.name}.tar")
                 )
-                target_size = self._target_part_size(part)
+                target_size = target_part_size(
+                    part, self._encryption_chunk_size, self._encryption_metadata_size
+                )
                 if target_size != actual_size:
                     logging.warning(
                         f"Part {part.name} files stored in tar, size not match {target_size} != {actual_size}"
@@ -570,18 +571,18 @@ class BackupLayout:
 
         deleting_files: List[str] = []
         for part in parts:
-            part_path = self._get_escaped_if_exists(
-                _part_path,
+            path_ = self._get_escaped_if_exists(
+                part_path,
                 part.link or backup_meta.path,
                 part.database,
                 part.table,
                 part.name,
             )
-            logging.debug("Deleting data part {}", part_path)
+            logging.debug("Deleting data part {}", path_)
             if part.tarball:
-                deleting_files.append(os.path.join(part_path, f"{part.name}.tar"))
+                deleting_files.append(os.path.join(path_, f"{part.name}.tar"))
             else:
-                deleting_files.extend(os.path.join(part_path, f) for f in part.files)
+                deleting_files.extend(os.path.join(path_, f) for f in part.files)
 
         self._delete_files(deleting_files)
 
@@ -620,15 +621,6 @@ class BackupLayout:
     def _backup_light_metadata_path(self, backup_name: str) -> str:
         return os.path.join(self.get_backup_path(backup_name), BACKUP_LIGHT_META_FNAME)
 
-    def _target_part_size(self, part: PartMetadata) -> int:
-        """
-        Predicts tar archive size after encryption.
-        """
-        tar_size = calc_tarball_size(list(part.raw_metadata.files), part.size)
-        return calc_encrypted_size(
-            tar_size, self._encryption_chunk_size, self._encryption_metadata_size
-        )
-
     def _get_escaped_if_exists(
         self, path_function: Callable, *args: Any, **kwargs: Any
     ) -> str:
@@ -653,7 +645,7 @@ def _udf_data_path(backup_path: str, udf_file: str, escape_names: bool = True) -
     Return S3 path to UDF data
     """
     if escape_names:
-        return os.path.join(backup_path, "udf", _quote(udf_file))
+        return os.path.join(backup_path, "udf", quote(udf_file))
     return os.path.join(backup_path, "udf", udf_file)
 
 
@@ -661,7 +653,7 @@ def _db_metadata_path(backup_path: str, db_name: str) -> str:
     """
     Return S3 path to database metadata.
     """
-    return os.path.join(backup_path, "metadata", _quote(db_name) + ".sql")
+    return os.path.join(backup_path, "metadata", quote(db_name) + ".sql")
 
 
 def _table_metadata_path(backup_path: str, db_name: str, table_name: str) -> str:
@@ -669,7 +661,7 @@ def _table_metadata_path(backup_path: str, db_name: str, table_name: str) -> str
     Return S3 path to table metadata.
     """
     return os.path.join(
-        backup_path, "metadata", _quote(db_name), _quote(table_name) + ".sql"
+        backup_path, "metadata", quote(db_name), quote(table_name) + ".sql"
     )
 
 
@@ -677,24 +669,7 @@ def _named_collections_data_path(backup_path: str, nc_name: str) -> str:
     """
     Return S3 path to named collections.
     """
-    return os.path.join(backup_path, "named_collections", _quote(nc_name) + ".sql")
-
-
-def _part_path(
-    backup_path: str,
-    db_name: str,
-    table_name: str,
-    part_name: str,
-    escape_names: bool = True,
-) -> str:
-    """
-    Return S3 path to data part.
-    """
-    if escape_names:
-        return os.path.join(
-            backup_path, "data", _quote(db_name), _quote(table_name), part_name
-        )
-    return os.path.join(backup_path, "data", db_name, table_name, part_name)
+    return os.path.join(backup_path, "named_collections", quote(nc_name) + ".sql")
 
 
 def _disk_metadata_path(
@@ -707,12 +682,3 @@ def _disk_metadata_path(
     if compressed:
         extension += COMPRESSED_EXTENSION
     return os.path.join(backup_path, "disks", f"{disk_name}{extension}")
-
-
-def _quote(value: str) -> str:
-    return quote(value, safe="").translate(
-        {
-            ord("."): "%2E",
-            ord("-"): "%2D",
-        }
-    )

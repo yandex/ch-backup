@@ -39,6 +39,7 @@ from ch_backup.storage.async_pipeline.stages import (
     WriteFilesStage,
     WriteFileStage,
 )
+from ch_backup.storage.async_pipeline.stages.types import StageType
 from ch_backup.storage.engine import get_storage_engine
 
 # Union here is a workaround according to https://github.com/python/mypy/issues/7866
@@ -333,6 +334,9 @@ class PipelineBuilder:
     def build_freeze_table_stage(
         self, ch_ctl: Any, db: Database, table: Table, backup_name: str, mtimes
     ) -> "PipelineBuilder":
+        """
+        Build freeze table and scan frozen parts stage.
+        """
         self.append(
             thread_input(FreezeTableStage(ch_ctl, db, table, backup_name, mtimes))
         )
@@ -341,9 +345,13 @@ class PipelineBuilder:
     def build_deduplicate_stage(
         self, ch_ctl: Any, db: Database, table: Table
     ) -> "PipelineBuilder":
-        stage_config = self._config[DeduplicateStage.stype]
+        """
+        Build deduplicate frozen parts stage.
+        """
+        stage_config = self._config
+        storage = get_storage_engine(stage_config[StageType.STORAGE])
         self.append(
-            thread_flat_map(DeduplicateStage(stage_config, ch_ctl, db, table)),
+            thread_flat_map(DeduplicateStage(stage_config, ch_ctl, storage, db, table)),
         )
         return self
 
