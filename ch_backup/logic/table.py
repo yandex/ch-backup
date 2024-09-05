@@ -10,7 +10,7 @@ from itertools import chain
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-import ch_backup.storage.async_pipeline.stages.backup.stage_communication as stage_communication
+import ch_backup.storage.async_pipeline.stages.backup.part_queue as part_queue
 from ch_backup import logging
 from ch_backup.backup.metadata import TableMetadata
 from ch_backup.backup.metadata.part_metadata import PartMetadata
@@ -157,8 +157,8 @@ class TableBackup(BackupManager):
         upload_observer = UploadPartObserver(context)
 
         while tables_to_backup and not schema_only:
-            part_info: stage_communication.FrozenPartInfo = (
-                stage_communication.part_metadata_queue.get()
+            part_info: part_queue.FrozenPartInfo = (
+                part_queue.part_metadata_queue.get()
             )
             if part_info.all_parts_done:
                 tables_to_backup.remove(part_info.table)
@@ -183,7 +183,6 @@ class TableBackup(BackupManager):
         # TODO: validate parts in batches
         self._validate_uploaded_parts(context, upload_observer.uploaded_parts)
 
-        # TODO: some tables are skipped ?
         for table in tables:
             context.ch_ctl.remove_freezed_data(backup_name, table)
 

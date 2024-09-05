@@ -32,6 +32,7 @@ class Disk(SimpleNamespace):
         self._metadata_storage_type = metadata_storage_type
         self.cache_path = cache_path
 
+    # Defining this is necessary for SimpleNamespace class to be pickleable
     def __reduce__(self):
         return (
             self.__class__,

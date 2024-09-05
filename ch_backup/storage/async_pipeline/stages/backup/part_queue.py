@@ -17,4 +17,5 @@ class FrozenPartInfo:
 
 # This queue will be inherited by child processes
 # Used to communicate with the main process
+# TODO: Limit queue size to avoid high RAM usage ?
 part_metadata_queue = Queue()

@@ -3,11 +3,11 @@ Compressing stage.
 """
 
 import os
-from typing import Any, Callable, Dict, Tuple
+from typing import Any, Dict, Tuple
 
-import ch_backup.storage.async_pipeline.stages.backup.stage_communication as stage_communication
+import ch_backup.storage.async_pipeline.stages.backup.part_queue as part_queue
 from ch_backup import logging
-from ch_backup.backup.layout_utils import part_path, target_part_size
+from ch_backup.backup.layout_utils import check_data_part
 from ch_backup.backup.metadata.part_metadata import PartMetadata
 from ch_backup.clickhouse.models import Database, FrozenPart, Table
 from ch_backup.encryption import get_encryption
@@ -46,8 +46,8 @@ class DeduplicateStage(Handler):
     def __call__(self, value: Tuple[str, FrozenPart], index: int) -> None:
         disk_type, frozen_part = value
         if disk_type == "s3":
-            stage_communication.part_metadata_queue.put(
-                stage_communication.FrozenPartInfo(
+            part_queue.part_metadata_queue.put(
+                part_queue.FrozenPartInfo(
                     frozen_part,
                     table=self.table.name,
                     s3_part=True,
@@ -58,8 +58,8 @@ class DeduplicateStage(Handler):
             if len(self.frozen_parts_batch) >= self.dedup_batch_size:
                 deduplicated_parts = self.deduplicate_parts()
                 for part_name in self.frozen_parts_batch.keys():
-                    stage_communication.part_metadata_queue.put(
-                        stage_communication.FrozenPartInfo(
+                    part_queue.part_metadata_queue.put(
+                        part_queue.FrozenPartInfo(
                             self.frozen_parts_batch[part_name],
                             table=self.table.name,
                             deduplicated_metadata=deduplicated_parts.get(
@@ -73,15 +73,15 @@ class DeduplicateStage(Handler):
         if self.frozen_parts_batch:
             deduplicated_parts = self.deduplicate_parts()
             for part_name in self.frozen_parts_batch.keys():
-                stage_communication.part_metadata_queue.put(
-                    stage_communication.FrozenPartInfo(
+                part_queue.part_metadata_queue.put(
+                    part_queue.FrozenPartInfo(
                         self.frozen_parts_batch[part_name],
                         table=self.table.name,
                         deduplicated_metadata=deduplicated_parts.get(part_name, None),
                     )
                 )
-        stage_communication.part_metadata_queue.put(
-            stage_communication.FrozenPartInfo(
+        part_queue.part_metadata_queue.put(
+            part_queue.FrozenPartInfo(
                 None, table=self.table.name, all_parts_done=True
             )
         )
@@ -111,7 +111,7 @@ class DeduplicateStage(Handler):
             )
 
             if not existing_part["verified"]:
-                if not self.check_data_part(existing_part["backup_path"], part):
+                if not check_data_part(self.loader, existing_part["backup_path"], part, self._encryption_chunk_size, self._encryption_metadata_size):
                     logging.debug(
                         'Part "{}" found in "{}", but it\'s invalid, skipping',
                         part.name,
@@ -128,60 +128,3 @@ class DeduplicateStage(Handler):
             )
 
         return deduplicated_parts
-
-    def check_data_part(self, backup_path: str, part: PartMetadata) -> bool:
-        """
-        Check availability of part data in storage.
-        """
-        try:
-            remote_dir_path = self._get_escaped_if_exists(
-                part_path,
-                part.link or backup_path,
-                part.database,
-                part.table,
-                part.name,
-            )
-            remote_files = self.loader.list_dir(remote_dir_path)
-
-            if remote_files == [f"{part.name}.tar"]:
-                actual_size = self.loader.get_object_size(
-                    os.path.join(remote_dir_path, f"{part.name}.tar")
-                )
-                target_size = target_part_size(
-                    part, self._encryption_chunk_size, self._encryption_metadata_size
-                )
-                if target_size != actual_size:
-                    logging.warning(
-                        f"Part {part.name} files stored in tar, size not match {target_size} != {actual_size}"
-                    )
-                    return False
-                return True
-
-            notfound_files = set(part.files) - set(remote_files)
-            if notfound_files:
-                logging.warning(
-                    "Some part files were not found in {}: {}",
-                    remote_dir_path,
-                    ", ".join(notfound_files),
-                )
-                return False
-
-            return True
-
-        except S3RetryingError:
-            logging.warning(
-                f"Failed to check data part {part.name}, consider it's broken",
-                exc_info=True,
-            )
-            return False
-
-    def _get_escaped_if_exists(
-        self, path_function: Callable, *args: Any, **kwargs: Any
-    ) -> str:
-        """
-        Return escaped path if it exists. Otherwise return regular path.
-        """
-        path = path_function(*args, escape_names=True, **kwargs)
-        if self.loader.path_exists(path, is_dir=True):
-            return path
-        return path_function(*args, escape_names=False, **kwargs)

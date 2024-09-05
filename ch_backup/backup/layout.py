@@ -4,19 +4,18 @@ Management of backup data layout.
 
 import os
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Sequence
+from typing import Callable, List, Optional, Sequence
 
 from nacl.exceptions import CryptoError
 
 from ch_backup import logging
-from ch_backup.backup.layout_utils import part_path, quote, target_part_size
+from ch_backup.backup.layout_utils import check_data_part as _check_data_part, get_escaped_if_exists, part_path, quote, target_part_size
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.config import Config
 from ch_backup.encryption import get_encryption
 from ch_backup.exceptions import StorageError
 from ch_backup.storage import StorageLoader
-from ch_backup.storage.engine.s3 import S3RetryingError
 from ch_backup.util import dir_is_empty, escape_metadata_file_name
 
 BACKUP_META_FNAME = "backup_struct.json"
@@ -247,8 +246,8 @@ class BackupLayout:
         """
         Download user defined function create statement.
         """
-        remote_path = self._get_escaped_if_exists(
-            _udf_data_path, backup_meta.path, filename
+        remote_path = get_escaped_if_exists(
+            self._storage_loader, _udf_data_path, backup_meta.path, filename
         )
         return self._storage_loader.download_data(remote_path, encryption=True)
 
@@ -437,7 +436,8 @@ class BackupLayout:
 
         os.makedirs(fs_part_path, exist_ok=True)
 
-        remote_dir_path = self._get_escaped_if_exists(
+        remote_dir_path = get_escaped_if_exists(
+            self._storage_loader,
             part_path,
             part.link or backup_meta.path,
             part.database,
@@ -478,47 +478,7 @@ class BackupLayout:
         """
         Check availability of part data in storage.
         """
-        try:
-            remote_dir_path = self._get_escaped_if_exists(
-                part_path,
-                part.link or backup_path,
-                part.database,
-                part.table,
-                part.name,
-            )
-            remote_files = self._storage_loader.list_dir(remote_dir_path)
-
-            if remote_files == [f"{part.name}.tar"]:
-                actual_size = self._storage_loader.get_file_size(
-                    os.path.join(remote_dir_path, f"{part.name}.tar")
-                )
-                target_size = target_part_size(
-                    part, self._encryption_chunk_size, self._encryption_metadata_size
-                )
-                if target_size != actual_size:
-                    logging.warning(
-                        f"Part {part.name} files stored in tar, size not match {target_size} != {actual_size}"
-                    )
-                    return False
-                return True
-
-            notfound_files = set(part.files) - set(remote_files)
-            if notfound_files:
-                logging.warning(
-                    "Some part files were not found in {}: {}",
-                    remote_dir_path,
-                    ", ".join(notfound_files),
-                )
-                return False
-
-            return True
-
-        except S3RetryingError:
-            logging.warning(
-                f"Failed to check data part {part.name}, consider it's broken",
-                exc_info=True,
-            )
-            return False
+        return _check_data_part(self._storage_loader, backup_path, part, self._encryption_chunk_size, self._encryption_metadata_size)
 
     def download_cloud_storage_metadata(
         self, backup_meta: BackupMetadata, disk: Disk, source_disk_name: str
@@ -571,18 +531,19 @@ class BackupLayout:
 
         deleting_files: List[str] = []
         for part in parts:
-            path_ = self._get_escaped_if_exists(
+            path = get_escaped_if_exists(
+                self._storage_loader,
                 part_path,
                 part.link or backup_meta.path,
                 part.database,
                 part.table,
                 part.name,
             )
-            logging.debug("Deleting data part {}", path_)
+            logging.debug("Deleting data part {}", path)
             if part.tarball:
-                deleting_files.append(os.path.join(path_, f"{part.name}.tar"))
+                deleting_files.append(os.path.join(path, f"{part.name}.tar"))
             else:
-                deleting_files.extend(os.path.join(path_, f) for f in part.files)
+                deleting_files.extend(os.path.join(path, f) for f in part.files)
 
         self._delete_files(deleting_files)
 
@@ -620,17 +581,6 @@ class BackupLayout:
 
     def _backup_light_metadata_path(self, backup_name: str) -> str:
         return os.path.join(self.get_backup_path(backup_name), BACKUP_LIGHT_META_FNAME)
-
-    def _get_escaped_if_exists(
-        self, path_function: Callable, *args: Any, **kwargs: Any
-    ) -> str:
-        """
-        Return escaped path if it exists. Otherwise return regular path.
-        """
-        path = path_function(*args, escape_names=True, **kwargs)
-        if self._storage_loader.path_exists(path, is_dir=True):
-            return path
-        return path_function(*args, escape_names=False, **kwargs)
 
 
 def _access_control_data_path(backup_path: str, file_name: str) -> str:
