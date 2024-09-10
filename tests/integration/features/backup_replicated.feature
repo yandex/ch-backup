@@ -800,7 +800,7 @@ Feature: Backup replicated merge tree table
         CounterID UInt32,
         UserID UInt32
     )
-    ENGINE = ReplicatedMergeTree('/clickhouse/tables/{uuid}/test_db.table_01', '{replica}')
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard01/test_db.table_01', '{replica}')
     PARTITION BY CounterID % 10
     ORDER BY (CounterID, EventDate, intHash32(UserID))
     SAMPLE BY intHash32(UserID);
