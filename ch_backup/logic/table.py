@@ -18,6 +18,7 @@ from ch_backup.backup.restore_context import PartState
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
+from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner, select_replica_drop
 from ch_backup.clickhouse.models import Database, FrozenPart, Table
 from ch_backup.clickhouse.schema import (
     rewrite_table_schema,
@@ -27,7 +28,7 @@ from ch_backup.clickhouse.schema import (
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.logic.upload_part_observer import UploadPartObserver
-from ch_backup.util import compare_schema, get_table_zookeeper_paths
+from ch_backup.util import compare_schema
 
 
 @dataclass
@@ -614,19 +615,16 @@ class TableBackup(BackupManager):
             else:
                 other_tables.append(table)
 
+        metadata_cleaner = MetadataCleaner(
+            context.ch_ctl,
+            select_replica_drop(replica_name, context.ch_ctl.get_macros()),
+        )
+
         if clean_zookeeper and len(context.zk_config.get("hosts")) > 0:  # type: ignore
-            macros = context.ch_ctl.get_macros()
             replicated_tables = [
                 table for table in merge_tree_tables if table.is_replicated()
             ]
-
-            logging.debug(
-                "Deleting replica metadata for replicated tables: {}",
-                ", ".join([f"{t.database}.{t.name}" for t in replicated_tables]),
-            )
-            context.zk_ctl.delete_replica_metadata(
-                get_table_zookeeper_paths(replicated_tables), replica_name, macros
-            )
+            metadata_cleaner.clean_tables_metadata(replicated_tables)
 
         return self._restore_table_objects(
             context,

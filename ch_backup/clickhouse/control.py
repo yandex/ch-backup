@@ -155,6 +155,12 @@ RESTORE_REPLICA_SQL = strip_query(
 """
 )
 
+DROP_REPLICA_BY_ZK_PATH_SQL = strip_query(
+    """
+    SYSTEM DROP REPLICA '{replica_name}' FROM ZKPATH '{zk_path}'
+"""
+)
+
 GET_DATABASES_SQL = strip_query(
     """
     SELECT
@@ -361,6 +367,7 @@ class ClickhouseCTL:
         self._freeze_timeout = self._ch_ctl_config["freeze_timeout"]
         self._unfreeze_timeout = self._ch_ctl_config["unfreeze_timeout"]
         self._restore_replica_timeout = self._ch_ctl_config["restore_replica_timeout"]
+        self._drop_replica_timeout = self._ch_ctl_config["drop_replica_timeout"]
         self._ch_client = ClickhouseClient(self._ch_ctl_config)
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
         self._disks = self.get_disks()
@@ -665,6 +672,17 @@ class ClickhouseCTL:
         Drop named collection.
         """
         self._ch_client.query(DROP_NAMED_COLLECTION_SQL.format(nc_name=escape(nc_name)))
+
+    def system_drop_replica(self, replica: str, zookeeper_path: str) -> None:
+        """
+        System drop replica query.
+        """
+        self._ch_client.query(
+            DROP_REPLICA_BY_ZK_PATH_SQL.format(
+                replica_name=replica, zk_path=zookeeper_path
+            ),
+            timeout=self._drop_replica_timeout,
+        )
 
     def get_database_metadata_path(self, database: str) -> str:
         """

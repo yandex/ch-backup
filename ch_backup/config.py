@@ -34,6 +34,7 @@ DEFAULT_CONFIG = {
         "freeze_timeout": _as_seconds("45 min"),
         "unfreeze_timeout": _as_seconds("1 hour"),
         "restore_replica_timeout": _as_seconds("30 min"),
+        "drop_replica_timeout": _as_seconds("1 hour"),
         "user": "clickhouse",
         "group": "clickhouse",
         "clickhouse_user": None,
