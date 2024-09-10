@@ -161,12 +161,20 @@ DROP_REPLICA_BY_ZK_PATH_SQL = strip_query(
 """
 )
 
+DROP_DATABASE_REPLICA_BY_ZK_PATH_SQL = strip_query(
+    """
+    SYSTEM DROP DATABASE REPLICA '{replica_name}' FROM ZKPATH '{zk_path}'
+"""
+)
+
 GET_DATABASES_SQL = strip_query(
     """
     SELECT
         name,
         engine,
-        metadata_path
+        metadata_path,
+        uuid,
+        engine_full
     FROM system.databases
     WHERE name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', '{system_db}')
     FORMAT JSON
@@ -515,7 +523,13 @@ class ClickhouseCTL:
         )
         if "data" in ch_resp:
             result = [
-                Database(row["name"], row["engine"], row["metadata_path"])
+                Database(
+                    row["name"],
+                    row["engine"],
+                    row["metadata_path"],
+                    row["uuid"],
+                    row["engine_full"],
+                )
                 for row in ch_resp["data"]
                 if row["name"] not in exclude_dbs
             ]
@@ -679,6 +693,17 @@ class ClickhouseCTL:
         """
         self._ch_client.query(
             DROP_REPLICA_BY_ZK_PATH_SQL.format(
+                replica_name=replica, zk_path=zookeeper_path
+            ),
+            timeout=self._drop_replica_timeout,
+        )
+
+    def system_drop_database_replica(self, replica: str, zookeeper_path: str) -> None:
+        """
+        System drop database replica query.
+        """
+        self._ch_client.query(
+            DROP_DATABASE_REPLICA_BY_ZK_PATH_SQL.format(
                 replica_name=replica, zk_path=zookeeper_path
             ),
             timeout=self._drop_replica_timeout,

@@ -301,21 +301,19 @@ def get_table_zookeeper_paths(tables: Iterable) -> Iterable[Tuple]:
     return result
 
 
-def get_database_zookeeper_paths(databases: Iterable[str]) -> Iterable[str]:
+def get_database_zookeeper_paths(databases: Iterable) -> Iterable[Tuple]:
     """
-    Parse ZooKeeper path from create statement.
+    Parse ZooKeeper path from database create statement and return path to database and shard from schema.
     """
     result = []
-    for db_sql in databases:
+    for database in databases:
         match = re.search(
             R"""Replicated\(\'(?P<zk_path>[^']+)\', '(?P<shard>[^']+)', '(?P<replica>[^']+)'""",
-            db_sql,
+            database.engine_full,
         )
         if not match:
             continue
-        result.append(
-            f'{match.group("zk_path")}/replicas/{match.group("shard")}|{match.group("replica")}'
-        )
+        result.append((database, match.group("zk_path"), match.group("shard")))
     return result
 
 

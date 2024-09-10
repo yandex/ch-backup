@@ -788,7 +788,7 @@ Feature: Backup replicated merge tree table
     And we got same clickhouse data at clickhouse01 clickhouse02
 
 
-  Scenario: Host resetup with zookeeper cleanup
+  Scenario: Host resetup with zookeeper table cleanup
     Given we have enabled shared zookeeper for clickhouse01
     And we have enabled shared zookeeper for clickhouse02
     And we have executed queries on clickhouse01
@@ -800,7 +800,7 @@ Feature: Backup replicated merge tree table
         CounterID UInt32,
         UserID UInt32
     )
-    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_01', '{replica}')
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/{uuid}/test_db.table_01', '{replica}')
     PARTITION BY CounterID % 10
     ORDER BY (CounterID, EventDate, intHash32(UserID))
     SAMPLE BY intHash32(UserID);
@@ -819,3 +819,25 @@ Feature: Backup replicated merge tree table
     """
     When we start clickhouse at clickhouse01
     Then replica test_db.table_01 on clickhouse01 is read-only
+
+  Scenario: Host resetup with database table cleanup
+    Given we have enabled shared zookeeper for clickhouse01
+    And we have enabled shared zookeeper for clickhouse02
+    And we have executed queries on clickhouse01
+    """
+    DROP DATABASE IF EXISTS db_repl SYNC;
+    CREATE DATABASE db_repl ENGINE = Replicated('/databases/{uuid}/db_repl', 'shard_01', '{replica}')
+    """
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 0         | 0          |
+
+    When we stop clickhouse at clickhouse01
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    replica_name: clickhouse01
+    schema_only: true
+    """
+    When we start clickhouse at clickhouse01
+    Then database replica db_repl on clickhouse01 does not exists

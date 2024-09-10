@@ -288,3 +288,9 @@ def step_check_data_equal(context, node):
 def step_check_replica_is_ro(context, table, database, node):
     ch_client = ClickhouseClient(context, node)
     assert ch_client.is_replica_ro(database, table)
+
+
+@then("database replica {database} on {node:w} does not exists")
+def step_check_no_database_replica(context, database, node):
+    ch_client = ClickhouseClient(context, node)
+    assert not ch_client.is_database_replica_exists(database)

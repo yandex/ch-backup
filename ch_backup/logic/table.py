@@ -18,7 +18,7 @@ from ch_backup.backup.restore_context import PartState
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
-from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner, select_replica_drop
+from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner
 from ch_backup.clickhouse.models import Database, FrozenPart, Table
 from ch_backup.clickhouse.schema import (
     rewrite_table_schema,
@@ -272,12 +272,11 @@ class TableBackup(BackupManager):
         schema_only: bool,
         tables: List[TableMetadata],
         exclude_tables: List[TableMetadata],
-        replica_name: Optional[str],
+        metadata_cleaner: Optional[MetadataCleaner],
         cloud_storage_source_bucket: Optional[str],
         cloud_storage_source_path: Optional[str],
         cloud_storage_source_endpoint: Optional[str],
         skip_cloud_storage: bool,
-        clean_zookeeper: bool,
         keep_going: bool,
     ) -> None:
         """
@@ -342,8 +341,7 @@ class TableBackup(BackupManager):
             context,
             databases,
             tables_to_restore,
-            clean_zookeeper,
-            replica_name,
+            metadata_cleaner,
             keep_going,
         )
 
@@ -588,8 +586,7 @@ class TableBackup(BackupManager):
         context: BackupContext,
         databases: Dict[str, Database],
         tables: Iterable[Table],
-        clean_zookeeper: bool = False,
-        replica_name: Optional[str] = None,
+        metadata_cleaner: Optional[MetadataCleaner],
         keep_going: bool = False,
     ) -> List[Table]:
         logging.info("Preparing tables for restoring")
@@ -615,12 +612,7 @@ class TableBackup(BackupManager):
             else:
                 other_tables.append(table)
 
-        metadata_cleaner = MetadataCleaner(
-            context.ch_ctl,
-            select_replica_drop(replica_name, context.ch_ctl.get_macros()),
-        )
-
-        if clean_zookeeper and len(context.zk_config.get("hosts")) > 0:  # type: ignore
+        if metadata_cleaner:  # type: ignore
             replicated_tables = [
                 table for table in merge_tree_tables if table.is_replicated()
             ]

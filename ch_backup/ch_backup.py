@@ -16,6 +16,7 @@ from ch_backup.backup.deduplication import (
 from ch_backup.backup.metadata import BackupMetadata, BackupState, TableMetadata
 from ch_backup.backup.sources import BackupSources
 from ch_backup.backup_context import BackupContext
+from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner, select_replica_drop
 from ch_backup.clickhouse.models import Database
 from ch_backup.config import Config
 from ch_backup.exceptions import (
@@ -514,8 +515,20 @@ class ClickhouseBackup:
                     db.set_engine_from_sql(db_sql)
                 databases[db_name] = db
 
+            metadata_cleaner: Optional[MetadataCleaner] = None
+
+            if clean_zookeeper and len(self._context.zk_config.get("hosts")) > 0:
+                metadata_cleaner = MetadataCleaner(
+                    self._context.ch_ctl,
+                    select_replica_drop(
+                        replica_name, self._context.ch_ctl.get_macros()
+                    ),
+                )
+
             # Restore databases.
-            self._database_backup_manager.restore(self._context, databases, keep_going)
+            self._database_backup_manager.restore(
+                self._context, databases, keep_going, metadata_cleaner
+            )
 
             # Restore tables and data stored on local disks.
             self._table_backup_manager.restore(
@@ -524,12 +537,11 @@ class ClickhouseBackup:
                 schema_only=sources.schema_only,
                 tables=tables,
                 exclude_tables=exclude_tables,
-                replica_name=replica_name,
+                metadata_cleaner=metadata_cleaner,
                 cloud_storage_source_bucket=cloud_storage_source_bucket,
                 cloud_storage_source_path=cloud_storage_source_path,
                 cloud_storage_source_endpoint=cloud_storage_source_endpoint,
                 skip_cloud_storage=skip_cloud_storage,
-                clean_zookeeper=clean_zookeeper,
                 keep_going=keep_going,
             )
 

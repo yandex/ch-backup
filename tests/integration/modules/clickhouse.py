@@ -264,6 +264,13 @@ class ClickhouseClient:
         )["data"][0]
         return resp["is_readonly"]
 
+    def is_database_replica_exists(self, database: str) -> bool:
+        resp = self._query(
+            "GET",
+            f"SELECT count() as cnt FROM system.clusters WHERE cluster='{database}' and database_replica_name='{{replica}}' FORMAT JSON",
+        )["data"][0]
+        return bool(resp["cnt"])
+
     def drop_test_table(self, db_num: int, table_num: int) -> None:
         """
         Drop test table.

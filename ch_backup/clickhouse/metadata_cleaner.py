@@ -8,9 +8,13 @@ from typing import Dict, List, Optional
 from ch_backup import logging
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.control import ClickhouseCTL
-from ch_backup.clickhouse.models import Table
+from ch_backup.clickhouse.models import Database, Table
 from ch_backup.exceptions import ConfigurationError
-from ch_backup.util import get_table_zookeeper_paths, replace_macros
+from ch_backup.util import (
+    get_database_zookeeper_paths,
+    get_table_zookeeper_paths,
+    replace_macros,
+)
 
 
 def select_replica_drop(replica_name: Optional[str], macros: Dict) -> str:
@@ -73,6 +77,38 @@ class MetadataCleaner:
                 if "does not look like a table path" in str(ch_error):
                     logging.warning(
                         "System drop replica failed with: {}\n Will ignore it, probably different configuration for zookeeper or tables schema.",
+                        repr(ch_error),
+                    )
+                else:
+                    raise
+
+    def clean_database_metadata(self, replicated_databases: List[Database]) -> None:
+        """
+        Remove replica database metadata from zookeeper.
+        """
+        replicated_databases_paths = get_database_zookeeper_paths(replicated_databases)
+
+        for [database, database_path, shard] in replicated_databases_paths:
+            db_macros = dict(database=database.name, uuid=database.uuid)
+            db_macros.update(self._macros)
+
+            path_resolved = os.path.abspath(replace_macros(database_path, db_macros))
+            full_replica_name = f"{shard}|{self._replica_to_drop}"
+
+            logging.debug(
+                "Removing replica {} from database {} metadata from zookeeper {}.",
+                full_replica_name,
+                database.name,
+                path_resolved,
+            )
+            try:
+                self._ch_ctl.system_drop_database_replica(
+                    replica=full_replica_name, zookeeper_path=path_resolved
+                )
+            except ClickhouseError as ch_error:
+                if "does not look like a path of Replicated database" in str(ch_error):
+                    logging.warning(
+                        "System drop database replica failed with: {}\n Will ignore it, probably different configuration for zookeeper or database schema.",
                         repr(ch_error),
                     )
                 else:
