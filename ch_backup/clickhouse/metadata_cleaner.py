@@ -57,7 +57,7 @@ class MetadataCleaner:
                 database=table.database, table=table.name, uuid=table.uuid
             )
             table_macros.update(self._macros)
-            path_resolved = os.path.normpath(replace_macros(table_path, table_macros))
+            path_resolved = os.path.abspath(replace_macros(table_path, table_macros))
 
             logging.debug(
                 "Removing replica {} from table {} metadata from zookeeper {}.",
