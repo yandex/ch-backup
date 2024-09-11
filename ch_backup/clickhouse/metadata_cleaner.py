@@ -86,6 +86,12 @@ class MetadataCleaner:
         """
         Remove replica database metadata from zookeeper.
         """
+        if not self._ch_ctl.ch_version_ge("23.3"):
+            logging.warning(
+                "Ch version is too old, will skip replicated database cleanup."
+            )
+            return
+
         replicated_databases_paths = get_database_zookeeper_paths(replicated_databases)
 
         for [database, database_path, shard] in replicated_databases_paths:
