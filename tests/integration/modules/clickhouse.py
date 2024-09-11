@@ -269,7 +269,7 @@ class ClickhouseClient:
             "GET",
             f"SELECT count() as cnt FROM system.clusters WHERE cluster='{database}' and database_replica_name='{{replica}}' FORMAT JSON",
         )["data"][0]
-        return bool(resp["cnt"])
+        return int(resp["cnt"]) > 0
 
     def drop_test_table(self, db_num: int, table_num: int) -> None:
         """
