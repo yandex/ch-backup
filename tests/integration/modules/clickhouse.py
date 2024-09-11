@@ -267,7 +267,7 @@ class ClickhouseClient:
     def is_database_replica_exists(self, database: str) -> bool:
         resp = self._query(
             "GET",
-            f"SELECT count() as cnt FROM system.clusters WHERE cluster='{database}' and database_replica_name='{{replica}}' FORMAT JSON",
+            f"SELECT count() as cnt FROM system.clusters WHERE cluster='{database}' and host_name like '{{replica}}%' FORMAT JSON",
         )["data"][0]
         return int(resp["cnt"]) > 0
 

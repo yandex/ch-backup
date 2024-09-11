@@ -93,7 +93,9 @@ class MetadataCleaner:
             db_macros.update(self._macros)
 
             path_resolved = os.path.abspath(replace_macros(database_path, db_macros))
-            full_replica_name = f"{shard}|{self._replica_to_drop}"
+            full_replica_name = (
+                f"{replace_macros(shard, db_macros)}|{self._replica_to_drop}"
+            )
 
             logging.debug(
                 "Removing replica {} from database {} metadata from zookeeper {}.",
@@ -106,7 +108,9 @@ class MetadataCleaner:
                     replica=full_replica_name, zookeeper_path=path_resolved
                 )
             except ClickhouseError as ch_error:
-                if "does not look like a path of Replicated database" in str(ch_error):
+                if "does not look like a path of Replicated database" in str(
+                    ch_error
+                ) or "node doesn't exist" in str(ch_error):
                     logging.warning(
                         "System drop database replica failed with: {}\n Will ignore it, probably different configuration for zookeeper or database schema.",
                         repr(ch_error),

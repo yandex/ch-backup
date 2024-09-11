@@ -181,6 +181,19 @@ GET_DATABASES_SQL = strip_query(
 """
 )
 
+GET_DATABASES_SQL_22_8 = strip_query(
+    """
+    SELECT
+        name,
+        engine,
+        metadata_path,
+        uuid
+    FROM system.databases
+    WHERE name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', '{system_db}')
+    FORMAT JSON
+"""
+)
+
 CREATE_IF_NOT_EXISTS_SYSTEM_DB_SQL = strip_query(
     "CREATE DATABASE IF NOT EXISTS `{system_db}`"
 )
@@ -518,9 +531,14 @@ class ClickhouseCTL:
 
         result: List[Database] = []
         system_database = self._backup_config["system_database"]
-        ch_resp = self._ch_client.query(
+
+        query = (
             GET_DATABASES_SQL.format(system_db=system_database)
+            if self.ch_version_ge("23.3")
+            else GET_DATABASES_SQL_22_8.format(system_db=system_database)
         )
+
+        ch_resp = self._ch_client.query(query)
         if "data" in ch_resp:
             result = [
                 Database(
@@ -528,7 +546,7 @@ class ClickhouseCTL:
                     row["engine"],
                     row["metadata_path"],
                     row["uuid"],
-                    row["engine_full"],
+                    row.get("engine_full"),
                 )
                 for row in ch_resp["data"]
                 if row["name"] not in exclude_dbs
