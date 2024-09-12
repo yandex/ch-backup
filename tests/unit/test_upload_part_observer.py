@@ -24,7 +24,9 @@ BACKUP_META = BackupMetadata(
     time_format="%Y-%m-%dT%H:%M:%S%Z",
     hostname="clickhouse01.test_net_711",
 )
-DB = Database(DB_NAME, ENGINE, f"/var/lib/clickhouse/metadata/{DB_NAME}.sql")
+DB = Database(
+    DB_NAME, ENGINE, f"/var/lib/clickhouse/metadata/{DB_NAME}.sql", None, None
+)
 
 
 @parametrize(

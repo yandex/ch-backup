@@ -54,6 +54,18 @@ def delete_znode(context: ContextT, node: str, znode: str) -> None:
     zk.stop()
 
 
+def znode_exists(context: ContextT, node: str, zk_path: str) -> bool:
+    """
+    Check if the znode is exists.
+    """
+    zk = _get_zookeeper_client(context, node)
+    zk.start()
+
+    result = zk.exists(path=zk_path)
+    zk.stop()
+    return result
+
+
 def get_children_list(context: ContextT, node: str, zk_path: str) -> Optional[List]:
     zk = _get_zookeeper_client(context, node)
     zk_config = context.conf.get("zk", {})

@@ -3,18 +3,12 @@ ZooKeeper-control classes module
 """
 
 import logging as py_logging
-import os
-from typing import Dict, Iterable, Tuple
 
 from kazoo.client import KazooClient
-from kazoo.exceptions import KazooException, NoNodeError
+from kazoo.exceptions import KazooException
 from kazoo.handlers.threading import KazooTimeoutError
 
-from ch_backup import logging
-from ch_backup.exceptions import ConfigurationError
-
-from ..clickhouse.models import Table
-from ..util import replace_macros, retry
+from ..util import retry
 
 KAZOO_RETRIES = retry(
     (KazooException, KazooTimeoutError), max_attempts=5, max_interval=60
@@ -80,60 +74,3 @@ class ZookeeperCTL:
         Getter zk_root_path
         """
         return self._zk_root_path
-
-    @KAZOO_RETRIES
-    def delete_replica_metadata(
-        self, tables: Iterable[Tuple[Table, str]], replica: str, macros: Dict = None
-    ) -> None:
-        """
-        Remove replica metadata from zookeeper for all tables from args.
-        """
-        if macros is None:
-            macros = {}
-        if replica is None:
-            if macros.get("replica") is not None:
-                replica = macros.get("replica")
-            else:
-                raise ConfigurationError(
-                    "Can't get the replica name. Please, specify it through macros or replica_name knob."
-                )
-
-        with self._zk_client as client:
-            for table, table_path in tables:
-                table_macros = dict(
-                    database=table.database, table=table.name, uuid=table.uuid
-                )
-                table_macros.update(macros)
-                path = os.path.join(
-                    self._zk_root_path,
-                    replace_macros(table_path[1:], table_macros),
-                    "replicas",
-                    replica,
-                )  # remove leading '/'
-                logging.debug(f'Deleting zk node: "{path}"')
-                try:
-                    client.delete(path, recursive=True)
-                except NoNodeError:
-                    pass
-
-    @KAZOO_RETRIES
-    def delete_replicated_database_metadata(
-        self, databases: Iterable[str], replica: str, macros: Dict = None
-    ) -> None:
-        """
-        Remove replica metadata from zookeeper for all replicated databases from args.
-        """
-        if macros is None:
-            macros = {}
-        macros["replica"] = replica
-
-        with self._zk_client as client:
-            for zk_path in databases:
-                path = os.path.join(
-                    self._zk_root_path, replace_macros(zk_path[1:], macros)
-                )  # remove leading '/'
-                logging.debug(f'Deleting zk node: "{path}"')
-                try:
-                    client.delete(path, recursive=True)
-                except NoNodeError:
-                    pass

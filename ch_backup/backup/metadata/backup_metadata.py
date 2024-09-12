@@ -228,7 +228,13 @@ class BackupMetadata:
         Get database.
         """
         db_meta = self._databases[db_name]
-        return Database(db_name, db_meta.get("engine"), db_meta.get("metadata_path"))
+        return Database(
+            db_name,
+            db_meta.get("engine"),
+            db_meta.get("metadata_path"),
+            db_meta.get("uuid"),
+            db_meta.get("engine_full"),
+        )
 
     def add_database(self, db: Database) -> None:
         """
@@ -239,6 +245,8 @@ class BackupMetadata:
         self._databases[db.name] = {
             "engine": db.engine,
             "metadata_path": db.metadata_path,
+            "uuid": db.uuid,
+            "engine_full": db.engine_full,
             "tables": {},
         }
 

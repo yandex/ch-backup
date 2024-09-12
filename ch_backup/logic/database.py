@@ -2,10 +2,11 @@
 Clickhouse backup logic for databases
 """
 
-from typing import Dict, Sequence
+from typing import Dict, Optional, Sequence
 
 from ch_backup import logging
 from ch_backup.backup_context import BackupContext
+from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner
 from ch_backup.clickhouse.models import Database
 from ch_backup.clickhouse.schema import (
     embedded_schema_db_sql,
@@ -32,7 +33,10 @@ class DatabaseBackup(BackupManager):
 
     @staticmethod
     def restore(
-        context: BackupContext, databases: Dict[str, Database], keep_going: bool
+        context: BackupContext,
+        databases: Dict[str, Database],
+        keep_going: bool,
+        metadata_cleaner: Optional[MetadataCleaner],
     ) -> None:
         """
         Restore database objects.
@@ -55,6 +59,14 @@ class DatabaseBackup(BackupManager):
             if name not in present_databases:
                 databases_to_restore[name] = db
                 continue
+
+        if metadata_cleaner:
+            replicated_databases = [
+                database
+                for database in databases_to_restore.values()
+                if database.is_replicated_db_engine()
+            ]
+            metadata_cleaner.clean_database_metadata(replicated_databases)
 
         logging.info("Restoring databases: {}", ", ".join(databases_to_restore.keys()))
         for db in databases_to_restore.values():

@@ -42,6 +42,7 @@ def create():
         "secure": True,
         "user": "clickhouse",
         "password": "password.password.password",
+        "shared_node": "shared",
     }
 
     return {

@@ -27,7 +27,9 @@ def test_backup_table_skipping_if_metadata_updated_during_backup(
 
     # Prepare involved data objects
     context = BackupContext(DEFAULT_CONFIG)  # type: ignore[arg-type]
-    db = Database(db_name, "MergeTree", "/var/lib/clickhouse/metadata/db1.sql")
+    db = Database(
+        db_name, "MergeTree", "/var/lib/clickhouse/metadata/db1.sql", None, None
+    )
     table_backup = TableBackup()
     backup_meta = BackupMetadata(
         name="20181017T210300",

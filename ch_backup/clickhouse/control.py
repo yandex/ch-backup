@@ -155,12 +155,39 @@ RESTORE_REPLICA_SQL = strip_query(
 """
 )
 
+DROP_REPLICA_BY_ZK_PATH_SQL = strip_query(
+    """
+    SYSTEM DROP REPLICA '{replica_name}' FROM ZKPATH '{zk_path}'
+"""
+)
+
+DROP_DATABASE_REPLICA_BY_ZK_PATH_SQL = strip_query(
+    """
+    SYSTEM DROP DATABASE REPLICA '{replica_name}' FROM ZKPATH '{zk_path}'
+"""
+)
+
 GET_DATABASES_SQL = strip_query(
     """
     SELECT
         name,
         engine,
-        metadata_path
+        metadata_path,
+        uuid,
+        engine_full
+    FROM system.databases
+    WHERE name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', '{system_db}')
+    FORMAT JSON
+"""
+)
+
+GET_DATABASES_SQL_22_8 = strip_query(
+    """
+    SELECT
+        name,
+        engine,
+        metadata_path,
+        uuid
     FROM system.databases
     WHERE name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', '{system_db}')
     FORMAT JSON
@@ -361,6 +388,7 @@ class ClickhouseCTL:
         self._freeze_timeout = self._ch_ctl_config["freeze_timeout"]
         self._unfreeze_timeout = self._ch_ctl_config["unfreeze_timeout"]
         self._restore_replica_timeout = self._ch_ctl_config["restore_replica_timeout"]
+        self._drop_replica_timeout = self._ch_ctl_config["drop_replica_timeout"]
         self._ch_client = ClickhouseClient(self._ch_ctl_config)
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
         self._disks = self.get_disks()
@@ -503,12 +531,23 @@ class ClickhouseCTL:
 
         result: List[Database] = []
         system_database = self._backup_config["system_database"]
-        ch_resp = self._ch_client.query(
+
+        query = (
             GET_DATABASES_SQL.format(system_db=system_database)
+            if self.ch_version_ge("23.3")
+            else GET_DATABASES_SQL_22_8.format(system_db=system_database)
         )
+
+        ch_resp = self._ch_client.query(query)
         if "data" in ch_resp:
             result = [
-                Database(row["name"], row["engine"], row["metadata_path"])
+                Database(
+                    row["name"],
+                    row["engine"],
+                    row["metadata_path"],
+                    row["uuid"],
+                    row.get("engine_full"),
+                )
                 for row in ch_resp["data"]
                 if row["name"] not in exclude_dbs
             ]
@@ -665,6 +704,28 @@ class ClickhouseCTL:
         Drop named collection.
         """
         self._ch_client.query(DROP_NAMED_COLLECTION_SQL.format(nc_name=escape(nc_name)))
+
+    def system_drop_replica(self, replica: str, zookeeper_path: str) -> None:
+        """
+        System drop replica query.
+        """
+        self._ch_client.query(
+            DROP_REPLICA_BY_ZK_PATH_SQL.format(
+                replica_name=replica, zk_path=zookeeper_path
+            ),
+            timeout=self._drop_replica_timeout,
+        )
+
+    def system_drop_database_replica(self, replica: str, zookeeper_path: str) -> None:
+        """
+        System drop database replica query.
+        """
+        self._ch_client.query(
+            DROP_DATABASE_REPLICA_BY_ZK_PATH_SQL.format(
+                replica_name=replica, zk_path=zookeeper_path
+            ),
+            timeout=self._drop_replica_timeout,
+        )
 
     def get_database_metadata_path(self, database: str) -> str:
         """

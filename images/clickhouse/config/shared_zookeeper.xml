@@ -1,0 +1,18 @@
+<yandex>
+{% if feature_enabled('zookeeper') %}
+    <zookeeper>
+        <node index="1">
+            <host>{{ conf.zk.uri }}</host>
+{%     if conf.zk.secure %}
+            <port>{{ conf.zk.secure_port }}</port>
+            <secure>1</secure>
+{%     else %}
+            <port>{{ conf.zk.port }}</port>
+{%     endif %}
+        </node>
+        <session_timeout_ms>3000</session_timeout_ms>
+        <root>/{{ conf.zk.shared_node }}</root>
+        <identity>{{ conf.zk.user }}:{{ conf.zk.password }}</identity>
+    </zookeeper>
+{% endif %}
+</yandex>

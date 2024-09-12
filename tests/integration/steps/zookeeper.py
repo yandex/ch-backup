@@ -4,11 +4,13 @@ Steps for interacting with ZooKeeper.
 
 from behave import given, then, when
 from hamcrest import assert_that, has_length
+from tests.integration.modules.steps import get_step_data
 from tests.integration.modules.zookeeper import (
     delete_znode,
     get_children_list,
     initialize_zookeeper_roots,
     write_znode,
+    znode_exists,
 )
 
 
@@ -56,3 +58,9 @@ def step_acquire_zookeeper_lock(context, node, zk_lock_path):
 @when("we release zookeeper lock on {node:w} with path {zk_lock_path}")
 def step_release_zookeeper_lock(context, node, zk_lock_path):
     delete_znode(context, node, zk_lock_path + "/__lock__-0000000000")
+
+
+@then("there are no zk node on {node:w}")
+def step_zk_node_not_exists(context, node):
+    data = get_step_data(context)
+    assert not znode_exists(context, node, data["zookeeper_path"])

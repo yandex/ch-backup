@@ -167,12 +167,19 @@ class Database(SimpleNamespace):
     """
 
     def __init__(
-        self, name: str, engine: Optional[str], metadata_path: Optional[str]
+        self,
+        name: str,
+        engine: Optional[str],
+        metadata_path: Optional[str],
+        uuid: Optional[str],
+        engine_full: Optional[str],
     ) -> None:
         super().__init__()
         self.name = name
         self.engine = engine
         self.metadata_path = metadata_path
+        self.uuid = uuid
+        self.engine_full = engine_full
 
     def is_atomic(self) -> bool:
         """

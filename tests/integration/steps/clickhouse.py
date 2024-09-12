@@ -21,6 +21,23 @@ def step_wait_for_clickhouse_alive(context, node):
     ClickhouseClient(context, node).ping()
 
 
+@given("we have enabled shared zookeeper for {node:w}")
+def step_enable_shared_zookeeper_for_clickhouse(context, node):
+    """
+    Replace a part of CH config on the fly to enable shared zookeeper for clickhouse nodes.
+    """
+    container = get_container(context, node)
+
+    override_config = "/config/shared_zookeeper.xml"
+    assert (
+        container.exec_run(
+            f"ln -s {override_config} /etc/clickhouse-server/conf.d/"
+        ).exit_code
+        == 0
+    )
+    assert container.exec_run("supervisorctl restart clickhouse").exit_code == 0
+
+
 @given("clickhouse on {node:w} has test schema")
 @when("clickhouse on {node:w} has test schema")
 def step_init_test_schema(context, node):
@@ -244,6 +261,16 @@ def step_stop_clickhouse(context, node):
     context.exit_code = result.exit_code
 
 
+@when("we start clickhouse at {node:w}")
+def step_start_clickhouse(context, node):
+    container = get_container(context, node)
+    result = container.exec_run(
+        ["bash", "-c", "supervisorctl start clickhouse"], user="root"
+    )
+    context.response = result.output.decode().strip()
+    context.exit_code = result.exit_code
+
+
 @when("we save all user's data in context on {node:w}")
 def step_save_user_data(context, node):
     ch_client = ClickhouseClient(context, node)
@@ -255,3 +282,9 @@ def step_check_data_equal(context, node):
     ch_client = ClickhouseClient(context, node)
     new_user_data = ch_client.get_all_user_data()
     assert new_user_data == context.user_data
+
+
+@then("database replica {database} on {node:w} does not exists")
+def step_check_no_database_replica(context, database, node):
+    ch_client = ClickhouseClient(context, node)
+    assert not ch_client.is_database_replica_exists(database)

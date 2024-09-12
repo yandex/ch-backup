@@ -257,6 +257,20 @@ class ClickhouseClient:
         """
         self._query("POST", f"DROP DATABASE `{db_name}`")
 
+    def is_replica_ro(self, database: str, table: str) -> int:
+        resp = self._query(
+            "GET",
+            f"SELECT is_readonly FROM system.replicas WHERE database='{database}' and table='{table}' FORMAT JSON",
+        )["data"][0]
+        return resp["is_readonly"]
+
+    def is_database_replica_exists(self, database: str) -> bool:
+        resp = self._query(
+            "GET",
+            f"SELECT count() as cnt FROM system.clusters WHERE cluster='{database}' and host_name like '{{replica}}%' FORMAT JSON",
+        )["data"][0]
+        return int(resp["cnt"]) > 0
+
     def drop_test_table(self, db_num: int, table_num: int) -> None:
         """
         Drop test table.
