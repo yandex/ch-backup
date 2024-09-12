@@ -63,7 +63,7 @@ class DatabaseBackup(BackupManager):
         if metadata_cleaner:
             replicated_databases = [
                 database
-                for [_, database] in databases_to_restore.items()
+                for database in databases_to_restore.values()
                 if database.is_replicated_db_engine()
             ]
             metadata_cleaner.clean_database_metadata(replicated_databases)
