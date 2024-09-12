@@ -725,7 +725,10 @@ class ClickhouseCTL:
 
     @staticmethod
     def scan_frozen_parts(
-        table: Table, disk: Disk, data_path: str, backup_meta: BackupMetadata,
+        table: Table,
+        disk: Disk,
+        data_path: str,
+        backup_meta: BackupMetadata,
     ) -> Iterable[FrozenPart]:
         """
         Yield frozen parts from specific disk and path.

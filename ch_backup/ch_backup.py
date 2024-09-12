@@ -150,9 +150,7 @@ class ClickhouseBackup:
             ch_version=self._context.ch_ctl.get_version(),
             time_format=self._context.config["time_format"],
             schema_only=sources.schema_only,
-            encrypted=self._config.get(EncryptStage.stype, {}).get(
-                "enabled", True
-            ),
+            encrypted=self._config.get(EncryptStage.stype, {}).get("enabled", True),
         )
 
         skip_lock = self._check_schema_only_backup_skip_lock(sources)
