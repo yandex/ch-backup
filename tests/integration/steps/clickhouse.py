@@ -284,12 +284,6 @@ def step_check_data_equal(context, node):
     assert new_user_data == context.user_data
 
 
-@then("replica {database}.{table} on {node:w} is read-only")
-def step_check_replica_is_ro(context, table, database, node):
-    ch_client = ClickhouseClient(context, node)
-    assert ch_client.is_replica_ro(database, table)
-
-
 @then("database replica {database} on {node:w} does not exists")
 def step_check_no_database_replica(context, database, node):
     ch_client = ClickhouseClient(context, node)

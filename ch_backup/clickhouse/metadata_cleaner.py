@@ -2,6 +2,7 @@
 Zookeeper metadata cleaner for clickhouse.
 """
 
+import copy
 import os
 from typing import Dict, List, Optional
 
@@ -40,15 +41,12 @@ class MetadataCleaner:
     def __init__(self, ch_ctl: ClickhouseCTL, replica_to_drop: str) -> None:
         self._ch_ctl = ch_ctl
         self._macros = self._ch_ctl.get_macros()
-        self._replica_to_drop = replica_to_drop
+        self._replica_to_drop = replica_to_drop or self._macros.get("replica")
 
-        if self._replica_to_drop is None:
-            if self._macros.get("replica") is not None:
-                self._replica_to_drop = self._macros.get("replica")
-            else:
-                raise ConfigurationError(
-                    "Can't get the replica name. Please, specify it through macros or replica_name knob."
-                )
+        if not self._replica_to_drop:
+            raise ConfigurationError(
+                "Can't get the replica name. Please, specify it through macros or replica_name knob."
+            )
 
     def clean_tables_metadata(self, replicated_tables: List[Table]) -> None:
         """
@@ -57,10 +55,12 @@ class MetadataCleaner:
         replicated_table_paths = get_table_zookeeper_paths(replicated_tables)
 
         for table, table_path in replicated_table_paths:
-            table_macros = dict(
+            table_macros = copy.copy(self._macros)
+            macros_to_override = dict(
                 database=table.database, table=table.name, uuid=table.uuid
             )
-            table_macros.update(self._macros)
+            table_macros.update(macros_to_override)
+
             path_resolved = os.path.abspath(replace_macros(table_path, table_macros))
 
             logging.debug(
@@ -71,7 +71,7 @@ class MetadataCleaner:
             )
             try:
                 self._ch_ctl.system_drop_replica(
-                    replica=self._replica_to_drop, zookeeper_path=path_resolved
+                    replica=self._replica_to_drop, zookeeper_path=path_resolved  # type: ignore
                 )
             except ClickhouseError as ch_error:
                 if "does not look like a table path" in str(ch_error):
@@ -94,9 +94,11 @@ class MetadataCleaner:
 
         replicated_databases_paths = get_database_zookeeper_paths(replicated_databases)
 
-        for [database, database_path, shard] in replicated_databases_paths:
-            db_macros = dict(database=database.name, uuid=database.uuid)
-            db_macros.update(self._macros)
+        for database, database_path, shard in replicated_databases_paths:
+            db_macros = copy.copy(self._macros)
+
+            macros_to_override = dict(database=database.name, uuid=database.uuid)
+            db_macros.update(macros_to_override)
 
             path_resolved = os.path.abspath(replace_macros(database_path, db_macros))
             full_replica_name = (
@@ -111,7 +113,7 @@ class MetadataCleaner:
             )
             try:
                 self._ch_ctl.system_drop_database_replica(
-                    replica=full_replica_name, zookeeper_path=path_resolved
+                    replica=full_replica_name, zookeeper_path=path_resolved  # type: ignore
                 )
             except ClickhouseError as ch_error:
                 if "does not look like a path of Replicated database" in str(

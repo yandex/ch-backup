@@ -818,7 +818,10 @@ Feature: Backup replicated merge tree table
     schema_only: true
     """
     When we start clickhouse at clickhouse01
-    Then replica test_db.table_01 on clickhouse01 is read-only
+    Then there are no zk node on zookeeper01
+    """
+    zookeeper_path: /{{ conf.zk.shared_node }}/clickhouse/tables/shard01/test_db.table_01/replicas/clickhouse01
+    """
 
   Scenario Outline: Host resetup with database table cleanup
     Given we have enabled shared zookeeper for clickhouse01
