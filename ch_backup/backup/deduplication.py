@@ -15,6 +15,7 @@ from ch_backup.clickhouse.models import Database, FrozenPart, Table
 from ch_backup.util import Slotted, utcnow
 
 
+# pylint: disable=too-many-instance-attributes
 class PartDedupInfo(Slotted):
     """
     Information about data part to use for deduplication / creation incremental backups.
@@ -31,6 +32,7 @@ class PartDedupInfo(Slotted):
         "tarball",
         "disk_name",
         "verified",
+        "encrypted",
     )
 
     # pylint: disable=too-many-arguments
@@ -46,6 +48,7 @@ class PartDedupInfo(Slotted):
         tarball: bool,
         disk_name: str,
         verified: bool,
+        encrypted: bool,
     ) -> None:
         self.database = database
         self.table = table
@@ -57,13 +60,14 @@ class PartDedupInfo(Slotted):
         self.tarball = tarball
         self.disk_name = disk_name
         self.verified = verified
+        self.encrypted = encrypted
 
     def to_sql(self):
         """
         Convert to string to use it in insert query
         """
         files_array = "[" + ",".join(f"'{file}'" for file in self.files) + "]"
-        return f"('{self.database}','{self.table}','{self.name}','{self.backup_path}','{self.checksum}',{self.size},{files_array},{int(self.tarball)},'{self.disk_name}',{int(self.verified)})"
+        return f"('{self.database}','{self.table}','{self.name}','{self.backup_path}','{self.checksum}',{self.size},{files_array},{int(self.tarball)},'{self.disk_name}',{int(self.verified)},{int(self.encrypted)})"
 
 
 TableDedupReferences = Set[str]
@@ -204,6 +208,7 @@ def _populate_dedup_info(
                         tarball=part.tarball,
                         disk_name=part.disk_name,
                         verified=verified,
+                        encrypted=part.encrypted,
                     )
 
                     table_dedup_info.add(part.name)
@@ -247,6 +252,7 @@ def deduplicate_parts(
             files=existing_part["files"],
             tarball=existing_part["tarball"],
             disk_name=existing_part["disk_name"],
+            encrypted=existing_part.get("encrypted", True),
         )
 
         if not existing_part["verified"]:

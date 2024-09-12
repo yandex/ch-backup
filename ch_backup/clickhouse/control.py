@@ -15,7 +15,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
 from pkg_resources import parse_version
 
 from ch_backup import logging
-from ch_backup.backup.metadata import TableMetadata
+from ch_backup.backup.metadata import BackupMetadata, TableMetadata
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.calculators import calc_aligned_files_size
 from ch_backup.clickhouse.client import ClickhouseClient
@@ -182,7 +182,8 @@ CREATE_IF_NOT_EXISTS_DEDUP_TABLE_SQL = strip_query(
         files Array(String),
         tarball Bool,
         disk_name String,
-        verified Bool
+        verified Bool,
+        encrypted Nullable(Bool)
     )
     ENGINE = MergeTree()
     ORDER BY (database, table, name, checksum)
@@ -724,13 +725,15 @@ class ClickhouseCTL:
 
     @staticmethod
     def scan_frozen_parts(
-        table: Table, disk: Disk, data_path: str, backup_name: str
+        table: Table, disk: Disk, data_path: str, backup_meta: BackupMetadata,
     ) -> Iterable[FrozenPart]:
         """
         Yield frozen parts from specific disk and path.
         """
         table_relative_path = os.path.relpath(data_path, disk.path)
-        path = os.path.join(disk.path, "shadow", backup_name, table_relative_path)
+        path = os.path.join(
+            disk.path, "shadow", backup_meta.get_sanitized_name(), table_relative_path
+        )
 
         if not os.path.exists(path):
             logging.debug("Shadow path {} is empty", path)
@@ -757,6 +760,7 @@ class ClickhouseCTL:
                 checksum,
                 size,
                 rel_paths,
+                backup_meta.encrypted,
             )
 
     @staticmethod

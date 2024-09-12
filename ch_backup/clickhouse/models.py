@@ -236,6 +236,7 @@ class FrozenPart(Slotted):
         "checksum",
         "size",
         "files",
+        "encrypted",
     )
 
     def __init__(
@@ -248,6 +249,7 @@ class FrozenPart(Slotted):
         checksum: str,
         size: int,
         files: List[str],
+        encrypted: bool,
     ):
         super().__init__()
         self.database = database
@@ -258,3 +260,4 @@ class FrozenPart(Slotted):
         self.checksum = checksum
         self.size = size
         self.files = files
+        self.encrypted = encrypted

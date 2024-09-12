@@ -13,7 +13,7 @@ class RawMetadata(Slotted):
     Raw metadata for ClickHouse data part.
     """
 
-    __slots__ = "checksum", "size", "files", "tarball", "link", "disk_name"
+    __slots__ = "checksum", "size", "files", "tarball", "link", "disk_name", "encrypted"
 
     def __init__(
         self,
@@ -23,6 +23,7 @@ class RawMetadata(Slotted):
         tarball: bool,
         link: str = None,
         disk_name: str = None,
+        encrypted: bool = True,
     ) -> None:
         self.checksum = checksum
         self.size = size
@@ -30,6 +31,7 @@ class RawMetadata(Slotted):
         self.tarball = tarball
         self.link = link
         self.disk_name = disk_name
+        self.encrypted = encrypted
 
 
 class PartMetadata(Slotted):
@@ -51,12 +53,13 @@ class PartMetadata(Slotted):
         tarball: bool,
         link: str = None,
         disk_name: str = None,
+        encrypted: bool = True,
     ) -> None:
         self.database: str = database
         self.table: str = table
         self.name: str = name
         self.raw_metadata: RawMetadata = RawMetadata(
-            checksum, size, files, tarball, link, disk_name
+            checksum, size, files, tarball, link, disk_name, encrypted
         )
 
     @property
@@ -101,6 +104,13 @@ class PartMetadata(Slotted):
         """
         return self.raw_metadata.tarball
 
+    @property
+    def encrypted(self) -> bool:
+        """
+        Returns true if part is encrypted
+        """
+        return self.raw_metadata.encrypted
+
     @classmethod
     def load(
         cls, db_name: str, table_name: str, part_name: str, raw_metadata: dict
@@ -118,6 +128,7 @@ class PartMetadata(Slotted):
             tarball=raw_metadata.get("tarball", False),
             link=raw_metadata["link"],
             disk_name=raw_metadata.get("disk_name", "default"),
+            encrypted=raw_metadata.get("encrypted", True),
         )
 
     @classmethod
@@ -134,4 +145,5 @@ class PartMetadata(Slotted):
             files=frozen_part.files,
             tarball=True,
             disk_name=frozen_part.disk_name,
+            encrypted=frozen_part.encrypted,
         )

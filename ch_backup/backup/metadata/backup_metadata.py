@@ -48,7 +48,7 @@ class BackupMetadata:
         hostname: str = None,
         labels: dict = None,
         schema_only: bool = False,
-        is_encryption_enabled: bool = True,
+        encrypted: bool = True,
     ) -> None:
         self.name = name
         self.path = path
@@ -62,7 +62,7 @@ class BackupMetadata:
         self.size = 0
         self.real_size = 0
         self.schema_only = schema_only
-        self.is_encryption_enabled = is_encryption_enabled
+        self.encrypted = encrypted
         self.cloud_storage: CloudStorageMetadata = CloudStorageMetadata()
 
         self._state = BackupState.CREATING
@@ -147,7 +147,7 @@ class BackupMetadata:
                 # to replace 'date_fmt' with 'time_format'.
                 "date_fmt": self.time_format,
                 "schema_only": self.schema_only,
-                "is_encryption_enabled": self.is_encryption_enabled,
+                "encrypted": self.encrypted,
             },
         }
 
@@ -199,7 +199,7 @@ class BackupMetadata:
             backup.labels = meta["labels"]
             backup.version = meta["version"]
             backup.schema_only = meta.get("schema_only", False)
-            backup.is_encryption_enabled = meta.get("is_encryption_enabled", True)
+            backup.encrypted = meta.get("encrypted", True)
             # TODO remove after a several weeks/months, when backups rotated
             # OR NOT TODO, because of backward compatibility
             backup._user_defined_functions = data.get(

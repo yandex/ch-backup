@@ -6,132 +6,41 @@ Feature: Support partially encrypted backups
     And a working zookeeper on zookeeper01
     And a working clickhouse on clickhouse01
     And a working clickhouse on clickhouse02
+    And clickhouse on clickhouse01 has test schema
 
-  Scenario: Restore backup with disabled encryption
+  Scenario: Create and restore backup with encryption check
     Given ch-backup configuration on clickhouse01
     """
     encryption:
-      type: noop
-      is_enabled: False
+      type: nacl
+      enabled: True
+      key: odaYtYjhvmeP8GO7vwWlXsViiDbgu4Ti
     """
     Given ch-backup configuration on clickhouse02
     """
     encryption:
-      type: noop
-      is_enabled: False
+      type: nacl
+      enabled: False
+      key: odaYtYjhvmeP8GO7vwWlXsViiDbgu4Ti
     """
-    Given we have executed queries on clickhouse01
-    """
-    CREATE DATABASE test_db;
-
-    CREATE TABLE test_db.table_01 ON CLUSTER 'default' (date Date, n Int32)
-    ENGINE = ReplicatedMergeTree('/clickhouse/tables/test_db/table', '{replica}') PARTITION BY date ORDER BY date;
-    INSERT INTO test_db.table_01 SELECT today(), number FROM system.numbers LIMIT 10;
-    """
+    And clickhouse01 has test clickhouse data test1
     When we create clickhouse01 clickhouse backup
-    When we restore clickhouse backup #0 to clickhouse02
-    Then clickhouse02 has same schema as clickhouse01
-    And we got same clickhouse data at clickhouse01 clickhouse02
-    And metadata of clickhouse01 backup #0 contains
-    """
-    is_encryption_enabled: False
-    """
-
-  Scenario: Restore backup after encryption disabled with no metadata
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 4          | 0          |
     Given ch-backup configuration on clickhouse01
     """
     encryption:
-      type: noop
+      type: nacl
+      enabled: False
+      key: odaYtYjhvmeP8GO7vwWlXsViiDbgu4Ti
     """
-    Given ch-backup configuration on clickhouse02
-    """
-    encryption:
-      type: noop
-      is_enabled: True
-    """
-    Given we have executed queries on clickhouse01
-    """
-    CREATE DATABASE test_db;
-
-    CREATE TABLE test_db.table_01 ON CLUSTER 'default' (date Date, n Int32)
-    ENGINE = ReplicatedMergeTree('/clickhouse/tables/test_db/table', '{replica}') PARTITION BY date ORDER BY date;
-    INSERT INTO test_db.table_01 SELECT today(), number FROM system.numbers LIMIT 10;
-    """
+    And clickhouse01 has test clickhouse data test2
     When we create clickhouse01 clickhouse backup
-    When metadata paths of clickhouse01 backup #0 was deleted
-    """
-    - databases.test_db.engine
-    - databases.test_db.metadata_path
-    """
-    Given file "metadata/test_db/table_01.sql" in clickhouse01 backup #0 data set to
-    """
-    CREATE TABLE test_db.table_01 ON CLUSTER 'default' (date Date, n Int32)
-    ENGINE = ReplicatedMergeTree('/clickhouse/tables/test_db/table', '{replica}') PARTITION BY date ORDER BY date
-    """
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 4          | 4          |
+      | 1   | created | 4          | 0          |
     When we restore clickhouse backup #0 to clickhouse02
     Then clickhouse02 has same schema as clickhouse01
     And we got same clickhouse data at clickhouse01 clickhouse02
-    And metadata of clickhouse01 backup #0 contains
-    """
-    is_encryption_enabled: True
-    """
-    When we update ch-backup configuration on clickhouse01
-    """
-    encryption:
-      type: noop
-      is_enabled: False
-    """
-    When we update ch-backup configuration on clickhouse02
-    """
-    encryption:
-      type: noop
-      is_enabled: False
-    """
-    When we restore clickhouse backup #0 to clickhouse02
-    Then clickhouse02 has same schema as clickhouse01
-    And we got not same clickhouse data at clickhouse01 clickhouse02
-    And metadata of clickhouse01 backup #0 contains
-    """
-    is_encryption_enabled: True
-    """
-
-  Scenario: Restore backup after encryption disabled with valid metadata
-    Given ch-backup configuration on clickhouse01
-    """
-    encryption:
-      type: noop
-    """
-    Given ch-backup configuration on clickhouse02
-    """
-    encryption:
-      type: noop
-      is_enabled: True
-    """
-    Given we have executed queries on clickhouse01
-    """
-    CREATE DATABASE test_db;
-
-    CREATE TABLE test_db.table_01 ON CLUSTER 'default' (date Date, n Int32)
-    ENGINE = ReplicatedMergeTree('/clickhouse/tables/test_db/table', '{replica}') PARTITION BY date ORDER BY date;
-    INSERT INTO test_db.table_01 SELECT today(), number FROM system.numbers LIMIT 10;
-    """
-    When we create clickhouse01 clickhouse backup
-    When we update ch-backup configuration on clickhouse01
-    """
-    encryption:
-      type: noop
-      is_enabled: False
-    """
-    When we update ch-backup configuration on clickhouse02
-    """
-    encryption:
-      type: noop
-      is_enabled: False
-    """
-    When we restore clickhouse backup #0 to clickhouse02
-    Then clickhouse02 has same schema as clickhouse01
-    And we got same clickhouse data at clickhouse01 clickhouse02
-    And metadata of clickhouse01 backup #0 contains
-    """
-    is_encryption_enabled: True
-    """

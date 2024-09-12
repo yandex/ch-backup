@@ -78,7 +78,7 @@ class BackupLayout:
             self._storage_loader.upload_file(
                 local_path,
                 remote_path=remote_path,
-                encryption=backup_meta.is_encryption_enabled,
+                encryption=True,
             )
         except Exception as e:
             msg = f"Failed to create async upload of {remote_path}"
@@ -109,7 +109,7 @@ class BackupLayout:
                 create_statement,
                 remote_path,
                 is_async=True,
-                encryption=backup_meta.is_encryption_enabled,
+                encryption=True,
             )
         except Exception as e:
             msg = f"Failed to create async upload of {remote_path}"
@@ -130,7 +130,7 @@ class BackupLayout:
             self._storage_loader.upload_file(
                 local_path=local_path,
                 remote_path=remote_path,
-                encryption=backup_meta.is_encryption_enabled,
+                encryption=True,
             )
         except Exception as e:
             msg = f'Failed to upload access control metadata file "{remote_path}"'
@@ -151,7 +151,7 @@ class BackupLayout:
                 local_path,
                 remote_path,
                 files=file_names,
-                encryption=backup_meta.is_encryption_enabled,
+                encryption=True,
             )
 
         except Exception as e:
@@ -169,7 +169,7 @@ class BackupLayout:
             self._storage_loader.upload_data(
                 data=metadata,
                 remote_path=remote_path,
-                encryption=backup_meta.is_encryption_enabled,
+                encryption=True,
             )
         except Exception as e:
             msg = f'Failed to upload udf metadata "{remote_path}"'
@@ -201,7 +201,7 @@ class BackupLayout:
                 files=fpart.files,
                 remote_path=remote_path,
                 is_async=True,
-                encryption=backup_meta.is_encryption_enabled,
+                encryption=backup_meta.encrypted,
                 delete=True,
                 callback=callback,
             )
@@ -260,7 +260,7 @@ class BackupLayout:
             self._storage_loader.upload_file(
                 local_path,
                 remote_path=remote_path,
-                encryption=backup_meta.is_encryption_enabled,
+                encryption=True,
             )
         except Exception as e:
             msg = f"Failed to create async upload of {remote_path}"
@@ -277,7 +277,7 @@ class BackupLayout:
         )
         return self._storage_loader.download_data(
             remote_path,
-            encryption=backup_meta.is_encryption_enabled,
+            encryption=True, # backup_meta.encrypted,
         )
 
     def get_local_nc_create_statement(self, nc_name: str) -> Optional[str]:
@@ -306,7 +306,7 @@ class BackupLayout:
         remote_path = _named_collections_data_path(backup_meta.path, filename)
         return self._storage_loader.download_data(
             remote_path,
-            encryption=backup_meta.is_encryption_enabled,
+            encryption=True,
         )
 
     def get_backup_names(self) -> Sequence[str]:
@@ -395,10 +395,7 @@ class BackupLayout:
         Download and return database create statement.
         """
         remote_path = _db_metadata_path(backup_meta.path, db_name)
-        return self._storage_loader.download_data(
-            remote_path,
-            encryption=backup_meta.is_encryption_enabled,
-        )
+        return self._storage_loader.download_data(remote_path, encryption=True)
 
     def write_database_metadata(self, db: Database, db_sql: str) -> None:
         """
@@ -417,10 +414,7 @@ class BackupLayout:
         Download and return table create statement.
         """
         remote_path = _table_metadata_path(backup_meta.path, db_name, table_name)
-        return self._storage_loader.download_data(
-            remote_path,
-            encryption=backup_meta.is_encryption_enabled,
-        )
+        return self._storage_loader.download_data(remote_path, encryption=True)
 
     def download_access_control_file(
         self, local_path: str, backup_meta: BackupMetadata, file_name: str
@@ -439,7 +433,7 @@ class BackupLayout:
             self._storage_loader.download_file(
                 remote_path,
                 local_path,
-                encryption=backup_meta.is_encryption_enabled,
+                encryption=True,
             )
         except Exception as e:
             msg = f"Failed to download access control metadata file {remote_path}"
@@ -461,7 +455,7 @@ class BackupLayout:
             self._storage_loader.download_files(
                 remote_path,
                 local_path,
-                encryption=backup_meta.is_encryption_enabled,
+                encryption=True,
             )
         except Exception as e:
             msg = f"Failed to download access control metadata file {remote_path}"
@@ -498,7 +492,7 @@ class BackupLayout:
                     remote_path=remote_path,
                     local_path=fs_part_path,
                     is_async=True,
-                    encryption=backup_meta.is_encryption_enabled,
+                    encryption=part.encrypted,
                 )
             except Exception as e:
                 msg = f"Failed to download part tarball file {remote_path}"
@@ -513,7 +507,7 @@ class BackupLayout:
                         remote_path=remote_path,
                         local_path=local_path,
                         is_async=True,
-                        encryption=backup_meta.is_encryption_enabled,
+                        encryption=part.encrypted,
                     )
                 except Exception as e:
                     msg = f"Failed to download part file {remote_path}"

@@ -475,7 +475,7 @@ class TableBackup(BackupManager):
         dedup_batch_size = context.config["deduplication_batch_size"]
         for data_path, disk in table.paths_with_disks:
             for fpart in context.ch_ctl.scan_frozen_parts(
-                table, disk, data_path, backup_name
+                table, disk, data_path, context.backup_meta
             ):
                 logging.debug("Working on {}", fpart)
                 if disk.type == "s3":
