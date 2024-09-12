@@ -27,7 +27,7 @@ class UDFBackup(BackupManager):
         logging.debug("Performing UDF backup for: {}", " ,".join(udf.keys()))
         for udf_name, udf_statement in udf.items():
             context.backup_layout.upload_udf(
-                context.backup_meta, udf_name, udf_statement
+                context.backup_meta.name, udf_name, udf_statement
             )
 
     def restore(self, context: BackupContext) -> None:

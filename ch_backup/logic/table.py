@@ -411,7 +411,7 @@ class TableBackup(BackupManager):
         )
         # Backup table metadata
         context.backup_layout.upload_table_create_statement(
-            context.backup_meta, db, table, create_statement
+            context.backup_meta.name, db, table, create_statement
         )
         # Backup table data
         if not schema_only:
