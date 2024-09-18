@@ -101,4 +101,4 @@ class ExecPool:
         """
         Shutdown pool explicitly to prevent the program from hanging in case of ungraceful termination.
         """
-        self.shutdown()
+        self.shutdown(graceful=False)
