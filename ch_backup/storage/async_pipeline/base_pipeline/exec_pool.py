@@ -101,4 +101,7 @@ class ExecPool:
         """
         Shutdown pool explicitly to prevent the program from hanging in case of ungraceful termination.
         """
-        self.shutdown(graceful=False)
+        try:
+            self.shutdown(graceful=True)
+        except Exception:  # nosec B110
+            pass
