@@ -277,9 +277,7 @@ class BackupLayout:
         Download named collection create statement.
         """
         remote_path = _named_collections_data_path(backup_meta.path, filename)
-        return self._storage_loader.download_data(
-            remote_path, encryption=True
-        )
+        return self._storage_loader.download_data(remote_path, encryption=True)
 
     def get_backup_names(self) -> Sequence[str]:
         """
