@@ -61,7 +61,9 @@ class BackupLayout:
         except Exception as e:
             raise StorageError("Failed to upload backup metadata") from e
 
-    def upload_database_create_statement(self, backup_meta: BackupMetadata, db: Database) -> None:
+    def upload_database_create_statement(
+        self, backup_meta: BackupMetadata, db: Database
+    ) -> None:
         """
         Upload database create statement from metadata file.
         """
@@ -81,7 +83,11 @@ class BackupLayout:
             raise StorageError(msg) from e
 
     def upload_table_create_statement(
-        self, backup_meta: BackupMetadata, db: Database, table: Table, create_statement: bytes
+        self,
+        backup_meta: BackupMetadata,
+        db: Database,
+        table: Table,
+        create_statement: bytes,
     ) -> None:
         """
         Upload table create statement.
@@ -98,7 +104,10 @@ class BackupLayout:
                 table.name,
             )
             self._storage_loader.upload_data(
-                create_statement, remote_path, is_async=True, encryption=backup_meta.encrypted
+                create_statement,
+                remote_path,
+                is_async=True,
+                encryption=backup_meta.encrypted,
             )
         except Exception as e:
             msg = f"Failed to create async upload of {remote_path}"
@@ -133,10 +142,7 @@ class BackupLayout:
         try:
             logging.debug('Uploading access control data "{}"', local_path)
             self._storage_loader.upload_files_tarball(
-                local_path,
-                remote_path,
-                files=file_names,
-                encryption=True
+                local_path, remote_path, files=file_names, encryption=True
             )
 
         except Exception as e:
@@ -170,7 +176,10 @@ class BackupLayout:
         )
 
         remote_dir_path = _part_path(
-            self.get_backup_path(backup_meta.name), fpart.database, fpart.table, fpart.name
+            self.get_backup_path(backup_meta.name),
+            fpart.database,
+            fpart.table,
+            fpart.name,
         )
         remote_path = os.path.join(remote_dir_path, fpart.name + ".tar")
         try:

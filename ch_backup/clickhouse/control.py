@@ -735,9 +735,7 @@ class ClickhouseCTL:
         Yield frozen parts from specific disk and path.
         """
         table_relative_path = os.path.relpath(data_path, disk.path)
-        path = os.path.join(
-            disk.path, "shadow", backup_name, table_relative_path
-        )
+        path = os.path.join(disk.path, "shadow", backup_name, table_relative_path)
 
         if not os.path.exists(path):
             logging.debug("Shadow path {} is empty", path)
