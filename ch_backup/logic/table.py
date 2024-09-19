@@ -411,7 +411,7 @@ class TableBackup(BackupManager):
         )
         # Backup table metadata
         context.backup_layout.upload_table_create_statement(
-            context.backup_meta.name, db, table, create_statement
+            context.backup_meta, db, table, create_statement
         )
         # Backup table data
         if not schema_only:
@@ -475,7 +475,7 @@ class TableBackup(BackupManager):
         dedup_batch_size = context.config["deduplication_batch_size"]
         for data_path, disk in table.paths_with_disks:
             for fpart in context.ch_ctl.scan_frozen_parts(
-                table, disk, data_path, context.backup_meta
+                table, disk, data_path, backup_name, context.backup_meta.encrypted
             ):
                 logging.debug("Working on {}", fpart)
                 if disk.type == "s3":

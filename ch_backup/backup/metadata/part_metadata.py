@@ -98,18 +98,18 @@ class PartMetadata(Slotted):
         return self.raw_metadata.disk_name if self.raw_metadata.disk_name else "default"
 
     @property
+    def encrypted(self) -> bool:
+        """
+        Return True if part is encrypted
+        """
+        return self.raw_metadata.encrypted
+
+    @property
     def tarball(self) -> bool:
         """
         Returns true if part files stored as single tarball.
         """
         return self.raw_metadata.tarball
-
-    @property
-    def encrypted(self) -> bool:
-        """
-        Returns true if part is encrypted
-        """
-        return self.raw_metadata.encrypted
 
     @classmethod
     def load(

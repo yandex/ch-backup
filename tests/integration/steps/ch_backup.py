@@ -20,7 +20,6 @@ from tests.integration.modules.steps import get_step_data
 
 
 @given("ch-backup configuration on {node:w}")
-@when("we update ch-backup configuration on {node:w}")
 def step_update_ch_backup_config(context, node):
     conf = get_step_data(context)
     BackupManager(context, node).update_config(conf)

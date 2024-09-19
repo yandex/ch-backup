@@ -67,7 +67,7 @@ class PartDedupInfo(Slotted):
         Convert to string to use it in insert query
         """
         files_array = "[" + ",".join(f"'{file}'" for file in self.files) + "]"
-        return f"('{self.database}','{self.table}','{self.name}','{self.backup_path}','{self.checksum}',{self.size},{files_array},{int(self.tarball)},'{self.disk_name}',{int(self.verified)},{int(self.encrypted)})"
+        return f"('{self.database}','{self.table}','{self.name}','{self.backup_path}','{self.checksum}',{self.size},{files_array},{int(self.tarball)},'{self.disk_name}',{int(self.verified)}, {int(self.encrypted)})"
 
 
 TableDedupReferences = Set[str]
