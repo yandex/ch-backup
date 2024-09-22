@@ -44,16 +44,12 @@ class ClickhouseClient:
         post_data: dict = None,
         settings: dict = None,
         timeout: float = None,
-        log_entry_length: int = None,
     ) -> Any:
         """
         Execute query.
         """
         try:
-            logging.debug(
-                "Executing query: {}",
-                query if not log_entry_length else query[:log_entry_length] + "...",
-            )
+            logging.debug("Executing query: {}", query)
 
             if timeout is None:
                 timeout = self.timeout
