@@ -49,7 +49,8 @@ def _create_formatter(fmt):
             record["message"] = record["message"][:message_head]
             skipped_characters = message_length - message_head - tail_length
             result_fmt += f" ...(skipped {skipped_characters} characters)... {{extra[message_tail]}}"
-        return result_fmt + "\n"
+        # Adding '\n{exception}' to dynamic formatters is required by loguru docs
+        return result_fmt + "\n{exception}"
 
     return _format
 
