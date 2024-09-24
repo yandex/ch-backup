@@ -168,6 +168,7 @@ class Database(SimpleNamespace):
     ClickHouse database.
     """
 
+    # pylint: disable=too-many-positional-arguments
     def __init__(
         self, name: str, engine: Optional[str], metadata_path: Optional[str]
     ) -> None:
