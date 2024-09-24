@@ -477,23 +477,32 @@ class TableBackup(BackupManager):
         dedup_batch_size = context.config["deduplication_batch_size"]
         for data_path, disk in table.paths_with_disks:
             for fpart in context.ch_ctl.scan_frozen_parts(
-                table, disk, data_path, backup_name,
+                table,
+                disk,
+                data_path,
+                backup_name,
             ):
                 logging.debug("Working on {}", fpart)
                 if disk.type == "s3":
                     context.backup_meta.add_part(
-                        PartMetadata.from_frozen_part(fpart, context.backup_meta.encrypted)
+                        PartMetadata.from_frozen_part(
+                            fpart, context.backup_meta.encrypted
+                        )
                     )
                     continue
 
                 frozen_parts_batch[fpart.name] = fpart
                 if len(frozen_parts_batch) >= dedup_batch_size:
                     deduplicate_parts_in_batch(
-                        context, upload_observer, frozen_parts_batch,
+                        context,
+                        upload_observer,
+                        frozen_parts_batch,
                     )
         if frozen_parts_batch:
             deduplicate_parts_in_batch(
-                context, upload_observer, frozen_parts_batch,
+                context,
+                upload_observer,
+                frozen_parts_batch,
             )
 
         context.backup_layout.wait()
