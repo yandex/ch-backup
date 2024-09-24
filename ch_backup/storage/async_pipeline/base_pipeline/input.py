@@ -45,6 +45,7 @@ class Input:
         yield self.handler.on_done()
 
 
+# pylint: disable=too-many-positional-arguments
 def input_(
     f: InputHandler,
     stage: Union[

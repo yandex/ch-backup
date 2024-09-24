@@ -64,6 +64,7 @@ class S3RetryMeta(ABCMeta):
         return wrapper
 
 
+# pylint: disable=too-many-positional-arguments
 def retry(
     exception_types: Union[type, tuple] = Exception,
     max_attempts: int = 5,
@@ -94,6 +95,7 @@ class RetryExponential:
     Exponential retry.
     """
 
+    # pylint: disable=too-many-positional-arguments
     def __init__(
         self,
         exception_types: Union[type, tuple] = Exception,

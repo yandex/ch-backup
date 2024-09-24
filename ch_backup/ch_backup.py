@@ -91,6 +91,7 @@ class ClickhouseBackup:
 
         return backups
 
+    # pylint: disable=too-many-positional-arguments
     def backup(
         self,
         sources: BackupSources,
@@ -207,7 +208,7 @@ class ClickhouseBackup:
 
         return self._context.backup_meta.name, None
 
-    # pylint: disable=too-many-arguments,duplicate-code
+    # pylint: disable=too-many-arguments,duplicate-code,too-many-positional-arguments
     def restore(
         self,
         sources: BackupSources,
@@ -478,6 +479,7 @@ class ClickhouseBackup:
         self._context.backup_layout.delete_data_parts(backup, own_parts)
         backup.remove_parts(table, parts)
 
+    # pylint: disable=too-many-positional-arguments
     def _restore(
         self,
         sources: BackupSources,

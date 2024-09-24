@@ -64,6 +64,7 @@ def step_fill_with_test_data(context, node, test_name):
 @when(
     "{node:w} has test clickhouse data {test_name:w} with {db_count:d} databases, {tables_count:d} tables, {rows_count:d} rows and {partitions_count:d} partitions"
 )
+# pylint: disable=too-many-positional-arguments
 def step_fill_with_test_data_custom(
     context,
     node,

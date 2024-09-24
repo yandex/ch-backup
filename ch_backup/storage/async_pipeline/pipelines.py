@@ -59,6 +59,7 @@ def upload_file_pipeline(
     run(builder.pipeline())
 
 
+# pylint: disable=too-many-positional-arguments
 def upload_files_tarball_scan_pipeline(
     config: dict,
     base_path: Path,
@@ -94,6 +95,7 @@ def upload_files_tarball_scan_pipeline(
     run(builder.pipeline())
 
 
+# pylint: disable=too-many-positional-arguments
 def upload_files_tarball_pipeline(
     config: dict,
     base_path: Path,

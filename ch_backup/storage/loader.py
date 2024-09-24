@@ -29,6 +29,7 @@ class StorageLoader:
         else:
             self._ploader = PipelineLoader(config)  # type: ignore[assignment]
 
+    # pylint: disable=too-many-positional-arguments
     def upload_data(
         self, data, remote_path, is_async=False, encryption=False, encoding="utf-8"
     ):
@@ -45,6 +46,7 @@ class StorageLoader:
             data, remote_path, is_async=is_async, encryption=encryption
         )
 
+    # pylint: disable=too-many-positional-arguments
     def upload_file(
         self,
         local_path,
@@ -69,6 +71,7 @@ class StorageLoader:
         )
         return remote_path
 
+    # pylint: disable=too-many-positional-arguments
     def upload_files_tarball_scan(
         self,
         dir_path: str,
@@ -98,6 +101,7 @@ class StorageLoader:
         )
         return remote_path
 
+    # pylint: disable=too-many-positional-arguments
     def upload_files_tarball(
         self,
         dir_path: str,
@@ -155,6 +159,7 @@ class StorageLoader:
             remote_path, local_path, is_async=is_async, encryption=encryption
         )
 
+    # pylint: disable=too-many-positional-arguments
     def download_files(
         self,
         remote_path: str,

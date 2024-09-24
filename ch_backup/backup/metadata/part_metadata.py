@@ -15,6 +15,7 @@ class RawMetadata(Slotted):
 
     __slots__ = "checksum", "size", "files", "tarball", "link", "disk_name", "encrypted"
 
+    # pylint: disable=too-many-positional-arguments
     def __init__(
         self,
         checksum: str,
@@ -41,7 +42,7 @@ class PartMetadata(Slotted):
 
     __slots__ = "database", "table", "name", "raw_metadata"
 
-    # pylint: disable=too-many-arguments
+    # pylint: disable=too-many-arguments, too-many-positional-arguments
     def __init__(
         self,
         database: str,

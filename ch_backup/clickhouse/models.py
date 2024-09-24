@@ -15,6 +15,7 @@ class Disk(SimpleNamespace):
     ClickHouse disk.
     """
 
+    # pylint: disable=too-many-positional-arguments
     def __init__(
         self,
         name: str,
@@ -53,6 +54,7 @@ class Table(SimpleNamespace):
     ClickHouse table.
     """
 
+    # pylint: disable=too-many-positional-arguments
     def __init__(
         self,
         database: str,
@@ -238,6 +240,7 @@ class FrozenPart(Slotted):
         "files",
     )
 
+    # pylint: disable=too-many-positional-arguments
     def __init__(
         self,
         database: str,
