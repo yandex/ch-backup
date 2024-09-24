@@ -729,7 +729,6 @@ class ClickhouseCTL:
         disk: Disk,
         data_path: str,
         backup_name: str,
-        encrypted: bool,
     ) -> Iterable[FrozenPart]:
         """
         Yield frozen parts from specific disk and path.
@@ -762,7 +761,6 @@ class ClickhouseCTL:
                 checksum,
                 size,
                 rel_paths,
-                encrypted,
             )
 
     @staticmethod

@@ -132,7 +132,7 @@ class PartMetadata(Slotted):
         )
 
     @classmethod
-    def from_frozen_part(cls, frozen_part: FrozenPart) -> "PartMetadata":
+    def from_frozen_part(cls, frozen_part: FrozenPart, encrypted: bool) -> "PartMetadata":
         """
         Converts FrozenPart to PartMetadata.
         """
@@ -145,5 +145,5 @@ class PartMetadata(Slotted):
             files=frozen_part.files,
             tarball=True,
             disk_name=frozen_part.disk_name,
-            encrypted=frozen_part.encrypted,
+            encrypted=encrypted,
         )

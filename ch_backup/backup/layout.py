@@ -188,7 +188,7 @@ class BackupLayout:
                 files=fpart.files,
                 remote_path=remote_path,
                 is_async=True,
-                encryption=fpart.encrypted,
+                encryption=backup_meta.encrypted,
                 delete=True,
                 callback=callback,
             )
