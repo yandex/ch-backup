@@ -123,62 +123,40 @@ class TableBackup(BackupManager):
                 )
             )
 
-            freezed_tables = self._freeze_tables(
-                context, db, tables_, backup_name, schema_only, freeze_threads
-            )
+            # Create shadow/increment.txt if not exists manually to avoid
+            # race condition with parallel freeze
+            context.ch_ctl.create_shadow_increment()
+            futures: List[Future] = []
+            with ThreadPoolExecutor(max_workers=freeze_threads) as pool:
+                for table in tables_:
+                    future = pool.submit(
+                        TableBackup._freeze_table,
+                        context,
+                        db,
+                        table,
+                        backup_name,
+                        schema_only,
+                    )
+                    futures.append(future)
 
-            logging.debug('All tables from "{}" are frozen', db.name)
+                for future in as_completed(futures):
+                    table_and_create_statement = future.result()
+                    if table_and_create_statement is not None:
+                        table, create_statement = table_and_create_statement
+                        self._backup_freezed_table(
+                            context,
+                            db,
+                            table,
+                            backup_name,
+                            schema_only,
+                            mtimes,
+                            create_statement,
+                        )
 
-            for table, create_statement in freezed_tables:
-                self._backup_freezed_table(
-                    context,
-                    db,
-                    table,
-                    backup_name,
-                    schema_only,
-                    mtimes,
-                    create_statement,
-                )
-
+            context.backup_layout.wait()
             context.ch_ctl.remove_freezed_data()
 
         context.backup_layout.upload_backup_metadata(context.backup_meta)
-
-    @staticmethod
-    # pylint: disable=too-many-positional-arguments
-    def _freeze_tables(
-        context: BackupContext,
-        db: Database,
-        tables: Sequence[Table],
-        backup_name: str,
-        schema_only: bool,
-        threads: int,
-    ) -> List[Tuple[Table, bytes]]:
-        """
-        Freeze tables in parallel.
-        """
-        # Create shadow/increment.txt if not exists manually to avoid
-        # race condition with parallel freeze
-        context.ch_ctl.create_shadow_increment()
-        futures: List[Future] = []
-        with ThreadPoolExecutor(max_workers=threads) as pool:
-            for table in tables:
-                future = pool.submit(
-                    TableBackup._freeze_table,
-                    context,
-                    db,
-                    table,
-                    backup_name,
-                    schema_only,
-                )
-                futures.append(future)
-
-            result: List[Tuple[Table, bytes]] = []
-            for future in as_completed(futures):
-                table_and_statement = future.result()
-                if table_and_statement is not None:
-                    result.append(table_and_statement)
-            return result
 
     @staticmethod
     def _freeze_table(
