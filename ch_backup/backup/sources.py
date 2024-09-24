@@ -23,6 +23,7 @@ class BackupSources:
     named_collections: bool = True
 
     @classmethod
+    # pylint: disable=too-many-positional-arguments
     def for_backup(
         cls,
         access: bool = False,
@@ -52,6 +53,7 @@ class BackupSources:
         )
 
     @classmethod
+    # pylint: disable=too-many-positional-arguments
     def for_restore(
         cls,
         access: bool = False,

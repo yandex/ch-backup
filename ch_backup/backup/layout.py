@@ -61,27 +61,33 @@ class BackupLayout:
         except Exception as e:
             raise StorageError("Failed to upload backup metadata") from e
 
-    def upload_database_create_statement(self, backup_name: str, db: Database) -> None:
+    def upload_database_create_statement(
+        self, backup_meta: BackupMetadata, db: Database
+    ) -> None:
         """
         Upload database create statement from metadata file.
         """
         local_path = os.path.join(
             self._metadata_path, f"{escape_metadata_file_name(db.name)}.sql"
         )
-        remote_path = _db_metadata_path(self.get_backup_path(backup_name), db.name)
+        remote_path = _db_metadata_path(self.get_backup_path(backup_meta.name), db.name)
         try:
             logging.debug(
                 'Uploading metadata (create statement) for database "{}"', db.name
             )
             self._storage_loader.upload_file(
-                local_path, remote_path=remote_path, encryption=True
+                local_path, remote_path=remote_path, encryption=backup_meta.encrypted
             )
         except Exception as e:
             msg = f"Failed to create async upload of {remote_path}"
             raise StorageError(msg) from e
 
     def upload_table_create_statement(
-        self, backup_name: str, db: Database, table: Table, create_statement: bytes
+        self,
+        backup_meta: BackupMetadata,
+        db: Database,
+        table: Table,
+        create_statement: bytes,
     ) -> None:
         """
         Upload table create statement.
@@ -89,7 +95,7 @@ class BackupLayout:
         assert db.metadata_path is not None
 
         remote_path = _table_metadata_path(
-            self.get_backup_path(backup_name), db.name, table.name
+            self.get_backup_path(backup_meta.name), db.name, table.name
         )
         try:
             logging.debug(
@@ -98,7 +104,10 @@ class BackupLayout:
                 table.name,
             )
             self._storage_loader.upload_data(
-                create_statement, remote_path, is_async=True, encryption=True
+                create_statement,
+                remote_path,
+                is_async=True,
+                encryption=backup_meta.encrypted,
             )
         except Exception as e:
             msg = f"Failed to create async upload of {remote_path}"
@@ -133,10 +142,7 @@ class BackupLayout:
         try:
             logging.debug('Uploading access control data "{}"', local_path)
             self._storage_loader.upload_files_tarball(
-                local_path,
-                remote_path,
-                files=file_names,
-                encryption=True,
+                local_path, remote_path, files=file_names, encryption=True
             )
 
         except Exception as e:
@@ -157,7 +163,7 @@ class BackupLayout:
             raise StorageError(msg) from e
 
     def upload_data_part(
-        self, backup_name: str, fpart: FrozenPart, callback: Callable
+        self, backup_meta: BackupMetadata, fpart: FrozenPart, callback: Callable
     ) -> None:
         """
         Upload part data.
@@ -170,7 +176,10 @@ class BackupLayout:
         )
 
         remote_dir_path = _part_path(
-            self.get_backup_path(backup_name), fpart.database, fpart.table, fpart.name
+            self.get_backup_path(backup_meta.name),
+            fpart.database,
+            fpart.table,
+            fpart.name,
         )
         remote_path = os.path.join(remote_dir_path, fpart.name + ".tar")
         try:
@@ -179,7 +188,7 @@ class BackupLayout:
                 files=fpart.files,
                 remote_path=remote_path,
                 is_async=True,
-                encryption=True,
+                encryption=backup_meta.encrypted,
                 delete=True,
                 callback=callback,
             )
@@ -365,7 +374,9 @@ class BackupLayout:
         Download and return database create statement.
         """
         remote_path = _db_metadata_path(backup_meta.path, db_name)
-        return self._storage_loader.download_data(remote_path, encryption=True)
+        return self._storage_loader.download_data(
+            remote_path, encryption=backup_meta.encrypted
+        )
 
     def write_database_metadata(self, db: Database, db_sql: str) -> None:
         """
@@ -384,7 +395,9 @@ class BackupLayout:
         Download and return table create statement.
         """
         remote_path = _table_metadata_path(backup_meta.path, db_name, table_name)
-        return self._storage_loader.download_data(remote_path, encryption=True)
+        return self._storage_loader.download_data(
+            remote_path, encryption=backup_meta.encrypted
+        )
 
     def download_access_control_file(
         self, local_path: str, backup_name: str, file_name: str
@@ -454,7 +467,7 @@ class BackupLayout:
                     remote_path=remote_path,
                     local_path=fs_part_path,
                     is_async=True,
-                    encryption=True,
+                    encryption=part.encrypted,
                 )
             except Exception as e:
                 msg = f"Failed to download part tarball file {remote_path}"
@@ -469,7 +482,7 @@ class BackupLayout:
                         remote_path=remote_path,
                         local_path=local_path,
                         is_async=True,
-                        encryption=True,
+                        encryption=part.encrypted,
                     )
                 except Exception as e:
                     msg = f"Failed to download part file {remote_path}"
@@ -493,7 +506,7 @@ class BackupLayout:
                 actual_size = self._storage_loader.get_file_size(
                     os.path.join(remote_dir_path, f"{part.name}.tar")
                 )
-                target_size = self._target_part_size(part)
+                target_size = self._target_part_size(part, encrypted=part.encrypted)
                 if target_size != actual_size:
                     logging.warning(
                         f"Part {part.name} files stored in tar, size not match {target_size} != {actual_size}"
@@ -620,11 +633,15 @@ class BackupLayout:
     def _backup_light_metadata_path(self, backup_name: str) -> str:
         return os.path.join(self.get_backup_path(backup_name), BACKUP_LIGHT_META_FNAME)
 
-    def _target_part_size(self, part: PartMetadata) -> int:
+    def _target_part_size(self, part: PartMetadata, encrypted: bool) -> int:
         """
         Predicts tar archive size after encryption.
         """
         tar_size = calc_tarball_size(list(part.raw_metadata.files), part.size)
+
+        if not encrypted:
+            return tar_size
+
         return calc_encrypted_size(
             tar_size, self._encryption_chunk_size, self._encryption_metadata_size
         )

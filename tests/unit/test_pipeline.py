@@ -91,6 +91,7 @@ def tmp_dir_path(dir_path=None):
     ),
     encrypt_conf=st.fixed_dictionaries(
         {
+            "enabled": st.booleans(),
             "buffer_size": st.integers(1, 1024),
             "chunk_size": st.integers(1, 1024),
             "type": st.just("nacl"),
@@ -105,6 +106,21 @@ def tmp_dir_path(dir_path=None):
     file_size=1024,
     read_conf={"chunk_size": 128},
     encrypt_conf={
+        "buffer_size": 512,
+        "chunk_size": 256,
+        "type": "nacl",
+        "key": SECRET_KEY,
+    },
+    write_conf={
+        "buffer_size": 512,
+        "chunk_size": 256,
+    },
+)
+@example(
+    file_size=1024,
+    read_conf={"chunk_size": 128},
+    encrypt_conf={
+        "enabled": True,
         "buffer_size": 512,
         "chunk_size": 256,
         "type": "nacl",
@@ -199,6 +215,7 @@ def run_backward_pl(in_file_name, out_file_name, read_conf, encrypt_conf, write_
     incoming_chunk_size=st.integers(1, 1024),
     conf=st.fixed_dictionaries(
         {
+            "enabled": st.booleans(),
             "buffer_size": st.integers(1, 1024),
             "chunk_size": st.integers(1, 1024),
             "type": st.just("nacl"),

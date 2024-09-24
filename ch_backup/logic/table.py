@@ -46,6 +46,7 @@ class TableBackup(BackupManager):
     Table backup class
     """
 
+    # pylint: disable=too-many-positional-arguments
     def backup(
         self,
         context: BackupContext,
@@ -97,6 +98,7 @@ class TableBackup(BackupManager):
 
         return res
 
+    # pylint: disable=too-many-positional-arguments
     def _backup(
         self,
         context: BackupContext,
@@ -157,6 +159,7 @@ class TableBackup(BackupManager):
 
         context.backup_layout.upload_backup_metadata(context.backup_meta)
 
+    # pylint: disable=too-many-positional-arguments
     @staticmethod
     def _freeze_table(
         context: BackupContext,
@@ -243,7 +246,7 @@ class TableBackup(BackupManager):
                 context.backup_meta.cloud_storage.add_disk(disk.name)
         logging.debug("Cloud Storage disks has been backed up ")
 
-    # pylint: disable=too-many-arguments,too-many-locals
+    # pylint: disable=too-many-arguments,too-many-locals,too-many-positional-arguments
     def restore(
         self,
         context: BackupContext,
@@ -359,6 +362,7 @@ class TableBackup(BackupManager):
                 keep_going=keep_going,
             )
 
+    # pylint: disable=too-many-positional-arguments
     def _backup_freezed_table(
         self,
         context: BackupContext,
@@ -389,7 +393,7 @@ class TableBackup(BackupManager):
         )
         # Backup table metadata
         context.backup_layout.upload_table_create_statement(
-            context.backup_meta.name, db, table, create_statement
+            context.backup_meta, db, table, create_statement
         )
         # Backup table data
         if not schema_only:
@@ -428,11 +432,13 @@ class TableBackup(BackupManager):
                     context.backup_meta.add_part(deduplicated_parts[part_name])
                 else:
                     context.backup_layout.upload_data_part(
-                        context.backup_meta.name,
+                        context.backup_meta,
                         frozen_parts[part_name],
                         partial(
                             upload_observer,
-                            PartMetadata.from_frozen_part(frozen_parts[part_name]),
+                            PartMetadata.from_frozen_part(
+                                frozen_parts[part_name], context.backup_meta.encrypted
+                            ),
                         ),
                     )
             frozen_parts.clear()
@@ -453,20 +459,33 @@ class TableBackup(BackupManager):
         dedup_batch_size = context.config["deduplication_batch_size"]
         for data_path, disk in table.paths_with_disks:
             for fpart in context.ch_ctl.scan_frozen_parts(
-                table, disk, data_path, backup_name
+                table,
+                disk,
+                data_path,
+                backup_name,
             ):
                 logging.debug("Working on {}", fpart)
                 if disk.type == "s3":
-                    context.backup_meta.add_part(PartMetadata.from_frozen_part(fpart))
+                    context.backup_meta.add_part(
+                        PartMetadata.from_frozen_part(
+                            fpart, context.backup_meta.encrypted
+                        )
+                    )
                     continue
 
                 frozen_parts_batch[fpart.name] = fpart
                 if len(frozen_parts_batch) >= dedup_batch_size:
                     deduplicate_parts_in_batch(
-                        context, upload_observer, frozen_parts_batch
+                        context,
+                        upload_observer,
+                        frozen_parts_batch,
                     )
         if frozen_parts_batch:
-            deduplicate_parts_in_batch(context, upload_observer, frozen_parts_batch)
+            deduplicate_parts_in_batch(
+                context,
+                upload_observer,
+                frozen_parts_batch,
+            )
 
         context.backup_layout.wait()
 
@@ -560,6 +579,7 @@ class TableBackup(BackupManager):
             ),
         )
 
+    # pylint: disable=too-many-positional-arguments
     def _restore_tables(
         self,
         context: BackupContext,
