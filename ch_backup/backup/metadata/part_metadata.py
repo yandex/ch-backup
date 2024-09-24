@@ -132,7 +132,9 @@ class PartMetadata(Slotted):
         )
 
     @classmethod
-    def from_frozen_part(cls, frozen_part: FrozenPart, encrypted: bool) -> "PartMetadata":
+    def from_frozen_part(
+        cls, frozen_part: FrozenPart, encrypted: bool
+    ) -> "PartMetadata":
         """
         Converts FrozenPart to PartMetadata.
         """
