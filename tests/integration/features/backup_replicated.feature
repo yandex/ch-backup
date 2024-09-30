@@ -532,7 +532,7 @@ Feature: Backup replicated merge tree table
     ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_01', 'static_name')
     PARTITION BY tuple() ORDER BY n SETTINGS index_granularity = 8192
     AS
-    SELECT number FROM system.numbers LIMIT 10
+    SELECT number AS n FROM system.numbers LIMIT 10
     """
     And we have executed queries on clickhouse01
     """
@@ -540,7 +540,7 @@ Feature: Backup replicated merge tree table
     ENGINE = ReplicatedSummingMergeTree('/clickhouse/tables/shard_01/test_db.table_02', 'static_name')
     PARTITION BY tuple() ORDER BY n SETTINGS index_granularity = 8192
     AS
-    SELECT number FROM system.numbers LIMIT 10
+    SELECT number AS n FROM system.numbers LIMIT 10
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
@@ -568,7 +568,7 @@ Feature: Backup replicated merge tree table
     ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_01', 'static_name')
     PARTITION BY tuple() ORDER BY n SETTINGS index_granularity = 8192
     AS
-    SELECT number FROM system.numbers LIMIT 10
+    SELECT number AS n FROM system.numbers LIMIT 10
     """
     And we have executed queries on clickhouse01
     """
@@ -576,7 +576,7 @@ Feature: Backup replicated merge tree table
     ENGINE = ReplicatedSummingMergeTree('/clickhouse/tables/shard_01/test_db.table_02', 'static_name')
     PARTITION BY tuple() ORDER BY n SETTINGS index_granularity = 8192
     AS
-    SELECT number FROM system.numbers LIMIT 10
+    SELECT number AS n FROM system.numbers LIMIT 10
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
