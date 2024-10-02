@@ -31,6 +31,9 @@ class ExecPool:
     def __init__(self, executor: Executor) -> None:
         self._future_to_job: Dict[Future, Job] = {}
         self._pool = executor
+        # It is necessary to start all processes while there are no running threads
+        # Used to freeze and backup tables at the same time
+        self._start_processes()
 
     def shutdown(self, graceful: bool = True) -> None:
         """
@@ -54,6 +57,14 @@ class ExecPool:
 
         future = self._pool.submit(func, *args, **kwargs)
         self._future_to_job[future] = Job(job_id, callback)
+
+    @staticmethod
+    def _start():
+        return
+
+    def _start_processes(self):
+        future = self._pool.submit(ExecPool._start)
+        future.result()
 
     def wait_all(self, keep_going: bool = False) -> None:
         """
@@ -90,4 +101,7 @@ class ExecPool:
         """
         Shutdown pool explicitly to prevent the program from hanging in case of ungraceful termination.
         """
-        self.shutdown()
+        try:
+            self.shutdown(graceful=True)
+        except Exception:  # nosec B110
+            pass

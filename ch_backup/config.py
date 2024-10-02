@@ -132,6 +132,7 @@ DEFAULT_CONFIG = {
         "queue_size": 10,
     },
     "encryption": {
+        "enabled": True,
         "type": "nacl",
         # Chunk size used when encrypting / decrypting data, in bytes.
         "chunk_size": parse_size("8 MiB"),

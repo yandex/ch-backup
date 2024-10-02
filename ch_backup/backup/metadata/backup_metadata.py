@@ -37,7 +37,7 @@ class BackupMetadata:
 
     # pylint: disable=too-many-instance-attributes
     # pylint: disable=too-many-arguments
-
+    # pylint: disable=too-many-positional-arguments
     def __init__(
         self,
         name: str,
@@ -48,6 +48,7 @@ class BackupMetadata:
         hostname: str = None,
         labels: dict = None,
         schema_only: bool = False,
+        encrypted: bool = True,
     ) -> None:
         self.name = name
         self.path = path
@@ -61,6 +62,7 @@ class BackupMetadata:
         self.size = 0
         self.real_size = 0
         self.schema_only = schema_only
+        self.encrypted = encrypted
         self.cloud_storage: CloudStorageMetadata = CloudStorageMetadata()
 
         self._state = BackupState.CREATING
@@ -145,6 +147,7 @@ class BackupMetadata:
                 # to replace 'date_fmt' with 'time_format'.
                 "date_fmt": self.time_format,
                 "schema_only": self.schema_only,
+                "encrypted": self.encrypted,
             },
         }
 
@@ -196,6 +199,7 @@ class BackupMetadata:
             backup.labels = meta["labels"]
             backup.version = meta["version"]
             backup.schema_only = meta.get("schema_only", False)
+            backup.encrypted = meta.get("encrypted", True)
             # TODO remove after a several weeks/months, when backups rotated
             # OR NOT TODO, because of backward compatibility
             backup._user_defined_functions = data.get(

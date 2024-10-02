@@ -70,6 +70,7 @@ class TableMetadata(SimpleNamespace):
             "link": part.link,
             "tarball": part.tarball,
             "disk_name": part.disk_name,
+            "encrypted": part.encrypted,
         }
 
     @classmethod

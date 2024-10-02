@@ -113,7 +113,7 @@ class DatabaseBackup(BackupManager):
 
         if not db.has_embedded_metadata():
             context.backup_layout.upload_database_create_statement(
-                context.backup_meta.name, db
+                context.backup_meta, db
             )
 
         context.backup_meta.add_database(db)

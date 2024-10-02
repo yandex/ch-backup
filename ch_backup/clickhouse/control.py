@@ -209,7 +209,8 @@ CREATE_IF_NOT_EXISTS_DEDUP_TABLE_SQL = strip_query(
         files Array(String),
         tarball Bool,
         disk_name String,
-        verified Bool
+        verified Bool,
+        encrypted Bool
     )
     ENGINE = MergeTree()
     ORDER BY (database, table, name, checksum)
@@ -785,7 +786,10 @@ class ClickhouseCTL:
 
     @staticmethod
     def scan_frozen_parts(
-        table: Table, disk: Disk, data_path: str, backup_name: str
+        table: Table,
+        disk: Disk,
+        data_path: str,
+        backup_name: str,
     ) -> Iterable[FrozenPart]:
         """
         Yield frozen parts from specific disk and path.

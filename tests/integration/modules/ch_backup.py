@@ -199,7 +199,7 @@ class BackupManager:
         protocol = context.ch_backup["protocol"]
         self._cmd_base = f"timeout {timeout} {CH_BACKUP_CLI_PATH} --protocol {protocol} --insecure  --config {self._config_path}"
 
-    # pylint: disable=too-many-arguments
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
     def backup(
         self,
         name: str = "{uuid}",
@@ -300,7 +300,7 @@ class BackupManager:
         output = self._exec(f"show {backup_id}")
         return Backup(json.loads(output))
 
-    # pylint: disable=too-many-arguments
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
     def restore(
         self,
         backup_id: BackupId,

@@ -107,6 +107,7 @@ def test_read(
         [100, 99, 98, 98, 100, 99],
     ),
 )
+# pylint: disable=too-many-positional-arguments
 def test_write_after_read(
     init_size: int,
     prefill_size: int,
