@@ -36,6 +36,25 @@ def make_filter(name):
     return Filter(name)
 
 
+def _create_formatter(fmt):
+    message_head = 800
+    message_tail = 300
+
+    def _format(record):
+        result_fmt = fmt
+        message_length = len(record["message"])
+        if message_length > message_head + message_tail:
+            tail_length = min(message_length - message_head, message_tail)
+            record["extra"]["message_tail"] = record["message"][-tail_length:]
+            record["message"] = record["message"][:message_head]
+            skipped_characters = message_length - message_head - tail_length
+            result_fmt += f" ...(skipped {skipped_characters} characters)... {{extra[message_tail]}}"
+        # Adding '\n{exception}' to dynamic formatters is required by loguru docs
+        return result_fmt + "\n{exception}"
+
+    return _format
+
+
 class InterceptHandler(logging.Handler):
     """
     Helper class for logging interception.
@@ -76,7 +95,7 @@ def configure(config_loguru: dict) -> None:
     for name, value in config_loguru["handlers"].items():
         handler = {
             "sink": value["sink"],
-            "format": config_loguru["formatters"][value["format"]],
+            "format": _create_formatter(config_loguru["formatters"][value["format"]]),
             "enqueue": True,
             "diagnose": False,
         }
