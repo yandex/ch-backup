@@ -262,7 +262,7 @@ class BackupMetadata:
         databases = [db_name] if db_name else self._databases.keys()
         for db in databases:
             for table_name, raw_metadata in self._databases[db]["tables"].items():
-                result.append(TableMetadata.load(db_name, table_name, raw_metadata))
+                result.append(TableMetadata.load(db, table_name, raw_metadata))
 
         return result
 
