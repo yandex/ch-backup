@@ -197,7 +197,11 @@ class BackupLayout:
             raise StorageError(msg) from e
 
     def upload_cloud_storage_metadata(
-        self, backup_meta: BackupMetadata, disk: Disk, delete_after_upload: bool = False
+        self,
+        backup_meta: BackupMetadata,
+        disk: Disk,
+        table: Table,
+        delete_after_upload: bool = False,
     ) -> bool:
         """
         Upload specified disk metadata files from given directory path as a tarball.
@@ -206,10 +210,16 @@ class BackupLayout:
         backup_name = backup_meta.get_sanitized_name()
         compression = backup_meta.cloud_storage.compressed
         remote_path = _disk_metadata_path(
-            self.get_backup_path(backup_name), disk.name, compression
+            self.get_backup_path(backup_name),
+            table.database,
+            table.name,
+            disk.name,
+            compression,
         )
-        shadow_path = os.path.join(disk.path, "shadow", backup_name)
-        exclude_file_names = ["frozen_metadata.txt"]
+        shadow_path = _table_shadow_path(disk.path, backup_name, table.path_on_disk)
+        exclude_file_names = [
+            "frozen_metadata.txt"
+        ]  # TODO: (lambda name: name == "frozen_metadata.txt")
         if dir_is_empty(shadow_path, exclude_file_names):
             return False
 
@@ -219,6 +229,7 @@ class BackupLayout:
             self._storage_loader.upload_files_tarball_scan(
                 dir_path=shadow_path,
                 remote_path=remote_path,
+                tar_base_dir=table.path_on_disk,
                 exclude_file_names=exclude_file_names,
                 is_async=True,
                 encryption=backup_meta.cloud_storage.encrypted,
@@ -540,24 +551,30 @@ class BackupLayout:
         """
         backup_name = backup_meta.get_sanitized_name()
         compression = backup_meta.cloud_storage.compressed
-        disk_path = os.path.join(disk.path, "shadow", backup_name)
-        os.makedirs(disk_path, exist_ok=True)
-        remote_path = _disk_metadata_path(
-            self.get_backup_path(backup_name), source_disk_name, compression
+        shadow_dir_contents = self._storage_loader.list_dir(
+            str(
+                os.path.join(
+                    self.get_backup_path(backup_name), "disks", source_disk_name
+                )
+            ),
+            recursive=True,
+            absolute=True,
         )
-
-        logging.debug(f'Downloading "{disk_path}" files from "{remote_path}"')
-        try:
-            self._storage_loader.download_files(
-                remote_path=remote_path,
-                local_path=disk_path,
-                is_async=True,
-                encryption=backup_meta.cloud_storage.encrypted,
-                compression=compression,
-            )
-        except Exception as e:
-            msg = f'Failed to download tarball file "{remote_path}"'
-            raise StorageError(msg) from e
+        for remote_path in shadow_dir_contents:
+            disk_path = os.path.join(disk.path, "shadow", backup_name)
+            os.makedirs(disk_path, exist_ok=True)
+            logging.debug(f'Downloading "{disk_path}" files from "{remote_path}"')
+            try:
+                self._storage_loader.download_files(
+                    remote_path=remote_path,
+                    local_path=disk_path,
+                    is_async=True,
+                    encryption=backup_meta.cloud_storage.encrypted,
+                    compression=compression,
+                )
+            except Exception as e:
+                msg = f'Failed to download tarball file "{remote_path}"'
+                raise StorageError(msg) from e
 
     def delete_backup(self, backup_name: str) -> None:
         """
@@ -715,7 +732,11 @@ def _part_path(
 
 
 def _disk_metadata_path(
-    backup_path: str, disk_name: str, compressed: bool = False
+    backup_path: str,
+    db_name: str,
+    table_name: str,
+    disk_name: str,
+    compressed: bool = False,
 ) -> str:
     """
     Returns path to store tarball with cloud storage shadow metadata.
@@ -723,7 +744,22 @@ def _disk_metadata_path(
     extension = ".tar"
     if compressed:
         extension += COMPRESSED_EXTENSION
-    return os.path.join(backup_path, "disks", f"{disk_name}{extension}")
+    return os.path.join(
+        backup_path,
+        "disks",
+        disk_name,
+        _quote(db_name),
+        f"{_quote(table_name)}{extension}",
+    )
+
+
+def _table_shadow_path(
+    disk_path: str, backup_name: str, table_path_on_disk: str
+) -> str:
+    """
+    Returns path to unpack tarball with cloud storage shadow metadata.
+    """
+    return os.path.join(disk_path, "shadow", backup_name, table_path_on_disk)
 
 
 def _quote(value: str) -> str:

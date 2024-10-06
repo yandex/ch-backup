@@ -254,13 +254,15 @@ class BackupMetadata:
             "tables": {},
         }
 
-    def get_tables(self, db_name: str) -> Sequence[TableMetadata]:
+    def get_tables(self, db_name: Optional[str] = None) -> Sequence[TableMetadata]:
         """
         Get tables for the specified database.
         """
         result = []
-        for table_name, raw_metadata in self._databases[db_name]["tables"].items():
-            result.append(TableMetadata.load(db_name, table_name, raw_metadata))
+        databases = [db_name] if db_name else self._databases.keys()
+        for db in databases:
+            for table_name, raw_metadata in self._databases[db]["tables"].items():
+                result.append(TableMetadata.load(db_name, table_name, raw_metadata))
 
         return result
 

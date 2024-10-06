@@ -2,6 +2,7 @@
 ClickHouse resource models.
 """
 
+import os
 import re
 from types import SimpleNamespace
 from typing import List, Optional, Tuple
@@ -74,6 +75,11 @@ class Table(SimpleNamespace):
         self.uuid = uuid
         self.paths_with_disks = self._map_paths_to_disks(disks, data_paths)
         self.metadata_path = metadata_path
+
+        self.path_on_disk = None
+        if self.paths_with_disks:
+            path, disk = self.paths_with_disks[0]
+            self.path_on_disk = os.path.relpath(path, disk.path)
 
     def _map_paths_to_disks(
         self, disks: List[Disk], data_paths: List[str]

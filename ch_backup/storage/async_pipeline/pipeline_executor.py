@@ -90,6 +90,7 @@ class PipelineExecutor:
         encryption: bool,
         delete: bool,
         compression: bool,
+        tar_base_dir: Optional[str] = None,
         exclude_file_names: Optional[List[str]] = None,
         callback: Optional[Callable] = None,
     ) -> None:
@@ -107,6 +108,7 @@ class PipelineExecutor:
             encryption,
             delete_after=delete,
             compression=compression,
+            tar_base_dir=tar_base_dir,
             exclude_file_names=exclude_file_names,
         )
         self._exec_pipeline(job_id, pipeline, is_async, callback)
