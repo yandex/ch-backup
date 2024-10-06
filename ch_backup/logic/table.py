@@ -46,7 +46,7 @@ class TableBackup(BackupManager):
     Table backup class
     """
 
-    # pylint: disable=too-many-positional-arguments
+    # pylint: disable=too-many-function-args
     def backup(
         self,
         context: BackupContext,
@@ -103,7 +103,7 @@ class TableBackup(BackupManager):
 
         return res
 
-    # pylint: disable=too-many-positional-arguments
+    # pylint: disable=too-many-function-args
     def _backup(
         self,
         context: BackupContext,
@@ -165,7 +165,7 @@ class TableBackup(BackupManager):
 
         context.backup_layout.upload_backup_metadata(context.backup_meta)
 
-    # pylint: disable=too-many-positional-arguments
+    # pylint: disable=too-many-function-args
     @staticmethod
     def _freeze_table(
         context: BackupContext,
@@ -233,7 +233,11 @@ class TableBackup(BackupManager):
         """
         Backup cloud storage metadata files.
         """
-        logging.debug('Backing up Cloud Storage disks "shadow" directory of "{}"."{}"', table.database, table.name)
+        logging.debug(
+            'Backing up Cloud Storage disks "shadow" directory of "{}"."{}"',
+            table.database,
+            table.name,
+        )
         for _, disk in table.paths_with_disks:
             if disk.type == "s3" and not disk.cache_path:
                 if not context.backup_layout.upload_cloud_storage_metadata(
@@ -244,7 +248,7 @@ class TableBackup(BackupManager):
                 # TODO: Add after all tables backed up
                 context.backup_meta.cloud_storage.add_disk(disk.name)
 
-    # pylint: disable=too-many-arguments,too-many-locals,too-many-positional-arguments
+    # pylint: disable=too-many-arguments,too-many-locals,too-many-function-args
     def restore(
         self,
         context: BackupContext,
@@ -360,7 +364,7 @@ class TableBackup(BackupManager):
                 keep_going=keep_going,
             )
 
-    # pylint: disable=too-many-positional-arguments
+    # pylint: disable=too-many-function-args
     def _backup_freezed_table(
         self,
         context: BackupContext,
@@ -577,7 +581,7 @@ class TableBackup(BackupManager):
             ),
         )
 
-    # pylint: disable=too-many-positional-arguments
+    # pylint: disable=too-many-function-args
     def _restore_tables(
         self,
         context: BackupContext,

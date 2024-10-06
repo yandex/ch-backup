@@ -38,7 +38,7 @@ class ClickhouseClient:
         return self._session.params
 
     @retry((requests.exceptions.ConnectionError, ClickhouseError))
-    # pylint: disable=too-many-positional-arguments
+    # pylint: disable=too-many-function-args
     def query(
         self,
         query: str,

@@ -59,7 +59,7 @@ def upload_file_pipeline(
     run(builder.pipeline())
 
 
-# pylint: disable=too-many-positional-arguments
+# pylint: disable=too-many-function-args
 def upload_files_tarball_scan_pipeline(
     config: dict,
     base_path: Path,
@@ -81,7 +81,9 @@ def upload_files_tarball_scan_pipeline(
     estimated_size = calc_tarball_size_scan(
         base_path, estimated_size, exclude_file_names
     )
-    builder.build_read_files_tarball_scan_stage(base_path, tar_base_dir, exclude_file_names)
+    builder.build_read_files_tarball_scan_stage(
+        base_path, tar_base_dir, exclude_file_names
+    )
     if compression:
         builder.build_compress_stage()
     if encrypt:
@@ -96,7 +98,7 @@ def upload_files_tarball_scan_pipeline(
     run(builder.pipeline())
 
 
-# pylint: disable=too-many-positional-arguments
+# pylint: disable=too-many-function-args
 def upload_files_tarball_pipeline(
     config: dict,
     base_path: Path,

@@ -112,7 +112,7 @@ signal.signal(signal.SIGINT, signal_handler)
     "Can be specified multiple times to override several settings.",
 )
 @pass_context
-# pylint: disable=too-many-positional-arguments
+# pylint: disable=too-many-function-args
 def cli(
     ctx: Context,
     config: str,
@@ -362,7 +362,7 @@ def show_command(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> None:
 @constraint(mutually_exclusive, ["schema_only", "udf"])
 @constraint(mutually_exclusive, ["schema_only", "nc"])
 @constraint(mutually_exclusive, ["data", "schema"])
-# pylint: disable=too-many-positional-arguments
+# pylint: disable=too-many-function-args
 def backup_command(
     _ctx: Context,
     ch_backup: ClickhouseBackup,
@@ -534,7 +534,7 @@ def backup_command(
 @constraint(mutually_exclusive, ["schema_only", "udf"])
 @constraint(mutually_exclusive, ["schema_only", "nc"])
 @constraint(mutually_exclusive, ["data", "schema"])
-# pylint: disable=too-many-positional-arguments
+# pylint: disable=too-many-function-args
 def restore_command(
     ctx: Context,
     ch_backup: ClickhouseBackup,

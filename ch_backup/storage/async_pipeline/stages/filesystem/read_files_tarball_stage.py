@@ -94,7 +94,7 @@ class ReadFilesTarballStage(ReadFilesTarballStageBase):
         config: dict,
         base_path: Path,
         file_relative_paths: List[Path],
-        tar_base_dir: Optional[Path] = None,
+        tar_base_dir: Optional[str] = None,
     ) -> None:
         super().__init__(config, base_path, tar_base_dir)
         self._file_source = file_relative_paths

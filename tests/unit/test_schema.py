@@ -303,7 +303,7 @@ def test_is_view(engine, result):
         },
     },
 )
-# pylint: disable=too-many-positional-arguments
+# pylint: disable=too-many-function-args
 def test_rewrite_table_schema(
     table_schema,
     table_engine,

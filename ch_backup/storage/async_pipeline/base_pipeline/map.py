@@ -48,7 +48,7 @@ class Map:
         yield self.handler.on_done()
 
 
-# pylint: disable=too-many-positional-arguments
+# pylint: disable=too-many-function-args
 def map_(
     f: Handler,
     stage: Union[

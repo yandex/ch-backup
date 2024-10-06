@@ -222,7 +222,7 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# pylint: disable=too-many-positional-arguments
+# pylint: disable=too-many-function-args
 def wait_for(
     func: Callable[[], bool],
     timeout_s: float,

@@ -207,6 +207,8 @@ class BackupLayout:
         Upload specified disk metadata files from given directory path as a tarball.
         Returns: whether backed up disk had data.
         """
+        assert table.path_on_disk, f"Table {table} doesn't store data on disk"
+
         backup_name = backup_meta.get_sanitized_name()
         compression = backup_meta.cloud_storage.compressed
         remote_path = _disk_metadata_path(

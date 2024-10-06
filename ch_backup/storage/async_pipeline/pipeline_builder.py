@@ -112,7 +112,10 @@ class PipelineBuilder:
         return self
 
     def build_read_files_tarball_scan_stage(
-        self, dir_path: Path, tar_base_dir: Optional[str] = None, exclude_file_names: Optional[List[str]] = None
+        self,
+        dir_path: Path,
+        tar_base_dir: Optional[str] = None,
+        exclude_file_names: Optional[List[str]] = None,
     ) -> "PipelineBuilder":
         """
         Build reading files to tarball stage.
@@ -122,7 +125,9 @@ class PipelineBuilder:
 
         self.append(
             thread_input(
-                ReadFilesTarballScanStage(stage_config, dir_path, tar_base_dir, exclude_file_names),
+                ReadFilesTarballScanStage(
+                    stage_config, dir_path, tar_base_dir, exclude_file_names
+                ),
                 maxsize=queue_size,
             )
         )

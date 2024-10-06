@@ -35,7 +35,7 @@ class PartDedupInfo(Slotted):
         "encrypted",
     )
 
-    # pylint: disable=too-many-arguments,too-many-positional-arguments
+    # pylint: disable=too-many-arguments,too-many-function-args
     def __init__(
         self,
         database: str,

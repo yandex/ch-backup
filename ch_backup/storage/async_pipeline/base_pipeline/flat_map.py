@@ -43,7 +43,7 @@ class FlatMap:
         yield from self.handler.on_done() or []
 
 
-# pylint: disable=too-many-positional-arguments
+# pylint: disable=too-many-function-args
 def flat_map(
     f: IterableHandler,
     stage: Union[

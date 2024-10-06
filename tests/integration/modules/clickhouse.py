@@ -119,7 +119,7 @@ class ClickhouseClient:
                     """
                 self._query("POST", query)
 
-    # pylint: disable=too-many-positional-arguments
+    # pylint: disable=too-many-function-args
     def init_data(
         self,
         mark: str,
