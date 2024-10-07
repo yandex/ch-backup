@@ -245,7 +245,6 @@ class TableBackup(BackupManager):
                 ):
                     logging.debug(f'No data frozen on disk "{disk.name}", skipping')
                     continue
-                # TODO: Add after all tables backed up
                 context.backup_meta.cloud_storage.add_disk(disk.name)
 
     # pylint: disable=too-many-arguments,too-many-locals,too-many-function-args
