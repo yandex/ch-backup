@@ -550,23 +550,22 @@ class BackupLayout:
         backup_name: str,
         source_disk_name: str,
         compression: bool,
-    ):
+    ) -> Sequence[str]:
         # Check if metadata is stored as 'disks/s3.tar.gz' for backwards compatibility
         old_style_remote_path = _disk_metadata_path(
             self.get_backup_path(backup_name), None, None, source_disk_name, compression
         )
         if self._storage_loader.path_exists(old_style_remote_path):
             return [old_style_remote_path]
-        else:
-            return self._storage_loader.list_dir(
-                str(
-                    os.path.join(
-                        self.get_backup_path(backup_name), "disks", source_disk_name
-                    )
-                ),
-                recursive=True,
-                absolute=True,
-            )
+        return self._storage_loader.list_dir(
+            str(
+                os.path.join(
+                    self.get_backup_path(backup_name), "disks", source_disk_name
+                )
+            ),
+            recursive=True,
+            absolute=True,
+        )
 
     def download_cloud_storage_metadata(
         self, backup_meta: BackupMetadata, disk: Disk, source_disk_name: str
@@ -773,8 +772,7 @@ def _disk_metadata_path(
             _quote(db_name),
             f"{_quote(table_name)}{extension}",
         )
-    else:
-        return os.path.join(backup_path, "disks", f"{disk_name}{extension}")
+    return os.path.join(backup_path, "disks", f"{disk_name}{extension}")
 
 
 def _table_shadow_path(
