@@ -781,7 +781,7 @@ def _table_shadow_path(
     disk_path: str, backup_name: str, table_path_on_disk: str
 ) -> str:
     """
-    Returns path to unpack tarball with cloud storage shadow metadata.
+    Returns path to frozen table data on given disk.
     """
     return os.path.join(disk_path, "shadow", backup_name, table_path_on_disk)
 
