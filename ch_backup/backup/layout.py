@@ -545,6 +545,29 @@ class BackupLayout:
             )
             return False
 
+    def _get_cloud_storage_metadata_remote_paths(
+        self,
+        backup_name: str,
+        source_disk_name: str,
+        compression: bool,
+    ):
+        # Check if metadata is stored as 'disks/s3.tar.gz' for backwards compatibility
+        old_style_remote_path = _disk_metadata_path(
+            self.get_backup_path(backup_name), None, None, source_disk_name, compression
+        )
+        if self._storage_loader.path_exists(old_style_remote_path):
+            return [old_style_remote_path]
+        else:
+            return self._storage_loader.list_dir(
+                str(
+                    os.path.join(
+                        self.get_backup_path(backup_name), "disks", source_disk_name
+                    )
+                ),
+                recursive=True,
+                absolute=True,
+            )
+
     def download_cloud_storage_metadata(
         self, backup_meta: BackupMetadata, disk: Disk, source_disk_name: str
     ) -> None:
@@ -553,18 +576,13 @@ class BackupLayout:
         """
         backup_name = backup_meta.get_sanitized_name()
         compression = backup_meta.cloud_storage.compressed
-        shadow_dir_contents = self._storage_loader.list_dir(
-            str(
-                os.path.join(
-                    self.get_backup_path(backup_name), "disks", source_disk_name
-                )
-            ),
-            recursive=True,
-            absolute=True,
+        disk_path = os.path.join(disk.path, "shadow", backup_name)
+        os.makedirs(disk_path, exist_ok=True)
+        metadata_remote_paths = self._get_cloud_storage_metadata_remote_paths(
+            backup_name, source_disk_name, compression
         )
-        for remote_path in shadow_dir_contents:
-            disk_path = os.path.join(disk.path, "shadow", backup_name)
-            os.makedirs(disk_path, exist_ok=True)
+
+        for remote_path in metadata_remote_paths:
             logging.debug(f'Downloading "{disk_path}" files from "{remote_path}"')
             try:
                 self._storage_loader.download_files(
@@ -735,8 +753,8 @@ def _part_path(
 
 def _disk_metadata_path(
     backup_path: str,
-    db_name: str,
-    table_name: str,
+    db_name: Optional[str],
+    table_name: Optional[str],
     disk_name: str,
     compressed: bool = False,
 ) -> str:
@@ -746,13 +764,17 @@ def _disk_metadata_path(
     extension = ".tar"
     if compressed:
         extension += COMPRESSED_EXTENSION
-    return os.path.join(
-        backup_path,
-        "disks",
-        disk_name,
-        _quote(db_name),
-        f"{_quote(table_name)}{extension}",
-    )
+    if table_name or db_name:
+        assert table_name and db_name
+        return os.path.join(
+            backup_path,
+            "disks",
+            disk_name,
+            _quote(db_name),
+            f"{_quote(table_name)}{extension}",
+        )
+    else:
+        return os.path.join(backup_path, "disks", f"{disk_name}{extension}")
 
 
 def _table_shadow_path(
