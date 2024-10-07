@@ -219,9 +219,7 @@ class BackupLayout:
             compression,
         )
         shadow_path = _table_shadow_path(disk.path, backup_name, table.path_on_disk)
-        exclude_file_names = [
-            "frozen_metadata.txt"
-        ]  # TODO: (lambda name: name == "frozen_metadata.txt")
+        exclude_file_names = ["frozen_metadata.txt"]
         if dir_is_empty(shadow_path, exclude_file_names):
             return False
 
