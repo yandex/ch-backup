@@ -39,7 +39,7 @@ class ClickHouseTemporaryDisks:
     Manages temporary cloud storage disks.
     """
 
-    # pylint: disable=too-many-instance-attributes,too-many-function-args
+    # pylint: disable=too-many-instance-attributes,too-many-positional-arguments
     def __init__(
         self,
         ch_ctl: ClickhouseCTL,
@@ -128,7 +128,7 @@ class ClickHouseTemporaryDisks:
                 pretty=True,
             )
 
-    # pylint: disable=too-many-function-args
+    # pylint: disable=too-many-positional-arguments
     def _create_temporary_disk(
         self,
         backup_meta: BackupMetadata,
@@ -268,7 +268,7 @@ class ClickHouseTemporaryDisks:
             f'Disk "{target_disk.name}" path not found for table `{table.database}`.`{table.name}`'
         )
 
-    # pylint: disable=too-many-function-args
+    # pylint: disable=too-many-positional-arguments
     def _copy_dir(
         self,
         from_disk: str,
@@ -282,7 +282,7 @@ class ClickHouseTemporaryDisks:
         else:
             self._ch_disks_copy(from_disk, from_path, to_disk, to_path, routine_tag)
 
-    # pylint: disable=too-many-function-args
+    # pylint: disable=too-many-positional-arguments
     def _os_copy(
         self,
         from_disk: str,
@@ -301,7 +301,7 @@ class ClickHouseTemporaryDisks:
         )
         logging.info(f"os copy result for {routine_tag}: {result}")
 
-    # pylint: disable=too-many-function-args
+    # pylint: disable=too-many-positional-arguments
     def _ch_disks_copy(
         self,
         from_disk: str,

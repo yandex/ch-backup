@@ -46,7 +46,7 @@ class TableBackup(BackupManager):
     Table backup class
     """
 
-    # pylint: disable=too-many-function-args
+    # pylint: disable=too-many-positional-arguments
     def backup(
         self,
         context: BackupContext,
@@ -103,7 +103,7 @@ class TableBackup(BackupManager):
 
         return res
 
-    # pylint: disable=too-many-function-args
+    # pylint: disable=too-many-positional-arguments
     def _backup(
         self,
         context: BackupContext,
@@ -165,7 +165,7 @@ class TableBackup(BackupManager):
 
         context.backup_layout.upload_backup_metadata(context.backup_meta)
 
-    # pylint: disable=too-many-function-args
+    # pylint: disable=too-many-positional-arguments
     @staticmethod
     def _freeze_table(
         context: BackupContext,
@@ -247,7 +247,7 @@ class TableBackup(BackupManager):
                     continue
                 context.backup_meta.cloud_storage.add_disk(disk.name)
 
-    # pylint: disable=too-many-arguments,too-many-locals,too-many-function-args
+    # pylint: disable=too-many-arguments,too-many-locals,too-many-positional-arguments
     def restore(
         self,
         context: BackupContext,
@@ -363,7 +363,7 @@ class TableBackup(BackupManager):
                 keep_going=keep_going,
             )
 
-    # pylint: disable=too-many-function-args
+    # pylint: disable=too-many-positional-arguments
     def _backup_freezed_table(
         self,
         context: BackupContext,
@@ -580,7 +580,7 @@ class TableBackup(BackupManager):
             ),
         )
 
-    # pylint: disable=too-many-function-args
+    # pylint: disable=too-many-positional-arguments
     def _restore_tables(
         self,
         context: BackupContext,

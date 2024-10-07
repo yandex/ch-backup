@@ -52,7 +52,7 @@ class PipelineExecutor:
         )
         self._exec_pipeline(job_id, pipeline, is_async)
 
-    # pylint: disable=too-many-function-args
+    # pylint: disable=too-many-positional-arguments
     def upload_file(
         self,
         local_path: str,
@@ -81,7 +81,7 @@ class PipelineExecutor:
 
         self._exec_pipeline(job_id, pipeline, is_async)
 
-    # pylint: disable=too-many-function-args
+    # pylint: disable=too-many-positional-arguments
     def upload_files_tarball_scan(
         self,
         dir_path: str,
@@ -113,7 +113,7 @@ class PipelineExecutor:
         )
         self._exec_pipeline(job_id, pipeline, is_async, callback)
 
-    # pylint: disable=too-many-function-args
+    # pylint: disable=too-many-positional-arguments
     def upload_files_tarball(
         self,
         dir_path: str,
@@ -172,7 +172,7 @@ class PipelineExecutor:
         )
         self._exec_pipeline(job_id, pipeline, is_async)
 
-    # pylint: disable=too-many-function-args
+    # pylint: disable=too-many-positional-arguments
     def download_files(
         self,
         remote_path: str,

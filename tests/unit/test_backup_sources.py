@@ -220,7 +220,7 @@ from ch_backup.backup.sources import BackupSources
         ),
     ],
 )
-# pylint: disable=too-many-function-args
+# pylint: disable=too-many-positional-arguments
 def test_sources_for_backup(
     access: bool,
     data: bool,
@@ -455,7 +455,7 @@ def test_sources_for_backup(
         ),
     ],
 )
-# pylint: disable=too-many-function-args
+# pylint: disable=too-many-positional-arguments
 def test_sources_for_restore(
     access: bool,
     data: bool,
