@@ -184,7 +184,7 @@ class ClickHouseTemporaryDisks:
 
         self._ch_ctl.reload_config()
         source_disk = self._ch_ctl.get_disk(tmp_disk_name)
-        logging.debug(f'Restoring Cloud Storage "shadow" data  of disk "{disk_name}"')
+        logging.debug(f'Restoring Cloud Storage "shadow" data of disk "{disk_name}"')
         self._backup_layout.download_cloud_storage_metadata(
             backup_meta, source_disk, disk_name
         )

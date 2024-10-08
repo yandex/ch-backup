@@ -67,6 +67,7 @@ def upload_files_tarball_scan_pipeline(
     encrypt: bool,
     delete_after: bool,
     compression: bool,
+    tar_base_dir: Optional[str] = None,
     exclude_file_names: Optional[List[str]] = None,
 ) -> None:
     """
@@ -80,7 +81,9 @@ def upload_files_tarball_scan_pipeline(
     estimated_size = calc_tarball_size_scan(
         base_path, estimated_size, exclude_file_names
     )
-    builder.build_read_files_tarball_scan_stage(base_path, exclude_file_names)
+    builder.build_read_files_tarball_scan_stage(
+        base_path, tar_base_dir, exclude_file_names
+    )
     if compression:
         builder.build_compress_stage()
     if encrypt:

@@ -61,6 +61,13 @@ class TableBackup(BackupManager):
 
         backup_name = context.backup_meta.get_sanitized_name()
 
+        if context.cloud_conf.get("cloud_storage", {}).get("encryption", True):
+            logging.debug('Cloud Storage "shadow" backup will be encrypted')
+            context.backup_meta.cloud_storage.encrypt()
+        if context.cloud_conf.get("cloud_storage", {}).get("compression", True):
+            logging.debug('Cloud Storage "shadow" backup will be compressed')
+            context.backup_meta.cloud_storage.compress()
+
         for db in databases:
             self._backup(
                 context,
@@ -70,8 +77,6 @@ class TableBackup(BackupManager):
                 schema_only,
                 freeze_threads,
             )
-
-        self._backup_cloud_storage_metadata(context)
 
     def _collect_local_metadata_mtime(
         self, context: BackupContext, db: Database, tables: Sequence[str]
@@ -153,6 +158,7 @@ class TableBackup(BackupManager):
                             mtimes,
                             create_statement,
                         )
+                        self._backup_cloud_storage_metadata(context, table)
 
             context.backup_layout.wait()
             context.ch_ctl.remove_freezed_data()
@@ -223,28 +229,23 @@ class TableBackup(BackupManager):
             return None
 
     @staticmethod
-    def _backup_cloud_storage_metadata(context: BackupContext) -> None:
+    def _backup_cloud_storage_metadata(context: BackupContext, table: Table) -> None:
         """
         Backup cloud storage metadata files.
         """
-        if context.cloud_conf.get("cloud_storage", {}).get("encryption", True):
-            logging.debug('Cloud Storage "shadow" backup will be encrypted')
-            context.backup_meta.cloud_storage.encrypt()
-        if context.cloud_conf.get("cloud_storage", {}).get("compression", True):
-            logging.debug('Cloud Storage "shadow" backup will be compressed')
-            context.backup_meta.cloud_storage.compress()
-
-        logging.debug('Backing up Cloud Storage disks "shadow" directory')
-        disks = context.ch_ctl.get_disks()
-        for disk in disks.values():
+        logging.debug(
+            'Backing up Cloud Storage disks "shadow" directory of "{}"."{}"',
+            table.database,
+            table.name,
+        )
+        for _, disk in table.paths_with_disks:
             if disk.type == "s3" and not disk.cache_path:
                 if not context.backup_layout.upload_cloud_storage_metadata(
-                    context.backup_meta, disk
+                    context.backup_meta, disk, table
                 ):
                     logging.debug(f'No data frozen on disk "{disk.name}", skipping')
                     continue
                 context.backup_meta.cloud_storage.add_disk(disk.name)
-        logging.debug("Cloud Storage disks has been backed up ")
 
     # pylint: disable=too-many-arguments,too-many-locals,too-many-positional-arguments
     def restore(

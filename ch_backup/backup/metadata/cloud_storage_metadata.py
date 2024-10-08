@@ -38,7 +38,8 @@ class CloudStorageMetadata:
         """
         Add disk name in backed up disks list.
         """
-        self._disks.append(disk_name)
+        if disk_name not in self._disks:
+            self._disks.append(disk_name)
 
     @property
     def encrypted(self) -> bool:
