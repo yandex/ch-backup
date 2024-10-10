@@ -1010,7 +1010,7 @@ class ClickhouseCTL:
             )
         )
         self._ch_client.query(
-            TRUNCATE_TABLE_IF_EXISTS_SQL.format(
+            DROP_TABLE_IF_EXISTS_SQL.format(
                 db_name=escape(self._backup_config["system_database"]),
                 table_name="_deduplication_info",
             )
