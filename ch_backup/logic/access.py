@@ -16,7 +16,11 @@ from ch_backup import logging
 from ch_backup.backup.metadata import BackupStorageFormat
 from ch_backup.backup_context import BackupContext
 from ch_backup.logic.backup_manager import BackupManager
-from ch_backup.util import chown_dir_contents, copy_directory_content
+from ch_backup.util import (
+    chown_dir_contents,
+    copy_directory_content,
+    escape_metadata_file_name,
+)
 
 CH_MARK_FILE = "need_rebuild_lists.mark"
 
@@ -284,8 +288,22 @@ class AccessBackup(BackupManager):
                     _zk_upsert_data(zk_client, uuid_zk_path, data)
 
                 # restore object link
-                uuid_zk_path = _get_access_zk_path(context, f"/{obj_char}/{name}")
-                _zk_upsert_data(zk_client, uuid_zk_path, uuid)
+                name_zk_path = _get_access_zk_path(
+                    context, f"/{obj_char}/{escape_metadata_file_name(name)}"
+                )
+                logging.debug(f'Upserting zk access entity name "{name_zk_path}"')
+                try:
+                    existing_uuid, _ = zk_client.get(name_zk_path)
+                except NoNodeError:
+                    zk_client.create(name_zk_path, uuid.encode(), makepath=True)
+                else:
+                    existing_uuid = existing_uuid.decode()
+                    if uuid != existing_uuid:
+                        logging.debug(f'Remove conflicting entity "{existing_uuid}"')
+                        zk_client.delete(
+                            _get_access_zk_path(context, f"/uuid/{existing_uuid}")
+                        )
+                        zk_client.set(name_zk_path, uuid.encode())
 
     def _mark_to_rebuild(
         self, clickhouse_access_path: str, user: str, group: str
