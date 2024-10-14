@@ -140,3 +140,74 @@ Feature: Backup and restore functionality of replicated access control entities
     /clickhouse02/clickhouse/access/Q
     """
     Then we get ZK list with len 1
+
+
+  Scenario: Restore access entities with conflicts
+    Given we have executed queries on clickhouse01
+    """
+    CREATE USER test_user IDENTIFIED WITH plaintext_password BY 'password';
+    CREATE ROLE test_role;
+    CREATE ROW POLICY filter ON test_db.table_01 FOR SELECT USING CounterID < 5 TO test_role;
+    CREATE QUOTA test_quota FOR INTERVAL 1 DAY MAX QUERIES 10 TO test_role;
+    CREATE SETTINGS PROFILE memory_profile SETTINGS max_memory_usage = 100000001 MIN 90000000 MAX 110000000 TO test_role;
+    """
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 1          | 0          |
+    Given we have dirty enabled replicated access on clickhouse02 with restart
+    And a working clickhouse on clickhouse02
+    When we restore clickhouse backup #0 to clickhouse02
+    Given we have executed queries on clickhouse02
+    """
+    CREATE USER test_user IDENTIFIED WITH no_password;
+    CREATE ROLE test_role;
+    CREATE ROW POLICY filter ON test_db.table_01 FOR SELECT USING CounterID < 7 TO test_role;
+    CREATE QUOTA test_quota FOR INTERVAL 1 DAY MAX QUERIES 100 TO test_role;
+    CREATE SETTINGS PROFILE memory_profile SETTINGS max_memory_usage = 99999999 MIN 90000000 MAX 110000000 TO test_role;
+    """
+    When we restore clickhouse access control metadata backup #0 to clickhouse02 with restart
+    Given a working clickhouse on clickhouse02
+    When we execute ZK list query on zookeeper01
+    """
+    /clickhouse02/clickhouse/access/uuid
+    """
+    Then we get ZK list with len 5
+    # check U
+    When we execute ZK list query on zookeeper01
+    """
+    /clickhouse02/clickhouse/access/U
+    """
+    Then we get ZK list with len 1
+    # check R
+    When we execute ZK list query on zookeeper01
+    """
+    /clickhouse02/clickhouse/access/R
+    """
+    Then we get ZK list with len 1
+    # check P
+    When we execute ZK list query on zookeeper01
+    """
+    /clickhouse02/clickhouse/access/P
+    """
+    Then we get ZK list with len 1
+    # check S
+    When we execute ZK list query on zookeeper01
+    """
+    /clickhouse02/clickhouse/access/S
+    """
+    Then we get ZK list with len 1
+    # check Q
+    When we execute ZK list query on zookeeper01
+    """
+    /clickhouse02/clickhouse/access/Q
+    """
+    Then we get ZK list with len 1
+    When we execute query on clickhouse02
+    """
+    SHOW CREATE USER test_user
+    """
+    Then we get response
+    """
+    CREATE USER test_user IDENTIFIED WITH plaintext_password
+    """

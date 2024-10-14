@@ -6,17 +6,22 @@ import os
 import re
 import shutil
 from contextlib import contextmanager
+from pathlib import Path
 from tempfile import TemporaryDirectory, mkdtemp
 from typing import Any, Dict, List, Sequence, Union
 
 from kazoo.client import KazooClient
-from kazoo.exceptions import NoNodeError
+from kazoo.exceptions import NodeExistsError, NoNodeError, ZookeeperError
 
 from ch_backup import logging
 from ch_backup.backup.metadata import BackupStorageFormat
 from ch_backup.backup_context import BackupContext
 from ch_backup.logic.backup_manager import BackupManager
-from ch_backup.util import chown_dir_contents, copy_directory_content
+from ch_backup.util import (
+    chown_dir_contents,
+    copy_directory_content,
+    escape_metadata_file_name,
+)
 
 CH_MARK_FILE = "need_rebuild_lists.mark"
 
@@ -262,6 +267,8 @@ class AccessBackup(BackupManager):
         """
         Restore access entities to replicated storage (ZK/CK).
         """
+        # pylint: disable=too-many-locals
+
         logging.debug(
             f"Restoring {len(acl_list)} access entities to replicated storage"
         )
@@ -276,16 +283,59 @@ class AccessBackup(BackupManager):
                 meta_data = acl_meta[str(i)]
                 name, obj_char = meta_data["name"], meta_data["char"]
 
-                # restore object data
-                file_path = os.path.join(restore_tmp_path, f"{uuid}.sql")
-                with open(file_path, "r", encoding="utf-8") as file:
-                    data = file.read()
-                    uuid_zk_path = _get_access_zk_path(context, f"/uuid/{uuid}")
-                    _zk_upsert_data(zk_client, uuid_zk_path, data)
+                uuid_zk_path = _get_access_zk_path(context, f"/uuid/{uuid}")
+                name_zk_path = _get_access_zk_path(
+                    context, f"/{obj_char}/{escape_metadata_file_name(name)}"
+                )
+                logging.debug(
+                    f'Upserting zk access entity uuid:"{uuid_zk_path}" name:"{name_zk_path}"'
+                )
 
-                # restore object link
-                uuid_zk_path = _get_access_zk_path(context, f"/{obj_char}/{name}")
-                _zk_upsert_data(zk_client, uuid_zk_path, uuid)
+                tx_insert = zk_client.transaction()
+                # Restore entity data
+                entiry_file_path = Path(restore_tmp_path) / f"{uuid}.sql"
+                entity_data = entiry_file_path.read_bytes()
+                tx_insert.create(uuid_zk_path, entity_data)
+                # Restore entity name
+                tx_insert.create(name_zk_path, uuid.encode())
+                result = tx_insert.commit()
+
+                if not any(isinstance(res, ZookeeperError) for res in result):
+                    # Transaction was completed successfully
+                    continue
+
+                # Handle conflicts
+                tx_update = zk_client.transaction()
+
+                # UUID conflict
+                if isinstance(result[0], NodeExistsError):
+                    tx_update.set_data(uuid_zk_path, entity_data)
+                else:
+                    tx_update.create(uuid_zk_path, entity_data)
+
+                # Name conflict
+                if isinstance(result[1], NodeExistsError):
+                    existing_uuid, _ = zk_client.get(name_zk_path)
+                    if uuid != existing_uuid:
+                        logging.debug(
+                            f"Remove conflicting UUID {existing_uuid.decode()}"
+                        )
+                        # Remove conflicting entity
+                        tx_update.delete(
+                            _get_access_zk_path(
+                                context, f"/uuid/{existing_uuid.decode()}"
+                            )
+                        )
+                    tx_update.set_data(name_zk_path, uuid.encode())
+                else:
+                    tx_update.create(name_zk_path, uuid.encode())
+
+                result = tx_update.commit()
+                if any(isinstance(res, ZookeeperError) for res in result):
+                    raise RuntimeError(
+                        f"Transaction restoring access entity with UUID {uuid} "
+                        f"and name {name} was failed with errors: {result}"
+                    )
 
     def _mark_to_rebuild(
         self, clickhouse_access_path: str, user: str, group: str
@@ -320,17 +370,6 @@ def _get_access_zk_path(context: BackupContext, zk_path: str) -> str:
         zk_path,
     )
     return "/" + os.path.join(*map(lambda x: x.lstrip("/"), paths))
-
-
-def _zk_upsert_data(zk: KazooClient, path: str, value: Union[str, bytes]) -> None:
-    if isinstance(value, str):
-        value = value.encode()
-
-    logging.debug(f'Upserting zk access entity "{path}"')
-    if zk.exists(path):
-        zk.set(path, value)
-    else:
-        zk.create(path, value, makepath=True)
 
 
 def _create_access_file(
