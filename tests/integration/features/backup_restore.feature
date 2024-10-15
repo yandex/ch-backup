@@ -87,6 +87,78 @@ Feature: Backup & Restore
     And we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
+  Scenario: Backup & Restore for ReplacingMergeTree
+    When we drop all databases at clickhouse01
+    And we drop all databases at clickhouse02
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.hits (
+        id UInt32,
+        url String,
+        visits UInt32
+    )
+    ENGINE ReplacingMergeTree
+    ORDER BY id;
+    INSERT INTO test_db.hits VALUES
+      (1, '/index', 100);
+    """
+    Given we have executed queries on clickhouse01
+    """
+    INSERT INTO test_db.hits VALUES
+      (1, '/index', 101);
+    """
+    Given we have executed queries on clickhouse01
+    """
+    INSERT INTO test_db.hits VALUES
+      (1, '/index', 102);
+    """
+    Given we have executed queries on clickhouse01
+    """
+    INSERT INTO test_db.hits VALUES
+      (1, '/index', 103);
+    """
+    Given we have executed queries on clickhouse01
+    """
+    INSERT INTO test_db.hits VALUES
+      (1, '/index', 104);
+    """
+    Given we have executed queries on clickhouse01
+    """
+    INSERT INTO test_db.hits VALUES
+      (1, '/index', 105);
+    """
+    Given we have executed queries on clickhouse01
+    """
+    INSERT INTO test_db.hits VALUES
+      (1, '/index', 106);
+    """
+    When we create clickhouse01 clickhouse backup
+    And we restore clickhouse backup #0 to clickhouse02
+    When we execute query on clickhouse01
+    """
+    SELECT id, visits FROM test_db.hits FINAL ORDER BY id FORMAT Vertical;
+    """
+    Then we get response
+    """
+    Row 1:
+    ──────
+    id:     1
+    visits: 106
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT id, visits FROM test_db.hits FINAL ORDER BY id FORMAT Vertical;
+    """
+    Then we get response
+    """
+    Row 1:
+    ──────
+    id:     1
+    visits: 106
+    """
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
   Scenario: Backup & Restore with long file names
     When we drop all databases at clickhouse01
     And we drop all databases at clickhouse02
