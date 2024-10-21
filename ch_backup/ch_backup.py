@@ -527,6 +527,7 @@ class ClickhouseBackup:
                     select_replica_drop(
                         replica_name, self._context.ch_ctl.get_macros()
                     ),
+                    self._config["multiprocessing"]["drop_replica_threads"],
                 )
 
             # Restore databases.
