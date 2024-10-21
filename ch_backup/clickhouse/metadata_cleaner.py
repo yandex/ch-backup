@@ -123,7 +123,7 @@ class MetadataCleaner:
                 path_resolved,
             )
             future = self._exec_pool.submit(
-                self._ch_ctl.system_drop_database_replica, self._replica_to_drop, path_resolved  # type: ignore
+                self._ch_ctl.system_drop_database_replica, full_replica_name, path_resolved  # type: ignore
             )
             tasks[f"{database.name}"] = future
 
