@@ -194,6 +194,11 @@ class TableBackup(BackupManager):
                 context.ch_ctl.freeze_table(backup_name, table)
             except ClickhouseError:
                 if context.ch_ctl.does_table_exist(table.database, table.name):
+                    logging.error(
+                        'Cannot freeze table "{}"."{}"',
+                        table.database,
+                        table.name,
+                    )
                     raise
 
                 logging.warning(
