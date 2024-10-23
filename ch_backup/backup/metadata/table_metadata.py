@@ -1,11 +1,11 @@
 """
 Backup metadata for ClickHouse table.
 """
+
 from types import SimpleNamespace
 from typing import List, Optional, Set
 
 from ch_backup.backup.metadata.part_metadata import PartMetadata
-
 
 REPLACING_MERGE_TREE = "ReplacingMergeTree"
 
@@ -56,8 +56,9 @@ class TableMetadata(SimpleNamespace):
                 )
 
         if self.engine == REPLACING_MERGE_TREE:
+
             def split_part_name(part):
-                chunks = part.split('_', maxsplit=3)
+                chunks = part.split("_", maxsplit=3)
                 partition = ""
                 suffix = ""
                 try:
