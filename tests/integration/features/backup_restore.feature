@@ -104,62 +104,62 @@ Feature: Backup & Restore
     PARTITION BY toYYYYMM(dt);
 
     INSERT INTO test_db.hits VALUES
-      (now(), 1, '/index', 100);
+      (toDate('2024-10-24'), 1, '/index', 100);
     """
     Given we have executed queries on clickhouse01
     """
     INSERT INTO test_db.hits VALUES
-      (now(), 1, '/index', 101);
+      (toDate('2024-10-24'), 1, '/index', 101);
     """
     Given we have executed queries on clickhouse01
     """
     INSERT INTO test_db.hits VALUES
-      (now(), 1, '/index', 102);
+      (toDate('2024-10-24'), 1, '/index', 102);
     """
     Given we have executed queries on clickhouse01
     """
     INSERT INTO test_db.hits VALUES
-      (now(), 1, '/index', 103);
+      (toDate('2024-10-24'), 1, '/index', 103);
     """
     Given we have executed queries on clickhouse01
     """
     INSERT INTO test_db.hits VALUES
-      (now(), 1, '/index', 104);
+      (toDate('2024-10-24'), 1, '/index', 104);
     """
     Given we have executed queries on clickhouse01
     """
     INSERT INTO test_db.hits VALUES
-      (now(), 1, '/index', 105);
+      (toDate('2024-10-24'), 1, '/index', 105);
     """
     Given we have executed queries on clickhouse01
     """
     INSERT INTO test_db.hits VALUES
-      (now(), 1, '/index', 106);
+      (toDate('2024-10-24'), 1, '/index', 106);
     """
     Given we have executed queries on clickhouse01
     """
     INSERT INTO test_db.hits VALUES
-      (now(), 1, '/index', 107);
+      (toDate('2024-10-24'), 1, '/index', 107);
     """
     Given we have executed queries on clickhouse01
     """
     INSERT INTO test_db.hits VALUES
-      (now(), 1, '/index', 108);
+      (toDate('2024-10-24'), 1, '/index', 108);
     """
     Given we have executed queries on clickhouse01
     """
     INSERT INTO test_db.hits VALUES
-      (now(), 1, '/index', 109);
+      (toDate('2024-10-24'), 1, '/index', 109);
     """
     Given we have executed queries on clickhouse01
     """
     INSERT INTO test_db.hits VALUES
-      (now(), 1, '/index', 110);
+      (toDate('2024-10-24'), 1, '/index', 110);
     """
     Given we have executed queries on clickhouse01
     """
     INSERT INTO test_db.hits VALUES
-      (now(), 1, '/index', 111);
+      (toDate('2024-10-24'), 1, '/index', 111);
     """
     When we create clickhouse01 clickhouse backup
     And we restore clickhouse backup #0 to clickhouse02
