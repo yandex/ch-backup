@@ -3,11 +3,22 @@ Backup metadata for ClickHouse table.
 """
 
 from types import SimpleNamespace
-from typing import List, Optional, Set
+from typing import List, NamedTuple, Optional, Set
 
 from ch_backup.backup.metadata.part_metadata import PartMetadata
 
-REPLACING_MERGE_TREE = "ReplacingMergeTree"
+
+class PartInfo(NamedTuple):
+    """
+    Parsed part name.
+    https://github.com/ClickHouse/ClickHouse/blob/e2821c5e8b728d1d28f9e0b98db87e0af5bc4a29/src/Storages/MergeTree/MergeTreePartInfo.cpp#L54
+    """
+
+    partition_id: str
+    min_block_num: int
+    max_block_num: int
+    level: int
+    mutation: str
 
 
 class TableMetadata(SimpleNamespace):
@@ -43,7 +54,7 @@ class TableMetadata(SimpleNamespace):
 
     def get_parts(self, *, excluded_parts: Set[str] = None) -> List[PartMetadata]:
         """
-        Return data parts.
+        Return data parts (sorted).
         """
         if not excluded_parts:
             excluded_parts = set()
@@ -55,24 +66,25 @@ class TableMetadata(SimpleNamespace):
                     PartMetadata.load(self.database, self.name, part_name, raw_metadata)
                 )
 
-        if self.engine == REPLACING_MERGE_TREE:
+        def split_part_name(part: str) -> PartInfo:
+            max_split = 4
+            chunks = part.split("_", maxsplit=max_split)
+            partition_id = ""
+            level = 0
+            mutation = ""
+            try:
+                partition_id = chunks[0]
+                min_block_num = int(chunks[1])
+                max_block_num = int(chunks[2])
+                level = int(chunks[3])
+                if max_split + 1 == len(chunks):
+                    mutation = chunks[4]
+            except (IndexError, ValueError):
+                min_block_num = 0
+                max_block_num = 0
+            return PartInfo(partition_id, min_block_num, max_block_num, level, mutation)
 
-            def split_part_name(part):
-                chunks = part.split("_", maxsplit=3)
-                partition = ""
-                suffix = ""
-                try:
-                    partition = chunks[0]
-                    start_range = int(chunks[1])
-                    finish_range = int(chunks[2])
-                    suffix = chunks[3]
-                except (IndexError, ValueError):
-                    start_range = 0
-                    finish_range = 0
-                return partition, start_range, finish_range, suffix
-
-            result.sort(key=lambda part: split_part_name(part.name))
-
+        result.sort(key=lambda part: split_part_name(part.name))
         return result
 
     def add_part(self, part: PartMetadata) -> None:
