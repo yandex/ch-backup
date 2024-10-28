@@ -18,7 +18,7 @@ class PartInfo(NamedTuple):
     min_block_num: int
     max_block_num: int
     level: int
-    mutation: str
+    mutation: int
 
 
 class TableMetadata(SimpleNamespace):
@@ -71,14 +71,14 @@ class TableMetadata(SimpleNamespace):
             chunks = part.split("_", maxsplit=max_split)
             partition_id = ""
             level = 0
-            mutation = ""
+            mutation = 0
             try:
                 partition_id = chunks[0]
                 min_block_num = int(chunks[1])
                 max_block_num = int(chunks[2])
                 level = int(chunks[3])
                 if max_split + 1 == len(chunks):
-                    mutation = chunks[4]
+                    mutation = int(chunks[4])
             except (IndexError, ValueError):
                 min_block_num = 0
                 max_block_num = 0
