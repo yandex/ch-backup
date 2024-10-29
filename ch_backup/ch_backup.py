@@ -524,6 +524,7 @@ class ClickhouseBackup:
             if clean_zookeeper and len(self._context.zk_config.get("hosts")) > 0:
                 metadata_cleaner = MetadataCleaner(
                     self._context.ch_ctl,
+                    self._context.zk_ctl,
                     select_replica_drop(
                         replica_name, self._context.ch_ctl.get_macros()
                     ),

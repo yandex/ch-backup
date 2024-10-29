@@ -6,6 +6,7 @@ import yaml
 from behave import given, then, when
 from hamcrest import assert_that, equal_to, has_length
 from tenacity import retry, stop_after_attempt, wait_fixed
+from tests.integration.modules.ch_backup import BackupManager
 from tests.integration.modules.clickhouse import ClickhouseClient
 from tests.integration.modules.docker import get_container, put_file
 from tests.integration.modules.steps import get_step_data
@@ -36,6 +37,11 @@ def step_enable_shared_zookeeper_for_clickhouse(context, node):
         == 0
     )
     assert container.exec_run("supervisorctl restart clickhouse").exit_code == 0
+
+    shared_zk_path = "/" + render_template(context, "{{ conf.zk.shared_node }}")
+
+    dict_to_update = {"zookeeper": {"root_path": shared_zk_path}}
+    BackupManager(context, node).update_config(dict_to_update)
 
 
 @given("clickhouse on {node:w} has test schema")
