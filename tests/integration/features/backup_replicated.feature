@@ -861,6 +861,7 @@ Feature: Backup replicated merge tree table
 
   ## Note: Sometimes we can have active orphaned table in the zookeeper.
   ## Here we are imitating such situation by creating objects with static replica name.
+  @require_version_23.3
   Scenario: Host resetup with active orphaned objects in zookeeper.
     Given we have enabled shared zookeeper for clickhouse01
     And we have enabled shared zookeeper for clickhouse02
