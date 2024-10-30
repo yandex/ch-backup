@@ -73,7 +73,7 @@ class MetadataCleaner:
             table_macros.update(macros_to_override)
 
             path_resolved = os.path.abspath(replace_macros(table_path, table_macros))
-            full_table_name = f"{table.database}.{table.database}"
+            full_table_name = f"{table.database}.{table.name}"
 
             with self._zk_ctl.zk_client as zk_client:
                 # Both paths are already abs.
@@ -93,8 +93,7 @@ class MetadataCleaner:
                     full_table_zk_path, "replicas", self._replica_to_drop, "is_active"  # type: ignore
                 )
                 try:
-                    if zk_client.exists(active_flag_path):
-                        zk_client.delete(active_flag_path)
+                    zk_client.delete(active_flag_path)
                 except NoNodeError:
                     pass
 
@@ -164,8 +163,7 @@ class MetadataCleaner:
                     full_database_zk_path, "replicas", full_replica_name, "active"
                 )
                 try:
-                    if zk_client.exists(active_flag_path):
-                        zk_client.delete(active_flag_path)
+                    zk_client.delete(active_flag_path)
                 except NoNodeError:
                     pass
 
