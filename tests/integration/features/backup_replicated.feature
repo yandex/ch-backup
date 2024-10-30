@@ -864,6 +864,10 @@ Feature: Backup replicated merge tree table
   Scenario: Host resetup with active orphaned objects in zookeeper.
     Given we have enabled shared zookeeper for clickhouse01
     And we have enabled shared zookeeper for clickhouse02
+    And ClickHouse settings
+    """
+      allow_experimental_database_replicated: 1
+    """
     And we have executed queries on clickhouse01
     """
     DROP DATABASE IF EXISTS test_db SYNC;
