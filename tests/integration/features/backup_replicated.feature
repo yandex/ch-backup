@@ -858,3 +858,42 @@ Feature: Backup replicated merge tree table
     Examples:
     | zookeeper_path          |
     |/databases/replicated/db_repl|
+
+  ## Note: Sometimes we can have active orphaned table in the zookeeper.
+  ## Here we are imitating such situation by creating objects with static replica name.
+  @require_version_23.3
+  Scenario: Host resetup with active orphaned objects in zookeeper.
+    Given we have enabled shared zookeeper for clickhouse01
+    And we have enabled shared zookeeper for clickhouse02
+    And ClickHouse settings
+    """
+      allow_experimental_database_replicated: 1
+    """
+    And we have executed queries on clickhouse01
+    """
+    DROP DATABASE IF EXISTS test_db SYNC;
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (
+        EventDate DateTime,
+        CounterID UInt32,
+        UserID UInt32
+    )
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard01/test_db.table_01', 'replica')
+    PARTITION BY CounterID % 10
+    ORDER BY (CounterID, EventDate, intHash32(UserID))
+    SAMPLE BY intHash32(UserID);
+    INSERT INTO test_db.table_01 SELECT now(), number, rand() FROM system.numbers LIMIT 10;
+
+    DROP DATABASE IF EXISTS db_repl SYNC;
+    CREATE DATABASE db_repl ENGINE = Replicated('/databases/replicated/db_repl', 'shard_01', 'replica');
+    """
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 10         | 0          |
+
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    replica_name: replica
+    schema_only: true
+    """
