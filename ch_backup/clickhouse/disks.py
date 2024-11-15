@@ -159,6 +159,7 @@ class ClickHouseTemporaryDisks:
             )
 
         disk_config["endpoint"] = tmp_disk_enpoint
+
         disks_config = {tmp_disk_name: disk_config}
 
         request_timeout_ms = int(disk_config.get("request_timeout_ms", 0))
@@ -176,6 +177,8 @@ class ClickHouseTemporaryDisks:
                 self._disks[disk_name]["request_timeout_ms"] = str(
                     CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS
                 )
+
+        disks_config[tmp_disk_name]["skip_access_check"] = str(True).lower()
 
         self._render_disks_config(
             _get_config_path(self._config_dir, tmp_disk_name),
