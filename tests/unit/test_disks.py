@@ -49,6 +49,7 @@ write_result = ""
                       <access_key_id>AKIAACCESSKEY</access_key_id>
                       <secret_access_key>SecretAccesskey</secret_access_key>
                       <request_timeout_ms>3600000</request_timeout_ms>
+                      <skip_access_check>true</skip_access_check>
                     </object_storage_source>
                     <object_storage>
                       <request_timeout_ms replace="replace">3600000</request_timeout_ms>
@@ -94,6 +95,7 @@ write_result = ""
                       <access_key_id>AKIAACCESSKEY</access_key_id>
                       <secret_access_key>SecretAccesskey</secret_access_key>
                       <request_timeout_ms>3600000</request_timeout_ms>
+                      <skip_access_check>true</skip_access_check>
                     </object_storage_source>
                     <object_storage>
                       <request_timeout_ms replace="replace">3600000</request_timeout_ms>
@@ -139,6 +141,7 @@ write_result = ""
                       <access_key_id>AKIAACCESSKEY</access_key_id>
                       <secret_access_key>SecretAccesskey</secret_access_key>
                       <request_timeout_ms>7200000</request_timeout_ms>
+                      <skip_access_check>true</skip_access_check>
                     </object_storage_source>
                   </disks>
                 </storage_configuration>
