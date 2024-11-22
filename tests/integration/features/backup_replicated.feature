@@ -859,6 +859,48 @@ Feature: Backup replicated merge tree table
     | zookeeper_path          |
     |/databases/replicated/db_repl|
 
+    Scenario Outline: Add new host with replicated
+    Given we have enabled shared zookeeper for clickhouse01
+    And we have enabled shared zookeeper for clickhouse02
+    Given ClickHouse settings
+    """
+      allow_experimental_database_replicated: 1
+    """
+    And we have executed queries on clickhouse01
+    """
+    DROP DATABASE IF EXISTS db_repl ON CLUSTER 'default' SYNC;
+    CREATE DATABASE db_repl ENGINE = Replicated('<zookeeper_path>', 'shard_01', '{replica}');
+
+    DROP TABLE IF EXISTS table_01 ON CLUSTER 'default' SYNC;
+    CREATE TABLE table_01 (
+        EventDate DateTime,
+        CounterID UInt32,
+        UserID UInt32
+    )
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard01/test_db.table_01', '{replica}')
+    PARTITION BY CounterID % 10
+    ORDER BY (CounterID, EventDate, intHash32(UserID))
+    SAMPLE BY intHash32(UserID);
+    INSERT INTO table_01 SELECT now(), number, rand() FROM system.numbers LIMIT 10;
+    """
+    When we create clickhouse01 clickhouse backup
+
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    schema_only: true
+    """
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+    
+    @require_version_24.8
+    Examples:
+    | zookeeper_path          |
+    |/databases/{uuid}/db_repl|
+    
+    @require_version_22.8
+    Examples:
+    | zookeeper_path          |
+    |/databases/replicated/db_repl|
+
   ## Note: Sometimes we can have active orphaned table in the zookeeper.
   ## Here we are imitating such situation by creating objects with static replica name.
   @require_version_23.3
