@@ -94,7 +94,7 @@ class MetadataCleaner:
 
                 # We are sure that we want to  drop the table from zk.
                 # To force it we will remove it active flag.
-                active_flag_path = os.path.join(full_table_zk_path, "active")
+                active_flag_path = os.path.join(full_table_zk_path, "is_active")
                 try:
                     zk_client.delete(active_flag_path)
                 except NoNodeError:
