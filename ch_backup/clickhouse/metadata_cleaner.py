@@ -77,7 +77,12 @@ class MetadataCleaner:
 
             with self._zk_ctl.zk_client as zk_client:
                 # Both paths are already abs.
-                full_table_zk_path = self._zk_ctl.zk_root_path + path_resolved
+                full_table_zk_path = (
+                    self._zk_ctl.zk_root_path  # type: ignore
+                    + path_resolved
+                    + "/replicas/"
+                    + self._replica_to_drop
+                )
 
                 if not zk_client.exists(full_table_zk_path):
                     logging.debug(
@@ -89,9 +94,7 @@ class MetadataCleaner:
 
                 # We are sure that we want to  drop the table from zk.
                 # To force it we will remove it active flag.
-                active_flag_path = os.path.join(
-                    full_table_zk_path, "replicas", self._replica_to_drop, "is_active"  # type: ignore
-                )
+                active_flag_path = os.path.join(full_table_zk_path, "is_active")
                 try:
                     zk_client.delete(active_flag_path)
                 except NoNodeError:
@@ -149,7 +152,12 @@ class MetadataCleaner:
 
             with self._zk_ctl.zk_client as zk_client:
                 # Both paths are already abs.
-                full_database_zk_path = self._zk_ctl.zk_root_path + path_resolved
+                full_database_zk_path = (
+                    self._zk_ctl.zk_root_path
+                    + path_resolved
+                    + "/replicas/"
+                    + full_replica_name
+                )
 
                 if not zk_client.exists(full_database_zk_path):
                     logging.debug(
@@ -159,9 +167,7 @@ class MetadataCleaner:
                     )
                     continue
 
-                active_flag_path = os.path.join(
-                    full_database_zk_path, "replicas", full_replica_name, "active"
-                )
+                active_flag_path = os.path.join(full_database_zk_path, "active")
                 try:
                     zk_client.delete(active_flag_path)
                 except NoNodeError:
