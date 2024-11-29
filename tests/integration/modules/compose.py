@@ -110,6 +110,7 @@ def _generate_service_config(
 
     volumes = [
         "../:/code:rw",
+        "../ch_backup:/var/tmp/ch-backup/ch_backup:rw",
     ]
     if os.path.exists(os.path.join(staging_dir, f"images/{instance_name}/config")):
         volumes.append(f"./images/{instance_name}/config:/config:rw")
