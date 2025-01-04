@@ -843,12 +843,14 @@ class TableBackup(BackupManager):
 
     @staticmethod
     def _restore_table_object(
-        context: BackupContext, db: Database, table: Table
+        context: BackupContext,
+        db: Database,
+        table: Table,
     ) -> None:
         try:
             if (
                 table.is_merge_tree()
-                or table.is_view()
+                or table.is_materialized_view()
                 or table.is_external_engine()
                 or table.is_distributed()
             ):
@@ -867,7 +869,7 @@ class TableBackup(BackupManager):
                 context.ch_ctl.create_table(table)
         except Exception as e:
             logging.debug(
-                f"Both table `{db.name}`.`{table.name}` restore methods failed. Removing it. Exception: {e}"
+                f"Failed to restore table `{db.name}`.`{table.name}`. Removing it. Exception: {e}"
             )
             if table.is_dictionary():
                 context.ch_ctl.drop_dictionary_if_exists(table)
