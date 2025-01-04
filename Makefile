@@ -52,7 +52,7 @@ build: install-deps ch_backup/version.txt
 all: build lint test-unit test-integration
 
 .PHONY: lint
-lint: install-deps isort black codespell ruff pylint mypy bandit
+lint: build isort black codespell ruff pylint mypy bandit
 
 .PHONY: isort
 isort: install-deps

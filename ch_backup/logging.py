@@ -113,7 +113,10 @@ def configure(config_loguru: dict) -> None:
             handler["filter"] = make_filter(name)
         loguru_handlers.append(handler)
 
-    logger.configure(handlers=loguru_handlers, activation=[("", True)])
+    logger.configure(
+        handlers=loguru_handlers,  # type: ignore
+        activation=[("", True)],
+    )
 
     # Configure logging.
     logging.basicConfig(handlers=[InterceptHandler()], level=0)
