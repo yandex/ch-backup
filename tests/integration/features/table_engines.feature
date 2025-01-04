@@ -178,6 +178,7 @@ Feature: Backup of tables with different engines and configurations
     And we got same clickhouse data at clickhouse01 clickhouse02
 
   @view
+  @require_version_23.3
   Scenario: Create backup containing views
     Given ClickHouse settings
     """
@@ -215,6 +216,10 @@ Feature: Backup of tables with different engines and configurations
     CREATE LIVE VIEW test_db.live_view
     AS SELECT n, n * n AS "n2"
     FROM test_db.table_01;
+
+    CREATE VIEW test_db.parametrized_view
+    AS WITH {a:UInt32} AS a, {b:UInt32} AS b
+    SELECT a + b
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01

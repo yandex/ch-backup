@@ -52,7 +52,7 @@ build: install-deps ch_backup/version.txt
 all: build lint test-unit test-integration
 
 .PHONY: lint
-lint: install-deps isort black codespell ruff pylint mypy bandit
+lint: build isort black codespell ruff pylint mypy bandit
 
 .PHONY: isort
 isort: install-deps
@@ -75,7 +75,7 @@ ruff: install-deps
 	${TEST_ENV} ruff check $(SRC_DIR) $(TESTS_DIR)
 
 .PHONY: pylint
-pylint: install-deps
+pylint: build
 	${TEST_ENV} pylint $(SRC_DIR)
 	${TEST_ENV} pylint --disable=missing-docstring,invalid-name $(TESTS_DIR)
 
