@@ -178,6 +178,7 @@ Feature: Backup of tables with different engines and configurations
     And we got same clickhouse data at clickhouse01 clickhouse02
 
   @view
+  @require_version_23.3
   Scenario: Create backup containing views
     Given ClickHouse settings
     """
