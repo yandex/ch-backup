@@ -75,7 +75,7 @@ ruff: install-deps
 	${TEST_ENV} ruff check $(SRC_DIR) $(TESTS_DIR)
 
 .PHONY: pylint
-pylint: install-deps
+pylint: build
 	${TEST_ENV} pylint $(SRC_DIR)
 	${TEST_ENV} pylint --disable=missing-docstring,invalid-name $(TESTS_DIR)
 
