@@ -4,6 +4,7 @@ select = ["E", "F", "W", "A"]
 ignore = [
     "A003",  # "Class attribute is shadowing a Python builtin"
     "E501",  # "Line too long"
+    "A005",  # "Module `logging` shadows a Python standard-library module"
 ]
 
 [lint.per-file-ignores]
