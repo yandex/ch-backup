@@ -991,7 +991,7 @@ class ClickhouseCTL:
 
         default_disk = self._disks.get("default")
 
-        if not default_disk is None:
+        if default_disk is not None:
             metadata_path = default_disk.path + metadata_path
 
         return metadata_path
