@@ -976,10 +976,25 @@ class ClickhouseCTL:
                 if "MergeTree" in record.get("engine", "")
                 else []
             ),
-            metadata_path=record.get("metadata_path", None),
+            metadata_path=self._get_metadata_path(record),
             create_statement=record["create_table_query"],
             uuid=record.get("uuid", None),
         )
+
+    def _get_metadata_path(self, record: dict) -> str:
+        metadata_path = record.get("metadata_path", None)
+        if metadata_path is None:
+            return metadata_path
+
+        if not self.ch_version_ge("25.1"):
+            return metadata_path
+
+        default_disk = self._disks.get("default")
+
+        if not default_disk is None:
+            metadata_path = default_disk.path + metadata_path
+
+        return metadata_path
 
     def read_s3_disk_revision(self, disk_name: str, backup_name: str) -> Optional[int]:
         """
