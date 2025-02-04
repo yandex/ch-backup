@@ -984,7 +984,7 @@ class ClickhouseCTL:
     def _get_metadata_path(self, record: dict) -> str:
         metadata_path = record.get("metadata_path", None)
         if metadata_path is None:
-            return metadata_path
+            return ""
 
         if not self.ch_version_ge("25.1"):
             return metadata_path
