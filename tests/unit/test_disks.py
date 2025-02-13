@@ -25,7 +25,7 @@ write_result = ""
                   <disks>
                     <object_storage>
                       <type>s3</type>
-                      <endpoint>https://s3.eu-central-1.amazonaws.com/double-cloud-storage-chc0001/cloud_storage/chc0001/s1/</endpoint>
+                      <endpoint>https://localhost/test-bucket/cluster1/shard1/</endpoint>
                       <access_key_id>AKIAACCESSKEY</access_key_id>
                       <secret_access_key>SecretAccesskey</secret_access_key>
                     </object_storage>
@@ -35,9 +35,9 @@ write_result = ""
               """,
             "disk_name": "object_storage",
             "source": {
-                "endpoint": "s3.us-west-1.amazonaws.com",
-                "bucket": "double-cloud-storage-chc0002",
-                "path": "cloud_storage/chc0002/s2/",
+                "endpoint": "localhost",
+                "bucket": "test-bucket",
+                "path": "cluster1/shard1/",
             },
             "temp_config": """
               <clickhouse>
@@ -45,7 +45,7 @@ write_result = ""
                   <disks>
                     <object_storage_source>
                       <type>s3</type>
-                      <endpoint>https://s3.us-west-1.amazonaws.com/double-cloud-storage-chc0002/cloud_storage/chc0002/s2/</endpoint>
+                      <endpoint>https://localhost/test-bucket/cluster1/shard1/</endpoint>
                       <access_key_id>AKIAACCESSKEY</access_key_id>
                       <secret_access_key>SecretAccesskey</secret_access_key>
                       <request_timeout_ms>3600000</request_timeout_ms>
@@ -70,7 +70,7 @@ write_result = ""
                   <disks>
                     <object_storage>
                       <type>s3</type>
-                      <endpoint>https://s3.eu-central-1.amazonaws.com/double-cloud-storage-chc0001/cloud_storage/chc0001/s1/</endpoint>
+                      <endpoint>https://localhost/test-bucket/cluster1/shard1/</endpoint>
                       <access_key_id>AKIAACCESSKEY</access_key_id>
                       <secret_access_key>SecretAccesskey</secret_access_key>
                       <request_timeout_ms>30000</request_timeout_ms>
@@ -81,9 +81,9 @@ write_result = ""
               """,
             "disk_name": "object_storage",
             "source": {
-                "endpoint": "s3.us-west-1.amazonaws.com",
-                "bucket": "double-cloud-storage-chc0002",
-                "path": "cloud_storage/chc0002/s2/",
+                "endpoint": "localhost",
+                "bucket": "test-bucket",
+                "path": "cluster1/shard1/",
             },
             "temp_config": """
               <clickhouse>
@@ -91,7 +91,7 @@ write_result = ""
                   <disks>
                     <object_storage_source>
                       <type>s3</type>
-                      <endpoint>https://s3.us-west-1.amazonaws.com/double-cloud-storage-chc0002/cloud_storage/chc0002/s2/</endpoint>
+                      <endpoint>https://localhost/test-bucket/cluster1/shard1/</endpoint>
                       <access_key_id>AKIAACCESSKEY</access_key_id>
                       <secret_access_key>SecretAccesskey</secret_access_key>
                       <request_timeout_ms>3600000</request_timeout_ms>
@@ -116,7 +116,7 @@ write_result = ""
                   <disks>
                     <object_storage>
                       <type>s3</type>
-                      <endpoint>https://s3.eu-central-1.amazonaws.com/double-cloud-storage-chc0001/cloud_storage/chc0001/s1/</endpoint>
+                      <endpoint>https://localhost/test-bucket/cluster1/shard1/</endpoint>
                       <access_key_id>AKIAACCESSKEY</access_key_id>
                       <secret_access_key>SecretAccesskey</secret_access_key>
                       <request_timeout_ms>7200000</request_timeout_ms>
@@ -127,9 +127,9 @@ write_result = ""
               """,
             "disk_name": "object_storage",
             "source": {
-                "endpoint": "s3.us-west-1.amazonaws.com",
-                "bucket": "double-cloud-storage-chc0002",
-                "path": "cloud_storage/chc0002/s2/",
+                "endpoint": "localhost",
+                "bucket": "test-bucket",
+                "path": "cluster1/shard1/",
             },
             "temp_config": """
               <clickhouse>
@@ -137,7 +137,7 @@ write_result = ""
                   <disks>
                     <object_storage_source>
                       <type>s3</type>
-                      <endpoint>https://s3.us-west-1.amazonaws.com/double-cloud-storage-chc0002/cloud_storage/chc0002/s2/</endpoint>
+                      <endpoint>https://localhost/test-bucket/cluster1/shard1/</endpoint>
                       <access_key_id>AKIAACCESSKEY</access_key_id>
                       <secret_access_key>SecretAccesskey</secret_access_key>
                       <request_timeout_ms>7200000</request_timeout_ms>
