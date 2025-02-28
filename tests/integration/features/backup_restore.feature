@@ -285,6 +285,15 @@ Feature: Backup & Restore
     """
     And we restore clickhouse backup #0 to clickhouse02
     Then clickhouse02 has same schema as clickhouse01
+    Given we have executed command on clickhouse02
+    """
+    rm /etc/clickhouse-server/conf.d/max_table_size_to_drop.xml
+    """
+    And we execute query on clickhouse02
+    """
+    SYSTEM RELOAD CONFIG
+    """
+
 
   Scenario: Perform retry restore when exist the table based on the table function.
     Given we execute query on clickhouse01
