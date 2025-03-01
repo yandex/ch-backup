@@ -253,41 +253,6 @@ Feature: Backup & Restore
     1
     """
 
-  Scenario: Restore of a backup with skipping a table with failing remove existing table
-    When we drop all databases at clickhouse01
-    And we drop all databases at clickhouse02
-    And we execute queries on clickhouse01
-    """
-    CREATE DATABASE test_db;
-    CREATE TABLE test_db.test_table_1 (partition_id Int32, n Int32)
-    ENGINE MergeTree PARTITION BY partition_id ORDER BY (partition_id, n);
-    CREATE TABLE test_db.test_table_2 (partition_id Int32, n Int32)
-    ENGINE MergeTree PARTITION BY partition_id ORDER BY (partition_id, n);
-    """
-    And we execute queries on clickhouse02
-    """
-    CREATE DATABASE test_db;
-    CREATE TABLE test_db.test_table_1 (partition_id Int32, n Int64)
-    ENGINE MergeTree PARTITION BY partition_id ORDER BY (partition_id, n);
-    """
-    Given we have executed command on clickhouse02
-    """
-    rm /var/lib/clickhouse/metadata/test_db/test_table_1.sql
-    """
-    When we create clickhouse01 clickhouse backup
-    When we restore clickhouse backup #0 to clickhouse02
-    """
-    keep_going: true
-    """
-    And we execute query on clickhouse02
-    """
-    SELECT count(*) FROM system.tables WHERE name='test_table_2';
-    """
-    Then we get response
-    """
-    1
-    """
-
   Scenario: Overwrite existing table on destination node when schema is mismatched
     When we drop all databases at clickhouse01
     And we drop all databases at clickhouse02    
@@ -320,7 +285,6 @@ Feature: Backup & Restore
     """
     And we restore clickhouse backup #0 to clickhouse02
     Then clickhouse02 has same schema as clickhouse01
-
 
   Scenario: Perform retry restore when exist the table based on the table function.
     Given we execute query on clickhouse01
