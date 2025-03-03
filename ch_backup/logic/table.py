@@ -322,7 +322,7 @@ class TableBackup(BackupManager):
             map(lambda meta: self._get_table_from_meta(context, meta), tables_meta)
         )
         tables_to_restore = self._preprocess_tables_to_restore(
-            context, databases, tables_to_restore
+            context, databases, tables_to_restore, keep_going
         )
 
         failed_tables = self._restore_tables(
@@ -535,6 +535,7 @@ class TableBackup(BackupManager):
         context: BackupContext,
         databases: Dict[str, Database],
         tables: List[Table],
+        keep_going: bool,
     ) -> List[Table]:
         # Prepare table schema to restore.
         for table in tables:
@@ -560,10 +561,18 @@ class TableBackup(BackupManager):
                     existing_table.create_statement,
                     table.create_statement,
                 )
-                if table.is_dictionary():
-                    context.ch_ctl.drop_dictionary_if_exists(table)
-                else:
-                    context.ch_ctl.drop_table_if_exists(table)
+                try:
+                    if table.is_dictionary():
+                        context.ch_ctl.drop_dictionary_if_exists(table)
+                    else:
+                        context.ch_ctl.drop_table_if_exists(table)
+                except Exception as e:
+                    if not keep_going:
+                        raise
+                    logging.exception(
+                        f"Drop of table {table.name} was failed, skipping due to --keep-going flag. Reason {e}"
+                    )
+                    continue
 
             result.append(table)
 
