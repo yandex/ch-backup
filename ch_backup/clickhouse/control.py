@@ -477,7 +477,7 @@ class ClickhouseCTL:
             table_name=escape(table.name),
             backup_name=backup_name,
         )
-        self._ch_client.query(query_sql, timeout=self._freeze_timeout)
+        self._ch_client.query(query_sql, timeout=self._freeze_timeout, retry=False)
 
     def system_unfreeze(self, backup_name: str) -> None:
         """
