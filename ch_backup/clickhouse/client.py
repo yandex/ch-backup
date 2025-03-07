@@ -16,6 +16,18 @@ class ClickhouseError(Exception):
     """
 
 
+class ClickhouseErrorNotRetriable(ClickhouseError):
+    """
+    ClickHouse interaction error.
+    """
+
+
+class ClickhouseErrorRetriable(ClickhouseError):
+    """
+    ClickHouse interaction error.
+    """
+
+
 class ClickhouseClient:
     """
     ClickHouse client.
@@ -37,7 +49,7 @@ class ClickhouseClient:
         """
         return self._session.params
 
-    @retry((requests.exceptions.ConnectionError, ClickhouseError))
+    @retry((requests.exceptions.ConnectionError, ClickhouseErrorRetriable))
     # pylint: disable=too-many-positional-arguments
     def query(
         self,
@@ -45,6 +57,7 @@ class ClickhouseClient:
         post_data: dict = None,
         settings: dict = None,
         timeout: float = None,
+        should_retry: bool = True,
     ) -> Any:
         """
         Execute query.
@@ -65,7 +78,9 @@ class ClickhouseClient:
 
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
-            raise ClickhouseError(e.response.text.strip()) from e
+            if should_retry:
+                raise ClickhouseErrorRetriable(e.response.text.strip()) from e
+            raise ClickhouseErrorNotRetriable(e.response.text.strip()) from e
 
         try:
             return response.json()
