@@ -57,7 +57,7 @@ class ClickhouseClient:
         post_data: dict = None,
         settings: dict = None,
         timeout: float = None,
-        retry: bool = True,
+        should_retry: bool = True,
     ) -> Any:
         """
         Execute query.
@@ -78,7 +78,7 @@ class ClickhouseClient:
 
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
-            if retry:
+            if should_retry:
                 raise ClickhouseErrorRetriable(e.response.text.strip()) from e
             raise ClickhouseErrorNotRetriable(e.response.text.strip()) from e
 
