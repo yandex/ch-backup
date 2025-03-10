@@ -81,7 +81,7 @@ pylint: build
 
 .PHONY: mypy
 mypy: install-deps
-	${TEST_ENV} mypy --install-types --non-interactive $(SRC_DIR) $(TESTS_DIR)
+	${TEST_ENV} mypy $(SRC_DIR) $(TESTS_DIR)
 
 .PHONY: bandit
 bandit: install-deps
