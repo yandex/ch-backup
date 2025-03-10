@@ -21,8 +21,6 @@ jobs:
       with:
         python-version: "3.10"
         cache: pip
-    - name: "Force insall setuptools"
-      run: python3 -m pip install types-setuptools
     - name: "lint: isort"
       run: make isort
     - name: "lint: black"
