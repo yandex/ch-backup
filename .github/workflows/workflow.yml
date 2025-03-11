@@ -21,10 +21,10 @@ jobs:
       with:
         python-version: "3.10"
         cache: pip
-    - name: "list"
-      run: python3 -m pip list 
     - name: "lint: isort"
       run: make isort
+    - name: "list"
+      run: python3 -m pip list 
     - name: "lint: black"
       run: make black
     - name: "lint: codespell"
@@ -33,6 +33,8 @@ jobs:
       run: make ruff
     - name: "lint: pylint"
       run: make pylint
+    - name: "lint: mypy"
+      run: make mypy
     - name: "lint: mypy"
       run: make mypy
     - name: "lint: bandit"
