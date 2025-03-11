@@ -287,7 +287,6 @@ Scenario: Inplace data restore on the another host.
     restore:
       use_inplace_cloud_restore: True
   """
-  
   And we have executed queries on clickhouse01
   """
   CREATE DATABASE IF NOT EXISTS test_db;
@@ -311,14 +310,14 @@ Scenario: Inplace data restore on the another host.
   """
   Then we got same clickhouse data at clickhouse01 clickhouse02
 
-Scenario: Inplace data restore on the same host.
-  Given ch-backup configuration on clickhouse02
+Scenario Outline: Inplace data restore on the same host with <name>
+  Given ch-backup configuration on <host>
   """
     restore:
       use_inplace_cloud_restore: True
   """
 
-  And we have executed queries on clickhouse02
+  And we have executed queries on <host>
   """
   CREATE DATABASE IF NOT EXISTS test_db;
 
@@ -334,16 +333,20 @@ Scenario: Inplace data restore on the same host.
   INSERT INTO test_db.table_02 SELECT number%30, number FROM system.numbers LIMIT 1000;
   """
 
-  When we save all user's data in context on clickhouse02
-  And we create clickhouse02 clickhouse backup
-  And we execute query on clickhouse02
+  When we save all user's data in context on <host>
+  And we create <host> clickhouse backup
+  And we execute query on <host>
   """
   DROP DATABASE test_db SYNC;
   """
 
-  When we restore clickhouse backup #0 to clickhouse02
+  When we restore clickhouse backup #0 to <host>
   """
   cloud_storage_source_bucket: 'cloud-storage-02'
   cloud_storage_source_path: 'data'
   """
-  Then the user's data equal to saved one on clickhouse02
+  Then the user's data equal to saved one on <host>
+  Examples:
+  | name                              | host          |
+  | virtual hosted s3 endpoint        | clickhouse01  |
+  | path style s3 endpoint            | clickhouse02  |

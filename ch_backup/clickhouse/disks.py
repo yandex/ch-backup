@@ -19,6 +19,7 @@ from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.models import Disk, Table
 from ch_backup.config import Config
+from ch_backup.util import is_equal_s3_endpoints
 
 
 class ClickHouseDisksException(RuntimeError):
@@ -152,7 +153,10 @@ class ClickHouseTemporaryDisks:
         orig_disk_enpoint = self._ch_config.config["storage_configuration"]["disks"][
             disk_name
         ]["endpoint"]
-        if self._use_local_copy and tmp_disk_enpoint != orig_disk_enpoint:
+
+        if self._use_local_copy and not is_equal_s3_endpoints(
+            tmp_disk_enpoint, orig_disk_enpoint
+        ):
             raise RuntimeError(
                 f"Endpoint of tmp object storage disk is not equal to original (original {orig_disk_enpoint}  tmp: {tmp_disk_enpoint})."
                 "It is required for inplace restore mode."
