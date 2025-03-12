@@ -11,6 +11,7 @@ from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.util import (
     compare_schema,
     get_table_zookeeper_paths,
+    is_equal_s3_endpoints,
     list_dir_files,
     replace_macros,
     retry,
@@ -277,3 +278,25 @@ def test_replace_macros():
     assert replace_macros("{a},{c}", {"a": "1", "b": "2"}) == "1,{c}"
     assert replace_macros(" } {a} { ", {"a": "1", "b": "2"}) == " } 1 { "
     assert replace_macros("", {"a": "1", "b": "2"}) == ""
+
+
+def test_compare_s3_endpoints():
+    endpoint_1 = "https://cloud-storage-qwerty1234.s3.yandexcloud.net/cloud_storage/qwerty1234/invalid-shard-1/"
+    endpoint_2 = "https://s3.yandexcloud.net/cloud-storage-qwerty1234/cloud_storage/qwerty1234/invalid-shard-1/"
+    assert is_equal_s3_endpoints(endpoint_1, endpoint_2)
+
+    endpoint_1 = "https://s3.yandexcloud.net/cloud-storage-qwerty1234/cloud_storage/qwerty1234/invalid-shard-1/"
+    endpoint_2 = "https://cloud-storage-qwerty1234.s3.yandexcloud.net/cloud_storage/qwerty1234/invalid-shard-1/"
+    assert is_equal_s3_endpoints(endpoint_1, endpoint_2)
+
+    endpoint_1 = "https://cloud-storage-qwerty1234.s3.yandexcloud.net/cloud_storage/qwerty1234/invalid-shard-1/"
+    endpoint_2 = "https://cloud-storage-qwerty1234.s3.yandexcloud.net/cloud_storage/qwerty1234/invalid-shard-1/"
+    assert is_equal_s3_endpoints(endpoint_1, endpoint_2)
+
+    endpoint_1 = "https://s3.yandexcloud.net/cloud-storage-qwerty1234/cloud_storage/qwerty1234/invalid-shard-1/"
+    endpoint_2 = "https://s3.yandexcloud.net/cloud-storage-qwerty1234/cloud_storage/qwerty1234/invalid-shard-1/"
+    assert is_equal_s3_endpoints(endpoint_1, endpoint_2)
+
+    endpoint_1 = "https://cloud-storage-1234QWERTYU.s3.yandexcloud.net/cloud_storage/qwerty1234/invalid-shard-1/"
+    endpoint_2 = "https://s3.yandexcloud.net/cloud-storage-qwerty1234/cloud_storage/qwerty1234/invalid-shard-1/"
+    assert not is_equal_s3_endpoints(endpoint_1, endpoint_2)

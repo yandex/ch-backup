@@ -486,3 +486,42 @@ def copy_directory_content(from_path_dir: str, to_path_dir: str) -> None:
         subpath_to = os.path.join(to_path_dir, subpath)
         if not os.path.exists(subpath_to):
             shutil.copy(subpath_from, to_path_dir)
+
+
+def s3_uri_from_path_style_to_virtual_hosted(s3_url: str) -> str:
+    """
+    Cast the s3 url from path-style to virtual-hosted-style.
+    """
+    s3_url_splitted = s3_url.split("/")
+    del s3_url_splitted[1]
+    return f"{s3_url_splitted[0]}//{s3_url_splitted[2]}.{s3_url_splitted[1]}/{'/'.join(s3_url_splitted[3:])}"
+
+
+def is_equal_s3_endpoints(first: str, second: str) -> bool:
+    """
+    Is two s3 endpoints are equal or not?
+
+    The problem is that s3 endpoints might be formed in two styles:
+        * path-style: https://<s3-provider>/<bucket>/<key>
+        * virtual-hosted-style: https://<bucket>.<s3-provider>/<key>
+    They are equivalent and describes the same object.
+    So when we are comparing two s3 endpoinds, we have to respect both them.
+
+    The functions are follows the assumptions:
+    1. If the number of '/' then paths in the same notaition or they are completely different.
+    So we can just compare them.
+    2. If the number of '/' is different then they probably be in the different notations.
+    Then the path with larger number '/' probably in the `path-style`, cast it to `virtual-hosted-style` one and compare.
+
+    The method looks pretty hacky, but i haven't found better one...
+    """
+
+    if first.count("/") == second.count("/"):
+        return first == second
+
+    if first.count("/") < second.count("/"):
+        first, second = second, first
+
+    if first.count("/") < 3:
+        return False
+    return s3_uri_from_path_style_to_virtual_hosted(first) == second
