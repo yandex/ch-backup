@@ -621,7 +621,7 @@ Feature: Backup replicated merge tree table
     And we restore clickhouse backup #0 to clickhouse01
     """
     override_replica_name: '{replica}'
-    clean_zookeeper: True
+    clean_zookeeper_mode: 'replica-only'
     replica_name: clickhouse01
     """
     When we restore clickhouse backup #0 to clickhouse02
