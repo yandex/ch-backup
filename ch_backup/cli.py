@@ -31,7 +31,7 @@ from ch_backup.exceptions import TerminatingSignal
 from . import logging
 from .backup.metadata import BackupState, TableMetadata
 from .backup.sources import BackupSources
-from .ch_backup import ClickhouseBackup
+from .ch_backup import CleanZooKeeperMode, ClickhouseBackup
 from .config import DEFAULT_CONFIG, Config
 from .params import JsonParamType, KeyValues, KeyValuesList, List, String, TimeSpan
 from .profile import profile
@@ -491,10 +491,10 @@ def backup_command(
 @option_group(
     "ZooKeeper",
     option(
-        "--clean-zookeeper/--no-clean-zookeeper",
-        is_flag=True,
-        default=True,
-        help="Remove zookeeper metadata for tables to restore",
+        "--clean-zookeeper-mode",
+        type=Choice(CleanZooKeeperMode),
+        default=CleanZooKeeperMode.REPLICA_ONLY,
+        help="Remove zookeeper metadata for tables to restore.",
     ),
 )
 @option_group(
@@ -551,7 +551,7 @@ def restore_command(
     cloud_storage_source_path: str = None,
     cloud_storage_source_endpoint: str = None,
     skip_cloud_storage: bool = False,
-    clean_zookeeper: bool = False,
+    clean_zookeeper_mode: CleanZooKeeperMode = CleanZooKeeperMode.REPLICA_ONLY,
     keep_going: bool = False,
     access: bool = False,
     data: bool = False,
@@ -590,7 +590,7 @@ def restore_command(
         cloud_storage_source_path=cloud_storage_source_path,
         cloud_storage_source_endpoint=cloud_storage_source_endpoint,
         skip_cloud_storage=skip_cloud_storage,
-        clean_zookeeper=clean_zookeeper,
+        clean_zookeeper_mode=clean_zookeeper_mode,
         keep_going=keep_going,
     )
 
