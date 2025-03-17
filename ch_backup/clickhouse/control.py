@@ -335,7 +335,7 @@ GET_UDF_QUERY_SQL = strip_query(
 
 GET_NAMED_COLLECTIONS_QUERY_SQL = strip_query(
     """
-    SELECT name FROM system.named_collections
+    SELECT name, collection FROM system.named_collections
     FORMAT JSON
 """
 )
@@ -905,12 +905,17 @@ class ClickhouseCTL:
         resp = self._ch_client.query(GET_UDF_QUERY_SQL)
         return {row["name"]: row["create_query"] for row in resp.get("data", [])}
 
-    def get_named_collections_query(self) -> List[str]:
+    def get_named_collections_query(self) -> Dict[str, str]:
         """
         Get named collections query from system table.
         """
         resp = self._ch_client.query(GET_NAMED_COLLECTIONS_QUERY_SQL)
-        return [row["name"] for row in resp.get("data", [])]
+        return {
+            row["name"]: self._create_named_collection_ddl_query(
+                row["name"], row["collection"]
+            )
+            for row in resp.get("data", [])
+        }
 
     def get_disk(self, disk_name: str) -> Disk:
         """
@@ -1104,6 +1109,12 @@ class ClickhouseCTL:
         finally:
             with suppress(FileNotFoundError):
                 flag_path.unlink()
+
+    @staticmethod
+    def _create_named_collection_ddl_query(name: str, collection: Dict) -> str:
+        return f"CREATE NAMED COLLECTION {name} AS " + ", ".join(
+            f"{key} = '{value}'" for key, value in collection.items()
+        )
 
 
 def _get_part_checksum(part_path: str) -> str:
