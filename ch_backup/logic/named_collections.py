@@ -29,10 +29,12 @@ class NamedCollectionsBackup(BackupManager):
         for nc_name in nc:
             context.backup_meta.add_named_collection(nc_name)
 
-        logging.debug("Performing named collections backup for: {}", " ,".join(nc))
-        for nc_name in nc:
+        logging.debug(
+            "Performing named collections backup for: {}", " ,".join(nc.keys())
+        )
+        for nc_name, nc_data in nc.items():
             context.backup_layout.upload_named_collections_create_statement(
-                context.backup_meta.name, nc_name
+                context.backup_meta.name, nc_name, nc_data
             )
 
     def restore(self, context: BackupContext) -> None:
