@@ -241,7 +241,7 @@ class BackupLayout:
             raise StorageError(msg) from e
         return True
 
-    def upload_named_collections_create_statement(
+    def upload_named_collections_ddl_from_file(
         self, backup_name: str, nc_name: str
     ) -> None:
         """
@@ -257,6 +257,24 @@ class BackupLayout:
             logging.debug('Uploading named collection create statement "{}"', nc_name)
             self._storage_loader.upload_file(
                 local_path, remote_path=remote_path, encryption=True
+            )
+        except Exception as e:
+            msg = f"Failed to create async upload of {remote_path}"
+            raise StorageError(msg) from e
+
+    def upload_named_collections_ddl_data(
+        self, backup_name: str, nc_name: str, nc_data: str
+    ) -> None:
+        """
+        Upload named collection create statement file.
+        """
+        remote_path = _named_collections_data_path(
+            self.get_backup_path(backup_name), nc_name
+        )
+        try:
+            logging.debug('Uploading named collection create statement "{}"', nc_name)
+            self._storage_loader.upload_data(
+                data=nc_data, remote_path=remote_path, encryption=True
             )
         except Exception as e:
             msg = f"Failed to create async upload of {remote_path}"
