@@ -19,7 +19,7 @@ from ch_backup.backup.metadata import TableMetadata
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.calculators import calc_aligned_files_size
 from ch_backup.clickhouse.client import ClickhouseClient
-from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
+from ch_backup.clickhouse.models import Database, Disk, EncryptedFile, FrozenPart, Table
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.util import (
     chown_dir_contents,
@@ -336,6 +336,13 @@ GET_UDF_QUERY_SQL = strip_query(
 GET_NAMED_COLLECTIONS_QUERY_SQL = strip_query(
     """
     SELECT name FROM system.named_collections
+    FORMAT JSON
+"""
+)
+
+DECRYPT_AES_128_CTR_QUERY_SQL = strip_query(
+    """
+    SELECT decrypt('aes-128-ctr', unhex('{data_hex}'), unhex('{key_hex}'), unhex('{iv_hex}')) AS data
     FORMAT JSON
 """
 )
@@ -911,6 +918,26 @@ class ClickhouseCTL:
         """
         resp = self._ch_client.query(GET_NAMED_COLLECTIONS_QUERY_SQL)
         return [row["name"] for row in resp.get("data", [])]
+
+    def decrypt_aes_128_ctr_encrypted_file(
+        self, encrypted_file: EncryptedFile, key_hex: str
+    ) -> str:
+        """
+        Decode aes_128_ctr encoded file.
+        """
+        resp = self._ch_client.query(
+            DECRYPT_AES_128_CTR_QUERY_SQL.format(
+                data_hex=encrypted_file.data_hex,
+                key_hex=key_hex,
+                iv_hex=encrypted_file.header.iv_hex,
+            )
+        )
+
+        first_row = resp.get("data")[0]
+
+        assert first_row, "could not decrypt data"
+
+        return first_row.get("data")
 
     def get_disk(self, disk_name: str) -> Disk:
         """

@@ -10,6 +10,10 @@ from typing import List, Optional, Tuple
 import ch_backup.logging
 from ch_backup.util import Slotted
 
+ENCRYPTED_FILE_HEADER_SIZE = 64
+ENCRYPTED_FILE_HEADER_IV_START = 23
+ENCRYPTED_FILE_HEADER_IV_END = 39
+
 
 class Disk(SimpleNamespace):
     """
@@ -275,3 +279,58 @@ class FrozenPart(Slotted):
         self.checksum = checksum
         self.size = size
         self.files = files
+
+
+class EncryptedFileHeader(SimpleNamespace):
+    """
+    Encrypted file header.
+
+    https://github.com/ClickHouse/ClickHouse/blob/v24.9.3.128-stable/src/IO/FileEncryptionCommon.h#L120
+    """
+
+    def __init__(self, encrypted_file: bytes):
+        if len(encrypted_file) < ENCRYPTED_FILE_HEADER_SIZE:
+            raise AssertionError("encrypted file should be at least 64 bytes")
+
+        self._iv = encrypted_file[
+            ENCRYPTED_FILE_HEADER_IV_START:ENCRYPTED_FILE_HEADER_IV_END
+        ]
+
+        assert self._iv, "could not set initial vector in encrypted file header"
+
+    @property
+    def iv_hex(self):
+        """
+        Encrypted file header initial vector.
+        """
+        return self._iv.hex()
+
+
+class EncryptedFile(SimpleNamespace):
+    """
+    Encrypted file.
+    """
+
+    def __init__(self, encrypted_file: bytes):
+        if len(encrypted_file) < ENCRYPTED_FILE_HEADER_SIZE:
+            raise AssertionError("encrypted file should be at least 64 bytes")
+
+        self._header = EncryptedFileHeader(encrypted_file)
+        self._data = encrypted_file[ENCRYPTED_FILE_HEADER_SIZE:]
+
+        assert self._header, "could not set header in encrypted file"
+        assert self._data, "could not set data in encrypted file"
+
+    @property
+    def header(self) -> EncryptedFileHeader:
+        """
+        Encrypted file header.
+        """
+        return self._header
+
+    @property
+    def data_hex(self) -> str:
+        """
+        Encrypted file data.
+        """
+        return self._data.hex()
