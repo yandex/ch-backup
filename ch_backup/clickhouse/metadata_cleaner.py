@@ -71,7 +71,7 @@ class MetadataCleaner:
             path_resolved = os.path.abspath(replace_macros(table_path, table_macros))
             full_table_name = f"{table.database}.{table.name}"
             replicas_to_drop = (
-                self._replica_to_drop
+                [self._replica_to_drop]
                 if self._replica_to_drop
                 else self._list_replicas(path_resolved)
             )

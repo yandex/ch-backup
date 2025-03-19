@@ -940,7 +940,7 @@ Feature: Backup replicated merge tree table
     schema_only: true
     """
 
-    Scenario Outline: Clean metadata modes
+  Scenario Outline: Clean metadata modes
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE test_db;
