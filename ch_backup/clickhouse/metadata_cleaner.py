@@ -70,17 +70,24 @@ class MetadataCleaner:
 
             path_resolved = os.path.abspath(replace_macros(table_path, table_macros))
             full_table_name = f"{table.database}.{table.name}"
-
-            logging.debug("Scheduling metadata cleanup for table {}", full_table_name)
-            tasks[full_table_name] = self._exec_pool.submit(
-                (
-                    self._clean_replica_only
-                    if self._replica_to_drop
-                    else self._clean_all_metadata
-                ),
-                full_table_name,
-                path_resolved,
+            replicas_to_drop = (
+                self._replica_to_drop
+                if self._replica_to_drop
+                else self._list_replicas(path_resolved)
             )
+
+            logging.debug(
+                "Scheduling metadata cleanup for table {}, replicas to clean: {}",
+                full_table_name,
+                replicas_to_drop,
+            )
+            for replica in replicas_to_drop:
+                tasks[full_table_name] = self._exec_pool.submit(
+                    self._clean_table_replica,
+                    full_table_name,
+                    path_resolved,
+                    replica,
+                )
 
         for full_table_name, future in tasks.items():
             try:
@@ -97,13 +104,15 @@ class MetadataCleaner:
                 else:
                     raise
 
-    def _clean_replica_only(self, full_table_name: str, path_resolved: str) -> None:
+    def _clean_table_replica(
+        self, full_table_name: str, path_resolved: str, replica: str
+    ) -> None:
         # Both paths are already abs.
         full_table_zk_path = (
             self._zk_ctl.zk_root_path  # type: ignore
             + path_resolved
             + "/replicas/"
-            + self._replica_to_drop
+            + replica
         )
 
         with self._zk_ctl.zk_client as zk_client:
@@ -123,25 +132,17 @@ class MetadataCleaner:
             except NoNodeError:
                 pass
 
-        self._ch_ctl.system_drop_replica(self._replica_to_drop, path_resolved)  # type: ignore
+        self._ch_ctl.system_drop_replica(replica, path_resolved)  # type: ignore
 
-    def _clean_all_metadata(self, full_table_name: str, path_resolved: str) -> None:
-        # Both paths are already abs.
-        full_table_zk_path = self._zk_ctl.zk_root_path + path_resolved  # type: ignore
-
+    def _list_replicas(self, zk_path: str) -> List[str]:
+        replicas_path = (
+            self._zk_ctl.zk_root_path + zk_path + "/replicas/"  # type: ignore
+        )
         with self._zk_ctl.zk_client as zk_client:
-            if not zk_client.exists(full_table_zk_path):
-                logging.debug(
-                    "There are no nodes for the replicated table {} with zk path {}",
-                    full_table_name,
-                    full_table_zk_path,
-                )
-                return
-
             try:
-                zk_client.delete(full_table_zk_path, recursive=True)
+                return zk_client.get_children(replicas_path)
             except NoNodeError:
-                pass
+                return []
 
     def clean_database_metadata(self, replicated_databases: List[Database]) -> None:
         """
