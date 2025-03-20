@@ -307,7 +307,7 @@ class BackupManager:
         schema_only: bool = False,
         override_replica_name: str = None,
         force_non_replicated: bool = False,
-        clean_zookeeper: bool = False,
+        clean_zookeeper_mode: str = None,
         replica_name: str = None,
         cloud_storage_source_bucket: str = None,
         cloud_storage_source_path: str = None,
@@ -329,8 +329,8 @@ class BackupManager:
             options.append(f"--override-replica-name {override_replica_name}")
         if force_non_replicated:
             options.append("--force-non-replicated")
-        if clean_zookeeper:
-            options.append("--clean-zookeeper")
+        if clean_zookeeper_mode:
+            options.append(f"--clean-zookeeper-mode {clean_zookeeper_mode}")
         if replica_name:
             options.append(f"--replica-name {replica_name}")
         if cloud_storage_source_bucket:

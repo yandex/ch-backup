@@ -39,24 +39,20 @@ def select_replica_drop(replica_name: Optional[str], macros: Dict) -> str:
 
 class MetadataCleaner:
     """
-    Class for cleaning up replica metadata from zookeeper.
+    Class for cleaning up table metadata from zookeeper.
     """
 
     def __init__(
         self,
         ch_ctl: ClickhouseCTL,
         zk_ctl: ZookeeperCTL,
-        replica_to_drop: str,
+        replica_to_drop: Optional[str],
         max_workers: int,
     ) -> None:
         self._ch_ctl = ch_ctl
         self._zk_ctl = zk_ctl
         self._macros = self._ch_ctl.get_macros()
-        self._replica_to_drop = replica_to_drop or self._macros.get("replica")
-        if not self._replica_to_drop:
-            raise ConfigurationError(
-                "Can't get the replica name. Please, specify it through macros or replica_name knob."
-            )
+        self._replica_to_drop = replica_to_drop
         self._exec_pool = ThreadPoolExecutor(max_workers)
 
     def clean_tables_metadata(self, replicated_tables: List[Table]) -> None:
@@ -74,42 +70,24 @@ class MetadataCleaner:
 
             path_resolved = os.path.abspath(replace_macros(table_path, table_macros))
             full_table_name = f"{table.database}.{table.name}"
-
-            with self._zk_ctl.zk_client as zk_client:
-                # Both paths are already abs.
-                full_table_zk_path = (
-                    self._zk_ctl.zk_root_path  # type: ignore
-                    + path_resolved
-                    + "/replicas/"
-                    + self._replica_to_drop
-                )
-
-                if not zk_client.exists(full_table_zk_path):
-                    logging.debug(
-                        "There are no nodes for the replicated table {} with zk path {}",
-                        full_table_name,
-                        full_table_zk_path,
-                    )
-                    continue
-
-                # We are sure that we want to  drop the table from zk.
-                # To force it we will remove it active flag.
-                active_flag_path = os.path.join(full_table_zk_path, "is_active")
-                try:
-                    zk_client.delete(active_flag_path)
-                except NoNodeError:
-                    pass
+            replicas_to_drop = (
+                [self._replica_to_drop]
+                if self._replica_to_drop
+                else self._list_replicas(path_resolved)
+            )
 
             logging.debug(
-                "Scheduling drop replica {} from table {} metadata from zookeeper {}.",
-                self._replica_to_drop,
+                "Scheduling metadata cleanup for table {}, replicas to clean: {}",
                 full_table_name,
-                path_resolved,
+                replicas_to_drop,
             )
-            future = self._exec_pool.submit(
-                self._ch_ctl.system_drop_replica, self._replica_to_drop, path_resolved  # type: ignore
-            )
-            tasks[full_table_name] = future
+            for replica in replicas_to_drop:
+                tasks[full_table_name] = self._exec_pool.submit(
+                    self._clean_table_replica,
+                    full_table_name,
+                    path_resolved,
+                    replica,
+                )
 
         for full_table_name, future in tasks.items():
             try:
@@ -125,6 +103,46 @@ class MetadataCleaner:
                     )
                 else:
                     raise
+
+    def _clean_table_replica(
+        self, full_table_name: str, path_resolved: str, replica: str
+    ) -> None:
+        # Both paths are already abs.
+        full_table_zk_path = (
+            self._zk_ctl.zk_root_path  # type: ignore
+            + path_resolved
+            + "/replicas/"
+            + replica
+        )
+
+        with self._zk_ctl.zk_client as zk_client:
+            if not zk_client.exists(full_table_zk_path):
+                logging.debug(
+                    "There are no nodes for the replicated table {} with zk path {}",
+                    full_table_name,
+                    full_table_zk_path,
+                )
+                return
+
+            # We are sure that we want to  drop the table from zk.
+            # To force it we will remove it active flag.
+            active_flag_path = os.path.join(full_table_zk_path, "is_active")
+            try:
+                zk_client.delete(active_flag_path)
+            except NoNodeError:
+                pass
+
+        self._ch_ctl.system_drop_replica(replica, path_resolved)  # type: ignore
+
+    def _list_replicas(self, zk_path: str) -> List[str]:
+        replicas_path = (
+            self._zk_ctl.zk_root_path + zk_path + "/replicas/"  # type: ignore
+        )
+        with self._zk_ctl.zk_client as zk_client:
+            try:
+                return zk_client.get_children(replicas_path)
+            except NoNodeError:
+                return []
 
     def clean_database_metadata(self, replicated_databases: List[Database]) -> None:
         """

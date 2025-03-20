@@ -621,7 +621,7 @@ Feature: Backup replicated merge tree table
     And we restore clickhouse backup #0 to clickhouse01
     """
     override_replica_name: '{replica}'
-    clean_zookeeper: True
+    clean_zookeeper_mode: 'replica-only'
     replica_name: clickhouse01
     """
     When we restore clickhouse backup #0 to clickhouse02
@@ -939,3 +939,45 @@ Feature: Backup replicated merge tree table
     replica_name: replica
     schema_only: true
     """
+
+  Scenario Outline: Clean metadata modes
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (id UInt32)
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard1/test_db.table_01', 'r1')
+    ORDER BY id;
+
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10;
+
+    CREATE TABLE test_db.table_02 (id UInt32)
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard1/test_db.table_01', 'r2')
+    ORDER BY id;
+    """
+    When we create clickhouse01 clickhouse backup
+    """
+    tables:
+      - test_db.table_01
+    """
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 1          | 0          |
+    When we dirty remove clickhouse data at clickhouse01
+    And we restore clickhouse backup #0 to clickhouse01
+    """
+    override_replica_name: 'r1'
+    clean_zookeeper_mode: '<clean_zookeeper_mode>'
+    replica_name: 'r1'
+    """
+    And we execute ZK list query on zookeeper01
+    """
+    /clickhouse01/clickhouse/tables/shard1/test_db.table_01/replicas
+    """
+    Then we get ZK list with len <len>
+    When we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
+    Examples:
+      | clean_zookeeper_mode | len |
+      | replica-only         |  2  |
+      | all-replicas         |  1  |

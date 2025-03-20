@@ -5,6 +5,7 @@ Clickhouse backup logic
 from collections import defaultdict
 from copy import copy
 from datetime import timedelta
+from enum import Enum
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from ch_backup import logging
@@ -32,6 +33,16 @@ from ch_backup.logic.udf import UDFBackup
 from ch_backup.storage.async_pipeline.stages import EncryptStage
 from ch_backup.util import cached_property, now, utcnow
 from ch_backup.version import get_version
+
+
+class CleanZooKeeperMode(str, Enum):
+    """
+    What to clean in ZooKeeper
+    """
+
+    DISABLED = "disabled"
+    REPLICA_ONLY = "replica-only"
+    ALL_REPLICAS = "all-replicas"
 
 
 # pylint: disable=too-many-instance-attributes
@@ -225,7 +236,7 @@ class ClickhouseBackup:
         cloud_storage_source_path: str = None,
         cloud_storage_source_endpoint: str = None,
         skip_cloud_storage: bool = False,
-        clean_zookeeper: bool = False,
+        clean_zookeeper_mode: CleanZooKeeperMode = CleanZooKeeperMode.DISABLED,
         keep_going: bool = False,
     ) -> None:
         """
@@ -300,7 +311,7 @@ class ClickhouseBackup:
                 cloud_storage_source_path=cloud_storage_source_path,
                 cloud_storage_source_endpoint=cloud_storage_source_endpoint,
                 skip_cloud_storage=skip_cloud_storage,
-                clean_zookeeper=clean_zookeeper,
+                clean_zookeeper_mode=clean_zookeeper_mode,
                 keep_going=keep_going,
             )
 
@@ -492,7 +503,7 @@ class ClickhouseBackup:
         cloud_storage_source_path: Optional[str] = None,
         cloud_storage_source_endpoint: Optional[str] = None,
         skip_cloud_storage: bool = False,
-        clean_zookeeper: bool = False,
+        clean_zookeeper_mode: CleanZooKeeperMode = CleanZooKeeperMode.DISABLED,
         keep_going: bool = False,
     ) -> None:
         if sources.access:
@@ -521,12 +532,19 @@ class ClickhouseBackup:
 
             metadata_cleaner: Optional[MetadataCleaner] = None
 
-            if clean_zookeeper and len(self._context.zk_config.get("hosts")) > 0:
+            if (
+                clean_zookeeper_mode != CleanZooKeeperMode.DISABLED
+                and len(self._context.zk_config.get("hosts")) > 0
+            ):
                 metadata_cleaner = MetadataCleaner(
                     self._context.ch_ctl,
                     self._context.zk_ctl,
-                    select_replica_drop(
-                        replica_name, self._context.ch_ctl.get_macros()
+                    (
+                        select_replica_drop(
+                            replica_name, self._context.ch_ctl.get_macros()
+                        )
+                        if clean_zookeeper_mode == CleanZooKeeperMode.REPLICA_ONLY
+                        else None
                     ),
                     self._config["multiprocessing"]["drop_replica_threads"],
                 )
