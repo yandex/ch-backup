@@ -52,6 +52,24 @@ GET_TABLES_SQL = strip_query(
     FROM system.tables
     WHERE ({db_condition})
       AND ({tables_condition})
+      AND engine != 'StorageProxy'
+
+    UNION ALL
+
+    SELECT
+        database,
+        name,
+        engine,
+        engine_full,
+        create_table_query,
+        [],
+        metadata_path,
+        uuid
+    FROM system.tables
+    WHERE ({db_condition})
+      AND ({tables_condition})
+      AND engine == 'StorageProxy'
+
     ORDER BY metadata_modification_time
     FORMAT JSON
 """
