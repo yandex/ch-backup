@@ -1,0 +1,7 @@
+<yandex>
+    <named_collections_storage>
+        <type>zookeeper</type>
+        <path>/named_collections/</path>
+        <update_timeout_ms>1000</update_timeout_ms>
+    </named_collections_storage>
+</yandex>

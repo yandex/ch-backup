@@ -19,7 +19,7 @@ from ch_backup.backup.metadata import TableMetadata
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.calculators import calc_aligned_files_size
 from ch_backup.clickhouse.client import ClickhouseClient
-from ch_backup.clickhouse.models import Database, Disk, EncryptedFile, FrozenPart, Table
+from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.util import (
     chown_dir_contents,
@@ -340,9 +340,9 @@ GET_NAMED_COLLECTIONS_QUERY_SQL = strip_query(
 """
 )
 
-DECRYPT_AES_128_CTR_QUERY_SQL = strip_query(
+DECRYPT_AES_CTR_QUERY_SQL = strip_query(
     """
-    SELECT decrypt('aes-128-ctr', unhex('{data_hex}'), unhex('{key_hex}'), unhex('{iv_hex}')) AS data
+    SELECT decrypt('aes-{key_size}-ctr', unhex('{data_hex}'), unhex('{key_hex}'), unhex('{iv_hex}')) AS data
     FORMAT JSON
 """
 )
@@ -919,17 +919,23 @@ class ClickhouseCTL:
         resp = self._ch_client.query(GET_NAMED_COLLECTIONS_QUERY_SQL)
         return [row["name"] for row in resp.get("data", [])]
 
-    def decrypt_aes_128_ctr_encrypted_file(
-        self, encrypted_file: EncryptedFile, key_hex: str
+    def decrypt_aes_ctr(
+        self, data_hex: str, key_hex: str, key_size: int, iv_hex: str
     ) -> str:
         """
-        Decode aes_128_ctr encoded file.
+        Decode data with aes ctr algorithm.
+
+        Provided :key_size: should be one of:
+            - 128
+            - 192
+            - 256
         """
         resp = self._ch_client.query(
-            DECRYPT_AES_128_CTR_QUERY_SQL.format(
-                data_hex=encrypted_file.data_hex,
+            DECRYPT_AES_CTR_QUERY_SQL.format(
+                key_size=key_size,
+                data_hex=data_hex,
                 key_hex=key_hex,
-                iv_hex=encrypted_file.header.iv_hex,
+                iv_hex=iv_hex,
             )
         )
 

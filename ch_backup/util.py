@@ -10,6 +10,7 @@ import pwd
 import re
 import shutil
 import time
+from contextlib import contextmanager
 from dataclasses import fields as data_fields
 from datetime import datetime, timedelta, timezone
 from functools import partial
@@ -17,7 +18,9 @@ from inspect import currentframe
 from itertools import islice
 from pathlib import Path
 from string import ascii_letters, digits
+from tempfile import mkdtemp
 from typing import (
+    Any,
     BinaryIO,
     Callable,
     Iterable,
@@ -525,3 +528,22 @@ def is_equal_s3_endpoints(first: str, second: str) -> bool:
     if first.count("/") < 3:
         return False
     return s3_uri_from_path_style_to_virtual_hosted(first) == second
+
+
+@contextmanager
+def temp_directory(directory_path: str, backup_name: str) -> Any:
+    """
+    Class to automatically create and remove temporary directory.
+    """
+    _prefix = backup_name + "_tmp_"
+    tmpdir = mkdtemp(prefix=_prefix, dir=directory_path)
+    yield tmpdir
+    shutil.rmtree(tmpdir)
+
+
+def ensure_owned_directory(path: str, user: str, group: str) -> None:
+    """
+    Create directory if not exists and set ownership.
+    """
+    os.makedirs(path, exist_ok=True)
+    shutil.chown(path, user, group)

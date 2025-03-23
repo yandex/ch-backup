@@ -1,0 +1,8 @@
+<yandex>
+    <named_collections_storage>
+        <type>local_encrypted</type>
+        <key_hex>bebec0cabebec0cabebec0cabebec0ca</key_hex>
+        <algorithm>aes_128_ctr</algorithm>
+        <path>/var/lib/clickhouse/named_collections_test</path>
+    </named_collections_storage>
+</yandex>

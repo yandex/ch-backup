@@ -5,8 +5,6 @@ Clickhouse backup logic for access entities.
 import os
 import re
 import shutil
-from contextlib import contextmanager
-from tempfile import TemporaryDirectory, mkdtemp
 from typing import Any, Dict, List, Sequence, Union
 
 from kazoo.client import KazooClient
@@ -19,29 +17,12 @@ from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.util import (
     chown_dir_contents,
     copy_directory_content,
+    ensure_owned_directory,
     escape_metadata_file_name,
+    temp_directory,
 )
 
 CH_MARK_FILE = "need_rebuild_lists.mark"
-
-
-@contextmanager
-def access_control_temp_directory(
-    directory_path: str, backup_name: str, keep_on_exception: bool = False
-) -> Any:
-    """
-    Class to automatically create and remove temporary directory.
-
-    If keep flag is set, then in case of exception, do not remove the folder.
-    """
-    _prefix = backup_name + "_tmp_"
-    if keep_on_exception:
-        tmpdir = mkdtemp(prefix=_prefix, dir=directory_path)
-        yield tmpdir
-        shutil.rmtree(tmpdir)
-    else:
-        with TemporaryDirectory(prefix=_prefix, dir=directory_path) as tmpdir:
-            yield tmpdir
 
 
 class AccessBackup(BackupManager):
@@ -58,13 +39,12 @@ class AccessBackup(BackupManager):
         user = context.ch_ctl_conf["user"]
         group = context.ch_ctl_conf["group"]
 
-        self._prepare_folder(clickhouse_access_path, user, group)
-        self._prepare_folder(context.ch_ctl_conf["tmp_path"], user, group, False)
+        ensure_owned_directory(clickhouse_access_path, user, group)
+        ensure_owned_directory(context.ch_ctl_conf["tmp_path"], user, group)
 
-        with access_control_temp_directory(
+        with temp_directory(
             context.ch_ctl_conf["tmp_path"],
             context.backup_meta.name,
-            keep_on_exception=True,
         ) as backup_tmp_path:
             objects = context.ch_ctl.get_access_control_objects()
             context.backup_meta.set_access_control(objects)
@@ -106,13 +86,15 @@ class AccessBackup(BackupManager):
         user = context.ch_ctl_conf["user"]
         group = context.ch_ctl_conf["group"]
 
-        self._prepare_folder(clickhouse_access_path, user, group, True)
-        self._prepare_folder(context.ch_ctl_conf["tmp_path"], user, group, False)
+        if os.path.exists(clickhouse_access_path):
+            shutil.rmtree(clickhouse_access_path)
 
-        with access_control_temp_directory(
+        ensure_owned_directory(clickhouse_access_path, user, group)
+        ensure_owned_directory(context.ch_ctl_conf["tmp_path"], user, group)
+
+        with temp_directory(
             context.ch_ctl_conf["tmp_path"],
             context.backup_meta.name,
-            keep_on_exception=True,
         ) as restore_tmp_path:
 
             self._download_access_control_list(context, restore_tmp_path, acl_ids)
@@ -192,15 +174,6 @@ class AccessBackup(BackupManager):
                         os.remove(file_path)
                 except FileNotFoundError:
                     logging.debug(f"File {file_path} not found.")
-
-    def _prepare_folder(
-        self, path: str, user: str, group: str, cleanup: bool = False
-    ) -> None:
-        if cleanup and os.path.exists(path):
-            shutil.rmtree(path)
-
-        os.makedirs(path, exist_ok=True)
-        shutil.chown(path, user, group)
 
     def _download_access_control_list(
         self, context: BackupContext, restore_tmp_path: str, acl_ids: List[str]
