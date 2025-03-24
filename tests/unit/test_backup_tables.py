@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import List
 from unittest.mock import Mock, patch
 
@@ -12,12 +13,52 @@ from ch_backup.logic.table import TableBackup
 UUID = "fa8ff291-1922-4b7f-afa7-06633d5e16ae"
 
 
+@dataclass
+class FakeStatResult:
+    st_mtime_ns: int
+    st_ctime_ns: int
+
+
 @pytest.mark.parametrize(
-    "mtime, backups_expected",
-    [([1689000195.8, 1689000195.8], 1), ([1689000195.8, 1689000200.1], 0)],
+    "fake_stats, backups_expected",
+    [
+        (
+            [
+                FakeStatResult(
+                    st_mtime_ns=16890001958000000, st_ctime_ns=16890001958000000
+                ),
+                FakeStatResult(
+                    st_mtime_ns=16890001958000000, st_ctime_ns=16890001958000000
+                ),
+            ],
+            1,
+        ),
+        (
+            [
+                FakeStatResult(
+                    st_mtime_ns=16890001958000000, st_ctime_ns=16890001958000000
+                ),
+                FakeStatResult(
+                    st_mtime_ns=16890001958000111, st_ctime_ns=16890001958000000
+                ),
+            ],
+            0,
+        ),
+        (
+            [
+                FakeStatResult(
+                    st_mtime_ns=16890001958000000, st_ctime_ns=16890001958000000
+                ),
+                FakeStatResult(
+                    st_mtime_ns=16890001958000000, st_ctime_ns=16890001958000111
+                ),
+            ],
+            0,
+        ),
+    ],
 )
 def test_backup_table_skipping_if_metadata_updated_during_backup(
-    mtime: List[float], backups_expected: int
+    fake_stats: List[FakeStatResult], backups_expected: int
 ) -> None:
     table_name = "table1"
     db_name = "db1"
@@ -65,7 +106,7 @@ def test_backup_table_skipping_if_metadata_updated_during_backup(
     read_bytes_mock = Mock(return_value=creation_statement.encode())
 
     # Backup table
-    with patch("os.path.getmtime", side_effect=mtime), patch(
+    with patch("os.stat", side_effect=fake_stats), patch(
         "ch_backup.logic.table.Path", read_bytes=read_bytes_mock
     ):
         table_backup.backup(
