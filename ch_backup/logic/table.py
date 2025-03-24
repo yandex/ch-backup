@@ -32,13 +32,14 @@ from ch_backup.util import compare_schema
 
 
 @dataclass
-class TableMetadataMtime:
+class TableMetadataChangeTime:
     """
-    Class contains timestamp of table metadata last modification.
+    Class contains timestamps of table metadata last modification.
     """
 
     metadata_path: str
-    mtime: float
+    mtime_ns: int  # Time of most recent content modification expressed in nanoseconds.
+    ctime_ns: int  # Time of most recent filesystem metadata(hardlinks) change expressed in nanoseconds.
 
 
 class TableBackup(BackupManager):
@@ -78,9 +79,9 @@ class TableBackup(BackupManager):
                 freeze_threads,
             )
 
-    def _collect_local_metadata_mtime(
+    def _collect_local_metadata_change_times(
         self, context: BackupContext, db: Database, tables: Sequence[str]
-    ) -> Dict[str, TableMetadataMtime]:
+    ) -> Dict[str, TableMetadataChangeTime]:
         """
         Collect modification timestamps of table metadata files.
         """
@@ -88,18 +89,16 @@ class TableBackup(BackupManager):
         res = {}
 
         for table in context.ch_ctl.get_tables(db.name, tables):
-            mtime = self._get_mtime(table.metadata_path)
-            if mtime is None:
+            change_time = self._get_change_time(table.metadata_path)
+            if change_time is None:
                 logging.warning(
-                    'Cannot get metadata mtime for table "{}"."{}". Skipping it',
+                    'Cannot get metadata change time for table "{}"."{}". Skipping it',
                     table.database,
                     table.name,
                 )
                 continue
 
-            res[table.name] = TableMetadataMtime(
-                metadata_path=table.metadata_path, mtime=mtime
-            )
+            res[table.name] = change_time
 
         return res
 
@@ -121,10 +120,12 @@ class TableBackup(BackupManager):
             # control of backup creation.
             # To ensure consistency between metadata and data backups.
             # See https://en.wikipedia.org/wiki/Optimistic_concurrency_control
-            mtimes = self._collect_local_metadata_mtime(context, db, tables)
+            change_times = self._collect_local_metadata_change_times(
+                context, db, tables
+            )
             tables_ = list(
                 filter(
-                    lambda table: table.name in mtimes,
+                    lambda table: table.name in change_times,
                     context.ch_ctl.get_tables(db.name, tables),
                 )
             )
@@ -155,7 +156,7 @@ class TableBackup(BackupManager):
                             table,
                             backup_name,
                             schema_only,
-                            mtimes,
+                            change_times,
                             create_statement,
                         )
                         self._backup_cloud_storage_metadata(context, table)
@@ -376,12 +377,12 @@ class TableBackup(BackupManager):
         table: Table,
         backup_name: str,
         schema_only: bool,
-        mtimes: Dict[str, TableMetadataMtime],
+        change_times: Dict[str, TableMetadataChangeTime],
         create_statement: bytes,
     ) -> None:
         # Check if table metadata was updated
-        new_mtime = self._get_mtime(table.metadata_path)
-        if new_mtime is None or mtimes[table.name].mtime != new_mtime:
+        new_change_time = self._get_change_time(table.metadata_path)
+        if new_change_time is None or change_times[table.name] != new_change_time:
             logging.warning(
                 'Skipping table backup for "{}"."{}". The metadata file was updated or removed during backup',
                 table.database,
@@ -520,14 +521,19 @@ class TableBackup(BackupManager):
                 )
 
     @staticmethod
-    def _get_mtime(file_name: str) -> Optional[float]:
+    def _get_change_time(file_name: str) -> Optional[TableMetadataChangeTime]:
         """
-        Fetch last modification time of the file safely.
+        Fetch change time of the table metadata file safely.
         """
         try:
-            return os.path.getmtime(file_name)
+            stat = os.stat(file_name)
+            return TableMetadataChangeTime(
+                metadata_path=file_name,
+                mtime_ns=stat.st_mtime_ns,
+                ctime_ns=stat.st_ctime_ns,
+            )
         except OSError as e:
-            logging.debug(f"Failed to get mtime of {file_name}: {str(e)}")
+            logging.debug(f"Failed to get stat of {file_name}: {str(e)}")
             return None
 
     def _preprocess_tables_to_restore(
