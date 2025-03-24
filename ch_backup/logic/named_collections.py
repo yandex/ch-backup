@@ -149,8 +149,8 @@ class NamedCollectionsBackup(BackupManager):
         """
         Copy all files from zookeeper directory to destination.
         """
-        if to_path_dir[-1] != "/":
-            to_path_dir += "/"
+        if posixpath.isabs(from_path_dir):
+            from_path_dir = from_path_dir[1:]
 
         with zk_ctl.zk_client as client:
             target_dir = posixpath.normpath(
@@ -159,7 +159,7 @@ class NamedCollectionsBackup(BackupManager):
             children_names = client.get_children(path=target_dir)
 
             for child_name in children_names:
-                subpath_from = posixpath.join(target_dir / child_name)
+                subpath_from = posixpath.join(target_dir, child_name)
                 child_data, _ = client.get(subpath_from)
                 subpath_to = os.path.join(to_path_dir, child_name)
                 if not os.path.exists(subpath_to):
