@@ -102,9 +102,9 @@ class MetadataCleaner:
                         pass
 
                     logging.debug(
-                        "Scheduling metadata cleanup for table {}, replicas to clean: {}",
+                        "Scheduling metadata cleanup for table {}, replica to clean: {}",
                         full_table_name,
-                        replicas_to_drop,
+                        replica,
                     )
                     tasks[full_table_name] = self._exec_pool.submit(
                         self._ch_ctl.system_drop_replica,
