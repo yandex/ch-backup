@@ -84,6 +84,7 @@ RUN openssl genrsa -out ${CH_TMP_DIR}/ssl/server.key 2048 && \
     mkdir -p /etc/clickhouse-server/conf.d/ && \
     ln -s /config/clickhouse-server.xml /etc/clickhouse-server/conf.d/ && \
     ln -s /config/storage_configuration.xml /etc/clickhouse-server/conf.d/ && \
+    ln -s /config/named_collections/no_storage.xml /etc/clickhouse-server/conf.d/ && \
     mkdir -p /etc/clickhouse-server/users.d/ && \
     ln -s /config/users.xml /etc/clickhouse-server/users.d/ && \
     chown -R clickhouse:clickhouse /hdd1/ /hdd2/ /etc/clickhouse-server/ /usr/bin/clickhouse

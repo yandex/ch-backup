@@ -340,6 +340,13 @@ GET_NAMED_COLLECTIONS_QUERY_SQL = strip_query(
 """
 )
 
+DECRYPT_AES_CTR_QUERY_SQL = strip_query(
+    """
+    SELECT decrypt('aes-{key_size}-ctr', unhex('{data_hex}'), unhex('{key_hex}'), unhex('{iv_hex}')) AS data
+    FORMAT JSON
+"""
+)
+
 RELOAD_CONFIG_SQL = strip_query(
     """
     SYSTEM RELOAD CONFIG
@@ -911,6 +918,32 @@ class ClickhouseCTL:
         """
         resp = self._ch_client.query(GET_NAMED_COLLECTIONS_QUERY_SQL)
         return [row["name"] for row in resp.get("data", [])]
+
+    def decrypt_aes_ctr(
+        self, data_hex: str, key_hex: str, key_size: int, iv_hex: str
+    ) -> str:
+        """
+        Decode data with aes ctr algorithm.
+
+        Provided :key_size: should be one of:
+            - 128
+            - 192
+            - 256
+        """
+        resp = self._ch_client.query(
+            DECRYPT_AES_CTR_QUERY_SQL.format(
+                key_size=key_size,
+                data_hex=data_hex,
+                key_hex=key_hex,
+                iv_hex=iv_hex,
+            )
+        )
+
+        first_row = resp.get("data")[0]
+
+        assert first_row, "could not decrypt data"
+
+        return first_row.get("data")
 
     def get_disk(self, disk_name: str) -> Disk:
         """

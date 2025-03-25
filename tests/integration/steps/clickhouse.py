@@ -258,6 +258,33 @@ def step_dirty_enable_replicated_access(context, node):
     assert container.exec_run("rm -rf /var/lib/clickhouse/access").exit_code == 0
 
 
+@given(
+    "we replace config file {config_to_replace} in favor of {new_config} on {node:w} with restart"
+)
+@when(
+    "we replace config file {config_to_replace} in favor of {new_config} on {node:w} with restart"
+)
+def step_replace_config_file(context, config_to_replace, new_config, node):
+    """
+    Replace a part of CH config on the fly.
+    """
+    container = get_container(context, node)
+
+    assert (
+        container.exec_run(
+            f"rm -rf /etc/clickhouse-server/conf.d/{config_to_replace}"
+        ).exit_code
+        == 0
+    )
+    assert (
+        container.exec_run(
+            f"ln -s /config/{new_config} /etc/clickhouse-server/conf.d/"
+        ).exit_code
+        == 0
+    )
+    assert container.exec_run("supervisorctl restart clickhouse").exit_code == 0
+
+
 @when("we stop clickhouse at {node:w}")
 def step_stop_clickhouse(context, node):
     container = get_container(context, node)

@@ -241,15 +241,12 @@ class BackupLayout:
             raise StorageError(msg) from e
         return True
 
-    def upload_named_collections_create_statement(
-        self, backup_name: str, nc_name: str
+    def upload_named_collections_ddl_from_file(
+        self, local_path: str, backup_name: str, nc_name: str
     ) -> None:
         """
         Upload named collection create statement file.
         """
-        local_path = os.path.join(
-            self._named_collections_path, f"{escape_metadata_file_name(nc_name)}.sql"
-        )
         remote_path = _named_collections_data_path(
             self.get_backup_path(backup_name), nc_name
         )

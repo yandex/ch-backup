@@ -1,0 +1,6 @@
+<yandex>
+    <named_collections_storage>
+        <type>local</type>
+        <path>/var/lib/clickhouse/named_collections_test</path>
+    </named_collections_storage>
+</yandex>
