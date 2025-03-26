@@ -983,10 +983,15 @@ Feature: Backup replicated merge tree table
       | all-replicas         |  1  |
 
   Scenario Outline: Clean metadata modes for replicated database
-    Given we have executed queries on clickhouse01
+    Given ClickHouse settings
+    """
+      allow_experimental_database_replicated: 1
+    """
+    And we have executed queries on clickhouse01
     """
     CREATE DATABASE test_db1 ENGINE Replicated('/clickhouse/databases/testdb', '{shard}', 'r1');
     CREATE DATABASE test_db2 ENGINE Replicated('/clickhouse/databases/testdb', '{shard}', 'r2');
+    """
     """
     When we create clickhouse01 clickhouse backup
     """
