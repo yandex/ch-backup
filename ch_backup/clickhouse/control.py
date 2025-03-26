@@ -93,7 +93,7 @@ GET_TABLES_SQL_23_8 = strip_query(
     WHERE ({db_condition})
       AND ({tables_condition})
       AND name
-        NOT IN (SELECT name FROM system.tables 
+        NOT IN (SELECT name FROM system.tables
             WHERE ({db_condition}) AND engine = 'StorageProxy')
 
     UNION ALL
