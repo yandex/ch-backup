@@ -992,7 +992,6 @@ Feature: Backup replicated merge tree table
     CREATE DATABASE test_db1 ENGINE Replicated('/clickhouse/databases/testdb', '{shard}', 'r1');
     CREATE DATABASE test_db2 ENGINE Replicated('/clickhouse/databases/testdb', '{shard}', 'r2');
     """
-    """
     When we create clickhouse01 clickhouse backup
     """
     databases:
