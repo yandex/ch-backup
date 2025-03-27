@@ -52,6 +52,66 @@ GET_TABLES_SQL = strip_query(
     FROM system.tables
     WHERE ({db_condition})
       AND ({tables_condition})
+      AND engine != 'StorageProxy'
+
+    UNION ALL
+
+    SELECT
+        database,
+        name,
+        engine,
+        engine_full,
+        create_table_query,
+        [],
+        metadata_path,
+        uuid
+    FROM system.tables
+    WHERE ({db_condition})
+      AND ({tables_condition})
+      AND engine = 'StorageProxy'
+
+    ORDER BY metadata_modification_time
+    FORMAT JSON
+"""
+)
+
+# 'WHERE engine != StorageProxy' in first SELECT still
+# throws exception if StorageProxy table is not responding,
+# only filter by database and name works
+GET_TABLES_SQL_23_8 = strip_query(
+    """
+    SELECT
+        database,
+        name,
+        engine,
+        engine_full,
+        create_table_query,
+        data_paths,
+        metadata_path,
+        uuid
+    FROM system.tables
+    WHERE ({db_condition})
+      AND ({tables_condition})
+      AND name
+        NOT IN (SELECT name FROM system.tables
+            WHERE ({db_condition}) AND engine = 'StorageProxy')
+
+    UNION ALL
+
+    SELECT
+        database,
+        name,
+        engine,
+        engine_full,
+        create_table_query,
+        [],
+        metadata_path,
+        uuid
+    FROM system.tables
+    WHERE ({db_condition})
+      AND ({tables_condition})
+      AND engine = 'StorageProxy'
+
     ORDER BY metadata_modification_time
     FORMAT JSON
 """
@@ -596,7 +656,15 @@ class ClickhouseCTL:
             if tables
             else "1"
         )
-        base_query_sql = GET_TABLES_SHORT_SQL if short_query else GET_TABLES_SQL
+
+        base_query_sql = ""
+        if short_query:
+            base_query_sql = GET_TABLES_SHORT_SQL
+        elif self.ch_version_ge("24.3"):
+            base_query_sql = GET_TABLES_SQL
+        else:
+            base_query_sql = GET_TABLES_SQL_23_8
+
         query_sql = base_query_sql.format(
             db_condition=db_condition,
             tables_condition=tables_condition,
