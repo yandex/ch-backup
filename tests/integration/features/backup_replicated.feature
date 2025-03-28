@@ -981,3 +981,41 @@ Feature: Backup replicated merge tree table
       | clean_zookeeper_mode | len |
       | replica-only         |  2  |
       | all-replicas         |  1  |
+
+  Scenario Outline: Clean metadata modes for replicated database
+    Given ClickHouse settings
+    """
+      allow_experimental_database_replicated: 1
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db1 ENGINE Replicated('/clickhouse/databases/testdb', '{shard}', 'r1');
+    CREATE DATABASE test_db2 ENGINE Replicated('/clickhouse/databases/testdb', '{shard}', 'r2');
+    """
+    When we create clickhouse01 clickhouse backup
+    """
+    databases:
+      - test_db1
+    """
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 0          | 0          |
+    When we dirty remove clickhouse data at clickhouse01
+    And we restore clickhouse backup #0 to clickhouse01
+    """
+    override_replica_name: 'r1'
+    clean_zookeeper_mode: '<clean_zookeeper_mode>'
+    replica_name: 'r1'
+    """
+    And we execute ZK list query on zookeeper01
+    """
+    /clickhouse01/clickhouse/databases/testdb/replicas
+    """
+    Then we get ZK list with len <len>
+    When we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
+    Examples:
+      | clean_zookeeper_mode | len |
+      | replica-only         |  2  |
+      | all-replicas         |  1  |

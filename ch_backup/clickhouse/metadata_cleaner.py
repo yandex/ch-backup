@@ -157,43 +157,49 @@ class MetadataCleaner:
             db_macros.update(macros_to_override)
 
             path_resolved = os.path.abspath(replace_macros(database_path, db_macros))
-            full_replica_name = (
-                f"{replace_macros(shard, db_macros)}|{self._replica_to_drop}"
+
+            # replicas from _list_replicas look like 'shard|replica'
+            # _replica_to_drop looks like 'replica'
+            replicas_to_drop = (
+                [f"{replace_macros(shard, db_macros)}|{self._replica_to_drop}"]
+                if self._replica_to_drop
+                else self._list_replicas(path_resolved)
             )
 
-            with self._zk_ctl.zk_client as zk_client:
-                # Both paths are already abs.
-                full_database_zk_path = (
-                    self._zk_ctl.zk_root_path
-                    + path_resolved
-                    + "/replicas/"
-                    + full_replica_name
-                )
-
-                if not zk_client.exists(full_database_zk_path):
-                    logging.debug(
-                        "There are no nodes for the replicated database {} with zk path {}",
-                        database.name,
-                        full_database_zk_path,
+            for replica in replicas_to_drop:
+                with self._zk_ctl.zk_client as zk_client:
+                    # Both paths are already abs.
+                    full_database_zk_path = (
+                        self._zk_ctl.zk_root_path
+                        + path_resolved
+                        + "/replicas/"
+                        + replica
                     )
-                    continue
 
-                active_flag_path = os.path.join(full_database_zk_path, "active")
-                try:
-                    zk_client.delete(active_flag_path)
-                except NoNodeError:
-                    pass
+                    if not zk_client.exists(full_database_zk_path):
+                        logging.debug(
+                            "There are no nodes for the replicated database {} with zk path {}",
+                            database.name,
+                            full_database_zk_path,
+                        )
+                        continue
 
-            logging.debug(
-                "Scheduling replica {} from database {} metadata from zookeeper {}.",
-                full_replica_name,
-                database.name,
-                path_resolved,
-            )
-            future = self._exec_pool.submit(
-                self._ch_ctl.system_drop_database_replica, full_replica_name, path_resolved  # type: ignore
-            )
-            tasks[f"{database.name}"] = future
+                    active_flag_path = os.path.join(full_database_zk_path, "active")
+                    try:
+                        zk_client.delete(active_flag_path)
+                    except NoNodeError:
+                        pass
+
+                logging.debug(
+                    "Scheduling replica {} from database {} metadata from zookeeper {}.",
+                    replica,
+                    database.name,
+                    path_resolved,
+                )
+                future = self._exec_pool.submit(
+                    self._ch_ctl.system_drop_database_replica, replica, path_resolved  # type: ignore
+                )
+                tasks[f"{database.name}"] = future
 
         for database_name, future in tasks.items():
             try:
