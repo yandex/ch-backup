@@ -982,6 +982,7 @@ Feature: Backup replicated merge tree table
       | replica-only         |  2  |
       | all-replicas         |  1  |
 
+  @require_version_23.3
   Scenario Outline: Clean metadata modes for replicated database
     Given ClickHouse settings
     """
