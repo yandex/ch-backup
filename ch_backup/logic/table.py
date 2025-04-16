@@ -715,7 +715,13 @@ class TableBackup(BackupManager):
                                 table, part.disk_name, part.name
                             )
                             context.backup_layout.download_data_part(
-                                context.backup_meta, part, fs_part_path
+                                context.backup_meta,
+                                part,
+                                fs_part_path,
+                                callback=partial(
+                                    context.restore_context.add_part,
+                                    PartState.DOWNLOADED,
+                                ),
                             )
 
                         attach_parts.append(part)
@@ -734,11 +740,20 @@ class TableBackup(BackupManager):
                         "cloud_storage_restore_workers"
                     ],
                     keep_going,
+                    part_callback=partial(
+                        context.restore_context.add_part, PartState.DOWNLOADED
+                    ),
                 )
 
                 context.backup_layout.wait(keep_going)
+                # Setting state with callback is not possible if part is not stored
+                # as a single file, because there are multiple async download tasks
+                # per part. Currently all uploading parts are stored as tarball,
+                # this is done only for backward compatibility.
+                # TODO: It can probably be removed already.
                 for part in attach_parts:
-                    context.restore_context.add_part(part, PartState.DOWNLOADED)
+                    if not part.tarball:
+                        context.restore_context.add_part(PartState.DOWNLOADED, part)
 
                 context.ch_ctl.chown_detached_table_parts(
                     table, context.restore_context
@@ -752,7 +767,7 @@ class TableBackup(BackupManager):
                     )
                     try:
                         context.ch_ctl.attach_part(table, part.name)
-                        context.restore_context.add_part(part, PartState.RESTORED)
+                        context.restore_context.add_part(PartState.RESTORED, part)
                     except Exception as e:
                         logging.warning(
                             'Attaching "{}.{}" part {} failed: {}',
@@ -763,7 +778,7 @@ class TableBackup(BackupManager):
                         )
                         context.restore_context.add_failed_part(part, e)
                         # if part failed to attach due to corrupted data during download
-                        context.restore_context.add_part(part, PartState.INVALID)
+                        context.restore_context.add_part(PartState.INVALID, part)
             finally:
                 context.restore_context.dump_state()
 

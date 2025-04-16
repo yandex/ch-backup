@@ -180,6 +180,7 @@ class PipelineExecutor:
         is_async: bool,
         encryption: bool,
         compression: bool,
+        callback: Optional[Callable],
     ) -> None:
         """
         Download and unarchive tarball to files on local filesystem.
@@ -194,7 +195,7 @@ class PipelineExecutor:
             encryption,
             compression,
         )
-        self._exec_pipeline(job_id, pipeline, is_async)
+        self._exec_pipeline(job_id, pipeline, is_async, callback=callback)
 
     # pylint: disable=unused-argument
     def delete_files(
