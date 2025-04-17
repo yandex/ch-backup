@@ -43,8 +43,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-        - python: "3.6"
-          clickhouse: "latest"
         - python: "3.7"
           clickhouse: "latest"
         - python: "3.8"
@@ -76,7 +74,7 @@ jobs:
         python-version: ${{ matrix.python }}
     - name: run unit tests
       run: make test-unit
-    - name: run integration tests
+    - name: run integration testF3s
       run: make test-integration
       env:
         CLICKHOUSE_VERSION: ${{ matrix.clickhouse == 'latest' && env.LATEST_CLICKHOUSE_VERSION || matrix.clickhouse }}
