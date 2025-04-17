@@ -74,7 +74,7 @@ jobs:
         python-version: ${{ matrix.python }}
     - name: run unit tests
       run: make test-unit
-    - name: run integration testF3s
+    - name: run integration tests
       run: make test-integration
       env:
         CLICKHOUSE_VERSION: ${{ matrix.clickhouse == 'latest' && env.LATEST_CLICKHOUSE_VERSION || matrix.clickhouse }}
