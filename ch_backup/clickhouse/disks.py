@@ -5,9 +5,10 @@ Clickhouse-disks controls temporary cloud storage disks management.
 import copy
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import partial
 from subprocess import PIPE, Popen
 from types import TracebackType
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 from urllib.parse import urlparse
 
 import xmltodict
@@ -205,6 +206,7 @@ class ClickHouseTemporaryDisks:
         parts_to_copy: List[Tuple[Table, PartMetadata]],
         max_proccesses_count: int,
         keep_going: bool,
+        part_callback: Optional[Callable],
     ) -> None:
         """
         Copy parts from temporary cloud storage disk to actual.
@@ -222,12 +224,18 @@ class ClickHouseTemporaryDisks:
             # Can't use map function here. The map method returns a generator
             # and it is not possible to resume a generator after an exception occurs.
             # https://peps.python.org/pep-0255/#specification-generators-and-exception-propagation
-            futures_to_part = {
-                executor.submit(
-                    self._run_copy_command, backup_meta, part[0], part[1]
-                ): part[1].name
-                for part in parts_to_copy
-            }
+            futures_to_part = {}
+            for part in parts_to_copy:
+                future = executor.submit(
+                    self._run_copy_command,
+                    backup_meta,
+                    part[0],
+                    part[1],
+                )
+                if part_callback:
+                    future.add_done_callback(partial(part_callback, part[1]))
+                futures_to_part[future] = part[1].name
+
             for future in as_completed(futures_to_part):
                 try:
                     future.result()
