@@ -57,9 +57,9 @@ class RestoreContext:
         """
         self._databases_dict = databases
 
-    def add_part(self, state: PartState, part: PartMetadata) -> None:
+    def change_part_state(self, state: PartState, part: PartMetadata) -> None:
         """
-        Marks that data part was restored.
+        Changes the state of the restoring part.
         """
         self._databases[part.database][part.table][part.name] = state
 

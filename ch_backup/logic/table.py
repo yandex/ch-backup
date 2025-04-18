@@ -719,7 +719,7 @@ class TableBackup(BackupManager):
                                 part,
                                 fs_part_path,
                                 callback=partial(
-                                    context.restore_context.add_part,
+                                    context.restore_context.change_part_state,
                                     PartState.DOWNLOADED,
                                 ),
                             )
@@ -741,7 +741,7 @@ class TableBackup(BackupManager):
                     ],
                     keep_going,
                     part_callback=partial(
-                        context.restore_context.add_part, PartState.DOWNLOADED
+                        context.restore_context.change_part_state, PartState.DOWNLOADED
                     ),
                 )
 
@@ -753,7 +753,9 @@ class TableBackup(BackupManager):
                 # TODO: It can probably be removed already.
                 for part in attach_parts:
                     if not part.tarball:
-                        context.restore_context.add_part(PartState.DOWNLOADED, part)
+                        context.restore_context.change_part_state(
+                            PartState.DOWNLOADED, part
+                        )
 
                 context.ch_ctl.chown_detached_table_parts(
                     table, context.restore_context
@@ -767,7 +769,9 @@ class TableBackup(BackupManager):
                     )
                     try:
                         context.ch_ctl.attach_part(table, part.name)
-                        context.restore_context.add_part(PartState.RESTORED, part)
+                        context.restore_context.change_part_state(
+                            PartState.RESTORED, part
+                        )
                     except Exception as e:
                         logging.warning(
                             'Attaching "{}.{}" part {} failed: {}',
@@ -778,7 +782,9 @@ class TableBackup(BackupManager):
                         )
                         context.restore_context.add_failed_part(part, e)
                         # if part failed to attach due to corrupted data during download
-                        context.restore_context.add_part(PartState.INVALID, part)
+                        context.restore_context.change_part_state(
+                            PartState.INVALID, part
+                        )
             finally:
                 context.restore_context.dump_state()
 
