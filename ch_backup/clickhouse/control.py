@@ -6,6 +6,7 @@ Clickhouse-control classes module
 
 import os
 import shutil
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextlib import contextmanager, suppress
 from hashlib import md5
 from pathlib import Path
@@ -164,6 +165,13 @@ FREEZE_TABLE_SQL = strip_query(
     """
     ALTER TABLE `{db_name}`.`{table_name}`
     FREEZE WITH NAME '{backup_name}'
+"""
+)
+
+FREEZE_PARTITION_SQL = strip_query(
+    """
+    ALTER TABLE `{db_name}`.`{table_name}`
+    FREEZE PARTITION ID '{partition}' WITH NAME '{backup_name}'
 """
 )
 
@@ -435,6 +443,15 @@ GET_ZOOKEEPER_ADMIN_UUID = strip_query(
 """
 )
 
+GET_PARTITIONS = strip_query(
+    """
+    SELECT DISTINCT partition_id
+    FROM system.parts
+    WHERE database = '{db_name}' AND table = '{table_name}' AND active = 1
+    FORMAT JSONCompact
+"""
+)
+
 
 # pylint: disable=too-many-public-methods
 class ClickhouseCTL:
@@ -547,6 +564,51 @@ class ClickhouseCTL:
         self._ch_client.query(
             query_sql, timeout=self._freeze_timeout, should_retry=False
         )
+
+    def freeze_table_by_partitions(
+        self, backup_name: str, table: Table, threads: int
+    ) -> None:
+        """
+        Make snapshot of the specified table.
+        """
+        # Table has no partitions or created with deprecated syntax.
+        # FREEZE PARTITION ID with deprecated syntax throws segmentation fault in CH.
+        if "PARTITION BY" not in table.create_statement:
+            return self.freeze_table(backup_name, table)
+
+        partitions_to_freeze = self.list_partitions(table)
+
+        with ThreadPoolExecutor(max_workers=threads) as pool:
+            futures: List[Future] = []
+            for partition in partitions_to_freeze:
+                query_sql = FREEZE_PARTITION_SQL.format(
+                    db_name=escape(table.database),
+                    table_name=escape(table.name),
+                    backup_name=backup_name,
+                    partition=partition,
+                )
+                futures.append(
+                    pool.submit(
+                        self._ch_client.query,
+                        query_sql,
+                        timeout=self._freeze_timeout,
+                        should_retry=False,
+                    )
+                )
+
+            for future in as_completed(futures):
+                future.result()
+
+    def list_partitions(self, table: Table) -> List[str]:
+        """
+        Get list of active partitions for table.
+        """
+        query_sql = GET_PARTITIONS.format(
+            db_name=escape(table.database),
+            table_name=escape(table.name),
+        )
+        result = self._ch_client.query(query_sql, should_retry=False)["data"]
+        return [partition[0] for partition in result]
 
     def system_unfreeze(self, backup_name: str) -> None:
         """

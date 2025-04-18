@@ -196,9 +196,7 @@ class ClickhouseBackup:
                         databases,
                         db_tables,
                         schema_only=sources.schema_only,
-                        freeze_threads=self._config["multiprocessing"][
-                            "freeze_threads"
-                        ],
+                        multiprocessing_config=self._config["multiprocessing"],
                     )
 
                 # Upload operations are async. Should wait until they are all finished.

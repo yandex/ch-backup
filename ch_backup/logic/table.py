@@ -54,7 +54,7 @@ class TableBackup(BackupManager):
         databases: Sequence[Database],
         db_tables: Dict[str, list],
         schema_only: bool,
-        freeze_threads: int,
+        multiprocessing_config: Dict,
     ) -> None:
         """
         Backup tables metadata, MergeTree data and Cloud storage metadata.
@@ -76,7 +76,7 @@ class TableBackup(BackupManager):
                 db_tables[db.name],
                 backup_name,
                 schema_only,
-                freeze_threads,
+                multiprocessing_config,
             )
 
     def _collect_local_metadata_change_times(
@@ -110,7 +110,7 @@ class TableBackup(BackupManager):
         tables: Sequence[str],
         backup_name: str,
         schema_only: bool,
-        freeze_threads: int,
+        multiprocessing_config: Dict,
     ) -> None:
         """
         Backup single database tables.
@@ -134,7 +134,9 @@ class TableBackup(BackupManager):
             # race condition with parallel freeze
             context.ch_ctl.create_shadow_increment()
             futures: List[Future] = []
-            with ThreadPoolExecutor(max_workers=freeze_threads) as pool:
+            with ThreadPoolExecutor(
+                max_workers=multiprocessing_config.get("freeze_threads", 1)
+            ) as pool:
                 for table in tables_:
                     future = pool.submit(
                         TableBackup._freeze_table,
@@ -143,23 +145,22 @@ class TableBackup(BackupManager):
                         table,
                         backup_name,
                         schema_only,
+                        multiprocessing_config.get("freeze_partition_threads", 0),
                     )
                     futures.append(future)
 
                 for future in as_completed(futures):
-                    table_and_create_statement = future.result()
-                    if table_and_create_statement is not None:
-                        table, create_statement = table_and_create_statement
+                    freezed_table = future.result()
+                    if freezed_table is not None:
                         self._backup_freezed_table(
                             context,
                             db,
-                            table,
+                            freezed_table,
                             backup_name,
                             schema_only,
                             change_times,
-                            create_statement,
                         )
-                        self._backup_cloud_storage_metadata(context, table)
+                        self._backup_cloud_storage_metadata(context, freezed_table)
 
             context.backup_layout.wait()
             context.ch_ctl.remove_freezed_data()
@@ -174,13 +175,15 @@ class TableBackup(BackupManager):
         table: Table,
         backup_name: str,
         schema_only: bool,
-    ) -> Optional[Tuple[Table, bytes]]:
+        freeze_partition_threads: int,
+    ) -> Optional[Table]:
         """
         Freeze table and return it's create statement
         """
         logging.debug('Trying to freeze "{}"."{}"', table.database, table.name)
 
         create_statement = TableBackup._load_create_statement_from_disk(table)
+        table.create_statement = create_statement if create_statement else ""
         if not create_statement:
             logging.warning(
                 'Skipping table backup for "{}"."{}". Local metadata is empty or absent',
@@ -192,7 +195,12 @@ class TableBackup(BackupManager):
         # Freeze only MergeTree tables
         if not schema_only and table.is_merge_tree():
             try:
-                context.ch_ctl.freeze_table(backup_name, table)
+                if freeze_partition_threads == 0:
+                    context.ch_ctl.freeze_table(backup_name, table)
+                else:
+                    context.ch_ctl.freeze_table_by_partitions(
+                        backup_name, table, freeze_partition_threads
+                    )
             except ClickhouseError:
                 if context.ch_ctl.does_table_exist(table.database, table.name):
                     logging.error(
@@ -209,10 +217,10 @@ class TableBackup(BackupManager):
                 )
                 return None
 
-        return (table, create_statement)
+        return table
 
     @staticmethod
-    def _load_create_statement_from_disk(table: Table) -> Optional[bytes]:
+    def _load_create_statement_from_disk(table: Table) -> Optional[str]:
         """
         Load a create statement of the table from a metadata file on the disk.
         """
@@ -224,7 +232,7 @@ class TableBackup(BackupManager):
             )
             return None
         try:
-            return Path(table.metadata_path).read_bytes()
+            return Path(table.metadata_path).read_text("utf-8")
         except OSError as e:
             logging.debug(
                 'Cannot load a create statement of the table "{}"."{}": {}',
@@ -378,7 +386,6 @@ class TableBackup(BackupManager):
         backup_name: str,
         schema_only: bool,
         change_times: Dict[str, TableMetadataChangeTime],
-        create_statement: bytes,
     ) -> None:
         # Check if table metadata was updated
         new_change_time = self._get_change_time(table.metadata_path)
@@ -400,7 +407,7 @@ class TableBackup(BackupManager):
         )
         # Backup table metadata
         context.backup_layout.upload_table_create_statement(
-            context.backup_meta, db, table, create_statement
+            context.backup_meta, db, table
         )
         # Backup table data
         if not schema_only:

@@ -160,6 +160,8 @@ DEFAULT_CONFIG = {
         "cloud_storage_restore_workers": 4,
         # The number of threads for parallel freeze of tables
         "freeze_threads": 4,
+        # The number of threads for parallel freeze of partitions. If set to 0, will freeze table in one query.
+        "freeze_partition_threads": 16,
         # The number of threads for parallel drop replica
         "drop_replica_threads": 8,
     },
