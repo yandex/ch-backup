@@ -591,7 +591,7 @@ class ClickhouseCTL:
                     timeout=self._freeze_timeout,
                     should_retry=False,
                 )
-            ch_client.wait_all(keep_going=False, timeout=self._freeze_timeout)
+            ch_client.wait_all(keep_going=False, timeout=self._freeze_timeout if freeze_by_partitions else None)
 
     def list_partitions(self, table: Table) -> List[str]:
         """

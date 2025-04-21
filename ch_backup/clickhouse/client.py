@@ -163,12 +163,12 @@ class ClickhouseClientMultithreading:
     def wait_all(
         self,
         keep_going: bool = False,
-        timeout: Optional[int] = None,
+        timeout: Optional[float] = None,
     ) -> None:
         """
         Wait until all submitted queries are finished.
         """
-        self._pool.wait_all(keep_going)
+        self._pool.wait_all(keep_going, timeout)
 
     def __enter__(self):
         return self
