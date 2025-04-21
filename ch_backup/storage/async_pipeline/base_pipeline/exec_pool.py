@@ -4,7 +4,7 @@ Class for executing callables on specified pool.
 
 from concurrent.futures import Executor, Future, as_completed
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Iterable, Optional
 
 from ch_backup import logging
 
@@ -66,19 +66,14 @@ class ExecPool:
         future = self._pool.submit(ExecPool._start)
         future.result()
 
-    def wait_all(self, keep_going: bool = False) -> None:
-        """
-        Wait workers for complete jobs.
-
-        Args:
-            keep_going - skip exceptions raised by futures instead of propagating it.
-        """
+    def _as_completed(self, keep_going: bool = False) -> Iterable:
         for future in as_completed(self._future_to_job):
             job = self._future_to_job[future]
             logging.debug("Future {} completed", job.id_)
 
             try:
-                future.result()
+                result = future.result()
+                yield (job, result)
             except Exception:
                 if keep_going:
                     logging.warning(
@@ -92,6 +87,29 @@ class ExecPool:
                 )
                 raise
 
+    def as_completed(self, keep_going: bool = False) -> Iterable:
+        """
+        Return result from futures as they are completed.
+
+        Args:
+            keep_going - skip exceptions raised by futures instead of propagating it.
+        """
+        for job, result in self._as_completed(keep_going):
+            if job.callback:
+                job.callback()
+
+            yield result
+
+        self._future_to_job = {}
+
+    def wait_all(self, keep_going: bool = False) -> None:
+        """
+        Wait workers for complete jobs.
+
+        Args:
+            keep_going - skip exceptions raised by futures instead of propagating it.
+        """
+        for job, _ in self._as_completed(keep_going):
             if job.callback:
                 job.callback()
 
@@ -105,3 +123,13 @@ class ExecPool:
             self.shutdown(graceful=True)
         except Exception:  # nosec B110
             pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            self.shutdown(graceful=True)
+        except Exception:  # nosec B110
+            pass
+        return False
