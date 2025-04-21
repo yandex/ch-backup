@@ -4,7 +4,7 @@ Clickhouse backup logic for tables
 
 import os
 from collections import deque
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
 from itertools import chain
@@ -28,6 +28,7 @@ from ch_backup.clickhouse.schema import (
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.logic.upload_part_observer import UploadPartObserver
+from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ExecPool
 from ch_backup.util import compare_schema
 
 
@@ -133,13 +134,16 @@ class TableBackup(BackupManager):
             # Create shadow/increment.txt if not exists manually to avoid
             # race condition with parallel freeze
             context.ch_ctl.create_shadow_increment()
-            futures: List[Future] = []
-            with ThreadPoolExecutor(
-                max_workers=multiprocessing_config.get("freeze_threads", 1)
+            with ExecPool(
+                ThreadPoolExecutor(
+                    max_workers=multiprocessing_config.get("freeze_threads", 1)
+                )
             ) as pool:
                 for table in tables_:
-                    future = pool.submit(
+                    pool.submit(
+                        f'Freeze table "{table.database}"."{table.name}"',
                         TableBackup._freeze_table,
+                        None,
                         context,
                         db,
                         table,
@@ -147,10 +151,8 @@ class TableBackup(BackupManager):
                         schema_only,
                         multiprocessing_config.get("freeze_partition_threads", 0),
                     )
-                    futures.append(future)
 
-                for future in as_completed(futures):
-                    freezed_table = future.result()
+                for freezed_table in pool.as_completed(keep_going=False):
                     if freezed_table is not None:
                         self._backup_freezed_table(
                             context,
@@ -195,12 +197,9 @@ class TableBackup(BackupManager):
         # Freeze only MergeTree tables
         if not schema_only and table.is_merge_tree():
             try:
-                if freeze_partition_threads == 0:
-                    context.ch_ctl.freeze_table(backup_name, table)
-                else:
-                    context.ch_ctl.freeze_table_by_partitions(
-                        backup_name, table, freeze_partition_threads
-                    )
+                context.ch_ctl.freeze_table(
+                    backup_name, table, freeze_partition_threads
+                )
             except ClickhouseError:
                 if context.ch_ctl.does_table_exist(table.database, table.name):
                     logging.error(
