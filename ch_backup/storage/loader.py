@@ -169,6 +169,7 @@ class StorageLoader:
         is_async: bool = False,
         encryption: bool = False,
         compression: bool = False,
+        callback: Optional[Callable] = None,
     ) -> None:
         """
         Download file to local filesystem.
@@ -179,6 +180,7 @@ class StorageLoader:
             is_async=is_async,
             encryption=encryption,
             compression=compression,
+            callback=callback,
         )
 
     def delete_files(

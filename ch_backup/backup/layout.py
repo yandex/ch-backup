@@ -3,6 +3,7 @@ Management of backup data layout.
 """
 
 import os
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Sequence
 from urllib.parse import quote
@@ -445,7 +446,11 @@ class BackupLayout:
             raise StorageError(msg) from e
 
     def download_data_part(
-        self, backup_meta: BackupMetadata, part: PartMetadata, fs_part_path: str
+        self,
+        backup_meta: BackupMetadata,
+        part: PartMetadata,
+        fs_part_path: str,
+        callback: Callable,
     ) -> None:
         """
         Download part data to the specified directory.
@@ -476,6 +481,7 @@ class BackupLayout:
                     local_path=fs_part_path,
                     is_async=True,
                     encryption=part.encrypted,
+                    callback=partial(callback, part),
                 )
             except Exception as e:
                 msg = f"Failed to download part tarball file {remote_path}"
