@@ -66,7 +66,9 @@ class ExecPool:
         future = self._pool.submit(ExecPool._start)
         future.result()
 
-    def _as_completed(self, keep_going: bool = False, timeout: Optional[float] = None) -> Iterable:
+    def _as_completed(
+        self, keep_going: bool = False, timeout: Optional[float] = None
+    ) -> Iterable:
         for future in as_completed(self._future_to_job, timeout):
             job = self._future_to_job[future]
             logging.debug("Future {} completed", job.id_)
@@ -87,7 +89,9 @@ class ExecPool:
                 )
                 raise
 
-    def as_completed(self, keep_going: bool = False, timeout: Optional[float] = None) -> Iterable:
+    def as_completed(
+        self, keep_going: bool = False, timeout: Optional[float] = None
+    ) -> Iterable:
         """
         Return result from futures as they are completed.
 
@@ -102,7 +106,9 @@ class ExecPool:
 
         self._future_to_job = {}
 
-    def wait_all(self, keep_going: bool = False, timeout: Optional[float] = None) -> None:
+    def wait_all(
+        self, keep_going: bool = False, timeout: Optional[float] = None
+    ) -> None:
         """
         Wait workers for complete jobs.
 
