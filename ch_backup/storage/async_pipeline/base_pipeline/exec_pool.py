@@ -2,7 +2,13 @@
 Class for executing callables on specified pool.
 """
 
-from concurrent.futures import Executor, Future, as_completed
+from concurrent.futures import (
+    Executor,
+    Future,
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    as_completed,
+)
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, Optional
 
@@ -139,3 +145,25 @@ class ExecPool:
         except Exception:  # nosec B110
             pass
         return False
+
+
+class ThreadExecPool(ExecPool):
+    """
+    Submit tasks on ThreadPoolExecutor.
+
+    Encapsulate collecting of futures and waiting all submitted tasks.
+    """
+
+    def __init__(self, threads: int) -> None:
+        super().__init__(ThreadPoolExecutor(threads))
+
+
+class ProcessExecPool(ExecPool):
+    """
+    Submit tasks on ProcessPoolExecutor.
+
+    Encapsulate collecting of futures and waiting all submitted tasks.
+    """
+
+    def __init__(self, threads: int) -> None:
+        super().__init__(ProcessPoolExecutor(threads))

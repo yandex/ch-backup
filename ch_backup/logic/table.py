@@ -4,7 +4,6 @@ Clickhouse backup logic for tables
 
 import os
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
 from itertools import chain
@@ -28,7 +27,9 @@ from ch_backup.clickhouse.schema import (
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.logic.upload_part_observer import UploadPartObserver
-from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ExecPool
+from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
+    ThreadExecPool,
+)
 from ch_backup.util import compare_schema
 
 
@@ -134,10 +135,8 @@ class TableBackup(BackupManager):
             # Create shadow/increment.txt if not exists manually to avoid
             # race condition with parallel freeze
             context.ch_ctl.create_shadow_increment()
-            with ExecPool(
-                ThreadPoolExecutor(
-                    max_workers=multiprocessing_config.get("freeze_threads", 1)
-                )
+            with ThreadExecPool(
+                multiprocessing_config.get("freeze_threads", 1)
             ) as pool:
                 for table in tables_:
                     pool.submit(

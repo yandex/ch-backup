@@ -2,13 +2,14 @@
 ClickHouse client.
 """
 
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
 import requests
 
 from ch_backup import logging
-from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ExecPool
+from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
+    ThreadExecPool,
+)
 from ch_backup.util import retry
 
 
@@ -134,7 +135,7 @@ class ClickhouseClientMultithreading:
 
     def __init__(self, ch_client: ClickhouseClient, threads: int) -> None:
         self._ch_client = ch_client
-        self._pool = ExecPool(ThreadPoolExecutor(max_workers=threads))
+        self._pool = ThreadExecPool(threads)
 
     # pylint: disable=too-many-positional-arguments
     def submit_query(
