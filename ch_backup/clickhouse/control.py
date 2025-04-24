@@ -652,7 +652,7 @@ class ClickhouseCTL:
         """
         db_condition = f"database = '{escape(db_name)}'" if db_name else "1"
         tables_condition = (
-            f"has(cast({list(map(escape, tables))}, 'Array(String)'), name)"
+            f"has(cast({_format_string_array(tables)}, 'Array(String)'), name)"
             if tables
             else "1"
         )
@@ -1210,3 +1210,7 @@ class ClickhouseCTL:
 def _get_part_checksum(part_path: str) -> str:
     with open(os.path.join(part_path, "checksums.txt"), "rb") as f:
         return md5(f.read()).hexdigest()  # nosec
+
+
+def _format_string_array(value: Sequence[str]) -> str:
+    return "[" + ",".join(f"'{escape(v)}'" for v in value) + "]"
