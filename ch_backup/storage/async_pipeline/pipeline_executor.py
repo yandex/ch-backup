@@ -2,13 +2,14 @@
 New pipelines executor module.
 """
 
-from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from pathlib import Path
 from typing import Any, AnyStr, Callable, List, Optional, Sequence
 
 from ch_backup.profile import profile
-from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ExecPool
+from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
+    ProcessExecPool,
+)
 from ch_backup.storage.async_pipeline.pipelines import (
     delete_multiple_storage_pipeline,
     download_data_pipeline,
@@ -33,11 +34,11 @@ class PipelineExecutor:
 
     def __init__(self, config: dict) -> None:
         self._config = config
-        self._exec_pool: Optional[ExecPool] = None
+        self._exec_pool: Optional[ProcessExecPool] = None
 
         worker_count = self._config["multiprocessing"].get("workers")
         if worker_count:
-            self._exec_pool = ExecPool(ProcessPoolExecutor(max_workers=worker_count))
+            self._exec_pool = ProcessExecPool(worker_count)
 
     def upload_data(
         self, data: AnyStr, remote_path: str, is_async: bool, encryption: bool
@@ -228,7 +229,9 @@ class PipelineExecutor:
         """
 
         if is_async and self._exec_pool:
-            return self._exec_pool.submit(job_id, profile(10, 60)(pipeline), callback)
+            return self._exec_pool.submit(
+                job_id, profile(10, 60)(pipeline), callback=callback
+            )
 
         result = pipeline()
         if callback:

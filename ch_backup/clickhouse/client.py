@@ -2,7 +2,8 @@
 ClickHouse client.
 """
 
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Iterator, Optional
 
 import requests
 
@@ -34,6 +35,8 @@ class ClickhouseClient:
     """
 
     def __init__(self, config: dict, settings: dict = None) -> None:
+        self._config = config
+        self._settings = settings
         host = config["host"]
         protocol = config["protocol"]
         port = config["port"] or (8123 if protocol == "http" else 8443)
@@ -58,6 +61,7 @@ class ClickhouseClient:
         settings: dict = None,
         timeout: float = None,
         should_retry: bool = True,
+        new_session: bool = False,
     ) -> Any:
         """
         Execute query.
@@ -68,13 +72,18 @@ class ClickhouseClient:
             if timeout is None:
                 timeout = self.timeout
 
-            response = self._session.post(
-                self._url,
-                params=settings,
-                json=post_data,
-                timeout=(self.connect_timeout, timeout),
-                data=query.encode("utf-8"),
-            )
+            # https://github.com/psf/requests/issues/2766
+            # requests.Session object is not guaranteed to be thread-safe.
+            # When using ClickhouseClient with multithreading, "new_session"
+            # should be True, so a separate Session is used for each query.
+            with self._get_session(new_session) as session:
+                response = session.post(
+                    self._url,
+                    params=settings,
+                    json=post_data,
+                    timeout=(self.connect_timeout, timeout),
+                    data=query.encode("utf-8"),
+                )
 
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
@@ -86,6 +95,21 @@ class ClickhouseClient:
             return response.json()
         except ValueError:
             return str.strip(response.text)
+
+    @contextmanager
+    def _get_session(
+        self, new_session: Optional[bool] = False
+    ) -> Iterator[requests.Session]:
+        session = (
+            self._create_session(self._config, self._settings)
+            if new_session
+            else self._session
+        )
+        try:
+            yield session
+        finally:
+            if new_session:
+                session.close()
 
     @staticmethod
     def _create_session(config, settings):

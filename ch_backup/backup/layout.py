@@ -88,7 +88,6 @@ class BackupLayout:
         backup_meta: BackupMetadata,
         db: Database,
         table: Table,
-        create_statement: bytes,
     ) -> None:
         """
         Upload table create statement.
@@ -105,7 +104,7 @@ class BackupLayout:
                 table.name,
             )
             self._storage_loader.upload_data(
-                create_statement,
+                table.create_statement,
                 remote_path,
                 is_async=True,
                 encryption=backup_meta.encrypted,

@@ -2,11 +2,18 @@
 Class for executing callables on specified pool.
 """
 
-from concurrent.futures import Executor, Future, as_completed
+from concurrent.futures import (
+    Executor,
+    Future,
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    as_completed,
+)
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Iterable, Optional
 
 from ch_backup import logging
+from ch_backup.util import exhaust_iterator
 
 
 @dataclass
@@ -45,8 +52,8 @@ class ExecPool:
         self,
         job_id: str,
         func: Callable,
-        callback: Optional[Callable],
         *args: Any,
+        callback: Optional[Callable] = None,
         **kwargs: Any
     ) -> None:
         """
@@ -66,19 +73,21 @@ class ExecPool:
         future = self._pool.submit(ExecPool._start)
         future.result()
 
-    def wait_all(self, keep_going: bool = False) -> None:
+    def as_completed(
+        self, keep_going: bool = False, timeout: Optional[float] = None
+    ) -> Iterable[Any]:
         """
-        Wait workers for complete jobs.
+        Return result from futures as they are completed.
 
         Args:
             keep_going - skip exceptions raised by futures instead of propagating it.
         """
-        for future in as_completed(self._future_to_job):
+        for future in as_completed(self._future_to_job, timeout):
             job = self._future_to_job[future]
             logging.debug("Future {} completed", job.id_)
 
             try:
-                future.result()
+                result = future.result()
             except Exception:
                 if keep_going:
                     logging.warning(
@@ -95,7 +104,20 @@ class ExecPool:
             if job.callback:
                 job.callback()
 
+            yield result
+
         self._future_to_job = {}
+
+    def wait_all(
+        self, keep_going: bool = False, timeout: Optional[float] = None
+    ) -> None:
+        """
+        Wait workers for complete jobs.
+
+        Args:
+            keep_going - skip exceptions raised by futures instead of propagating it.
+        """
+        exhaust_iterator(iter(self.as_completed(keep_going, timeout)))
 
     def __del__(self) -> None:
         """
@@ -105,3 +127,35 @@ class ExecPool:
             self.shutdown(graceful=True)
         except Exception:  # nosec B110
             pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            self.shutdown(graceful=True)
+        except Exception:  # nosec B110
+            pass
+        return False
+
+
+class ThreadExecPool(ExecPool):
+    """
+    Submit tasks on ThreadPoolExecutor.
+
+    Encapsulate collecting of futures and waiting all submitted tasks.
+    """
+
+    def __init__(self, threads: int) -> None:
+        super().__init__(ThreadPoolExecutor(threads))
+
+
+class ProcessExecPool(ExecPool):
+    """
+    Submit tasks on ProcessPoolExecutor.
+
+    Encapsulate collecting of futures and waiting all submitted tasks.
+    """
+
+    def __init__(self, threads: int) -> None:
+        super().__init__(ProcessPoolExecutor(threads))
