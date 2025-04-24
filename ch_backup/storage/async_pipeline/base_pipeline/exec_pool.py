@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, Optional
 
 from ch_backup import logging
+from ch_backup.util import exhaust_iterator
 
 
 @dataclass
@@ -51,8 +52,8 @@ class ExecPool:
         self,
         job_id: str,
         func: Callable,
-        callback: Optional[Callable],
         *args: Any,
+        callback: Optional[Callable] = None,
         **kwargs: Any
     ) -> None:
         """
@@ -72,16 +73,21 @@ class ExecPool:
         future = self._pool.submit(ExecPool._start)
         future.result()
 
-    def _as_completed(
+    def as_completed(
         self, keep_going: bool = False, timeout: Optional[float] = None
-    ) -> Iterable:
+    ) -> Iterable[Any]:
+        """
+        Return result from futures as they are completed.
+
+        Args:
+            keep_going - skip exceptions raised by futures instead of propagating it.
+        """
         for future in as_completed(self._future_to_job, timeout):
             job = self._future_to_job[future]
             logging.debug("Future {} completed", job.id_)
 
             try:
                 result = future.result()
-                yield (job, result)
             except Exception:
                 if keep_going:
                     logging.warning(
@@ -95,16 +101,6 @@ class ExecPool:
                 )
                 raise
 
-    def as_completed(
-        self, keep_going: bool = False, timeout: Optional[float] = None
-    ) -> Iterable:
-        """
-        Return result from futures as they are completed.
-
-        Args:
-            keep_going - skip exceptions raised by futures instead of propagating it.
-        """
-        for job, result in self._as_completed(keep_going, timeout):
             if job.callback:
                 job.callback()
 
@@ -121,11 +117,7 @@ class ExecPool:
         Args:
             keep_going - skip exceptions raised by futures instead of propagating it.
         """
-        for job, _ in self._as_completed(keep_going, timeout):
-            if job.callback:
-                job.callback()
-
-        self._future_to_job = {}
+        exhaust_iterator(iter(self.as_completed(keep_going, timeout)))
 
     def __del__(self) -> None:
         """

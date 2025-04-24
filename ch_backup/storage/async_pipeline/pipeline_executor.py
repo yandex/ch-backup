@@ -228,7 +228,9 @@ class PipelineExecutor:
         """
 
         if is_async and self._exec_pool:
-            return self._exec_pool.submit(job_id, profile(10, 60)(pipeline), callback)
+            return self._exec_pool.submit(
+                job_id, profile(10, 60)(pipeline), callback=callback
+            )
 
         result = pipeline()
         if callback:

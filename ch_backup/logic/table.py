@@ -142,7 +142,6 @@ class TableBackup(BackupManager):
                     pool.submit(
                         f'Freeze table "{table.database}"."{table.name}"',
                         TableBackup._freeze_table,
-                        None,
                         context,
                         db,
                         table,
@@ -182,9 +181,8 @@ class TableBackup(BackupManager):
         Freeze table and return it's create statement
         """
         logging.debug('Trying to freeze "{}"."{}"', table.database, table.name)
-
         create_statement = TableBackup._load_create_statement_from_disk(table)
-        table.create_statement = create_statement if create_statement else ""
+        table.create_statement = create_statement or ""
         if not create_statement:
             logging.warning(
                 'Skipping table backup for "{}"."{}". Local metadata is empty or absent',
