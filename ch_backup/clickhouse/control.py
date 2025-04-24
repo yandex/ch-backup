@@ -18,9 +18,10 @@ from ch_backup import logging
 from ch_backup.backup.metadata import TableMetadata
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.calculators import calc_aligned_files_size
-from ch_backup.clickhouse.client import ClickhouseClient, ClickhouseClientMultithreading
+from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.exceptions import ClickhouseBackupError
+from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.util import (
     chown_dir_contents,
     chown_file,
@@ -563,37 +564,40 @@ class ClickhouseCTL:
         # Table has no partitions or created with deprecated syntax.
         # FREEZE PARTITION ID with deprecated syntax throws segmentation fault in CH.
         freeze_by_partitions = threads > 0 and "PARTITION BY" in table.create_statement
-        with ClickhouseClientMultithreading(
-            self._ch_client, max(1, threads)
-        ) as ch_client:
-            if freeze_by_partitions:
-                partitions_to_freeze = self.list_partitions(table)
-                for partition in partitions_to_freeze:
-                    query_sql = FREEZE_PARTITION_SQL.format(
-                        db_name=escape(table.database),
-                        table_name=escape(table.name),
-                        backup_name=backup_name,
-                        partition=partition,
-                    )
-                    ch_client.submit_query(
-                        query_sql,
-                        timeout=self._freeze_timeout,
-                        should_retry=False,
-                    )
-            else:
-                query_sql = FREEZE_TABLE_SQL.format(
-                    db_name=escape(table.database),
-                    table_name=escape(table.name),
-                    backup_name=backup_name,
-                )
-                ch_client.submit_query(
-                    query_sql,
+        if freeze_by_partitions:
+            with ThreadExecPool(max(1, threads)) as pool:
+                if freeze_by_partitions:
+                    partitions_to_freeze = self.list_partitions(table)
+                    for partition in partitions_to_freeze:
+                        query_sql = FREEZE_PARTITION_SQL.format(
+                            db_name=escape(table.database),
+                            table_name=escape(table.name),
+                            backup_name=backup_name,
+                            partition=partition,
+                        )
+                        pool.submit(
+                            f'Freeze partition "{partition}"',
+                            self._ch_client.query,
+                            query_sql,
+                            timeout=self._freeze_timeout,
+                            should_retry=False,
+                            new_session=True,
+                        )
+                pool.wait_all(
+                    keep_going=False,
                     timeout=self._freeze_timeout,
-                    should_retry=False,
                 )
-            ch_client.wait_all(
-                keep_going=False,
-                timeout=self._freeze_timeout if freeze_by_partitions else None,
+        else:
+            query_sql = FREEZE_TABLE_SQL.format(
+                db_name=escape(table.database),
+                table_name=escape(table.name),
+                backup_name=backup_name,
+            )
+            self._ch_client.query(
+                query_sql,
+                timeout=self._freeze_timeout,
+                should_retry=False,
+                new_session=True,
             )
 
     def list_partitions(self, table: Table) -> List[str]:
