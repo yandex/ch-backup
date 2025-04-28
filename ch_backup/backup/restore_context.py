@@ -15,6 +15,7 @@ class PartState(str, Enum):
     """
     Represents status of the data part, during restore.
     """
+
     NOT_DOWNLOADED = "not_downloaded"
     INVALID = "invalid"
     DOWNLOADED = "downloaded"
@@ -116,7 +117,9 @@ class RestoreContext:
         with open(self._state_file, "r", encoding="utf-8") as f:
             state: Dict[str, Any] = json.load(f)
             databases: Dict[str, Dict[str, Dict[str, PartState]]] = defaultdict(
-                lambda: defaultdict(lambda: defaultdict(lambda: PartState.NOT_DOWNLOADED))
+                lambda: defaultdict(
+                    lambda: defaultdict(lambda: PartState.NOT_DOWNLOADED)
+                )
             )
             for db, tables in state.get("databases", {}).items():
                 for table, parts in tables.items():
