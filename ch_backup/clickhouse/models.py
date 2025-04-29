@@ -144,10 +144,20 @@ class Table(SimpleNamespace):
             "MySQL",
             "ODBC",
             "PostgreSQL",
+            "MaterializedPostgreSQL",
             "RabbitMQ",
             "S3",
             "URL",
-        )
+            "AzureBlobStorage",
+            "AzureQueue",
+            "DeltaLake",
+            "EmbeddedRocksDB",
+            "TimeSeries",
+            "Hudi",
+            "NATS",
+            "Redis",
+            "SQLite",
+        ) or self.engine.startswith("Iceberg")
 
     def __hash__(self):
         return hash((self.database, self.name))
