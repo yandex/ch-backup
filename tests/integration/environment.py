@@ -9,11 +9,6 @@ from tests.integration import env_control
 from tests.integration.modules.logs import save_logs
 from tests.integration.modules.utils import version_ge, version_lt
 
-try:
-    import ipdb as pdb
-except ImportError:
-    import pdb  # type: ignore
-
 
 def before_all(context):
     """
@@ -51,16 +46,18 @@ def after_step(context, step):
     """
     if step.status == "failed":
         save_logs(context)
-        if context.config.userdata.getbool("debug"):
-            pdb.post_mortem(step.exc_traceback)
 
 
 def after_all(context):
     """
     Top-level cleanup function.
     """
-    if context.failed and not context.aborted:
-        logging.warning("Remember to run `make clean` after you done")
+    if (
+        context.failed
+        and not context.aborted
+        and context.config.userdata.getbool("no_stop_on_fail")
+    ):
+        logging.info("Not stopping containers on failure as requested")
         return
     env_control.stop(context)
 

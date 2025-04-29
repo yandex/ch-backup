@@ -242,5 +242,7 @@ help:
 	@echo "  PYTHON                     Python executable to use (default: \"$(PYTHON)\")."
 	@echo "  PYTEST_ARGS                Arguments to pass to pytest (unit tests)."
 	@echo "  BEHAVE_ARGS                Arguments to pass to behave (integration tests)."
+	@echo "                             Project-specific behave options:"
+	@echo "                               -D no_stop_on_fail  Keep Docker containers running on test failure."
 	@echo "  NO_VENV                    Disable creation of venv if the variable is set to non-empty value."
 	@echo "  CLICKHOUSE_VERSION         ClickHouse version to use in integration tests (default: \"$(CLICKHOUSE_VERSION)\")."
