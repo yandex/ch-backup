@@ -12,9 +12,7 @@ tenacity<8.4.0
 kazoo
 xmltodict
 pypeln==0.4.9
-dataclasses>=0.7,<0.8; python_version <"3.7"  # required for pypeln==0.4.9
-typing_extensions>=3.7.4,<4.0; python_version <"3.8"  # required for pypeln==0.4.9
 loguru
-setuptools>=71.1; python_version >="3.8"  # instead of python3-setuptools package
+setuptools>=71.1
 boto3<1.21; python_version >="3.12"
 botocore<1.24; python_version >="3.12"
