@@ -1,15 +1,15 @@
-isort;              python_version >="3.8"
-black;              python_version >="3.8"
-ruff;               python_version >="3.8"
-pylint<4.0;         python_version >="3.8"
-mypy==1.9.0;        python_version >="3.8"
-mypy-boto3-s3;      python_version >="3.8"
-types-PyYAML;       python_version >="3.8"
-types-dataclasses;  python_version >="3.8"
-types-requests;     python_version >="3.8"
-types-tabulate;     python_version >="3.8"
-bandit;             python_version >="3.8"
-codespell;          python_version >="3.8"
+isort
+black
+ruff
+pylint<4.0
+mypy==1.9.0
+mypy-boto3-s3
+types-PyYAML
+types-dataclasses
+types-requests
+types-tabulate
+bandit
+codespell
 pytest
 PyHamcrest
 hypothesis

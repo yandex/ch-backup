@@ -43,10 +43,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-        - python: "3.7"
-          clickhouse: "latest"
-        - python: "3.8"
-          clickhouse: "latest"
         - python: "3.9"
           clickhouse: "latest"
         - python: "3.10"
@@ -56,9 +52,11 @@ jobs:
         - python: "3.10"
           clickhouse: "23.8.16.40"
         - python: "3.10"
-          clickhouse: "24.3.11.7"
+          clickhouse: "24.3.18.7"
         - python: "3.10"
-          clickhouse: "24.8.4.13"
+          clickhouse: "24.8.14.39"
+        - python: "3.10"
+          clickhouse: "25.3.3.42"
         - python: "3.10"
           clickhouse: "latest"
         - python: "3.11"
