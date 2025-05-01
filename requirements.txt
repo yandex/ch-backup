@@ -16,3 +16,4 @@ loguru
 setuptools>=71.1
 boto3<1.21; python_version >="3.12"
 botocore<1.24; python_version >="3.12"
+legacy-cgi; python_version >="3.13"
