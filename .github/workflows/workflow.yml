@@ -17,10 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - uses: actions/setup-python@v5
-      with:
-        python-version: "3.10"
-        cache: pip
+    - uses: astral-sh/setup-uv@v5
     - name: "lint: isort"
       run: make isort
     - name: "lint: black"
@@ -66,14 +63,11 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v4
-    - name: set up python ${{ matrix.python }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python }}
+    - uses: astral-sh/setup-uv@v5
     - name: run unit tests
-      run: make test-unit
+      run: PYTHON_VERSION=${{ matrix.python }} make test-unit
     - name: run integration tests
-      run: make test-integration
+      run: PYTHON_VERSION=${{ matrix.python }} make test-integration
       env:
         CLICKHOUSE_VERSION: ${{ matrix.clickhouse == 'latest' && env.LATEST_CLICKHOUSE_VERSION || matrix.clickhouse }}
     - uses: actions/upload-artifact@v4

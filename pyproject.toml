@@ -1,0 +1,105 @@
+[project]
+name = "ch-backup"
+description = "Backup tool for ClickHouse DBMS."
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/yandex/ch-backup"
+repository = "https://github.com/yandex/ch-backup"
+dynamic = ["version"]
+requires-python = ">=3.9"
+keywords=[
+    "clickhouse",
+    "database",
+    "administration",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: BSD",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Unix",
+    "Environment :: Console",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Typing :: Typed",
+]
+dependencies = [
+    "boto3<1.19 ; python_full_version < '3.12'",
+    "boto3<1.21 ; python_full_version >= '3.12'",
+    "botocore<1.22 ; python_full_version < '3.12'",
+    "botocore<1.24 ; python_full_version >= '3.12'",
+    "click>=8.1.8",
+    "cloup>=3.0.7",
+    "humanfriendly>=10.0",
+    "kazoo>=2.10.0",
+    "legacy-cgi>=2.6.3 ; python_full_version >= '3.13'",
+    "loguru>=0.7.3",
+    "psutil>=7.0.0",
+    "pynacl==1.2.1",
+    "pypeln==0.4.9",
+    "pyyaml<5.4",
+    "requests>2.19,<2.29",
+    "setuptools>=71.1",
+    "tabulate>=0.9.0",
+    "tenacity<8.4.0",
+    "xmltodict>=0.14.2",
+]
+
+[dependency-groups]
+dev = [
+    "bandit>=1.8.3",
+    "behave>=1.2.6",
+    "black>=25.1.0",
+    "codespell>=2.4.1",
+    "deepdiff<7.1.0",
+    "docker<8.0",
+    "docker-compose<1.29 ; python_full_version < '3.13'",
+    "hypothesis>=6.131.9",
+    "isort>=6.0.1",
+    "jinja2>=3.1.6",
+    "mypy==1.9.0",
+    "mypy-boto3-s3>=1.38.0",
+    "pyhamcrest>=2.1.0",
+    "pylint<4.0",
+    "pytest>=8.3.5",
+    "ruff>=0.11.8",
+    "types-dataclasses>=0.6.6",
+    "types-pyyaml>=6.0.12.20250402",
+    "types-requests>=2.31.0.6",
+    "types-tabulate>=0.9.0.20241207",
+    "websocket-client<2.0 ; python_full_version < '3.13'",
+]
+
+[project.scripts]
+ch-backup = "ch_backup:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "ch_backup/version.txt"
+pattern = "(?P<version>.+)"
+
+[tool.hatch.build]
+ignore-vcs = true  # to prevent excluding generated files
+only-include = ["ch_backup"]
+
+[tool.isort]
+profile = "black"
+
+[tool.mypy]
+ignore_missing_imports = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+exclude = ["tests/staging"]
+
+[tool.codespell]
+ignore-words-list = "sav,fpr"

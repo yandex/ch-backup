@@ -9,9 +9,9 @@
 .install-deps
 .mypy_cache/
 .pytest_cache/
-.python-version
 .session_conf.sav
 .tox/
+.venv/
 .vscode
 build/
 ch_backup/version.txt
