@@ -95,11 +95,5 @@ only-include = ["ch_backup"]
 [tool.isort]
 profile = "black"
 
-[tool.mypy]
-ignore_missing_imports = true
-disallow_incomplete_defs = true
-check_untyped_defs = true
-exclude = ["tests/staging"]
-
 [tool.codespell]
 ignore-words-list = "sav,fpr"

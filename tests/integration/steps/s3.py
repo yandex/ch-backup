@@ -4,6 +4,7 @@ Steps for interacting with S3.
 
 from behave import given, then, when
 from hamcrest import assert_that, equal_to
+
 from tests.integration.modules import s3
 from tests.integration.modules.minio import configure_s3_credentials, create_s3_buckets
 from tests.integration.modules.steps import get_step_data
