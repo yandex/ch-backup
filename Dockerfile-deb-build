@@ -27,8 +27,7 @@ RUN set -ex \
     # Configure locales
     && locale-gen en_US.UTF-8 \
     && update-locale LANG=en_US.UTF-8 \
-    # Ensure that `python` refers to `python3` so that poetry works.
-    # It makes sense for ubuntu:18.04
+    # Ensure that `python` refers to `python3`
     && ln -sf /usr/bin/python3 /usr/bin/python \
     # Install `uv`
     && python3 -m pip install --upgrade pip \

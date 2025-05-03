@@ -144,7 +144,7 @@ uninstall:
 
 
 .PHONY: build-deb-package
-build-deb-package:
+build-deb-package: setup
 	./build_deb_in_docker.sh
 
 
