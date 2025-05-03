@@ -29,7 +29,11 @@ RUN set -ex \
     && update-locale LANG=en_US.UTF-8 \
     # Ensure that `python` refers to `python3` so that poetry works.
     # It makes sense for ubuntu:18.04
-    && ln -sf /usr/bin/python3 /usr/bin/python
+    && ln -sf /usr/bin/python3 /usr/bin/python \
+    # Install `uv`
+    && python3 -m pip install --upgrade pip \
+    && python3 -m pip install uv \
+    && ln -sf /usr/local/bin/uv /usr/bin/uv
 
 # Project directory must be mounted here
 VOLUME /src

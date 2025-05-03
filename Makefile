@@ -34,12 +34,12 @@ INTEGRATION_TEST_TOOL=uv run python -m tests.integration.env_control
 
 
 .PHONY: build
-build: generate
+build: setup
 	uv build --python $(PYTHON_VERSION)
 
 
-.PHONY: generate
-generate: check-environment ch_backup/version.txt
+.PHONY: setup
+setup: check-environment ch_backup/version.txt
 
 
 .PHONY: all
@@ -47,69 +47,69 @@ all: lint test-unit build test-integration
 
 
 .PHONY: lint
-lint: generate isort black codespell ruff pylint mypy bandit
+lint: setup isort black codespell ruff pylint mypy bandit
 
 
 .PHONY: isort
-isort: generate
+isort: setup
 	uv run --python $(PYTHON_VERSION) isort --check --diff $(SRC_DIR) $(TESTS_DIR)
 
 
 .PHONY: black
-black: generate
+black: setup
 	uv run --python $(PYTHON_VERSION) black --check --diff $(SRC_DIR) $(TESTS_DIR)
 
 
 .PHONY: codespell
-codespell: generate
+codespell: setup
 	uv run --python $(PYTHON_VERSION) codespell $(SRC_DIR) $(TESTS_DIR)
 
 
 .PHONY: fix-codespell-errors
-fix-codespell-errors: generate
+fix-codespell-errors: setup
 	uv run --python $(PYTHON_VERSION) codespell -w $(SRC_DIR) $(TESTS_DIR)
 
 
 .PHONY: ruff
-ruff: generate
+ruff: setup
 	uv run --python $(PYTHON_VERSION) ruff check $(SRC_DIR) $(TESTS_DIR)
 
 
 .PHONY: pylint
-pylint: generate
+pylint: setup
 	uv run --python $(PYTHON_VERSION) pylint $(SRC_DIR)
 	uv run --python $(PYTHON_VERSION) pylint --disable=missing-docstring,invalid-name $(TESTS_DIR)
 
 
 .PHONY: mypy
-mypy: generate
+mypy: setup
 	uv run --python $(PYTHON_VERSION) mypy $(SRC_DIR) $(TESTS_DIR)
 
 
 .PHONY: bandit
-bandit: generate
+bandit: setup
 	uv run --python $(PYTHON_VERSION) bandit -c bandit.yaml -r ch_backup
 
 
 .PHONY: format
-format: generate
+format: setup
 	uv run --python ${PYTHON_VERSION} isort .
 	uv run --python ${PYTHON_VERSION} black .
 
 
 .PHONY: test-unit
-test-unit: generate
+test-unit: setup
 	uv run --python $(PYTHON_VERSION) py.test $(PYTEST_ARGS) tests
 
 
 .PHONY: test-integration
-test-integration: create-env
+test-integration: create-test-env
 	rm -rf staging/logs
 	uv run behave --show-timings --stop -D skip_setup $(BEHAVE_ARGS) @tests/integration/ch_backup.featureset
 
 
 .PHONY: clean
-clean: clean-env clean-pycache clean-debuild
+clean: clean-test-env clean-pycache clean-debuild
 	rm -rf ${VENV} *.egg-info htmlcov .coverage* .hypothesis .mypy_cache .pytest_cache \
 	     .ruff_cache ch_backup/version.txt dist
 
@@ -121,9 +121,8 @@ clean-pycache:
 .PHONY: install
 install:
 	@echo "Installing into $(INSTALL_DIR)"
-	$(PYTHON) -m venv $(INSTALL_DIR)
-	$(INSTALL_DIR)/bin/pip install -r requirements.txt
-	$(INSTALL_DIR)/bin/pip install .
+	python3 -m venv $(INSTALL_DIR)
+	$(INSTALL_DIR)/bin/pip install --no-compile $(BUILD_PYTHON_OUTPUT_DIR)/ch_backup-*.whl
 	mkdir -p $(DESTDIR)/usr/bin/
 	ln -s /opt/yandex/ch-backup/bin/ch-backup $(DESTDIR)/usr/bin/
 	mkdir -p $(DESTDIR)/etc/bash_completion.d/
@@ -155,7 +154,7 @@ build-deb-package-local: prepare-changelog
 
 
 .PHONY: prepare-changelog
-prepare-changelog: generate
+prepare-changelog: setup
 	@rm -f debian/changelog
 	dch --create --package ch-backup --distribution stable \
 	    -v `cat ch_backup/version.txt` \
@@ -168,25 +167,25 @@ clean-debuild:
 	rm -f ../ch-backup_*{build,changes,deb,dsc,tar.gz}
 
 
-.PHONY: create-env
-create-env: build ${SESSION_FILE}
+.PHONY: create-test-env
+create-test-env: build ${SESSION_FILE}
 
 ${SESSION_FILE}:
 	${INTEGRATION_TEST_TOOL} create
 
 
-.PHONY: start-env
-start-env: create-env
+.PHONY: start-test-env
+start-test-env: create-test-env
 	${INTEGRATION_TEST_TOOL} start
 
 
-.PHONY: stop-env
-stop-env:
+.PHONY: stop-test-env
+stop-test-env:
 	test -f ${SESSION_FILE} && ${INTEGRATION_TEST_TOOL} stop || true
 
 
-.PHONY: clean-env
-clean-env: stop-env
+.PHONY: clean-test-env
+clean-test-env: stop-test-env
 	rm -rf staging ${SESSION_FILE}
 
 
@@ -219,16 +218,14 @@ help:
 	@echo "  pylint                     Perform pylint checks."
 	@echo "  mypy                       Perform mypy checks.."
 	@echo "  bandit                     Perform bandit checks."
-	@echo "  clean                      Clean up build and test artifacts."
-	@echo "  create-env                 Create test environment."
-	@echo "  start-env                  Start test environment runtime."
-	@echo "  stop-env                   Stop test environment runtime."
-	@echo "  clean-env                  Clean up test environment."
-	@echo "  debuild                    Build Debian package."
-	@echo "  clean-debuild              Clean up build and test artifacts including ones produced by"
-	@echo "                             debuild target outside the project worksapce."
+	@echo "  create-test-env            Create test environment."
+	@echo "  start-test-env             Start test environment runtime."
+	@echo "  stop-test-env              Stop test environment runtime."
+	@echo "  clean-test-env             Clean up test environment."
+	@echo "  build-deb-package          Build Debian package."
 	@echo "  format                     Re-format source code to conform style settings enforced by"
 	@echo "                             isort and black tools."
+	@echo "  clean                      Clean up build and test artifacts."
 	@echo "  help                       Show this help message."
 	@echo
 	@echo "Environment Variables:"
