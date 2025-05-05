@@ -9,7 +9,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  NO_VENV: true
   LATEST_CLICKHOUSE_VERSION: latest
 
 jobs:
