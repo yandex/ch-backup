@@ -26,7 +26,6 @@ class LockManager:
     _lock_conf: dict
     _process_lockfile_path: str
     _process_zk_lockfile_path: str
-    _fd: int
     _zk_lock: Lock
     _file: IO
     _lock_id: str
@@ -95,7 +94,7 @@ class LockManager:
             return
 
         if self._lock_conf.get("flock"):
-            os.close(self._fd)
+            self._file.close()
         if self._zk_client and self._zk_lock is not None:
             self._zk_lock.release()
             self._zk_client.__exit__(None, None, None)
@@ -109,9 +108,8 @@ class LockManager:
         if not os.path.exists(self._process_lockfile_path):
             with open(self._process_lockfile_path, "w+", encoding="utf-8"):
                 pass
-        self._file = open(self._process_lockfile_path, "r", encoding="utf-8")
-        self._fd = self._file.fileno()
-        flock(self._fd, LOCK_SH)
+        self._file = open(self._process_lockfile_path, "r+", encoding="utf-8")
+        flock(self._file, LOCK_SH)
 
     def _zk_flock(self) -> None:
         """
