@@ -1,8 +1,8 @@
 #!/usr/bin/make -f
 # -*- makefile -*-
 
-PYTHON_MAJOR := $(shell $(PYTHON) -c 'import sys; print(sys.version_info[0])')
-PYTHON_MINOR := $(shell $(PYTHON) -c 'import sys; print(sys.version_info[1])')
+PYTHON_MAJOR := $(shell python3 -c 'import sys; print(sys.version_info[0])')
+PYTHON_MINOR := $(shell python3 -c 'import sys; print(sys.version_info[1])')
 
 PYTHON_FROM := $(PYTHON_MAJOR).$(PYTHON_MINOR)
 PYTHON_TO := $(PYTHON_MAJOR).$(shell echo $$(( $(PYTHON_MINOR) + 1 )))

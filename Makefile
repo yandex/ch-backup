@@ -1,30 +1,10 @@
 SHELL := bash
 
-export PYTHON?=python3
-export PYTHONIOENCODING?=utf8
-export NO_VENV?=
-export COMPOSE_HTTP_TIMEOUT?=300
-export CLICKHOUSE_VERSION?=latest
+export PYTHON_VERSION ?= $(shell cat .python-version)
+export PYTHONIOENCODING ?= utf8
+export COMPOSE_HTTP_TIMEOUT ?= 300
+export CLICKHOUSE_VERSION ?= latest
 export PROJECT_NAME ?= ch-backup
-
-ifndef NO_VENV
-  PATH:=venv/bin:${PATH}
-endif
-
-PYTHON_VERSION=$(shell ${PYTHON} -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
-SESSION_FILE=.session_conf.sav
-INSTALL_DIR=$(DESTDIR)/opt/yandex/ch-backup
-SRC_DIR ?= ch_backup
-TESTS_DIR ?= tests
-
-TEST_ENV=env \
-    PATH=${PATH} \
-    PYTHON_VERSION=${PYTHON_VERSION} \
-    PYTHONIOENCODING=${PYTHONIOENCODING} \
-    CLICKHOUSE_VERSION=${CLICKHOUSE_VERSION} \
-    COMPOSE_HTTP_TIMEOUT=${COMPOSE_HTTP_TIMEOUT}
-
-INTEGRATION_TEST_TOOL=${TEST_ENV} python -m tests.integration.env_control
 
 export BUILD_PYTHON_OUTPUT_DIR ?= dist
 export BUILD_DEB_OUTPUT_DIR ?= out
@@ -45,63 +25,93 @@ export DEB_TARGET_PLATFORM ?=
 export DEB_BUILD_DISTRIBUTION ?=
 
 
+SRC_DIR = ch_backup
+TESTS_DIR = tests
+VENV = .venv
+SESSION_FILE = .session_conf.sav
+INSTALL_DIR = $(DESTDIR)/opt/yandex/ch-backup
+INTEGRATION_TEST_TOOL=uv run python -m tests.integration.env_control
+
+
 .PHONY: build
-build: install-deps ch_backup/version.txt
+build: setup
+	uv build --python $(PYTHON_VERSION)
+
+
+.PHONY: setup
+setup: check-environment ch_backup/version.txt
+
 
 .PHONY: all
-all: build lint test-unit test-integration
+all: lint test-unit build test-integration
+
 
 .PHONY: lint
-lint: build isort black codespell ruff pylint mypy bandit
+lint: setup isort black codespell ruff pylint mypy bandit
+
 
 .PHONY: isort
-isort: install-deps
-	${TEST_ENV} isort --check --diff $(SRC_DIR) $(TESTS_DIR)
+isort: setup
+	uv run --python $(PYTHON_VERSION) isort --check --diff $(SRC_DIR) $(TESTS_DIR)
+
 
 .PHONY: black
-black: install-deps
-	${TEST_ENV} black --check --diff $(SRC_DIR) $(TESTS_DIR)
+black: setup
+	uv run --python $(PYTHON_VERSION) black --check --diff $(SRC_DIR) $(TESTS_DIR)
+
 
 .PHONY: codespell
-codespell: install-deps
-	${TEST_ENV} codespell
+codespell: setup
+	uv run --python $(PYTHON_VERSION) codespell $(SRC_DIR) $(TESTS_DIR)
+
 
 .PHONY: fix-codespell-errors
-fix-codespell-errors: install-deps
-	${TEST_ENV} codespell -w
+fix-codespell-errors: setup
+	uv run --python $(PYTHON_VERSION) codespell -w $(SRC_DIR) $(TESTS_DIR)
+
 
 .PHONY: ruff
-ruff: install-deps
-	${TEST_ENV} ruff check $(SRC_DIR) $(TESTS_DIR)
+ruff: setup
+	uv run --python $(PYTHON_VERSION) ruff check $(SRC_DIR) $(TESTS_DIR)
+
 
 .PHONY: pylint
-pylint: build
-	${TEST_ENV} pylint $(SRC_DIR)
-	${TEST_ENV} pylint --disable=missing-docstring,invalid-name $(TESTS_DIR)
+pylint: setup
+	uv run --python $(PYTHON_VERSION) pylint $(SRC_DIR)
+	uv run --python $(PYTHON_VERSION) pylint --disable=missing-docstring,invalid-name $(TESTS_DIR)
+
 
 .PHONY: mypy
-mypy: install-deps
-	${TEST_ENV} mypy $(SRC_DIR) $(TESTS_DIR)
+mypy: setup
+	uv run --python $(PYTHON_VERSION) mypy $(SRC_DIR) $(TESTS_DIR)
+
 
 .PHONY: bandit
-bandit: install-deps
-	${TEST_ENV} bandit -c bandit.yaml -r ch_backup
+bandit: setup
+	uv run --python $(PYTHON_VERSION) bandit -c bandit.yaml -r ch_backup
+
+
+.PHONY: format
+format: setup
+	uv run --python ${PYTHON_VERSION} isort .
+	uv run --python ${PYTHON_VERSION} black .
 
 
 .PHONY: test-unit
-test-unit: build
-	${TEST_ENV} py.test $(PYTEST_ARGS) tests
+test-unit: setup
+	uv run --python $(PYTHON_VERSION) py.test $(PYTEST_ARGS) tests
 
 
 .PHONY: test-integration
-test-integration: build create-env
+test-integration: create-test-env
 	rm -rf staging/logs
-	${TEST_ENV} behave --show-timings --stop -D skip_setup $(BEHAVE_ARGS) @tests/integration/ch_backup.featureset
+	uv run behave --show-timings --stop -D skip_setup $(BEHAVE_ARGS) @tests/integration/ch_backup.featureset
 
 
 .PHONY: clean
-clean: clean-env clean-pycache clean-debuild
-	rm -rf venv *.egg-info htmlcov .coverage* .hypothesis .mypy_cache .pytest_cache .install-deps ch_backup/version.txt
+clean: clean-test-env clean-pycache clean-debuild
+	rm -rf ${VENV} *.egg-info htmlcov .coverage* .hypothesis .mypy_cache .pytest_cache \
+	     .ruff_cache ch_backup/version.txt dist
 
 .PHONY: clean-pycache
 clean-pycache:
@@ -111,9 +121,8 @@ clean-pycache:
 .PHONY: install
 install:
 	@echo "Installing into $(INSTALL_DIR)"
-	$(PYTHON) -m venv $(INSTALL_DIR)
-	$(INSTALL_DIR)/bin/pip install -r requirements.txt
-	$(INSTALL_DIR)/bin/pip install .
+	python3 -m venv $(INSTALL_DIR)
+	$(INSTALL_DIR)/bin/pip install --no-compile $(BUILD_PYTHON_OUTPUT_DIR)/ch_backup-*.whl
 	mkdir -p $(DESTDIR)/usr/bin/
 	ln -s /opt/yandex/ch-backup/bin/ch-backup $(DESTDIR)/usr/bin/
 	mkdir -p $(DESTDIR)/etc/bash_completion.d/
@@ -134,10 +143,8 @@ uninstall:
 	rm -rf $(INSTALL_DIR) $(DESTDIR)/usr/bin/ch-backup $(DESTDIR)/etc/bash_completion.d/ch-backup
 
 
-
-
 .PHONY: build-deb-package
-build-deb-package:
+build-deb-package: setup
 	./build_deb_in_docker.sh
 
 
@@ -147,7 +154,7 @@ build-deb-package-local: prepare-changelog
 
 
 .PHONY: prepare-changelog
-prepare-changelog: build
+prepare-changelog: setup
 	@rm -f debian/changelog
 	dch --create --package ch-backup --distribution stable \
 	    -v `cat ch_backup/version.txt` \
@@ -160,62 +167,47 @@ clean-debuild:
 	rm -f ../ch-backup_*{build,changes,deb,dsc,tar.gz}
 
 
-.PHONY: create-env
-create-env: build ${SESSION_FILE}
+.PHONY: create-test-env
+create-test-env: build ${SESSION_FILE}
 
 ${SESSION_FILE}:
 	${INTEGRATION_TEST_TOOL} create
 
 
-.PHONY: start-env
-start-env: create-env
+.PHONY: start-test-env
+start-test-env: create-test-env
 	${INTEGRATION_TEST_TOOL} start
 
 
-.PHONY: stop-env
-stop-env:
+.PHONY: stop-test-env
+stop-test-env:
 	test -f ${SESSION_FILE} && ${INTEGRATION_TEST_TOOL} stop || true
 
 
-.PHONY: clean-env
-clean-env: stop-env
+.PHONY: clean-test-env
+clean-test-env: stop-test-env
 	rm -rf staging ${SESSION_FILE}
-
-
-.PHONY: format
-format: install-deps
-	${TEST_ENV} isort .
-	${TEST_ENV} black .
 
 
 ch_backup/version.txt:
 	@echo "2.$$(git rev-list HEAD --count).$$(git rev-parse --short HEAD | perl -ne 'print hex $$_')" > ch_backup/version.txt
 
 
-.PHONY: install-deps
-install-deps: check-environment .install-deps
-
 .PHONY: check-environment
 check-environment:
-	@test="$(command -v ${PYTHON})"; if [ $$? -eq 1 ]; then \
-		echo 'Python interpreter "${PYTHON}" ($$PYTHON) not found' >&2; exit 1; \
+	@if ! command -v "uv" &>/dev/null; then \
+		echo 'Python project manager tool "uv" not found. Please follow installation instructions at https://docs.astral.sh/uv/getting-started/installation.' >&2; exit 1; \
 	fi
 	@if [ -z "${PYTHON_VERSION}" ]; then \
-		echo 'Failed to determine version of Python interpreter "${PYTHON}" ($$PYTHON)' >&2; exit 1; \
+		echo 'Failed to determine version of Python interpreter to use.' >&2; exit 1; \
 	fi
-
-.install-deps: requirements.txt requirements-dev.txt
-	if [ -z "${NO_VENV}" ]; then ${PYTHON} -m venv venv; fi
-	${TEST_ENV} pip install --upgrade pip
-	${TEST_ENV} pip install --no-cache-dir --disable-pip-version-check -r requirements.txt -r requirements-dev.txt
-	touch .install-deps
 
 
 .PHONY: help
 help:
 	@echo "Targets:"
-	@echo "  build (default)            Build project. It installs dependencies and generates version.txt."
-	@echo "  all                        Alias for \"build lint test-unit test-integration\"."
+	@echo "  build (default)            Build Python packages (sdist and wheel)."
+	@echo "  all                        Alias for \"lint test-unit build test-integration\"."
 	@echo "  lint                       Run all linter tools. Alias for \"isort black codespell ruff pylint mypy bandit\"."
 	@echo "  test-unit                  Run unit tests."
 	@echo "  test-integration           Run integration tests."
@@ -226,21 +218,18 @@ help:
 	@echo "  pylint                     Perform pylint checks."
 	@echo "  mypy                       Perform mypy checks.."
 	@echo "  bandit                     Perform bandit checks."
-	@echo "  clean                      Clean up build and test artifacts."
-	@echo "  create-env                 Create test environment."
-	@echo "  start-env                  Start test environment runtime."
-	@echo "  stop-env                   Stop test environment runtime."
-	@echo "  clean-env                  Clean up test environment."
-	@echo "  debuild                    Build Debian package."
-	@echo "  clean-debuild              Clean up build and test artifacts including ones produced by"
-	@echo "                             debuild target outside the project worksapce."
+	@echo "  create-test-env            Create test environment."
+	@echo "  start-test-env             Start test environment runtime."
+	@echo "  stop-test-env              Stop test environment runtime."
+	@echo "  clean-test-env             Clean up test environment."
+	@echo "  build-deb-package          Build Debian package."
 	@echo "  format                     Re-format source code to conform style settings enforced by"
 	@echo "                             isort and black tools."
+	@echo "  clean                      Clean up build and test artifacts."
 	@echo "  help                       Show this help message."
 	@echo
 	@echo "Environment Variables:"
-	@echo "  PYTHON                     Python executable to use (default: \"$(PYTHON)\")."
+	@echo "  PYTHON_VERSION             Python version to use (default: \"$(PYTHON_VERSION)\")."
 	@echo "  PYTEST_ARGS                Arguments to pass to pytest (unit tests)."
 	@echo "  BEHAVE_ARGS                Arguments to pass to behave (integration tests)."
-	@echo "  NO_VENV                    Disable creation of venv if the variable is set to non-empty value."
 	@echo "  CLICKHOUSE_VERSION         ClickHouse version to use in integration tests (default: \"$(CLICKHOUSE_VERSION)\")."

@@ -4,13 +4,12 @@ Unit tests clickhouse encryption.
 
 from itertools import chain
 
-from tests.unit.utils import assert_equal, parametrize
-
 from ch_backup.clickhouse.encryption import (
     EncryptedFile,
     EncryptedFileAlgorithm,
     EncryptedFileHeader,
 )
+from tests.unit.utils import assert_equal, parametrize
 
 PIPELINE_TEST_COUNT = 100
 

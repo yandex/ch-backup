@@ -54,7 +54,7 @@ class ExecPool:
         func: Callable,
         *args: Any,
         callback: Optional[Callable] = None,
-        **kwargs: Any
+        **kwargs: Any,
     ) -> None:
         """
         Schedule job for execution

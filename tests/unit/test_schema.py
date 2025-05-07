@@ -2,10 +2,9 @@
 Unit tests schema module.
 """
 
-from tests.unit.utils import parametrize
-
 from ch_backup.clickhouse.models import Table
 from ch_backup.clickhouse.schema import rewrite_table_schema
+from tests.unit.utils import parametrize
 
 UUID = "223b4576-76f0-4ed3-976f-46db82af82a9"
 INNER_UUID = "fa8ff291-1922-4b7f-afa7-06633d5e16ae"

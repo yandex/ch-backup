@@ -4,6 +4,7 @@ Steps for interacting with ZooKeeper.
 
 from behave import given, then, when
 from hamcrest import assert_that, has_length
+
 from tests.integration.modules.steps import get_step_data
 from tests.integration.modules.zookeeper import (
     delete_znode,

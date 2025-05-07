@@ -5,11 +5,10 @@ Access entities unit tests.
 from typing import Optional
 from unittest import mock
 
-from tests.unit.utils import parametrize
-
 from ch_backup.backup_context import BackupContext
 from ch_backup.logic import access
 from ch_backup.zookeeper.zookeeper import ZookeeperCTL
+from tests.unit.utils import parametrize
 
 
 def zookeeper_mock(config: Optional[dict] = None) -> ZookeeperCTL:

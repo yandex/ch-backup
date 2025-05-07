@@ -1,6 +1,5 @@
-from tests.unit.utils import parametrize
-
 from ch_backup.clickhouse.control import _format_string_array
+from tests.unit.utils import parametrize
 
 
 @parametrize(

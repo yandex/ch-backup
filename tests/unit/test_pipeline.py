@@ -164,9 +164,10 @@ def test_pipeline_roundtrip(
         forward_file_path, backward_file_name, read_conf, encrypt_conf, write_conf
     )
 
-    with open(original_file_path, "rb") as orig_fobj, open(
-        backward_file_name, "rb"
-    ) as res_fobj:
+    with (
+        open(original_file_path, "rb") as orig_fobj,
+        open(backward_file_name, "rb") as res_fobj,
+    ):
         orig_contents = orig_fobj.read()
         res_contents = res_fobj.read()
 
