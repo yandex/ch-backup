@@ -151,8 +151,6 @@ class Table(SimpleNamespace):
             "AzureBlobStorage",
             "AzureQueue",
             "DeltaLake",
-            "EmbeddedRocksDB",
-            "TimeSeries",
             "Hudi",
             "NATS",
             "Redis",
