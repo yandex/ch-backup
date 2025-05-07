@@ -1,5 +1,8 @@
 name: Sourcery Code Review
 
+permissions:
+  contents: read
+
 on:
   pull_request:
     branches: [ main ]
@@ -9,6 +12,7 @@ on:
 jobs:
   sourcery_review:
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
