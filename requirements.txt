@@ -17,5 +17,5 @@ kazoo
 xmltodict
 pypeln==0.4.9
 loguru
-setuptools>=71.1; python_version >="3.12"  # for compatibility with "pypeln" and its dependency "stopit"
+setuptools>=71.1
 packaging
