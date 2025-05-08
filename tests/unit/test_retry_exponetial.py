@@ -5,9 +5,9 @@ Unit test for RateLimiter.
 from typing import List
 
 import pytest
-from tests.unit.time_mocker import TimeMocker
 
 from ch_backup.storage.engine.s3.s3_retry import retry
+from tests.unit.time_mocker import TimeMocker
 
 
 @pytest.mark.parametrize(

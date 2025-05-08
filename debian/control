@@ -2,7 +2,7 @@ Source: ch-backup
 Section: database
 Priority: optional
 Maintainer: Yandex LLC
-Build-Depends: debhelper (>= 8.0.0), python3 (>= 3.6), python3-venv, python3-pip
+Build-Depends: debhelper (>= 8.0.0), python3 (>= 3.9), python3-venv, python3-pip
 Standards-Version: 3.9.4
 Homepage: https://github.com/yandex/ch-backup
 Vcs-Browser: https://github.com/yandex/ch-backup.git
