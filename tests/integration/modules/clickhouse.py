@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from typing import Any, List, Sequence, Tuple, Union
 from urllib.parse import urljoin
 
-from pkg_resources import parse_version
+from packaging.version import parse as parse_version
 from requests import HTTPError, Session
 
 from . import docker

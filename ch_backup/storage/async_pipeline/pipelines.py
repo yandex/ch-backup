@@ -6,6 +6,7 @@ from pathlib import Path
 from tarfile import BLOCKSIZE
 from typing import Any, AnyStr, List, Optional, Sequence
 
+from ch_backup import logging
 from ch_backup.calculators import (
     calc_aligned_files_size,
     calc_aligned_files_size_scan,
@@ -196,8 +197,20 @@ def run(pipeline: PypelnStage) -> None:
     """
     Run pipeline until it is complete.
     """
-    itr = iter(pipeline)
-    exhaust_iterator(itr)
+    try:
+        itr = iter(pipeline)
+        exhaust_iterator(itr)
+    except ValueError as e:
+        # The library "stopit" (dependency of "pypeln") as of the version 1.1.2, incorrectly handle the case when
+        # timeout exception is sent to already terminated thread. It's incorrectly interpreted as an internal error.
+        # https://github.com/glenfant/stopit/blob/dda4bd181d1d29ab1fb22314dc9bde0e3c931abc/src/stopit/threadstop.py#L37
+        if "Invalid thread ID" in str(e):
+            logging.warning(
+                "Thread ID error due to incorrect handling of thread termination in stopit library, skipping",
+                exc_info=True,
+            )
+        else:
+            raise
 
 
 def run_and_return_first(pipeline: PypelnStage) -> Any:

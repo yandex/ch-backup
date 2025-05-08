@@ -64,11 +64,11 @@ black: install-deps
 
 .PHONY: codespell
 codespell: install-deps
-	${TEST_ENV} codespell
+	${TEST_ENV} codespell $(SRC_DIR) $(TESTS_DIR) *.md
 
 .PHONY: fix-codespell-errors
 fix-codespell-errors: install-deps
-	${TEST_ENV} codespell -w
+	${TEST_ENV} codespell -w $(SRC_DIR) $(TESTS_DIR) *.md
 
 .PHONY: ruff
 ruff: install-deps

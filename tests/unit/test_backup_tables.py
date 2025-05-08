@@ -106,8 +106,9 @@ def test_backup_table_skipping_if_metadata_updated_during_backup(
     read_bytes_mock = Mock(return_value=creation_statement.encode())
 
     # Backup table
-    with patch("os.stat", side_effect=fake_stats), patch(
-        "ch_backup.logic.table.Path", read_bytes=read_bytes_mock
+    with (
+        patch("os.stat", side_effect=fake_stats),
+        patch("ch_backup.logic.table.Path", read_bytes=read_bytes_mock),
     ):
         table_backup.backup(
             context,

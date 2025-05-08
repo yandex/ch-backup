@@ -10,7 +10,7 @@ from random import choice as random_choise
 from types import SimpleNamespace
 from typing import Mapping, MutableMapping, MutableSequence
 
-from pkg_resources import parse_version
+from packaging.version import parse as parse_version
 
 from .typing import ContextT
 

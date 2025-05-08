@@ -242,7 +242,7 @@ class PipelineBuilder:
                 maxsize=queue_size,
             ),
             thread_flat_map(ChunkingStage(chunk_size, buffer_size), maxsize=queue_size),
-            *stages
+            *stages,
         )
         return self
 

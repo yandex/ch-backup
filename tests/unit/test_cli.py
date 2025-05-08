@@ -2,9 +2,8 @@
 Cli unit tests.
 """
 
-from tests.unit.utils import parametrize
-
 from ch_backup import cli
+from tests.unit.utils import parametrize
 
 
 @parametrize(
