@@ -14,6 +14,7 @@ from hamcrest import (
     matches_regexp,
     starts_with,
 )
+
 from tests.integration.modules.ch_backup import BackupManager
 from tests.integration.modules.docker import get_container
 from tests.integration.modules.steps import get_step_data

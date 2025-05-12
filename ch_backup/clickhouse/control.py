@@ -12,7 +12,7 @@ from pathlib import Path
 from tarfile import BLOCKSIZE  # type: ignore
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
 
-from pkg_resources import parse_version
+from packaging.version import parse as parse_version
 
 from ch_backup import logging
 from ch_backup.backup.metadata import TableMetadata

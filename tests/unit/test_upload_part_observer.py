@@ -2,14 +2,13 @@ import copy
 from typing import List
 from unittest.mock import Mock, patch
 
-from tests.unit.utils import parametrize
-
 from ch_backup.backup.metadata.backup_metadata import BackupMetadata
 from ch_backup.backup.metadata.part_metadata import PartMetadata
 from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.models import Database
 from ch_backup.logic.upload_part_observer import UploadPartObserver
+from tests.unit.utils import parametrize
 
 UUID = "fa8ff291-1922-4b7f-afa7-06633d5e16ae"
 DB_NAME = "test_db"

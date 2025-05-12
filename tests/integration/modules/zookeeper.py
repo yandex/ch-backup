@@ -7,6 +7,7 @@ from typing import List, Optional
 
 from kazoo.client import KazooClient
 from kazoo.exceptions import NodeExistsError, NoNodeError
+
 from tests.integration.modules.docker import get_container, get_exposed_port
 
 from .typing import ContextT

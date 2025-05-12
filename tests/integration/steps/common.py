@@ -4,6 +4,7 @@ Common steps.
 
 import yaml
 from behave import given, when
+
 from tests.integration.modules.ch_backup import get_version
 from tests.integration.modules.docker import copy_between_containers, get_container
 from tests.integration.modules.steps import get_step_data

@@ -5,12 +5,12 @@ Unit tests disks module.
 import unittest
 
 import xmltodict
-from tests.unit.utils import assert_equal, parametrize
 
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
 from ch_backup.config import DEFAULT_CONFIG, Config
+from tests.unit.utils import assert_equal, parametrize
 
 write_result = ""
 

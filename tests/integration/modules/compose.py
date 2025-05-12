@@ -4,6 +4,7 @@ Docker Compose interface.
 
 import os
 import shlex
+import shutil
 import subprocess
 
 import yaml
@@ -181,9 +182,13 @@ def _validate_config(context: ContextT) -> None:
 
 def _call_compose(conf: dict, *, command: str, project_name: str = None) -> None:
     """
-    Execute docker-compose action by invoking `docker-compose`.
+    Execute Docker Compose command.
     """
-    shell_command = f"docker-compose --file {_config_path(conf)}"
+    docker_compose = "docker-compose"
+    if shutil.which(docker_compose) is None:
+        docker_compose = "docker compose"
+
+    shell_command = f"{docker_compose} --file {_config_path(conf)}"
     if project_name:
         shell_command += f" -p {project_name}"
     shell_command += f" {command}"

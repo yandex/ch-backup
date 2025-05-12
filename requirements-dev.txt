@@ -1,21 +1,23 @@
-isort;              python_version >="3.8"
-black;              python_version >="3.8"
-ruff;               python_version >="3.8"
-pylint<4.0;         python_version >="3.8"
-mypy==1.9.0;        python_version >="3.8"
-mypy-boto3-s3;      python_version >="3.8"
-types-PyYAML;       python_version >="3.8"
-types-dataclasses;  python_version >="3.8"
-types-requests;     python_version >="3.8"
-types-tabulate;     python_version >="3.8"
-bandit;             python_version >="3.8"
-codespell;          python_version >="3.8"
+isort
+black
+ruff
+pylint<4.0
+mypy==1.9.0
+mypy-boto3-s3
+types-PyYAML
+types-dataclasses
+types-requests
+types-setuptools
+types-tabulate
+bandit
+codespell
 pytest
 PyHamcrest
 hypothesis
 behave
-docker<8.0
-docker-compose<1.29
-websocket-client<2.0  # required for docker-compose<1.29
+docker>=4.0,<8.0; python_version <"3.13"  # upper bound is for compatibility with "docker-compose"
+docker>=4.0; python_version >="3.13"
+docker-compose<1.29; python_version <"3.13"  # docker compose v1 (python implementation) is deprecated and not compatible with python versions >= 3.13
+websocket-client<2.0; python_version <"3.13"  # required for "docker-compose<1.29"
 Jinja2
 deepdiff<7.1.0
