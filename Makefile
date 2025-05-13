@@ -62,12 +62,12 @@ black: setup
 
 .PHONY: codespell
 codespell: setup
-	uv run --python $(PYTHON_VERSION) codespell $(SRC_DIR) $(TESTS_DIR)
+	uv run --python $(PYTHON_VERSION) codespell $(SRC_DIR) $(TESTS_DIR) *.md
 
 
 .PHONY: fix-codespell-errors
 fix-codespell-errors: setup
-	uv run --python $(PYTHON_VERSION) codespell -w $(SRC_DIR) $(TESTS_DIR)
+	uv run --python $(PYTHON_VERSION) codespell -w $(SRC_DIR) $(TESTS_DIR) *.md
 
 
 .PHONY: ruff

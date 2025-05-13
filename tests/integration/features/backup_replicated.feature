@@ -859,12 +859,12 @@ Feature: Backup replicated merge tree table
     | zookeeper_path          |
     |/databases/replicated/db_repl|
 
-    Scenario Outline: Add new host with replicated
+  Scenario Outline: Add new host with replicated
     Given we have enabled shared zookeeper for clickhouse01
     And we have enabled shared zookeeper for clickhouse02
     Given ClickHouse settings
     """
-      allow_experimental_database_replicated: 1
+    allow_experimental_database_replicated: 1
     """
     And we have executed queries on clickhouse01
     """
