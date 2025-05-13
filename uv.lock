@@ -392,7 +392,7 @@ dev = [
     { name = "docker", marker = "python_full_version >= '3.13'", specifier = ">=4.0" },
     { name = "docker-compose", marker = "python_full_version < '3.13'", specifier = "~=1.28.0" },
     { name = "hypothesis", specifier = ">=6.131.9" },
-    { name = "isort", specifier = ">=6.0.1" },
+    { name = "isort", specifier = ">=6.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "mypy", specifier = "~=1.9.0" },
     { name = "mypy-boto3-s3", specifier = ">=1.38" },

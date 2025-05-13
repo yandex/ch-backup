@@ -66,7 +66,7 @@ dev = [
     "docker >= 4.0 ; python_version >= '3.13'",
     "docker-compose ~= 1.28.0 ; python_version<'3.13'",
     "hypothesis >= 6.131.9",
-    "isort >= 6.0.1",
+    "isort >= 6.0",
     "jinja2 >= 3.1.6",
     "mypy ~= 1.9.0",
     "mypy-boto3-s3 >= 1.38",
@@ -84,6 +84,7 @@ dev = [
 [project.scripts]
 ch-backup = "ch_backup:main"
 
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -96,8 +97,77 @@ pattern = "(?P<version>.+)"
 ignore-vcs = true  # to prevent excluding generated files
 only-include = ["ch_backup"]
 
+
 [tool.isort]
 profile = "black"
 
+
 [tool.codespell]
 ignore-words-list = "sav,fpr"
+
+
+[tool.ruff]
+lint.select = ["E", "F", "W", "A"]
+lint.ignore = [
+    "A003",  # "Class attribute is shadowing a Python builtin"
+    "A005",  # Module `logging` shadows a Python standard-library module
+    "E402",  # "Module level import not at top of file", duplicate corresponding pylint check
+    "E501",  # "Line too long"
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # "Unused import"
+
+
+[tool.pylint.main]
+py-version = "3.9"  # Minimum Python version to use for version dependent checks
+jobs = 4  # Use multiple processes to speed up Pylint
+ignored-modules = [  # List of module names for which member attributes should not be checked
+    "behave",
+    "requests.packages",
+]
+
+[tool.pylint."messages control"]
+disable = [
+    "broad-exception-caught",
+    "duplicate-code",
+    "fixme",
+    "inconsistent-return-statements",
+    "line-too-long",
+    "raise-missing-from",
+    "too-few-public-methods",
+    "unnecessary-pass",
+    "use-dict-literal",
+]
+
+[tool.pylint.basic]
+include-naming-hint = true
+
+[tool.pylint.design]
+max-args = 10
+max-locals = 18
+max-branches = 14
+max-attributes = 10
+max-public-methods = 30
+
+[tool.pylint.refactoring]
+max-nested-blocks = 7
+
+[tool.pylint.reports]
+score = false
+
+
+[tool.mypy]
+python_version = 3.9
+ignore_missing_imports = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = "ch_backup.cli"
+disable_error_code = "arg-type"  # Suppress errors related to Click library usage
+
+[[tool.mypy.overrides]]
+module = "tests.integration.steps.*"
+disable_error_code = "arg-type,call-overload"  # Suppress errors related to PyHamcrest library usage
