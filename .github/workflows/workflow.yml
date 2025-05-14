@@ -66,7 +66,7 @@ jobs:
     - uses: actions/checkout@v4
     - uses: astral-sh/setup-uv@v5
       with:
-        python-version: "{{ matrix.python }}"
+        python-version: ${{ matrix.python }}
     - name: run unit tests
       run: make test-unit
     - name: run integration tests
