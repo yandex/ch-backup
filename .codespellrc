@@ -1,3 +1,0 @@
-[codespell]
-skip = staging,venv*
-ignore-words-list = sav,fpr

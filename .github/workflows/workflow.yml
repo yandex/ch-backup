@@ -9,7 +9,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  NO_VENV: true
   LATEST_CLICKHOUSE_VERSION: latest
 
 jobs:
@@ -17,10 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    - uses: actions/setup-python@v5
-      with:
-        python-version: "3.10"
-        cache: pip
+    - uses: astral-sh/setup-uv@v5
     - name: "lint: isort"
       run: make isort
     - name: "lint: black"
@@ -68,8 +64,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v4
-    - name: set up python ${{ matrix.python }}
-      uses: actions/setup-python@v5
+    - uses: astral-sh/setup-uv@v5
       with:
         python-version: ${{ matrix.python }}
     - name: run unit tests
