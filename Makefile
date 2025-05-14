@@ -1,6 +1,5 @@
 SHELL := bash
 
-export PYTHON_VERSION ?= $(shell cat .python-version)
 export PYTHONIOENCODING ?= utf8
 export COMPOSE_HTTP_TIMEOUT ?= 300
 export CLICKHOUSE_VERSION ?= latest
@@ -35,7 +34,7 @@ INTEGRATION_TEST_TOOL=uv run python -m tests.integration.env_control
 
 .PHONY: build
 build: setup
-	uv build --python $(PYTHON_VERSION)
+	uv build
 
 
 .PHONY: setup
@@ -52,54 +51,54 @@ lint: setup isort black codespell ruff pylint mypy bandit
 
 .PHONY: isort
 isort: setup
-	uv run --python $(PYTHON_VERSION) isort --check --diff $(SRC_DIR) $(TESTS_DIR)
+	uv run isort --check --diff $(SRC_DIR) $(TESTS_DIR)
 
 
 .PHONY: black
 black: setup
-	uv run --python $(PYTHON_VERSION) black --check --diff $(SRC_DIR) $(TESTS_DIR)
+	uv run black --check --diff $(SRC_DIR) $(TESTS_DIR)
 
 
 .PHONY: codespell
 codespell: setup
-	uv run --python $(PYTHON_VERSION) codespell $(SRC_DIR) $(TESTS_DIR) *.md
+	uv run codespell $(SRC_DIR) $(TESTS_DIR) *.md
 
 
 .PHONY: fix-codespell-errors
 fix-codespell-errors: setup
-	uv run --python $(PYTHON_VERSION) codespell -w $(SRC_DIR) $(TESTS_DIR) *.md
+	uv run codespell -w $(SRC_DIR) $(TESTS_DIR) *.md
 
 
 .PHONY: ruff
 ruff: setup
-	uv run --python $(PYTHON_VERSION) ruff check $(SRC_DIR) $(TESTS_DIR)
+	uv run ruff check $(SRC_DIR) $(TESTS_DIR)
 
 
 .PHONY: pylint
 pylint: setup
-	uv run --python $(PYTHON_VERSION) pylint $(SRC_DIR)
-	uv run --python $(PYTHON_VERSION) pylint --disable=missing-docstring,invalid-name $(TESTS_DIR)
+	uv run pylint $(SRC_DIR)
+	uv run pylint --disable=missing-docstring,invalid-name $(TESTS_DIR)
 
 
 .PHONY: mypy
 mypy: setup
-	uv run --python $(PYTHON_VERSION) mypy $(SRC_DIR) $(TESTS_DIR)
+	uv run mypy $(SRC_DIR) $(TESTS_DIR)
 
 
 .PHONY: bandit
 bandit: setup
-	uv run --python $(PYTHON_VERSION) bandit -c bandit.yaml -r ch_backup
+	uv run bandit -c bandit.yaml -r ch_backup
 
 
 .PHONY: format
 format: setup
-	uv run --python ${PYTHON_VERSION} isort .
-	uv run --python ${PYTHON_VERSION} black .
+	uv run isort .
+	uv run black .
 
 
 .PHONY: test-unit
 test-unit: setup
-	uv run --python $(PYTHON_VERSION) py.test $(PYTEST_ARGS) tests
+	uv run py.test $(PYTEST_ARGS) tests
 
 
 .PHONY: test-integration
@@ -198,9 +197,6 @@ check-environment:
 	@if ! command -v "uv" &>/dev/null; then \
 		echo 'Python project manager tool "uv" not found. Please follow installation instructions at https://docs.astral.sh/uv/getting-started/installation.' >&2; exit 1; \
 	fi
-	@if [ -z "${PYTHON_VERSION}" ]; then \
-		echo 'Failed to determine version of Python interpreter to use.' >&2; exit 1; \
-	fi
 
 
 .PHONY: help
@@ -229,7 +225,7 @@ help:
 	@echo "  help                       Show this help message."
 	@echo
 	@echo "Environment Variables:"
-	@echo "  PYTHON_VERSION             Python version to use (default: \"$(PYTHON_VERSION)\")."
+	@echo "  UV_PYTHON                  Python version to use (default: \"$(shell cat .python-version)\")."
 	@echo "  PYTEST_ARGS                Arguments to pass to pytest (unit tests)."
 	@echo "  BEHAVE_ARGS                Arguments to pass to behave (integration tests)."
 	@echo "  CLICKHOUSE_VERSION         ClickHouse version to use in integration tests (default: \"$(CLICKHOUSE_VERSION)\")."

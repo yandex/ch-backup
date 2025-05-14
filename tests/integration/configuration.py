@@ -4,6 +4,7 @@ Variables that influence testing behavior are defined here.
 
 import os
 import random
+import sys
 
 from tests.integration.modules.utils import generate_random_string
 
@@ -74,7 +75,7 @@ def create():
                 "depends_on": ["minio", "proxy", "proxy-api", "zookeeper"],
                 "external_links": [f'{s3["host"]}:minio', f'{zk["uri"]}:zookeeper'],
                 "args": {
-                    "PYTHON_VERSION": "$PYTHON_VERSION",
+                    "PYTHON_VERSION": ".".join(map(str, sys.version_info[:2])),
                     "CLICKHOUSE_VERSION": "$CLICKHOUSE_VERSION",
                 },
             },
