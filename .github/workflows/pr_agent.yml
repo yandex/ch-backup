@@ -1,0 +1,19 @@
+name: AI PR Agent
+
+on:
+  pull_request:
+    types: [opened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  request_review:
+    if: ${{ github.event.sender.type != 'Bot' }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - run: gh pr comment ${{ github.event.pull_request.html_url }} --body "@CodiumAI-Agent /describe"
+      - run: sleep 30  # wait for start of processing /describe command
+      - run: gh pr comment ${{ github.event.pull_request.html_url }} --body "@CodiumAI-Agent /improve"

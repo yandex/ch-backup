@@ -1,0 +1,14 @@
+[config]
+reasoning_effort = "high"
+publish_output_progress = false
+
+[pr_description]
+publish_description_as_comment = true
+add_original_user_description = false
+
+[pr_reviewer]
+require_estimate_effort_to_review = false
+enable_review_labels_effort = false
+
+[pr_code_suggestions]
+enable_help_comment = true
