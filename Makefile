@@ -38,7 +38,7 @@ build: setup
 
 
 .PHONY: setup
-setup: check-environment ch_backup/version.txt
+setup: check-uv ch_backup/version.txt
 
 
 .PHONY: all
@@ -143,7 +143,7 @@ uninstall:
 
 
 .PHONY: build-deb-package
-build-deb-package: setup
+build-deb-package: check-docker setup
 	./build_deb_in_docker.sh
 
 
@@ -167,7 +167,7 @@ clean-debuild:
 
 
 .PHONY: create-test-env
-create-test-env: build ${SESSION_FILE}
+create-test-env: check-docker-compose build ${SESSION_FILE}
 
 ${SESSION_FILE}:
 	${INTEGRATION_TEST_TOOL} create
@@ -192,10 +192,24 @@ ch_backup/version.txt:
 	@echo "2.$$(git rev-list HEAD --count).$$(git rev-parse --short HEAD | perl -ne 'print hex $$_')" > ch_backup/version.txt
 
 
-.PHONY: check-environment
-check-environment:
+.PHONY: check-uv
+check-uv:
 	@if ! command -v "uv" &>/dev/null; then \
 		echo 'Python project manager tool "uv" not found. Please follow installation instructions at https://docs.astral.sh/uv/getting-started/installation.' >&2; exit 1; \
+	fi
+
+
+.PHONY: check-docker
+check-docker:
+	@if ! command -v "docker" &>/dev/null; then \
+		echo 'Docker not found. Please follow installation instructions at https://docs.docker.com/engine/install.' >&2; exit 1; \
+	fi
+
+
+.PHONY: check-docker-compose
+check-docker-compose: check-docker
+	@if ! (docker compose version || docker-compose version) &>/dev/null; then \
+		echo 'Docker Compose not found. Please follow installation instructions at https://docs.docker.com/compose/install.' >&2; exit 1; \
 	fi
 
 
