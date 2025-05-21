@@ -57,7 +57,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "bandit >= 1.8.3",
     "behave >= 1.2.6",
     "black >= 25.1",
     "codespell >= 2.4.1",
@@ -74,7 +73,6 @@ dev = [
     "pylint >= 3.0, < 4.0",
     "pytest >= 8.3.5",
     "ruff >= 0.11.8",
-    "types-dataclasses >= 0.6.6",
     "types-pyyaml >= 6.0.12.20250402",
     "types-requests >= 2.31.0.6",
     "types-tabulate >= 0.9.0.20241207",
@@ -107,17 +105,24 @@ ignore-words-list = "sav,fpr"
 
 
 [tool.ruff]
-lint.select = ["E", "F", "W", "A"]
+lint.select = ["E", "F", "W", "A", "S"]
 lint.ignore = [
     "A003",  # "Class attribute is shadowing a Python builtin"
     "A005",  # Module `logging` shadows a Python standard-library module
     "E402",  # "Module level import not at top of file", duplicate corresponding pylint check
     "E501",  # "Line too long"
+    "S101",  # Use of `assert` detected
+    "S108",  # Probable insecure usage of temporary file or directory
+    "S110",  # `try`-`except`-`pass` detected, consider logging the exception"
+    "S113",  # Probable use of `requests` call without timeout
+    "S311",  # Standard pseudo-random generators are not suitable for cryptographic purposes
+    "S324",  # Probable use of insecure hash functions in `hashlib`: `md5`
+    "S602",  # `subprocess` call with `shell=True
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"__init__.py" = ["F401"]  # "Unused import"
-
+"__init__.py" = ["F401"]  # Unused import
+"tests/**"    = ["S"]     # Disable security checks in tests
 
 [tool.pylint.main]
 py-version = "3.9"  # Minimum Python version to use for version dependent checks
