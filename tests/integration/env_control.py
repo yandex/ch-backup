@@ -14,8 +14,8 @@ from tests.integration.modules import compose, docker, minio, templates
 SESSION_STATE_CONF = ".session_conf.sav"
 STAGES = {
     "create": [
-        compose.create_config,
         templates.render_docker_configs,
+        compose.create_config,
         compose.build_images,
     ],
     "start": [
