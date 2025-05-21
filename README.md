@@ -45,7 +45,7 @@ Commands:
 
 ### Regression
 
-The regression test suite contains run of static code analysis tools (isort, black, ruff, pylint, mypy, bandit),
+The regression test suite contains run of static code analysis tools (isort, black, codespell, ruff, pylint, mypy),
 unit tests and integration tests.
 
 The tests can be run by issuing the command:
@@ -62,7 +62,7 @@ The following steps describe how to set up testing infrastructure on top of
 
 1. Create and run docker containers.
 ```
-$ make start-env
+$ make start-test-env
 ...
 Creating minio01.test_net_711 ...
 Creating clickhouse01.test_net_711 ...
@@ -100,7 +100,7 @@ Note: There are no prepopulated data in ClickHouse. So you need to insert some
 ### Testing new versions
 
 ```
-export CLICKHOUSE_VERSION=21.11.1.8636
+export CLICKHOUSE_VERSION=25.4.5.24
 make all
 ```
 

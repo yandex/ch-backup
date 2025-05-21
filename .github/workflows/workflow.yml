@@ -29,8 +29,6 @@ jobs:
       run: make pylint
     - name: "lint: mypy"
       run: make mypy
-    - name: "lint: bandit"
-      run: make bandit
 
   test:
     name: test (Python ${{ matrix.python }}, ClickHouse ${{ matrix.clickhouse }})

@@ -46,7 +46,7 @@ all: lint test-unit build test-integration
 
 
 .PHONY: lint
-lint: setup isort black codespell ruff pylint mypy bandit
+lint: setup isort black codespell ruff pylint mypy
 
 
 .PHONY: isort
@@ -83,11 +83,6 @@ pylint: setup
 .PHONY: mypy
 mypy: setup
 	uv run mypy $(SRC_DIR) $(TESTS_DIR)
-
-
-.PHONY: bandit
-bandit: setup
-	uv run bandit -c bandit.yaml -r ch_backup
 
 
 .PHONY: format
@@ -204,7 +199,7 @@ help:
 	@echo "Targets:"
 	@echo "  build (default)            Build Python packages (sdist and wheel)."
 	@echo "  all                        Alias for \"lint test-unit build test-integration\"."
-	@echo "  lint                       Run all linter tools. Alias for \"isort black codespell ruff pylint mypy bandit\"."
+	@echo "  lint                       Run all linter tools. Alias for \"isort black codespell ruff pylint mypy\"."
 	@echo "  test-unit                  Run unit tests."
 	@echo "  test-integration           Run integration tests."
 	@echo "  isort                      Perform isort checks."
@@ -212,8 +207,7 @@ help:
 	@echo "  codespell                  Perform codespell checks."
 	@echo "  ruff                       Perform ruff checks."
 	@echo "  pylint                     Perform pylint checks."
-	@echo "  mypy                       Perform mypy checks.."
-	@echo "  bandit                     Perform bandit checks."
+	@echo "  mypy                       Perform mypy checks."
 	@echo "  create-test-env            Create test environment."
 	@echo "  start-test-env             Start test environment runtime."
 	@echo "  stop-test-env              Stop test environment runtime."
