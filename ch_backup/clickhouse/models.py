@@ -149,7 +149,7 @@ class Table(SimpleNamespace):
             "URL",
         )
 
-    def __hash__(self):
+    def __hash__(self) -> int:  # type: ignore
         return hash((self.database, self.name))
 
     def is_dictionary(self) -> bool:
