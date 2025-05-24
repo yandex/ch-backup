@@ -39,6 +39,8 @@ class S3Client:
                 s3={
                     "addressing_style": boto_config["addressing_style"],
                     "region_name": boto_config["region_name"],
+                    # Enable payload signing for all requests for better compatibility with different S3 implementations
+                    "payload_signing_enabled": True,
                 }
             ),
         )
