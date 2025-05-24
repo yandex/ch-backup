@@ -1,6 +1,6 @@
-FROM minio/mc:RELEASE.2022-01-07T06-01-38Z
+FROM minio/mc:RELEASE.2025-04-16T18-13-26Z
 
-FROM minio/minio:RELEASE.2022-01-08T03-11-54Z
+FROM minio/minio:RELEASE.2025-04-22T22-12-26Z
 
 COPY --from=0 /usr/bin/mc /usr/bin/mc
 
