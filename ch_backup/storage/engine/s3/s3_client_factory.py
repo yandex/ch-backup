@@ -75,6 +75,8 @@ class S3ClientFactory:
                 s3={
                     "addressing_style": boto_config["addressing_style"],
                     "region_name": boto_config["region_name"],
+                    # Enable payload signing for all requests for better compatibility with different S3 implementations
+                    "payload_signing_enabled": True,
                 },
                 proxies=self._resolve_proxies(
                     self._config.get("proxy_resolver", {}).get("uri"),
