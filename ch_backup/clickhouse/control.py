@@ -939,7 +939,7 @@ class ClickhouseCTL:
 
         if not os.path.exists(path):
             logging.debug("Shadow path {} is empty", path)
-            return []
+            return
 
         for dir_entry in os.scandir(path):
             part = dir_entry.name
