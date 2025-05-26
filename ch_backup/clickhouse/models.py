@@ -157,7 +157,7 @@ class Table(SimpleNamespace):
             "SQLite",
         ) or self.engine.startswith("Iceberg")
 
-    def __hash__(self):
+    def __hash__(self) -> int:  # type: ignore
         return hash((self.database, self.name))
 
     def is_dictionary(self) -> bool:
