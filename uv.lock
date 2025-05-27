@@ -247,7 +247,7 @@ requires-dist = [
     { name = "pypeln", specifier = ">=0.4.9" },
     { name = "pyyaml", specifier = ">=5.4" },
     { name = "requests", specifier = ">=2.20" },
-    { name = "setuptools", specifier = ">=71.1" },
+    { name = "setuptools", specifier = ">=71,<81" },
     { name = "tabulate", specifier = ">=0.9" },
     { name = "tenacity", specifier = ">=8.3" },
     { name = "xmltodict", specifier = ">=0.14" },
@@ -454,16 +454,16 @@ wheels = [
 
 [[package]]
 name = "hypothesis"
-version = "6.131.27"
+version = "6.131.28"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
     { name = "exceptiongroup", marker = "python_full_version < '3.11'" },
     { name = "sortedcontainers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8a/9e/81147d07d4a4f9ed3ed92e9ec2bc4244e15d95204819fef80d5e7166eb26/hypothesis-6.131.27.tar.gz", hash = "sha256:9bd7e7e7bdbfc1b6e1f152dafacd398334588a374618490415209eeb26110b8d", size = 440336, upload-time = "2025-05-24T22:36:10.913Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1e/3b/4f87f1c3e19bd66f60259c55deb0cc0e05d84556d7bbc0a905c391b47d75/hypothesis-6.131.28.tar.gz", hash = "sha256:8294567dd46c21049deb095881ce76e7766e31468c5fb93a37f13431c9b38ad1", size = 441837, upload-time = "2025-05-25T17:58:35.024Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/79/68/45f9c1acba9100068299b51ee6204fabb43c2fa6d537071638039a2b4122/hypothesis-6.131.27-py3-none-any.whl", hash = "sha256:5edac0fa73e38f123f93b739626c59b1ead7aedfd329c893e04cb0a6c1ab27af", size = 504920, upload-time = "2025-05-24T22:36:07.337Z" },
+    { url = "https://files.pythonhosted.org/packages/d9/f4/cc00d61c6eee87490453a39bb47999ee0bab7a5ff5bd246f0d16b86c7f63/hypothesis-6.131.28-py3-none-any.whl", hash = "sha256:8f34eb2789d8cb47f4b82f67832cf99596fb2a9919a2753b7aba11458f71edb2", size = 506437, upload-time = "2025-05-25T17:58:31.301Z" },
 ]
 
 [[package]]
@@ -987,11 +987,11 @@ wheels = [
 
 [[package]]
 name = "setuptools"
-version = "80.8.0"
+version = "80.9.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/8d/d2/ec1acaaff45caed5c2dedb33b67055ba9d4e96b091094df90762e60135fe/setuptools-80.8.0.tar.gz", hash = "sha256:49f7af965996f26d43c8ae34539c8d99c5042fbff34302ea151eaa9c207cd257", size = 1319720, upload-time = "2025-05-20T14:02:53.503Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/18/5d/3bf57dcd21979b887f014ea83c24ae194cfcd12b9e0fda66b957c69d1fca/setuptools-80.9.0.tar.gz", hash = "sha256:f36b47402ecde768dbfafc46e8e4207b4360c654f1f3bb84475f0a28628fb19c", size = 1319958, upload-time = "2025-05-27T00:56:51.443Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/58/29/93c53c098d301132196c3238c312825324740851d77a8500a2462c0fd888/setuptools-80.8.0-py3-none-any.whl", hash = "sha256:95a60484590d24103af13b686121328cc2736bee85de8936383111e421b9edc0", size = 1201470, upload-time = "2025-05-20T14:02:51.348Z" },
+    { url = "https://files.pythonhosted.org/packages/a3/dc/17031897dae0efacfea57dfd3a82fdd2a2aeb58e0ff71b77b87e44edc772/setuptools-80.9.0-py3-none-any.whl", hash = "sha256:062d34222ad13e0cc312a4c02d73f059e86a4acbfbdea8f8f76b28c99f306922", size = 1201486, upload-time = "2025-05-27T00:56:49.664Z" },
 ]
 
 [[package]]

@@ -2,9 +2,9 @@
 Version module.
 """
 
-from pkg_resources import resource_string
+from importlib import resources
 
-__version__ = resource_string(__name__, "version.txt").decode().strip()
+__version__ = resources.files("ch_backup").joinpath("version.txt").read_text().strip()
 
 
 def get_version() -> str:
