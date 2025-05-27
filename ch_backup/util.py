@@ -323,31 +323,39 @@ def get_database_zookeeper_paths(databases: Iterable) -> Iterable[Tuple]:
 
 def compare_schema(schema_a: str, schema_b: str) -> bool:
     """
-    Normalize table schema for comparison.
-    `... ENGINE = Distributed('aaa', bbb, ccc, xxx) ...` may be in ver. before 19.16, 20.1
-    `... ENGINE = Distributed('aaa', 'bbb', 'ccc', xxx) ...` in ver. 19.16+, 20.1+
-
-    Also
-    `ATTACH TABLE `db`.`table` UUID '...' ...` from file schema, multiline
-    `CREATE TABLE db.table ` from sql request, single line
+    Normalize and compare table schemas.
     """
 
     def _normalize(schema: str) -> str:
-        res = re.sub(
-            r"ENGINE = Distributed\('([^']+)', ('?)(\w+)\2, ('?)(\w+)\4(, .*)?\)",
-            r"ENGINE = Distributed('\1', '\3', '\5'\6)",
-            schema,
-        ).lower()
-        res = re.sub(
-            r"^attach ([^`\.]+) `?([^`\.]+)`?\.\`?([^`\.]+)\`( uuid '[^']+')?",
-            r"create \1 \2.\3",
-            res,
+        # Strip redundant space symbols
+        result = schema.strip()
+        result = re.sub(r"\s+", " ", result)
+        result = re.sub(r"\( +", "(", result)
+        result = re.sub(r" +\)", ")", result)
+
+        # Convert to lower case
+        result = result.lower()
+
+        # Unify CREATE and ATTACH statements
+        result = re.sub(r"^attach", "create", result)
+
+        # Force backtick quotes for database and table names, and drop optional UUID clause
+        result = re.sub(
+            r"^create ([^`\.]+) (`?)([^`\. ]+)\2\.(`?)([^`\. ]+)\4( uuid '[^']+')?( [^`\. ])",
+            r"create \1 `\3`.`\5`\7",
+            result,
         )
-        res = re.sub(r"\s+", " ", res)
-        res = re.sub(r"\( +", "(", res)
-        res = re.sub(r" +\)", ")", res)
-        res = re.sub(r" $", "", res)
-        return res
+
+        # Force quotas for Distributed engine parameters to unify syntax across ClickHouse versions
+        # `... ENGINE = Distributed('aaa', bbb, ccc, xxx) ...` - in versions lower 20.1
+        # `... ENGINE = Distributed('aaa', 'bbb', 'ccc', xxx) ...` - in versions 20.1 and higher
+        result = re.sub(
+            r"engine = distributed\('([^']+)', ('?)(\w+)\2, ('?)(\w+)\4(, .*)?\)",
+            r"engine = distributed('\1', '\3', '\5'\6)",
+            result,
+        )
+
+        return result
 
     return _normalize(schema_a) == _normalize(schema_b)
 
