@@ -347,8 +347,6 @@ def compare_schema(schema_a: str, schema_b: str) -> bool:
         )
 
         # Force quotas for Distributed engine parameters to unify syntax across ClickHouse versions
-        # `... ENGINE = Distributed('aaa', bbb, ccc, xxx) ...` - in versions lower 20.1
-        # `... ENGINE = Distributed('aaa', 'bbb', 'ccc', xxx) ...` - in versions 20.1 and higher
         result = re.sub(
             r"engine = distributed\('([^']+)', ('?)(\w+)\2, ('?)(\w+)\4(, .*)?\)",
             r"engine = distributed('\1', '\3', '\5'\6)",
