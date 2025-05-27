@@ -44,10 +44,10 @@ dependencies = [
     "pypeln >= 0.4.9",
     "pyyaml >= 5.4",
     "requests >= 2.20",
-    "setuptools >= 71.1",  # for pkg_resources module
     "tabulate >= 0.9",
     "tenacity >= 8.3",
     "xmltodict >= 0.14",
+    "setuptools >= 71, < 81",  # for the library "stopit" (dependency of "pypeln")
 ]
 
 [dependency-groups]
@@ -136,6 +136,7 @@ disable = [
     "too-few-public-methods",
     "unnecessary-pass",
     "use-dict-literal",
+    "wrong-import-position",
 ]
 
 [tool.pylint.basic]
