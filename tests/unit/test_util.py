@@ -20,6 +20,7 @@ from ch_backup.util import (
 )
 
 from . import ExpectedException, UnexpectedException
+from .utils import parametrize
 
 
 class TestStripQuery:
@@ -140,121 +141,174 @@ class TestGetZooKeeperPath:
             )
 
 
-class TestNormalizeSchema:
-    """
-    Test _normailze_schema method
-    """
-
-    schemas = [
-        [
-            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+@parametrize(
+    {
+        "id": "identical MergeTree tables",
+        "args": {
+            "schema_a": "CREATE TABLE database.test (`date` Date, `value` UInt32) "
             "ENGINE = MergeTree() ORDER BY date",
-            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "schema_b": "CREATE TABLE database.test (`date` Date, `value` UInt32) "
             "ENGINE = MergeTree() ORDER BY date",
-            True,
-        ],
-        [
-            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "result": True,
+        },
+    },
+    {
+        "id": "unequal MergeTree tables with mismatched column types",
+        "args": {
+            "schema_a": "CREATE TABLE database.test (`date` Date, `value` UInt32) "
             "ENGINE = MergeTree() ORDER BY date",
-            "CREATE TABLE database.test (`date` Date, `value` UInt64) "
+            "schema_b": "CREATE TABLE database.test (`date` Date, `value` UInt64) "
             "ENGINE = MergeTree() ORDER BY date",
-            False,
-        ],
-        [
-            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "result": False,
+        },
+    },
+    {
+        "id": "identical Distributed tables",
+        "args": {
+            "schema_a": "CREATE TABLE database.test (`date` Date, `value` UInt32) "
             "ENGINE = Distributed('foo-foo', 'database_bar', 'table_biz')",
-            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "schema_b": "CREATE TABLE database.test (`date` Date, `value` UInt32) "
             "ENGINE = Distributed('foo-foo', 'database_bar', 'table_biz')",
-            True,
-        ],
-        [
-            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "result": True,
+        },
+    },
+    {
+        "id": "equal Distributed tables with syntax differences in quotas",
+        "args": {
+            "schema_a": "CREATE TABLE database.test (`date` Date, `value` UInt32) "
             "ENGINE = Distributed('foo-foo', 'database_bar', 'table_biz')",
-            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "schema_b": "CREATE TABLE database.test (`date` Date, `value` UInt32) "
             "ENGINE = Distributed('foo-foo', database_bar, table_biz)",
-            True,
-        ],
-        [
-            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "result": True,
+        },
+    },
+    {
+        "id": "equal Distributed tables with syntax differences in quotas - 1",
+        "args": {
+            "schema_a": "CREATE TABLE database.test (`date` Date, `value` UInt32) "
             "ENGINE = Distributed('foo-foo', 'database_bar', 'table_biz')",
-            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "schema_b": "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "ENGINE = Distributed('foo-foo', database_bar, table_biz)",
+            "result": True,
+        },
+    },
+    {
+        "id": "equal Distributed tables with syntax differences in quotas - 2",
+        "args": {
+            "schema_a": "CREATE TABLE test_db.table_all (`a` UInt32) "
+            "ENGINE = Distributed('{cluster}', 'test_db', 'table')",
+            "schema_b": "ATTACH TABLE `test_db`.`table_all` (`a` UInt32) "
+            "ENGINE = Distributed('{cluster}', 'test_db', 'table')",
+            "result": True,
+        },
+    },
+    {
+        "id": "equal Distributed tables with syntax differences in quotas - 3",
+        "args": {
+            "schema_a": "CREATE TABLE `test_db`.table_all (`a` UInt32) "
+            "ENGINE = Distributed('{cluster}', 'test_db', 'table')",
+            "schema_b": "ATTACH TABLE `test_db`.`table_all` (`a` UInt32) "
+            "ENGINE = Distributed('{cluster}', 'test_db', 'table')",
+            "result": True,
+        },
+    },
+    {
+        "id": "unequal Distributed tables with mismatched database names",
+        "args": {
+            "schema_a": "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "ENGINE = Distributed('foo-foo', 'database_bar', 'table_biz')",
+            "schema_b": "CREATE TABLE database.test (`date` Date, `value` UInt32) "
             "ENGINE = Distributed('foo-foo', database_biz, table_biz)",
-            False,
-        ],
-        [
-            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "result": False,
+        },
+    },
+    {
+        "id": "unequal Distributed tables with mismatched cluster names",
+        "args": {
+            "schema_a": "CREATE TABLE database.test (`date` Date, `value` UInt32) "
             "ENGINE = Distributed('foo-foo', 'database_bar', 'table_biz')",
-            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "schema_b": "CREATE TABLE database.test (`date` Date, `value` UInt32) "
             "ENGINE = Distributed('bar-bar', database_bar, table_biz)",
-            False,
-        ],
-        [
-            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "result": False,
+        },
+    },
+    {
+        "id": "equal Distributed tables with sharding key and syntax differences in quotas",
+        "args": {
+            "schema_a": "CREATE TABLE database.test (`date` Date, `value` UInt32) "
             "ENGINE = Distributed('foo-foo', 'database_bar', 'table_biz', shard_key, policy_name)",
-            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "schema_b": "CREATE TABLE database.test (`date` Date, `value` UInt32) "
             "ENGINE = Distributed('foo-foo', database_bar, table_biz, shard_key, policy_name)",
-            True,
-        ],
-        [
-            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "result": True,
+        },
+    },
+    {
+        "id": "equal Distributed tables with SETTINGS clause and syntax differences in quotas",
+        "args": {
+            "schema_a": "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "ENGINE = Distributed('foo-foo', 'database_bar', 'table_biz', shard_key, policy_name)",
+            "schema_b": "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "ENGINE = Distributed('foo-foo', database_bar, table_biz, shard_key, policy_name)",
+            "result": True,
+        },
+    },
+    {
+        "id": "unequal Distributed tables with mismatched settings",
+        "args": {
+            "schema_a": "CREATE TABLE database.test (`date` Date, `value` UInt32) "
             "ENGINE = Distributed('foo-foo', 'database_bar', 'table_biz', shard_key, policy_name) SETTINGS a=b",
-            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
-            "ENGINE = Distributed('foo-foo', database_bar, table_biz, shard_key, policy_name) SETTINGS a=b",
-            True,
-        ],
-        [
-            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
-            "ENGINE = Distributed('foo-foo', 'database_bar', 'table_biz', shard_key, policy_name) SETTINGS a=b",
-            "CREATE TABLE database.test (`date` Date, `value` UInt32) "
+            "schema_b": "CREATE TABLE database.test (`date` Date, `value` UInt32) "
             "ENGINE = Distributed('foo-foo', database_bar, table_biz, shard_key, policy_name) SETTINGS c=b",
-            False,
-        ],
-        [
-            "CREATE TABLE test_db.table_01 (`date` Date, `n` Int32, "
+            "result": False,
+        },
+    },
+    {
+        "id": "equal Distributed tables with and without UUID clause",
+        "args": {
+            "schema_a": "CREATE TABLE test_db.table_all (`a` UInt32) "
+            "ENGINE = Distributed('{cluster}', 'test_db', 'table')",
+            "schema_b": "ATTACH TABLE `test_db`.`table_all` UUID 'f8456d96-67fe-45bf-9126-61f83c4b2682' "
+            "(`a` UInt32) ENGINE = Distributed('{cluster}', 'test_db', 'table')",
+            "result": True,
+        },
+    },
+    {
+        "id": "equal tables with projection and differences in function name case",
+        "args": {
+            "schema_a": "CREATE TABLE test_db.table_01 (`date` Date, `n` Int32, "
             "PROJECTION test_proj (SELECT n, COUNT(*) AS count GROUP BY n)) "
             "ENGINE = MergeTree PARTITION BY date ORDER BY date SETTINGS index_granularity = 8192",
-            "CREATE TABLE test_db.table_01 (`date` Date, `n` Int32, "
+            "schema_b": "CREATE TABLE test_db.table_01 (`date` Date, `n` Int32, "
             "PROJECTION test_proj (SELECT n, count(*) AS count GROUP BY n)) "
             "ENGINE = MergeTree PARTITION BY date ORDER BY date SETTINGS index_granularity = 8192",
-            True,
-        ],
-        [
-            "CREATE TABLE test_db.table_all (`a` UInt32) "
-            "ENGINE = Distributed('{cluster}', 'test_db', 'table')",
-            "ATTACH TABLE `test_db`.`table_all` (`a` UInt32) "
-            "ENGINE = Distributed('{cluster}', 'test_db', 'table')",
-            True,
-        ],
-        [
-            "CREATE TABLE test_db.table_all (`a` UInt32) "
-            "ENGINE = Distributed('{cluster}', 'test_db', 'table')",
-            "ATTACH TABLE `test_db`.`table_all` UUID 'f8456d96-67fe-45bf-9126-61f83c4b2682' "
-            "(`a` UInt32) ENGINE = Distributed('{cluster}', 'test_db', 'table')",
-            True,
-        ],
-        [
-            "CREATE TABLE test_db.test (`a` UInt32, `b` Date, `c` DateTime, `d` String, `e` UInt8, `f` UInt8) ENGINE = Null",
-            "ATTACH TABLE `test_db`.`test` ("
-            "`a` UInt32, "
-            "`b` Date, "
-            "`c` DateTime, "
-            "`d` String, "
-            "`e` UInt8, "
-            "`f` UInt8"
-            ") "
+            "result": True,
+        },
+    },
+    {
+        "id": "equal tables with Null engine and differences in formatting",
+        "args": {
+            "schema_a": "CREATE TABLE test_db.test "
+            "(`a` UInt32, `b` Date, `c` DateTime, `d` String, `e` UInt8, `f` UInt8) "
             "ENGINE = Null",
-            True,
-        ],
-        [
-            "CREATE MATERIALIZED VIEW test_db.mview TO test_db.base (`number` UInt64) AS SELECT * FROM system.numbers LIMIT 10",
-            "ATTACH MATERIALIZED VIEW `test_db`.`mview` TO test_db.base (`number` UInt64) AS SELECT * FROM system.numbers LIMIT 10",
-            True,
-        ],
-    ]
-
-    def test_normalize_schema(self):
-        for schema in self.schemas:
-            assert compare_schema(str(schema[0]), str(schema[1])) == bool(schema[2])
+            "schema_b": "CREATE TABLE `test_db`.`test` "
+            "(`a` UInt32, `b` Date, `c` DateTime, `d` String, `e` UInt8, `f` UInt8) "
+            "ENGINE = Null",
+            "result": True,
+        },
+    },
+    {
+        "id": "equal materialized views with syntax differences in quotas",
+        "args": {
+            "schema_a": "CREATE MATERIALIZED VIEW test_db.mview TO test_db.base (`number` UInt64) "
+            "AS SELECT * FROM system.numbers LIMIT 10",
+            "schema_b": "ATTACH MATERIALIZED VIEW `test_db`.`mview` TO test_db.base (`number` UInt64) "
+            "AS SELECT * FROM system.numbers LIMIT 10",
+            "result": True,
+        },
+    },
+)
+def test_compare_schema(schema_a, schema_b, result):
+    assert compare_schema(schema_a, schema_b) == result
 
 
 class TestScanDir:
