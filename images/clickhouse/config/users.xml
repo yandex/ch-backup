@@ -8,7 +8,6 @@
             <password></password>
             <access_management>1</access_management>
             <profile>default</profile>
-            <quota>default</quota>
 {% if ch_version_ge('23.2') %}
             <show_named_collections>1</show_named_collections>
             <show_named_collections_secrets>1</show_named_collections_secrets>
@@ -21,16 +20,4 @@
     <profiles>
         <default/>
     </profiles>
-    <quotas>
-        <default>
-            <interval>
-                <duration>3600</duration>
-                <queries>0</queries>
-                <errors>0</errors>
-                <result_rows>0</result_rows>
-                <read_rows>0</read_rows>
-                <execution_time>0</execution_time>
-            </interval>
-        </default>
-    </quotas>
 </yandex>
