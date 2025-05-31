@@ -496,25 +496,13 @@ class ClickhouseCTL:
                 "kafka_disable_num_consumers_limit": 1,
             }
             if self.ch_version_ge("22.9"):
-                settings.update(
-                    {
-                        "allow_experimental_annoy_index": 1,
-                        "allow_suspicious_fixed_string_types": 1,
-                    }
-                )
+                settings["allow_experimental_annoy_index"] = 1
+                settings["allow_suspicious_fixed_string_types"] = 1
             if self.ch_version_ge("23.1"):
-                settings.update(
-                    {
-                        "allow_experimental_inverted_index": 1,
-                    }
-                )
+                settings["allow_experimental_inverted_index"] = 1
             if self.ch_version_ge("23.12"):
-                settings.update(
-                    {
-                        "allow_experimental_refreshable_materialized_view": 1,
-                        "allow_suspicious_ttl_expressions": 1,
-                    }
-                )
+                settings["allow_experimental_refreshable_materialized_view"] = 1
+                settings["allow_suspicious_ttl_expressions"] = 1
         self._ch_client.settings.update(settings)
 
     def chown_detached_table_parts(self, table: Table, context: RestoreContext) -> None:
