@@ -13,7 +13,7 @@ from ch_backup.util import retry
 
 class ClickhouseError(Exception):
     """
-    ClickHouse interaction error.
+    ClickHouse interaction.
     """
 
 
