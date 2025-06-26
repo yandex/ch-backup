@@ -551,17 +551,24 @@ class TableBackup(BackupManager):
             self._rewrite_table_schema(context, databases[table.database], table)
 
         # Filter out already restored tables.
-        existing_tables = {}
+        existing_tables_by_name = {}
+        existing_tables_by_uuid = {}
         for table in context.ch_ctl.get_tables(short_query=True):
-            existing_tables[(table.database, table.name)] = table
+            existing_tables_by_name[(table.database, table.name)] = table
+            if table.uuid:
+                existing_tables_by_uuid[table.uuid] = table
 
         result: List[Table] = []
         for table in tables:
-            existing_table = existing_tables.get((table.database, table.name))
-            if existing_table:
+            existing_table: Optional[Table] = None
+
+            if existing_table := existing_tables_by_name.get(
+                (table.database, table.name)
+            ):
                 if compare_schema(
                     existing_table.create_statement, table.create_statement
                 ):
+                    # Skip table
                     continue
                 logging.warning(
                     'Table "{}"."{}" will be recreated as its schema mismatches the schema from backup: "{}" != "{}"',
@@ -570,16 +577,33 @@ class TableBackup(BackupManager):
                     existing_table.create_statement,
                     table.create_statement,
                 )
+            elif existing_table := (
+                existing_tables_by_uuid.get(table.uuid) if table.uuid else None
+            ):
+                if compare_schema(
+                    existing_table.create_statement, table.create_statement
+                ):
+                    # Skip table
+                    continue
+                logging.warning(
+                    'Table "{}"."{}" will be dropped as its UUID is equal but schema mismatches the schema from backup: "{}" != "{}"',
+                    existing_table.database,
+                    existing_table.name,
+                    existing_table.create_statement,
+                    table.create_statement,
+                )
+
+            if existing_table:
                 try:
-                    if table.is_dictionary():
-                        context.ch_ctl.drop_dictionary_if_exists(table)
+                    if existing_table.is_dictionary():
+                        context.ch_ctl.drop_dictionary_if_exists(existing_table)
                     else:
-                        context.ch_ctl.drop_table_if_exists(table)
+                        context.ch_ctl.drop_table_if_exists(existing_table)
                 except Exception as e:
                     if not keep_going:
                         raise
                     logging.exception(
-                        f"Drop of table {table.name} was failed, skipping due to --keep-going flag. Reason {e}"
+                        f"Drop of table {existing_table.name} was failed, skipping due to --keep-going flag. Reason {e}"
                     )
                     continue
 
