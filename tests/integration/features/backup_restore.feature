@@ -253,7 +253,7 @@ Feature: Backup & Restore
     1
     """
 
-  Scenario: Overwrite existing table on destination node when name is equal and schema is mismatched
+  Scenario: Overwrite existing table on destination node when name is equal and schema is mismatched with checking force_drop_table
     When we drop all databases at clickhouse01
     And we drop all databases at clickhouse02    
     And we execute queries on clickhouse01
@@ -284,6 +284,11 @@ Feature: Backup & Restore
     SYSTEM RELOAD CONFIG
     """
     And we restore clickhouse backup #0 to clickhouse02
+    And we delete the following file at "/etc/clickhouse-server/conf.d/max_table_size_to_drop.xml" on clickhouse02
+    And we execute query on clickhouse02
+    """
+    SYSTEM RELOAD CONFIG
+    """
     Then clickhouse02 has same schema as clickhouse01
 
   Scenario: Overwrite existing table on destination node when UUID is equal and schema is mismatched
@@ -305,16 +310,6 @@ Feature: Backup & Restore
     ENGINE MergeTree PARTITION BY partition_id ORDER BY (partition_id, a, b);
 
     INSERT INTO test_db.other_test_table SELECT number % 2, number, number FROM system.numbers LIMIT 100;
-    """
-    And we put following info in "/etc/clickhouse-server/conf.d/max_table_size_to_drop.xml" at clickhouse02
-    """
-    <yandex>
-      <max_table_size_to_drop>1</max_table_size_to_drop>
-    </yandex>
-    """
-    And we execute query on clickhouse02
-    """
-    SYSTEM RELOAD CONFIG
     """
     And we restore clickhouse backup #0 to clickhouse02
     Then clickhouse02 has same schema as clickhouse01
