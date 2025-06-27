@@ -580,11 +580,7 @@ class TableBackup(BackupManager):
             elif existing_table := (
                 existing_tables_by_uuid.get(table.uuid) if table.uuid else None
             ):
-                if compare_schema(
-                    existing_table.create_statement, table.create_statement
-                ):
-                    # Skip table
-                    continue
+                # Schemas mismatch here at least in name
                 logging.warning(
                     'Table "{}"."{}" will be dropped as its UUID is equal but schema mismatches the schema from backup: "{}" != "{}"',
                     existing_table.database,
