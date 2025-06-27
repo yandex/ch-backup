@@ -123,6 +123,7 @@ GET_TABLES_SHORT_SQL = strip_query(
     SELECT
         database,
         name,
+        uuid,
         engine,
         create_table_query
     FROM system.tables

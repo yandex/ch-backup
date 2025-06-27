@@ -73,6 +73,12 @@ def step_put_file(context, path, node):
     put_file(container, bytes(context.text, "utf-8"), path)
 
 
+@when('we delete the following file at "{path}" on {node:w}')
+def step_delete_file(context, path, node):
+    container = get_container(context, node)
+    assert container.exec_run(f"rm -rf {path}").exit_code == 0
+
+
 @given("{node:w} has test clickhouse data {test_name:w}")
 @when("{node:w} has test clickhouse data {test_name:w}")
 def step_fill_with_test_data(context, node, test_name):

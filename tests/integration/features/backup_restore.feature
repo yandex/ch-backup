@@ -253,7 +253,30 @@ Feature: Backup & Restore
     1
     """
 
-  Scenario: Overwrite existing table on destination node when schema is mismatched
+  Scenario: Overwrite existing table on destination node when UUID is equal and schema is mismatched
+    When we drop all databases at clickhouse01
+    And we drop all databases at clickhouse02    
+    And we execute queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    ATTACH TABLE test_db.test_table UUID '3a00aeb8-2605-4eec-8215-777777777777' (partition_id Int32, a Int32)
+    ENGINE MergeTree PARTITION BY partition_id ORDER BY (partition_id, a);
+
+    INSERT INTO test_db.test_table SELECT number % 2, number FROM system.numbers LIMIT 100;
+    """
+    And we create clickhouse01 clickhouse backup  
+    And we execute queries on clickhouse02
+    """
+    CREATE DATABASE test_db;
+    ATTACH TABLE test_db.other_test_table UUID '3a00aeb8-2605-4eec-8215-777777777777' (partition_id Int32, a Int32, b Int32)
+    ENGINE MergeTree PARTITION BY partition_id ORDER BY (partition_id, a, b);
+
+    INSERT INTO test_db.other_test_table SELECT number % 2, number, number FROM system.numbers LIMIT 100;
+    """
+    And we restore clickhouse backup #0 to clickhouse02
+    Then clickhouse02 has same schema as clickhouse01
+
+  Scenario: Overwrite existing table on destination node when name is equal and schema is mismatched with checking force_drop_table
     When we drop all databases at clickhouse01
     And we drop all databases at clickhouse02    
     And we execute queries on clickhouse01
@@ -284,6 +307,11 @@ Feature: Backup & Restore
     SYSTEM RELOAD CONFIG
     """
     And we restore clickhouse backup #0 to clickhouse02
+    And we delete the following file at "/etc/clickhouse-server/conf.d/max_table_size_to_drop.xml" on clickhouse02
+    And we execute query on clickhouse02
+    """
+    SYSTEM RELOAD CONFIG
+    """
     Then clickhouse02 has same schema as clickhouse01
 
   Scenario: Perform retry restore when exist the table based on the table function.
