@@ -679,10 +679,35 @@ def version_command(_ctx: Context, _ch_backup: ClickhouseBackup) -> None:
     print(get_version())
 
 
+@command(name="get-cloud-storage-metadata")  # type: ignore
+@argument("name", metavar="BACKUP")
+@option("--disk", type=str, help="Disk to get metadata")
+def get_cloud_storage_metadata(
+    ctx: Context,
+    ch_backup: ClickhouseBackup,
+    name: str,
+    disk: str,
+) -> None:
+    """Download cloud storage metadata to shadow directory"""
+    try:
+        name = _validate_and_resolve_name(
+            ctx, ch_backup, name, backup_state=BackupState.CREATED
+        )
+    except Exception as e:
+        print(e)
+        return
+
+    if not ch_backup.get_cloud_storage_metadata(backup_name=name, disk_name=disk):
+        print(f"Metadata for disk {disk} and backup {name} is already present")
+
+
 def _validate_and_resolve_name(
-    ctx: Context, ch_backup: ClickhouseBackup, name: str
+    ctx: Context,
+    ch_backup: ClickhouseBackup,
+    name: str,
+    backup_state: BackupState = None,
 ) -> str:
-    backups = ch_backup.list()
+    backups = ch_backup.list(backup_state)
 
     if name == "LAST":
         if not backups:

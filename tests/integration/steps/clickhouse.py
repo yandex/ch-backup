@@ -4,7 +4,7 @@ Steps for interacting with ClickHouse DBMS.
 
 import yaml
 from behave import given, then, when
-from hamcrest import assert_that, equal_to, has_length
+from hamcrest import assert_that, contains_string, equal_to, has_length
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 from tests.integration.modules.ch_backup import BackupManager
@@ -139,6 +139,11 @@ def step_drop_test_table(context, table_num, db_num, node):
 @then("we get response")
 def step_get_response(context):
     assert_that(context.response, equal_to(context.text))
+
+
+@then("we get response contains")
+def step_get_response_contains(context):
+    assert_that(context.response, contains_string(context.text))
 
 
 @then("we got same clickhouse data at {nodes}")
