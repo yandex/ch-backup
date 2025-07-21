@@ -681,7 +681,7 @@ def version_command(_ctx: Context, _ch_backup: ClickhouseBackup) -> None:
 
 @command(name="get-cloud-storage-metadata")  # type: ignore
 @argument("name", metavar="BACKUP")
-@option("--disk", type=str, help="Disk to get metadata")
+@option("--disk", type=str, required=True, help="Disk to get metadata")
 def get_cloud_storage_metadata(
     ctx: Context,
     ch_backup: ClickhouseBackup,
