@@ -567,15 +567,34 @@ class BackupLayout:
             absolute=True,
         )
 
+    def _get_cloud_storage_metadata_dst_path(
+        self, backup_meta: BackupMetadata, disk: Disk
+    ) -> str:
+        backup_name = backup_meta.get_sanitized_name()
+        return os.path.join(disk.path, "shadow", backup_name)
+
+    def cloud_storage_metadata_exists(
+        self, backup_meta: BackupMetadata, disk: Disk
+    ) -> bool:
+        """
+        Check if cloud storage metadata for a given backup is already present in the shadow directory
+        """
+        return os.path.exists(
+            self._get_cloud_storage_metadata_dst_path(backup_meta, disk)
+        )
+
     def download_cloud_storage_metadata(
-        self, backup_meta: BackupMetadata, disk: Disk, source_disk_name: str
+        self,
+        backup_meta: BackupMetadata,
+        disk: Disk,
+        source_disk_name: str,
     ) -> None:
         """
         Download files packed in tarball and unpacks them into specified directory.
         """
         backup_name = backup_meta.get_sanitized_name()
         compression = backup_meta.cloud_storage.compressed
-        disk_path = os.path.join(disk.path, "shadow", backup_name)
+        disk_path = self._get_cloud_storage_metadata_dst_path(backup_meta, disk)
         os.makedirs(disk_path, exist_ok=True)
         metadata_remote_paths = self._get_cloud_storage_metadata_remote_paths(
             backup_name, source_disk_name, compression

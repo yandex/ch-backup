@@ -7,6 +7,60 @@ Feature: Backup & Clean & Restore
     And a working clickhouse on clickhouse01
     And clickhouse on clickhouse01 has test schema
 
+  Scenario Outline: Download backup metadata
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    CREATE TABLE test_db.table_01 (
+        CounterID UInt32,
+        UserID UInt32
+    )
+    ENGINE = MergeTree()
+    ORDER BY UserID
+    SETTINGS storage_policy = 's3';
+    INSERT INTO test_db.table_01 VALUES(0, 42), (1, 777);
+    """
+    And we create clickhouse01 clickhouse backup
+    """
+    name: test_backup
+    """
+    And we execute command on clickhouse01
+    """
+    ls /var/lib/clickhouse/disks/s3/shadow/
+    """
+    Then we get response
+    """
+    test_backup
+    """
+    When we execute command on clickhouse01
+    """
+    rm -r /var/lib/clickhouse/disks/s3/shadow/test_backup
+    """
+    And we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf get-cloud-storage-metadata --disk s3 <name>
+    """
+    And we execute command on clickhouse01
+    """
+    ls /var/lib/clickhouse/disks/s3/shadow/
+    """
+    Then we get response
+    """
+    test_backup
+    """
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf get-cloud-storage-metadata --disk s3 <name>
+    """
+    Then we get response contains
+    """
+    is already present
+    """
+    Examples:
+      | name              |
+      | test_backup       |
+      | LAST              |
+
   @require_version_22.6
   @require_version_less_than_23.4
   Scenario: All backup data is deleted including data of removed tables
