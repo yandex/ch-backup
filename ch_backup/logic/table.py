@@ -558,11 +558,24 @@ class TableBackup(BackupManager):
             if table.uuid:
                 existing_tables_by_uuid[table.uuid] = table
 
+        existing_readonly_tables = {
+            (replica["database"], replica["table"])
+            for replica in context.ch_ctl.get_replicas(readonly=True)
+        }
+
         result: List[Table] = []
         for table in tables:
             existing_table: Optional[Table] = None
 
-            if existing_table := existing_tables_by_name.get(
+            if (table.database, table.name) in existing_readonly_tables:
+                existing_table = table
+                logging.warning(
+                    'Table "{}"."{}" will be recreated because it is in readonly state',
+                    table.database,
+                    table.name,
+                )
+
+            elif existing_table := existing_tables_by_name.get(
                 (table.database, table.name)
             ):
                 if compare_schema(

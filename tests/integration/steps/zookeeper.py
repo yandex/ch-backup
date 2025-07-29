@@ -2,7 +2,7 @@
 Steps for interacting with ZooKeeper.
 """
 
-from behave import given, then, when
+from behave import given, step, then, when
 from hamcrest import assert_that, has_length
 
 from tests.integration.modules.steps import get_step_data
@@ -18,6 +18,11 @@ from tests.integration.modules.zookeeper import (
 @given("a working zookeeper on {node:w}")
 def step_wait_for_zookeeper_alive(context, node):
     initialize_zookeeper_roots(context, node)
+
+
+@step("on {node:w} we delete {znode}")
+def step_delete_znode(context, node, znode):
+    delete_znode(context, node, znode)
 
 
 @when("on {node:w} we create {znode}")

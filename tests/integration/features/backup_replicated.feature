@@ -1020,3 +1020,81 @@ Feature: Backup replicated merge tree table
       | clean_zookeeper_mode | len |
       | replica-only         |  2  |
       | all-replicas         |  1  |
+
+  Scenario: Overwrite existing replicated table on destination node when it is in readonly state
+    Given we have executed queries on clickhouse02
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (
+        EventDate DateTime,
+        CounterID UInt32,
+        UserID UInt32
+    )
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_01', '{replica}')
+    PARTITION BY CounterID % 10
+    ORDER BY (CounterID, EventDate, intHash32(UserID))
+    SAMPLE BY intHash32(UserID);
+    """
+    Given on zookeeper01 we delete /clickhouse02/clickhouse/tables/shard_01/test_db.table_01/replicas/clickhouse02
+    Given we have executed queries on clickhouse02
+    """
+    SYSTEM RESTART REPLICA test_db.table_01
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT is_readonly FROM system.replicas WHERE table = 'table_01' and database = 'test_db'
+    """
+    Then we get response
+    """
+    1
+    """
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (
+        EventDate DateTime,
+        CounterID UInt32,
+        UserID UInt32
+    )
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_01', '{replica}')
+    PARTITION BY CounterID % 10
+    ORDER BY (CounterID, EventDate, intHash32(UserID))
+    SAMPLE BY intHash32(UserID);
+    INSERT INTO test_db.table_01 SELECT now(), number, rand() FROM system.numbers LIMIT 10
+    """
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 10         | 0          |
+    
+    When we restore clickhouse backup #0 to clickhouse02
+    Then clickhouse02 has same schema as clickhouse01
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+    When we execute query on clickhouse02
+    """
+    SELECT is_readonly FROM system.replicas WHERE table = 'table_01' and database = 'test_db'
+    """
+    Then we get response
+    """
+    0
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM test_db.table_01
+    """
+    Then we get response
+    """
+    10
+    """
+    When we execute query on clickhouse02
+    """
+    INSERT INTO test_db.table_01 SELECT now(), number, rand() FROM system.numbers LIMIT 10
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM test_db.table_01
+    """
+    Then we get response
+    """
+    20
+    """

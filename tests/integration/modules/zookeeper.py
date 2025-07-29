@@ -49,9 +49,7 @@ def delete_znode(context: ContextT, node: str, znode: str) -> None:
     delete specified zookeeper node
     """
     zk = _get_zookeeper_client(context, node)
-    zk.start()
-
-    zk.delete(znode)
+    zk.delete(znode, recursive=True)
     zk.stop()
 
 
@@ -69,13 +67,7 @@ def znode_exists(context: ContextT, node: str, zk_path: str) -> bool:
 
 def get_children_list(context: ContextT, node: str, zk_path: str) -> Optional[List]:
     zk = _get_zookeeper_client(context, node)
-    zk_config = context.conf.get("zk", {})
     try:
-        zk.start()
-        if zk_config.get("user") and zk_config.get("password"):
-            zk.add_auth(
-                "digest", f'{zk_config.get("user")}:{zk_config.get("password")}'
-            )
         return zk.get_children(zk_path)
     except NoNodeError:
         return None
@@ -89,4 +81,15 @@ def _get_zookeeper_client(context: ContextT, node: str) -> KazooClient:
 
     zk_container = get_container(context, node)
     host, port = get_exposed_port(zk_container, 2181)
-    return KazooClient(f"{host}:{port}")
+    zk_client = KazooClient(f"{host}:{port}")
+    zk_client.start()
+
+    # Add credentials from ClickHouse <zookeeper>...</zookeeper> config
+    # to the session to access nodes created by ClickHouse
+    zk_config = context.conf.get("zk", {})
+    if zk_config.get("user") and zk_config.get("password"):
+        zk_client.add_auth(
+            "digest", f'{zk_config.get("user")}:{zk_config.get("password")}'
+        )
+
+    return zk_client
