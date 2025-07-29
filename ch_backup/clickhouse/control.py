@@ -761,17 +761,16 @@ class ClickhouseCTL:
 
     def get_replicas(
         self,
-        db_name: str = None,
+        db_name: Optional[str] = None,
         tables: Sequence[str] = None,
         readonly: Optional[bool] = None,
     ) -> list[dict]:
         """
         Get table replicas from system.replicas
-
         """
         db_condition = f"database = '{escape(db_name)}'" if db_name else "1"
         tables_condition = (
-            f"has(cast({_format_string_array(tables)}, 'Array(String)'), name)"
+            f"has(cast({_format_string_array(tables)}, 'Array(String)'), table)"
             if tables
             else "1"
         )
