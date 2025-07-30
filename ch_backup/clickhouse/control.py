@@ -134,6 +134,21 @@ GET_TABLES_SHORT_SQL = strip_query(
 """
 )
 
+GET_REPLICAS_SQL = strip_query(
+    """
+    SELECT
+        database,
+        table,
+        is_readonly
+    FROM system.replicas
+    WHERE ({db_condition})
+      AND ({tables_condition})
+      AND ({readonly_condition})
+    ORDER BY database, table
+    FORMAT JSON
+"""
+)
+
 CHECK_TABLE_SQL = strip_query(
     """
     SELECT count()
@@ -722,7 +737,7 @@ class ClickhouseCTL:
         query_sql = base_query_sql.format(
             db_condition=db_condition,
             tables_condition=tables_condition,
-        )  # type: ignore
+        )
         result: List[Table] = []
         for row in self._ch_client.query(query_sql)["data"]:
             result.append(self._make_table(row))
@@ -743,6 +758,33 @@ class ClickhouseCTL:
             )
 
         return tables[0] if len(tables) == 1 else None
+
+    def get_replicas(
+        self,
+        db_name: Optional[str] = None,
+        tables: Sequence[str] = None,
+        readonly: Optional[bool] = None,
+    ) -> list[dict]:
+        """
+        Get table replicas from system.replicas
+        """
+        db_condition = f"database = '{escape(db_name)}'" if db_name else "1"
+        tables_condition = (
+            f"has(cast({_format_string_array(tables)}, 'Array(String)'), table)"
+            if tables
+            else "1"
+        )
+        readonly_condition = (
+            f"is_readonly={int(readonly)}" if readonly is not None else "1"
+        )
+
+        query_sql = GET_REPLICAS_SQL.format(
+            db_condition=db_condition,
+            tables_condition=tables_condition,
+            readonly_condition=readonly_condition,
+        )
+
+        return self._ch_client.query(query_sql)["data"]
 
     def does_table_exist(self, db_name: str, table_name: str) -> bool:
         """
