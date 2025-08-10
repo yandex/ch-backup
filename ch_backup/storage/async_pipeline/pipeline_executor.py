@@ -215,7 +215,11 @@ class PipelineExecutor:
         Wait for completion of async operations.
         """
         if self._exec_pool:
-            self._exec_pool.wait_all(keep_going)
+            try:
+                self._exec_pool.wait_all(keep_going)
+            except:
+                self._exec_pool.shutdown(graceful=False)
+                raise
 
     def _exec_pipeline(
         self,

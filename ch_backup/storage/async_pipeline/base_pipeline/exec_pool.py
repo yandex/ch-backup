@@ -2,6 +2,7 @@
 Class for executing callables on specified pool.
 """
 
+import time
 from concurrent.futures import (
     Executor,
     Future,
@@ -14,6 +15,8 @@ from typing import Any, Callable, Dict, Iterable, Optional
 
 from ch_backup import logging
 from ch_backup.util import exhaust_iterator
+
+TIMEOUT_WORKER_TERMINATING_SEC = 5.0
 
 
 @dataclass
@@ -46,7 +49,7 @@ class ExecPool:
         """
         Wait workers for complete jobs and shutdown workers
         """
-        self._pool.shutdown(wait=graceful)
+        self._pool.shutdown(wait=graceful, cancel_futures=True)
 
     def submit(
         self,
@@ -124,7 +127,7 @@ class ExecPool:
         Shutdown pool explicitly to prevent the program from hanging in case of ungraceful termination.
         """
         try:
-            self.shutdown(graceful=True)
+            self.shutdown()
         except Exception:  # nosec B110
             pass
 
@@ -133,7 +136,7 @@ class ExecPool:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         try:
-            self.shutdown(graceful=True)
+            self.shutdown()
         except Exception:  # nosec B110
             pass
         return False
@@ -146,8 +149,8 @@ class ThreadExecPool(ExecPool):
     Encapsulate collecting of futures and waiting all submitted tasks.
     """
 
-    def __init__(self, threads: int) -> None:
-        super().__init__(ThreadPoolExecutor(threads))
+    def __init__(self, workers: int) -> None:
+        super().__init__(ThreadPoolExecutor(workers))
 
 
 class ProcessExecPool(ExecPool):
@@ -157,5 +160,41 @@ class ProcessExecPool(ExecPool):
     Encapsulate collecting of futures and waiting all submitted tasks.
     """
 
-    def __init__(self, threads: int) -> None:
-        super().__init__(ProcessPoolExecutor(threads))
+    _pool: ProcessPoolExecutor
+
+    def __init__(self, workers: int) -> None:
+        super().__init__(ProcessPoolExecutor(workers))
+
+    def shutdown(self, graceful: bool = True) -> None:
+        """
+        Wait workers for complete jobs and shutdown workers
+        """
+        # Try to shutdown gracefully
+        if graceful:
+            self._pool.shutdown(wait=True, cancel_futures=True)
+            return
+
+        # Send SIGTERM to the pool processes
+        # pylint: disable=protected-access
+        for p in self._pool._processes.values():
+            if p.is_alive():
+                try:
+                    p.terminate()
+                except Exception:
+                    logging.exception("Failed terminating of worker process. Ignore it")
+
+        # Wait for termination
+        remaining_timeout = TIMEOUT_WORKER_TERMINATING_SEC
+        for p in self._pool._processes.values():
+            start = time.time()
+            p.join(remaining_timeout)
+            elapsed = time.time() - start
+            remaining_timeout = max(remaining_timeout - elapsed, 0)
+
+        # Forcibly kill it if it's not responding to the SIGTERM
+        for p in self._pool._processes.values():
+            if p.is_alive():
+                try:
+                    p.kill()
+                except Exception:
+                    logging.exception("Failed killing of worker process. Ignore it")
