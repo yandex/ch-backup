@@ -516,6 +516,8 @@ class ClickhouseCTL:
                 settings["allow_suspicious_fixed_string_types"] = 1
             if self.ch_version_ge("23.1"):
                 settings["allow_experimental_inverted_index"] = 1
+            if self.ch_version_ge("23.8"):
+                settings["format_display_secrets_in_show_and_select"] = 1
             if self.ch_version_ge("23.12"):
                 settings["allow_experimental_refreshable_materialized_view"] = 1
                 settings["allow_suspicious_ttl_expressions"] = 1
