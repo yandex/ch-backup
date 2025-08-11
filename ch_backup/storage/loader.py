@@ -7,7 +7,6 @@ from typing import Callable, List, Optional, Sequence
 
 from ch_backup.storage.async_pipeline.pipeline_executor import PipelineExecutor
 from ch_backup.storage.engine import get_storage_engine
-from ch_backup.storage.pipeline import PipelineLoader
 
 
 class StorageLoader:
@@ -22,12 +21,7 @@ class StorageLoader:
     def __init__(self, config):
         self._config = config
         self._engine = get_storage_engine(config["storage"])
-
-        # FIXME: Temporary feature toggle
-        if config["pipeline"]["async"]:
-            self._ploader = PipelineExecutor(config)
-        else:
-            self._ploader = PipelineLoader(config)  # type: ignore[assignment]
+        self._ploader = PipelineExecutor(config)
 
     # pylint: disable=too-many-positional-arguments
     def upload_data(
