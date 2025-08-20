@@ -446,6 +446,8 @@ class ClickhouseBackup:
         self._context.backup_layout.download_cloud_storage_metadata(
             backup_meta, source_disk, disk_name
         )
+        self._context.backup_layout.wait()
+
         return True
 
     def _delete(
