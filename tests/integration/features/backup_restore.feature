@@ -351,3 +351,31 @@ Feature: Backup & Restore
     """
     1
     """
+
+  Scenario: Perform backup, restore for table with long names.
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE long_names;
+
+    ATTACH TABLE long_names.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    UUID '474a6d3b-f3f1-4c45-a218-630c7db9a215'
+    (
+      a UInt32,
+    )
+    ENGINE = MergeTree()
+    ORDER BY a;
+    """
+    When we create clickhouse01 clickhouse backup
+    And we execute queries on clickhouse01
+    """
+    ALTER TABLE long_names.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    ADD COLUMN b UInt32;
+    """
+    And we restore clickhouse backup #0 to clickhouse01
+    And we restore clickhouse backup #0 to clickhouse02
+    Then clickhouse02 has same schema as clickhouse01
+    When we execute queries on clickhouse01
+    """
+    RENAME TABLE long_names.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    TO long_names.babacaba;
+    """
