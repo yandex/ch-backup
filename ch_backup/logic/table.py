@@ -621,7 +621,7 @@ class TableBackup(BackupManager):
                         )
                         if (
                             len(table.name)
-                            > context.config["restore"]["max_table_name"]
+                            > context.config_root["restore"]["max_table_name"]
                         ):
                             new_table_name = "".join(
                                 choices(ascii_lowercase, k=RANDOM_TABLE_NAME_LENGTH)
