@@ -158,7 +158,7 @@ Feature: Backup & Clean & Restore
     """
 
   @require_version_23.7
-  Scenario: All backup data is deleted including data of removed tables
+  Scenario Outline: All backup data is deleted including data of removed tables
     Given ch-backup configuration on clickhouse01
     """
     backup:
@@ -185,7 +185,7 @@ Feature: Backup & Clean & Restore
       | num | state   | data_count | link_count | title   |
       | 0   | created | 5          | 0          | deleted |
     And s3 contains 15 objects
-    And s3 bucket cloud-storage-01 contains 10 objects
+    And s3 bucket cloud-storage-01 contains <object_count> objects
     And we got the following s3 backup directories on clickhouse01
     """
     ["12345678T123456"]
@@ -203,3 +203,12 @@ Feature: Backup & Clean & Restore
     """
     []
     """
+    @require_version_less_than_25.8
+    Examples:
+    | object_count |
+    | 10           |
+
+    @require_version_25.8
+    Examples:
+    | object_count |
+    | 11           |
