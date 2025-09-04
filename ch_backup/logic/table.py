@@ -617,7 +617,14 @@ class TableBackup(BackupManager):
                     else:
                         ### The lightweight copy to that we can modify and use for ch queries
                         table_to_drop = Table(
-                            table.database, table.name, "", [], [], "", "", None
+                            existing_table.database,
+                            existing_table.name,
+                            "",
+                            [],
+                            [],
+                            "",
+                            "",
+                            None,
                         )
                         if (
                             len(table.name)
@@ -628,7 +635,9 @@ class TableBackup(BackupManager):
                             )
                             table_to_drop.name = new_table_name
                             context.ch_ctl.drop_table_if_exists(table_to_drop)
-                            context.ch_ctl.rename_table(table, table_to_drop.name)
+                            context.ch_ctl.rename_table(
+                                existing_table, table_to_drop.name
+                            )
 
                         context.ch_ctl.drop_table_if_exists(table_to_drop)
 
