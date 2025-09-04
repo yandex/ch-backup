@@ -157,7 +157,6 @@ Feature: Backup & Clean & Restore
     []
     """
 
-  @require_version_23.7
   Scenario Outline: All backup data is deleted including data of removed tables
     Given ch-backup configuration on clickhouse01
     """
@@ -203,6 +202,7 @@ Feature: Backup & Clean & Restore
     """
     []
     """
+    @require_version_23.7
     @require_version_less_than_25.8
     Examples:
     | object_count |
