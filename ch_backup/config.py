@@ -72,6 +72,8 @@ DEFAULT_CONFIG = {
     },
     "restore": {
         "use_inplace_cloud_restore": False,
+        # Max table name length. Actually it is just a result of the getMaxTableNameLengthForDatabase(<atomic_db>) ch function.
+        "max_table_name": 206,
     },
     "storage": {
         "type": "s3",
