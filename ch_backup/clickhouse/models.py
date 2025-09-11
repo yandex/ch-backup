@@ -5,6 +5,8 @@ ClickHouse resource models.
 import os
 import re
 from types import SimpleNamespace
+
+# from typing import Any, List, Optional, Tuple
 from typing import List, Optional, Tuple
 
 import ch_backup.logging
@@ -80,6 +82,13 @@ class Table(SimpleNamespace):
         if self.paths_with_disks:
             path, disk = self.paths_with_disks[0]
             self.path_on_disk = os.path.relpath(path, disk.path)
+
+    @classmethod
+    def make_dummy(cls, database: str, name: str) -> "Table":
+        """
+        Make dummy instance of Table only with database and table name.
+        """
+        return cls(database, name, "", [], [], "", "", None)
 
     def _map_paths_to_disks(
         self, disks: List[Disk], data_paths: List[str]

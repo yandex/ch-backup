@@ -437,6 +437,13 @@ RELOAD_CONFIG_SQL = strip_query(
 """
 )
 
+RENAME_TABLE_SQL = strip_query(
+    """
+    RENAME TABLE `{db_name}`.`{old_table_name}` TO `{db_name}`.`{new_table_name}`
+"""
+)
+
+
 GET_ZOOKEEPER_ADMIN_USER = strip_query(
     """
     SELECT
@@ -1303,6 +1310,18 @@ class ClickhouseCTL:
         finally:
             with suppress(FileNotFoundError):
                 flag_path.unlink()
+
+    def rename_table(self, table: Table, new_table_name: str) -> None:
+        """
+        Rename clickhouse table.
+        """
+        self._ch_client.query(
+            RENAME_TABLE_SQL.format(
+                db_name=table.database,
+                old_table_name=table.name,
+                new_table_name=new_table_name,
+            ),
+        )
 
 
 def _get_part_checksum(part_path: str) -> str:

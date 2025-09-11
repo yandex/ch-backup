@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from functools import partial
 from itertools import chain
 from pathlib import Path
+from random import choices
+from string import ascii_lowercase
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ch_backup import logging
@@ -31,6 +33,8 @@ from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
     ThreadExecPool,
 )
 from ch_backup.util import compare_schema
+
+RANDOM_TABLE_NAME_LENGTH = 16
 
 
 @dataclass
@@ -604,10 +608,33 @@ class TableBackup(BackupManager):
 
             if existing_table:
                 try:
+                    ### If table name longer than `getMaxTableNameLengthForDatabase()` ch function result
+                    ### then we can't drop the table. Just rename it to some random name and drop the table.
+                    ### But for dictionaries doesn't works create/attach with long name, so we can't even restore the dictionary
+                    ### with long name. So it better to keep it.
                     if existing_table.is_dictionary():
                         context.ch_ctl.drop_dictionary_if_exists(existing_table)
                     else:
-                        context.ch_ctl.drop_table_if_exists(existing_table)
+                        ### The lightweight copy to that we can modify and use for ch queries
+                        table_to_drop = Table.make_dummy(
+                            existing_table.database,
+                            existing_table.name,
+                        )
+                        if (
+                            len(table.name)
+                            > context.config_root["restore"]["max_table_name"]
+                        ):
+                            new_table_name = "to_drop_" + "".join(
+                                choices(ascii_lowercase, k=RANDOM_TABLE_NAME_LENGTH)
+                            )
+                            table_to_drop.name = new_table_name
+                            context.ch_ctl.drop_table_if_exists(table_to_drop)
+                            context.ch_ctl.rename_table(
+                                existing_table, table_to_drop.name
+                            )
+
+                        context.ch_ctl.drop_table_if_exists(table_to_drop)
+
                 except Exception as e:
                     if not keep_going:
                         raise
