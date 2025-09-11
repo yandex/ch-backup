@@ -616,21 +616,15 @@ class TableBackup(BackupManager):
                         context.ch_ctl.drop_dictionary_if_exists(existing_table)
                     else:
                         ### The lightweight copy to that we can modify and use for ch queries
-                        table_to_drop = Table(
+                        table_to_drop = Table.make_dummy(
                             existing_table.database,
                             existing_table.name,
-                            "",
-                            [],
-                            [],
-                            "",
-                            "",
-                            None,
                         )
                         if (
                             len(table.name)
                             > context.config_root["restore"]["max_table_name"]
                         ):
-                            new_table_name = "".join(
+                            new_table_name = "to_drop_" + "".join(
                                 choices(ascii_lowercase, k=RANDOM_TABLE_NAME_LENGTH)
                             )
                             table_to_drop.name = new_table_name
