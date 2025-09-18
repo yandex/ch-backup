@@ -195,8 +195,8 @@ def test_temporary_disk(clickhouse_config, disk_name, source, temp_config):
             encoding="utf-8",
         )
 
-        expected_content = xmltodict.parse(temp_config)
-        actual_content = xmltodict.parse(write_result)
+        expected_content = xmltodict.parse(temp_config, disable_entities=False)
+        actual_content = xmltodict.parse(write_result, disable_entities=False)
         assert_equal(actual_content, expected_content)
 
 
