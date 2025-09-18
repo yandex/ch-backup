@@ -23,7 +23,7 @@ class ClickhouseConfig:
         Loads clickhouse configuration file.
         """
         with open(self._ch_config_path, "r", encoding="utf-8") as file:
-            config = xmltodict.parse(file.read())
+            config = xmltodict.parse(file.read(), disable_entities=False)
             self._ch_config = config.get("clickhouse", config.get("yandex"))
 
     @property
