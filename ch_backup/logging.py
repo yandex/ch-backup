@@ -4,6 +4,9 @@ Logging module.
 
 import inspect
 import logging
+import multiprocessing
+import os
+from functools import partial
 from typing import Any
 
 import psutil
@@ -36,23 +39,21 @@ def make_filter(name):
     return Filter(name)
 
 
-def _create_formatter(fmt):
+def _format(fmt, record):
     message_head = 800
     message_tail = 300
-
-    def _format(record):
-        result_fmt = fmt
-        message_length = len(record["message"])
-        if message_length > message_head + message_tail:
-            tail_length = min(message_length - message_head, message_tail)
-            record["extra"]["message_tail"] = record["message"][-tail_length:]
-            record["message"] = record["message"][:message_head]
-            skipped_characters = message_length - message_head - tail_length
-            result_fmt += f" ...(skipped {skipped_characters} characters)... {{extra[message_tail]}}"
-        # Adding '\n{exception}' to dynamic formatters is required by loguru docs
-        return result_fmt + "\n{exception}"
-
-    return _format
+    result_fmt = fmt
+    message_length = len(record["message"])
+    if message_length > message_head + message_tail:
+        tail_length = min(message_length - message_head, message_tail)
+        record["extra"]["message_tail"] = record["message"][-tail_length:]
+        record["message"] = record["message"][:message_head]
+        skipped_characters = message_length - message_head - tail_length
+        result_fmt += (
+            f" ...(skipped {skipped_characters} characters)... {{extra[message_tail]}}"
+        )
+    # Adding '\n{exception}' to dynamic formatters is required by loguru docs
+    return result_fmt + "\n{exception}"
 
 
 class InterceptHandler(logging.Handler):
@@ -93,11 +94,13 @@ def configure(config_loguru: dict) -> None:
     loguru_handlers = []
 
     for name, value in config_loguru["handlers"].items():
+        logs_directory = config_loguru["logs_directory"]
         handler = {
-            "sink": value["sink"],
-            "format": _create_formatter(config_loguru["formatters"][value["format"]]),
+            "sink": os.path.join(logs_directory, value["sink"]),
+            "format": partial(_format, config_loguru["formatters"][value["format"]]),
             "enqueue": True,
             "diagnose": False,
+            "context": multiprocessing.get_context("spawn"),
         }
         if "level" in value:
             handler["level"] = value["level"]

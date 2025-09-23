@@ -9,6 +9,7 @@ import typing
 import uuid
 from collections import OrderedDict
 from functools import wraps
+from pathlib import Path as PathlibPath
 from typing import Iterable, Tuple, Union
 
 from click import Choice, Path, argument, pass_context, style
@@ -35,7 +36,7 @@ from .ch_backup import CleanZooKeeperMode, ClickhouseBackup
 from .config import DEFAULT_CONFIG, Config
 from .params import JsonParamType, KeyValues, KeyValuesList, List, String, TimeSpan
 from .profile import profile
-from .util import drop_privileges, setup_environment, utcnow
+from .util import chown_dir_contents, drop_privileges, setup_environment, utcnow
 from .version import get_version
 
 TIMESTAMP = utcnow().strftime("%Y%m%dT%H%M%S")
@@ -144,11 +145,20 @@ def cli(
         cli_cfg = _build_cli_cfg_from_config_parameters(config_parameters)
         cfg.merge(cli_cfg)
 
-    logging.configure(cfg["loguru"])
+    PathlibPath(cfg["loguru"]["logs_directory"]).mkdir(exist_ok=True)
+    chown_dir_contents(
+        cfg["main"]["user"],
+        cfg["main"]["group"],
+        cfg["loguru"]["logs_directory"],
+        need_recursion=False,
+    )
     setup_environment(cfg["main"])
 
     if not drop_privileges(cfg["main"]):
         logging.warning("Drop privileges was disabled in config file.")
+
+    # Creating logger as not privileged user is required to copy logger to child processes
+    logging.configure(cfg["loguru"])
 
     ch_backup = ClickhouseBackup(cfg)
 

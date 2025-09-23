@@ -180,23 +180,24 @@ DEFAULT_CONFIG = {
         "tracemalloc": 0,
     },
     "loguru": {
+        "logs_directory": "/var/log/ch-backup",
         "formatters": {
             "ch-backup": "{time:YYYY-MM-DD HH:mm:ss,SSS} {process.name:11} {process.id:5} [{level:8}] {extra[logger_name]}: {message}",
             "clickhouse-disks": "{time:YYYY-MM-DD HH:mm:ss,SSS} {extra[tag]} {process.id:5} [{level:8}]: {message}",
         },
         "handlers": {
             "ch-backup": {
-                "sink": "/var/log/ch-backup/ch-backup.log",
+                "sink": "ch-backup.log",
                 "level": "DEBUG",
                 "format": "ch-backup",
             },
             "zookeeper": {
-                "sink": "/var/log/ch-backup/ch-backup.log",
+                "sink": "ch-backup.log",
                 "level": "DEBUG",
                 "format": "ch-backup",
             },
             "botocore": {
-                "sink": "/var/log/ch-backup/boto.log",
+                "sink": "boto.log",
                 "format": "ch-backup",
                 "filter": {
                     "botocore": "INFO",
@@ -206,12 +207,12 @@ DEFAULT_CONFIG = {
                 },
             },
             "clickhouse-disks": {
-                "sink": "/var/log/ch-backup/clickhouse-disks.log",
+                "sink": "clickhouse-disks.log",
                 "level": "DEBUG",
                 "format": "clickhouse-disks",
             },
             "urllib3.connectionpool": {
-                "sink": "/var/log/ch-backup/boto.log",
+                "sink": "boto.log",
                 "level": "DEBUG",
                 "format": "ch-backup",
             },

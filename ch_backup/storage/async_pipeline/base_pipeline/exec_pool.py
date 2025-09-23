@@ -11,6 +11,7 @@ from concurrent.futures import (
     as_completed,
 )
 from dataclasses import dataclass
+from multiprocessing import get_context
 from typing import Any, Callable, Dict, Iterable, Optional
 
 from ch_backup import logging
@@ -153,6 +154,13 @@ class ThreadExecPool(ExecPool):
         super().__init__(ThreadPoolExecutor(workers))
 
 
+def _init_logger(logger_: Any) -> None:
+    """
+    Init logger on spawned process.
+    """
+    logging.logger = logger_
+
+
 class ProcessExecPool(ExecPool):
     """
     Submit tasks on ProcessPoolExecutor.
@@ -163,7 +171,14 @@ class ProcessExecPool(ExecPool):
     _pool: ProcessPoolExecutor
 
     def __init__(self, workers: int) -> None:
-        super().__init__(ProcessPoolExecutor(workers))
+        super().__init__(
+            ProcessPoolExecutor(
+                max_workers=workers,
+                mp_context=get_context("spawn"),
+                initializer=_init_logger,
+                initargs=(logging.logger,),
+            )
+        )
 
     def shutdown(self, graceful: bool = True) -> None:
         """
