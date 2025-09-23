@@ -175,8 +175,8 @@ class ProcessExecPool(ExecPool):
             ProcessPoolExecutor(
                 max_workers=workers,
                 mp_context=get_context("spawn"),
-                initializer=_init_logger,  #  type: ignore
-                initargs=tuple([logging.logger]),  #  type: ignore
+                initializer=_init_logger,
+                initargs=(logging.logger,),
             )
         )
 
