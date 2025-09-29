@@ -174,6 +174,7 @@ DEFAULT_CONFIG = {
     "main": {
         "user": "clickhouse",
         "group": "clickhouse",
+        "working_dir": "/tmp",
         "drop_privileges": True,
         "ca_bundle": [],
         "disable_ssl_warnings": False,
