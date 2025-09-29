@@ -3,6 +3,7 @@
 Command-line interface.
 """
 import json
+import os
 import signal
 import sys
 import typing
@@ -152,6 +153,7 @@ def cli(
         cfg["loguru"]["logs_directory"],
         need_recursion=False,
     )
+    os.chdir(cfg["main"]["working_dir"])
     setup_environment(cfg["main"])
 
     if not drop_privileges(cfg["main"]):
