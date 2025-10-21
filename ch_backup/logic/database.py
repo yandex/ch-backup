@@ -116,7 +116,7 @@ class DatabaseBackup(BackupManager):
                     raise
 
         # Wait synchronizing replicated databases after restore
-        if sync_replicated_databases:
+        if sync_replicated_databases and not context.config["force_non_replicated"]:
             DatabaseBackup._wait_sync_replicated_databases(
                 context, databases_to_restore.values(), keep_going
             )
