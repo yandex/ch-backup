@@ -579,7 +579,6 @@ class ClickhouseBackup:
                 databases,
                 keep_going,
                 metadata_cleaner,
-                sync_replicated_databases=True,
             )
 
             # Restore tables and data stored on local disks.

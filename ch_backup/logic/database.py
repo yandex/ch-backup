@@ -48,7 +48,6 @@ class DatabaseBackup(BackupManager):
         databases: Dict[str, Database],
         keep_going: bool,
         metadata_cleaner: Optional[MetadataCleaner],
-        sync_replicated_databases: bool = False,
     ) -> None:
         """
         Restore database objects.
@@ -116,7 +115,7 @@ class DatabaseBackup(BackupManager):
                     raise
 
         # Wait synchronizing replicated databases after restore
-        if sync_replicated_databases and not context.config["force_non_replicated"]:
+        if not context.config["force_non_replicated"]:
             DatabaseBackup._wait_sync_replicated_databases(
                 context, databases_to_restore.values(), keep_going
             )
@@ -138,7 +137,7 @@ class DatabaseBackup(BackupManager):
             if db.is_replicated_db_engine():
                 try:
                     logging.info(f"Synchronizing replicated database: {db.name}")
-                    _sync_replicated_database_with_retries(
+                    DatabaseBackup._sync_replicated_database_with_retries(
                         context, db.name, deadline, max_retries, max_backoff
                     )
                 except Exception as e:
@@ -164,35 +163,38 @@ class DatabaseBackup(BackupManager):
         context.backup_meta.add_database(db)
         context.backup_layout.upload_backup_metadata(context.backup_meta)
 
+    @staticmethod
+    def _sync_replicated_database_with_retries(
+        context: BackupContext,
+        db_name: str,
+        deadline: float,
+        max_retries: int,
+        max_backoff: int,
+    ) -> None:
+        """
+        Synchronize Replicated Database replica with retries.
+        """
+        timeout_exceeded_exception_pattern = r".*Timeout exceeded.*"
+        time_left = max(deadline - time.time(), 1)
 
-def _sync_replicated_database_with_retries(
-    context: BackupContext,
-    db_name: str,
-    deadline: float,
-    max_retries: int,
-    max_backoff: int,
-) -> None:
-    """
-    Synchronize Replicated Database replica with retries.
-    """
-    time_left = max(deadline - time.time(), 1)
-
-    retry_decorator = retry(
-        retry=(
-            retry_if_exception_type(ClickhouseError)
-            & retry_if_not_exception_message(match=r".*Timeout exceeded.*")
-        ),
-        stop=(stop_after_attempt(max_retries) | stop_after_delay(time_left)),
-        wait=wait_random_exponential(max=max_backoff),
-        reraise=True,
-    )
-
-    @retry_decorator
-    def execute_sync():
-        current_time_left = max(deadline - time.time(), 1)
-        settings = {"receive_timeout": current_time_left}
-        context.ch_ctl.system_sync_database_replica(
-            db_name, timeout=int(current_time_left), settings=settings
+        retry_decorator = retry(
+            retry=(
+                retry_if_exception_type(ClickhouseError)
+                & retry_if_not_exception_message(
+                    match=timeout_exceeded_exception_pattern
+                )
+            ),
+            stop=(stop_after_attempt(max_retries) | stop_after_delay(time_left)),
+            wait=wait_random_exponential(max=max_backoff),
+            reraise=True,
         )
 
-    execute_sync()
+        @retry_decorator
+        def execute_sync():
+            current_time_left = max(deadline - time.time(), 1)
+            settings = {"receive_timeout": current_time_left}
+            context.ch_ctl.system_sync_database_replica(
+                db_name, timeout=int(current_time_left), settings=settings
+            )
+
+        execute_sync()
