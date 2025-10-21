@@ -536,6 +536,11 @@ def backup_command(
     is_flag=True,
     help="Forces to keep going if some tables are failed on restore",
 )
+@option(
+    "--restore-tables-in-replicated-database",
+    is_flag=True,
+    help="Restore tables in Replicated databases",
+)
 @constraint(mutually_exclusive, ["databases", "tables"])
 @constraint(mutually_exclusive, ["exclude_databases", "tables"])
 @constraint(mutually_exclusive, ["schema_only", "tables"])
@@ -565,6 +570,7 @@ def restore_command(
     skip_cloud_storage: bool = False,
     clean_zookeeper_mode: CleanZooKeeperMode = CleanZooKeeperMode.REPLICA_ONLY,
     keep_going: bool = False,
+    restore_tables_in_replicated_database: bool = False,
     access: bool = False,
     data: bool = False,
     schema: bool = False,
@@ -604,6 +610,7 @@ def restore_command(
         skip_cloud_storage=skip_cloud_storage,
         clean_zookeeper_mode=clean_zookeeper_mode,
         keep_going=keep_going,
+        restore_tables_in_replicated_database=restore_tables_in_replicated_database,
     )
 
 

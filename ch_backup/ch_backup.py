@@ -236,6 +236,7 @@ class ClickhouseBackup:
         skip_cloud_storage: bool = False,
         clean_zookeeper_mode: CleanZooKeeperMode = CleanZooKeeperMode.DISABLED,
         keep_going: bool = False,
+        restore_tables_in_replicated_database: bool = False,
     ) -> None:
         """
         Restore specified backup
@@ -311,6 +312,7 @@ class ClickhouseBackup:
                 skip_cloud_storage=skip_cloud_storage,
                 clean_zookeeper_mode=clean_zookeeper_mode,
                 keep_going=keep_going,
+                restore_tables_in_replicated_database=restore_tables_in_replicated_database,
             )
 
     def delete(
@@ -524,7 +526,10 @@ class ClickhouseBackup:
         skip_cloud_storage: bool = False,
         clean_zookeeper_mode: CleanZooKeeperMode = CleanZooKeeperMode.DISABLED,
         keep_going: bool = False,
+        restore_tables_in_replicated_database: bool = False,
     ) -> None:
+        # pylint: disable=too-many-locals
+
         if sources.access:
             # Restore access control entities
             self._access_backup_manager.restore(self._context)
@@ -570,7 +575,11 @@ class ClickhouseBackup:
 
             # Restore databases.
             self._database_backup_manager.restore(
-                self._context, databases, keep_going, metadata_cleaner
+                self._context,
+                databases,
+                keep_going,
+                metadata_cleaner,
+                sync_replicated_databases=True,
             )
 
             # Restore tables and data stored on local disks.
@@ -586,6 +595,7 @@ class ClickhouseBackup:
                 cloud_storage_source_endpoint=cloud_storage_source_endpoint,
                 skip_cloud_storage=skip_cloud_storage,
                 keep_going=keep_going,
+                restore_tables_in_replicated_database=restore_tables_in_replicated_database,
             )
 
             if sources.data and self._context.restore_context.has_failed_parts():

@@ -317,6 +317,7 @@ class BackupManager:
         udf: bool = None,
         nc: bool = None,
         keep_going: bool = False,
+        restore_tables_in_replicated_database: bool = False,
     ) -> str:
         """
         Restore backup entry.
@@ -351,6 +352,8 @@ class BackupManager:
             options.append("--nc")
         if keep_going:
             options.append("--keep-going")
+        if restore_tables_in_replicated_database:
+            options.append("--restore-tables-in-replicated-database")
         return self._exec(f'restore {" ".join(options)} {backup_id}')
 
     def restore_access_control(self, backup_id: BackupId) -> str:

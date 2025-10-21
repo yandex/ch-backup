@@ -2,10 +2,21 @@
 Clickhouse backup logic for databases
 """
 
-from typing import Dict, Optional, Sequence
+import time
+from typing import Dict, Iterable, Optional, Sequence
+
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    retry_if_not_exception_message,
+    stop_after_attempt,
+    stop_after_delay,
+    wait_random_exponential,
+)
 
 from ch_backup import logging
 from ch_backup.backup_context import BackupContext
+from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner
 from ch_backup.clickhouse.models import Database
 from ch_backup.clickhouse.schema import (
@@ -37,10 +48,12 @@ class DatabaseBackup(BackupManager):
         databases: Dict[str, Database],
         keep_going: bool,
         metadata_cleaner: Optional[MetadataCleaner],
+        sync_replicated_databases: bool = False,
     ) -> None:
         """
         Restore database objects.
         """
+        # pylint: disable=too-many-branches
         logging.debug("Retrieving list of databases")
         present_databases = {db.name: db for db in context.ch_ctl.get_databases()}
 
@@ -102,7 +115,39 @@ class DatabaseBackup(BackupManager):
                 else:
                     raise
 
+        # Wait synchronizing replicated databases after restore
+        if sync_replicated_databases:
+            DatabaseBackup._wait_sync_replicated_databases(
+                context, databases_to_restore.values(), keep_going
+            )
+
         logging.info("All databases restored")
+
+    @staticmethod
+    def _wait_sync_replicated_databases(
+        context: BackupContext, databases: Iterable[Database], keep_going: bool
+    ) -> None:
+        logging.info("Synchronizing replicated database replicas")
+
+        # Common deadline for all databases
+        deadline = time.time() + context.ch_ctl_conf["sync_database_replica_timeout"]
+        max_retries = context.ch_ctl_conf["sync_database_replica_max_retries"]
+        max_backoff = context.ch_ctl_conf["sync_database_replica_max_backoff"]
+
+        for db in databases:
+            if db.is_replicated_db_engine():
+                try:
+                    logging.info(f"Synchronizing replicated database: {db.name}")
+                    _sync_replicated_database_with_retries(
+                        context, db.name, deadline, max_retries, max_backoff
+                    )
+                except Exception as e:
+                    if keep_going:
+                        logging.exception(
+                            f"Sync of replicated database {db.name} failed, skipping due to --keep-going flag. Reason {e}"
+                        )
+                    else:
+                        raise
 
     @staticmethod
     def _backup_database(context: BackupContext, db: Database) -> None:
@@ -118,3 +163,36 @@ class DatabaseBackup(BackupManager):
 
         context.backup_meta.add_database(db)
         context.backup_layout.upload_backup_metadata(context.backup_meta)
+
+
+def _sync_replicated_database_with_retries(
+    context: BackupContext,
+    db_name: str,
+    deadline: float,
+    max_retries: int,
+    max_backoff: int,
+) -> None:
+    """
+    Synchronize Replicated Database replica with retries.
+    """
+    time_left = max(deadline - time.time(), 1)
+
+    retry_decorator = retry(
+        retry=(
+            retry_if_exception_type(ClickhouseError)
+            & retry_if_not_exception_message(match=r".*Timeout exceeded.*")
+        ),
+        stop=(stop_after_attempt(max_retries) | stop_after_delay(time_left)),
+        wait=wait_random_exponential(max=max_backoff),
+        reraise=True,
+    )
+
+    @retry_decorator
+    def execute_sync():
+        current_time_left = max(deadline - time.time(), 1)
+        settings = {"receive_timeout": current_time_left}
+        context.ch_ctl.system_sync_database_replica(
+            db_name, timeout=int(current_time_left), settings=settings
+        )
+
+    execute_sync()
