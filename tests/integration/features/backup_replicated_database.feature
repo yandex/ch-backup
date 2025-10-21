@@ -7,6 +7,7 @@ Feature: Backup and restore Replicated Database with synchronization
     And a working clickhouse on clickhouse01
     And a working clickhouse on clickhouse02
 
+  @require_version_23.8
   Scenario: Replicated Database synchronization after full restore
     Given we have enabled shared zookeeper for clickhouse01
     And we have enabled shared zookeeper for clickhouse02
@@ -62,7 +63,7 @@ Feature: Backup and restore Replicated Database with synchronization
     2
     """
 
-  @require_version_22.8
+  @require_version_23.8
   Scenario: Replicated Database synchronization after schema-only restore
     Given we have enabled shared zookeeper for clickhouse01
     And we have enabled shared zookeeper for clickhouse02
@@ -120,7 +121,7 @@ Feature: Backup and restore Replicated Database with synchronization
     0
     """
 
-  @require_version_22.8
+  @require_version_23.8
   Scenario Outline: Restore with --restore-tables-in-replicated-database flag
     Given we have enabled shared zookeeper for clickhouse01
     And we have enabled shared zookeeper for clickhouse02
@@ -179,7 +180,7 @@ Feature: Backup and restore Replicated Database with synchronization
       | true       | 1           |
       | false      | 0           |
 
-  @require_version_22.8
+  @require_version_23.8
   Scenario Outline: Mixed databases with --restore-tables-in-replicated-database flag
     Given we have enabled shared zookeeper for clickhouse01
     And we have enabled shared zookeeper for clickhouse02
