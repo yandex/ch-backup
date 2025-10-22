@@ -928,9 +928,9 @@ class ClickhouseCTL:
         """
         Synchronize Replicated Database replica.
         """
-        if not self.ch_version_ge("22.8"):
+        if not self.ch_version_ge("23.8"):
             raise RuntimeError(
-                "SYSTEM SYNC DATABASE REPLICA is not supported in ClickHouse version < 22.8"
+                "SYSTEM SYNC DATABASE REPLICA is not stable in ClickHouse version < 23.8"
             )
 
         query_timeout = timeout or self._restore_replica_timeout
