@@ -2,6 +2,9 @@
 Clickhouse backup logic for tables
 """
 
+# pylint: disable=too-many-lines
+
+
 import os
 from collections import deque
 from dataclasses import dataclass
@@ -915,6 +918,8 @@ class TableBackup(BackupManager):
             else:
                 errors.clear()
 
+        self._check_readonly_restored_tables(context, tables, errors)
+
         logging.info("Restoring tables completed")
 
         if errors:
@@ -939,6 +944,33 @@ class TableBackup(BackupManager):
             )
 
         return []
+
+    @staticmethod
+    def _check_readonly_restored_tables(
+        context: BackupContext,
+        tables: Iterable[Table],
+        errors: List[Tuple[Table, Exception]],
+    ) -> None:
+        """
+        Successful RESTORE REPLICA doesn't mean that replica becomes active.
+        Need to check if table is still readonly.
+        """
+        readonly_tables = {
+            (replica["database"], replica["table"])
+            for replica in context.ch_ctl.get_replicas(readonly=True)
+        }
+        has_errors = {(table.database, table.name) for table, _ in errors}
+        for table in tables:
+            if (table.database, table.name) not in has_errors and (
+                table.database,
+                table.name,
+            ) in readonly_tables:
+                errors.append(
+                    (
+                        table,
+                        Exception("Table is readonly after successful RESTORE REPLICA"),
+                    )
+                )
 
     @staticmethod
     def _restore_table_object(
