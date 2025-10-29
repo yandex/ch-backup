@@ -933,7 +933,7 @@ class ClickhouseCTL:
                 "SYSTEM SYNC DATABASE REPLICA is not stable in ClickHouse version < 23.8"
             )
 
-        query_timeout = timeout or self._restore_replica_timeout
+        query_timeout = timeout or self._sync_database_replica_timeout
         query_settings = settings or {}
 
         self._ch_client.query(
