@@ -334,3 +334,18 @@ def step_check_data_equal(context, node):
 def step_check_no_database_replica(context, database, node):
     ch_client = ClickhouseClient(context, node)
     assert not ch_client.is_database_replica_exists(database)
+
+
+@given("we create {table_count:d} tables on {node:w} with schema")
+@when("we create {table_count:d} tables on {node:w} with schema")
+def step_create_multiple_tables(context, table_count, node):
+    """
+    Create multiple tables with numbered names using a schema template.
+    The schema template should contain {table_number} placeholder.
+    """
+    schema_template = context.text.strip()
+    ch_client = ClickhouseClient(context, node)
+
+    for i in range(table_count):
+        table_schema = schema_template.format(table_number=i)
+        ch_client.execute(table_schema)

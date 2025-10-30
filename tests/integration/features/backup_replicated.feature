@@ -49,7 +49,7 @@ Feature: Backup replicated merge tree table
     20
     """
 
-  @require_version_21.10
+  @require_version_23.8
   Scenario: Backup & Restore databases with Replicated engine
     Given ClickHouse settings
     """
@@ -64,7 +64,7 @@ Feature: Backup replicated merge tree table
     And we restore clickhouse backup #0 to clickhouse02
     Then clickhouse01 has same schema as clickhouse02
 
-  @require_version_21.10
+  @require_version_23.8
   Scenario: Backup Replicated database with static replica name
     Given ClickHouse settings
     """
@@ -88,7 +88,7 @@ Feature: Backup replicated merge tree table
     test_shard|clickhouse02
     """
 
-  @require_version_21.10
+  @require_version_23.8
   Scenario: Override replicated database to single-node on restore with cmd flag
     Given ClickHouse settings
     """
@@ -854,7 +854,7 @@ Feature: Backup replicated merge tree table
     | zookeeper_path          |
     |/databases/{uuid}/db_repl|
     
-    @require_version_22.8
+    @require_version_23.8
     Examples:
     | zookeeper_path          |
     |/databases/replicated/db_repl|
@@ -896,14 +896,14 @@ Feature: Backup replicated merge tree table
     | zookeeper_path          |
     |/databases/{uuid}/db_repl|
     
-    @require_version_22.8
+    @require_version_23.8
     Examples:
     | zookeeper_path          |
     |/databases/replicated/db_repl|
 
   ## Note: Sometimes we can have active orphaned table in the zookeeper.
   ## Here we are imitating such situation by creating objects with static replica name.
-  @require_version_23.3
+  @require_version_23.8
   Scenario: Host resetup with active orphaned objects in zookeeper.
     Given we have enabled shared zookeeper for clickhouse01
     And we have enabled shared zookeeper for clickhouse02
@@ -982,7 +982,7 @@ Feature: Backup replicated merge tree table
       | replica-only         |  2  |
       | all-replicas         |  1  |
 
-  @require_version_23.3
+  @require_version_23.8
   Scenario Outline: Clean metadata modes for replicated database
     Given ClickHouse settings
     """

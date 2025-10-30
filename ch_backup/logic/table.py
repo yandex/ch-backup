@@ -2,6 +2,8 @@
 Clickhouse backup logic for tables
 """
 
+# pylint: disable=too-many-lines
+
 import os
 from collections import deque
 from dataclasses import dataclass
@@ -275,6 +277,7 @@ class TableBackup(BackupManager):
         cloud_storage_source_endpoint: Optional[str],
         skip_cloud_storage: bool,
         keep_going: bool,
+        restore_tables_in_replicated_database: bool,
     ) -> None:
         """
         Restore tables and MergeTree data.
@@ -331,7 +334,11 @@ class TableBackup(BackupManager):
             map(lambda meta: self._get_table_from_meta(context, meta), tables_meta)
         )
         tables_to_restore = self._preprocess_tables_to_restore(
-            context, databases, tables_to_restore, keep_going
+            context,
+            databases,
+            tables_to_restore,
+            keep_going,
+            restore_tables_in_replicated_database,
         )
 
         failed_tables = self._restore_tables(
@@ -543,16 +550,33 @@ class TableBackup(BackupManager):
             logging.debug(f"Failed to get stat of {file_name}: {str(e)}")
             return None
 
+    # pylint: disable=too-many-branches
     def _preprocess_tables_to_restore(
         self,
         context: BackupContext,
         databases: Dict[str, Database],
         tables: List[Table],
         keep_going: bool,
+        restore_tables_in_replicated_database: bool,
     ) -> List[Table]:
         # Prepare table schema to restore.
+
         for table in tables:
             self._rewrite_table_schema(context, databases[table.database], table)
+
+        # Filter out tables in replicated databases if flag is not set
+        if not restore_tables_in_replicated_database:
+            filtered_tables = []
+            for table in tables:
+                if databases[table.database].is_replicated_db_engine():
+                    logging.info(
+                        'Skipping table "{}"."{}" because it is in replicated database and --restore-tables-in-replicated-database flag is not set',
+                        table.database,
+                        table.name,
+                    )
+                    continue
+                filtered_tables.append(table)
+            tables = filtered_tables
 
         # Filter out already restored tables.
         existing_tables_by_name = {}
