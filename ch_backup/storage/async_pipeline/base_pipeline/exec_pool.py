@@ -2,6 +2,10 @@
 Class for executing callables on specified pool.
 """
 
+import multiprocessing
+import os
+import signal
+import threading
 import time
 from concurrent.futures import (
     Executor,
@@ -161,6 +165,32 @@ def _init_logger(logger_: Any) -> None:
     logging.logger = logger_
 
 
+def _init_terminate_thread() -> None:
+    """
+    Starts a thread to watch if parent process is dead to prevent orphaned processes.
+    """
+
+    def _run() -> None:
+        sleep_time = 10.0
+        while True:
+            parent_process = multiprocessing.parent_process()
+            if parent_process is None or not parent_process.is_alive():
+                os.kill(os.getpid(), signal.SIGTERM)
+                return
+            time.sleep(sleep_time)
+
+    terminate_thread = threading.Thread(target=_run, daemon=True)
+    terminate_thread.start()
+
+
+def _init_process(logger: Any) -> None:
+    """
+    Initialize processes in pool.
+    """
+    _init_logger(logger)
+    _init_terminate_thread()
+
+
 class ProcessExecPool(ExecPool):
     """
     Submit tasks on ProcessPoolExecutor.
@@ -175,7 +205,7 @@ class ProcessExecPool(ExecPool):
             ProcessPoolExecutor(
                 max_workers=workers,
                 mp_context=get_context("spawn"),
-                initializer=_init_logger,
+                initializer=_init_process,
                 initargs=(logging.logger,),
             )
         )
