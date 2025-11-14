@@ -849,11 +849,6 @@ Feature: Backup replicated merge tree table
     When we start clickhouse at clickhouse01
     Then database replica db_repl on clickhouse01 does not exists
     
-    @require_version_24.8
-    Examples:
-    | zookeeper_path          |
-    |/databases/{uuid}/db_repl|
-    
     @require_version_23.8
     Examples:
     | zookeeper_path          |
@@ -890,11 +885,6 @@ Feature: Backup replicated merge tree table
     schema_only: true
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
-    
-    @require_version_24.8
-    Examples:
-    | zookeeper_path          |
-    |/databases/{uuid}/db_repl|
     
     @require_version_23.8
     Examples:
