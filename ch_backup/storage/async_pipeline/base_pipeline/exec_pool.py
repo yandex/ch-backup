@@ -2,6 +2,9 @@
 Class for executing callables on specified pool.
 """
 
+import os
+import signal
+import threading
 import time
 from concurrent.futures import (
     Executor,
@@ -161,6 +164,37 @@ def _init_logger(logger_: Any) -> None:
     logging.logger = logger_
 
 
+def _init_terminate_thread() -> None:
+    """
+    Starts a thread to watch if parent process is dead to prevent orphaned processes.
+    """
+
+    def _run() -> None:
+        initial_ppid = os.getppid()
+        sleep_time = 10.0
+        while True:
+            # Check if os.getppid() == 1 is not good enough,
+            # systemd can have child processes with id not equal to 1.
+            # This may also not work properly if parent id is reused by other process.
+            if initial_ppid == 1 or os.getppid() != initial_ppid:
+                os.kill(os.getpid(), signal.SIGTERM)
+                time.sleep(sleep_time)
+                os.kill(os.getpid(), signal.SIGKILL)
+                return
+            time.sleep(sleep_time)
+
+    terminate_thread = threading.Thread(target=_run, daemon=True)
+    terminate_thread.start()
+
+
+def _init_process(logger: Any) -> None:
+    """
+    Initialize processes in pool.
+    """
+    _init_logger(logger)
+    _init_terminate_thread()
+
+
 class ProcessExecPool(ExecPool):
     """
     Submit tasks on ProcessPoolExecutor.
@@ -175,7 +209,7 @@ class ProcessExecPool(ExecPool):
             ProcessPoolExecutor(
                 max_workers=workers,
                 mp_context=get_context("spawn"),
-                initializer=_init_logger,
+                initializer=_init_process,
                 initargs=(logging.logger,),
             )
         )
