@@ -2,7 +2,6 @@
 Class for executing callables on specified pool.
 """
 
-import multiprocessing
 import os
 import signal
 import threading
@@ -171,11 +170,16 @@ def _init_terminate_thread() -> None:
     """
 
     def _run() -> None:
+        initial_ppid = os.getppid()
         sleep_time = 10.0
         while True:
-            parent_process = multiprocessing.parent_process()
-            if parent_process is None or not parent_process.is_alive():
+            # Check if os.getppid() == 1 is not good enough,
+            # systemd can have child processes with id not equal to 1.
+            # This may also not work properly if parent id is reused by other process.
+            if initial_ppid == 1 or os.getppid() != initial_ppid:
                 os.kill(os.getpid(), signal.SIGTERM)
+                time.sleep(sleep_time)
+                os.kill(os.getpid(), signal.SIGKILL)
                 return
             time.sleep(sleep_time)
 
