@@ -588,6 +588,7 @@ class BackupLayout:
         backup_meta: BackupMetadata,
         disk: Disk,
         source_disk_name: str,
+        tar: bool = False,
     ) -> None:
         """
         Download files packed in tarball and unpacks them into specified directory.
@@ -603,13 +604,35 @@ class BackupLayout:
         for remote_path in metadata_remote_paths:
             logging.debug(f'Downloading "{disk_path}" files from "{remote_path}"')
             try:
-                self._storage_loader.download_files(
-                    remote_path=remote_path,
-                    local_path=disk_path,
-                    is_async=True,
-                    encryption=backup_meta.cloud_storage.encrypted,
-                    compression=compression,
-                )
+                if tar:
+                    tar_name = os.path.basename(remote_path)
+                    if compression:
+                        compressed_ext = ".gz"
+                        if not tar_name.endswith(compressed_ext):
+                            raise RuntimeError(
+                                f"Compressed remote metadata path should end with '.gz', actual path is {remote_path}"
+                            )
+                        tar_name = tar_name[: -len(compressed_ext)]
+
+                    database = os.path.basename(os.path.dirname(remote_path))
+                    result_dir = os.path.join(disk_path, database)
+                    os.makedirs(result_dir, exist_ok=True)
+
+                    self._storage_loader.download_file(
+                        remote_path=remote_path,
+                        local_path=os.path.join(result_dir, tar_name),
+                        is_async=True,
+                        encryption=backup_meta.cloud_storage.encrypted,
+                        compression=compression,
+                    )
+                else:
+                    self._storage_loader.download_files(
+                        remote_path=remote_path,
+                        local_path=disk_path,
+                        is_async=True,
+                        encryption=backup_meta.cloud_storage.encrypted,
+                        compression=compression,
+                    )
             except Exception as e:
                 msg = f'Failed to download tarball file "{remote_path}"'
                 raise StorageError(msg) from e
