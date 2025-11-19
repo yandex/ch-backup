@@ -435,19 +435,22 @@ class ClickhouseBackup:
         self,
         backup_name: str,
         disk_name: str,
-        tar: bool = False,
+        local_path: Optional[str] = None,
     ) -> bool:
-        """Download cloud storage metadata to shadow directory. Returns false if metadata is already present."""
+        """Download cloud storage metadata to shadow directory or to a file at given path. Returns false if metadata is already present."""
         backup_meta = self._get_backup(backup_name)
         source_disk = self._context.ch_ctl.get_disk(disk_name)
 
-        if self._context.backup_layout.cloud_storage_metadata_exists(
-            backup_meta, source_disk
+        if (
+            not local_path
+            and self._context.backup_layout.cloud_storage_metadata_exists(
+                backup_meta, source_disk
+            )
         ):
             return False
 
         self._context.backup_layout.download_cloud_storage_metadata(
-            backup_meta, source_disk, disk_name, tar
+            backup_meta, source_disk, disk_name, local_path
         )
         self._context.backup_layout.wait()
 

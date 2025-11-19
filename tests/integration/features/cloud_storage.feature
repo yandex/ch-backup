@@ -61,6 +61,48 @@ Feature: Backup & Clean & Restore
       | test_backup       |
       | LAST              |
 
+  Scenario: Download backup metadata to local path
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    CREATE TABLE test_db.table_01 (
+        CounterID UInt32,
+        UserID UInt32
+    )
+    ENGINE = MergeTree()
+    ORDER BY UserID
+    SETTINGS storage_policy = 's3';
+    INSERT INTO test_db.table_01 VALUES(0, 42), (1, 777);
+    """
+    And we create clickhouse01 clickhouse backup
+    """
+    name: test_backup
+    """
+    And we execute command on clickhouse01
+    """
+    ls /var/lib/clickhouse/disks/s3/shadow/
+    """
+    Then we get response
+    """
+    test_backup
+    """
+    When we execute command on clickhouse01
+    """
+    rm -r /var/lib/clickhouse/disks/s3/shadow/test_backup
+    """
+    And we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf get-cloud-storage-metadata --local-path /tmp/cloud-storage-metadata-pipe --disk s3 LAST
+    """
+    And we execute command on clickhouse01
+    """
+    ls /tmp/cloud-storage-metadata-pipe
+    """
+    Then we get response
+    """
+    /tmp/cloud-storage-metadata-pipe
+    """
+
   Scenario: Download backup metadata with tar flag
     When we execute queries on clickhouse01
     """

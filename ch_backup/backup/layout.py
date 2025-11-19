@@ -588,15 +588,18 @@ class BackupLayout:
         backup_meta: BackupMetadata,
         disk: Disk,
         source_disk_name: str,
-        tar: bool = False,
+        local_path: Optional[str] = None,
     ) -> None:
         """
         Download files packed in tarball and unpacks them into specified directory.
         """
         backup_name = backup_meta.get_sanitized_name()
         compression = backup_meta.cloud_storage.compressed
-        disk_path = self._get_cloud_storage_metadata_dst_path(backup_meta, disk)
-        os.makedirs(disk_path, exist_ok=True)
+        disk_path = (
+            local_path
+            if local_path
+            else self._get_cloud_storage_metadata_dst_path(backup_meta, disk)
+        )
         metadata_remote_paths = self._get_cloud_storage_metadata_remote_paths(
             backup_name, source_disk_name, compression
         )
@@ -604,28 +607,16 @@ class BackupLayout:
         for remote_path in metadata_remote_paths:
             logging.debug(f'Downloading "{disk_path}" files from "{remote_path}"')
             try:
-                if tar:
-                    tar_name = os.path.basename(remote_path)
-                    if compression:
-                        compressed_ext = ".gz"
-                        if not tar_name.endswith(compressed_ext):
-                            raise RuntimeError(
-                                f"Compressed remote metadata path should end with '.gz', actual path is {remote_path}"
-                            )
-                        tar_name = tar_name[: -len(compressed_ext)]
-
-                    database = os.path.basename(os.path.dirname(remote_path))
-                    result_dir = os.path.join(disk_path, database)
-                    os.makedirs(result_dir, exist_ok=True)
-
+                if local_path:
                     self._storage_loader.download_file(
                         remote_path=remote_path,
-                        local_path=os.path.join(result_dir, tar_name),
+                        local_path=disk_path,
                         is_async=True,
                         encryption=backup_meta.cloud_storage.encrypted,
                         compression=compression,
                     )
                 else:
+                    os.makedirs(disk_path, exist_ok=True)
                     self._storage_loader.download_files(
                         remote_path=remote_path,
                         local_path=disk_path,
