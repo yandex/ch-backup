@@ -157,7 +157,12 @@ class PipelineExecutor:
         return self._exec_pipeline(job_id, pipeline, is_async)
 
     def download_file(
-        self, remote_path: str, local_path: str, is_async: bool, encryption: bool
+        self,
+        remote_path: str,
+        local_path: str,
+        is_async: bool,
+        encryption: bool,
+        compression: bool,
     ) -> None:
         """
         Download file to local filesystem.
@@ -170,6 +175,7 @@ class PipelineExecutor:
             remote_path,
             Path(local_path),
             encryption,
+            compression,
         )
         self._exec_pipeline(job_id, pipeline, is_async)
 

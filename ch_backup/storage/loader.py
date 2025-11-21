@@ -147,12 +147,17 @@ class StorageLoader:
         local_path: str,
         is_async: bool = False,
         encryption: bool = False,
+        compression: bool = False,
     ) -> None:
         """
         Download file to local filesystem.
         """
         self._ploader.download_file(
-            remote_path, local_path, is_async=is_async, encryption=encryption
+            remote_path,
+            local_path,
+            is_async=is_async,
+            encryption=encryption,
+            compression=compression,
         )
 
     # pylint: disable=too-many-positional-arguments

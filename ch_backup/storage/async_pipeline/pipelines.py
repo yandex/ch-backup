@@ -149,7 +149,11 @@ def download_data_pipeline(config: dict, remote_path: str, decrypt: bool) -> byt
 
 
 def download_file_pipeline(
-    config: dict, remote_path: str, local_path: Path, decrypt: bool
+    config: dict,
+    remote_path: str,
+    local_path: Path,
+    decrypt: bool,
+    decompress: bool,
 ) -> None:
     """
     Entrypoint of download file pipeline.
@@ -159,6 +163,8 @@ def download_file_pipeline(
     builder.build_download_storage_stage(remote_path)
     if decrypt:
         builder.build_decrypt_stage()
+    if decompress:
+        builder.build_decompress_stage()
     builder.build_write_file_stage(local_path)
 
     run(builder.pipeline())
