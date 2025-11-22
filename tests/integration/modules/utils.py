@@ -10,8 +10,6 @@ from random import choice as random_choise
 from types import SimpleNamespace
 from typing import Mapping, MutableMapping, MutableSequence
 
-from packaging.version import parse as parse_version
-
 from .typing import ContextT
 
 
@@ -110,7 +108,7 @@ def normalize_create_query(create_query):
     return create_query
 
 
-def version_ge(current_version, comparing_version):
+def version_ge(current_version: str, comparing_version: str) -> bool:
     """
     Return True if `current_version` is greater or equal than `comparing_version`, or False otherwise.
     """
@@ -118,10 +116,10 @@ def version_ge(current_version, comparing_version):
     if current_version == "latest":
         return True
 
-    return parse_version(current_version) >= parse_version(comparing_version)  # type: ignore
+    return _parse_version(current_version) >= _parse_version(comparing_version)
 
 
-def version_lt(current_version, comparing_version):
+def version_lt(current_version: str, comparing_version: str) -> bool:
     """
     Return True if `current_version` is less than `comparing_version`, or False otherwise.
     """
@@ -129,4 +127,8 @@ def version_lt(current_version, comparing_version):
     if current_version == "latest":
         return False
 
-    return parse_version(current_version) < parse_version(comparing_version)  # type: ignore
+    return _parse_version(current_version) < _parse_version(comparing_version)
+
+
+def _parse_version(version: str) -> list[int]:
+    return [int(x) for x in re.sub(r"-.*$", "", version).split(".")]
