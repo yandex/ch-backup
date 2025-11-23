@@ -5,14 +5,13 @@ Clickhouse-control classes module
 # pylint: disable=too-many-lines
 
 import os
+import re
 import shutil
 from contextlib import contextmanager, suppress
 from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE  # type: ignore
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
-
-from packaging.version import parse as parse_version
 
 from ch_backup import logging
 from ch_backup.backup.metadata import TableMetadata
@@ -1101,7 +1100,7 @@ class ClickhouseCTL:
         """
         Returns True if ClickHouse version >= comparing_version.
         """
-        return parse_version(self.get_version()) >= parse_version(comparing_version)  # type: ignore
+        return _parse_version(self.get_version()) >= _parse_version(comparing_version)
 
     def get_macros(self) -> Dict:
         """
@@ -1363,3 +1362,8 @@ def _get_part_checksum(part_path: str) -> str:
 
 def _format_string_array(value: Sequence[str]) -> str:
     return "[" + ",".join(f"'{escape(v)}'" for v in value) + "]"
+
+
+def _parse_version(version: str) -> list[int]:
+    stripped_version = re.sub(r"^(\d+(?:\.\d+)*).*$", r"\1", version.strip())
+    return [int(x) for x in stripped_version.split(".")]

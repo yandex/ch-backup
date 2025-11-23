@@ -8,12 +8,11 @@ from datetime import datetime, timedelta
 from typing import Any, List, Sequence, Tuple, Union
 from urllib.parse import urljoin
 
-from packaging.version import parse as parse_version
 from requests import HTTPError, Session
 
 from . import docker
 from .typing import ContextT
-from .utils import generate_random_string, normalize_create_query
+from .utils import generate_random_string, normalize_create_query, version_ge
 
 DB_COUNT = 2
 TABLE_COUNT = 2
@@ -90,7 +89,7 @@ class ClickhouseClient:
         """
         Returns True if ClickHouse version >= comparing_version.
         """
-        return parse_version(self.get_version()) >= parse_version(comparing_version)  # type: ignore
+        return version_ge(self.get_version(), comparing_version)
 
     def init_schema(
         self,
