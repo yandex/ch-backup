@@ -1,3 +1,5 @@
+import pytest
+
 from ch_backup.clickhouse.control import _format_string_array, _parse_version
 from tests.unit.utils import parametrize
 
@@ -36,21 +38,14 @@ def test_format_string_array(value, result):
     assert _format_string_array(value) == result
 
 
-@parametrize(
-    {
-        "id": "release version",
-        "args": {
-            "value": "25.10.2.65",
-            "result": [25, 10, 2, 65],
-        },
-    },
-    {
-        "id": "development version",
-        "args": {
-            "value": "25.10.2.65-dev.1",
-            "result": [25, 10, 2, 65],
-        },
-    },
+@pytest.mark.parametrize(
+    "version,expected",
+    [
+        ("25.10", [25, 10]),
+        ("25.10.2.65", [25, 10, 2, 65]),
+        ("25.10.2.65.dev", [25, 10, 2, 65]),
+        ("25.10.2.65-dev.1", [25, 10, 2, 65]),
+    ],
 )
-def test_parse_version(value, result):
-    assert _parse_version(value) == result
+def test_parse_version(version: str, expected: list[int]) -> None:
+    assert _parse_version(version) == expected

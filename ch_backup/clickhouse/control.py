@@ -1365,4 +1365,5 @@ def _format_string_array(value: Sequence[str]) -> str:
 
 
 def _parse_version(version: str) -> list[int]:
-    return [int(x) for x in re.sub(r"-.*$", "", version).split(".")]
+    stripped_version = re.sub(r"^(\d+(?:\.\d+)*).*$", r"\1", version.strip())
+    return [int(x) for x in stripped_version.split(".")]
