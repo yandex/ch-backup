@@ -15,7 +15,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v6
     - uses: astral-sh/setup-uv@v6
     - name: "lint: isort"
       run: make isort
@@ -61,7 +61,7 @@ jobs:
           clickhouse: "latest"
     runs-on: ubuntu-22.04
     steps:
-    - uses: actions/checkout@v5
+    - uses: actions/checkout@v6
     - uses: astral-sh/setup-uv@v6
       with:
         python-version: ${{ matrix.python }}
