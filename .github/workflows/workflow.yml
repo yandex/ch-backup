@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v6
-    - uses: astral-sh/setup-uv@v6
+    - uses: astral-sh/setup-uv@v7
     - name: "lint: isort"
       run: make isort
     - name: "lint: black"
@@ -62,7 +62,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
     - uses: actions/checkout@v6
-    - uses: astral-sh/setup-uv@v6
+    - uses: astral-sh/setup-uv@v7
       with:
         python-version: ${{ matrix.python }}
     - name: run unit tests
