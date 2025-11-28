@@ -6,7 +6,7 @@ readme = "README.md"
 homepage = "https://github.com/yandex/ch-backup"
 repository = "https://github.com/yandex/ch-backup"
 dynamic = ["version"]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 keywords=[
     "clickhouse",
     "database",
@@ -23,7 +23,6 @@ classifiers = [
     "Operating System :: Unix",
     "Environment :: Console",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -118,7 +117,7 @@ lint.ignore = [
 "tests/**"    = ["S"]     # Disable security checks in tests
 
 [tool.pylint.main]
-py-version = "3.9"  # Minimum Python version to use for version dependent checks
+py-version = "3.10"  # Minimum Python version to use for version dependent checks
 jobs = 4  # Use multiple processes to speed up Pylint
 ignored-modules = [  # List of module names for which member attributes should not be checked
     "behave",
@@ -157,7 +156,7 @@ score = false
 
 
 [tool.mypy]
-python_version = 3.9
+python_version = "3.10"
 ignore_missing_imports = true
 disallow_incomplete_defs = true
 check_untyped_defs = true

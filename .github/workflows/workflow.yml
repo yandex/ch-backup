@@ -37,8 +37,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-        - python: "3.9"
-          clickhouse: "latest"
         - python: "3.10"
           clickhouse: "22.8.21.38"
         - python: "3.10"
