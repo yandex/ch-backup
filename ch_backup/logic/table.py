@@ -270,7 +270,6 @@ class TableBackup(BackupManager):
         databases: Dict[str, Database],
         schema_only: bool,
         tables: List[TableMetadata],
-        exclude_tables: List[TableMetadata],
         metadata_cleaner: Optional[MetadataCleaner],
         cloud_storage_source_bucket: Optional[str],
         cloud_storage_source_path: Optional[str],
@@ -318,15 +317,6 @@ class TableBackup(BackupManager):
             required_tables = [(table.database, table.name) for table in tables]
             tables_meta = list(
                 filter(lambda t: (t.database, t.name) in required_tables, tables_meta)
-            )
-
-        if exclude_tables:
-            logging.debug("Excluding unnecessary tables metadata")
-            excluded_tables = [(table.database, table.name) for table in exclude_tables]
-            tables_meta = list(
-                filter(
-                    lambda t: (t.database, t.name) not in excluded_tables, tables_meta
-                )
             )
 
         logging.debug("Retrieving tables from tables metadata")
