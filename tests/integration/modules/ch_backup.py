@@ -304,6 +304,8 @@ class BackupManager:
     def restore(
         self,
         backup_id: BackupId,
+        databases: str = None,
+        exclude_databases: str = None,
         schema_only: bool = False,
         override_replica_name: str = None,
         force_non_replicated: bool = False,
@@ -360,6 +362,10 @@ class BackupManager:
             options.append(f"--included-patterns {included_patterns}")
         if excluded_patterns:
             options.append(f"--excluded-patterns {excluded_patterns}")
+        if databases:
+            options.append(f"--databases {databases}")
+        if exclude_databases:
+            options.append(f"--exclude-databases {exclude_databases}")
         return self._exec(f'restore {" ".join(options)} {backup_id}')
 
     def restore_access_control(self, backup_id: BackupId) -> str:

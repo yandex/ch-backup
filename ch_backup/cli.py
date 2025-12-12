@@ -423,11 +423,18 @@ def backup_command(
     "Database",
     f"Example for {style(List.name.upper(), bold=True)}: "
     + style('"db1, db2"', fg=Color.cyan),
-    option(
-        "-d",
-        "--databases",
-        type=List(regexp=r"\w+"),
-        help="Comma-separated list of databases to restore. Other databases will be skipped.",
+    mutually_exclusive(
+        option(
+            "-d",
+            "--databases",
+            type=List(regexp=r"\w+"),
+            help="Comma-separated list of databases to restore. Other databases will be skipped.",
+        ),
+        option(
+            "--exclude-databases",
+            type=List(regexp=r"\w+"),
+            help="Comma-separated list of databases to exclude for restore. Other databases will be restored.",
+        ),
     ),
     option("--schema-only", is_flag=True, help="Restore only database schemas."),
 )
@@ -541,6 +548,7 @@ def restore_command(
     ch_backup: ClickhouseBackup,
     name: str,
     databases: list,
+    exclude_databases: list,
     schema_only: bool,
     override_replica_name: str = None,
     force_non_replicated: bool = False,
@@ -565,6 +573,7 @@ def restore_command(
     name = _validate_and_resolve_name(ctx, ch_backup, name)
 
     specified_databases: typing.List[str] = _list_to_database_names(databases)
+    excluded_databases: typing.List[str] = _list_to_database_names(exclude_databases)
 
     matcher = None
     if included_patterns:
@@ -578,6 +587,7 @@ def restore_command(
         sources=sources,
         backup_name=name,
         databases=specified_databases,
+        exclude_databases=excluded_databases,
         override_replica_name=override_replica_name,
         force_non_replicated=force_non_replicated,
         replica_name=replica_name,
