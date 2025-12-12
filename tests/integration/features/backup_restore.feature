@@ -320,6 +320,7 @@ Feature: Backup & Restore
     When we restore clickhouse backup #0 to clickhouse02
     """
     excluded_patterns: test_db1.table1,test_db2.*
+    exclude_databases: test_db2
     """
     When we execute query on clickhouse02
     """

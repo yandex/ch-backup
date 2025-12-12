@@ -225,6 +225,7 @@ class ClickhouseBackup:
         sources: BackupSources,
         backup_name: str,
         databases: Sequence[str],
+        exclude_databases: Sequence[str],
         override_replica_name: str = None,
         force_non_replicated: bool = False,
         replica_name: Optional[str] = None,
@@ -261,23 +262,16 @@ class ClickhouseBackup:
         )
 
         if not databases:
+            logging.debug(f"Picking all databases from backup.")
             databases = self._context.backup_meta.get_databases()
 
-        if partial_restore_filter:
-            filtered_databases = []
-            excluded_databases = []
-            for db_name in databases:
-                if partial_restore_filter.is_possibly_contains_database(db_name):
-                    filtered_databases.append(db_name)
-                else:
-                    excluded_databases.append(db_name)
-
-            databases = filtered_databases
-
-            if excluded_databases:
-                logging.debug(
-                    f'Excluding specified database from restoring: {", ".join(excluded_databases)}.'
-                )
+        if exclude_databases:
+            logging.debug(
+                f'Excluding specified databases from restoring: {", ".join(exclude_databases)}.'
+            )
+            databases = list(
+                filter(lambda x: x not in exclude_databases, databases)
+            )
 
         logging.debug(f"Picking databases to restore: {databases}.")
 
