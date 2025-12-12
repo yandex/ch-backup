@@ -262,16 +262,14 @@ class ClickhouseBackup:
         )
 
         if not databases:
-            logging.debug(f"Picking all databases from backup.")
+            logging.debug("Picking all databases from backup.")
             databases = self._context.backup_meta.get_databases()
 
         if exclude_databases:
             logging.debug(
                 f'Excluding specified databases from restoring: {", ".join(exclude_databases)}.'
             )
-            databases = list(
-                filter(lambda x: x not in exclude_databases, databases)
-            )
+            databases = list(filter(lambda x: x not in exclude_databases, databases))
 
         logging.debug(f"Picking databases to restore: {databases}.")
 
