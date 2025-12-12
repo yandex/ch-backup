@@ -506,12 +506,14 @@ def backup_command(
     option(
         "--included-patterns",
         type=List(regexp=r"\w+\.[\w*]+"),
-        help="Comma-separated list of db.tables to restore. Other tables will be skipped.",
+        help="Comma-separated list of db.tables to restore. Other tables will be skipped. "
+        "Examples: db1.table1; db1.table2,db2.*; db1.prefix*,db2.*suffix",
     ),
     option(
         "--excluded-patterns",
         type=List(regexp=r"\w+\.[\w*]+"),
-        help="Comma-separated list of db.tables to skip on restore. Other tables will be restored.",
+        help="Comma-separated list of db.tables to skip on restore. Other tables will be restored. "
+        "Examples: db1.table1; db1.table2,db2.*; db1.prefix*,db2.*suffix",
     ),
     option("--nc", is_flag=True, help="Perform partial restore of named collections."),
 )
@@ -526,7 +528,6 @@ def backup_command(
     help="Restore tables in Replicated databases",
 )
 @constraint(mutually_exclusive, ["included_patterns", "excluded_patterns"])
-@constraint(mutually_exclusive, ["schema_only", "excluded_patterns"])
 @constraint(mutually_exclusive, ["schema_only", "included_patterns"])
 @constraint(mutually_exclusive, ["schema_only", "access"])
 @constraint(mutually_exclusive, ["schema_only", "data"])
