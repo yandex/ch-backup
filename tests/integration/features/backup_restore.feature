@@ -319,7 +319,22 @@ Feature: Backup & Restore
     When we drop all databases at clickhouse02
     When we restore clickhouse backup #0 to clickhouse02
     """
-    excluded_patterns: test_db1.table1,test_db2.*
+    included_patterns: test_db1.table2,test_db2.*table*
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT database,name FROM system.tables where database LIKE 'test_db%' ORDER BY database,name  FORMAT CSV
+    """
+    Then we get response
+    """
+    "test_db1","table2"
+    "test_db2","test_table1"
+    "test_db2","test_table2"
+    """
+    When we drop all databases at clickhouse02
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    excluded_patterns: test_db1.table1
     exclude_databases: test_db2
     """
     When we execute query on clickhouse02
@@ -332,13 +347,35 @@ Feature: Backup & Restore
     """
     When we execute query on clickhouse02
     """
-    SELECT count(*) FROM system.parts where database LIKE 'test_db%';
+    SELECT name FROM system.databases where database LIKE 'test_db%' ORDER BY name  FORMAT CSV
     """
     Then we get response
     """
-    2
+    test_db1
     """
-    
+    When we drop all databases at clickhouse02
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    excluded_patterns: test_db1.table1,test_db2.*
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT database,name FROM system.tables where database LIKE 'test_db%' ORDER BY database,name  FORMAT CSV
+    """
+    Then we get response
+    """
+    "test_db1","table2"
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT name FROM system.databases where database LIKE 'test_db%' ORDER BY name  FORMAT CSV
+    """
+    Then we get response
+    """
+    "test_db1"
+    "test_db2"
+    """
+
   Scenario: Overwrite existing table on destination node when name is equal and schema is mismatched with checking force_drop_table
     When we drop all databases at clickhouse01
     And we drop all databases at clickhouse02
