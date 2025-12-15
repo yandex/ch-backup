@@ -16,6 +16,7 @@ from ch_backup.logic.partial_restore import PartialRestoreFilter
         [["db1.table1", "db2.*"], "db1", "table2", False],
         [["db1.table*"], "db1", "table2", True],
         [["db1.table*"], "db2", "table2", False],
+        [["db1.*table*"], "db1", "pre_table_suf", True],
         [["db1.table1", "db2.table2"], "db2", "table2", True],
         [["db1.table1", "db2.table2"], "db1", "table2", False],
         [["db1.table*", "db2.table2"], "db1", "table2", True],
