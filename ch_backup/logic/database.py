@@ -3,7 +3,7 @@ Clickhouse backup logic for databases
 """
 
 import time
-from typing import Dict, Iterable, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence
 
 from tenacity import (
     retry,
@@ -48,7 +48,7 @@ class DatabaseBackup(BackupManager):
         databases: Dict[str, Database],
         keep_going: bool,
         metadata_cleaner: Optional[MetadataCleaner],
-    ) -> None:
+    ) -> List[Database]:
         """
         Restore database objects.
         """
@@ -114,18 +114,20 @@ class DatabaseBackup(BackupManager):
                 else:
                     raise
 
-        # Wait synchronizing replicated databases after restore
-        if not context.config["force_non_replicated"]:
-            DatabaseBackup._wait_sync_replicated_databases(
-                context, databases_to_restore.values(), keep_going
-            )
-
         logging.info("All databases restored")
+        return list(databases_to_restore.values())
 
     @staticmethod
-    def _wait_sync_replicated_databases(
+    def wait_sync_replicated_databases(
         context: BackupContext, databases: Iterable[Database], keep_going: bool
     ) -> None:
+        """
+        Call SYNC DATABASE REPLICA for replicated databases.
+        """
+        if context.config["force_non_replicated"]:
+            logging.info("Skipping synchronizing replicated database replicas.")
+            return
+
         logging.info("Synchronizing replicated database replicas")
 
         # Common deadline for all databases
