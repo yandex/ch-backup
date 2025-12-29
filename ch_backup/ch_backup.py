@@ -218,7 +218,7 @@ class ClickhouseBackup:
 
         return self._context.backup_meta.name, None
 
-    # pylint: disable=too-many-arguments,duplicate-code,too-many-positional-arguments
+    # pylint: disable=too-many-arguments,duplicate-code,too-many-positional-arguments,too-many-locals
     def restore(
         self,
         sources: BackupSources,
@@ -237,6 +237,7 @@ class ClickhouseBackup:
         clean_zookeeper_mode: CleanZooKeeperMode = CleanZooKeeperMode.DISABLED,
         keep_going: bool = False,
         restore_tables_in_replicated_database: bool = False,
+        clean_metadata_for_tables_in_repl_db: bool = True,
     ) -> None:
         """
         Restore specified backup
@@ -313,6 +314,7 @@ class ClickhouseBackup:
                 clean_zookeeper_mode=clean_zookeeper_mode,
                 keep_going=keep_going,
                 restore_tables_in_replicated_database=restore_tables_in_replicated_database,
+                clean_metadata_for_tables_in_repl_db=clean_metadata_for_tables_in_repl_db,
             )
 
     def delete(
@@ -531,6 +533,7 @@ class ClickhouseBackup:
         clean_zookeeper_mode: CleanZooKeeperMode = CleanZooKeeperMode.DISABLED,
         keep_going: bool = False,
         restore_tables_in_replicated_database: bool = False,
+        clean_metadata_for_tables_in_repl_db: bool = True,
     ) -> None:
         # pylint: disable=too-many-locals
 
@@ -578,7 +581,7 @@ class ClickhouseBackup:
                 )
 
             # Restore databases.
-            self._database_backup_manager.restore(
+            restored_databases = self._database_backup_manager.restore(
                 self._context,
                 databases,
                 keep_going,
@@ -599,6 +602,11 @@ class ClickhouseBackup:
                 skip_cloud_storage=skip_cloud_storage,
                 keep_going=keep_going,
                 restore_tables_in_replicated_database=restore_tables_in_replicated_database,
+                clean_metadata_for_tables_in_repl_db=clean_metadata_for_tables_in_repl_db,
+            )
+
+            self._database_backup_manager.wait_sync_replicated_databases(
+                self._context, restored_databases, keep_going
             )
 
             if sources.data and self._context.restore_context.has_failed_parts():
