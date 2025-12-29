@@ -545,7 +545,7 @@ def backup_command(
     "--clean-metadata-for-tables-in-replicated-db",
     is_flag=True,
     default=True,
-    help="Restore tables in Replicated databases",
+    help="Clean metadata for tables in Replicated databases (disable to keep existing metadata)",
 )
 @constraint(mutually_exclusive, ["databases", "tables"])
 @constraint(mutually_exclusive, ["exclude_databases", "tables"])
