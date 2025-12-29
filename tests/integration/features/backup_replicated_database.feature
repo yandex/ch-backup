@@ -246,8 +246,8 @@ Feature: Backup and restore Replicated Database with synchronization
       | true       | 1                      |
       | false      | 0                      |
 
-  @require_version_23.8
-  Scenario: Replicated Database resetup of one node
+
+  Scenario Outline: Replicated Database resetup of one node
     Given we have enabled shared zookeeper for clickhouse01
     And we have enabled shared zookeeper for clickhouse02
     And ClickHouse settings
@@ -260,7 +260,7 @@ Feature: Backup and restore Replicated Database with synchronization
     ENGINE = Replicated('/clickhouse/databases/test_db', '{shard}', '{replica}');
 
     CREATE TABLE test_replicated_db.test_table UUID '82aa76a0-45cd-42f2-b355-852cc8c9c0af' (id UInt32, name String)
-    ENGINE = ReplicatedMergeTree() ORDER BY id PARTITION BY id SETTINGS database_replicated_allow_explicit_uuid=1;
+    ENGINE = ReplicatedMergeTree() ORDER BY id PARTITION BY id <create_table_settings>;
 
     INSERT INTO test_replicated_db.test_table SELECT 1, 'abacaba';
     """
@@ -298,3 +298,14 @@ Feature: Backup and restore Replicated Database with synchronization
     """
     1
     """
+    @require_version_23.8
+    @require_version_less_than_25.3
+    Examples:
+      | create_table_settings |
+      |    |
+
+    @require_version_25.3
+    Examples:
+      | create_table_settings |
+      |  SETTINGS database_replicated_allow_explicit_uuid=1  |
+
