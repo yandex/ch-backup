@@ -52,16 +52,16 @@ class RestoreContext:
     ### Note: In most of cases we don't need lock for operations, because operations aren't concurrent.
     ### But sometimes we pass updates of the restore context to process pools where the tasks are async.
     ### That's why lock is required.
-    @staticmethod
     def _method_with_lock_decorator_factory(respect_update_counter: bool) -> Any:
         def decorator(function: Callable) -> Any:
             def wrapper(self, *args, **kwargs):
                 # pylint: disable=protected-access
                 with self._state_lock:
-                    function(self, *args, **kwargs)
+                    result = function(self, *args, **kwargs)
                     if respect_update_counter:
                         # pylint: disable=protected-access
                         self._process_update_counter_locked()
+                    return result
 
             return wrapper
 
@@ -108,7 +108,7 @@ class RestoreContext:
         """
         self._failed[part.database][part.table]["failed_parts"][part.name] = repr(e)
 
-    @_method_with_lock_decorator_factory(True)
+    @_method_with_lock_decorator_factory(False)
     def has_failed_parts(self) -> bool:
         """
         Returns whether some parts failed during restore.
