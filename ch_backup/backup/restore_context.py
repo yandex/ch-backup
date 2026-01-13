@@ -52,6 +52,7 @@ class RestoreContext:
     ### Note: In most of cases we don't need lock for operations, because operations aren't concurrent.
     ### But sometimes we pass updates of the restore context to process pools where the tasks are async.
     ### That's why lock is required.
+    @staticmethod
     def _method_with_lock_decorator_factory(respect_update_counter: bool) -> Any:
         def decorator(function: Callable) -> Any:
             def wrapper(self, *args, **kwargs):
