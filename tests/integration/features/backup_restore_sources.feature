@@ -238,3 +238,22 @@ Feature: Backup & Restore sources
     """
     1
     """
+
+Scenario: Restore with regular sync of restore context
+    When we drop all databases at clickhouse01
+    And we drop all databases at clickhouse02
+    Given ch-backup configuration on clickhouse02
+    """
+      backup:
+        restore_context_sync_on_disk_operation_threshold: 1
+    """
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (n Int32) ENGINE = MergeTree() PARTITION BY n%100 ORDER BY n;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10000000;
+    """
+    When we create clickhouse01 clickhouse backup
+    And we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
