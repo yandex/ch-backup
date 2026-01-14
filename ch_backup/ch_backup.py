@@ -237,7 +237,6 @@ class ClickhouseBackup:
         clean_zookeeper_mode: CleanZooKeeperMode = CleanZooKeeperMode.DISABLED,
         keep_going: bool = False,
         restore_tables_in_replicated_database: bool = False,
-        clean_metadata_for_tables_in_repl_db: bool = True,
     ) -> None:
         """
         Restore specified backup
@@ -314,7 +313,6 @@ class ClickhouseBackup:
                 clean_zookeeper_mode=clean_zookeeper_mode,
                 keep_going=keep_going,
                 restore_tables_in_replicated_database=restore_tables_in_replicated_database,
-                clean_metadata_for_tables_in_repl_db=clean_metadata_for_tables_in_repl_db,
             )
 
     def delete(
@@ -533,7 +531,6 @@ class ClickhouseBackup:
         clean_zookeeper_mode: CleanZooKeeperMode = CleanZooKeeperMode.DISABLED,
         keep_going: bool = False,
         restore_tables_in_replicated_database: bool = False,
-        clean_metadata_for_tables_in_repl_db: bool = True,
     ) -> None:
         # pylint: disable=too-many-locals
 
@@ -602,7 +599,6 @@ class ClickhouseBackup:
                 skip_cloud_storage=skip_cloud_storage,
                 keep_going=keep_going,
                 restore_tables_in_replicated_database=restore_tables_in_replicated_database,
-                clean_metadata_for_tables_in_repl_db=clean_metadata_for_tables_in_repl_db,
             )
 
             self._database_backup_manager.wait_sync_replicated_databases(

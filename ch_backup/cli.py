@@ -541,12 +541,6 @@ def backup_command(
     is_flag=True,
     help="Restore tables in Replicated databases",
 )
-@option(
-    "--clean-metadata-for-tables-in-replicated-db",
-    is_flag=True,
-    default=True,
-    help="Clean metadata for tables in Replicated databases (disable to keep existing metadata)",
-)
 @constraint(mutually_exclusive, ["databases", "tables"])
 @constraint(mutually_exclusive, ["exclude_databases", "tables"])
 @constraint(mutually_exclusive, ["schema_only", "tables"])
@@ -577,7 +571,6 @@ def restore_command(
     clean_zookeeper_mode: CleanZooKeeperMode = CleanZooKeeperMode.REPLICA_ONLY,
     keep_going: bool = False,
     restore_tables_in_replicated_database: bool = False,
-    clean_metadata_for_tables_in_replicated_db: bool = True,
     access: bool = False,
     data: bool = False,
     schema: bool = False,
@@ -618,7 +611,6 @@ def restore_command(
         clean_zookeeper_mode=clean_zookeeper_mode,
         keep_going=keep_going,
         restore_tables_in_replicated_database=restore_tables_in_replicated_database,
-        clean_metadata_for_tables_in_repl_db=clean_metadata_for_tables_in_replicated_db,
     )
 
 
