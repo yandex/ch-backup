@@ -51,7 +51,7 @@ class RestoreContext:
             # pylint: disable=protected-access
             self._state_updates_cnt += 1
             if self._state_updates_cnt >= self._state_file_dump_threshold:
-                self._dump_state()
+                self.dump_state()
                 self._state_updates_cnt = 0
             return result
 
