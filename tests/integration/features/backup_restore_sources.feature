@@ -245,7 +245,7 @@ Scenario: Restore with regular sync of restore context
     Given ch-backup configuration on clickhouse02
     """
       backup:
-        restore_context_sync_on_disk_operation_threshold: 1
+        restore_context_sync_threshold_ops: 1
     """
     Given we have executed queries on clickhouse01
     """

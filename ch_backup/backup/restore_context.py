@@ -29,9 +29,7 @@ class RestoreContext:
 
     def __init__(self, config: Dict):
         self._state_file = config["restore_context_path"]
-        self._state_file_dump_threshold = config[
-            "restore_context_sync_on_disk_operation_threshold"
-        ]
+        self._state_file_dump_threshold = config["restore_context_sync_threshold_ops"]
         self._state_updates_cnt = 0
 
         self._databases_dict: Dict[str, Dict[str, Dict[str, PartState]]] = defaultdict(
@@ -47,13 +45,13 @@ class RestoreContext:
         )
 
     @staticmethod
-    def _method_update_state(function: Callable) -> Any:
+    def _dump_state_if_need(function: Callable) -> Any:
         def wrapper(self, *args, **kwargs):
             result = function(self, *args, **kwargs)
             # pylint: disable=protected-access
             self._state_updates_cnt += 1
-            if self._state_updates_cnt == self._state_file_dump_threshold:
-                self._dump_state_locked()
+            if self._state_updates_cnt >= self._state_file_dump_threshold:
+                self._dump_state()
                 self._state_updates_cnt = 0
             return result
 
@@ -79,21 +77,21 @@ class RestoreContext:
     def _part(self, part: PartMetadata) -> PartState:
         return self._databases[part.database][part.table][part.name]
 
-    @_method_update_state
+    @_dump_state_if_need
     def change_part_state(self, state: PartState, part: PartMetadata) -> None:
         """
         Changes the state of the restoring part.
         """
         self._databases[part.database][part.table][part.name] = state
 
-    @_method_update_state
+    @_dump_state_if_need
     def add_failed_chown(self, database: str, table: str, path: str) -> None:
         """
         Save information about failed detached dir chown in context
         """
         self._failed[database][table]["failed_paths"].append(path)
 
-    @_method_update_state
+    @_dump_state_if_need
     def add_failed_part(self, part: PartMetadata, e: Exception) -> None:
         """
         Save information about failed to restore part in context
@@ -105,12 +103,6 @@ class RestoreContext:
         Returns whether some parts failed during restore.
         """
         return len(self._failed) > 0
-
-    def dump_state(self) -> None:
-        """
-        Dumps restore state to file of disk.
-        """
-        self._dump_state_locked()
 
     def part_downloaded(self, part: PartMetadata) -> bool:
         """
@@ -124,7 +116,7 @@ class RestoreContext:
         """
         return self._part(part) == PartState.RESTORED
 
-    def _dump_state_locked(self) -> None:
+    def dump_state(self) -> None:
         """
         Dumps restore state of file to disk.
         """
