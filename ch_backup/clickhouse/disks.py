@@ -4,7 +4,6 @@ Clickhouse-disks controls temporary cloud storage disks management.
 
 import copy
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import partial
 from subprocess import PIPE, Popen
 from types import TracebackType
@@ -20,6 +19,7 @@ from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.models import Disk, Table
 from ch_backup.config import Config
+from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.util import is_equal_s3_endpoints
 
 
@@ -206,7 +206,7 @@ class ClickHouseTemporaryDisks:
         parts_to_copy: List[Tuple[Table, PartMetadata]],
         max_proccesses_count: int,
         keep_going: bool,
-        part_callback: Optional[Callable],
+        part_callback: Callable,
     ) -> None:
         """
         Copy parts from temporary cloud storage disk to actual.
@@ -220,33 +220,17 @@ class ClickHouseTemporaryDisks:
                 "It is unsafe to use cloud_storage_restore_workers > 1 with clickhouse version < 23.3"
                 f"(cloud_storage_restore_workers: {max_proccesses_count}, ch_version: {self._ch_ctl.get_version()}"
             )
-        with ThreadPoolExecutor(max_workers=max_proccesses_count) as executor:
-            # Can't use map function here. The map method returns a generator
-            # and it is not possible to resume a generator after an exception occurs.
-            # https://peps.python.org/pep-0255/#specification-generators-and-exception-propagation
-            futures_to_part = {}
+        with ThreadExecPool(max_proccesses_count) as executor:
             for part in parts_to_copy:
-                future = executor.submit(
+                executor.submit(
+                    f"Restore of part {part[1].name}",
                     self._run_copy_command,
                     backup_meta,
                     part[0],
                     part[1],
+                    callback=partial(part_callback, part[1]),
                 )
-                if part_callback:
-                    future.add_done_callback(partial(part_callback, part[1]))
-                futures_to_part[future] = part[1].name
-
-            for future in as_completed(futures_to_part):
-                try:
-                    future.result()
-                except Exception:
-                    if keep_going:
-                        part_name = futures_to_part[future]
-                        logging.exception(
-                            f"Restore of part {part_name} failed, skipping due to --keep-going flag"
-                        )
-                    else:
-                        raise
+            executor.wait_all(keep_going)
 
     def _run_copy_command(
         self, backup_meta: BackupMetadata, table: Table, part: PartMetadata

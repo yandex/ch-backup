@@ -5,7 +5,6 @@ Backup restoring context.
 import json
 from collections import defaultdict
 from enum import Enum
-from multiprocessing import Lock
 from os.path import exists
 from typing import Any, Callable, Dict, Mapping
 
@@ -33,9 +32,7 @@ class RestoreContext:
         self._state_file_dump_threshold = config[
             "restore_context_sync_on_disk_operation_threshold"
         ]
-
         self._state_updates_cnt = 0
-        self._state_lock = Lock()
 
         self._databases_dict: Dict[str, Dict[str, Dict[str, PartState]]] = defaultdict(
             lambda: defaultdict(lambda: defaultdict(lambda: PartState.NOT_DOWNLOADED))
@@ -49,24 +46,18 @@ class RestoreContext:
             )
         )
 
-    ### Note: In most of cases we don't need lock for operations, because operations aren't concurrent.
-    ### But sometimes we pass updates of the restore context to process pools where the tasks are async.
-    ### That's why lock is required.
     @staticmethod
-    def _method_with_lock_decorator_factory(respect_update_counter: bool) -> Any:
-        def decorator(function: Callable) -> Any:
-            def wrapper(self, *args, **kwargs):
-                # pylint: disable=protected-access
-                with self._state_lock:
-                    result = function(self, *args, **kwargs)
-                    if respect_update_counter:
-                        # pylint: disable=protected-access
-                        self._process_update_counter_locked()
-                    return result
+    def _method_update_state(function: Callable) -> Any:
+        def wrapper(self, *args, **kwargs):
+            result = function(self, *args, **kwargs)
+            # pylint: disable=protected-access
+            self._state_updates_cnt += 1
+            if self._state_updates_cnt == self._state_file_dump_threshold:
+                self._dump_state_locked()
+                self._state_updates_cnt = 0
+            return result
 
-            return wrapper
-
-        return decorator
+        return wrapper
 
     @property
     def _databases(self) -> Dict[str, Dict[str, Dict[str, PartState]]]:
@@ -88,67 +79,54 @@ class RestoreContext:
     def _part(self, part: PartMetadata) -> PartState:
         return self._databases[part.database][part.table][part.name]
 
-    @_method_with_lock_decorator_factory(True)
+    @_method_update_state
     def change_part_state(self, state: PartState, part: PartMetadata) -> None:
         """
         Changes the state of the restoring part.
         """
         self._databases[part.database][part.table][part.name] = state
 
-    @_method_with_lock_decorator_factory(True)
+    @_method_update_state
     def add_failed_chown(self, database: str, table: str, path: str) -> None:
         """
         Save information about failed detached dir chown in context
         """
         self._failed[database][table]["failed_paths"].append(path)
 
-    @_method_with_lock_decorator_factory(True)
+    @_method_update_state
     def add_failed_part(self, part: PartMetadata, e: Exception) -> None:
         """
         Save information about failed to restore part in context
         """
         self._failed[part.database][part.table]["failed_parts"][part.name] = repr(e)
 
-    @_method_with_lock_decorator_factory(False)
     def has_failed_parts(self) -> bool:
         """
         Returns whether some parts failed during restore.
         """
         return len(self._failed) > 0
 
-    @_method_with_lock_decorator_factory(False)
     def dump_state(self) -> None:
         """
         Dumps restore state to file of disk.
         """
         self._dump_state_locked()
 
-    @_method_with_lock_decorator_factory(False)
     def part_downloaded(self, part: PartMetadata) -> bool:
         """
         Checks if data part was downloaded.
         """
         return self._part(part) == PartState.DOWNLOADED
 
-    @_method_with_lock_decorator_factory(False)
     def part_restored(self, part: PartMetadata) -> bool:
         """
         Checks if data part was restored.
         """
         return self._part(part) == PartState.RESTORED
 
-    def _process_update_counter_locked(self):
-        """
-        Process update counter. Increment and dump state to disk if needed.
-        """
-        self._state_updates_cnt += 1
-        if self._state_updates_cnt == self._state_file_dump_threshold:
-            self._dump_state_locked()
-            self._state_updates_cnt = 0
-
     def _dump_state_locked(self) -> None:
         """
-        The Internal realization of dump_state.
+        Dumps restore state of file to disk.
         """
         # Using _databases property with empty dict might cause loading of the state file
         # So use it here before file is opened

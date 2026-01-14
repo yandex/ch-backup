@@ -251,7 +251,7 @@ Scenario: Restore with regular sync of restore context
     """
     CREATE DATABASE test_db;
     CREATE TABLE test_db.table_01 (n Int32) ENGINE = MergeTree() PARTITION BY n%100 ORDER BY n;
-    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10000000;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 1000;
     """
     When we create clickhouse01 clickhouse backup
     And we restore clickhouse backup #0 to clickhouse02
