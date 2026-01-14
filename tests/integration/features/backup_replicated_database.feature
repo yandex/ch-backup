@@ -245,3 +245,67 @@ Feature: Backup and restore Replicated Database with synchronization
       | flag_value | replicated_table_count |
       | true       | 1                      |
       | false      | 0                      |
+
+
+  Scenario Outline: Replicated Database resetup of one node
+    Given we have enabled shared zookeeper for clickhouse01
+    And we have enabled shared zookeeper for clickhouse02
+    And ClickHouse settings
+    """
+    allow_experimental_database_replicated: 1
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_replicated_db
+    ENGINE = Replicated('/clickhouse/databases/test_db', '{shard}', '{replica}');
+
+    CREATE TABLE test_replicated_db.test_table UUID '82aa76a0-45cd-42f2-b355-852cc8c9c0af' (id UInt32, name String)
+    ENGINE = ReplicatedMergeTree() ORDER BY id PARTITION BY id <create_table_settings>;
+
+    INSERT INTO test_replicated_db.test_table SELECT 1, 'abacaba';
+    """
+    And we have executed queries on clickhouse02
+    """
+    CREATE TABLE mock_table (id UInt32, name String)
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/82aa76a0-45cd-42f2-b355-852cc8c9c0af/shard1', '{replica}')
+    ORDER BY id PARTITION BY id;
+
+    SYSTEM SYNC REPLICA mock_table;
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count(*) FROM mock_table;
+    """
+    Then we get response
+    """
+    1
+    """
+    When we create clickhouse01 clickhouse backup
+    And we execute query on clickhouse02
+    """
+    DETACH TABLE mock_table;
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    restore_tables_in_replicated_database: false
+    schema_only: true
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count(*) FROM test_replicated_db.test_table;
+    """
+    Then we get response
+    """
+    1
+    """
+    @require_version_23.8
+    @require_version_less_than_25.3
+    Examples:
+      | create_table_settings |
+      |    |
+
+    @require_version_25.3
+    Examples:
+      | create_table_settings |
+      |  SETTINGS database_replicated_allow_explicit_uuid=1  |
+

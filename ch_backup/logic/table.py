@@ -330,22 +330,22 @@ class TableBackup(BackupManager):
             )
 
         logging.debug("Retrieving tables from tables metadata")
-        tables_to_restore: List[Table] = list(
+        tables_to_preprocess: List[Table] = list(
             map(lambda meta: self._get_table_from_meta(context, meta), tables_meta)
         )
         tables_to_restore = self._preprocess_tables_to_restore(
             context,
             databases,
-            tables_to_restore,
+            tables_to_preprocess,
             keep_going,
             restore_tables_in_replicated_database,
+            metadata_cleaner,
         )
 
         failed_tables = self._restore_tables(
             context,
             databases,
             tables_to_restore,
-            metadata_cleaner,
             keep_going,
         )
 
@@ -558,25 +558,14 @@ class TableBackup(BackupManager):
         tables: List[Table],
         keep_going: bool,
         restore_tables_in_replicated_database: bool,
+        metadata_cleaner: Optional[MetadataCleaner],
     ) -> List[Table]:
         # Prepare table schema to restore.
 
         for table in tables:
-            self._rewrite_table_schema(context, databases[table.database], table)
-
-        # Filter out tables in replicated databases if flag is not set
-        if not restore_tables_in_replicated_database:
-            filtered_tables = []
-            for table in tables:
-                if databases[table.database].is_replicated_db_engine():
-                    logging.info(
-                        'Skipping table "{}"."{}" because it is in replicated database and --restore-tables-in-replicated-database flag is not set',
-                        table.database,
-                        table.name,
-                    )
-                    continue
-                filtered_tables.append(table)
-            tables = filtered_tables
+            self._rewrite_table_schema(
+                context, databases[table.database], table, add_uuid_if_required=True
+            )
 
         # Filter out already restored tables.
         existing_tables_by_name = {}
@@ -592,9 +581,9 @@ class TableBackup(BackupManager):
         }
 
         result: List[Table] = []
+        tables_to_clean_metadata: List[Table] = []
         for table in tables:
             existing_table: Optional[Table] = None
-
             if (table.database, table.name) in existing_readonly_tables:
                 existing_table = table
                 logging.warning(
@@ -667,7 +656,23 @@ class TableBackup(BackupManager):
                     )
                     continue
 
-            result.append(table)
+            if metadata_cleaner and table.is_replicated():
+                tables_to_clean_metadata.append(table)
+
+            if (
+                not restore_tables_in_replicated_database
+                and databases[table.database].is_replicated_db_engine()
+            ):
+                logging.info(
+                    'Skipping table "{}"."{}" because it is in replicated database and --restore-tables-in-replicated-database flag is not set',
+                    table.database,
+                    table.name,
+                )
+            else:
+                result.append(table)
+
+        if metadata_cleaner:  # type: ignore
+            metadata_cleaner.clean_tables_metadata(tables_to_clean_metadata)
 
         return result
 
@@ -693,7 +698,6 @@ class TableBackup(BackupManager):
         context: BackupContext,
         databases: Dict[str, Database],
         tables: Iterable[Table],
-        metadata_cleaner: Optional[MetadataCleaner],
         keep_going: bool = False,
     ) -> List[Table]:
         logging.info("Preparing tables for restoring")
@@ -702,14 +706,11 @@ class TableBackup(BackupManager):
         distributed_tables = []
         view_tables = []
         other_tables = []
+
         for table in tables:
             logging.debug(
                 "Preparing table {} for restoring", f"{table.database}.{table.name}"
             )
-            self._rewrite_table_schema(
-                context, databases[table.database], table, add_uuid_if_required=True
-            )
-
             if table.is_merge_tree():
                 merge_tree_tables.append(table)
             elif table.is_distributed():
@@ -718,12 +719,6 @@ class TableBackup(BackupManager):
                 view_tables.append(table)
             else:
                 other_tables.append(table)
-
-        if metadata_cleaner:  # type: ignore
-            replicated_tables = [
-                table for table in merge_tree_tables if table.is_replicated()
-            ]
-            metadata_cleaner.clean_tables_metadata(replicated_tables)
 
         return self._restore_table_objects(
             context,
