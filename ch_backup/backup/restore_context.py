@@ -6,7 +6,7 @@ import json
 from collections import defaultdict
 from enum import Enum
 from os.path import exists
-from typing import Any, Dict, Mapping
+from typing import Any, Callable, Dict, Mapping
 
 from ch_backup.backup.metadata import PartMetadata
 
@@ -29,6 +29,9 @@ class RestoreContext:
 
     def __init__(self, config: Dict):
         self._state_file = config["restore_context_path"]
+        self._state_file_dump_threshold = config["restore_context_sync_threshold_ops"]
+        self._state_updates_cnt = 0
+
         self._databases_dict: Dict[str, Dict[str, Dict[str, PartState]]] = defaultdict(
             lambda: defaultdict(lambda: defaultdict(lambda: PartState.NOT_DOWNLOADED))
         )
@@ -40,6 +43,19 @@ class RestoreContext:
                 }
             )
         )
+
+    @staticmethod
+    def _dump_state_if_need(function: Callable) -> Any:
+        def wrapper(self, *args, **kwargs):
+            result = function(self, *args, **kwargs)
+            # pylint: disable=protected-access
+            self._state_updates_cnt += 1
+            if self._state_updates_cnt >= self._state_file_dump_threshold:
+                self.dump_state()
+                self._state_updates_cnt = 0
+            return result
+
+        return wrapper
 
     @property
     def _databases(self) -> Dict[str, Dict[str, Dict[str, PartState]]]:
@@ -58,14 +74,35 @@ class RestoreContext:
         """
         self._databases_dict = databases
 
+    def _part(self, part: PartMetadata) -> PartState:
+        return self._databases[part.database][part.table][part.name]
+
+    @_dump_state_if_need
     def change_part_state(self, state: PartState, part: PartMetadata) -> None:
         """
         Changes the state of the restoring part.
         """
         self._databases[part.database][part.table][part.name] = state
 
-    def _part(self, part: PartMetadata) -> PartState:
-        return self._databases[part.database][part.table][part.name]
+    @_dump_state_if_need
+    def add_failed_chown(self, database: str, table: str, path: str) -> None:
+        """
+        Save information about failed detached dir chown in context
+        """
+        self._failed[database][table]["failed_paths"].append(path)
+
+    @_dump_state_if_need
+    def add_failed_part(self, part: PartMetadata, e: Exception) -> None:
+        """
+        Save information about failed to restore part in context
+        """
+        self._failed[part.database][part.table]["failed_parts"][part.name] = repr(e)
+
+    def has_failed_parts(self) -> bool:
+        """
+        Returns whether some parts failed during restore.
+        """
+        return len(self._failed) > 0
 
     def part_downloaded(self, part: PartMetadata) -> bool:
         """
@@ -79,27 +116,9 @@ class RestoreContext:
         """
         return self._part(part) == PartState.RESTORED
 
-    def add_failed_chown(self, database: str, table: str, path: str) -> None:
-        """
-        Save information about failed detached dir chown in context
-        """
-        self._failed[database][table]["failed_paths"].append(path)
-
-    def add_failed_part(self, part: PartMetadata, e: Exception) -> None:
-        """
-        Save information about failed to restore part in context
-        """
-        self._failed[part.database][part.table]["failed_parts"][part.name] = repr(e)
-
-    def has_failed_parts(self) -> bool:
-        """
-        Returns whether some parts failed during restore.
-        """
-        return len(self._failed) > 0
-
     def dump_state(self) -> None:
         """
-        Dumps restore state to file of disk.
+        Dumps restore state of file to disk.
         """
         # Using _databases property with empty dict might cause loading of the state file
         # So use it here before file is opened
