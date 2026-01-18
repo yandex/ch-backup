@@ -257,3 +257,20 @@ Scenario: Restore with regular sync of restore context
     And we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
+
+Scenario: Detached table is not a blocker to backup restore.
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    ATTACH TABLE test_db.table_01 UUID 'c38d1e72-83d4-4828-a110-16c937207574' (n Int32) ENGINE = MergeTree() PARTITION BY n%100 ORDER BY n;
+    """
+    And we have executed queries on clickhouse02
+    """
+    CREATE DATABASE test_db;
+    ATTACH TABLE test_db.table_01 UUID 'c38d1e72-83d4-4828-a110-16c937207574' (n Int32) ENGINE = MergeTree() PARTITION BY n%100 ORDER BY n;
+    DETACH TABLE test_db.table_01;
+    """
+    When we create clickhouse01 clickhouse backup
+    And we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
