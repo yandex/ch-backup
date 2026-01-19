@@ -606,35 +606,32 @@ class BackupLayout:
             backup_name, source_disk_name, compression
         )
 
-        for remote_path in metadata_remote_paths:
-            logging.debug(f'Downloading from "{remote_path}" to "{disk_path}"')
-            if file_path:
-                # Opening file only once is necessary when file is actually a named pipe.
-                # Named pipe requires to be reopened for read each time it is reopened for write.
-                # This way it is not reopened at all.
-                with open(disk_path, "bw", buffering=0) as file:
-                    self._download_metadata_files(
-                        remote_path,
-                        file,
-                        encryption,
-                        compression,
-                        to_single_file=True,
-                    )
-            else:
-                disk_path = self._get_cloud_storage_metadata_dst_path(backup_meta, disk)
-                os.makedirs(disk_path, exist_ok=True)
+        if file_path:
+            # Opening file only once is necessary when file is actually a named pipe.
+            # Reader may receive EOF when file is closed, but not all metadata is downloaded.
+            with open(disk_path, "bw", buffering=0) as file:
                 self._download_metadata_files(
-                    remote_path,
-                    disk_path,
+                    metadata_remote_paths,
+                    file,
                     encryption,
                     compression,
-                    to_single_file=False,
+                    to_single_file=True,
                 )
+        else:
+            disk_path = self._get_cloud_storage_metadata_dst_path(backup_meta, disk)
+            os.makedirs(disk_path, exist_ok=True)
+            self._download_metadata_files(
+                metadata_remote_paths,
+                disk_path,
+                encryption,
+                compression,
+                to_single_file=False,
+            )
 
     # pylint: disable=too-many-positional-arguments
     def _download_metadata_files(
         self,
-        remote_path: str,
+        remote_paths: Sequence[str],
         local_path: Any,
         encryption: bool,
         compression: bool,
@@ -643,26 +640,27 @@ class BackupLayout:
         """
         Download metadata files from remote paths.
         """
-        try:
-            if to_single_file:
-                self._storage_loader.download_file(
-                    remote_path=remote_path,
-                    local_path=local_path,
-                    is_async=False,
-                    encryption=encryption,
-                    compression=compression,
-                )
-            else:
-                self._storage_loader.download_files(
-                    remote_path=remote_path,
-                    local_path=local_path,
-                    is_async=True,
-                    encryption=encryption,
-                    compression=compression,
-                )
-        except Exception as e:
-            msg = f'Failed to download tarball file "{remote_path}"'
-            raise StorageError(msg) from e
+        for remote_path in remote_paths:
+            try:
+                if to_single_file:
+                    self._storage_loader.download_file(
+                        remote_path=remote_path,
+                        local_path=local_path,
+                        is_async=False,
+                        encryption=encryption,
+                        compression=compression,
+                    )
+                else:
+                    self._storage_loader.download_files(
+                        remote_path=remote_path,
+                        local_path=local_path,
+                        is_async=True,
+                        encryption=encryption,
+                        compression=compression,
+                    )
+            except Exception as e:
+                msg = f'Failed to download tarball file "{remote_path}"'
+                raise StorageError(msg) from e
 
     def delete_backup(self, backup_name: str) -> None:
         """
