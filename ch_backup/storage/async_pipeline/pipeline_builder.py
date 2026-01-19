@@ -3,6 +3,7 @@ Pipeline builder.
 """
 
 from functools import reduce
+from io import FileIO
 from math import ceil
 from pathlib import Path
 from typing import Any, Iterable, List, Optional, Sequence, Union
@@ -311,7 +312,9 @@ class PipelineBuilder:
         self.append(thread_map(CollectDataStage()))
         return self
 
-    def build_write_file_stage(self, file_path: Path) -> "PipelineBuilder":
+    def build_write_file_stage(
+        self, file_path: Union[Path, FileIO]
+    ) -> "PipelineBuilder":
         """
         Build writing single file stage.
         """

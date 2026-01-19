@@ -2,9 +2,10 @@
 Free functions that create and run pipelines. Can be started in multiprocessing pool.
 """
 
+from io import FileIO
 from pathlib import Path
 from tarfile import BLOCKSIZE
-from typing import Any, AnyStr, List, Optional, Sequence
+from typing import Any, AnyStr, List, Optional, Sequence, Union
 
 from ch_backup import logging
 from ch_backup.calculators import (
@@ -151,7 +152,7 @@ def download_data_pipeline(config: dict, remote_path: str, decrypt: bool) -> byt
 def download_file_pipeline(
     config: dict,
     remote_path: str,
-    local_path: Path,
+    local_path: Union[Path, FileIO],
     decrypt: bool,
     decompress: bool,
 ) -> None:

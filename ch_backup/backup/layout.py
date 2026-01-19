@@ -595,6 +595,7 @@ class BackupLayout:
         """
         backup_name = backup_meta.get_sanitized_name()
         compression = backup_meta.cloud_storage.compressed
+        encryption = backup_meta.cloud_storage.encrypted
         disk_path = (
             local_path
             if local_path
@@ -605,28 +606,59 @@ class BackupLayout:
         )
 
         for remote_path in metadata_remote_paths:
-            logging.debug(f'Downloading "{disk_path}" files from "{remote_path}"')
-            try:
-                if local_path:
-                    self._storage_loader.download_file(
-                        remote_path=remote_path,
-                        local_path=disk_path,
-                        is_async=True,
-                        encryption=backup_meta.cloud_storage.encrypted,
-                        compression=compression,
+            logging.debug(f'Downloading from "{remote_path}" to "{disk_path}"')
+            if local_path:
+                with open(disk_path, "bw", buffering=0) as file:
+                    self._download_metadata_files(
+                        remote_path,
+                        file,
+                        encryption,
+                        compression,
+                        to_single_file=True,
                     )
-                else:
-                    os.makedirs(disk_path, exist_ok=True)
-                    self._storage_loader.download_files(
-                        remote_path=remote_path,
-                        local_path=disk_path,
-                        is_async=True,
-                        encryption=backup_meta.cloud_storage.encrypted,
-                        compression=compression,
-                    )
-            except Exception as e:
-                msg = f'Failed to download tarball file "{remote_path}"'
-                raise StorageError(msg) from e
+            else:
+                disk_path = self._get_cloud_storage_metadata_dst_path(backup_meta, disk)
+                os.makedirs(disk_path, exist_ok=True)
+                self._download_metadata_files(
+                    remote_path,
+                    disk_path,
+                    encryption,
+                    compression,
+                    to_single_file=False,
+                )
+
+    # pylint: disable=too-many-positional-arguments
+    def _download_metadata_files(
+        self,
+        remote_path: str,
+        local_path: Any,
+        encryption: bool,
+        compression: bool,
+        to_single_file: bool = False,
+    ) -> None:
+        """
+        Download metadata files from remote paths.
+        """
+        try:
+            if to_single_file:
+                self._storage_loader.download_file(
+                    remote_path=remote_path,
+                    local_path=local_path,
+                    is_async=False,
+                    encryption=encryption,
+                    compression=compression,
+                )
+            else:
+                self._storage_loader.download_files(
+                    remote_path=remote_path,
+                    local_path=local_path,
+                    is_async=True,
+                    encryption=encryption,
+                    compression=compression,
+                )
+        except Exception as e:
+            msg = f'Failed to download tarball file "{remote_path}"'
+            raise StorageError(msg) from e
 
     def delete_backup(self, backup_name: str) -> None:
         """
