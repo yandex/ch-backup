@@ -254,3 +254,15 @@ Feature: Backup & Clean & Restore
     Examples:
     | object_count |
     | 11           |
+
+Scenario: Double restore.
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.test (n Int32) ENGINE = MergeTree() PARTITION BY n%100 ORDER BY n;
+    INSERT INTO test_db.test SELECT 1
+    """
+    When we create clickhouse01 clickhouse backup
+    And we restore clickhouse backup #0 to clickhouse01
+    And we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02

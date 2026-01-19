@@ -257,7 +257,7 @@ Scenario: Restore with regular sync of restore context
     And we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
-
+@require_version_24.8
 Scenario: Detached table is not a blocker to backup restore.
     Given we have executed queries on clickhouse01
     """
