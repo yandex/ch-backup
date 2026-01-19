@@ -592,6 +592,7 @@ class BackupLayout:
     ) -> None:
         """
         Download files packed in tarball and unpacks them into specified directory.
+        It is also possible to download all files to a single tar.
         """
         backup_name = backup_meta.get_sanitized_name()
         compression = backup_meta.cloud_storage.compressed
