@@ -84,18 +84,11 @@ class Table(SimpleNamespace):
             self.path_on_disk = os.path.relpath(path, disk.path)
 
     @classmethod
-    def make_detached_table(cls, database: str, name: str, uuid: str) -> "Table":
-        """
-        Make detached table.
-        """
-        return cls(database, name, "", [], [], "", "", uuid)
-
-    @classmethod
-    def make_dummy(cls, database: str, name: str) -> "Table":
+    def make_dummy(cls, database: str, name: str, uuid: str = None) -> "Table":
         """
         Make dummy instance of Table only with database and table name.
         """
-        return cls(database, name, "", [], [], "", "", None)
+        return cls(database, name, "", [], [], "", "", uuid)
 
     def _map_paths_to_disks(
         self, disks: List[Disk], data_paths: List[str]

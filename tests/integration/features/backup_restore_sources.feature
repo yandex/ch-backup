@@ -240,8 +240,6 @@ Feature: Backup & Restore sources
     """
 
 Scenario: Restore with regular sync of restore context
-    When we drop all databases at clickhouse01
-    And we drop all databases at clickhouse02
     Given ch-backup configuration on clickhouse02
     """
       backup:

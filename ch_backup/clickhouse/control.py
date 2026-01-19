@@ -785,9 +785,7 @@ class ClickhouseCTL:
             return result
 
         for row in self._ch_client.query(GET_DETACHED_TABLES_SQL)["data"]:
-            result.append(
-                Table.make_detached_table(row["database"], row["table"], row["uuid"])
-            )
+            result.append(Table.make_dummy(row["database"], row["table"], row["uuid"]))
         return result
 
     def get_table(
