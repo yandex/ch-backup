@@ -588,7 +588,7 @@ class BackupLayout:
         backup_meta: BackupMetadata,
         disk: Disk,
         source_disk_name: str,
-        local_path: Optional[str] = None,
+        file_path: Optional[str] = None,
     ) -> None:
         """
         Download files packed in tarball and unpacks them into specified directory.
@@ -597,8 +597,8 @@ class BackupLayout:
         compression = backup_meta.cloud_storage.compressed
         encryption = backup_meta.cloud_storage.encrypted
         disk_path = (
-            local_path
-            if local_path
+            file_path
+            if file_path
             else self._get_cloud_storage_metadata_dst_path(backup_meta, disk)
         )
         metadata_remote_paths = self._get_cloud_storage_metadata_remote_paths(
@@ -607,7 +607,10 @@ class BackupLayout:
 
         for remote_path in metadata_remote_paths:
             logging.debug(f'Downloading from "{remote_path}" to "{disk_path}"')
-            if local_path:
+            if file_path:
+                # Opening file only once is necessary when file is actually a named pipe.
+                # Named pipe requires to be reopened for read each time it is reopened for write.
+                # This way it is not reopened at all.
                 with open(disk_path, "bw", buffering=0) as file:
                     self._download_metadata_files(
                         remote_path,
