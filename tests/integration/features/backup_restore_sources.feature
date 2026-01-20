@@ -5,6 +5,7 @@ Feature: Backup & Restore sources
     And a working s3
     And a working zookeeper on zookeeper01
     And a working clickhouse on clickhouse01
+    And a working clickhouse on clickhouse02
     And clickhouse on clickhouse01 has test schema
     And clickhouse01 has test clickhouse data test1
     And we have executed queries on clickhouse01
@@ -240,8 +241,6 @@ Feature: Backup & Restore sources
     """
 
 Scenario: Restore with regular sync of restore context
-    When we drop all databases at clickhouse01
-    And we drop all databases at clickhouse02
     Given ch-backup configuration on clickhouse02
     """
       backup:
@@ -252,6 +251,23 @@ Scenario: Restore with regular sync of restore context
     CREATE DATABASE test_db;
     CREATE TABLE test_db.table_01 (n Int32) ENGINE = MergeTree() PARTITION BY n%100 ORDER BY n;
     INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 1000;
+    """
+    When we create clickhouse01 clickhouse backup
+    And we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
+@require_version_24.8
+Scenario: Detached table is not a blocker to backup restore.
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    ATTACH TABLE test_db.table_01 UUID 'c38d1e72-83d4-4828-a110-16c937207574' (n Int32) ENGINE = MergeTree() PARTITION BY n%100 ORDER BY n;
+    """
+    And we have executed queries on clickhouse02
+    """
+    CREATE DATABASE test_db;
+    ATTACH TABLE test_db.table_01 UUID 'c38d1e72-83d4-4828-a110-16c937207574' (n Int32) ENGINE = MergeTree() PARTITION BY n%100 ORDER BY n;
+    DETACH TABLE test_db.table_01;
     """
     When we create clickhouse01 clickhouse backup
     And we restore clickhouse backup #0 to clickhouse02

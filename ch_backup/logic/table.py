@@ -567,6 +567,17 @@ class TableBackup(BackupManager):
                 context, databases[table.database], table, add_uuid_if_required=True
             )
 
+        detached_tables = {}
+        for table in context.ch_ctl.get_detached_tables():
+            if table.uuid:
+                detached_tables[table.uuid] = table
+
+        for table in tables:
+            if detached_table := (
+                detached_tables.get(table.uuid) if table.uuid else None
+            ):
+                context.ch_ctl.attach_table(detached_table)
+
         # Filter out already restored tables.
         existing_tables_by_name = {}
         existing_tables_by_uuid = {}

@@ -133,6 +133,17 @@ GET_TABLES_SHORT_SQL = strip_query(
 """
 )
 
+GET_DETACHED_TABLES_SQL = strip_query(
+    """
+    SELECT
+        database,
+        table,
+        uuid,
+    FROM system.detached_tables
+    FORMAT JSON
+"""
+)
+
 GET_REPLICAS_SQL = strip_query(
     """
     SELECT
@@ -759,6 +770,22 @@ class ClickhouseCTL:
         for row in self._ch_client.query(query_sql)["data"]:
             result.append(self._make_table(row))
 
+        return result
+
+    def get_detached_tables(self) -> Sequence[Table]:
+        """
+        Get detached tables.
+        """
+        result: List[Table] = []
+
+        if not self.ch_version_ge("24.8"):
+            logging.warning(
+                "Skip getting detached tables, because system.detached_tables exists only for ch >= 24.8."
+            )
+            return result
+
+        for row in self._ch_client.query(GET_DETACHED_TABLES_SQL)["data"]:
+            result.append(Table.make_dummy(row["database"], row["table"], row["uuid"]))
         return result
 
     def get_table(
