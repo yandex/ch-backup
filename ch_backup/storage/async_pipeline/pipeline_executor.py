@@ -3,9 +3,8 @@ New pipelines executor module.
 """
 
 from functools import partial
-from io import FileIO
 from pathlib import Path
-from typing import Any, AnyStr, Callable, List, Optional, Sequence, Union
+from typing import Any, AnyStr, BinaryIO, Callable, List, Optional, Sequence, Union
 
 from ch_backup.profile import profile
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
@@ -160,7 +159,7 @@ class PipelineExecutor:
     def download_file(
         self,
         remote_path: str,
-        local_path: Union[str, FileIO],
+        local_path: Union[str, BinaryIO],
         is_async: bool,
         encryption: bool,
         compression: bool,
