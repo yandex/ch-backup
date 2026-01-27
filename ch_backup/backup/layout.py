@@ -3,9 +3,11 @@ Management of backup data layout.
 """
 
 import os
+from contextlib import contextmanager
 from functools import partial
+from io import IOBase
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Sequence
+from typing import Any, BinaryIO, Callable, Iterator, List, Optional, Sequence, Union
 from urllib.parse import quote
 
 from nacl.exceptions import CryptoError
@@ -567,11 +569,25 @@ class BackupLayout:
             absolute=True,
         )
 
-    def _get_cloud_storage_metadata_dst_path(
-        self, backup_meta: BackupMetadata, disk: Disk
-    ) -> str:
-        backup_name = backup_meta.get_sanitized_name()
-        return os.path.join(disk.path, "shadow", backup_name)
+    @contextmanager
+    def _get_cloud_storage_metadata_dst(
+        self,
+        backup_meta: BackupMetadata,
+        disk: Disk,
+        file_path: Optional[str] = None,
+    ) -> Iterator[Union[str, BinaryIO]]:
+        """
+        Opening file only once is necessary when file is actually a named pipe.
+        Reader may receive EOF when file is closed, but not all metadata is downloaded.
+        """
+        if file_path:
+            with open(file_path, "bw", buffering=0) as file:
+                yield file
+        else:
+            backup_name = backup_meta.get_sanitized_name()
+            path = os.path.join(disk.path, "shadow", backup_name)
+            os.makedirs(path, exist_ok=True)
+            yield path
 
     def cloud_storage_metadata_exists(
         self, backup_meta: BackupMetadata, disk: Disk
@@ -579,54 +595,50 @@ class BackupLayout:
         """
         Check if cloud storage metadata for a given backup is already present in the shadow directory
         """
-        return os.path.exists(
-            self._get_cloud_storage_metadata_dst_path(backup_meta, disk)
-        )
+        with self._get_cloud_storage_metadata_dst(backup_meta, disk) as path:
+            assert isinstance(path, str)
+            return os.path.exists(path)
 
     def download_cloud_storage_metadata(
         self,
         backup_meta: BackupMetadata,
         disk: Disk,
         source_disk_name: str,
-        local_path: Optional[str] = None,
+        file_path: Optional[str] = None,
     ) -> None:
         """
         Download files packed in tarball and unpacks them into specified directory.
+        It is also possible to download all files to a single tar.
         """
         backup_name = backup_meta.get_sanitized_name()
         compression = backup_meta.cloud_storage.compressed
-        disk_path = (
-            local_path
-            if local_path
-            else self._get_cloud_storage_metadata_dst_path(backup_meta, disk)
-        )
+        encryption = backup_meta.cloud_storage.encrypted
         metadata_remote_paths = self._get_cloud_storage_metadata_remote_paths(
             backup_name, source_disk_name, compression
         )
 
-        for remote_path in metadata_remote_paths:
-            logging.debug(f'Downloading "{disk_path}" files from "{remote_path}"')
-            try:
-                if local_path:
-                    self._storage_loader.download_file(
-                        remote_path=remote_path,
-                        local_path=disk_path,
-                        is_async=True,
-                        encryption=backup_meta.cloud_storage.encrypted,
-                        compression=compression,
-                    )
-                else:
-                    os.makedirs(disk_path, exist_ok=True)
-                    self._storage_loader.download_files(
-                        remote_path=remote_path,
-                        local_path=disk_path,
-                        is_async=True,
-                        encryption=backup_meta.cloud_storage.encrypted,
-                        compression=compression,
-                    )
-            except Exception as e:
-                msg = f'Failed to download tarball file "{remote_path}"'
-                raise StorageError(msg) from e
+        with self._get_cloud_storage_metadata_dst(backup_meta, disk, file_path) as dst:
+            for remote_path in metadata_remote_paths:
+                try:
+                    if isinstance(dst, str):
+                        self._storage_loader.download_files(
+                            remote_path=remote_path,
+                            local_path=dst,
+                            is_async=True,
+                            encryption=encryption,
+                            compression=compression,
+                        )
+                    elif isinstance(dst, IOBase):
+                        self._storage_loader.download_file(
+                            remote_path=remote_path,
+                            local_path=dst,
+                            is_async=False,
+                            encryption=encryption,
+                            compression=compression,
+                        )
+                except Exception as e:
+                    msg = f'Failed to download tarball file "{remote_path}"'
+                    raise StorageError(msg) from e
 
     def delete_backup(self, backup_name: str) -> None:
         """

@@ -5,7 +5,7 @@ Pipeline builder.
 from functools import reduce
 from math import ceil
 from pathlib import Path
-from typing import Any, Iterable, List, Optional, Sequence, Union
+from typing import Any, BinaryIO, Iterable, List, Optional, Sequence, Union
 
 from pypeln import utils as pypeln_utils
 from pypeln.thread.api.from_iterable import from_iterable
@@ -311,7 +311,9 @@ class PipelineBuilder:
         self.append(thread_map(CollectDataStage()))
         return self
 
-    def build_write_file_stage(self, file_path: Path) -> "PipelineBuilder":
+    def build_write_file_stage(
+        self, file_path: Union[Path, BinaryIO]
+    ) -> "PipelineBuilder":
         """
         Build writing single file stage.
         """

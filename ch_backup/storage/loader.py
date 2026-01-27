@@ -3,7 +3,7 @@ Module providing API for storage management (upload and download data, check
 remote path on existence, etc.).
 """
 
-from typing import Callable, List, Optional, Sequence
+from typing import BinaryIO, Callable, List, Optional, Sequence, Union
 
 from ch_backup.storage.async_pipeline.pipeline_executor import PipelineExecutor
 from ch_backup.storage.engine import get_storage_engine
@@ -144,7 +144,7 @@ class StorageLoader:
     def download_file(
         self,
         remote_path: str,
-        local_path: str,
+        local_path: Union[str, BinaryIO],
         is_async: bool = False,
         encryption: bool = False,
         compression: bool = False,
