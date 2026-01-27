@@ -1118,9 +1118,8 @@ class ClickhouseCTL:
             # For example ClickHouse UNFREEZE
             def _onerror(_func, path, exc_info):
                 """Ignore FileNotFoundError during rmtree."""
-                exctype, value = exc_info[:2]
-                if exctype is not FileNotFoundError:
-                    raise
+                if not issubclass(exc_info[0], FileNotFoundError):
+                    raise  # pylint: disable=misplaced-bare-raise
                 logging.debug(
                     f"Ignoring FileNotFoundError for {path} during removing shadow"
                 )
