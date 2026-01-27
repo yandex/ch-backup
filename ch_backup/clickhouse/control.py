@@ -1120,7 +1120,7 @@ class ClickhouseCTL:
                 """Ignore FileNotFoundError during rmtree."""
                 exctype, value = exc_info[:2]
                 if exctype is not FileNotFoundError:
-                    raise value
+                    raise
                 logging.debug(
                     f"Ignoring FileNotFoundError for {path} during removing shadow"
                 )
