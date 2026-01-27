@@ -1114,7 +1114,16 @@ class ClickhouseCTL:
         if os.path.exists(path):
             logging.debug(f"Path {path} exists. Trying to remove it.")
 
-            shutil.rmtree(path)
+            # Handle the case when shadow is cleaned in parallel
+            # For example ClickHouse UNFREEZE
+            def _onerror(_func, path, exc_info):
+                """Ignore FileNotFoundError during rmtree."""
+                exctype, value = exc_info[:2]
+                if exctype is not FileNotFoundError:
+                    raise value
+                logging.debug(f"Ignoring FileNotFoundError for {path}")
+
+            shutil.rmtree(path, onerror=_onerror)
 
             msg = "shutil.rmtree has done working"
             if os.path.exists(path):
