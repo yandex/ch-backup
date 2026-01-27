@@ -598,6 +598,12 @@ class ClickhouseCTL:
         # Table has no partitions or created with deprecated syntax.
         # FREEZE PARTITION ID with deprecated syntax throws segmentation fault in CH.
         freeze_by_partitions = threads > 0 and "PARTITION BY" in table.create_statement
+
+        query_settings = None
+        # Since https://github.com/ClickHouse/ClickHouse/pull/75016
+        if self.ch_version_ge("25.2"):
+            query_settings = {"max_execution_time": self._freeze_timeout}
+
         if freeze_by_partitions:
             with ThreadExecPool(max(1, threads)) as pool:
                 if freeze_by_partitions:
@@ -613,6 +619,7 @@ class ClickhouseCTL:
                             f'Freeze partition "{partition}"',
                             self._ch_client.query,
                             query_sql,
+                            settings=query_settings,
                             timeout=self._freeze_timeout,
                             should_retry=False,
                             new_session=True,
@@ -629,6 +636,7 @@ class ClickhouseCTL:
             )
             self._ch_client.query(
                 query_sql,
+                settings=query_settings,
                 timeout=self._freeze_timeout,
                 should_retry=False,
                 new_session=True,
