@@ -511,7 +511,7 @@ def backup_command(
         "--udf", is_flag=True, help="Perform partial restore of user defined functions."
     ),
     option(
-        "--included-patterns",
+        "--table-included-patterns",
         type=List(regexp=r"\w+\.[\w*]+"),
         help="Comma-separated list of db.tables to restore. Other tables will be skipped. "
         "Examples: db1.table1; db1.table2,db2.*; db1.prefix*,db2.*suffix",
@@ -565,7 +565,7 @@ def restore_command(
     data: bool = False,
     schema: bool = False,
     udf: bool = False,
-    included_patterns: list = None,
+    included_patterns: Optional[list[str]] = None,
     excluded_patterns: list = None,
     nc: bool = False,
 ) -> None:

@@ -236,7 +236,7 @@ class ClickhouseBackup:
         clean_zookeeper_mode: CleanZooKeeperMode = CleanZooKeeperMode.DISABLED,
         keep_going: bool = False,
         restore_tables_in_replicated_database: bool = False,
-        partial_restore_filter: PartialRestoreFilter = None,
+        partial_restore_filter: Optional[PartialRestoreFilter] = None,
     ) -> None:
         """
         Restore specified backup
@@ -269,7 +269,7 @@ class ClickhouseBackup:
             logging.debug(
                 f'Excluding specified databases from restoring: {", ".join(exclude_databases)}.'
             )
-            databases = list(filter(lambda x: x not in exclude_databases, databases))
+            databases = [db for db in databases if db not in exclude_databases]
 
         logging.debug(f"Picking databases to restore: {databases}.")
 
