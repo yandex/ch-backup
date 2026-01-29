@@ -296,7 +296,7 @@ Feature: Backup & Restore
     And we create clickhouse01 clickhouse backup
     When we restore clickhouse backup #0 to clickhouse02
     """
-    included_patterns: test_db1.table1,test_db2.*
+    table_included_patterns: test_db1.table1,test_db2.*
     """
     When we execute query on clickhouse02
     """
@@ -319,7 +319,7 @@ Feature: Backup & Restore
     When we drop all databases at clickhouse02
     When we restore clickhouse backup #0 to clickhouse02
     """
-    included_patterns: test_db1.table2,test_db2.*table*
+    table_included_patterns: test_db1.table2,test_db2.*table*
     """
     When we execute query on clickhouse02
     """
@@ -334,7 +334,7 @@ Feature: Backup & Restore
     When we drop all databases at clickhouse02
     When we restore clickhouse backup #0 to clickhouse02
     """
-    excluded_patterns: test_db1.table1
+    table_excluded_patterns: test_db1.table1
     exclude_databases: test_db2
     """
     When we execute query on clickhouse02
@@ -356,7 +356,7 @@ Feature: Backup & Restore
     When we drop all databases at clickhouse02
     When we restore clickhouse backup #0 to clickhouse02
     """
-    excluded_patterns: test_db1.table1,test_db2.*
+    table_excluded_patterns: test_db1.table1,test_db2.*
     """
     When we execute query on clickhouse02
     """

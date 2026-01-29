@@ -264,6 +264,22 @@ class ClickhouseBackup:
         if not databases:
             logging.debug("Picking all databases from backup.")
             databases = self._context.backup_meta.get_databases()
+        else:
+            logging.info("Checking for presence of required databases.")
+            missed_databases = [
+                db_name
+                for db_name in databases
+                if db_name not in self._context.backup_meta.get_databases()
+            ]
+            if missed_databases:
+                logging.critical(
+                    "Required databases {} were not found in backup metadata: {}",
+                    ", ".join(missed_databases),
+                    self._context.backup_meta.path,
+                )
+                raise ClickhouseBackupError(
+                    "Required databases were not found in backup metadata"
+                )
 
         if exclude_databases:
             logging.debug(
@@ -280,10 +296,13 @@ class ClickhouseBackup:
             for db_name in databases:
                 all_tables.extend(self._context.backup_meta.get_tables(db_name))
             for table in all_tables:
-                logging.debug(
-                    f"Filtering table to restore: {table.database}.{table.name} result: {partial_restore_filter.accept_table(table.database, table.name)}."
+                is_restoring = partial_restore_filter.accept_table(
+                    table.database, table.name
                 )
-                if partial_restore_filter.accept_table(table.database, table.name):
+                logging.debug(
+                    f"Filtering table to restore: {table.database}.{table.name} result: {is_restoring}."
+                )
+                if is_restoring:
                     tables.append(table)
                 else:
                     excluded_tables.append(f"{table.database}.{table.name}")

@@ -320,8 +320,8 @@ class BackupManager:
         nc: bool = None,
         keep_going: bool = False,
         restore_tables_in_replicated_database: bool = False,
-        included_patterns: str = None,
-        excluded_patterns: str = None,
+        table_included_patterns: str = None,
+        table_excluded_patterns: str = None,
     ) -> str:
         """
         Restore backup entry.
@@ -358,10 +358,10 @@ class BackupManager:
             options.append("--keep-going")
         if restore_tables_in_replicated_database:
             options.append("--restore-tables-in-replicated-database")
-        if included_patterns:
-            options.append(f"--included-patterns {included_patterns}")
-        if excluded_patterns:
-            options.append(f"--excluded-patterns {excluded_patterns}")
+        if table_included_patterns:
+            options.append(f"--table-included-patterns {table_included_patterns}")
+        if table_excluded_patterns:
+            options.append(f"--table-excluded-patterns {table_excluded_patterns}")
         if databases:
             options.append(f"--databases {databases}")
         if exclude_databases:

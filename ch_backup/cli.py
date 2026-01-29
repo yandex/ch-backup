@@ -11,7 +11,7 @@ import uuid
 from collections import OrderedDict
 from functools import wraps
 from pathlib import Path as PathlibPath
-from typing import Iterable, Tuple, Union
+from typing import Iterable, Optional, Tuple, Union
 
 from click import Choice, Path, argument, pass_context, style
 from cloup import (
@@ -514,13 +514,13 @@ def backup_command(
         "--table-included-patterns",
         type=List(regexp=r"\w+\.[\w*]+"),
         help="Comma-separated list of db.tables to restore. Other tables will be skipped. "
-        "Examples: db1.table1; db1.table2,db2.*; db1.prefix*,db2.*suffix",
+        "Examples: db1.table1 | db1.table2,db2.* | db1.prefix*,db2.*suffix | db1.*",
     ),
     option(
-        "--excluded-patterns",
+        "--table-excluded-patterns",
         type=List(regexp=r"\w+\.[\w*]+"),
         help="Comma-separated list of db.tables to skip on restore. Other tables will be restored. "
-        "Examples: db1.table1; db1.table2,db2.*; db1.prefix*,db2.*suffix",
+        "Examples: db1.table1 | db1.table2,db2.* | db1.prefix*,db2.*suffix | db1.*",
     ),
     option("--nc", is_flag=True, help="Perform partial restore of named collections."),
 )
@@ -534,9 +534,9 @@ def backup_command(
     is_flag=True,
     help="Restore tables in Replicated databases",
 )
-@constraint(mutually_exclusive, ["included_patterns", "excluded_patterns"])
-@constraint(mutually_exclusive, ["included_patterns", "exclude_databases"])
-@constraint(mutually_exclusive, ["schema_only", "included_patterns"])
+@constraint(mutually_exclusive, ["table_included_patterns", "table_excluded_patterns"])
+@constraint(mutually_exclusive, ["table_included_patterns", "exclude_databases"])
+@constraint(mutually_exclusive, ["schema_only", "table_included_patterns"])
 @constraint(mutually_exclusive, ["schema_only", "access"])
 @constraint(mutually_exclusive, ["schema_only", "data"])
 @constraint(mutually_exclusive, ["schema_only", "schema"])
@@ -565,8 +565,8 @@ def restore_command(
     data: bool = False,
     schema: bool = False,
     udf: bool = False,
-    included_patterns: Optional[list[str]] = None,
-    excluded_patterns: list = None,
+    table_included_patterns: Optional[typing.List[str]] = None,
+    table_excluded_patterns: Optional[typing.List[str]] = None,
     nc: bool = False,
 ) -> None:
     """Restore data from a particular backup."""
@@ -577,11 +577,11 @@ def restore_command(
     excluded_databases: typing.List[str] = _list_to_database_names(exclude_databases)
 
     matcher = None
-    if included_patterns:
-        matcher = PartialRestoreFilter(inverted=False, patterns=included_patterns)
+    if table_included_patterns:
+        matcher = PartialRestoreFilter(inverted=False, patterns=table_included_patterns)
 
-    if excluded_patterns:
-        matcher = PartialRestoreFilter(inverted=True, patterns=excluded_patterns)
+    if table_excluded_patterns:
+        matcher = PartialRestoreFilter(inverted=True, patterns=table_excluded_patterns)
 
     sources = BackupSources.for_restore(access, data, schema, udf, nc, schema_only)
     ch_backup.restore(

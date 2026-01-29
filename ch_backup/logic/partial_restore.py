@@ -2,7 +2,7 @@
 Clickhouse partial restore helper
 """
 
-import re
+import fnmatch
 from typing import List
 
 
@@ -13,13 +13,7 @@ class PartialRestorePattern:
 
     def __init__(self, database: str, pattern_str: str):
         self.database = database
-        self.pattern_str = pattern_str
-        self.pattern = None
-        self.table = None
-        if pattern_str.find("*") != -1:
-            self.pattern = re.compile(pattern_str.replace("*", ".*"))
-        else:
-            self.table = pattern_str
+        self.table_pattern = pattern_str
 
     @classmethod
     def from_pattern(cls, pattern: str) -> "PartialRestorePattern":
@@ -36,10 +30,7 @@ class PartialRestorePattern:
         if self.database != db:
             return False
 
-        if self.pattern is None:
-            return self.table == table
-
-        return self.pattern.fullmatch(table) is not None
+        return fnmatch.fnmatch(table, self.table_pattern)
 
     def related_to_db(self, db: str) -> bool:
         """
@@ -74,25 +65,6 @@ class PartialRestoreFilter:
 
         for pattern in self.patterns:
             if pattern.matches(db, table):
-                return not self.inverted
-
-        return self.inverted
-
-    def is_possibly_contains_database(self, db: str) -> bool:
-        """
-        Checks if database used in any filter or not totally excluded by pattern.
-        """
-        if self.is_empty():
-            return True
-
-        for pattern in self.patterns:
-            if not pattern.related_to_db(db):
-                continue
-
-            if not self.inverted:
-                return True
-
-            if pattern.pattern_str == "*":
                 return not self.inverted
 
         return self.inverted
