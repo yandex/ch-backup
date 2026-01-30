@@ -207,6 +207,12 @@ SYSTEM_UNFREEZE_SQL = strip_query(
 """
 )
 
+KILL_RUNNING_FREEZE_SQL = strip_query(
+    """
+    KILL QUERY WHERE query_kind='Alter' AND user='{user}' AND query ilike '%ALTER TABLE%FREEZE%'
+"""
+)
+
 DROP_TABLE_IF_EXISTS_SQL = strip_query(
     """
     DROP TABLE IF EXISTS `{db_name}`.`{table_name}` NO DELAY
@@ -585,6 +591,14 @@ class ClickhouseCTL:
         )
 
         self._ch_client.query(query_sql)
+
+    def kill_old_freeze_queries(self):
+        """
+        Collect all freeze queries from prev backup and kill them all.
+        """
+        self._ch_client.query(
+            KILL_RUNNING_FREEZE_SQL.format(user=self._ch_ctl_config["user"])
+        )
 
     def freeze_table(
         self,
