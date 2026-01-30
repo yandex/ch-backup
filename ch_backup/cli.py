@@ -514,12 +514,14 @@ def backup_command(
         "--table-included-patterns",
         type=List(regexp=r"\w+\.[\w*]+"),
         help="Comma-separated list of db.tables to restore. Other tables will be skipped. "
+        "Patterns support Unix shell-style wildcards(*) and are supported only for tables."
         "Examples: db1.table1 | db1.table2,db2.* | db1.prefix*,db2.*suffix | db1.*",
     ),
     option(
         "--table-excluded-patterns",
         type=List(regexp=r"\w+\.[\w*]+"),
         help="Comma-separated list of db.tables to skip on restore. Other tables will be restored. "
+        "Patterns support Unix shell-style wildcards(*) and are supported only for tables."
         "Examples: db1.table1 | db1.table2,db2.* | db1.prefix*,db2.*suffix | db1.*",
     ),
     option("--nc", is_flag=True, help="Perform partial restore of named collections."),
