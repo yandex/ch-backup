@@ -73,6 +73,7 @@ DEFAULT_CONFIG = {
         "validate_part_after_upload": False,
         "restore_fail_on_attach_error": False,
         "update_metadata_interval": _as_seconds("30 min"),
+        "kill_old_freeze_queries": True,
     },
     "restore": {
         "use_inplace_cloud_restore": False,

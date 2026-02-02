@@ -207,6 +207,12 @@ SYSTEM_UNFREEZE_SQL = strip_query(
 """
 )
 
+KILL_RUNNING_FREEZE_SQL = strip_query(
+    """
+    KILL QUERY WHERE query_kind='Alter' AND user='{user}' AND query ilike '%ALTER TABLE%FREEZE%'
+"""
+)
+
 DROP_TABLE_IF_EXISTS_SQL = strip_query(
     """
     DROP TABLE IF EXISTS `{db_name}`.`{table_name}` NO DELAY
@@ -586,6 +592,14 @@ class ClickhouseCTL:
 
         self._ch_client.query(query_sql)
 
+    def kill_old_freeze_queries(self):
+        """
+        Collect all freeze queries from prev backup and kill them all.
+        """
+        self._ch_client.query(
+            KILL_RUNNING_FREEZE_SQL.format(user=self._ch_ctl_config["user"])
+        )
+
     def freeze_table(
         self,
         backup_name: str,
@@ -598,6 +612,12 @@ class ClickhouseCTL:
         # Table has no partitions or created with deprecated syntax.
         # FREEZE PARTITION ID with deprecated syntax throws segmentation fault in CH.
         freeze_by_partitions = threads > 0 and "PARTITION BY" in table.create_statement
+
+        query_settings = None
+        # Since https://github.com/ClickHouse/ClickHouse/pull/75016
+        if self.ch_version_ge("25.2"):
+            query_settings = {"max_execution_time": self._freeze_timeout}
+
         if freeze_by_partitions:
             with ThreadExecPool(max(1, threads)) as pool:
                 if freeze_by_partitions:
@@ -613,6 +633,7 @@ class ClickhouseCTL:
                             f'Freeze partition "{partition}"',
                             self._ch_client.query,
                             query_sql,
+                            settings=query_settings,
                             timeout=self._freeze_timeout,
                             should_retry=False,
                             new_session=True,
@@ -629,6 +650,7 @@ class ClickhouseCTL:
             )
             self._ch_client.query(
                 query_sql,
+                settings=query_settings,
                 timeout=self._freeze_timeout,
                 should_retry=False,
                 new_session=True,

@@ -77,6 +77,13 @@ class TableBackup(BackupManager):
             logging.debug('Cloud Storage "shadow" backup will be compressed')
             context.backup_meta.cloud_storage.compress()
 
+        # Since https://github.com/ClickHouse/ClickHouse/pull/75016
+        if (
+            context.ch_ctl.ch_version_ge("25.2")
+            and context.config["kill_old_freeze_queries"]
+        ):
+            context.ch_ctl.kill_old_freeze_queries()
+
         for db in databases:
             self._backup(
                 context,
