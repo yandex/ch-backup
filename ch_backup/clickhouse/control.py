@@ -553,6 +553,8 @@ class ClickhouseCTL:
             if self.ch_version_ge("23.12"):
                 settings["allow_experimental_refreshable_materialized_view"] = 1
                 settings["allow_suspicious_ttl_expressions"] = 1
+            if self.ch_version_ge("24.9"):
+                settings["database_replicated_allow_explicit_uuid"] = 1
         self._ch_client.settings.update(settings)
 
     def chown_detached_table_parts(self, table: Table, context: RestoreContext) -> None:
