@@ -126,9 +126,7 @@ class StorageLoader:
         )
         return remote_path
 
-    def download_data(
-        self, remote_path, is_async=False, encryption=False, encoding="utf-8"
-    ):
+    def download_data(self, remote_path, is_async=False, encryption=False):
         """
         Download file from storage and return its content.
 
@@ -139,8 +137,6 @@ class StorageLoader:
         data = self._ploader.download_data(
             remote_path, is_async=is_async, encryption=encryption
         )
-        if not encoding:
-            return data
         try:
             return data.decode("utf-8")
         except UnicodeDecodeError:
