@@ -1006,8 +1006,12 @@ class TableBackup(BackupManager):
         table: Table,
     ) -> None:
         try:
+            use_create_method_for_merge_tree = (
+                db.is_replicated_db_engine() and context.ch_ctl.ch_version_ge("24.9")
+            )
+
             if (
-                table.is_merge_tree()
+                (table.is_merge_tree() and not use_create_method_for_merge_tree)
                 or table.is_materialized_view()
                 or table.is_external_engine()
                 or table.is_distributed()
