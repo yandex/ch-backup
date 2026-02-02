@@ -167,7 +167,7 @@ DEFAULT_CONFIG = {
         "cloud_storage_restore_workers": 4,
         # The number of threads for parallel freeze of tables
         "freeze_threads": 4,
-        # To execute freeze efficiently we should parallelize freeze operations. But we got options where we clould parallelize:
+        # To execute freeze efficiently, we should parallelize freeze operations. We have two options where we can parallelize:
         # 1) Inside ch-backup: We can perform several `ALTER TABLE FREEZE PARTITION` queries. Then freeze_partition_threads are used.
         # 2) Inside clickhouse(preferable): Since 25.11 clickhouse can parallelize `ALTER TABLE FREEZE` queries. Then freeze_table_query_max_threads are used.
         #    https://github.com/ClickHouse/ClickHouse/pull/71743

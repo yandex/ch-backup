@@ -611,7 +611,7 @@ class ClickhouseCTL:
     ) -> None:
         """
         Make snapshot of the specified table.
-        To execute freeze efficiently we should parallelize freeze operations. But we got options where we clould parallelize:
+        To execute freeze efficiently, we should parallelize freeze operations. We have two options where we can parallelize:
         1) parallelize_freeze_in_ch = False
         Inside ch-backup: We can perform several `ALTER TABLE FREEZE PARTITION` queries.
         2) parallelize_freeze_in_ch = True
@@ -629,7 +629,7 @@ class ClickhouseCTL:
 
         # Since https://github.com/ClickHouse/ClickHouse/pull/75016
         if self.ch_version_ge("25.2"):
-            query_settings = {"max_execution_time": self._freeze_timeout}
+            query_settings["max_execution_time"] = self._freeze_timeout
 
         if freeze_by_partitions:
             with ThreadExecPool(max(1, freeze_partition_threads)) as pool:
