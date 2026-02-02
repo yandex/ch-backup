@@ -18,7 +18,7 @@ jobs:
           fi
       - name: Link issue
         if: env.ISSUE_NUMBER
-        uses: fjogeleit/http-request-action@v1
+        uses: fjogeleit/http-request-action@v2
         with:
           url: 'https://st-api.yandex-team.ru/v2/issues/${{ env.ISSUE_NUMBER }}'
           method: 'LINK'
