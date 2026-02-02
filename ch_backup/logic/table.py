@@ -235,6 +235,13 @@ class TableBackup(BackupManager):
             return None
         try:
             return Path(table.metadata_path).read_text("utf-8")
+        except UnicodeDecodeError:
+            logging.warning(
+                'Table "{}"."{}": metadata contains non-UTF-8 bytes, using latin-1 fallback',
+                table.database,
+                table.name,
+            )
+            return Path(table.metadata_path).read_text("latin-1")
         except OSError as e:
             logging.debug(
                 'Cannot load a create statement of the table "{}"."{}": {}',
