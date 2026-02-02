@@ -73,6 +73,12 @@ class ClickhouseClient:
         """
         self._query("POST", query=query)
 
+    def execute_raw(self, query_bytes: bytes) -> None:
+        """
+        Execute query from raw bytes.
+        """
+        self._query("POST", data=query_bytes)
+
     def get_response(self, query: str) -> str:
         """
         Execute arbitrary query and return result

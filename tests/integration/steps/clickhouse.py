@@ -349,3 +349,22 @@ def step_create_multiple_tables(context, table_count, node):
     for i in range(table_count):
         table_schema = schema_template.format(table_number=i)
         ch_client.execute(table_schema)
+
+
+@given("we have created non-UTF-8 test table on {node}")
+def create_non_utf8_table(context, node):
+    """
+    Create table with invalid utf-8 for testing latin-1 fallback
+    """
+    ch_client = ClickhouseClient(context, node)
+    ch_client.execute("CREATE DATABASE IF NOT EXISTS test_db")
+
+    query = (
+        "CREATE TABLE test_db.non_utf8_test "
+        "(id Int32, `тест` String) "
+        "ENGINE = MergeTree() "
+        "ORDER BY id;"
+    )
+
+    ch_client.execute_raw(query.encode("cp1251"))
+    ch_client.execute("INSERT INTO test_db.non_utf8_test VALUES (1, 'test')")
