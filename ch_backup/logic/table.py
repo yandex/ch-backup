@@ -193,7 +193,7 @@ class TableBackup(BackupManager):
         backup_name: str,
         schema_only: bool,
         parallelize_freeze_in_ch: bool,
-        freeze_partitions_threads: int,
+        freeze_partition_threads: int,
         freeze_table_query_max_threads: int,
     ) -> Optional[Table]:
         """
@@ -217,7 +217,7 @@ class TableBackup(BackupManager):
                     backup_name,
                     table,
                     parallelize_freeze_in_ch,
-                    freeze_partitions_threads,
+                    freeze_partition_threads,
                     freeze_table_query_max_threads,
                 )
             except ClickhouseError:
