@@ -54,7 +54,7 @@ Feature: Non-UTF-8 schema encoding support
     When we restore clickhouse backup #0 to clickhouse02
     When we execute query on clickhouse02
     """
-    EXISTS TABLE test_db.non_utf8_test
+    EXISTS TABLE test_db.table_rus
     """
     Then we get response
     """

@@ -359,12 +359,16 @@ def create_non_utf8_table(context, node):
     ch_client = ClickhouseClient(context, node)
     ch_client.execute("CREATE DATABASE IF NOT EXISTS test_db")
 
-    query = (
-        "CREATE TABLE test_db.non_utf8_test "
-        "(id Int32, `тест` String) "
-        "ENGINE = MergeTree() "
-        "ORDER BY id;"
-    )
+    query = b"""
+        CREATE TABLE test_db.table_rus (
+            EventDate DateTime,
+            CounterID UInt32,
+            `\xcf\xf0\xe8\xe2\xe5\xf2` UInt32
+        )
+        ENGINE = MergeTree()
+        PARTITION BY CounterID % 10
+        ORDER BY (CounterID, EventDate)
+    """
 
-    ch_client.execute(query.encode("cp1251"))
-    ch_client.execute("INSERT INTO test_db.non_utf8_test VALUES (1, 'test')")
+    ch_client.execute(query)
+    ch_client.execute("INSERT INTO test_db.table_rus VALUES (toDateTime('17.01.2006 10:03:00'), 2, 3)")
