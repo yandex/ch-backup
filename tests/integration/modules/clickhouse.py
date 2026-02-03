@@ -67,17 +67,14 @@ class ClickhouseClient:
         """
         self._query("GET", url="ping")
 
-    def execute(self, query: str) -> None:
+    def execute(self, query: Union[str, bytes]) -> None:
         """
         Execute arbitrary query.
         """
-        self._query("POST", query=query)
-
-    def execute_raw(self, query_bytes: bytes) -> None:
-        """
-        Execute query from raw bytes.
-        """
-        self._query("POST", data=query_bytes)
+        if isinstance(query, str):
+            self._query("POST", query=query)
+            return
+        self._query("POST", data=query)
 
     def get_response(self, query: str) -> str:
         """

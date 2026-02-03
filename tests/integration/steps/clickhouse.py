@@ -366,5 +366,5 @@ def create_non_utf8_table(context, node):
         "ORDER BY id;"
     )
 
-    ch_client.execute_raw(query.encode("cp1251"))
+    ch_client.execute(query.encode("cp1251"))
     ch_client.execute("INSERT INTO test_db.non_utf8_test VALUES (1, 'test')")
