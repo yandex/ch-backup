@@ -11,7 +11,7 @@ import uuid
 from collections import OrderedDict
 from functools import wraps
 from pathlib import Path as PathlibPath
-from typing import Iterable, Tuple, Union
+from typing import Iterable, Optional, Tuple, Union
 
 from click import Choice, Path, argument, pass_context, style
 from cloup import (
@@ -35,7 +35,8 @@ from .backup.metadata import BackupState, TableMetadata
 from .backup.sources import BackupSources
 from .ch_backup import CleanZooKeeperMode, ClickhouseBackup
 from .config import DEFAULT_CONFIG, Config
-from .params import JsonParamType, KeyValues, KeyValuesList, List, String, TimeSpan
+from .logic.partial_restore import PartialRestoreFilter
+from .params import JsonParamType, KeyValues, List, String, TimeSpan
 from .profile import profile
 from .util import chown_dir_contents, drop_privileges, setup_environment, utcnow
 from .version import get_version
@@ -438,26 +439,6 @@ def backup_command(
     option("--schema-only", is_flag=True, help="Restore only database schemas."),
 )
 @option_group(
-    "Table",
-    # pylint: disable=consider-using-f-string
-    "Example for {key_values}: {key_values_example}".format(
-        key_values=style(KeyValuesList.name.upper(), bold=True),
-        key_values_example=style('"db1: table1, table2; db2: table3"', fg=Color.cyan),
-    ),
-    option(
-        "-t",
-        "--tables",
-        type=KeyValuesList(),
-        help="Semicolon-separated list of db:tables to restore. Other tables will be skipped.",
-    ),
-    option(
-        "--exclude-tables",
-        type=KeyValuesList(),
-        help="Semicolon-separated list of db:tables to skip on restore. Other tables will be restored.",
-    ),
-    constraint=mutually_exclusive,
-)
-@option_group(
     "Replica",
     option(
         "--override-replica-name",
@@ -529,6 +510,20 @@ def backup_command(
     option(
         "--udf", is_flag=True, help="Perform partial restore of user defined functions."
     ),
+    option(
+        "--table-included-patterns",
+        type=List(regexp=r"\w+\.[\w*]+"),
+        help="Comma-separated list of db.tables to restore. Other tables will be skipped. "
+        "Patterns support Unix shell-style wildcards(*) and are supported only for tables."
+        "Examples: db1.table1 | db1.table2,db2.* | db1.prefix*,db2.*suffix | db1.*",
+    ),
+    option(
+        "--table-excluded-patterns",
+        type=List(regexp=r"\w+\.[\w*]+"),
+        help="Comma-separated list of db.tables to skip on restore. Other tables will be restored. "
+        "Patterns support Unix shell-style wildcards(*) and are supported only for tables."
+        "Examples: db1.table1 | db1.table2,db2.* | db1.prefix*,db2.*suffix | db1.*",
+    ),
     option("--nc", is_flag=True, help="Perform partial restore of named collections."),
 )
 @option(
@@ -541,10 +536,9 @@ def backup_command(
     is_flag=True,
     help="Restore tables in Replicated databases",
 )
-@constraint(mutually_exclusive, ["databases", "tables"])
-@constraint(mutually_exclusive, ["exclude_databases", "tables"])
-@constraint(mutually_exclusive, ["schema_only", "tables"])
-@constraint(mutually_exclusive, ["schema_only", "exclude_tables"])
+@constraint(mutually_exclusive, ["table_included_patterns", "table_excluded_patterns"])
+@constraint(mutually_exclusive, ["table_included_patterns", "exclude_databases"])
+@constraint(mutually_exclusive, ["schema_only", "table_included_patterns"])
 @constraint(mutually_exclusive, ["schema_only", "access"])
 @constraint(mutually_exclusive, ["schema_only", "data"])
 @constraint(mutually_exclusive, ["schema_only", "schema"])
@@ -559,8 +553,6 @@ def restore_command(
     databases: list,
     exclude_databases: list,
     schema_only: bool,
-    tables: typing.Optional[KeyValues] = None,
-    exclude_tables: typing.Optional[KeyValues] = None,
     override_replica_name: str = None,
     force_non_replicated: bool = False,
     replica_name: str = None,
@@ -575,6 +567,8 @@ def restore_command(
     data: bool = False,
     schema: bool = False,
     udf: bool = False,
+    table_included_patterns: Optional[typing.List[str]] = None,
+    table_excluded_patterns: Optional[typing.List[str]] = None,
     nc: bool = False,
 ) -> None:
     """Restore data from a particular backup."""
@@ -582,25 +576,21 @@ def restore_command(
     name = _validate_and_resolve_name(ctx, ch_backup, name)
 
     specified_databases: typing.List[str] = _list_to_database_names(databases)
-    specified_exclude_databases: typing.List[str] = _list_to_database_names(
-        exclude_databases
-    )
+    excluded_databases: typing.List[str] = _list_to_database_names(exclude_databases)
 
-    specified_tables: typing.List[TableMetadata] = _key_values_to_tables_metadata(
-        tables
-    )
-    specified_exclude_tables: typing.List[TableMetadata] = (
-        _key_values_to_tables_metadata(exclude_tables)
-    )
+    matcher = None
+    if table_included_patterns:
+        matcher = PartialRestoreFilter(inverted=False, patterns=table_included_patterns)
+
+    if table_excluded_patterns:
+        matcher = PartialRestoreFilter(inverted=True, patterns=table_excluded_patterns)
 
     sources = BackupSources.for_restore(access, data, schema, udf, nc, schema_only)
     ch_backup.restore(
         sources=sources,
         backup_name=name,
         databases=specified_databases,
-        exclude_databases=specified_exclude_databases,
-        tables=specified_tables,
-        exclude_tables=specified_exclude_tables,
+        exclude_databases=excluded_databases,
         override_replica_name=override_replica_name,
         force_non_replicated=force_non_replicated,
         replica_name=replica_name,
@@ -611,6 +601,7 @@ def restore_command(
         clean_zookeeper_mode=clean_zookeeper_mode,
         keep_going=keep_going,
         restore_tables_in_replicated_database=restore_tables_in_replicated_database,
+        partial_restore_filter=matcher,
     )
 
 

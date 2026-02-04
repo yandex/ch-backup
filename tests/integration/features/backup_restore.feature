@@ -221,7 +221,7 @@ Feature: Backup & Restore
 
   Scenario: Restore of a backup with a corrupted data part
     When we drop all databases at clickhouse01
-    And we drop all databases at clickhouse02    
+    And we drop all databases at clickhouse02
     And we execute queries on clickhouse01
     """
     CREATE DATABASE test_db;
@@ -255,7 +255,7 @@ Feature: Backup & Restore
 
   Scenario: Overwrite existing table on destination node when UUID is equal and schema is mismatched
     When we drop all databases at clickhouse01
-    And we drop all databases at clickhouse02    
+    And we drop all databases at clickhouse02
     And we execute queries on clickhouse01
     """
     CREATE DATABASE test_db;
@@ -264,7 +264,7 @@ Feature: Backup & Restore
 
     INSERT INTO test_db.test_table SELECT number % 2, number FROM system.numbers LIMIT 100;
     """
-    And we create clickhouse01 clickhouse backup  
+    And we create clickhouse01 clickhouse backup
     And we execute queries on clickhouse02
     """
     CREATE DATABASE test_db;
@@ -276,9 +276,109 @@ Feature: Backup & Restore
     And we restore clickhouse backup #0 to clickhouse02
     Then clickhouse02 has same schema as clickhouse01
 
+  Scenario: Partial restore of a backup
+    When we drop all databases at clickhouse01
+    And we drop all databases at clickhouse02
+    And we execute queries on clickhouse01
+    """
+    CREATE DATABASE test_db1;
+    CREATE TABLE test_db1.table1 (partition_id Int32, n Int32) ENGINE MergeTree PARTITION BY partition_id ORDER BY (partition_id, n);
+    CREATE TABLE test_db1.table2 (partition_id Int32, n Int32) ENGINE MergeTree PARTITION BY partition_id ORDER BY (partition_id, n);
+    CREATE DATABASE test_db2;
+    CREATE TABLE test_db2.test_table1 (partition_id Int32, n Int32) ENGINE MergeTree PARTITION BY partition_id ORDER BY (partition_id, n);
+    CREATE TABLE test_db2.test_table2 (partition_id Int32, n Int32) ENGINE MergeTree PARTITION BY partition_id ORDER BY (partition_id, n);
+
+    INSERT INTO test_db1.table1 SELECT number, number FROM system.numbers LIMIT 1;
+    INSERT INTO test_db1.table2 SELECT number, number FROM system.numbers LIMIT 2;
+    INSERT INTO test_db2.test_table1 SELECT number, number FROM system.numbers LIMIT 3;
+    INSERT INTO test_db2.test_table2 SELECT number, number FROM system.numbers LIMIT 4;
+    """
+    And we create clickhouse01 clickhouse backup
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    table_included_patterns: test_db1.table1,test_db2.*
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT database,name FROM system.tables where database LIKE 'test_db%' ORDER BY database,name  FORMAT CSV
+    """
+    Then we get response
+    """
+    "test_db1","table1"
+    "test_db2","test_table1"
+    "test_db2","test_table2"
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count(*) FROM system.parts where database LIKE 'test_db%';
+    """
+    Then we get response
+    """
+    8
+    """
+    When we drop all databases at clickhouse02
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    table_included_patterns: test_db1.table2,test_db2.*table*
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT database,name FROM system.tables where database LIKE 'test_db%' ORDER BY database,name  FORMAT CSV
+    """
+    Then we get response
+    """
+    "test_db1","table2"
+    "test_db2","test_table1"
+    "test_db2","test_table2"
+    """
+    When we drop all databases at clickhouse02
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    table_excluded_patterns: test_db1.table1
+    exclude_databases: test_db2
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT database,name FROM system.tables where database LIKE 'test_db%' ORDER BY database,name  FORMAT CSV
+    """
+    Then we get response
+    """
+    "test_db1","table2"
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT name FROM system.databases where database LIKE 'test_db%' ORDER BY name  FORMAT CSV
+    """
+    Then we get response
+    """
+    test_db1
+    """
+    When we drop all databases at clickhouse02
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    table_excluded_patterns: test_db1.table1,test_db2.*
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT database,name FROM system.tables where database LIKE 'test_db%' ORDER BY database,name  FORMAT CSV
+    """
+    Then we get response
+    """
+    "test_db1","table2"
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT name FROM system.databases where database LIKE 'test_db%' ORDER BY name  FORMAT CSV
+    """
+    Then we get response
+    """
+    "test_db1"
+    "test_db2"
+    """
+
   Scenario: Overwrite existing table on destination node when name is equal and schema is mismatched with checking force_drop_table
     When we drop all databases at clickhouse01
-    And we drop all databases at clickhouse02    
+    And we drop all databases at clickhouse02
     And we execute queries on clickhouse01
     """
     CREATE DATABASE test_db;
@@ -287,7 +387,7 @@ Feature: Backup & Restore
 
     INSERT INTO test_db.test_table SELECT number % 2, number FROM system.numbers LIMIT 100;
     """
-    And we create clickhouse01 clickhouse backup  
+    And we create clickhouse01 clickhouse backup
     And we execute queries on clickhouse02
     """
     CREATE DATABASE test_db;

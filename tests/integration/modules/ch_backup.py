@@ -300,10 +300,12 @@ class BackupManager:
         output = self._exec(f"show {backup_id}")
         return Backup(json.loads(output))
 
-    # pylint: disable=too-many-arguments,too-many-positional-arguments
+    # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches
     def restore(
         self,
         backup_id: BackupId,
+        databases: str = None,
+        exclude_databases: str = None,
         schema_only: bool = False,
         override_replica_name: str = None,
         force_non_replicated: bool = False,
@@ -318,6 +320,8 @@ class BackupManager:
         nc: bool = None,
         keep_going: bool = False,
         restore_tables_in_replicated_database: bool = False,
+        table_included_patterns: str = None,
+        table_excluded_patterns: str = None,
     ) -> str:
         """
         Restore backup entry.
@@ -354,6 +358,14 @@ class BackupManager:
             options.append("--keep-going")
         if restore_tables_in_replicated_database:
             options.append("--restore-tables-in-replicated-database")
+        if table_included_patterns:
+            options.append(f"--table-included-patterns {table_included_patterns}")
+        if table_excluded_patterns:
+            options.append(f"--table-excluded-patterns {table_excluded_patterns}")
+        if databases:
+            options.append(f"--databases {databases}")
+        if exclude_databases:
+            options.append(f"--exclude-databases {exclude_databases}")
         return self._exec(f'restore {" ".join(options)} {backup_id}')
 
     def restore_access_control(self, backup_id: BackupId) -> str:

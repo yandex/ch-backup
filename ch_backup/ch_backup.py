@@ -28,6 +28,7 @@ from ch_backup.exceptions import (
 from ch_backup.logic.access import AccessBackup
 from ch_backup.logic.database import DatabaseBackup
 from ch_backup.logic.named_collections import NamedCollectionsBackup
+from ch_backup.logic.partial_restore import PartialRestoreFilter
 from ch_backup.logic.table import TableBackup
 from ch_backup.logic.udf import UDFBackup
 from ch_backup.storage.async_pipeline.stages import EncryptStage
@@ -218,15 +219,13 @@ class ClickhouseBackup:
 
         return self._context.backup_meta.name, None
 
-    # pylint: disable=too-many-arguments,duplicate-code,too-many-positional-arguments,too-many-locals
+    # pylint: disable=too-many-arguments,duplicate-code,too-many-positional-arguments,too-many-branches,too-many-locals
     def restore(
         self,
         sources: BackupSources,
         backup_name: str,
         databases: Sequence[str],
         exclude_databases: Sequence[str],
-        tables: List[TableMetadata],
-        exclude_tables: List[TableMetadata],
         override_replica_name: str = None,
         force_non_replicated: bool = False,
         replica_name: Optional[str] = None,
@@ -237,6 +236,7 @@ class ClickhouseBackup:
         clean_zookeeper_mode: CleanZooKeeperMode = CleanZooKeeperMode.DISABLED,
         keep_going: bool = False,
         restore_tables_in_replicated_database: bool = False,
+        partial_restore_filter: Optional[PartialRestoreFilter] = None,
     ) -> None:
         """
         Restore specified backup
@@ -261,41 +261,58 @@ class ClickhouseBackup:
             force_non_replicated or self._context.config["force_non_replicated"]
         )
 
-        if tables:
-            logging.debug("Picking databases for specified tables.")
-            databases = list(set(t.database for t in tables))
-
         if not databases:
             logging.debug("Picking all databases from backup.")
             databases = self._context.backup_meta.get_databases()
+        else:
+            logging.info("Checking for presence of required databases.")
+            missed_databases = [
+                db_name
+                for db_name in databases
+                if db_name not in self._context.backup_meta.get_databases()
+            ]
+            if missed_databases:
+                logging.critical(
+                    "Required databases {} were not found in backup metadata: {}",
+                    ", ".join(missed_databases),
+                    self._context.backup_meta.path,
+                )
+                raise ClickhouseBackupError(
+                    "Required databases were not found in backup metadata"
+                )
 
         if exclude_databases:
             logging.debug(
                 f'Excluding specified databases from restoring: {", ".join(exclude_databases)}.'
             )
-            databases = list(
-                filter(lambda db_name: db_name not in exclude_databases, databases)
-            )
+            databases = [db for db in databases if db not in exclude_databases]
 
-        # check if all required databases exist in backup meta
-        logging.info("Checking for presence of required databases.")
+        logging.debug(f"Picking databases to restore: {databases}.")
 
-        missed_databases = [
-            db_name
-            for db_name in databases
-            if db_name not in self._context.backup_meta.get_databases()
-        ]
-        if missed_databases:
-            logging.critical(
-                "Required databases {} were not found in backup metadata: {}",
-                ", ".join(missed_databases),
-                self._context.backup_meta.path,
-            )
-            raise ClickhouseBackupError(
-                "Required databases were not found in backup metadata"
-            )
+        tables = []
+        if partial_restore_filter:
+            excluded_tables = []
+            all_tables: List[TableMetadata] = []
+            for db_name in databases:
+                all_tables.extend(self._context.backup_meta.get_tables(db_name))
+            for table in all_tables:
+                is_restoring = partial_restore_filter.accept_table(
+                    table.database, table.name
+                )
+                logging.debug(
+                    f"Filtering table to restore: {table.database}.{table.name} result: {is_restoring}."
+                )
+                if is_restoring:
+                    tables.append(table)
+                else:
+                    excluded_tables.append(f"{table.database}.{table.name}")
 
-        logging.info("All required databases are present in backup.")
+            if excluded_tables:
+                logging.debug(
+                    f'Excluding specified tables from restoring: {", ".join(excluded_tables)}.'
+                )
+        else:
+            logging.debug("Picking all tables from backup.")
 
         with self._context.locker(
             distributed=not sources.schema_only, operation="RESTORE"
@@ -304,7 +321,6 @@ class ClickhouseBackup:
                 sources=sources,
                 db_names=databases,
                 tables=tables,
-                exclude_tables=exclude_tables,
                 replica_name=replica_name,
                 cloud_storage_source_bucket=cloud_storage_source_bucket,
                 cloud_storage_source_path=cloud_storage_source_path,
@@ -522,7 +538,6 @@ class ClickhouseBackup:
         sources: BackupSources,
         db_names: Sequence[str],
         tables: List[TableMetadata],
-        exclude_tables: List[TableMetadata],
         replica_name: Optional[str] = None,
         cloud_storage_source_bucket: Optional[str] = None,
         cloud_storage_source_path: Optional[str] = None,
@@ -591,7 +606,6 @@ class ClickhouseBackup:
                 databases=databases,
                 schema_only=sources.schema_only,
                 tables=tables,
-                exclude_tables=exclude_tables,
                 metadata_cleaner=metadata_cleaner,
                 cloud_storage_source_bucket=cloud_storage_source_bucket,
                 cloud_storage_source_path=cloud_storage_source_path,
