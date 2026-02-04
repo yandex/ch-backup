@@ -49,12 +49,7 @@ def test_calc_aligned_file_size(
     [
         ([1], 512, 1024),  # 1 header + 1 data block
         ([1, 1], 1024, 2048),  # 2 header + 2 data blocks
-        ([LENGTH_NAME - 1], 512, 1024),  # 1 header + 1 data block
-        (
-            [LENGTH_NAME],
-            512,
-            2048,
-        ),  # header + long name header + 1 name data block + 1 data block
+        ([LENGTH_NAME], 512, 1024),  # 1 header + 1 data block
         (
             [LENGTH_NAME + 413],
             512,
@@ -62,8 +57,8 @@ def test_calc_aligned_file_size(
         ),  # header + long name header + 2 name data blocks + 1 data block
         (
             [
-                LENGTH_NAME,
                 LENGTH_NAME + 1,
+                LENGTH_NAME + 2,
             ],
             1024,
             4096,
