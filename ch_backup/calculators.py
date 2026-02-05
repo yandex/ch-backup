@@ -5,7 +5,7 @@ Auxiliary functions for calculation sizes of backped data blocks.
 import math
 from pathlib import Path
 from tarfile import BLOCKSIZE, LENGTH_NAME
-from typing import List, Optional
+from typing import Iterable, List, Optional
 
 from ch_backup.util import scan_dir_files
 
@@ -55,18 +55,12 @@ def calc_tarball_size_scan(
             for each file.
         exclude_file_names: File names that will not be included in tarball.
     """
-    result = aligned_files_size
-    for name in scan_dir_files(dir_path, exclude_file_names):
-        if len(name) < LENGTH_NAME:
-            result += BLOCKSIZE  # file header
-        else:
-            result += (
-                math.ceil(len(name) / BLOCKSIZE) + 2
-            ) * BLOCKSIZE  # long name header + name data + file header
-    return result
+    return calc_tarball_size(
+        scan_dir_files(dir_path, exclude_file_names), aligned_files_size
+    )
 
 
-def calc_tarball_size(file_names: List[str], aligned_files_size: int) -> int:
+def calc_tarball_size(file_names: Iterable[str], aligned_files_size: int) -> int:
     """
     Calculate tarball (TAR archive) size.
 
@@ -77,7 +71,7 @@ def calc_tarball_size(file_names: List[str], aligned_files_size: int) -> int:
     """
     result = aligned_files_size
     for name in file_names:
-        if len(name) < LENGTH_NAME:
+        if len(name) <= LENGTH_NAME:
             result += BLOCKSIZE  # file header
         else:
             result += (
