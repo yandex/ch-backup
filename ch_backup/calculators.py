@@ -41,20 +41,6 @@ def calc_aligned_files_size(files: List[Path], alignment: int = 1) -> int:
     return size
 
 
-def _calc_tar_blocks_size_for_names(
-    names: Iterable[str], aligned_files_size: int
-) -> int:
-    result = aligned_files_size
-    for name in names:
-        if len(name) <= LENGTH_NAME:
-            result += BLOCKSIZE  # file header
-        else:
-            result += (
-                math.ceil(len(name) / BLOCKSIZE) + 2
-            ) * BLOCKSIZE  # long name header + name data + file header
-    return result
-
-
 def calc_tarball_size_scan(
     dir_path: Path,
     aligned_files_size: int,
@@ -69,12 +55,12 @@ def calc_tarball_size_scan(
             for each file.
         exclude_file_names: File names that will not be included in tarball.
     """
-    return _calc_tar_blocks_size_for_names(
+    return calc_tarball_size(
         scan_dir_files(dir_path, exclude_file_names), aligned_files_size
     )
 
 
-def calc_tarball_size(file_names: List[str], aligned_files_size: int) -> int:
+def calc_tarball_size(file_names: Iterable[str], aligned_files_size: int) -> int:
     """
     Calculate tarball (TAR archive) size.
 
@@ -83,7 +69,15 @@ def calc_tarball_size(file_names: List[str], aligned_files_size: int) -> int:
         aligned_files_size: Summed size of all files including padding on BLOCKSIZE boundary
             for each file.
     """
-    return _calc_tar_blocks_size_for_names(file_names, aligned_files_size)
+    result = aligned_files_size
+    for name in file_names:
+        if len(name) <= LENGTH_NAME:
+            result += BLOCKSIZE  # file header
+        else:
+            result += (
+                math.ceil(len(name) / BLOCKSIZE) + 2
+            ) * BLOCKSIZE  # long name header + name data + file header
+    return result
 
 
 def calc_encrypted_size(
