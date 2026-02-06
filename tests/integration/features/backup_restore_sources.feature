@@ -274,11 +274,11 @@ Scenario: Detached table is not a blocker to backup restore.
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
 @require_version_25.11
-Scenario: Parallel freeze over parallelization of query in clickhouse.
+Scenario: Parallel freeze over parallelization in ch-backup.
     Given ch-backup configuration on clickhouse01
     """
       multiprocessing:
-        parallelize_freeze_in_clickhouse: True
+        parallelize_freeze_in_clickhouse: False
     """
     Given we have executed queries on clickhouse01
     """

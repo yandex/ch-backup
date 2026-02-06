@@ -171,7 +171,7 @@ DEFAULT_CONFIG = {
         # 1) Inside ch-backup: We can perform several `ALTER TABLE FREEZE PARTITION` queries. Then freeze_partition_threads are used.
         # 2) Inside clickhouse(preferable): Since 25.11 clickhouse can parallelize `ALTER TABLE FREEZE` queries. Then freeze_table_query_max_threads are used.
         #    https://github.com/ClickHouse/ClickHouse/pull/71743
-        "parallelize_freeze_in_clickhouse": False,
+        "parallelize_freeze_in_clickhouse": True,
         # The number of threads for parallel freeze of partitions. If set to 0, will freeze table in one query.
         "freeze_partition_threads": 16,
         "freeze_table_query_max_threads": 16,
