@@ -160,7 +160,11 @@ class TableBackup(BackupManager):
                         table,
                         backup_name,
                         schema_only,
+                        multiprocessing_config.get(
+                            "parallelize_freeze_in_clickhouse", False
+                        ),
                         multiprocessing_config.get("freeze_partition_threads", 0),
+                        multiprocessing_config.get("freeze_table_query_max_threads", 0),
                     )
 
                 for freezed_table in pool.as_completed(keep_going=False):
@@ -188,7 +192,9 @@ class TableBackup(BackupManager):
         table: Table,
         backup_name: str,
         schema_only: bool,
+        parallelize_freeze_in_ch: bool,
         freeze_partition_threads: int,
+        freeze_table_query_max_threads: int,
     ) -> Optional[Table]:
         """
         Freeze table and return it's create statement
@@ -208,7 +214,11 @@ class TableBackup(BackupManager):
         if not schema_only and table.is_merge_tree():
             try:
                 context.ch_ctl.freeze_table(
-                    backup_name, table, freeze_partition_threads
+                    backup_name,
+                    table,
+                    parallelize_freeze_in_ch,
+                    freeze_partition_threads,
+                    freeze_table_query_max_threads,
                 )
             except ClickhouseError:
                 if context.ch_ctl.does_table_exist(table.database, table.name):

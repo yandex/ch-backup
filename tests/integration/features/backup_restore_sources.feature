@@ -273,3 +273,21 @@ Scenario: Detached table is not a blocker to backup restore.
     And we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
+@require_version_25.11
+Scenario: Parallel freeze over parallelization in ch-backup.
+    Given ch-backup configuration on clickhouse01
+    """
+      multiprocessing:
+        parallelize_freeze_in_clickhouse: False
+    """
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (n Int32, b Int32) ENGINE = MergeTree() PARTITION BY b ORDER BY n;
+    INSERT INTO test_db.table_01 SELECT rand32()%100, rand32()%100 FROM numbers(100000);
+    """
+    When we create clickhouse01 clickhouse backup
+    And we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
+

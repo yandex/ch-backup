@@ -602,61 +602,82 @@ class ClickhouseCTL:
             KILL_RUNNING_FREEZE_SQL.format(user=self._ch_ctl_config["user"])
         )
 
+    # pylint: disable=too-many-positional-arguments
     def freeze_table(
         self,
         backup_name: str,
         table: Table,
-        threads: int,
+        parallelize_freeze_in_ch: bool,
+        freeze_partition_threads: int,
+        clickhouse_query_max_threads: int,
     ) -> None:
         """
         Make snapshot of the specified table.
+        To execute freeze efficiently, we should parallelize freeze operations. We have two options where we can parallelize:
+        1) parallelize_freeze_in_ch = False
+        Inside ch-backup: We can perform several `ALTER TABLE FREEZE PARTITION` queries.
+        2) parallelize_freeze_in_ch = True
+        Inside clickhouse(preferable): Since 25.11 clickhouse can parallelize `ALTER TABLE FREEZE` queries. https://github.com/ClickHouse/ClickHouse/pull/71743
         """
         # Table has no partitions or created with deprecated syntax.
         # FREEZE PARTITION ID with deprecated syntax throws segmentation fault in CH.
-        freeze_by_partitions = threads > 0 and "PARTITION BY" in table.create_statement
+        freeze_by_partitions = (
+            not parallelize_freeze_in_ch
+            and freeze_partition_threads > 0
+            and "PARTITION BY" in table.create_statement
+        )
 
-        query_settings = None
+        query_settings: Dict[str, Any] = {"max_threads": 1}
+
         # Since https://github.com/ClickHouse/ClickHouse/pull/75016
         if self.ch_version_ge("25.2"):
-            query_settings = {"max_execution_time": self._freeze_timeout}
+            query_settings["max_execution_time"] = self._freeze_timeout
 
         if freeze_by_partitions:
-            with ThreadExecPool(max(1, threads)) as pool:
-                if freeze_by_partitions:
-                    partitions_to_freeze = self.list_partitions(table)
-                    for partition in partitions_to_freeze:
-                        query_sql = FREEZE_PARTITION_SQL.format(
-                            db_name=escape(table.database),
-                            table_name=escape(table.name),
-                            backup_name=backup_name,
-                            partition=partition,
-                        )
-                        pool.submit(
-                            f'Freeze partition "{partition}"',
-                            self._ch_client.query,
-                            query_sql,
-                            settings=query_settings,
-                            timeout=self._freeze_timeout,
-                            should_retry=False,
-                            new_session=True,
-                        )
+            with ThreadExecPool(max(1, freeze_partition_threads)) as pool:
+                partitions_to_freeze = self.list_partitions(table)
+                for partition in partitions_to_freeze:
+                    query_sql = FREEZE_PARTITION_SQL.format(
+                        db_name=escape(table.database),
+                        table_name=escape(table.name),
+                        backup_name=backup_name,
+                        partition=partition,
+                    )
+                    pool.submit(
+                        f'Freeze partition "{partition}"',
+                        self._ch_client.query,
+                        query_sql,
+                        settings=query_settings,
+                        timeout=self._freeze_timeout,
+                        should_retry=False,
+                        new_session=True,
+                    )
                 pool.wait_all(
                     keep_going=False,
                     timeout=self._freeze_timeout,
                 )
-        else:
-            query_sql = FREEZE_TABLE_SQL.format(
-                db_name=escape(table.database),
-                table_name=escape(table.name),
-                backup_name=backup_name,
-            )
-            self._ch_client.query(
-                query_sql,
-                settings=query_settings,
-                timeout=self._freeze_timeout,
-                should_retry=False,
-                new_session=True,
-            )
+            return
+
+        if parallelize_freeze_in_ch:
+            if self.ch_version_ge("25.11"):
+                query_settings["max_threads"] = max(1, clickhouse_query_max_threads)
+            else:
+                logging.warning(
+                    "Parallel freeze available only with ch >= 25.11. See https://github.com/ClickHouse/ClickHouse/pull/71743"
+                )
+
+        query_sql = FREEZE_TABLE_SQL.format(
+            db_name=escape(table.database),
+            table_name=escape(table.name),
+            backup_name=backup_name,
+        )
+        self._ch_client.query(
+            query_sql,
+            settings=query_settings,
+            timeout=self._freeze_timeout,
+            should_retry=False,
+            new_session=True,
+        )
 
     def list_partitions(self, table: Table) -> List[str]:
         """
