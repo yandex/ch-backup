@@ -634,8 +634,9 @@ class TableBackup(BackupManager):
             ):
                 # Schemas mismatch here at least in name
                 logging.warning(
-                    'Table {} will be dropped as its UUID is equal but schema mismatches the schema from backup: "{}" != "{}"',
-                    table_name_for_logs,
+                    'Table "{}"."{}" will be dropped as its UUID is equal but schema mismatches the schema from backup: "{}" != "{}"',
+                    existing_table.database,
+                    existing_table.name,
                     existing_table.create_statement,
                     table.create_statement,
                 )
