@@ -707,14 +707,9 @@ def get_cloud_storage_metadata(
     local_path: str,
 ) -> None:
     """Download cloud storage metadata to shadow directory"""
-    try:
-        name = _validate_and_resolve_name(
-            ctx, ch_backup, name, backup_state=BackupState.CREATED
-        )
-    except Exception as e:
-        print(e)
-        return
-
+    name = _validate_and_resolve_name(
+        ctx, ch_backup, name, backup_state=BackupState.CREATED
+    )
     if not ch_backup.get_cloud_storage_metadata(
         backup_name=name, disk_name=disk, local_path=local_path
     ):
