@@ -4,6 +4,7 @@ export PYTHONIOENCODING ?= utf8
 export COMPOSE_HTTP_TIMEOUT ?= 300
 export CLICKHOUSE_VERSION ?= latest
 export PROJECT_NAME ?= ch-backup
+export DEV_MODE ?= false
 
 export BUILD_PYTHON_OUTPUT_DIR ?= dist
 export BUILD_DEB_OUTPUT_DIR ?= out
