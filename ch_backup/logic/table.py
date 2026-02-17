@@ -558,6 +558,7 @@ class TableBackup(BackupManager):
             return None
 
     # pylint: disable=too-many-branches
+    # pylint: disable=too-many-statements
     def _preprocess_tables_to_restore(
         self,
         context: BackupContext,
@@ -583,6 +584,9 @@ class TableBackup(BackupManager):
             if detached_table := (
                 detached_tables.get(table.uuid) if table.uuid else None
             ):
+                logging.debug(
+                    f'Table with uuid "{table.uuid}" already exists as detached, attaching it'
+                )
                 context.ch_ctl.attach_table(detached_table)
 
         # Filter out already restored tables.
@@ -601,13 +605,12 @@ class TableBackup(BackupManager):
         result: List[Table] = []
         tables_to_clean_metadata: List[Table] = []
         for table in tables:
+            table_name_for_logs = f'"{table.database}"."{table.name}"'
             existing_table: Optional[Table] = None
             if (table.database, table.name) in existing_readonly_tables:
                 existing_table = table
                 logging.warning(
-                    'Table "{}"."{}" will be recreated because it is in readonly state',
-                    table.database,
-                    table.name,
+                    f"Table {table_name_for_logs} will be recreated because it is in readonly state",
                 )
 
             elif existing_table := existing_tables_by_name.get(
@@ -616,12 +619,13 @@ class TableBackup(BackupManager):
                 if compare_schema(
                     existing_table.create_statement, table.create_statement
                 ):
-                    # Skip table
+                    logging.debug(
+                        f"Table {table_name_for_logs} already exists and its schema is the same as the schema from backup. Skipping it.",
+                    )
                     continue
                 logging.warning(
-                    'Table "{}"."{}" will be recreated as its schema mismatches the schema from backup: "{}" != "{}"',
-                    table.database,
-                    table.name,
+                    'Table {} will be recreated as its schema mismatches the schema from backup: "{}" != "{}"',
+                    table_name_for_logs,
                     existing_table.create_statement,
                     table.create_statement,
                 )
@@ -675,6 +679,9 @@ class TableBackup(BackupManager):
                     continue
 
             if metadata_cleaner and table.is_replicated():
+                logging.debug(
+                    f"Will clean ZooKeeper metadata for table {table_name_for_logs}"
+                )
                 tables_to_clean_metadata.append(table)
 
             if (
@@ -682,9 +689,7 @@ class TableBackup(BackupManager):
                 and databases[table.database].is_replicated_db_engine()
             ):
                 logging.info(
-                    'Skipping table "{}"."{}" because it is in replicated database and --restore-tables-in-replicated-database flag is not set',
-                    table.database,
-                    table.name,
+                    f"Skipping table {table_name_for_logs} because it is in replicated database and --restore-tables-in-replicated-database flag is not set",
                 )
             else:
                 result.append(table)

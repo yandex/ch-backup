@@ -76,6 +76,10 @@ class MetadataCleaner:
                 else self._list_replicas(path_resolved)
             )
 
+            logging.debug(
+                f'Will search for existing ZooKeeper metadata for "{full_table_name}" at "{path_resolved}"'
+            )
+
             with self._zk_ctl.zk_client as zk_client:
                 for replica in replicas_to_drop:
                     # Both paths are already abs.
