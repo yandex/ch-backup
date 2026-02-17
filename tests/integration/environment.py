@@ -39,8 +39,10 @@ def before_scenario(context, scenario):
     """
     Per-scenario setup function.
     """
-    if "dependent-scenarios" not in context.feature.tags and _check_tags(
-        context, scenario
+
+    if (
+        _check_tags(context, scenario)
+        and "dependent-scenarios" not in context.feature.tags
     ):
         env_control.restart(context)
 
