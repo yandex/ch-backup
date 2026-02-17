@@ -33,7 +33,8 @@ def rewrite_table_schema(
     """
     Rewrite table schema.
     """
-    logging.info(f"Going to rewrite table schema: {table.create_statement}")
+    # Use repr for logging because schema may contain surrogate escape symbols
+    logging.info(f"Going to rewrite table schema: {table.create_statement!r}")
     if force_non_replicated_engine:
         create_statement = table.create_statement
         match = re.search(
@@ -70,7 +71,7 @@ def rewrite_table_schema(
         f"\\g<create> \\g<type> `{escape(table.database)}`.`{escape(table.name)}` ",
         table.create_statement,
     )
-    logging.info(f"Resulting table schema: {table.create_statement}")
+    logging.info(f"Resulting table schema: {table.create_statement!r}")
 
 
 def rewrite_database_schema(

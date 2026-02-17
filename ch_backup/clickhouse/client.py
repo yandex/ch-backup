@@ -3,7 +3,7 @@ ClickHouse client.
 """
 
 from contextlib import contextmanager
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Optional, Union
 
 import requests
 
@@ -56,21 +56,25 @@ class ClickhouseClient:
     # pylint: disable=too-many-positional-arguments
     def query(
         self,
-        query: str,
+        query: Union[bytes, str],
         post_data: dict = None,
         settings: dict = None,
         timeout: float = None,
         should_retry: bool = True,
         new_session: bool = False,
+        encoding: str = "utf-8",
     ) -> Any:
         """
         Execute query.
         """
         try:
-            logging.debug("Executing query: {}", query)
-
             if timeout is None:
                 timeout = self.timeout
+
+            if isinstance(query, str):
+                query = query.encode(encoding, "surrogateescape")
+
+            logging.debug("Executing query: {}", query)
 
             # https://github.com/psf/requests/issues/2766
             # requests.Session object is not guaranteed to be thread-safe.
@@ -82,7 +86,7 @@ class ClickhouseClient:
                     params=settings,
                     json=post_data,
                     timeout=(self.connect_timeout, timeout),
-                    data=query.encode("utf-8"),
+                    data=query,
                 )
 
             response.raise_for_status()

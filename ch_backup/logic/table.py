@@ -251,7 +251,9 @@ class TableBackup(BackupManager):
             )
             return None
         try:
-            return Path(table.metadata_path).read_text("utf-8")
+            return Path(table.metadata_path).read_text(
+                "utf-8", errors="surrogateescape"
+            )
         except OSError as e:
             logging.debug(
                 'Cannot load a create statement of the table "{}"."{}": {}',
