@@ -33,11 +33,12 @@ def step_update_ch_backup_config(context):
 
 
 @when("we try to execute command on {node:w}")
-def step_try_command(context, node):
+@when("we try to execute command on {node:w} with response encoding {encoding:w}")
+def step_try_command(context, node, encoding="utf-8"):
     container = get_container(context, node)
     context.command = context.text.strip()
     result = container.exec_run(["bash", "-c", context.command], user="root")
-    context.response = result.output.decode().strip()
+    context.response = result.output.decode(encoding).strip()
     context.exit_code = result.exit_code
 
 

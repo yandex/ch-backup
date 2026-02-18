@@ -34,7 +34,7 @@ class StorageLoader:
         converted to bytes using provided encoding.
         """
         if isinstance(data, str):
-            data = data.encode(encoding)
+            data = data.encode(encoding, errors="surrogateescape")
 
         return self._ploader.upload_data(
             data, remote_path, is_async=is_async, encryption=encryption

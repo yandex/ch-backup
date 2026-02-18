@@ -3,8 +3,10 @@ ARG PYTHON_VERSION=3
 FROM python:${PYTHON_VERSION}-bullseye
 
 ARG CLICKHOUSE_VERSION=latest
+ARG DEV_MODE=false
 
 ENV TZ=Europe/Moscow
+ENV CH_TMP_DIR=/var/tmp/ch-backup
 
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && \
     apt-get update -qq && \
@@ -50,9 +52,24 @@ RUN mkdir -p /etc/apt/sources.list.d && \
     rm -rf /var/lib/apt/lists/* /var/cache/debconf && \
     apt-get clean
 
-COPY dist/ch_backup*.whl /var/tmp/
-RUN cd /var/tmp/ && \
-    pip3 install ch_backup*.whl && \
+# Install ch-backup: production (wheel) or development (editable) mode
+RUN mkdir -p ${CH_TMP_DIR}
+  
+# For dev mode install (editable)
+COPY pyproject.toml README.md ${CH_TMP_DIR}/
+COPY ch_backup/ ${CH_TMP_DIR}/ch_backup/
+
+# For wheel install
+COPY dist/*.whl ${CH_TMP_DIR}/
+
+RUN cd ${CH_TMP_DIR} && \
+    if [ "${DEV_MODE}" = "true" ]; then \
+        echo "Installing ch-backup in development mode (editable)..."; \
+        pip3 install -e .; \
+    else \
+        echo "Installing ch-backup from wheel (production)..."; \
+        pip3 install *.whl; \
+    fi && \
     mkdir -p /etc/yandex/ch-backup && \
     ln -s /config/ch-backup.conf /etc/yandex/ch-backup/ch-backup.conf && \
     rm -rf /etc/supervisor && \

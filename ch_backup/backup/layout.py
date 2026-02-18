@@ -405,9 +405,10 @@ class BackupLayout:
         Download and return table create statement.
         """
         remote_path = _table_metadata_path(backup_meta.path, db_name, table_name)
-        return self._storage_loader.download_data(
-            remote_path, encryption=backup_meta.encrypted
+        data = self._storage_loader.download_data(
+            remote_path, encryption=backup_meta.encrypted, encoding=None
         )
+        return data.decode("utf-8", errors="surrogateescape")
 
     def download_access_control_file(
         self, local_path: str, backup_name: str, file_name: str

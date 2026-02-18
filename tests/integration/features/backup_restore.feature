@@ -219,6 +219,45 @@ Feature: Backup & Restore
     And we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
+  @require_version_25.3
+  Scenario: Backup & Restore with non utf-8 column names
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE `test_db`;
+    CREATE TABLE `test_db`.`table_cp1251` (`\xEA\xEB\xFE\xF7` Int32)
+      ENGINE = MergeTree()
+      PARTITION BY `\xEA\xEB\xFE\xF7` % 1
+      ORDER BY `\xEA\xEB\xFE\xF7`;
+    INSERT INTO `test_db`.`table_cp1251` SELECT number FROM system.numbers LIMIT 50;
+    """
+    When we create clickhouse01 clickhouse backup
+    When we restore clickhouse backup #0 to clickhouse02
+    Then clickhouse02 has same schema as clickhouse01
+    When we execute query on clickhouse01
+    """
+    EXISTS TABLE `test_db`.`table_cp1251`
+    """
+    Then we get response
+    """
+    1
+    """
+    When we try to execute command on clickhouse01 with response encoding cp1251
+    """
+    cat /var/lib/clickhouse/metadata/test_db/table_cp1251.sql
+    """
+    Then we get response contains
+    """
+    `ключ` Int32
+    """
+    When we try to execute command on clickhouse02 with response encoding cp1251
+    """
+    cat /var/lib/clickhouse/metadata/test_db/table_cp1251.sql
+    """
+    Then we get response contains
+    """
+    `ключ` Int32
+    """
+
   Scenario: Restore of a backup with a corrupted data part
     When we drop all databases at clickhouse01
     And we drop all databases at clickhouse02

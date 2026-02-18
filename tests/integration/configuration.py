@@ -77,6 +77,7 @@ def create():
                 "args": {
                     "PYTHON_VERSION": ".".join(map(str, sys.version_info[:2])),
                     "CLICKHOUSE_VERSION": "$CLICKHOUSE_VERSION",
+                    "DEV_MODE": "$DEV_MODE",
                 },
             },
             "minio": {
