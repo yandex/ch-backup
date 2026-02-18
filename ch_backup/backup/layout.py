@@ -66,21 +66,32 @@ class BackupLayout:
 
     def upload_database_create_statement(
         self, backup_meta: BackupMetadata, db: Database
-    ) -> None:
+    ) -> bool:
         """
         Upload database create statement from metadata file.
         """
         local_path = os.path.join(
             self._metadata_path, f"{escape_metadata_file_name(db.name)}.sql"
         )
+        try:
+            create_statement = Path(local_path).read_text("utf-8")
+        except OSError as e:
+            logging.warning(
+                f'Cannot load a create statement of the database "{db.name}". Skipping it. Reason: {str(e)}',
+            )
+            return False
+
         remote_path = _db_metadata_path(self.get_backup_path(backup_meta.name), db.name)
         try:
             logging.debug(
                 'Uploading metadata (create statement) for database "{}"', db.name
             )
-            self._storage_loader.upload_file(
-                local_path, remote_path=remote_path, encryption=backup_meta.encrypted
+            self._storage_loader.upload_data(
+                create_statement,
+                remote_path=remote_path,
+                encryption=backup_meta.encrypted,
             )
+            return True
         except Exception as e:
             msg = f"Failed to create async upload of {remote_path}"
             raise StorageError(msg) from e
