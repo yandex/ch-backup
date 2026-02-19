@@ -536,7 +536,6 @@ def backup_command(
     is_flag=True,
     help="Restore tables in Replicated databases",
 )
-@constraint(mutually_exclusive, ["table_included_patterns", "table_excluded_patterns"])
 @constraint(mutually_exclusive, ["table_included_patterns", "exclude_databases"])
 @constraint(mutually_exclusive, ["schema_only", "table_included_patterns"])
 @constraint(mutually_exclusive, ["schema_only", "access"])
