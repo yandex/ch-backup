@@ -186,7 +186,9 @@ class ClickhouseBackup:
                 if sources.named_collections:
                     self._nc_backup_manager.backup(self._context)
                 if sources.schemas_included():
-                    self._database_backup_manager.backup(self._context, databases)
+                    databases = self._database_backup_manager.backup(
+                        self._context, databases
+                    )
                     collect_dedup_info(
                         context=self._context,
                         backups_with_light_meta=backups_with_light_meta,

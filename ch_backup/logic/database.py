@@ -33,14 +33,17 @@ class DatabaseBackup(BackupManager):
     Database backup class
     """
 
-    def backup(self, context: BackupContext, databases: Sequence[Database]) -> None:
+    def backup(
+        self, context: BackupContext, databases: Sequence[Database]
+    ) -> list[Database]:
         """
         Backup database objects metadata.
         """
-        for db in databases:
-            self._backup_database(context, db)
-
+        backed_up_databases = [
+            db for db in databases if self._backup_database(context, db)
+        ]
         context.backup_layout.wait()
+        return backed_up_databases
 
     @staticmethod
     def restore(
@@ -151,19 +154,21 @@ class DatabaseBackup(BackupManager):
                         raise
 
     @staticmethod
-    def _backup_database(context: BackupContext, db: Database) -> None:
+    def _backup_database(context: BackupContext, db: Database) -> bool:
         """
         Backup database.
         """
         logging.debug('Performing database backup for "{}"', db.name)
 
         if not db.has_embedded_metadata():
-            context.backup_layout.upload_database_create_statement(
+            if not context.backup_layout.upload_database_create_statement(
                 context.backup_meta, db
-            )
+            ):
+                return False
 
         context.backup_meta.add_database(db)
         context.backup_layout.upload_backup_metadata(context.backup_meta)
+        return True
 
     @staticmethod
     def _sync_replicated_database_with_retries(
