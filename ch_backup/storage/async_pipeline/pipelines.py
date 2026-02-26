@@ -8,6 +8,7 @@ from typing import Any, AnyStr, BinaryIO, List, Optional, Sequence, Union
 
 from ch_backup import logging
 from ch_backup.calculators import (
+    calc_aligned_data_size,
     calc_aligned_files_size,
     calc_aligned_files_size_scan,
     calc_encrypted_size,
@@ -35,6 +36,41 @@ def upload_data_pipeline(
     if encrypt:
         builder.build_encrypt_stage()
         estimated_size = _calc_encrypted_size(config, estimated_size)
+    builder.build_uploading_stage(remote_path, estimated_size)
+
+    run(builder.pipeline())
+
+
+def upload_data_tarball_pipeline(
+    config: dict,
+    file_names: List[str],
+    data_list: List[AnyStr],
+    remote_path: str,
+    encrypt: bool,
+    compress: bool,
+) -> None:
+    """
+    Entrypoint of upload data tarball pipeline.
+    Accepts list of file names and corresponding data (as bytes or strings).
+    """
+    assert len(file_names) == len(data_list)
+
+    builder = PipelineBuilder(config)
+
+    for i, data in enumerate(data_list):
+        if isinstance(data, str):
+            data_list[i] = data.encode('utf-8', errors="surrogateescape")
+
+    estimated_size = calc_aligned_data_size(data_list, alignment=BLOCKSIZE)
+    estimated_size = calc_tarball_size(file_names, estimated_size)
+    builder.build_read_data_tarball_stage(file_names, data_list)
+    if compress:
+        builder.build_compress_stage()
+    if encrypt:
+        builder.build_encrypt_stage()
+        estimated_size = _calc_encrypted_size(config, estimated_size)
+    # Assuming actual size after compression is not larger than estimated_size
+    # If it is not, number of chunks may exceed the maximum allowed count and upload will fail
     builder.build_uploading_stage(remote_path, estimated_size)
 
     run(builder.pipeline())
