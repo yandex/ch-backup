@@ -145,39 +145,66 @@ class TableBackup(BackupManager):
                 )
             )
 
+            create_statements_to_backup = []
+
             # Create shadow/increment.txt if not exists manually to avoid
             # race condition with parallel freeze
             context.ch_ctl.create_shadow_increment()
-            with ThreadExecPool(
-                multiprocessing_config.get("freeze_threads", 1)
-            ) as pool:
-                for table in tables_:
-                    pool.submit(
-                        f'Freeze table "{table.database}"."{table.name}"',
-                        TableBackup._freeze_table,
-                        context,
-                        db,
-                        table,
-                        backup_name,
-                        schema_only,
-                        multiprocessing_config.get(
-                            "parallelize_freeze_in_clickhouse", False
-                        ),
-                        multiprocessing_config.get("freeze_partition_threads", 0),
-                        multiprocessing_config.get("freeze_table_query_max_threads", 0),
-                    )
-
-                for freezed_table in pool.as_completed(keep_going=False):
-                    if freezed_table is not None:
-                        self._backup_freezed_table(
+            try:
+                with ThreadExecPool(
+                    multiprocessing_config.get("freeze_threads", 1)
+                ) as pool:
+                    for table in tables_:
+                        pool.submit(
+                            f'Freeze table "{table.database}"."{table.name}"',
+                            TableBackup._freeze_table,
                             context,
                             db,
-                            freezed_table,
+                            table,
                             backup_name,
                             schema_only,
-                            change_times,
+                            multiprocessing_config.get(
+                                "parallelize_freeze_in_clickhouse", False
+                            ),
+                            multiprocessing_config.get("freeze_partition_threads", 0),
+                            multiprocessing_config.get(
+                                "freeze_table_query_max_threads", 0
+                            ),
                         )
-                        self._backup_cloud_storage_metadata(context, freezed_table)
+
+                    for freezed_table in pool.as_completed(keep_going=False):
+                        if freezed_table is not None:
+                            if self._check_metadata_change_time(
+                                context,
+                                freezed_table,
+                                backup_name,
+                                change_times,
+                            ):
+                                create_statements_to_backup.append(
+                                    (freezed_table.name, freezed_table.create_statement)
+                                )
+                                context.backup_meta.add_table(
+                                    TableMetadata(
+                                        table.database,
+                                        table.name,
+                                        table.engine,
+                                        table.uuid,
+                                    )
+                                )
+                                if not schema_only:
+                                    self._backup_frozen_table_data(
+                                        context,
+                                        freezed_table,
+                                        backup_name,
+                                    )
+                                    self._backup_cloud_storage_metadata(
+                                        context, freezed_table
+                                    )
+            finally:
+                if create_statements_to_backup:
+                    context.backup_layout.upload_create_statements(
+                        context.backup_meta, db, create_statements_to_backup
+                    )
 
             context.backup_layout.wait()
             context.ch_ctl.remove_freezed_data()
@@ -393,41 +420,27 @@ class TableBackup(BackupManager):
                 keep_going=keep_going,
             )
 
-    # pylint: disable=too-many-positional-arguments
-    def _backup_freezed_table(
+    def _check_metadata_change_time(
         self,
         context: BackupContext,
-        db: Database,
         table: Table,
         backup_name: str,
-        schema_only: bool,
         change_times: Dict[str, TableMetadataChangeTime],
-    ) -> None:
-        # Check if table metadata was updated
+    ) -> bool:
+        """
+        Check if table metadata was updated.
+        """
         new_change_time = self._get_change_time(table.metadata_path)
-        if new_change_time is None or change_times[table.name] != new_change_time:
-            logging.warning(
-                'Skipping table backup for "{}"."{}". The metadata file was updated or removed during backup',
-                table.database,
-                table.name,
-            )
-            context.ch_ctl.remove_freezed_data(backup_name, table)
-            return
+        if new_change_time is not None and change_times[table.name] == new_change_time:
+            return True
 
-        logging.debug(
-            'Performing table backup for "{}"."{}"', table.database, table.name
+        logging.warning(
+            'Skipping table backup for "{}"."{}". The metadata file was updated or removed during backup',
+            table.database,
+            table.name,
         )
-        # Add table metadata to backup metadata
-        context.backup_meta.add_table(
-            TableMetadata(table.database, table.name, table.engine, table.uuid)
-        )
-        # Backup table metadata
-        context.backup_layout.upload_table_create_statement(
-            context.backup_meta, db, table
-        )
-        # Backup table data
-        if not schema_only:
-            self._backup_frozen_table_data(context, table, backup_name)
+        context.ch_ctl.remove_freezed_data(backup_name, table)
+        return False
 
     def _backup_frozen_table_data(
         self,
@@ -472,6 +485,10 @@ class TableBackup(BackupManager):
                         ),
                     )
             frozen_parts.clear()
+
+        logging.debug(
+            'Performing table backup for "{}"."{}"', table.database, table.name
+        )
 
         if not table.is_merge_tree():
             logging.info(

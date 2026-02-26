@@ -26,6 +26,7 @@ from ch_backup.util import dir_is_empty, escape_metadata_file_name
 BACKUP_META_FNAME = "backup_struct.json"
 BACKUP_LIGHT_META_FNAME = "backup_light_struct.json"
 ACCESS_CONTROL_FNAME = "access_control.tar"
+DATABASES_FNAME = "databases.tar"
 COMPRESSED_EXTENSION = ".gz"
 
 
@@ -64,63 +65,86 @@ class BackupLayout:
         except Exception as e:
             raise StorageError("Failed to upload backup metadata") from e
 
-    def upload_database_create_statement(
-        self, backup_meta: BackupMetadata, db: Database
-    ) -> bool:
+    def upload_database_create_statements(
+        self, backup_meta: BackupMetadata, databases: list[Database]
+    ) -> list[Database]:
         """
-        Upload database create statement from metadata file.
+        Upload database create statements from metadata files as a tarball.
         """
-        local_path = os.path.join(
-            self._metadata_path, f"{escape_metadata_file_name(db.name)}.sql"
-        )
-        try:
-            create_statement = Path(local_path).read_text("utf-8")
-        except OSError as e:
-            logging.warning(
-                f'Cannot load a create statement of the database "{db.name}". Skipping it. Reason: {str(e)}',
-            )
-            return False
+        file_names: list[str] = []
+        data_list: list[str] = []
+        backed_up_databases: list[Database] = []
 
-        remote_path = _db_metadata_path(self.get_backup_path(backup_meta.name), db.name)
+        for db in databases:
+            local_path = os.path.join(
+                self._metadata_path, f"{escape_metadata_file_name(db.name)}.sql"
+            )
+            try:
+                create_statement = Path(local_path).read_text("utf-8")
+                file_names.append(db.name)
+                data_list.append(create_statement)
+                backed_up_databases.append(db)
+            except OSError as e:
+                logging.warning(
+                    f'Cannot load a create statement of the database "{db.name}". Skipping it. Reason: {str(e)}',
+                )
+
+        if not file_names:
+            return backed_up_databases
+
+        remote_path = _db_metadata_path_tar(self.get_backup_path(backup_meta.name))
         try:
             logging.debug(
-                'Uploading metadata (create statement) for database "{}"', db.name
+                "Uploading metadata (create statements) for {} databases",
+                len(file_names),
             )
-            self._storage_loader.upload_data(
-                create_statement,
+            self._storage_loader.upload_data_tarball(
+                file_names=file_names,
+                data_list=data_list,
                 remote_path=remote_path,
                 encryption=backup_meta.encrypted,
             )
-            return True
         except Exception as e:
             msg = f"Failed to create async upload of {remote_path}"
             raise StorageError(msg) from e
 
-    def upload_table_create_statement(
+        return backed_up_databases
+
+    def upload_create_statements(
         self,
         backup_meta: BackupMetadata,
         db: Database,
-        table: Table,
+        create_statements: list[tuple[str, str]],
     ) -> None:
         """
-        Upload table create statement.
+        Upload table create statements as a tarball.
+        Each tuple in create_statements contains (table_name, create_statement).
         """
-        assert db.metadata_path is not None
+        if not create_statements:
+            return
 
-        remote_path = _table_metadata_path(
-            self.get_backup_path(backup_meta.name), db.name, table.name
+        file_names: list[str] = []
+        data_list: list[str] = []
+
+        for table_name, create_statement in create_statements:
+            file_names.append(table_name)
+            data_list.append(create_statement)
+
+        remote_path = _table_metadata_path_tar(
+            self.get_backup_path(backup_meta.name), db.name
         )
         try:
             logging.debug(
-                'Uploading metadata (create statement) for table "{}"."{}"',
+                'Uploading metadata (create statements) for {} tables in database "{}"',
+                len(file_names),
                 db.name,
-                table.name,
             )
-            self._storage_loader.upload_data(
-                table.create_statement,
-                remote_path,
-                is_async=True,
+            self._storage_loader.upload_data_tarball(
+                file_names=file_names,
+                data_list=data_list,
+                remote_path=remote_path,
                 encryption=backup_meta.encrypted,
+                is_async=True,
             )
         except Exception as e:
             msg = f"Failed to create async upload of {remote_path}"
@@ -774,6 +798,13 @@ def _db_metadata_path(backup_path: str, db_name: str) -> str:
     return os.path.join(backup_path, "metadata", _quote(db_name) + ".sql")
 
 
+def _db_metadata_path_tar(backup_path: str) -> str:
+    """
+    Return S3 path to databases metadata.
+    """
+    return os.path.join(backup_path, "metadata", DATABASES_FNAME)
+
+
 def _table_metadata_path(backup_path: str, db_name: str, table_name: str) -> str:
     """
     Return S3 path to table metadata.
@@ -781,6 +812,13 @@ def _table_metadata_path(backup_path: str, db_name: str, table_name: str) -> str
     return os.path.join(
         backup_path, "metadata", _quote(db_name), _quote(table_name) + ".sql"
     )
+
+
+def _table_metadata_path_tar(backup_path: str, db_name: str) -> str:
+    """
+    Return S3 path to tables metadata tarball for a database.
+    """
+    return os.path.join(backup_path, "metadata", f"{_quote(db_name)}.tar")
 
 
 def _named_collections_data_path(backup_path: str, nc_name: str) -> str:

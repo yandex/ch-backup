@@ -16,6 +16,7 @@ from ch_backup.storage.async_pipeline.pipelines import (
     download_file_pipeline,
     download_files_pipeline,
     upload_data_pipeline,
+    upload_data_tarball_pipeline,
     upload_file_pipeline,
     upload_files_tarball_pipeline,
     upload_files_tarball_scan_pipeline,
@@ -50,6 +51,31 @@ class PipelineExecutor:
 
         pipeline = partial(
             upload_data_pipeline, self._config, data, remote_path, encryption
+        )
+        self._exec_pipeline(job_id, pipeline, is_async)
+
+    def upload_data_tarball(
+        self,
+        file_names: List[str],
+        data_list: List[AnyStr],
+        remote_path: str,
+        is_async: bool,
+        encryption: bool,
+        compression: bool,
+    ) -> None:
+        """
+        Upload given data as tarball with specified file names.
+        """
+        job_id = self._make_job_id(current_func_name(), remote_path)
+
+        pipeline = partial(
+            upload_data_tarball_pipeline,
+            self._config,
+            file_names,
+            data_list,
+            remote_path,
+            encryption,
+            compression,
         )
         self._exec_pipeline(job_id, pipeline, is_async)
 
