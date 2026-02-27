@@ -258,6 +258,21 @@ Feature: Backup & Restore
     `ключ` Int32
     """
 
+  Scenario: Backup & Restore with regex special characters in table name
+    When we drop all databases at clickhouse01
+    And we drop all databases at clickhouse02
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.`[10-03-2025]` (n Int32)
+      ENGINE = MergeTree()
+      ORDER BY n;
+    INSERT INTO test_db.`[10-03-2025]` SELECT number FROM system.numbers LIMIT 50;
+    """
+    When we create clickhouse01 clickhouse backup
+    And we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
   Scenario: Restore of a backup with a corrupted data part
     When we drop all databases at clickhouse01
     And we drop all databases at clickhouse02
