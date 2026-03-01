@@ -10,8 +10,8 @@ from .filesystem.chunking_stage import ChunkingStage
 from .filesystem.collect_data_stage import CollectDataStage
 from .filesystem.delete_files_stage import DeleteFilesScanStage, DeleteFilesStage
 from .filesystem.read_file_stage import ReadFileStage
-from .filesystem.read_data_tarball_stage import ReadDataTarballStage
 from .filesystem.read_files_tarball_stage import (
+    ReadDataTarballStage,
     ReadFilesTarballScanStage,
     ReadFilesTarballStage,
 )
