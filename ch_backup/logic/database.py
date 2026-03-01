@@ -41,7 +41,7 @@ class DatabaseBackup(BackupManager):
         """
         db_with_create_statements = []
         db_with_embedded_metadata = []
-        
+
         for db in databases:
             if db.has_embedded_metadata():
                 db_with_embedded_metadata.append(db)
@@ -50,8 +50,10 @@ class DatabaseBackup(BackupManager):
 
         backed_up_databases = []
         if db_with_create_statements:
-            backed_up_databases = context.backup_layout.upload_database_create_statements(
-                context.backup_meta, db_with_create_statements
+            backed_up_databases = (
+                context.backup_layout.upload_database_create_statements(
+                    context.backup_meta, db_with_create_statements
+                )
             )
 
         context.backup_layout.wait()

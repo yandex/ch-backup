@@ -44,7 +44,7 @@ class StorageLoader:
     def upload_data_tarball(
         self,
         file_names: List[str],
-        data_list: List[str],
+        data_list: List[bytes],
         remote_path: str,
         is_async: bool = False,
         encryption: bool = False,

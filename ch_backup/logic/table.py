@@ -185,10 +185,10 @@ class TableBackup(BackupManager):
                                 )
                                 context.backup_meta.add_table(
                                     TableMetadata(
-                                        table.database,
-                                        table.name,
-                                        table.engine,
-                                        table.uuid,
+                                        freezed_table.database,
+                                        freezed_table.name,
+                                        freezed_table.engine,
+                                        freezed_table.uuid,
                                     )
                                 )
                                 if not schema_only:

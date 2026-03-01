@@ -41,25 +41,22 @@ def upload_data_pipeline(
     run(builder.pipeline())
 
 
+# pylint: disable=too-many-positional-arguments
 def upload_data_tarball_pipeline(
     config: dict,
     file_names: List[str],
-    data_list: List[AnyStr],
+    data_list: List[bytes],
     remote_path: str,
     encrypt: bool,
     compress: bool,
 ) -> None:
     """
     Entrypoint of upload data tarball pipeline.
-    Accepts list of file names and corresponding data (as bytes or strings).
+    Accepts list of file names and corresponding data.
     """
     assert len(file_names) == len(data_list)
 
     builder = PipelineBuilder(config)
-
-    for i, data in enumerate(data_list):
-        if isinstance(data, str):
-            data_list[i] = data.encode('utf-8', errors="surrogateescape")
 
     estimated_size = calc_aligned_data_size(data_list, alignment=BLOCKSIZE)
     estimated_size = calc_tarball_size(file_names, estimated_size)

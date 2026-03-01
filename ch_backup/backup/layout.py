@@ -72,7 +72,7 @@ class BackupLayout:
         Upload database create statements from metadata files as a tarball.
         """
         file_names: list[str] = []
-        data_list: list[str] = []
+        data_list: list[bytes] = []
         backed_up_databases: list[Database] = []
 
         for db in databases:
@@ -80,9 +80,9 @@ class BackupLayout:
                 self._metadata_path, f"{escape_metadata_file_name(db.name)}.sql"
             )
             try:
-                create_statement = Path(local_path).read_text("utf-8")
-                file_names.append(db.name)
+                create_statement = Path(local_path).read_bytes()
                 data_list.append(create_statement)
+                file_names.append(db.name)
                 backed_up_databases.append(db)
             except OSError as e:
                 logging.warning(
@@ -124,11 +124,11 @@ class BackupLayout:
             return
 
         file_names: list[str] = []
-        data_list: list[str] = []
+        data_list: list[bytes] = []
 
         for table_name, create_statement in create_statements:
             file_names.append(table_name)
-            data_list.append(create_statement)
+            data_list.append(create_statement.encode("utf-8", errors="surrogateescape"))
 
         remote_path = _table_metadata_path_tar(
             self.get_backup_path(backup_meta.name), db.name

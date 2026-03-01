@@ -54,10 +54,11 @@ class PipelineExecutor:
         )
         self._exec_pipeline(job_id, pipeline, is_async)
 
+    # pylint: disable=too-many-positional-arguments
     def upload_data_tarball(
         self,
         file_names: List[str],
-        data_list: List[AnyStr],
+        data_list: List[bytes],
         remote_path: str,
         is_async: bool,
         encryption: bool,
