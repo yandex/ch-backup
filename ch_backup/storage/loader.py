@@ -166,6 +166,25 @@ class StorageLoader:
         )
         return data.decode(encoding) if encoding else data
 
+    def download_data_tarball(
+        self,
+        remote_path: str,
+        is_async: bool = False,
+        encryption: bool = False,
+        compression: bool = False,
+    ) -> list[tuple[str, bytes]]:
+        """
+        Download file from storage and return its content.
+        """
+        # pylint: disable=no-member
+        data = self._ploader.download_data_tarball(
+            remote_path,
+            is_async=is_async,
+            encryption=encryption,
+            compression=compression,
+        )
+        return data
+
     def download_file(
         self,
         remote_path: str,

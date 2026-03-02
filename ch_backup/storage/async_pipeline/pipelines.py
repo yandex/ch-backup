@@ -4,7 +4,17 @@ Free functions that create and run pipelines. Can be started in multiprocessing 
 
 from pathlib import Path
 from tarfile import BLOCKSIZE
-from typing import Any, AnyStr, BinaryIO, List, Optional, Sequence, Union
+from typing import (
+    Any,
+    AnyStr,
+    BinaryIO,
+    Iterator,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 from ch_backup import logging
 from ch_backup.calculators import (
@@ -181,6 +191,28 @@ def download_data_pipeline(config: dict, remote_path: str, decrypt: bool) -> byt
     return run_and_return_first(builder.pipeline())
 
 
+def download_data_tarball_pipeline(
+    config: dict,
+    remote_path: str,
+    decrypt: bool,
+    decompress: bool,
+) -> List[Tuple[str, bytes]]:
+    """
+    Entrypoint of download data tarball pipeline.
+    Downloads tarball and unpacks it into list of (filename, data) pairs.
+    """
+    builder = PipelineBuilder(config)
+
+    builder.build_download_storage_stage(remote_path)
+    if decrypt:
+        builder.build_decrypt_stage()
+    if decompress:
+        builder.build_decompress_stage()
+    builder.build_unpack_data_tarball_stage()
+
+    return run_and_collect_all(builder.pipeline())
+
+
 def download_file_pipeline(
     config: dict,
     remote_path: str,
@@ -262,6 +294,22 @@ def run_and_return_first(pipeline: PypelnStage) -> Any:
     exhaust_iterator(itr)
 
     return result
+
+
+def run_and_collect_all(pipeline: PypelnStage) -> List[Any]:
+    """
+    Run pipeline until it is complete and collect all results.
+    """
+    itr = iter(pipeline)
+    results: list = []
+
+    for item in itr:
+        if isinstance(item, Iterator):
+            results.extend(item)
+        else:
+            results.append(item)
+
+    return results
 
 
 def _calc_encrypted_size(config: dict, data_size: int) -> int:

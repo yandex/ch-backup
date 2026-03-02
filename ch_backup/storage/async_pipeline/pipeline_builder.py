@@ -34,6 +34,7 @@ from ch_backup.storage.async_pipeline.stages import (
     ReadFilesTarballStage,
     StartMultipartUploadStage,
     StorageUploadingStage,
+    UnpackTarballStage,
     WriteFilesStage,
     WriteFileStage,
 )
@@ -320,6 +321,21 @@ class PipelineBuilder:
             thread_map(
                 WriteFilesStage(stage_config, dir_path, buffer_size), maxsize=queue_size
             ),
+        )
+        return self
+
+    def build_unpack_data_tarball_stage(self) -> "PipelineBuilder":
+        """
+        Build unpacking data tarball stage.
+        """
+        stage_config = self._config[WriteFilesStage.stype]
+        buffer_size = stage_config["buffer_size"]
+        queue_size = stage_config["queue_size"]
+
+        self.append(
+            thread_map(
+                UnpackTarballStage(stage_config, buffer_size), maxsize=queue_size
+            )
         )
         return self
 

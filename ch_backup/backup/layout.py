@@ -30,6 +30,7 @@ DATABASES_FNAME = "databases.tar"
 COMPRESSED_EXTENSION = ".gz"
 
 
+# pylint: disable=too-many-public-methods
 class BackupLayout:
     """
     Class responsible for management of backup data layout.
@@ -423,6 +424,29 @@ class BackupLayout:
             remote_path, encryption=backup_meta.encrypted
         )
 
+    def get_database_create_statements(
+        self, backup_meta: BackupMetadata, db_names: list[str]
+    ) -> list[tuple[str, str]]:
+        """
+        Download and return database create statements.
+        """
+        remote_path = _db_metadata_path_tar(backup_meta.path)
+        if not self._storage_loader.path_exists(remote_path):
+            logging.debug(
+                f"File {remote_path} doesn't exist, fallback to old metadata style"
+            )
+            return [
+                (db_name, self.get_database_create_statement(backup_meta, db_name))
+                for db_name in db_names
+            ]
+
+        data: list[tuple[str, Any]] = self._storage_loader.download_data_tarball(
+            remote_path, encryption=backup_meta.encrypted
+        )
+        for i, (name, sql) in enumerate(data):
+            data[i] = (name, sql.decode("utf-8", errors="surrogateescape"))
+        return data
+
     def write_database_metadata(self, db: Database, db_sql: str) -> None:
         """
         Write db sql to metadata file to prepare ATTACH query.
@@ -444,6 +468,34 @@ class BackupLayout:
             remote_path, encryption=backup_meta.encrypted, encoding=None
         )
         return data.decode("utf-8", errors="surrogateescape")
+
+    def get_table_create_statements(
+        self, backup_meta: BackupMetadata, db_name: str, table_names: list[str]
+    ) -> list[tuple[str, str]]:
+        """
+        Download and return table create statements.
+        """
+        remote_path = _table_metadata_path_tar(backup_meta.path, db_name)
+        if not self._storage_loader.path_exists(remote_path):
+            logging.debug(
+                f"File {remote_path} doesn't exist, fallback to old metadata style"
+            )
+            return [
+                (
+                    table_name,
+                    self.get_table_create_statement(backup_meta, db_name, table_name),
+                )
+                for table_name in table_names
+            ]
+
+        data: list[tuple[str, Any]] = self._storage_loader.download_data_tarball(
+            remote_path,
+            encryption=backup_meta.encrypted,
+            compression=False,
+        )
+        for i, (name, sql) in enumerate(data):
+            data[i] = (name, sql.decode("utf-8", errors="surrogateescape"))
+        return data
 
     def download_access_control_file(
         self, local_path: str, backup_name: str, file_name: str

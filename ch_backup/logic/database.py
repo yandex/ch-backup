@@ -103,14 +103,19 @@ class DatabaseBackup(BackupManager):
             ]
             metadata_cleaner.clean_database_metadata(replicated_databases)
 
+        logging.debug("Downloading database create statements")
+        create_statements = dict(
+            context.backup_layout.get_database_create_statements(
+                context.backup_meta, list(databases_to_restore.keys())
+            )
+        )
+
         logging.info("Restoring databases: {}", ", ".join(databases_to_restore.keys()))
         for db in databases_to_restore.values():
             if db.has_embedded_metadata():
                 db_sql = embedded_schema_db_sql(db)
             else:
-                db_sql = context.backup_layout.get_database_create_statement(
-                    context.backup_meta, db.name
-                )
+                db_sql = create_statements[db.name]
             try:
                 if db.is_atomic() or db.has_embedded_metadata():
                     logging.debug(f"Going to restore database `{db.name}` using CREATE")

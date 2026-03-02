@@ -366,8 +366,8 @@ class TableBackup(BackupManager):
             )
 
         logging.debug("Retrieving tables from tables metadata")
-        tables_to_preprocess: List[Table] = list(
-            map(lambda meta: self._get_table_from_meta(context, meta), tables_meta)
+        tables_to_preprocess: List[Table] = self._get_tables_from_meta(
+            context, tables_meta
         )
         tables_to_restore = self._preprocess_tables_to_restore(
             context,
@@ -719,20 +719,35 @@ class TableBackup(BackupManager):
         return result
 
     @staticmethod
-    def _get_table_from_meta(context: BackupContext, meta: TableMetadata) -> Table:
-        return Table(
-            database=meta.database,
-            name=meta.name,
-            engine=meta.engine,
-            # TODO: set disks and data_paths
-            disks=[],
-            data_paths=[],
-            metadata_path="",
-            uuid=meta.uuid,
-            create_statement=context.backup_layout.get_table_create_statement(
-                context.backup_meta, meta.database, meta.name
-            ),
-        )
+    def _get_tables_from_meta(
+        context: BackupContext, meta: list[TableMetadata]
+    ) -> list[Table]:
+        databases_to_download: set[str] = set()
+        tables: dict[tuple[str, str], Table] = {}
+        for table_meta in meta:
+            databases_to_download.add(table_meta.database)
+            tables[(table_meta.database, table_meta.name)] = Table(
+                database=table_meta.database,
+                name=table_meta.name,
+                engine=table_meta.engine,
+                # TODO: set disks and data_paths
+                disks=[],
+                data_paths=[],
+                metadata_path="",
+                uuid=table_meta.uuid,
+                create_statement="",
+            )
+
+        for database in databases_to_download:
+            logging.debug(f"Downloading create statements for database {database}")
+            statements = context.backup_layout.get_table_create_statements(
+                context.backup_meta, database, [meta.name for meta in meta]
+            )
+            for table, create_statement in statements:
+                if (database, table) in tables:
+                    tables[(database, table)].create_statement = create_statement
+
+        return list(tables.values())
 
     # pylint: disable=too-many-positional-arguments
     def _restore_tables(

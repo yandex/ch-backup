@@ -4,7 +4,17 @@ New pipelines executor module.
 
 from functools import partial
 from pathlib import Path
-from typing import Any, AnyStr, BinaryIO, Callable, List, Optional, Sequence, Union
+from typing import (
+    Any,
+    AnyStr,
+    BinaryIO,
+    Callable,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 from ch_backup.profile import profile
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
@@ -13,6 +23,7 @@ from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
 from ch_backup.storage.async_pipeline.pipelines import (
     delete_multiple_storage_pipeline,
     download_data_pipeline,
+    download_data_tarball_pipeline,
     download_file_pipeline,
     download_files_pipeline,
     upload_data_pipeline,
@@ -179,6 +190,27 @@ class PipelineExecutor:
         job_id = self._make_job_id(current_func_name(), remote_path)
         pipeline = partial(
             download_data_pipeline, self._config, remote_path, encryption
+        )
+
+        return self._exec_pipeline(job_id, pipeline, is_async)
+
+    def download_data_tarball(
+        self,
+        remote_path: str,
+        is_async: bool,
+        encryption: bool,
+        compression: bool,
+    ) -> List[Tuple[str, bytes]]:
+        """
+        Download tarball from storage and return list of (filename, data) pairs.
+        """
+        job_id = self._make_job_id(current_func_name(), remote_path)
+        pipeline = partial(
+            download_data_tarball_pipeline,
+            self._config,
+            remote_path,
+            encryption,
+            compression,
         )
 
         return self._exec_pipeline(job_id, pipeline, is_async)
