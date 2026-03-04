@@ -720,11 +720,11 @@ class TableBackup(BackupManager):
 
     @staticmethod
     def _get_tables_from_meta(
-        context: BackupContext, meta: list[TableMetadata]
+        context: BackupContext, tables_meta: list[TableMetadata]
     ) -> list[Table]:
         databases_to_download: set[str] = set()
         tables: dict[tuple[str, str], Table] = {}
-        for table_meta in meta:
+        for table_meta in tables_meta:
             databases_to_download.add(table_meta.database)
             tables[(table_meta.database, table_meta.name)] = Table(
                 database=table_meta.database,
@@ -741,7 +741,9 @@ class TableBackup(BackupManager):
         for database in databases_to_download:
             logging.debug(f"Downloading create statements for database {database}")
             statements = context.backup_layout.get_table_create_statements(
-                context.backup_meta, database, [meta.name for meta in meta]
+                context.backup_meta,
+                database,
+                [table.name for table in tables_meta if table.database == database],
             )
             for table, create_statement in statements:
                 if (database, table) in tables:
