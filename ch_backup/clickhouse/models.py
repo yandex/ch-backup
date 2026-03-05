@@ -57,6 +57,8 @@ class Table(SimpleNamespace):
     ClickHouse table.
     """
 
+    ZERO_UUID = "00000000-0000-0000-0000-000000000000"
+
     # pylint: disable=too-many-positional-arguments
     def __init__(
         self,
@@ -74,7 +76,7 @@ class Table(SimpleNamespace):
         self.name = name
         self.engine = engine
         self.create_statement = create_statement
-        self.uuid = uuid
+        self._uuid = uuid
         self.paths_with_disks = self._map_paths_to_disks(disks, data_paths)
         self.metadata_path = metadata_path
 
@@ -82,6 +84,22 @@ class Table(SimpleNamespace):
         if self.paths_with_disks:
             path, disk = self.paths_with_disks[0]
             self.path_on_disk = os.path.relpath(path, disk.path)
+
+    @property
+    def uuid(self) -> Optional[str]:
+        """
+        Return table UUID or None if it's a zero UUID (for Ordinary databases).
+        """
+        if self._uuid == self.ZERO_UUID:
+            return None
+        return self._uuid
+
+    @uuid.setter
+    def uuid(self, value: Optional[str]) -> None:
+        """
+        Set table UUID.
+        """
+        self._uuid = value
 
     @classmethod
     def make_dummy(cls, database: str, name: str, uuid: str = None) -> "Table":
