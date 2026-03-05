@@ -67,7 +67,7 @@ def rewrite_table_schema(
         _add_uuid(table, inner_uuid)
 
     table.create_statement = re.sub(
-        f"(?P<create>CREATE|ATTACH)\\s+(?P<type>TABLE|(\\S+\\s+)?VIEW|DICTIONARY)\\s+(_|`?{escape(table.name)}`?)\\s+",
+        f"(?P<create>CREATE|ATTACH)\\s+(?P<type>TABLE|(\\S+\\s+)?VIEW|DICTIONARY)\\s+(_|`?{escape(table.name, regex=True)}`?)\\s+",
         f"\\g<create> \\g<type> `{escape(table.database)}`.`{escape(table.name)}` ",
         table.create_statement,
     )
@@ -118,7 +118,7 @@ def _add_uuid(table: Table, inner_uuid: str = None) -> None:
         inner_uuid_clause = f"TO INNER UUID '{inner_uuid}'" if inner_uuid else ""
         table.create_statement = re.sub(
             f"^(?P<statement>CREATE|ATTACH) (?P<view_type>((MATERIALIZED|LIVE) )?VIEW) "
-            f"(?P<view_name>`?{table.database}`?.`?{table.name}`?) ",
+            f"(?P<view_name>`?{escape(table.database, regex=True)}`?.`?{escape(table.name, regex=True)}`?) ",
             f"\\g<statement> \\g<view_type> \\g<view_name> UUID '{table.uuid}' {inner_uuid_clause} ",
             table.create_statement,
         )
