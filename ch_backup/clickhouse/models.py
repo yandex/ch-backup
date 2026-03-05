@@ -94,6 +94,13 @@ class Table(SimpleNamespace):
             return None
         return self._uuid
 
+    @uuid.setter
+    def uuid(self, value: Optional[str]) -> None:
+        """
+        Set table UUID.
+        """
+        self._uuid = value
+
     @classmethod
     def make_dummy(cls, database: str, name: str, uuid: str = None) -> "Table":
         """
