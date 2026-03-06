@@ -4,10 +4,21 @@ Free functions that create and run pipelines. Can be started in multiprocessing 
 
 from pathlib import Path
 from tarfile import BLOCKSIZE
-from typing import Any, AnyStr, BinaryIO, List, Optional, Sequence, Union
+from typing import (
+    Any,
+    AnyStr,
+    BinaryIO,
+    Iterator,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 
 from ch_backup import logging
 from ch_backup.calculators import (
+    calc_aligned_data_size,
     calc_aligned_files_size,
     calc_aligned_files_size_scan,
     calc_encrypted_size,
@@ -35,6 +46,38 @@ def upload_data_pipeline(
     if encrypt:
         builder.build_encrypt_stage()
         estimated_size = _calc_encrypted_size(config, estimated_size)
+    builder.build_uploading_stage(remote_path, estimated_size)
+
+    run(builder.pipeline())
+
+
+# pylint: disable=too-many-positional-arguments
+def upload_data_tarball_pipeline(
+    config: dict,
+    file_names: List[str],
+    data_list: List[bytes],
+    remote_path: str,
+    encrypt: bool,
+    compress: bool,
+) -> None:
+    """
+    Entrypoint of upload data tarball pipeline.
+    Accepts list of file names and corresponding data.
+    """
+    assert len(file_names) == len(data_list)
+
+    builder = PipelineBuilder(config)
+
+    estimated_size = calc_aligned_data_size(data_list, alignment=BLOCKSIZE)
+    estimated_size = calc_tarball_size(file_names, estimated_size)
+    builder.build_read_data_tarball_stage(file_names, data_list)
+    if compress:
+        builder.build_compress_stage()
+    if encrypt:
+        builder.build_encrypt_stage()
+        estimated_size = _calc_encrypted_size(config, estimated_size)
+    # Assuming actual size after compression is not larger than estimated_size
+    # If it is not, number of chunks may exceed the maximum allowed count and upload will fail
     builder.build_uploading_stage(remote_path, estimated_size)
 
     run(builder.pipeline())
@@ -148,6 +191,28 @@ def download_data_pipeline(config: dict, remote_path: str, decrypt: bool) -> byt
     return run_and_return_first(builder.pipeline())
 
 
+def download_data_tarball_pipeline(
+    config: dict,
+    remote_path: str,
+    decrypt: bool,
+    decompress: bool,
+) -> List[Tuple[str, bytes]]:
+    """
+    Entrypoint of download data tarball pipeline.
+    Downloads tarball and unpacks it into list of (filename, data) pairs.
+    """
+    builder = PipelineBuilder(config)
+
+    builder.build_download_storage_stage(remote_path)
+    if decrypt:
+        builder.build_decrypt_stage()
+    if decompress:
+        builder.build_decompress_stage()
+    builder.build_unpack_data_tarball_stage()
+
+    return run_and_collect_all(builder.pipeline())
+
+
 def download_file_pipeline(
     config: dict,
     remote_path: str,
@@ -229,6 +294,22 @@ def run_and_return_first(pipeline: PypelnStage) -> Any:
     exhaust_iterator(itr)
 
     return result
+
+
+def run_and_collect_all(pipeline: PypelnStage) -> List[Any]:
+    """
+    Run pipeline until it is complete and collect all results.
+    """
+    itr = iter(pipeline)
+    results: list = []
+
+    for item in itr:
+        if isinstance(item, Iterator):
+            results.extend(item)
+        else:
+            results.append(item)
+
+    return results
 
 
 def _calc_encrypted_size(config: dict, data_size: int) -> int:

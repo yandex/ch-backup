@@ -564,16 +564,10 @@ class ClickhouseBackup:
             self._nc_backup_manager.restore(self._context)
 
         if sources.schemas_included():
-            databases: Dict[str, Database] = {}
-            for db_name in db_names:
-                db = self._context.backup_meta.get_database(db_name)
-                # TODO For backward compatibility, remove when all backups rotated
-                if db.engine is None:
-                    db_sql = self._context.backup_layout.get_database_create_statement(
-                        self._context.backup_meta, db.name
-                    )
-                    db.set_engine_from_sql(db_sql)
-                databases[db_name] = db
+            databases: Dict[str, Database] = {
+                db_name: self._context.backup_meta.get_database(db_name)
+                for db_name in db_names
+            }
 
             metadata_cleaner: Optional[MetadataCleaner] = None
 

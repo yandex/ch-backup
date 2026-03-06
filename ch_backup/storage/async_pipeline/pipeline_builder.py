@@ -28,11 +28,13 @@ from ch_backup.storage.async_pipeline.stages import (
     DownloadStorageStage,
     EncryptStage,
     RateLimiterStage,
+    ReadDataTarballStage,
     ReadFileStage,
     ReadFilesTarballScanStage,
     ReadFilesTarballStage,
     StartMultipartUploadStage,
     StorageUploadingStage,
+    UnpackTarballStage,
     WriteFilesStage,
     WriteFileStage,
 )
@@ -146,6 +148,24 @@ class PipelineBuilder:
         self.append(
             thread_input(
                 ReadFilesTarballStage(stage_config, dir_path, file_relative_paths),
+                maxsize=queue_size,
+            )
+        )
+
+        return self
+
+    def build_read_data_tarball_stage(
+        self, file_names: List[str], data_list: List[bytes]
+    ) -> "PipelineBuilder":
+        """
+        Build reading in-memory data to tarball stage.
+        """
+        stage_config = self._config[ReadDataTarballStage.stype]
+        queue_size = stage_config["queue_size"]
+
+        self.append(
+            thread_input(
+                ReadDataTarballStage(stage_config, file_names, data_list),
                 maxsize=queue_size,
             )
         )
@@ -301,6 +321,21 @@ class PipelineBuilder:
             thread_map(
                 WriteFilesStage(stage_config, dir_path, buffer_size), maxsize=queue_size
             ),
+        )
+        return self
+
+    def build_unpack_data_tarball_stage(self) -> "PipelineBuilder":
+        """
+        Build unpacking data tarball stage.
+        """
+        stage_config = self._config[WriteFilesStage.stype]
+        buffer_size = stage_config["buffer_size"]
+        queue_size = stage_config["queue_size"]
+
+        self.append(
+            thread_map(
+                UnpackTarballStage(stage_config, buffer_size), maxsize=queue_size
+            )
         )
         return self
 

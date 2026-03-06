@@ -41,6 +41,20 @@ def calc_aligned_files_size(files: List[Path], alignment: int = 1) -> int:
     return size
 
 
+def calc_aligned_data_size(data_list: List[bytes], alignment: int = 1) -> int:
+    """
+    Calculate total size of data with padding added after each element.
+    """
+    total_size = 0
+    for data in data_list:
+        data_size = len(data)
+        remainder = data_size % alignment
+        if remainder > 0:
+            data_size += alignment - remainder
+        total_size += data_size
+    return total_size
+
+
 def calc_tarball_size_scan(
     dir_path: Path,
     aligned_files_size: int,

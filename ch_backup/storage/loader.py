@@ -41,6 +41,31 @@ class StorageLoader:
         )
 
     # pylint: disable=too-many-positional-arguments
+    def upload_data_tarball(
+        self,
+        file_names: List[str],
+        data_list: List[bytes],
+        remote_path: str,
+        is_async: bool = False,
+        encryption: bool = False,
+        compression: bool = False,
+    ) -> str:
+        """
+        Upload data as tarball with specified file names.
+
+        Each element in data_list corresponds to a file in file_names.
+        """
+        self._ploader.upload_data_tarball(
+            file_names=file_names,
+            data_list=data_list,
+            remote_path=remote_path,
+            is_async=is_async,
+            encryption=encryption,
+            compression=compression,
+        )
+        return remote_path
+
+    # pylint: disable=too-many-positional-arguments
     def upload_file(
         self,
         local_path,
@@ -140,6 +165,25 @@ class StorageLoader:
             remote_path, is_async=is_async, encryption=encryption
         )
         return data.decode(encoding) if encoding else data
+
+    def download_data_tarball(
+        self,
+        remote_path: str,
+        is_async: bool = False,
+        encryption: bool = False,
+        compression: bool = False,
+    ) -> list[tuple[str, bytes]]:
+        """
+        Download file from storage and return its content.
+        """
+        # pylint: disable=no-member
+        data = self._ploader.download_data_tarball(
+            remote_path,
+            is_async=is_async,
+            encryption=encryption,
+            compression=compression,
+        )
+        return data
 
     def download_file(
         self,

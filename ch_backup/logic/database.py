@@ -39,11 +39,31 @@ class DatabaseBackup(BackupManager):
         """
         Backup database objects metadata.
         """
-        backed_up_databases = [
-            db for db in databases if self._backup_database(context, db)
-        ]
+        db_with_create_statements = []
+        db_with_embedded_metadata = []
+
+        for db in databases:
+            if db.has_embedded_metadata():
+                db_with_embedded_metadata.append(db)
+            else:
+                db_with_create_statements.append(db)
+
+        backed_up_databases = []
+        if db_with_create_statements:
+            backed_up_databases = (
+                context.backup_layout.upload_database_create_statements(
+                    context.backup_meta, db_with_create_statements
+                )
+            )
+
         context.backup_layout.wait()
-        return backed_up_databases
+
+        for db in backed_up_databases + db_with_embedded_metadata:
+            context.backup_meta.add_database(db)
+
+        context.backup_layout.upload_backup_metadata(context.backup_meta)
+
+        return backed_up_databases + db_with_embedded_metadata
 
     @staticmethod
     def restore(
@@ -83,14 +103,19 @@ class DatabaseBackup(BackupManager):
             ]
             metadata_cleaner.clean_database_metadata(replicated_databases)
 
+        logging.debug("Downloading database create statements")
+        create_statements = dict(
+            context.backup_layout.get_database_create_statements(
+                context.backup_meta, list(databases_to_restore.keys())
+            )
+        )
+
         logging.info("Restoring databases: {}", ", ".join(databases_to_restore.keys()))
         for db in databases_to_restore.values():
             if db.has_embedded_metadata():
                 db_sql = embedded_schema_db_sql(db)
             else:
-                db_sql = context.backup_layout.get_database_create_statement(
-                    context.backup_meta, db.name
-                )
+                db_sql = create_statements[db.name]
             try:
                 if db.is_atomic() or db.has_embedded_metadata():
                     logging.debug(f"Going to restore database `{db.name}` using CREATE")
@@ -152,23 +177,6 @@ class DatabaseBackup(BackupManager):
                         )
                     else:
                         raise
-
-    @staticmethod
-    def _backup_database(context: BackupContext, db: Database) -> bool:
-        """
-        Backup database.
-        """
-        logging.debug('Performing database backup for "{}"', db.name)
-
-        if not db.has_embedded_metadata():
-            if not context.backup_layout.upload_database_create_statement(
-                context.backup_meta, db
-            ):
-                return False
-
-        context.backup_meta.add_database(db)
-        context.backup_layout.upload_backup_metadata(context.backup_meta)
-        return True
 
     @staticmethod
     def _sync_replicated_database_with_retries(
