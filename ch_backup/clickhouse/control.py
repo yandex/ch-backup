@@ -832,7 +832,7 @@ class ClickhouseCTL:
         for database in databases.values():
             if database.is_external_db_engine():
                 logging.warning(
-                    f'Skip getting detached tables, because {database.name} have external DB engine {database.engine}.'
+                    f"Skip getting detached tables, because {database.name} have external DB engine {database.engine}."
                 )
                 return result
 
