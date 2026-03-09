@@ -817,7 +817,7 @@ class ClickhouseCTL:
 
         return result
 
-    def get_detached_tables(self) -> Sequence[Table]:
+    def get_detached_tables(self, databases: Dict[str, Database]) -> Sequence[Table]:
         """
         Get detached tables.
         """
@@ -828,6 +828,13 @@ class ClickhouseCTL:
                 "Skip getting detached tables, because system.detached_tables exists only for ch >= 24.8."
             )
             return result
+
+        for database in databases.values():
+            if database.is_external_db_engine():
+                logging.warning(
+                    f"Skip getting detached tables, because {database.name} have external DB engine {database.engine}."
+                )
+                return result
 
         for row in self._ch_client.query(GET_DETACHED_TABLES_SQL)["data"]:
             result.append(Table.make_dummy(row["database"], row["table"], row["uuid"]))

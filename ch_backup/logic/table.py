@@ -578,7 +578,7 @@ class TableBackup(BackupManager):
             )
 
         detached_tables = {}
-        for table in context.ch_ctl.get_detached_tables():
+        for table in context.ch_ctl.get_detached_tables(databases):
             if table.uuid:
                 detached_tables[table.uuid] = table
 
