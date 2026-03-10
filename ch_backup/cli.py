@@ -522,6 +522,7 @@ def backup_command(
         type=List(regexp=r"\w+\.[\w*]+"),
         help="Comma-separated list of db.tables to skip on restore. Other tables will be restored. "
         "Patterns support Unix shell-style wildcards(*) and are supported only for tables."
+        "When used together with option table-included-patterns, it has a higher priority and excludes tables from final result."
         "Examples: db1.table1 | db1.table2,db2.* | db1.prefix*,db2.*suffix | db1.*",
     ),
     option("--nc", is_flag=True, help="Perform partial restore of named collections."),
@@ -536,9 +537,7 @@ def backup_command(
     is_flag=True,
     help="Restore tables in Replicated databases",
 )
-@constraint(mutually_exclusive, ["table_included_patterns", "table_excluded_patterns"])
 @constraint(mutually_exclusive, ["table_included_patterns", "exclude_databases"])
-@constraint(mutually_exclusive, ["schema_only", "table_included_patterns"])
 @constraint(mutually_exclusive, ["schema_only", "access"])
 @constraint(mutually_exclusive, ["schema_only", "data"])
 @constraint(mutually_exclusive, ["schema_only", "schema"])
