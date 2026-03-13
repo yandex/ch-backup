@@ -15,7 +15,10 @@ from string import ascii_lowercase
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ch_backup import logging
-from ch_backup.backup.deduplication import deduplicate_parts
+from ch_backup.backup.deduplication import (
+    deduplicate_parts,
+    deduplicated_parts_by_partition,
+)
 from ch_backup.backup.metadata import PartMetadata, TableMetadata
 from ch_backup.backup.restore_context import PartState
 from ch_backup.backup_context import BackupContext
@@ -48,6 +51,39 @@ class TableMetadataChangeTime:
     metadata_path: str
     mtime_ns: int  # Time of most recent content modification expressed in nanoseconds.
     ctime_ns: int  # Time of most recent filesystem metadata(hardlinks) change expressed in nanoseconds.
+
+
+class FilteredPartitionsForFreeze:
+    """
+    Filtered partitions for deduplication.
+    """
+
+    def __init__(self, partitions_to_freeze: List[str], partitions: List[str]):
+        self.partitions_to_freeze = set(partitions_to_freeze)
+        self.partitions = set(partitions)
+
+    def need_freeze_all_partitions(self) -> bool:
+        """
+        All partitions have changed.
+        """
+        return len(self.partitions_to_freeze) == len(self.partitions)
+
+    def add_partition_to_freeze(self, partition: str) -> None:
+        """
+        Mark partition for freeze.
+        """
+        self.partitions_to_freeze.add(partition)
+
+    @property
+    def unchanged_partitions(self):
+        """
+        Get unchanged partitions
+        """
+        result: List[str] = []
+        for partition in self.partitions:
+            if partition not in self.partitions_to_freeze:
+                result.append(partition)
+        return result
 
 
 class TableBackup(BackupManager):
@@ -117,6 +153,24 @@ class TableBackup(BackupManager):
 
         return res
 
+    def _filter_partition_for_freeze(
+        self, context: BackupContext, tables: List[Table]
+    ) -> List[Tuple[Table, FilteredPartitionsForFreeze]]:
+        filtered_tables: List[Tuple[Table, FilteredPartitionsForFreeze]] = []
+        for table in tables:
+            filtered_tables.append(
+                (
+                    table,
+                    FilteredPartitionsForFreeze(
+                        partitions_to_freeze=context.ch_ctl.get_filtered_dedup_partitions(
+                            table
+                        ),
+                        partitions=context.ch_ctl.list_partitions(table),
+                    ),
+                )
+            )
+        return filtered_tables
+
     # pylint: disable=too-many-positional-arguments
     def _backup(
         self,
@@ -148,16 +202,21 @@ class TableBackup(BackupManager):
             # Create shadow/increment.txt if not exists manually to avoid
             # race condition with parallel freeze
             context.ch_ctl.create_shadow_increment()
+            tables_with_partition_filters = self._filter_partition_for_freeze(
+                context, tables_
+            )
+
             with ThreadExecPool(
                 multiprocessing_config.get("freeze_threads", 1)
             ) as pool:
-                for table in tables_:
+                for table, filtered_partitions in tables_with_partition_filters:
                     pool.submit(
                         f'Freeze table "{table.database}"."{table.name}"',
                         TableBackup._freeze_table,
                         context,
                         db,
                         table,
+                        filtered_partitions,
                         backup_name,
                         schema_only,
                         multiprocessing_config.get(
@@ -167,17 +226,20 @@ class TableBackup(BackupManager):
                         multiprocessing_config.get("freeze_table_query_max_threads", 0),
                     )
 
-                for freezed_table in pool.as_completed(keep_going=False):
-                    if freezed_table is not None:
+                for freeze_result in pool.as_completed(keep_going=False):
+                    if freeze_result is not None:
+                        table = freeze_result[0]
+                        unchanged_parts = freeze_result[1]
                         self._backup_freezed_table(
                             context,
                             db,
-                            freezed_table,
+                            table,
+                            unchanged_parts,
                             backup_name,
                             schema_only,
                             change_times,
                         )
-                        self._backup_cloud_storage_metadata(context, freezed_table)
+                        self._backup_cloud_storage_metadata(context, table)
 
             context.backup_layout.wait()
             context.ch_ctl.remove_freezed_data()
@@ -190,12 +252,13 @@ class TableBackup(BackupManager):
         context: BackupContext,
         db: Database,
         table: Table,
+        partitions_filters: FilteredPartitionsForFreeze,
         backup_name: str,
         schema_only: bool,
         parallelize_freeze_in_ch: bool,
         freeze_partition_threads: int,
         freeze_table_query_max_threads: int,
-    ) -> Optional[Table]:
+    ) -> Optional[Tuple[Table, List[PartMetadata]]]:
         """
         Freeze table and return it's create statement
         """
@@ -210,16 +273,37 @@ class TableBackup(BackupManager):
             )
             return None
 
+        unchanged_parts: List[PartMetadata] = []
         # Freeze only MergeTree tables
         if not schema_only and table.is_merge_tree():
-            try:
-                context.ch_ctl.freeze_table(
-                    backup_name,
-                    table,
-                    parallelize_freeze_in_ch,
-                    freeze_partition_threads,
-                    freeze_table_query_max_threads,
+            # Validate unchanged partitions they might have invalid parts, which we should backup anyway
+            for partition_id in partitions_filters.unchanged_partitions:
+                [unchanged_parts_for_partition, invalid_parts_count] = (
+                    deduplicated_parts_by_partition(
+                        context, db.name, table.name, partition_id
+                    )
                 )
+                if invalid_parts_count:
+                    partitions_filters.add_partition_to_freeze(partition_id)
+                    continue
+                unchanged_parts.extend(unchanged_parts_for_partition)
+
+            try:
+                if partitions_filters.need_freeze_all_partitions():
+                    context.ch_ctl.freeze_table(
+                        backup_name,
+                        table,
+                        parallelize_freeze_in_ch,
+                        freeze_partition_threads,
+                        freeze_table_query_max_threads,
+                    )
+                else:
+                    context.ch_ctl.freeze_partitions(
+                        backup_name,
+                        table,
+                        list(partitions_filters.partitions_to_freeze),
+                        freeze_partition_threads,
+                    )
             except ClickhouseError:
                 if context.ch_ctl.does_table_exist(table.database, table.name):
                     logging.error(
@@ -236,7 +320,7 @@ class TableBackup(BackupManager):
                 )
                 return None
 
-        return table
+        return (table, unchanged_parts)
 
     @staticmethod
     def _load_create_statement_from_disk(table: Table) -> Optional[str]:
@@ -399,6 +483,7 @@ class TableBackup(BackupManager):
         context: BackupContext,
         db: Database,
         table: Table,
+        unchanged_parts: List[PartMetadata],
         backup_name: str,
         schema_only: bool,
         change_times: Dict[str, TableMetadataChangeTime],
@@ -427,6 +512,9 @@ class TableBackup(BackupManager):
         )
         # Backup table data
         if not schema_only:
+            # Add unchanged parts to the backup
+            for part in unchanged_parts:
+                context.backup_meta.add_part(part)
             self._backup_frozen_table_data(context, table, backup_name)
 
     def _backup_frozen_table_data(
@@ -518,10 +606,24 @@ class TableBackup(BackupManager):
             )
 
         context.backup_layout.wait()
-
         self._validate_uploaded_parts(context, upload_observer.uploaded_parts)
+        self._populate_parts_meta_with_dedup_filters(
+            context, table.database, table.name
+        )
 
         context.ch_ctl.remove_freezed_data(backup_name, table)
+
+    def _populate_parts_meta_with_dedup_filters(
+        self, context: BackupContext, database: str, table: str
+    ) -> None:
+        """
+        Populate parts meta with dedup info
+        """
+        for row in context.ch_ctl.get_active_parts(database, table):
+            part_name, hash_of_all_files, parition_id = row
+            context.backup_meta.add_part_dedup_filter(
+                database, table, part_name, hash_of_all_files, parition_id
+            )
 
     @staticmethod
     def _validate_uploaded_parts(context: BackupContext, uploaded_parts: list) -> None:

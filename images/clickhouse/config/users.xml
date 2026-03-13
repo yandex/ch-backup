@@ -8,6 +8,7 @@
             <password></password>
             <access_management>1</access_management>
             <profile>default</profile>
+            <log_queries>1</log_queries>
 {% if ch_version_ge('23.2') %}
             <show_named_collections>1</show_named_collections>
             <show_named_collections_secrets>1</show_named_collections_secrets>
