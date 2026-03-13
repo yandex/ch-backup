@@ -5,7 +5,7 @@ Data part deduplication.
 from collections import defaultdict
 from copy import copy
 from datetime import timedelta
-from typing import Dict, List, Sequence, Set
+from typing import Dict, List, Sequence, Set, Tuple
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
@@ -33,6 +33,8 @@ class PartDedupInfo(Slotted):
         "disk_name",
         "verified",
         "encrypted",
+        "hash_of_all_files",
+        "partition_id",
     )
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -49,6 +51,8 @@ class PartDedupInfo(Slotted):
         disk_name: str,
         verified: bool,
         encrypted: bool,
+        hash_of_all_files: str,
+        partition_id: str,
     ) -> None:
         self.database = database
         self.table = table
@@ -61,13 +65,15 @@ class PartDedupInfo(Slotted):
         self.disk_name = disk_name
         self.verified = verified
         self.encrypted = encrypted
+        self.hash_of_all_files = hash_of_all_files
+        self.partition_id = partition_id
 
     def to_sql(self):
         """
         Convert to string to use it in insert query
         """
         files_array = "[" + ",".join(f"'{file}'" for file in self.files) + "]"
-        return f"('{self.database}','{self.table}','{self.name}','{self.backup_path}','{self.checksum}',{self.size},{files_array},{int(self.tarball)},'{self.disk_name}',{int(self.verified)}, {int(self.encrypted)})"
+        return f"('{self.database}','{self.table}','{self.name}','{self.backup_path}','{self.checksum}',{self.size},{files_array},{int(self.tarball)},'{self.disk_name}',{int(self.verified)}, {int(self.encrypted)}, '{self.hash_of_all_files}', '{self.partition_id}')"
 
 
 TableDedupReferences = Set[str]
@@ -209,6 +215,8 @@ def _populate_dedup_info(
                         disk_name=part.disk_name,
                         verified=verified,
                         encrypted=part.encrypted,
+                        hash_of_all_files=part.hash_of_all_files,
+                        partition_id=part.partition_id,
                     )
 
                     table_dedup_info.add(part.name)
@@ -223,6 +231,52 @@ def _populate_dedup_info(
 
         if not databases_to_handle:
             break
+
+
+def deduplicated_parts_by_partition(
+    context: BackupContext, database: str, table: str, partition_id: str
+) -> Tuple[List[PartMetadata], int]:
+    """
+    Deduplicate parts by partition.
+    """
+    parts = context.ch_ctl.get_deduplication_info_by_partition(
+        database, table, partition_id
+    )
+    layout = context.backup_layout
+    parts_metadata: List[PartMetadata] = []
+    invalid_part_count: int = 0
+    for part in parts:
+        part_metadata = PartMetadata(
+            database=database,
+            table=table,
+            name=part["name"],
+            checksum=part["checksum"],
+            size=int(part["size"]),
+            link=part["backup_path"],
+            files=part["files"],
+            tarball=part["tarball"],
+            disk_name=part["disk_name"],
+            encrypted=part.get("encrypted", True),
+            hash_of_all_files=part.get("hash_of_all_files", ""),
+            partition_id=part.get("partition_id", ""),
+        )
+        if not part["verified"]:
+            if not layout.check_data_part(part["backup_path"], part_metadata):
+                logging.debug(
+                    'Part "{}" found in "{}", but it\'s invalid, skipping',
+                    part_metadata.name,
+                    part["backup_path"],
+                )
+                invalid_part_count += 1
+                continue
+
+        parts_metadata.append(part_metadata)
+        logging.debug(
+            'Part "{}" found in "{}", reusing', part_metadata.name, part["backup_path"]
+        )
+
+    logging.debug("deduplicated parts {}", parts_metadata)
+    return (parts_metadata, invalid_part_count)
 
 
 def deduplicate_parts(
@@ -253,6 +307,8 @@ def deduplicate_parts(
             tarball=existing_part["tarball"],
             disk_name=existing_part["disk_name"],
             encrypted=existing_part.get("encrypted", True),
+            hash_of_all_files=existing_part.get("hash_of_all_files", ""),
+            partition_id=existing_part.get("partition_id", ""),
         )
 
         if not existing_part["verified"]:

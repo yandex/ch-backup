@@ -316,7 +316,9 @@ CREATE_IF_NOT_EXISTS_DEDUP_TABLE_SQL = strip_query(
         tarball Bool,
         disk_name String,
         verified Bool,
-        encrypted Bool
+        encrypted Bool,
+        hash_of_all_files String,
+        partition_id String
     )
     ENGINE = MergeTree()
     ORDER BY (database, table, name, checksum)
@@ -347,6 +349,37 @@ GET_DEDUPLICATED_PARTS_SQL = strip_query(
     FORMAT JSON
 """
 )
+
+GET_DEDUPLICATED_PARTS_BY_PARTITION_SQL = strip_query(
+    """
+    SELECT * FROM `{system_db}`._deduplication_info
+    WHERE database = '{database}' AND table='{table}' AND partition_id = '{partition_id}'
+    FORMAT JSON
+"""
+)
+
+
+FILTER_DEDUP_PARTITION_SQL = strip_query(
+    """
+    WITH sys_parts AS
+    (
+        SELECT database, table, name, hash_of_all_files, partition_id
+            FROM system.parts
+            WHERE database='{database}' AND table = '{table}' AND active=1
+    ),
+    dedup AS (
+        SELECT database, table, name, hash_of_all_files
+        FROM `{sustem_db}`._deduplication_info
+        WHERE database='{database}' AND table = '{table}'
+    )
+    SELECT partition_id
+    FROM sys_parts
+    LEFT ANTI JOIN dedup
+    USING (database, table, name, hash_of_all_files)
+    FORMAT JSONCompact
+"""
+)
+
 
 SHOW_CREATE_DATABASE_SQL = strip_query(
     """
@@ -497,6 +530,15 @@ GET_PARTITIONS = strip_query(
 """
 )
 
+GET_ACTIVE_PARTS_FOR_TABLE = strip_query(
+    """
+    SELECT name, hash_of_all_files, partition_id
+    FROM system.parts
+    WHERE database = '{db_name}' AND table = '{table_name}' AND active = 1
+    FORMAT JSONCompact
+"""
+)
+
 
 # pylint: disable=too-many-public-methods
 class ClickhouseCTL:
@@ -594,6 +636,21 @@ class ClickhouseCTL:
 
         self._ch_client.query(query_sql)
 
+    def get_active_parts(self, database: str, table: str) -> List[dict]:
+        """
+        Get list of active parts.
+        """
+        query_sql = GET_ACTIVE_PARTS_FOR_TABLE.format(
+            db_name=escape(database),
+            table_name=escape(table),
+        )
+        # Is it not too much?
+        # Probably no, have tested with the max length of database and table name the size of each row is less than 1KB
+        # In ordinary case the number of dataparts is about 10k-20k, so it is 20MB
+        # In the worst case the number is 200k-300k(numbers based on my experience); it is 200MB
+        # Looks fine.
+        return self._ch_client.query(query_sql)["data"]
+
     def kill_old_freeze_queries(self):
         """
         Collect all freeze queries from prev backup and kill them all.
@@ -601,6 +658,43 @@ class ClickhouseCTL:
         self._ch_client.query(
             KILL_RUNNING_FREEZE_SQL.format(user=self._ch_ctl_config["user"])
         )
+
+    def freeze_partitions(
+        self,
+        backup_name: str,
+        table: Table,
+        partitions: List[str],
+        freeze_partition_threads: int,
+    ) -> None:
+        """
+        Perform ALTER TABLE FREEZE PARTITIONS for the list of partitions
+        """
+        query_settings: Dict[str, Any] = {}
+        # Since https://github.com/ClickHouse/ClickHouse/pull/75016
+        if self.ch_version_ge("25.2"):
+            query_settings["max_execution_time"] = self._freeze_timeout
+
+        with ThreadExecPool(max(1, freeze_partition_threads)) as pool:
+            for partition in partitions:
+                query_sql = FREEZE_PARTITION_SQL.format(
+                    db_name=escape(table.database),
+                    table_name=escape(table.name),
+                    backup_name=backup_name,
+                    partition=partition,
+                )
+                pool.submit(
+                    f'Freeze partition "{partition}"',
+                    self._ch_client.query,
+                    query_sql,
+                    settings=query_settings,
+                    timeout=self._freeze_timeout,
+                    should_retry=False,
+                    new_session=True,
+                )
+            pool.wait_all(
+                keep_going=False,
+                timeout=self._freeze_timeout,
+            )
 
     # pylint: disable=too-many-positional-arguments
     def freeze_table(
@@ -621,7 +715,7 @@ class ClickhouseCTL:
         """
         # Table has no partitions or created with deprecated syntax.
         # FREEZE PARTITION ID with deprecated syntax throws segmentation fault in CH.
-        freeze_by_partitions = (
+        do_freeze_by_partitions = (
             not parallelize_freeze_in_ch
             and freeze_partition_threads > 0
             and "PARTITION BY" in table.create_statement
@@ -633,29 +727,11 @@ class ClickhouseCTL:
         if self.ch_version_ge("25.2"):
             query_settings["max_execution_time"] = self._freeze_timeout
 
-        if freeze_by_partitions:
-            with ThreadExecPool(max(1, freeze_partition_threads)) as pool:
-                partitions_to_freeze = self.list_partitions(table)
-                for partition in partitions_to_freeze:
-                    query_sql = FREEZE_PARTITION_SQL.format(
-                        db_name=escape(table.database),
-                        table_name=escape(table.name),
-                        backup_name=backup_name,
-                        partition=partition,
-                    )
-                    pool.submit(
-                        f'Freeze partition "{partition}"',
-                        self._ch_client.query,
-                        query_sql,
-                        settings=query_settings,
-                        timeout=self._freeze_timeout,
-                        should_retry=False,
-                        new_session=True,
-                    )
-                pool.wait_all(
-                    keep_going=False,
-                    timeout=self._freeze_timeout,
-                )
+        if do_freeze_by_partitions:
+            partitions_to_freeze = self.list_partitions(table)
+            self.freeze_partitions(
+                backup_name, table, partitions_to_freeze, freeze_partition_threads
+            )
             return
 
         if parallelize_freeze_in_ch:
@@ -1368,6 +1444,34 @@ class ClickhouseCTL:
                 batch=",".join(batch),
             ),
         )
+
+    def get_filtered_dedup_partitions(self, table: Table) -> List[str]:
+        """
+        Get list of partitions that remains the same.
+        """
+        query = FILTER_DEDUP_PARTITION_SQL.format(
+            database=table.database,
+            table=table.name,
+            sustem_db=escape(self._backup_config["system_database"]),
+        )
+        result = self._ch_client.query(query)["data"]
+        return [partition[0] for partition in result]
+
+    def get_deduplication_info_by_partition(
+        self, database: str, table: str, partition_id: str
+    ) -> List[Dict]:
+        """
+        Filter deduplicated parts by partition.
+        """
+        result_json = self._ch_client.query(
+            GET_DEDUPLICATED_PARTS_BY_PARTITION_SQL.format(
+                system_db=escape(self._backup_config["system_database"]),
+                database=escape(database),
+                table=escape(table),
+                partition_id=partition_id,
+            )
+        )
+        return result_json["data"]
 
     def get_deduplication_info(
         self, database: str, table: str, frozen_parts: Dict[str, FrozenPart]

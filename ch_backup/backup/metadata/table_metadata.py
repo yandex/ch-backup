@@ -103,7 +103,21 @@ class TableMetadata(SimpleNamespace):
             "tarball": part.tarball,
             "disk_name": part.disk_name,
             "encrypted": part.encrypted,
+            "hash_of_all_files": part.hash_of_all_files,
+            "partition_id": part.partition_id,
         }
+
+    def add_part_dedup_filter(
+        self, part_name: str, partition_id: str, hash_of_all_files: str
+    ) -> None:
+        """
+        Populate data part with deduplication filters.
+        """
+        if part := self.raw_metadata["parts"].get(part_name):
+            if part.get("hash_of_all_files", None) != "":
+                return
+            part["hash_of_all_files"] = hash_of_all_files
+            part["partition_id"] = partition_id
 
     @classmethod
     def load(cls, database: str, name: str, raw_metadata: dict) -> "TableMetadata":

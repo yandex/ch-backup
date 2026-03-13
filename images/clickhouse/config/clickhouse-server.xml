@@ -85,4 +85,13 @@
 {% endif %}
     <!-- It's needed to force atomic database drop when execute DROP DATABASE query -->
     <database_atomic_delay_before_drop_table_sec>0</database_atomic_delay_before_drop_table_sec>
+
+    <query_log>
+        <database>system</database>
+        <table>query_log</table>
+
+        <partition_by>toYYYYMM(event_date)</partition_by>
+
+        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+    </query_log>
 </yandex>
