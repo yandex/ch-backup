@@ -174,11 +174,16 @@ def demote_user(new_user: str) -> None:
     os.setuid(new_uid)
 
 
-def escape(s: str) -> str:
+def escape(s: str, regex: bool = False) -> str:
     """
-    Escaping special character '`'
+    Escaping special characters for SQL identifiers.
     """
-    return r"\`".join(s.split("`"))
+    escaped = r"\`".join(s.split("`"))
+
+    if regex:
+        escaped = re.escape(escaped)
+
+    return escaped
 
 
 def demote_user_group(new_user: str, new_group: str) -> None:
