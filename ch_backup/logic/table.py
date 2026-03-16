@@ -154,8 +154,13 @@ class TableBackup(BackupManager):
         return res
 
     def _filter_partition_for_freeze(
-        self, context: BackupContext, tables: List[Table]
+        self, context: BackupContext, tables: List[Table], schema_only: bool
     ) -> List[Tuple[Table, FilteredPartitionsForFreeze]]:
+
+        # If schema only we shouldn't collect partitions.
+        if schema_only:
+            return [(table, FilteredPartitionsForFreeze([], [])) for table in tables]
+
         filtered_tables: List[Tuple[Table, FilteredPartitionsForFreeze]] = []
         for table in tables:
             filtered_tables.append(
@@ -203,7 +208,7 @@ class TableBackup(BackupManager):
             # race condition with parallel freeze
             context.ch_ctl.create_shadow_increment()
             tables_with_partition_filters = self._filter_partition_for_freeze(
-                context, tables_
+                context, tables_, schema_only
             )
 
             with ThreadExecPool(
