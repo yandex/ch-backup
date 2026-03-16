@@ -202,7 +202,7 @@ Feature: Deduplication
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
-  Scenario: Test selective depuplication filters.
+  Scenario Outline: Test selective depuplication filters.
     Given we have executed queries on clickhouse01
     """
     CREATE TABLE test_db1.test_table3 (partition_id Int32, n Int32)
@@ -226,7 +226,7 @@ Feature: Deduplication
     # Note: 1 freeze for test_table2 and one for test_table3
     Then we get response
     """
-    2
+    <result_1>
     """
     When we execute queries on clickhouse01
     """
@@ -259,7 +259,15 @@ Feature: Deduplication
     # Note: freeze for test_table3
     Then we get response
     """
-    1
+    <result_3>
     """
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
+    @require_version_25.11
+    Examples:
+      | result_1 | result_3 |
+      | 2        | 1        |
+    @require_version_less_than_25.3
+    Examples:
+      | result_1 | result_3 |
+      | 6        | 3        |

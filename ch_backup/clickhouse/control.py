@@ -369,7 +369,7 @@ FILTER_DEDUP_PARTITION_SQL = strip_query(
     ),
     dedup AS (
         SELECT database, table, name, hash_of_all_files
-        FROM `{sustem_db}`._deduplication_info
+        FROM `{system_db}`._deduplication_info
         WHERE database='{database}' AND table = '{table}'
     )
     SELECT partition_id
@@ -704,6 +704,7 @@ class ClickhouseCTL:
         parallelize_freeze_in_ch: bool,
         freeze_partition_threads: int,
         clickhouse_query_max_threads: int,
+        partitions_to_freeze: Optional[List[str]] = None,
     ) -> None:
         """
         Make snapshot of the specified table.
@@ -1452,7 +1453,7 @@ class ClickhouseCTL:
         query = FILTER_DEDUP_PARTITION_SQL.format(
             database=table.database,
             table=table.name,
-            sustem_db=escape(self._backup_config["system_database"]),
+            system_db=escape(self._backup_config["system_database"]),
         )
         result = self._ch_client.query(query)["data"]
         return [partition[0] for partition in result]

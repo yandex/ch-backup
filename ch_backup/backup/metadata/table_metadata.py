@@ -114,7 +114,7 @@ class TableMetadata(SimpleNamespace):
         Populate data part with deduplication filters.
         """
         if part := self.raw_metadata["parts"].get(part_name):
-            if part.get("hash_of_all_files", None) != "":
+            if part.get("hash_of_all_files", "") != "":
                 return
             part["hash_of_all_files"] = hash_of_all_files
             part["partition_id"] = partition_id
