@@ -11,11 +11,12 @@ from .filesystem.collect_data_stage import CollectDataStage
 from .filesystem.delete_files_stage import DeleteFilesScanStage, DeleteFilesStage
 from .filesystem.read_file_stage import ReadFileStage
 from .filesystem.read_files_tarball_stage import (
+    ReadDataTarballStage,
     ReadFilesTarballScanStage,
     ReadFilesTarballStage,
 )
 from .filesystem.write_file_stage import WriteFileStage
-from .filesystem.write_files_stage import WriteFilesStage
+from .filesystem.write_files_stage import UnpackTarballStage, WriteFilesStage
 from .storage.delete_multiple_storage_stage import DeleteMultipleStorageStage
 from .storage.download_storage_stage import DownloadStorageStage
 from .storage.multipart_storage_uploading_stage import (

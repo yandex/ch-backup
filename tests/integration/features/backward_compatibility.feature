@@ -1,4 +1,4 @@
-Feature: Restore backup from previous versions
+Feature: Backward compatibility support for old backups
 
   Background:
     Given default configuration
@@ -6,64 +6,64 @@ Feature: Restore backup from previous versions
     And a working zookeeper on zookeeper01
     And a working clickhouse on clickhouse01
     And a working clickhouse on clickhouse02
-
-  Scenario: Restore backup with incomplete database metadata
-    Given we have executed queries on clickhouse01
+    And ch-backup configuration on clickhouse01
     """
-    CREATE DATABASE test_db;
+    encryption:
+      enabled: False
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    encryption:
+      enabled: False
+    """
+    
 
-    CREATE TABLE test_db.table_01 (date Date, n Int32)
-    ENGINE = MergeTree() PARTITION BY date ORDER BY date;
-    INSERT INTO test_db.table_01 SELECT today(), number FROM system.numbers LIMIT 1000;
-
-    CREATE TABLE test_db.table_02 (n Int32)
-    ENGINE = MergeTree() PARTITION BY n % 10 ORDER BY n;
-    INSERT INTO test_db.table_02 SELECT number FROM system.numbers LIMIT 1000;
+  Scenario: Restore with old metadata layout
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE test_db_01 UUID '82aa76a0-45cd-42f2-b355-852cc8c9c0af' ENGINE = Atomic;
+    CREATE TABLE test_db_01.table_01 UUID '10000000-0000-0000-0000-000000000001' (id UInt32, val String) ENGINE = MergeTree ORDER BY id;
+    CREATE TABLE test_db_01.table_02 UUID '10000000-0000-0000-0000-000000000002' (id UInt32, abc String, def UInt64) ENGINE = MergeTree ORDER BY id;
     """
     When we create clickhouse01 clickhouse backup
-    Then we got the following backups on clickhouse01
-      | num | state   | data_count | link_count |
-      | 0   | created | 11         | 0          |
-    When metadata paths of clickhouse01 backup #0 was deleted
     """
-    - databases.test_db.engine
-    - databases.test_db.metadata_path
+    name: test_backup
+    """
+    Then s3 bucket ch-backup contains 4 objects
+    """
+        bucket: ch-backup
+    """
+    When we delete object in S3
+    """
+        bucket: ch-backup
+        path: /ch_backup/test_backup/metadata/databases.tar
+    """
+    And we delete object in S3
+    """
+        bucket: ch-backup
+        path: /ch_backup/test_backup/metadata/test_db_01.tar
+    """
+    Then s3 bucket ch-backup contains 2 objects
+    """
+        bucket: ch-backup
+    """
+    When we put object in S3
+    """
+        bucket: ch-backup
+        path: /ch_backup/test_backup/metadata/test_db_01.sql
+        data: "ATTACH DATABASE _ UUID '82aa76a0-45cd-42f2-b355-852cc8c9c0af'\nENGINE = Atomic\n"
+    """
+    And we put object in S3
+    """
+        bucket: ch-backup
+        path: /ch_backup/test_backup/metadata/test_db_01/table_01.sql
+        data: "ATTACH TABLE _ UUID '10000000-0000-0000-0000-000000000001'\n(\n    `id` UInt32,\n    `val` String\n)\nENGINE = MergeTree\nORDER BY id\nSETTINGS index_granularity = 8192\n"
+    """
+    And we put object in S3
+    """
+        bucket: ch-backup
+        path: /ch_backup/test_backup/metadata/test_db_01/table_02.sql
+        data: "ATTACH TABLE _ UUID '10000000-0000-0000-0000-000000000002'\n(\n    `id` UInt32,\n    `abc` String,\n    `def` UInt64\n)\nENGINE = MergeTree\nORDER BY id\nSETTINGS index_granularity = 8192\n"
     """
     When we restore clickhouse backup #0 to clickhouse02
     Then clickhouse02 has same schema as clickhouse01
-    And we got same clickhouse data at clickhouse01 clickhouse02
-
-
-  Scenario: Restore backup with incomplete database metadata
-    Given ch-backup configuration on clickhouse01
-    """
-    encryption:
-      type: noop
-    """
-    Given ch-backup configuration on clickhouse02
-    """
-    encryption:
-      type: noop
-    """
-    Given we have executed queries on clickhouse01
-    """
-    CREATE DATABASE test_db;
-
-    CREATE TABLE test_db.table_01 ON CLUSTER 'default' (date Date, n Int32)
-    ENGINE = ReplicatedMergeTree('/clickhouse/tables/test_db/table', '{replica}') PARTITION BY date ORDER BY date;
-    INSERT INTO test_db.table_01 SELECT today(), number FROM system.numbers LIMIT 1000;
-    """
-    When we create clickhouse01 clickhouse backup
-    When metadata paths of clickhouse01 backup #0 was deleted
-    """
-    - databases.test_db.engine
-    - databases.test_db.metadata_path
-    """
-    Given file "metadata/test_db/table_01.sql" in clickhouse01 backup #0 data set to
-    """
-    CREATE TABLE test_db.table_01 ON CLUSTER 'default' (date Date, n Int32)
-    ENGINE = ReplicatedMergeTree('/clickhouse/tables/test_db/table', '{replica}') PARTITION BY date ORDER BY date
-    """
-    When we restore clickhouse backup #0 to clickhouse02
-    Then clickhouse02 has same schema as clickhouse01
-    And we got same clickhouse data at clickhouse01 clickhouse02
