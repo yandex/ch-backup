@@ -269,7 +269,9 @@ class TableBackup(BackupManager):
                                     self._backup_cloud_storage_metadata(
                                         context, freezed_table
                                     )
-                                    self._backup_unchanged_parts(context, unchanged_parts)
+                                    self._backup_unchanged_parts(
+                                        context, unchanged_parts
+                                    )
             finally:
                 if create_statements_to_backup:
                     context.backup_layout.upload_create_statements(
@@ -380,9 +382,10 @@ class TableBackup(BackupManager):
             )
             return None
 
-
     @staticmethod
-    def _backup_unchanged_parts(context: BackupContext, unchanged_parts: List[PartMetadata]) -> None:
+    def _backup_unchanged_parts(
+        context: BackupContext, unchanged_parts: List[PartMetadata]
+    ) -> None:
         """
         Backup unchagned parts.
         """
