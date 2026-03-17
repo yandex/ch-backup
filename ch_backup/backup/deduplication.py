@@ -5,7 +5,7 @@ Data part deduplication.
 from collections import defaultdict
 from copy import copy
 from datetime import timedelta
-from typing import Dict, List, Sequence, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Set
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
@@ -233,19 +233,15 @@ def _populate_dedup_info(
             break
 
 
-def deduplicated_parts_by_partition(
-    context: BackupContext, database: str, table: str, partition_id: str
-) -> Tuple[List[PartMetadata], int]:
-    """
-    Deduplicate parts by partition.
-    """
-    parts = context.ch_ctl.get_deduplication_info_by_partition(
-        database, table, partition_id
-    )
-    layout = context.backup_layout
-    parts_metadata: List[PartMetadata] = []
-    invalid_part_count: int = 0
-    for part in parts:
+def _deduplication_process_raw_parts_info(
+    layout: BackupLayout,
+    database: str,
+    table: str,
+    parts_raw: List[Dict],
+    ignore_invalid: bool,
+) -> Optional[Dict[str, PartMetadata]]:
+    parts_metadata: Dict[str, PartMetadata] = {}
+    for part in parts_raw:
         part_metadata = PartMetadata(
             database=database,
             table=table,
@@ -267,16 +263,31 @@ def deduplicated_parts_by_partition(
                     part_metadata.name,
                     part["backup_path"],
                 )
-                invalid_part_count += 1
-                continue
+                if not ignore_invalid:
+                    return None
 
-        parts_metadata.append(part_metadata)
+        parts_metadata[part_metadata.name] = part_metadata
         logging.debug(
             'Part "{}" found in "{}", reusing', part_metadata.name, part["backup_path"]
         )
 
-    logging.debug("deduplicated parts {}", parts_metadata)
-    return (parts_metadata, invalid_part_count)
+    return parts_metadata
+
+
+def collect_verified_parts_by_partition(
+    context: BackupContext, database: str, table: str, partition_id: str
+) -> Optional[List[PartMetadata]]:
+    """
+    Deduplicate parts by partition.
+    """
+    parts = context.ch_ctl.get_deduplication_info_by_partition(
+        database, table, partition_id
+    )
+    layout = context.backup_layout
+    result = _deduplication_process_raw_parts_info(
+        layout, database, table, parts, False
+    )
+    return list(result.values()) if result else None
 
 
 def deduplicate_parts(
@@ -293,40 +304,9 @@ def deduplicate_parts(
     existing_parts = context.ch_ctl.get_deduplication_info(
         database, table, frozen_parts
     )
-    deduplicated_parts: Dict[str, PartMetadata] = {}
-
-    for existing_part in existing_parts:
-        part = PartMetadata(
-            database=database,
-            table=table,
-            name=existing_part["name"],
-            checksum=existing_part["checksum"],
-            size=int(existing_part["size"]),
-            link=existing_part["backup_path"],
-            files=existing_part["files"],
-            tarball=existing_part["tarball"],
-            disk_name=existing_part["disk_name"],
-            encrypted=existing_part.get("encrypted", True),
-            hash_of_all_files=existing_part.get("hash_of_all_files", ""),
-            partition_id=existing_part.get("partition_id", ""),
-        )
-
-        if not existing_part["verified"]:
-            if not layout.check_data_part(existing_part["backup_path"], part):
-                logging.debug(
-                    'Part "{}" found in "{}", but it\'s invalid, skipping',
-                    part.name,
-                    existing_part["backup_path"],
-                )
-                continue
-
-        deduplicated_parts[part.name] = part
-
-        logging.debug(
-            'Part "{}" found in "{}", reusing', part.name, existing_part["backup_path"]
-        )
-
-    return deduplicated_parts
+    return _deduplication_process_raw_parts_info(  # type: ignore
+        layout, database, table, existing_parts, True
+    )
 
 
 def collect_dedup_references_for_batch_backup_deletion(
