@@ -319,6 +319,7 @@ class TableBackup(BackupManager):
                     context, db.name, table.name, partition_id
                 )
                 if not unchanged_parts_for_partition:
+                    logging.debug("Found invalid parts in partititon {}. Add partition to freeze", partition_id)
                     partitions_filters.add_partition_to_freeze(partition_id)
                     continue
                 unchanged_parts.extend(unchanged_parts_for_partition)

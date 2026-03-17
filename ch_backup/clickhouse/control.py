@@ -350,7 +350,7 @@ GET_DEDUPLICATED_PARTS_SQL = strip_query(
 """
 )
 
-GET_collect_verified_parts_by_partition_SQL = strip_query(
+GET_COLLECT_VERIFIED_PARTS_BY_PARTITION_SQL = strip_query(
     """
     SELECT * FROM `{system_db}`._deduplication_info
     WHERE database = '{database}' AND table='{table}' AND partition_id = '{partition_id}'
@@ -1469,7 +1469,7 @@ class ClickhouseCTL:
         Filter deduplicated parts by partition.
         """
         result_json = self._ch_client.query(
-            GET_collect_verified_parts_by_partition_SQL.format(
+            GET_COLLECT_VERIFIED_PARTS_BY_PARTITION_SQL.format(
                 system_db=escape(self._backup_config["system_database"]),
                 database=escape(database),
                 table=escape(table),

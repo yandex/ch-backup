@@ -265,6 +265,7 @@ def _deduplication_process_raw_parts_info(
                 )
                 if not ignore_invalid:
                     return None
+                continue
 
         parts_metadata[part_metadata.name] = part_metadata
         logging.debug(
