@@ -16,8 +16,8 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ch_backup import logging
 from ch_backup.backup.deduplication import (
+    collect_verified_parts_by_partition,
     deduplicate_parts,
-    deduplicated_parts_by_partition,
 )
 from ch_backup.backup.metadata import PartMetadata, TableMetadata
 from ch_backup.backup.restore_context import PartState
@@ -53,7 +53,7 @@ class TableMetadataChangeTime:
     ctime_ns: int  # Time of most recent filesystem metadata(hardlinks) change expressed in nanoseconds.
 
 
-class FilteredPartitionsForFreeze:
+class FreezeSelector:
     """
     Filtered partitions for deduplication.
     """
@@ -72,6 +72,10 @@ class FilteredPartitionsForFreeze:
         """
         Mark partition for freeze.
         """
+        if partition not in self.partitions:
+            raise RuntimeError(
+                "Try to add partition to freeze but it is unknown partition."
+            )
         self.partitions_to_freeze.add(partition)
 
     @property
@@ -155,19 +159,19 @@ class TableBackup(BackupManager):
 
     def _filter_partition_for_freeze(
         self, context: BackupContext, tables: List[Table], schema_only: bool
-    ) -> List[Tuple[Table, FilteredPartitionsForFreeze]]:
+    ) -> List[Tuple[Table, FreezeSelector]]:
 
         # If schema only we shouldn't collect partitions.
         if schema_only:
-            return [(table, FilteredPartitionsForFreeze([], [])) for table in tables]
+            return [(table, FreezeSelector([], [])) for table in tables]
 
-        filtered_tables: List[Tuple[Table, FilteredPartitionsForFreeze]] = []
+        filtered_tables: List[Tuple[Table, FreezeSelector]] = []
         for table in tables:
             filtered_tables.append(
                 (
                     table,
-                    FilteredPartitionsForFreeze(
-                        partitions_to_freeze=context.ch_ctl.get_filtered_dedup_partitions(
+                    FreezeSelector(
+                        partitions_to_freeze=context.ch_ctl.get_changed_partitions(
                             table
                         ),
                         partitions=context.ch_ctl.list_partitions(table),
@@ -257,7 +261,7 @@ class TableBackup(BackupManager):
         context: BackupContext,
         db: Database,
         table: Table,
-        partitions_filters: FilteredPartitionsForFreeze,
+        partitions_filters: FreezeSelector,
         backup_name: str,
         schema_only: bool,
         parallelize_freeze_in_ch: bool,
@@ -283,12 +287,10 @@ class TableBackup(BackupManager):
         if not schema_only and table.is_merge_tree():
             # Validate unchanged partitions they might have invalid parts, which we should backup anyway
             for partition_id in partitions_filters.unchanged_partitions:
-                [unchanged_parts_for_partition, invalid_parts_count] = (
-                    deduplicated_parts_by_partition(
-                        context, db.name, table.name, partition_id
-                    )
+                unchanged_parts_for_partition = collect_verified_parts_by_partition(
+                    context, db.name, table.name, partition_id
                 )
-                if invalid_parts_count:
+                if not unchanged_parts_for_partition:
                     partitions_filters.add_partition_to_freeze(partition_id)
                     continue
                 unchanged_parts.extend(unchanged_parts_for_partition)

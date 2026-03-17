@@ -350,7 +350,7 @@ GET_DEDUPLICATED_PARTS_SQL = strip_query(
 """
 )
 
-GET_DEDUPLICATED_PARTS_BY_PARTITION_SQL = strip_query(
+GET_collect_verified_parts_by_partition_SQL = strip_query(
     """
     SELECT * FROM `{system_db}`._deduplication_info
     WHERE database = '{database}' AND table='{table}' AND partition_id = '{partition_id}'
@@ -359,7 +359,7 @@ GET_DEDUPLICATED_PARTS_BY_PARTITION_SQL = strip_query(
 )
 
 
-FILTER_DEDUP_PARTITION_SQL = strip_query(
+GET_CHANGED_PARTITIONS_SQL = strip_query(
     """
     WITH sys_parts AS
     (
@@ -372,7 +372,7 @@ FILTER_DEDUP_PARTITION_SQL = strip_query(
         FROM `{system_db}`._deduplication_info
         WHERE database='{database}' AND table = '{table}'
     )
-    SELECT partition_id
+    SELECT DISTINCT partition_id
     FROM sys_parts
     LEFT ANTI JOIN dedup
     USING (database, table, name, hash_of_all_files)
@@ -729,7 +729,11 @@ class ClickhouseCTL:
             query_settings["max_execution_time"] = self._freeze_timeout
 
         if do_freeze_by_partitions:
-            partitions_to_freeze = self.list_partitions(table)
+            partitions_to_freeze = (
+                self.list_partitions(table)
+                if not partitions_to_freeze
+                else partitions_to_freeze
+            )
             self.freeze_partitions(
                 backup_name, table, partitions_to_freeze, freeze_partition_threads
             )
@@ -1446,11 +1450,11 @@ class ClickhouseCTL:
             ),
         )
 
-    def get_filtered_dedup_partitions(self, table: Table) -> List[str]:
+    def get_changed_partitions(self, table: Table) -> List[str]:
         """
         Get list of partitions that remains the same.
         """
-        query = FILTER_DEDUP_PARTITION_SQL.format(
+        query = GET_CHANGED_PARTITIONS_SQL.format(
             database=table.database,
             table=table.name,
             system_db=escape(self._backup_config["system_database"]),
@@ -1465,7 +1469,7 @@ class ClickhouseCTL:
         Filter deduplicated parts by partition.
         """
         result_json = self._ch_client.query(
-            GET_DEDUPLICATED_PARTS_BY_PARTITION_SQL.format(
+            GET_collect_verified_parts_by_partition_SQL.format(
                 system_db=escape(self._backup_config["system_database"]),
                 database=escape(database),
                 table=escape(table),
