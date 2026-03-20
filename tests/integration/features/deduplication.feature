@@ -221,6 +221,10 @@ Feature: Deduplication
     When we create clickhouse01 clickhouse backup
     And we execute query on clickhouse01
     """
+    SYSTEM FLUSH LOGS
+    """
+    And we execute query on clickhouse01
+    """
     SELECT count() FROM system.query_log WHERE query ilike '%FREEZE%' AND type='QueryFinish' AND query_kind='Alter'
     """
     # Note: 1 freeze for test_table2 and one for test_table3
@@ -235,6 +239,10 @@ Feature: Deduplication
     TRUNCATE TABLE system.query_log;
     """
     When we create clickhouse01 clickhouse backup
+    And we execute query on clickhouse01
+    """
+    SYSTEM FLUSH LOGS
+    """
     And we execute query on clickhouse01
     """
     SELECT count() FROM system.query_log WHERE query ilike '%FREEZE%' AND type='QueryFinish' AND query_kind='Alter'
@@ -252,6 +260,10 @@ Feature: Deduplication
     TRUNCATE TABLE system.query_log;
     """
     When we create clickhouse01 clickhouse backup
+    And we execute query on clickhouse01
+    """
+    SYSTEM FLUSH LOGS
+    """
     And we execute query on clickhouse01
     """
     SELECT count() FROM system.query_log WHERE query ilike '%FREEZE%' AND type='QueryFinish' AND query_kind='Alter'
