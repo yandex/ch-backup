@@ -140,6 +140,10 @@ GET_DETACHED_TABLES_SQL = strip_query(
         table,
         uuid,
     FROM system.detached_tables
+    WHERE database IN (
+        SELECT name FROM system.databases
+        WHERE engine IN ('Atomic', 'Ordinary', 'Replicated', 'Lazy')
+    )
     FORMAT JSON
 """
 )
