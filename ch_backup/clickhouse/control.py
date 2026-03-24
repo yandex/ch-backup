@@ -368,14 +368,14 @@ GET_CHANGED_PARTITIONS_SQL = strip_query(
             WHERE database='{database}' AND table = '{table}' AND active=1
     ),
     dedup AS (
-        SELECT database, table, name, hash_of_all_files
+        SELECT database, table, name, hash_of_all_files, partition_id
         FROM `{system_db}`._deduplication_info
         WHERE database='{database}' AND table = '{table}'
     )
     SELECT DISTINCT partition_id
-    FROM sys_parts
-    LEFT ANTI JOIN dedup
-    USING (database, table, name, hash_of_all_files)
+    FROM dedup
+    RIGHT ANTI JOIN sys_parts
+    USING (database, table, name, hash_of_all_files, partition_id)
     FORMAT JSONCompact
 """
 )
