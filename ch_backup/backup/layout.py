@@ -42,6 +42,7 @@ class BackupLayout:
         self._access_control_path = config["clickhouse"]["access_control_path"]
         self._metadata_path = config["clickhouse"]["metadata_path"]
         self._named_collections_path = config["clickhouse"]["named_collections_path"]
+        self._workload_path = config["clickhouse"]["workload_path"]
         enc_conf = config["encryption"]
         self._encryption_chunk_size = enc_conf["chunk_size"]
         self._encryption_metadata_size = get_encryption(
@@ -332,6 +333,50 @@ class BackupLayout:
         Download named collection create statement.
         """
         remote_path = _named_collections_data_path(backup_meta.path, filename)
+        return self._storage_loader.download_data(remote_path, encryption=True)
+
+    def upload_workload_entity_ddl_from_file(
+        self, local_path: str, backup_name: str, entity_name: str
+    ) -> None:
+        """
+        Upload workload entity create statement file.
+        """
+        remote_path = _workload_entities_data_path(
+            self.get_backup_path(backup_name), entity_name
+        )
+        try:
+            logging.debug('Uploading workload entity create statement "{}"', entity_name)
+            self._storage_loader.upload_file(
+                local_path, remote_path=remote_path, encryption=True
+            )
+        except Exception as e:
+            msg = f"Failed to create async upload of {remote_path}"
+            raise StorageError(msg) from e
+
+    def get_local_we_create_statement(self, entity_name: str) -> Optional[str]:
+        """
+        Read workload entity create statement from local file.
+        """
+        local_path = os.path.join(
+            self._workload_path, f"{escape_metadata_file_name(entity_name)}.sql"
+        )
+        try:
+            return Path(local_path).read_bytes().decode("utf-8")
+        except OSError as e:
+            logging.debug(
+                'Cannot load a create statement of the workload entity "{}": {}',
+                entity_name,
+                str(e),
+            )
+            return None
+
+    def get_workload_entity_create_statement(
+        self, backup_meta: BackupMetadata, filename: str
+    ) -> str:
+        """
+        Download workload entity create statement.
+        """
+        remote_path = _workload_entities_data_path(backup_meta.path, filename)
         return self._storage_loader.download_data(remote_path, encryption=True)
 
     def get_backup_names(self) -> Sequence[str]:
@@ -878,6 +923,13 @@ def _named_collections_data_path(backup_path: str, nc_name: str) -> str:
     Return S3 path to named collections.
     """
     return os.path.join(backup_path, "named_collections", _quote(nc_name) + ".sql")
+
+
+def _workload_entities_data_path(backup_path: str, entity_name: str) -> str:
+    """
+    Return S3 path to workload entities.
+    """
+    return os.path.join(backup_path, "workload_entities", _quote(entity_name) + ".sql")
 
 
 def _part_path(

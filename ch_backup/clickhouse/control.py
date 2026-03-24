@@ -243,6 +243,18 @@ DROP_NAMED_COLLECTION_SQL = strip_query(
 """
 )
 
+DROP_WORKLOAD_SQL = strip_query(
+    """
+    DROP WORKLOAD `{entity_name}`
+"""
+)
+
+DROP_RESOURCE_SQL = strip_query(
+    """
+    DROP RESOURCE `{entity_name}`
+"""
+)
+
 TRUNCATE_TABLE_IF_EXISTS_SQL = strip_query(
     """
     TRUNCATE TABLE IF EXISTS `{db_name}`.`{table_name}`
@@ -442,6 +454,18 @@ GET_UDF_QUERY_SQL = strip_query(
 GET_NAMED_COLLECTIONS_QUERY_SQL = strip_query(
     """
     SELECT name FROM system.named_collections
+    FORMAT JSON
+"""
+)
+
+GET_WORKLOAD_ENTITIES_QUERY_SQL = strip_query(
+    """
+    SELECT name FROM (
+        SELECT name FROM system.workloads
+        UNION ALL
+        SELECT name FROM system.resources
+    )
+    ORDER BY name
     FORMAT JSON
 """
 )
@@ -908,6 +932,12 @@ class ClickhouseCTL:
         """
         self._ch_client.query(nc_statement)
 
+    def restore_workload_entity(self, entity_statement):
+        """
+        Restore workload entity (WORKLOAD or RESOURCE).
+        """
+        self._ch_client.query(entity_statement)
+
     def create_table(self, table: Table) -> None:
         """
         Restore table.
@@ -967,6 +997,16 @@ class ClickhouseCTL:
         Drop named collection.
         """
         self._ch_client.query(DROP_NAMED_COLLECTION_SQL.format(nc_name=escape(nc_name)))
+
+    def drop_workload_entity(self, entity_name: str) -> None:
+        """
+        Drop workload entity (WORKLOAD or RESOURCE).
+        Try dropping as WORKLOAD first, then as RESOURCE if that fails.
+        """
+        try:
+            self._ch_client.query(DROP_WORKLOAD_SQL.format(entity_name=escape(entity_name)))
+        except Exception:
+            self._ch_client.query(DROP_RESOURCE_SQL.format(entity_name=escape(entity_name)))
 
     def system_drop_replica(self, replica: str, zookeeper_path: str) -> None:
         """
@@ -1203,6 +1243,13 @@ class ClickhouseCTL:
         Get named collections query from system table.
         """
         resp = self._ch_client.query(GET_NAMED_COLLECTIONS_QUERY_SQL)
+        return [row["name"] for row in resp.get("data", [])]
+
+    def get_workload_entities_query(self) -> List[str]:
+        """
+        Get workload entities (WORKLOADs and RESOURCEs) from system tables.
+        """
+        resp = self._ch_client.query(GET_WORKLOAD_ENTITIES_QUERY_SQL)
         return [row["name"] for row in resp.get("data", [])]
 
     def decrypt_aes_ctr(
