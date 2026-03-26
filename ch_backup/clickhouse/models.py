@@ -102,11 +102,13 @@ class Table(SimpleNamespace):
         self._uuid = value
 
     @classmethod
-    def make_dummy(cls, database: str, name: str, uuid: str = None) -> "Table":
+    def make_dummy(
+        cls, database: str, name: str, uuid: str = None, metadata_path: str = ""
+    ) -> "Table":
         """
         Make dummy instance of Table only with database and table name.
         """
-        return cls(database, name, "", [], [], "", "", uuid)
+        return cls(database, name, "", [], [], metadata_path, "", uuid)
 
     def _map_paths_to_disks(
         self, disks: List[Disk], data_paths: List[str]

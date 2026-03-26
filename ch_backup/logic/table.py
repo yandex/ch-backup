@@ -576,6 +576,15 @@ class TableBackup(BackupManager):
             logging.debug(f"Failed to get stat of {file_name}: {str(e)}")
             return None
 
+    def _try_fix_broken_detached_table(
+        self, context: BackupContext, detached_table: Table
+    ) -> None:
+        context.ch_ctl.create_metadata_for_missed_detached_table(
+            detached_table.metadata_path, detached_table.uuid  # type: ignore
+        )
+        context.ch_ctl.attach_table(detached_table)
+        context.ch_ctl.drop_table_if_exists(detached_table)
+
     # pylint: disable=too-many-branches
     # pylint: disable=too-many-statements
     def _preprocess_tables_to_restore(
@@ -603,10 +612,19 @@ class TableBackup(BackupManager):
             if detached_table := (
                 detached_tables.get(table.uuid) if table.uuid else None
             ):
-                logging.debug(
-                    f'Table with uuid "{table.uuid}" already exists as detached, attaching it'
-                )
-                context.ch_ctl.attach_table(detached_table)
+                try:
+                    logging.debug(
+                        f'Table with uuid "{table.uuid}" already exists as detached, attaching it'
+                    )
+                    context.ch_ctl.attach_table(detached_table)
+                except ClickhouseError as ch_err:
+                    if "CANNOT_GET_CREATE_TABLE_QUERY" in str(ch_err):
+                        logging.warning(
+                            "Got an exception during attaching detached table. "
+                            "Will ignore the ignore and try to restore table as usual {}",
+                            repr(ch_err),
+                        )
+                        self._try_fix_broken_detached_table(context, detached_table)
 
         # Filter out already restored tables.
         existing_tables_by_name = {}

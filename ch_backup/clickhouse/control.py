@@ -139,6 +139,7 @@ GET_DETACHED_TABLES_SQL = strip_query(
         database,
         table,
         uuid,
+        metadata_path
     FROM system.detached_tables
     WHERE database IN (
         SELECT name FROM system.databases
@@ -501,6 +502,18 @@ GET_PARTITIONS = strip_query(
 """
 )
 
+METADATA_PLACEHOLDER_FOR_MISSED_DETACHED_TABLE = strip_query(
+    """
+ATTACH TABLE _ UUID '{uuid}'
+(
+    `a` UInt32
+)
+ENGINE = MergeTree
+ORDER BY a
+SETTINGS index_granularity = 8192
+"""
+)
+
 
 # pylint: disable=too-many-public-methods
 class ClickhouseCTL:
@@ -821,6 +834,20 @@ class ClickhouseCTL:
 
         return result
 
+    def create_metadata_for_missed_detached_table(
+        self, metadata_path: str, uuid: str
+    ) -> None:
+        """
+        Clickhouse keeps info about detached tables in memory and doesn't expects that
+        metadata clould be removed. So we the put file manually to remove the info from clickhouse.
+        """
+        attach_statement = METADATA_PLACEHOLDER_FOR_MISSED_DETACHED_TABLE.format(
+            uuid=uuid
+        )
+        metadata_file_path = f"/var/lib/clickhouse/{metadata_path}"
+        with open(metadata_file_path, "w", encoding="utf-8") as f:
+            f.write(attach_statement)
+
     def get_detached_tables(self) -> Sequence[Table]:
         """
         Get detached tables.
@@ -834,7 +861,11 @@ class ClickhouseCTL:
             return result
 
         for row in self._ch_client.query(GET_DETACHED_TABLES_SQL)["data"]:
-            result.append(Table.make_dummy(row["database"], row["table"], row["uuid"]))
+            result.append(
+                Table.make_dummy(
+                    row["database"], row["table"], row["uuid"], row["metadata_path"]
+                )
+            )
         return result
 
     def get_table(

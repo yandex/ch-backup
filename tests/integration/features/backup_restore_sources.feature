@@ -273,6 +273,32 @@ Scenario: Detached table is not a blocker to backup restore.
     And we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
+
+
+# Note : Clickhouse keeps info about detached tables in the memory,
+# so for the ch the file still metadata file is still exists even it was deleted.
+@require_version_24.8
+Scenario: Broken detached table is not a blocker to backup restore.
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    ATTACH TABLE test_db.table_01 UUID 'c38d1e72-83d4-4828-a110-16c937207574' (n Int32) ENGINE = MergeTree() PARTITION BY n%100 ORDER BY n;
+    """
+    And we have executed queries on clickhouse02
+    """
+    CREATE DATABASE test_db;
+    ATTACH TABLE test_db.table_01 UUID 'c38d1e72-83d4-4828-a110-16c937207574' (n Int32) ENGINE = MergeTree() PARTITION BY n%100 ORDER BY n;
+    DETACH TABLE test_db.table_01;
+    """
+    Given we have executed command on clickhouse02
+    """
+    rm -rf /var/lib/clickhouse/metadata/test_db/table_01.sql
+    """
+    When we create clickhouse01 clickhouse backup
+    And we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
+
 @require_version_25.11
 Scenario: Parallel freeze over parallelization in ch-backup.
     Given ch-backup configuration on clickhouse01
