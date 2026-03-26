@@ -283,6 +283,29 @@ class TableBackup(BackupManager):
 
         context.backup_layout.upload_backup_metadata(context.backup_meta)
 
+    @staticmethod
+    def _collect_unchanged_parts(
+        context: BackupContext,
+        db_name: str,
+        table_name: str,
+        partitions_filters: FreezeSelector,
+    ) -> Tuple[FreezeSelector, List[PartMetadata]]:
+
+        unchanged_parts: List[PartMetadata] = []
+        for partition_id in partitions_filters.unchanged_partitions:
+            unchanged_parts_for_partition = collect_verified_parts_by_partition(
+                context, db_name, table_name, partition_id
+            )
+            if not unchanged_parts_for_partition:
+                logging.debug(
+                    "Found invalid parts in partititon {}. Add partition to freeze",
+                    partition_id,
+                )
+                partitions_filters.add_partition_to_freeze(partition_id)
+                continue
+            unchanged_parts.extend(unchanged_parts_for_partition)
+        return (partitions_filters, unchanged_parts)
+
     # pylint: disable=too-many-positional-arguments
     @staticmethod
     def _freeze_table(
@@ -314,18 +337,11 @@ class TableBackup(BackupManager):
         # Freeze only MergeTree tables
         if not schema_only and table.is_merge_tree():
             # Validate unchanged partitions they might have invalid parts, which we should backup anyway
-            for partition_id in partitions_filters.unchanged_partitions:
-                unchanged_parts_for_partition = collect_verified_parts_by_partition(
-                    context, db.name, table.name, partition_id
+            [partitions_filters, unchanged_parts] = (
+                TableBackup._collect_unchanged_parts(
+                    context, db.name, table.name, partitions_filters
                 )
-                if not unchanged_parts_for_partition:
-                    logging.debug(
-                        "Found invalid parts in partititon {}. Add partition to freeze",
-                        partition_id,
-                    )
-                    partitions_filters.add_partition_to_freeze(partition_id)
-                    continue
-                unchanged_parts.extend(unchanged_parts_for_partition)
+            )
 
             try:
                 if partitions_filters.need_freeze_all_partitions():
