@@ -838,13 +838,18 @@ class ClickhouseCTL:
         self, metadata_path: str, uuid: str
     ) -> None:
         """
-        Clickhouse keeps info about detached tables in memory and doesn't expects that
-        metadata clould be removed. So we the put file manually to remove the info from clickhouse.
+        Clickhouse keeps info about detached tables in memory and doesn't expect that
+        metadata could be removed. So we put the file manually to remove the info from clickhouse.
         """
         attach_statement = METADATA_PLACEHOLDER_FOR_MISSED_DETACHED_TABLE.format(
             uuid=uuid
         )
-        metadata_file_path = f"/var/lib/clickhouse/{metadata_path}"
+        if self.ch_version_ge("24.8"):
+            metadata_file_path = f"{self._root_data_path}/{metadata_path}"
+        else:
+            # Until 25.3 the metadata is path abs.
+            metadata_file_path = metadata_path
+
         with open(metadata_file_path, "w", encoding="utf-8") as f:
             f.write(attach_statement)
 
