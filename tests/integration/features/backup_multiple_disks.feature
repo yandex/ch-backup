@@ -68,7 +68,7 @@ Feature: Backup & Restore multiple disks and S3
     """
     And we execute query on clickhouse02
     """
-    SELECT count() FROM system.parts WHERE table = 'table_01' and disk_name = 's3'
+    SELECT count() FROM system.parts WHERE table = 'table_01' and disk_name LIKE 's3%'
     """
     Then we get response
     """
@@ -111,7 +111,7 @@ Feature: Backup & Restore multiple disks and S3
     """
     And we execute query on clickhouse02
     """
-    SELECT count() FROM system.parts WHERE table = 'table_01' and disk_name = 's3'
+    SELECT count() FROM system.parts WHERE table = 'table_01' and disk_name LIKE 's3%'
     """
     Then we get response
     """
@@ -160,7 +160,7 @@ Feature: Backup & Restore multiple disks and S3
     """
     And we execute query on clickhouse02
     """
-    SELECT count() FROM system.parts WHERE disk_name = 's3'
+    SELECT count() FROM system.parts WHERE disk_name LIKE 's3%'
     """
     Then we get response
     """
@@ -256,7 +256,7 @@ Feature: Backup & Restore multiple disks and S3
     """
     And we execute query on clickhouse02
     """
-    SELECT count() FROM system.parts WHERE table = 'table_01' and disk_name = 's3'
+    SELECT count() FROM system.parts WHERE table = 'table_01' and disk_name LIKE 's3%'
     """
     Then we get response
     """
