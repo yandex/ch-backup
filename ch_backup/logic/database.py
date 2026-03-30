@@ -104,9 +104,14 @@ class DatabaseBackup(BackupManager):
             metadata_cleaner.clean_database_metadata(replicated_databases)
 
         logging.debug("Downloading database create statements")
+        databases_to_download = [
+            name
+            for name, db in databases_to_restore.items()
+            if not db.has_embedded_metadata()
+        ]
         create_statements = dict(
             context.backup_layout.get_database_create_statements(
-                context.backup_meta, list(databases_to_restore.keys())
+                context.backup_meta, databases_to_download
             )
         )
 
