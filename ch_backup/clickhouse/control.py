@@ -925,7 +925,7 @@ class ClickhouseCTL:
         attach_statement = METADATA_PLACEHOLDER_FOR_MISSED_DETACHED_TABLE.format(
             uuid=uuid
         )
-        if self.ch_version_ge("24.8"):
+        if self.ch_version_ge("25.3"):
             metadata_file_path = f"{self._root_data_path}/{metadata_path}"
         else:
             # Until 25.3 the metadata is path abs.
