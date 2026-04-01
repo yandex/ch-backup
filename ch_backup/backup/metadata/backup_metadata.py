@@ -174,10 +174,11 @@ class BackupMetadata:
             ValueError: If database or table not found, or if table format is invalid
         """
         indent = 2 if pretty else None
+        separators = None if pretty else (",", ":")
 
         # If no filters, use standard dump
         if not database and not table:
-            return json.dumps(self.dump(light), separators=(",", ":"), indent=indent)
+            return json.dumps(self.dump(light), separators=separators, indent=indent)
 
         # Apply filters
         data = self.dump(light)
