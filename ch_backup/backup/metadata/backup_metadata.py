@@ -151,11 +151,71 @@ class BackupMetadata:
             },
         }
 
-    def dump_json(self, light: bool = False) -> str:
+    def dump_json(
+        self,
+        light: bool = False,
+        pretty: bool = False,
+        database: Optional[str] = None,
+        table: Optional[str] = None,
+    ) -> str:
         """
         Return json representation of backup metadata.
+
+        Args:
+            light: If True, return lightweight metadata without detailed information
+            pretty: If True, format JSON with indentation
+            database: Filter to show only this database
+            table: Filter to show only this table (format: db.table or table when database is set)
+
+        Returns:
+            JSON string representation of backup metadata
+
+        Raises:
+            ValueError: If database or table not found, or if table format is invalid
         """
-        return json.dumps(self.dump(light), separators=(",", ":"))
+        indent = 2 if pretty else None
+
+        # If no filters, use standard dump
+        if not database and not table:
+            return json.dumps(self.dump(light), separators=(",", ":"), indent=indent)
+
+        # Apply filters
+        data = self.dump(light)
+
+        # Parse table specification if provided
+        table_name = None
+        if table:
+            if "." in table:
+                db_name, table_name = table.split(".", 1)
+                if database and database != db_name:
+                    raise ValueError(
+                        f'Table specification "{table}" conflicts with database "{database}"'
+                    )
+                database = db_name
+            elif database:
+                table_name = table
+            else:
+                raise ValueError(
+                    f'Table "{table}" must be in format "database.table" or database must be specified'
+                )
+
+        # Filter by database
+        if database:
+            if database not in data["databases"]:
+                raise ValueError(f'Database "{database}" not found in backup')
+            data["databases"] = {database: data["databases"][database]}
+
+            # Filter by table if specified
+            if table_name:
+                if table_name not in data["databases"][database]["tables"]:
+                    raise ValueError(
+                        f'Table "{database}.{table_name}" not found in backup'
+                    )
+                data["databases"][database]["tables"] = {
+                    table_name: data["databases"][database]["tables"][table_name]
+                }
+
+        return json.dumps(data, separators=(",", ":"), indent=indent)
 
     @classmethod
     def load(cls, data: dict) -> "BackupMetadata":

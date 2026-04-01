@@ -266,11 +266,37 @@ def list_command(
 
 @command(name="show")  # type: ignore
 @argument("name", metavar="BACKUP")
-def show_command(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> None:
+@option("--pretty", is_flag=True, default=False, help="Pretty output.")
+@option(
+    "-d",
+    "--database",
+    type=str,
+    help="Filter output to show only the specified database.",
+)
+@option(
+    "-t",
+    "--table",
+    type=str,
+    help="Filter output to show only the specified table (format: db.table or table when used with --database).",
+)
+# pylint: disable=too-many-positional-arguments
+def show_command(
+    ctx: Context,
+    ch_backup: ClickhouseBackup,
+    name: str,
+    pretty: bool,
+    database: Optional[str],
+    table: Optional[str],
+) -> None:
     """Show details for a particular backup."""
     name = _validate_and_resolve_name(ctx, ch_backup, name)
 
-    print(ch_backup.get(name))
+    try:
+        print(
+            ch_backup.get(name).dump_json(pretty=pretty, database=database, table=table)
+        )
+    except ValueError as e:
+        ctx.fail(str(e))
 
 
 @command(name="backup")
