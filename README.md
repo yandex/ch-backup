@@ -23,6 +23,7 @@ Python whl package that can be installed using `pip install` or `uv tool install
 
 <details>
 <summary>Example</summary>
+
 ```
 $ make build
 uv build
@@ -31,6 +32,7 @@ Building wheel from source distribution...
 Successfully built dist/ch_backup-2.690.221827381.tar.gz
 Successfully built dist/ch_backup-2.690.221827381-py3-none-any.whl
 ```
+
 ```
 $ uv tool install dist/*whl
 Resolved 29 packages in 434ms
