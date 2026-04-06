@@ -18,7 +18,7 @@ The tool also supports deduplication at part-level granularity. It's set up
 
 ## Installation
 
-In order to get up-to-date version of ch-backup run `make build`. It will produce
+In order to get an up-to-date version of ch-backup, run `make build`. It will produce
 Python whl package that can be installed using `pip install` or `uv tool install`.
 
 
