@@ -13,17 +13,7 @@ class RawMetadata(Slotted):
     Raw metadata for ClickHouse data part.
     """
 
-    __slots__ = (
-        "checksum",
-        "size",
-        "files",
-        "tarball",
-        "link",
-        "disk_name",
-        "encrypted",
-        "hash_of_all_files",
-        "partition_id",
-    )
+    __slots__ = "checksum", "size", "files", "tarball", "link", "disk_name", "encrypted"
 
     # pylint: disable=too-many-positional-arguments
     def __init__(
@@ -35,8 +25,6 @@ class RawMetadata(Slotted):
         link: str = None,
         disk_name: str = None,
         encrypted: bool = True,
-        hash_of_all_files: str = "",
-        partition_id: str = "",
     ) -> None:
         self.checksum = checksum
         self.size = size
@@ -45,8 +33,6 @@ class RawMetadata(Slotted):
         self.link = link
         self.disk_name = disk_name
         self.encrypted = encrypted
-        self.hash_of_all_files = hash_of_all_files
-        self.partition_id = partition_id
 
 
 class PartMetadata(Slotted):
@@ -69,22 +55,12 @@ class PartMetadata(Slotted):
         link: str = None,
         disk_name: str = None,
         encrypted: bool = True,
-        hash_of_all_files: str = "",
-        partition_id: str = "",
     ) -> None:
         self.database: str = database
         self.table: str = table
         self.name: str = name
         self.raw_metadata: RawMetadata = RawMetadata(
-            checksum,
-            size,
-            files,
-            tarball,
-            link,
-            disk_name,
-            encrypted,
-            hash_of_all_files,
-            partition_id,
+            checksum, size, files, tarball, link, disk_name, encrypted
         )
 
     @property
@@ -136,20 +112,6 @@ class PartMetadata(Slotted):
         """
         return self.raw_metadata.tarball
 
-    @property
-    def hash_of_all_files(self) -> str:
-        """
-        Returns hash_of_all_files of the part.
-        """
-        return self.raw_metadata.hash_of_all_files
-
-    @property
-    def partition_id(self) -> str:
-        """
-        Returns partition_id of the part.
-        """
-        return self.raw_metadata.partition_id
-
     @classmethod
     def load(
         cls, db_name: str, table_name: str, part_name: str, raw_metadata: dict
@@ -168,8 +130,6 @@ class PartMetadata(Slotted):
             link=raw_metadata["link"],
             disk_name=raw_metadata.get("disk_name", "default"),
             encrypted=raw_metadata.get("encrypted", True),
-            hash_of_all_files=raw_metadata.get("hash_of_all_files", ""),
-            partition_id=raw_metadata.get("partition_id", ""),
         )
 
     @classmethod

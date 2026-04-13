@@ -5,7 +5,7 @@ Data part deduplication.
 from collections import defaultdict
 from copy import copy
 from datetime import timedelta
-from typing import Dict, List, Optional, Sequence, Set
+from typing import Dict, List, Sequence, Set
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
@@ -33,8 +33,6 @@ class PartDedupInfo(Slotted):
         "disk_name",
         "verified",
         "encrypted",
-        "hash_of_all_files",
-        "partition_id",
     )
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -51,8 +49,6 @@ class PartDedupInfo(Slotted):
         disk_name: str,
         verified: bool,
         encrypted: bool,
-        hash_of_all_files: str,
-        partition_id: str,
     ) -> None:
         self.database = database
         self.table = table
@@ -65,15 +61,13 @@ class PartDedupInfo(Slotted):
         self.disk_name = disk_name
         self.verified = verified
         self.encrypted = encrypted
-        self.hash_of_all_files = hash_of_all_files
-        self.partition_id = partition_id
 
     def to_sql(self):
         """
         Convert to string to use it in insert query
         """
         files_array = "[" + ",".join(f"'{file}'" for file in self.files) + "]"
-        return f"('{self.database}','{self.table}','{self.name}','{self.backup_path}','{self.checksum}',{self.size},{files_array},{int(self.tarball)},'{self.disk_name}',{int(self.verified)}, {int(self.encrypted)}, '{self.hash_of_all_files}', '{self.partition_id}')"
+        return f"('{self.database}','{self.table}','{self.name}','{self.backup_path}','{self.checksum}',{self.size},{files_array},{int(self.tarball)},'{self.disk_name}',{int(self.verified)}, {int(self.encrypted)})"
 
 
 TableDedupReferences = Set[str]
@@ -215,8 +209,6 @@ def _populate_dedup_info(
                         disk_name=part.disk_name,
                         verified=verified,
                         encrypted=part.encrypted,
-                        hash_of_all_files=part.hash_of_all_files,
-                        partition_id=part.partition_id,
                     )
 
                     table_dedup_info.add(part.name)
@@ -233,64 +225,6 @@ def _populate_dedup_info(
             break
 
 
-def _deduplication_process_raw_parts_info(
-    layout: BackupLayout,
-    database: str,
-    table: str,
-    parts_raw: List[Dict],
-    ignore_invalid: bool,
-) -> Optional[Dict[str, PartMetadata]]:
-    parts_metadata: Dict[str, PartMetadata] = {}
-    for part in parts_raw:
-        part_metadata = PartMetadata(
-            database=database,
-            table=table,
-            name=part["name"],
-            checksum=part["checksum"],
-            size=int(part["size"]),
-            link=part["backup_path"],
-            files=part["files"],
-            tarball=part["tarball"],
-            disk_name=part["disk_name"],
-            encrypted=part.get("encrypted", True),
-            hash_of_all_files=part.get("hash_of_all_files", ""),
-            partition_id=part.get("partition_id", ""),
-        )
-        if not part["verified"]:
-            if not layout.check_data_part(part["backup_path"], part_metadata):
-                logging.debug(
-                    'Part "{}" found in "{}", but it\'s invalid, skipping',
-                    part_metadata.name,
-                    part["backup_path"],
-                )
-                if not ignore_invalid:
-                    return None
-                continue
-
-        parts_metadata[part_metadata.name] = part_metadata
-        logging.debug(
-            'Part "{}" found in "{}", reusing', part_metadata.name, part["backup_path"]
-        )
-
-    return parts_metadata
-
-
-def collect_verified_parts_by_partition(
-    context: BackupContext, database: str, table: str, partition_id: str
-) -> Optional[List[PartMetadata]]:
-    """
-    Deduplicate parts by partition.
-    """
-    parts = context.ch_ctl.get_deduplication_info_by_partition(
-        database, table, partition_id
-    )
-    layout = context.backup_layout
-    result = _deduplication_process_raw_parts_info(
-        layout, database, table, parts, False
-    )
-    return list(result.values()) if result else None
-
-
 def deduplicate_parts(
     context: BackupContext,
     database: str,
@@ -305,9 +239,38 @@ def deduplicate_parts(
     existing_parts = context.ch_ctl.get_deduplication_info(
         database, table, frozen_parts
     )
-    return _deduplication_process_raw_parts_info(  # type: ignore
-        layout, database, table, existing_parts, True
-    )
+    deduplicated_parts: Dict[str, PartMetadata] = {}
+
+    for existing_part in existing_parts:
+        part = PartMetadata(
+            database=database,
+            table=table,
+            name=existing_part["name"],
+            checksum=existing_part["checksum"],
+            size=int(existing_part["size"]),
+            link=existing_part["backup_path"],
+            files=existing_part["files"],
+            tarball=existing_part["tarball"],
+            disk_name=existing_part["disk_name"],
+            encrypted=existing_part.get("encrypted", True),
+        )
+
+        if not existing_part["verified"]:
+            if not layout.check_data_part(existing_part["backup_path"], part):
+                logging.debug(
+                    'Part "{}" found in "{}", but it\'s invalid, skipping',
+                    part.name,
+                    existing_part["backup_path"],
+                )
+                continue
+
+        deduplicated_parts[part.name] = part
+
+        logging.debug(
+            'Part "{}" found in "{}", reusing', part.name, existing_part["backup_path"]
+        )
+
+    return deduplicated_parts
 
 
 def collect_dedup_references_for_batch_backup_deletion(

@@ -98,9 +98,6 @@ def test_backup_table_skipping_if_metadata_updated_during_backup(
             UUID,
         ),
     ]
-    clickhouse_ctl_mock.get_changed_partitions.return_value = []
-    clickhouse_ctl_mock.list_partitions.return_value = []
-    clickhouse_ctl_mock.get_active_parts.return_value = []
     clickhouse_ctl_mock.get_disks.return_value = {}
     context.ch_ctl = clickhouse_ctl_mock
 

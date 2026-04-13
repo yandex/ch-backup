@@ -409,21 +409,6 @@ class BackupMetadata:
         if not part.link:
             self.real_size += part.size
 
-    def add_part_dedup_filter(
-        self,
-        database: str,
-        table: str,
-        name: str,
-        hash_of_all_files: str,
-        partition_id: str,
-    ) -> None:
-        """
-        Populate part with deuduplication filters
-        """
-        self.get_table(database, table).add_part_dedup_filter(
-            name, partition_id, hash_of_all_files
-        )
-
     def remove_parts(self, table: TableMetadata, parts: List[PartMetadata]) -> None:
         """
         Remove data parts from backup metadata.
