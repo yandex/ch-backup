@@ -189,6 +189,11 @@ class Table(SimpleNamespace):
     def __hash__(self) -> int:  # type: ignore
         return hash((self.database, self.name))
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Table):
+            return NotImplemented
+        return self.database == other.database and self.name == other.name
+
     def is_dictionary(self) -> bool:
         """
         Return True if table is dictionary.
