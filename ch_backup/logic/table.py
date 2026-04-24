@@ -84,6 +84,15 @@ class TableBackup(BackupManager):
         ):
             context.ch_ctl.kill_old_freeze_queries()
 
+        # Collect modification timestamps of table metadata files for all databases
+        # for optimistic concurrency control of backup creation.
+        # To ensure consistency between metadata and data backups in case of EXCHANGE TABLES
+        # within a single backup run.
+        # See https://en.wikipedia.org/wiki/Optimistic_concurrency_control
+        change_times = self._collect_local_metadata_change_times(
+            context, databases, db_tables
+        )
+
         for db in databases:
             self._backup(
                 context,
@@ -92,28 +101,35 @@ class TableBackup(BackupManager):
                 backup_name,
                 schema_only,
                 multiprocessing_config,
+                change_times,
             )
 
     def _collect_local_metadata_change_times(
-        self, context: BackupContext, db: Database, tables: Sequence[str]
-    ) -> Dict[str, TableMetadataChangeTime]:
+        self,
+        context: BackupContext,
+        databases: Sequence[Database],
+        db_tables: Dict[str, list],
+    ) -> Dict[Table, TableMetadataChangeTime]:
         """
         Collect modification timestamps of table metadata files.
         """
         logging.debug("Collecting local metadata modification times")
-        res = {}
+        res: Dict[Table, TableMetadataChangeTime] = {}
 
-        for table in context.ch_ctl.get_tables(db.name, tables):
-            change_time = self._get_change_time(table.metadata_path)
-            if change_time is None:
-                logging.warning(
-                    'Cannot get metadata change time for table "{}"."{}". Skipping it',
-                    table.database,
-                    table.name,
-                )
+        for db in databases:
+            if db.is_external_db_engine():
                 continue
+            for table in context.ch_ctl.get_tables(db.name, db_tables[db.name]):
+                change_time = self._get_change_time(table.metadata_path)
+                if change_time is None:
+                    logging.warning(
+                        'Cannot get metadata change time for table "{}"."{}". Skipping it',
+                        table.database,
+                        table.name,
+                    )
+                    continue
 
-            res[table.name] = change_time
+                res[table] = change_time
 
         return res
 
@@ -126,24 +142,17 @@ class TableBackup(BackupManager):
         backup_name: str,
         schema_only: bool,
         multiprocessing_config: Dict,
+        change_times: Dict[Table, TableMetadataChangeTime],
     ) -> None:
         """
         Backup single database tables.
         """
         if not db.is_external_db_engine():
-            # Collect modification timestamps of table metadata files for optimistic concurrency
-            # control of backup creation.
-            # To ensure consistency between metadata and data backups.
-            # See https://en.wikipedia.org/wiki/Optimistic_concurrency_control
-            change_times = self._collect_local_metadata_change_times(
-                context, db, tables
-            )
-            tables_ = list(
-                filter(
-                    lambda table: table.name in change_times,
-                    context.ch_ctl.get_tables(db.name, tables),
-                )
-            )
+            tables_ = [
+                table
+                for table in context.ch_ctl.get_tables(db.name, tables)
+                if table in change_times
+            ]
 
             create_statements_to_backup = []
 
@@ -425,13 +434,13 @@ class TableBackup(BackupManager):
         context: BackupContext,
         table: Table,
         backup_name: str,
-        change_times: Dict[str, TableMetadataChangeTime],
+        change_times: Dict[Table, TableMetadataChangeTime],
     ) -> bool:
         """
         Check if table metadata was updated.
         """
         new_change_time = self._get_change_time(table.metadata_path)
-        if new_change_time is not None and change_times[table.name] == new_change_time:
+        if new_change_time is not None and change_times[table] == new_change_time:
             return True
 
         logging.warning(
