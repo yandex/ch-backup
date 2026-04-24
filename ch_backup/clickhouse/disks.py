@@ -74,7 +74,9 @@ class ClickHouseTemporaryDisks:
         self._ch_availible_disks: Dict[str, Disk] = {}
 
     def __enter__(self):
-        self._disks = self._ch_config.config["storage_configuration"]["disks"]
+        self._disks = self._ch_config.config.get("storage_configuration", {}).get(
+            "disks", {}
+        )
         for disk_name in self._backup_meta.cloud_storage.disks:
             self._create_temporary_disk(
                 self._backup_meta,
@@ -141,29 +143,31 @@ class ClickHouseTemporaryDisks:
     ) -> None:
         tmp_disk_name = _get_tmp_disk_name(disk_name)
         logging.debug(f"Creating tmp disk {tmp_disk_name}")
-        disk_config = copy.copy(
-            self._ch_config.config["storage_configuration"]["disks"][disk_name]
-        )
+        if disk_name not in self._disks:
+            raise ClickHouseDisksException(
+                f'Disk "{disk_name}" is present in backup cloud storage metadata'
+                f" but is missing from ClickHouse storage_configuration."
+                f" Add the disk to the ClickHouse configuration and retry."
+            )
+        disk_config = copy.copy(self._disks[disk_name])
 
         endpoint = urlparse(disk_config["endpoint"])
         endpoint_netloc = source_endpoint or endpoint.netloc
 
-        tmp_disk_enpoint = os.path.join(
+        tmp_disk_endpoint = os.path.join(
             f"{endpoint.scheme}://{endpoint_netloc}", source_bucket, source_path, ""
         )
-        orig_disk_enpoint = self._ch_config.config["storage_configuration"]["disks"][
-            disk_name
-        ]["endpoint"]
+        orig_disk_endpoint = self._disks[disk_name]["endpoint"]
 
         if self._use_local_copy and not is_equal_s3_endpoints(
-            tmp_disk_enpoint, orig_disk_enpoint
+            tmp_disk_endpoint, orig_disk_endpoint
         ):
             raise RuntimeError(
-                f"Endpoint of tmp object storage disk is not equal to original (original {orig_disk_enpoint}  tmp: {tmp_disk_enpoint})."
+                f"Endpoint of tmp object storage disk is not equal to original (original {orig_disk_endpoint}  tmp: {tmp_disk_endpoint})."
                 "It is required for inplace restore mode."
             )
 
-        disk_config["endpoint"] = tmp_disk_enpoint
+        disk_config["endpoint"] = tmp_disk_endpoint
 
         disks_config = {tmp_disk_name: disk_config}
 

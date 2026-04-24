@@ -1,0 +1,52 @@
+<yandex>
+    <!-- Storage configuration intentionally missing the 's3' disk.
+         Used in integration tests to verify that ch-backup raises
+         ClickHouseDisksException (not a bare KeyError) when a disk
+         referenced in backup cloud_storage metadata is absent from
+         the ClickHouse storage_configuration. -->
+    <storage_configuration>
+        <disks>
+            <hdd1>
+                <path>/hdd1/</path>
+            </hdd1>
+            <hdd2>
+                <path>/hdd2/</path>
+            </hdd2>
+        </disks>
+
+        <policies>
+            <multiple_disks>
+                <volumes>
+                    <main>
+                        <disk>default</disk>
+                    </main>
+                    <hdd1>
+                        <disk>hdd1</disk>
+                    </hdd1>
+                    <hdd2>
+                        <disk>hdd2</disk>
+                    </hdd2>
+                </volumes>
+                <move_factor>0.0</move_factor>
+            </multiple_disks>
+
+            <s3>
+                <volumes>
+                    <main>
+                        <disk>default</disk>
+                    </main>
+                </volumes>
+                <move_factor>0.0</move_factor>
+            </s3>
+
+            <s3_cold>
+                <volumes>
+                    <main>
+                        <disk>default</disk>
+                    </main>
+                </volumes>
+                <move_factor>0.0</move_factor>
+            </s3_cold>
+        </policies>
+    </storage_configuration>
+</yandex>
