@@ -7,7 +7,7 @@ from behave import given, then, when
 from hamcrest import assert_that, contains_string, equal_to, has_length
 from tenacity import retry, stop_after_attempt, wait_fixed
 
-from tests.integration.modules.ch_backup import BackupManager
+from tests.integration.modules.ch_backup_cli import BackupManager
 from tests.integration.modules.clickhouse import ClickhouseClient
 from tests.integration.modules.docker import get_container, put_file
 from tests.integration.modules.steps import get_step_data

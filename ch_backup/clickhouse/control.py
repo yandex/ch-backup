@@ -324,7 +324,7 @@ CREATE_IF_NOT_EXISTS_DEDUP_TABLE_SQL = strip_query(
         database String,
         table String,
         name String,
-        backup_path String,
+        backup_name String,
         checksum String,
         size Int64,
         files Array(String),

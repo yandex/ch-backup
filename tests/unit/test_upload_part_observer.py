@@ -2,9 +2,7 @@ import copy
 from typing import List
 from unittest.mock import Mock, patch
 
-from ch_backup.backup.metadata.backup_metadata import BackupMetadata
-from ch_backup.backup.metadata.part_metadata import PartMetadata
-from ch_backup.backup.metadata.table_metadata import TableMetadata
+from ch_backup.backup.metadata import BackupMetadata, PartMetadata, TableMetadata
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.models import Database
 from ch_backup.logic.upload_part_observer import UploadPartObserver
@@ -17,7 +15,6 @@ ENGINE = "MergeTree"
 BACKUP_NAME = "TestBackup"
 BACKUP_META = BackupMetadata(
     name=BACKUP_NAME,
-    path=f"ch_backup/{BACKUP_NAME}",
     version="1.0.100",
     ch_version="19.1.16",
     time_format="%Y-%m-%dT%H:%M:%S%Z",

@@ -3,7 +3,7 @@
 import time
 from typing import List
 
-from ch_backup.backup.metadata.part_metadata import PartMetadata
+from ch_backup.backup.metadata import PartMetadata
 from ch_backup.backup_context import BackupContext
 
 

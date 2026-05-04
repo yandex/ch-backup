@@ -114,6 +114,8 @@ def backup_metadata(
         {
             "meta": {
                 "name": name,
+                # DEPRECATED: the ``path`` field is kept for backward
+                # compatibility with older ch-backup versions.
                 "path": f"ch_backup/{name}",
                 "hostname": hostname,
                 "state": state,

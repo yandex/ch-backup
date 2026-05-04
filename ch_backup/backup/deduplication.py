@@ -25,7 +25,7 @@ class PartDedupInfo(Slotted):
         "database",
         "table",
         "name",
-        "backup_path",
+        "backup_name",
         "checksum",
         "size",
         "files",
@@ -41,7 +41,7 @@ class PartDedupInfo(Slotted):
         database: str,
         table: str,
         name: str,
-        backup_path: str,
+        backup_name: str,
         checksum: str,
         size: int,
         files: Sequence[str],
@@ -53,7 +53,7 @@ class PartDedupInfo(Slotted):
         self.database = database
         self.table = table
         self.name = name
-        self.backup_path = backup_path
+        self.backup_name = backup_name
         self.checksum = checksum
         self.size = size
         self.files = files
@@ -67,7 +67,7 @@ class PartDedupInfo(Slotted):
         Convert to string to use it in insert query
         """
         files_array = "[" + ",".join(f"'{file}'" for file in self.files) + "]"
-        return f"('{self.database}','{self.table}','{self.name}','{self.backup_path}','{self.checksum}',{self.size},{files_array},{int(self.tarball)},'{self.disk_name}',{int(self.verified)}, {int(self.encrypted)})"
+        return f"('{self.database}','{self.table}','{self.name}','{self.backup_name}','{self.checksum}',{self.size},{files_array},{int(self.tarball)},'{self.disk_name}',{int(self.verified)}, {int(self.encrypted)})"
 
 
 TableDedupReferences = Set[str]
@@ -148,7 +148,7 @@ def _populate_dedup_info(
     dedup_batch_size = context.config["deduplication_batch_size"]
 
     databases_to_handle = {db.name: _DatabaseToHandle(db.name) for db in databases}
-    dedup_backup_paths = set(backup.path for backup in dedup_backups_with_light_meta)
+    dedup_backup_names = {backup.name for backup in dedup_backups_with_light_meta}
     for backup in dedup_backups_with_light_meta:
         backup = layout.reload_backup(backup, use_light_meta=False)
 
@@ -190,18 +190,18 @@ def _populate_dedup_info(
 
                     if part.link:
                         verified = True
-                        backup_path = part.link
-                        if backup_path not in dedup_backup_paths:
+                        backup_name = part.link
+                        if backup_name not in dedup_backup_names:
                             continue
                     else:
                         verified = False
-                        backup_path = backup.path
+                        backup_name = backup.name
 
                     part_dedup = PartDedupInfo(
                         database=db.name,
                         table=table.name,
                         name=part.name,
-                        backup_path=backup_path,
+                        backup_name=backup_name,
                         checksum=part.checksum,
                         size=part.size,
                         files=part.files,
@@ -248,7 +248,7 @@ def deduplicate_parts(
             name=existing_part["name"],
             checksum=existing_part["checksum"],
             size=int(existing_part["size"]),
-            link=existing_part["backup_path"],
+            link=existing_part["backup_name"],
             files=existing_part["files"],
             tarball=existing_part["tarball"],
             disk_name=existing_part["disk_name"],
@@ -256,18 +256,20 @@ def deduplicate_parts(
         )
 
         if not existing_part["verified"]:
-            if not layout.check_data_part(existing_part["backup_path"], part):
+            if not layout.check_data_part(existing_part["backup_name"], part):
                 logging.debug(
-                    'Part "{}" found in "{}", but it\'s invalid, skipping',
+                    'Part "{}" found in backup "{}", but it\'s invalid, skipping',
                     part.name,
-                    existing_part["backup_path"],
+                    existing_part["backup_name"],
                 )
                 continue
 
         deduplicated_parts[part.name] = part
 
         logging.debug(
-            'Part "{}" found in "{}", reusing', part.name, existing_part["backup_path"]
+            'Part "{}" found in backup "{}", reusing',
+            part.name,
+            existing_part["backup_name"],
         )
 
     return deduplicated_parts
@@ -286,9 +288,7 @@ def collect_dedup_references_for_batch_backup_deletion(
         _create_empty_dedup_references
     )
 
-    deleting_backup_name_resolver = {
-        b.path: b.name for b in deleting_backups_light_meta
-    }
+    deleting_backup_names = {b.name for b in deleting_backups_light_meta}
     for backup in retained_backups_light_meta:
         backup = layout.reload_backup(backup, use_light_meta=False)
         for db_name in backup.get_databases():
@@ -297,11 +297,10 @@ def collect_dedup_references_for_batch_backup_deletion(
                     if not part.link:
                         continue
 
-                    backup_name = deleting_backup_name_resolver.get(part.link)
-                    if not backup_name:
+                    if part.link not in deleting_backup_names:
                         continue
 
-                    _add_part_to_dedup_references(dedup_references[backup_name], part)
+                    _add_part_to_dedup_references(dedup_references[part.link], part)
 
     return dedup_references
 

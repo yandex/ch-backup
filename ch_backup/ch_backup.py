@@ -159,6 +159,8 @@ class ClickhouseBackup:
 
         self._context.backup_meta = BackupMetadata(
             name=name,
+            # DEPRECATED: ``path`` is populated for backward compatibility
+            # with older ch-backup versions and is not used by new code.
             path=self._context.backup_layout.get_backup_path(name),
             labels=backup_labels,
             version=get_version(),
@@ -278,7 +280,7 @@ class ClickhouseBackup:
                 logging.critical(
                     "Required databases %s were not found in backup metadata: %s",
                     ", ".join(missed_databases),
-                    self._context.backup_meta.path,
+                    self._context.backup_meta.name,
                 )
                 raise ClickhouseBackupError(
                     "Required databases were not found in backup metadata"

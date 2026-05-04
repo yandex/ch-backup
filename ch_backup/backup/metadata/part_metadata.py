@@ -2,10 +2,32 @@
 Backup metadata for ClickHouse data part.
 """
 
+import os
 from typing import Optional, Sequence
 
 from ch_backup.clickhouse.models import FrozenPart
 from ch_backup.util import Slotted
+
+
+def normalize_backup_link(raw_link: Optional[str]) -> Optional[str]:
+    """
+    Normalize the ``link`` field to a plain backup name.
+
+    The serialized ``link`` field is intentionally stored as a full storage
+    path (legacy format) so that older ch-backup versions can still read
+    backups produced by this code.  In-memory we always work with a plain
+    backup name; this helper performs the conversion at load time.
+
+    ``os.path.basename`` handles both formats transparently:
+    - ``"20181017T210300"``                 → ``"20181017T210300"`` (new)
+    - ``"ch_backup/20181017T210300"``       → ``"20181017T210300"`` (legacy)
+    - ``"/srv/backups/20181017T210300/"``   → ``"20181017T210300"`` (legacy)
+
+    Returns ``None`` for falsy values (``None``, empty string).
+    """
+    if not raw_link:
+        return None
+    return os.path.basename(raw_link.rstrip("/"))
 
 
 class RawMetadata(Slotted):
@@ -22,8 +44,8 @@ class RawMetadata(Slotted):
         size: int,
         files: Sequence[str],
         tarball: bool,
-        link: str = None,
-        disk_name: str = None,
+        link: Optional[str] = None,
+        disk_name: Optional[str] = None,
         encrypted: bool = True,
     ) -> None:
         self.checksum = checksum
@@ -52,8 +74,8 @@ class PartMetadata(Slotted):
         size: int,
         files: Sequence[str],
         tarball: bool,
-        link: str = None,
-        disk_name: str = None,
+        link: Optional[str] = None,
+        disk_name: Optional[str] = None,
         encrypted: bool = True,
     ) -> None:
         self.database: str = database
@@ -87,7 +109,8 @@ class PartMetadata(Slotted):
     @property
     def link(self) -> Optional[str]:
         """
-        For deduplicated data parts it returns link to the source backup (its path). Otherwise None is returned.
+        For deduplicated data parts returns the name of the source backup.
+        For non-deduplicated parts returns None.
         """
         return self.raw_metadata.link
 
@@ -127,7 +150,7 @@ class PartMetadata(Slotted):
             size=raw_metadata["bytes"],
             files=raw_metadata["files"],
             tarball=raw_metadata.get("tarball", False),
-            link=raw_metadata["link"],
+            link=normalize_backup_link(raw_metadata.get("link")),
             disk_name=raw_metadata.get("disk_name", "default"),
             encrypted=raw_metadata.get("encrypted", True),
         )

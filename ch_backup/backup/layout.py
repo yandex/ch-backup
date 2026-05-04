@@ -304,7 +304,7 @@ class BackupLayout:
         Download user defined function create statement.
         """
         remote_path = self._get_escaped_if_exists(
-            _udf_data_path, backup_meta.path, filename
+            _udf_data_path, self.get_backup_path(backup_meta.name), filename
         )
         return self._storage_loader.download_data(remote_path, encryption=True)
 
@@ -331,7 +331,9 @@ class BackupLayout:
         """
         Download named collection create statement.
         """
-        remote_path = _named_collections_data_path(backup_meta.path, filename)
+        remote_path = _named_collections_data_path(
+            self.get_backup_path(backup_meta.name), filename
+        )
         return self._storage_loader.download_data(remote_path, encryption=True)
 
     def get_backup_names(self) -> Sequence[str]:
@@ -419,7 +421,7 @@ class BackupLayout:
         """
         Download and return database create statement.
         """
-        remote_path = _db_metadata_path(backup_meta.path, db_name)
+        remote_path = _db_metadata_path(self.get_backup_path(backup_meta.name), db_name)
         return self._storage_loader.download_data(
             remote_path, encryption=backup_meta.encrypted
         )
@@ -430,7 +432,7 @@ class BackupLayout:
         """
         Download and return database create statements.
         """
-        remote_path = _db_metadata_path_tar(backup_meta.path)
+        remote_path = _db_metadata_path_tar(self.get_backup_path(backup_meta.name))
         if not self._storage_loader.path_exists(remote_path):
             logging.debug(
                 f"File {remote_path} doesn't exist, fallback to old metadata style"
@@ -463,7 +465,9 @@ class BackupLayout:
         """
         Download and return table create statement.
         """
-        remote_path = _table_metadata_path(backup_meta.path, db_name, table_name)
+        remote_path = _table_metadata_path(
+            self.get_backup_path(backup_meta.name), db_name, table_name
+        )
         data = self._storage_loader.download_data(
             remote_path, encryption=backup_meta.encrypted, encoding=None
         )
@@ -475,7 +479,9 @@ class BackupLayout:
         """
         Download and return table create statements.
         """
-        remote_path = _table_metadata_path_tar(backup_meta.path, db_name)
+        remote_path = _table_metadata_path_tar(
+            self.get_backup_path(backup_meta.name), db_name
+        )
         if not self._storage_loader.path_exists(remote_path):
             logging.debug(
                 f"File {remote_path} doesn't exist, fallback to old metadata style"
@@ -553,9 +559,12 @@ class BackupLayout:
 
         os.makedirs(fs_part_path, exist_ok=True)
 
+        # part.link is the source backup name for deduplicated parts (or None).
+        source_backup_name = part.link or backup_meta.name
+        backup_path = self.get_backup_path(source_backup_name)
         remote_dir_path = self._get_escaped_if_exists(
             _part_path,
-            part.link or backup_meta.path,
+            backup_path,
             part.database,
             part.table,
             part.name,
@@ -591,14 +600,17 @@ class BackupLayout:
                     msg = f"Failed to download part file {remote_path}"
                     raise StorageError(msg) from e
 
-    def check_data_part(self, backup_path: str, part: PartMetadata) -> bool:
+    def check_data_part(self, backup_name: str, part: PartMetadata) -> bool:
         """
         Check availability of part data in storage.
         """
         try:
+            # part.link is the source backup name for deduplicated parts (or None).
+            source_backup_name = part.link or backup_name
+            resolved_backup_path = self.get_backup_path(source_backup_name)
             remote_dir_path = self._get_escaped_if_exists(
                 _part_path,
-                part.link or backup_path,
+                resolved_backup_path,
                 part.database,
                 part.table,
                 part.name,
@@ -641,18 +653,15 @@ class BackupLayout:
         source_disk_name: str,
         compression: bool,
     ) -> Sequence[str]:
+        backup_path = self.get_backup_path(backup_name)
         # Check if metadata is stored as 'disks/s3.tar.gz' for backwards compatibility
         old_style_remote_path = _disk_metadata_path(
-            self.get_backup_path(backup_name), None, None, source_disk_name, compression
+            backup_path, None, None, source_disk_name, compression
         )
         if self._storage_loader.path_exists(old_style_remote_path):
             return [old_style_remote_path]
         return self._storage_loader.list_dir(
-            str(
-                os.path.join(
-                    self.get_backup_path(backup_name), "disks", source_disk_name
-                )
-            ),
+            str(os.path.join(backup_path, "disks", source_disk_name)),
             recursive=True,
             absolute=True,
         )
@@ -752,9 +761,11 @@ class BackupLayout:
 
         deleting_files: List[str] = []
         for part in parts:
+            # part.link is the source backup name for deduplicated parts (or None).
+            source_backup_name = part.link or backup_meta.name
             part_path = self._get_escaped_if_exists(
                 _part_path,
-                part.link or backup_meta.path,
+                self.get_backup_path(source_backup_name),
                 part.database,
                 part.table,
                 part.name,

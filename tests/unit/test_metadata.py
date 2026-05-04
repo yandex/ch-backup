@@ -12,6 +12,8 @@ from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
     BackupStorageFormat,
+    PartMetadata,
+    normalize_backup_link,
 )
 
 
@@ -42,7 +44,6 @@ class TestBackupMetadata:
 
         meta = {
             "name": "20181017T210300",
-            "path": "ch_backup/20181017T210300",
             "time_format": "%Y-%m-%d %H:%M:%S %z",
             "bytes": 0,
             "real_bytes": 0,
@@ -59,7 +60,6 @@ class TestBackupMetadata:
 
         backup = BackupMetadata.load_json(json.dumps(metadata))
         assert backup.name == meta["name"]
-        assert backup.path == meta["path"]
         assert backup.state == BackupState(meta["state"])
         time_format = meta["time_format"]
         assert backup.time_format == time_format
@@ -86,7 +86,11 @@ class TestBackupMetadata:
             hostname="clickhouse01.test_net_711",
         )
 
+        dump = backup.dump()
         assert backup.dump_json().find(" ") == -1
+        # Deprecated `path` field is still emitted for backward compatibility
+        # with older ch-backup versions that read it.
+        assert dump["meta"]["path"] == "ch_backup/20181017T210300"
 
     @pytest.mark.parametrize(
         "access_control",
@@ -118,7 +122,6 @@ class TestBackupMetadata:
         metadata = {
             "meta": {
                 "name": "20181017T210300",
-                "path": "ch_backup/20181017T210300",
                 "time_format": "%Y-%m-%d %H:%M:%S %z",
                 "bytes": 0,
                 "real_bytes": 0,
@@ -145,6 +148,50 @@ class TestBackupMetadata:
             },
         }
         assert acl.backup_format == BackupStorageFormat.PLAIN
+
+    def test_load_json_accepts_legacy_path_field(self):
+        """
+        BackupMetadata.load_json() must succeed when the JSON contains the
+        deprecated ``meta.path`` field (present in old backups) and must
+        still populate all other fields correctly.
+
+        Regression test: ensure we do not break reading old backup metadata.
+        """
+        metadata = {
+            "meta": {
+                "name": "20181017T210300",
+                # DEPRECATED legacy field — preserved on load and re-emitted
+                # on dump for backward compatibility with older ch-backup
+                # versions.
+                "path": "ch_backup/20181017T210300",
+                "time_format": "%Y-%m-%d %H:%M:%S %z",
+                "bytes": 0,
+                "real_bytes": 0,
+                "hostname": "clickhouse01.test_net_711",
+                "version": "1.0.100",
+                "ch_version": "19.1.16",
+                "labels": None,
+                "state": "created",
+                "start_time": "2018-10-18 00:03:00 +0300",
+                "end_time": "2018-10-18 00:04:00 +0300",
+            },
+            "databases": [],
+        }
+
+        backup = BackupMetadata.load_json(json.dumps(metadata))
+
+        assert backup.name == "20181017T210300"
+        assert backup.state == BackupState.CREATED
+        assert backup.hostname == "clickhouse01.test_net_711"
+        assert backup.version == "1.0.100"
+        assert backup.ch_version == "19.1.16"
+        # Legacy ``path`` is preserved through the load/dump round-trip
+        # (deprecated, but still required for older ch-backup versions).
+        assert backup.path == "ch_backup/20181017T210300"
+        assert (
+            json.loads(backup.dump_json())["meta"]["path"]
+            == "ch_backup/20181017T210300"
+        )
 
 
 class TestAccessControlMetadata:
@@ -254,3 +301,88 @@ class TestAccessControlMetadata:
             },
             "backup_format": "tar",
         }
+
+
+class TestPartMetadata:
+    """
+    Tests for PartMetadata.
+    """
+
+    _BASE_RAW = {
+        "checksum": "abc123",
+        "bytes": 1024,
+        "files": ["data.bin"],
+        "tarball": False,
+        "disk_name": "default",
+        "encrypted": True,
+        "database": "test_db",
+        "table": "test_table",
+        "name": "20181017T210300",
+    }
+
+    @pytest.mark.parametrize(
+        ("raw_link", "expected_link"),
+        [
+            # New format: plain backup name — returned as-is.
+            ("20181017T210300", "20181017T210300"),
+            # Old format: full path with path_root prefix.
+            ("ch_backup/20181017T210300", "20181017T210300"),
+            # Old format: absolute path.
+            ("/srv/backups/20181017T210300", "20181017T210300"),
+            # Nested path with trailing slash — must reduce to last component.
+            ("/srv/backups/daily/20181017T210300/", "20181017T210300"),
+            # No link (non-deduplicated part).
+            (None, None),
+            # Empty string treated as no link.
+            ("", None),
+        ],
+    )
+    def test_load_link_normalization(self, raw_link, expected_link):
+        """
+        PartMetadata.load() must normalise the ``link`` field to a plain
+        backup name regardless of whether it was stored as a full path
+        (old format) or already as a name (new format).
+
+        Also asserts that non-link fields are preserved unchanged.
+        """
+        raw = {**self._BASE_RAW, "link": raw_link}
+        part = PartMetadata.load("db1", "table1", "part1", raw)
+
+        # link normalization
+        assert part.link == expected_link
+
+        # non-link fields must be preserved
+        assert part.database == "db1"
+        assert part.table == "table1"
+        assert part.name == "part1"
+        assert part.files == raw["files"]
+
+
+class TestNormalizeBackupLink:
+    """
+    Tests for the normalize_backup_link() module-level helper.
+    """
+
+    @pytest.mark.parametrize(
+        ("raw_link", "expected"),
+        [
+            # New format: plain backup name — returned as-is.
+            ("20181017T210300", "20181017T210300"),
+            # Old format: relative path with path_root prefix.
+            ("ch_backup/20181017T210300", "20181017T210300"),
+            # Old format: absolute path.
+            ("/srv/backups/20181017T210300", "20181017T210300"),
+            # Nested path with trailing slash — must reduce to last component.
+            ("/srv/backups/daily/20181017T210300/", "20181017T210300"),
+            # None → None.
+            (None, None),
+            # Empty string → None.
+            ("", None),
+        ],
+    )
+    def test_normalize_backup_link(self, raw_link, expected):
+        """
+        normalize_backup_link() must return a plain backup name for both
+        old full-path and new name-only formats, and None for falsy input.
+        """
+        assert normalize_backup_link(raw_link) == expected
