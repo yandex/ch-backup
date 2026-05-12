@@ -52,7 +52,7 @@ GET_TABLES_SQL = strip_query(
     FROM system.tables
     WHERE ({db_condition})
       AND ({tables_condition})
-      AND engine != 'StorageProxy'
+      AND engine NOT IN ('Proxy', 'StorageProxy')
 
     UNION ALL
 
@@ -68,7 +68,7 @@ GET_TABLES_SQL = strip_query(
     FROM system.tables
     WHERE ({db_condition})
       AND ({tables_condition})
-      AND engine = 'StorageProxy'
+      AND engine IN ('Proxy', 'StorageProxy')
 
     ORDER BY metadata_modification_time
     FORMAT JSON
