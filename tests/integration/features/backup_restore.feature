@@ -330,6 +330,75 @@ Feature: Backup & Restore
     And we restore clickhouse backup #0 to clickhouse02
     Then clickhouse02 has same schema as clickhouse01
 
+  Scenario: Restore backup with duplicate UUIDs in metadata
+    When we drop all databases at clickhouse01
+    And we drop all databases at clickhouse02
+    And we execute queries on clickhouse01
+    """
+    CREATE DATABASE test_db1;
+    CREATE DATABASE test_db2;
+    ATTACH TABLE test_db1.test_table_1 UUID 'fa8ff291-1922-4b7f-afa7-06633d5e16ae' (partition_id Int32, n Int32)
+    ENGINE = MergeTree PARTITION BY partition_id ORDER BY (partition_id, n);
+    ATTACH TABLE test_db2.test_table_2 UUID 'b91d4ef5-8f6d-4c88-93b4-111111111111' (partition_id Int32, n Int32)
+    ENGINE = MergeTree PARTITION BY partition_id ORDER BY (partition_id, n);
+
+    INSERT INTO test_db1.test_table_1 SELECT number % 2, number FROM system.numbers LIMIT 10;
+    INSERT INTO test_db2.test_table_2 SELECT number % 2, number FROM system.numbers LIMIT 20;
+    """
+    And we create clickhouse01 clickhouse backup
+    Given metadata of clickhouse01 backup #0 was adjusted with
+    """
+    databases:
+      test_db2:
+        tables:
+          test_table_2:
+            uuid: fa8ff291-1922-4b7f-afa7-06633d5e16ae
+    """
+    When we try to execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore LAST
+    """
+    Then we get response contains
+    """
+    Backup metadata contains conflicting tables with same UUID fa8ff291-1922-4b7f-afa7-06633d5e16ae: test_db1.test_table_1 and test_db2.test_table_2
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM system.tables WHERE database IN ('test_db1', 'test_db2');
+    """
+    Then we get response
+    """
+    0
+    """
+    When we try to execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore LAST --keep-going
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT database,name FROM system.tables WHERE database IN ('test_db1', 'test_db2') ORDER BY database, name FORMAT CSV
+    """
+    Then we get response
+    """
+    "test_db1","test_table_1"
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM test_db1.test_table_1;
+    """
+    Then we get response
+    """
+    10
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM system.tables WHERE database = 'test_db2' AND name = 'test_table_2';
+    """
+    Then we get response
+    """
+    0
+    """
+
   Scenario: Partial restore of a backup
     When we drop all databases at clickhouse01
     And we drop all databases at clickhouse02

@@ -12,7 +12,7 @@ from itertools import chain
 from pathlib import Path
 from random import choices
 from string import ascii_lowercase
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 from ch_backup import logging
 from ch_backup.backup.deduplication import deduplicate_parts
@@ -48,6 +48,13 @@ class TableMetadataChangeTime:
     metadata_path: str
     mtime_ns: int  # Time of most recent content modification expressed in nanoseconds.
     ctime_ns: int  # Time of most recent filesystem metadata(hardlinks) change expressed in nanoseconds.
+
+
+class RestorePreprocessResult(NamedTuple):
+    tables: list[Table]
+    duplicate_uuid_skipped: int = 0
+    missing_create_statement_skipped: int = 0
+    preprocessing_failed_skipped: int = 0
 
 
 class TableBackup(BackupManager):
@@ -358,15 +365,19 @@ class TableBackup(BackupManager):
                 if (table.database, table.name) not in db_tables
             ]
             if missed_tables:
-                logging.critical(
-                    "Required tables {} were not found in backup metadata",
-                    ", ".join([f"{t.database}.{t.name}" for t in missed_tables]),
+                missed_tables_names = ", ".join(
+                    f"{t.database}.{t.name}" for t in missed_tables
                 )
-                raise ClickhouseBackupError(
-                    "Required tables were not found in backup metadata"
+                if not keep_going:
+                    raise ClickhouseBackupError(
+                        f"Required tables {missed_tables_names} were not found in backup metadata"
+                    )
+                logging.warning(
+                    "Required tables {} were not found in backup metadata, skipping due to --keep-going flag",
+                    missed_tables_names,
                 )
-
-            logging.debug("All required tables are present")
+            else:
+                logging.debug("All required tables are present")
 
             logging.debug("Leaving only required tables metadata")
             required_tables = [(table.database, table.name) for table in tables]
@@ -374,11 +385,22 @@ class TableBackup(BackupManager):
                 filter(lambda t: (t.database, t.name) in required_tables, tables_meta)
             )
 
-        logging.debug("Retrieving tables from tables metadata")
-        tables_to_preprocess: List[Table] = self._get_tables_from_meta(
-            context, tables_meta
+            if not tables_meta:
+                logging.warning(
+                    "No tables remain to restore after filtering missing required tables"
+                )
+                return
+
+        tables_meta, duplicate_uuid_skipped = self._resolve_duplicate_backup_tables(
+            tables_meta, keep_going
         )
-        tables_to_restore = self._preprocess_tables_to_restore(
+
+        logging.debug("Retrieving tables from tables metadata")
+        (
+            tables_to_preprocess,
+            missing_create_statement_skipped,
+        ) = self._get_tables_from_meta(context, tables_meta, keep_going)
+        preprocess_result = self._preprocess_tables_to_restore(
             context,
             databases,
             tables_to_preprocess,
@@ -386,11 +408,16 @@ class TableBackup(BackupManager):
             restore_tables_in_replicated_database,
             metadata_cleaner,
         )
+        self._log_restore_preprocess_summary(
+            duplicate_uuid_skipped=duplicate_uuid_skipped,
+            missing_create_statement_skipped=missing_create_statement_skipped,
+            preprocessing_failed_skipped=preprocess_result.preprocessing_failed_skipped,
+        )
 
         failed_tables = self._restore_tables(
             context,
             databases,
-            tables_to_restore,
+            preprocess_result.tables,
             keep_going,
         )
 
@@ -605,36 +632,13 @@ class TableBackup(BackupManager):
         keep_going: bool,
         restore_tables_in_replicated_database: bool,
         metadata_cleaner: Optional[MetadataCleaner],
-    ) -> List[Table]:
+    ) -> RestorePreprocessResult:
         # Prepare table schema to restore.
-
-        for table in tables:
-            self._rewrite_table_schema(
-                context, databases[table.database], table, add_uuid_if_required=True
-            )
 
         detached_tables = {}
         for table in context.ch_ctl.get_detached_tables():
             if table.uuid:
                 detached_tables[table.uuid] = table
-
-        for table in tables:
-            if detached_table := (
-                detached_tables.get(table.uuid) if table.uuid else None
-            ):
-                try:
-                    logging.debug(
-                        f'Table with uuid "{table.uuid}" already exists as detached, attaching it'
-                    )
-                    context.ch_ctl.attach_table(detached_table)
-                except ClickhouseError as ch_err:
-                    if "CANNOT_GET_CREATE_TABLE_QUERY" in str(ch_err):
-                        logging.warning(
-                            "Got an exception during attaching detached table. "
-                            "Will ignore the ignore and try to restore table as usual {}",
-                            repr(ch_err),
-                        )
-                        self._try_fix_broken_detached_table(context, detached_table)
 
         # Filter out already restored tables.
         existing_tables_by_name = {}
@@ -652,84 +656,111 @@ class TableBackup(BackupManager):
 
         result: List[Table] = []
         tables_to_clean_metadata: List[Table] = []
+        preprocessing_failed_skipped = 0
         for table in tables:
             table_name_for_logs = f'"{table.database}"."{table.name}"'
-            existing_table: Optional[Table] = None
-            if (table.database, table.name) in existing_readonly_tables:
-                existing_table = table
-                logging.warning(
-                    f"Table {table_name_for_logs} will be recreated because it is in readonly state",
+            try:
+                self._rewrite_table_schema(
+                    context, databases[table.database], table, add_uuid_if_required=True
                 )
 
-            elif existing_table := existing_tables_by_name.get(
-                (table.database, table.name)
-            ):
-                if compare_schema(
-                    existing_table.create_statement, table.create_statement
+                if detached_table := (
+                    detached_tables.get(table.uuid) if table.uuid else None
                 ):
-                    logging.debug(
-                        f"Table {table_name_for_logs} already exists and its schema is the same as the schema from backup. Skipping it.",
+                    try:
+                        logging.debug(
+                            f'Table with uuid "{table.uuid}" already exists as detached, attaching it'
+                        )
+                        context.ch_ctl.attach_table(detached_table)
+                    except ClickhouseError as ch_err:
+                        if "CANNOT_GET_CREATE_TABLE_QUERY" in str(ch_err):
+                            logging.warning(
+                                "Got an exception during attaching detached table. "
+                                "Will ignore the ignore and try to restore table as usual {}",
+                                repr(ch_err),
+                            )
+                            self._try_fix_broken_detached_table(context, detached_table)
+                        else:
+                            raise
+
+                existing_table: Optional[Table] = None
+                if (table.database, table.name) in existing_readonly_tables:
+                    existing_table = table
+                    logging.warning(
+                        f"Table {table_name_for_logs} will be recreated because it is in readonly state",
                     )
-                    continue
-                logging.warning(
-                    'Table {} will be recreated as its schema mismatches the schema from backup: "{}" != "{}"',
-                    table_name_for_logs,
-                    existing_table.create_statement,
-                    table.create_statement,
-                )
-            elif existing_table := (
-                existing_tables_by_uuid.get(table.uuid) if table.uuid else None
-            ):
-                # Schemas mismatch here at least in name
-                logging.warning(
-                    'Table "{}"."{}" will be dropped as its UUID is equal but schema mismatches the schema from backup: "{}" != "{}"',
-                    existing_table.database,
-                    existing_table.name,
-                    existing_table.create_statement,
-                    table.create_statement,
-                )
 
-            drop_performed = False
+                elif existing_table := existing_tables_by_name.get(
+                    (table.database, table.name)
+                ):
+                    if compare_schema(
+                        existing_table.create_statement, table.create_statement
+                    ):
+                        logging.debug(
+                            f"Table {table_name_for_logs} already exists and its schema is the same as the schema from backup. Skipping it.",
+                        )
+                        continue
+                    logging.warning(
+                        'Table {} will be recreated as its schema mismatches the schema from backup: "{}" != "{}"',
+                        table_name_for_logs,
+                        existing_table.create_statement,
+                        table.create_statement,
+                    )
+                elif existing_table := (
+                    existing_tables_by_uuid.get(table.uuid) if table.uuid else None
+                ):
+                    logging.warning(
+                        'Table "{}"."{}" will be dropped as its UUID is equal but schema mismatches the schema from backup: "{}" != "{}"',
+                        existing_table.database,
+                        existing_table.name,
+                        existing_table.create_statement,
+                        table.create_statement,
+                    )
 
-            if (
-                databases[table.database].is_replicated_db_engine()
-                and not restore_tables_in_replicated_database
-            ):
-                action = "drop" if existing_table else "restore"
-                logging.info(
-                    f"Skipping {action} of table {table_name_for_logs} because it is in replicated database "
-                    f"and --restore-tables-in-replicated-database flag is not set",
-                )
-            elif not existing_table:
-                result.append(table)
-            else:
-                try:
+                drop_performed = False
+
+                if (
+                    databases[table.database].is_replicated_db_engine()
+                    and not restore_tables_in_replicated_database
+                ):
+                    action = "drop" if existing_table else "restore"
+                    logging.info(
+                        f"Skipping {action} of table {table_name_for_logs} because it is in replicated database "
+                        f"and --restore-tables-in-replicated-database flag is not set",
+                    )
+                elif not existing_table:
+                    result.append(table)
+                else:
                     self._drop_existing_table(context, table, existing_table)
                     drop_performed = True
                     result.append(table)
-                except Exception as e:
-                    if not keep_going:
-                        raise
-                    logging.exception(
-                        f"Drop of table {existing_table.name} failed, skipping due to --keep-going flag. Reason: {e}"
-                    )
-                    continue
 
-            if (
-                metadata_cleaner
-                and table.is_replicated()
-                and not drop_performed
-                and (table.database, table.name) not in readonly_cleaned_metadata
-            ):
-                logging.debug(
-                    f"Will clean ZooKeeper metadata for table {table_name_for_logs}"
+                if (
+                    metadata_cleaner
+                    and table.is_replicated()
+                    and not drop_performed
+                    and (table.database, table.name) not in readonly_cleaned_metadata
+                ):
+                    logging.debug(
+                        f"Will clean ZooKeeper metadata for table {table_name_for_logs}"
+                    )
+                    tables_to_clean_metadata.append(table)
+            except (ClickhouseBackupError, ClickhouseError, OSError, ValueError) as e:
+                if not keep_going:
+                    raise
+                preprocessing_failed_skipped += 1
+                logging.exception(
+                    f"Preprocessing of table {table.database}.{table.name} failed, skipping due to --keep-going flag. Reason: {e}"
                 )
-                tables_to_clean_metadata.append(table)
+                continue
 
         if metadata_cleaner and tables_to_clean_metadata:
             metadata_cleaner.clean_tables_metadata(tables_to_clean_metadata)
 
-        return result
+        return RestorePreprocessResult(
+            tables=result,
+            preprocessing_failed_skipped=preprocessing_failed_skipped,
+        )
 
     def _get_remaining_readonly_tables_after_fix_attempt(
         self,
@@ -838,8 +869,8 @@ class TableBackup(BackupManager):
 
     @staticmethod
     def _get_tables_from_meta(
-        context: BackupContext, tables_meta: list[TableMetadata]
-    ) -> list[Table]:
+        context: BackupContext, tables_meta: list[TableMetadata], keep_going: bool
+    ) -> tuple[list[Table], int]:
         databases_to_download: set[str] = set()
         tables: dict[tuple[str, str], Table] = {}
         for table_meta in tables_meta:
@@ -867,7 +898,99 @@ class TableBackup(BackupManager):
                 if (database, table) in tables:
                     tables[(database, table)].create_statement = create_statement
 
-        return list(tables.values())
+        result = []
+        missing_create_statement_skipped = 0
+        for table in tables.values():
+            if table.create_statement:
+                result.append(table)
+                continue
+
+            if not keep_going:
+                raise ClickhouseBackupError(
+                    f"Create statement for table {table.database}.{table.name} is missing in backup layout"
+                )
+
+            missing_create_statement_skipped += 1
+            logging.warning(
+                "Create statement for table {}.{} is missing in backup layout, skipping due to --keep-going flag",
+                table.database,
+                table.name,
+            )
+
+        return result, missing_create_statement_skipped
+
+    @staticmethod
+    def _resolve_duplicate_backup_tables(
+        tables_meta: list[TableMetadata], keep_going: bool
+    ) -> tuple[list[TableMetadata], int]:
+        tables_by_uuid: dict[str, TableMetadata] = {}
+        result: list[TableMetadata] = []
+        duplicate_uuid_skipped = 0
+
+        for table_meta in tables_meta:
+            if not table_meta.uuid:
+                result.append(table_meta)
+                continue
+
+            kept_table_meta = tables_by_uuid.get(table_meta.uuid)
+            if not kept_table_meta:
+                tables_by_uuid[table_meta.uuid] = table_meta
+                result.append(table_meta)
+                continue
+
+            if (
+                kept_table_meta.database == table_meta.database
+                and kept_table_meta.name == table_meta.name
+            ):
+                duplicate_uuid_skipped += 1
+                logging.warning(
+                    "Skipping duplicate metadata entry for table {}.{} with UUID {}",
+                    table_meta.database,
+                    table_meta.name,
+                    table_meta.uuid,
+                )
+                continue
+
+            if not keep_going:
+                raise ClickhouseBackupError(
+                    "Backup metadata contains conflicting tables with same UUID "
+                    f"{table_meta.uuid}: {kept_table_meta.database}.{kept_table_meta.name} "
+                    f"and {table_meta.database}.{table_meta.name}"
+                )
+
+            duplicate_uuid_skipped += 1
+            logging.warning(
+                "Skipping table {}.{} from backup restore: UUID {} duplicates {}.{} in backup metadata and --keep-going is enabled",
+                table_meta.database,
+                table_meta.name,
+                table_meta.uuid,
+                kept_table_meta.database,
+                kept_table_meta.name,
+            )
+
+        return result, duplicate_uuid_skipped
+
+    @staticmethod
+    def _log_restore_preprocess_summary(
+        duplicate_uuid_skipped: int,
+        missing_create_statement_skipped: int,
+        preprocessing_failed_skipped: int,
+    ) -> None:
+        skipped_total = (
+            duplicate_uuid_skipped
+            + missing_create_statement_skipped
+            + preprocessing_failed_skipped
+        )
+        if skipped_total == 0:
+            return
+
+        logging.info(
+            "Restore preprocessing skipped {} table(s): {} duplicate UUID, {} missing create statement, {} preprocessing failures",
+            skipped_total,
+            duplicate_uuid_skipped,
+            missing_create_statement_skipped,
+            preprocessing_failed_skipped,
+        )
 
     # pylint: disable=too-many-positional-arguments
     def _restore_tables(
