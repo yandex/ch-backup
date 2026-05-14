@@ -635,10 +635,12 @@ class TableBackup(BackupManager):
     ) -> RestorePreprocessResult:
         # Prepare table schema to restore.
 
-        detached_tables = {}
+        detached_tables_by_uuid = {}
+        detached_tables_by_name = {}
         for table in context.ch_ctl.get_detached_tables():
+            detached_tables_by_name[(table.database, table.name)] = table
             if table.uuid:
-                detached_tables[table.uuid] = table
+                detached_tables_by_uuid[table.uuid] = table
 
         # Filter out already restored tables.
         existing_tables_by_name = {}
@@ -664,12 +666,19 @@ class TableBackup(BackupManager):
                     context, databases[table.database], table, add_uuid_if_required=True
                 )
 
-                if detached_table := (
-                    detached_tables.get(table.uuid) if table.uuid else None
-                ):
+                detached_table = None
+                if table.uuid:
+                    detached_table = detached_tables_by_uuid.get(table.uuid)
+                if not detached_table:
+                    detached_table = detached_tables_by_name.get(
+                        (table.database, table.name)
+                    )
+
+                if detached_table:
                     try:
                         logging.debug(
-                            f'Table with uuid "{table.uuid}" already exists as detached, attaching it'
+                            "Table {} already exists as detached, attaching it",
+                            table_name_for_logs,
                         )
                         context.ch_ctl.attach_table(detached_table)
                     except ClickhouseError as ch_err:
