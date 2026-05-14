@@ -51,6 +51,10 @@ class TableMetadataChangeTime:
 
 
 class RestorePreprocessResult(NamedTuple):
+    """
+    Metrics for restoration process
+    """
+
     tables: list[Table]
     duplicate_uuid_skipped: int = 0
     missing_create_statement_skipped: int = 0
@@ -903,9 +907,9 @@ class TableBackup(BackupManager):
                 database,
                 [table.name for table in tables_meta if table.database == database],
             )
-            for table, create_statement in statements:
-                if (database, table) in tables:
-                    tables[(database, table)].create_statement = create_statement
+            for table_name, create_statement in statements:
+                if (database, table_name) in tables:
+                    tables[(database, table_name)].create_statement = create_statement
 
         result = []
         missing_create_statement_skipped = 0
