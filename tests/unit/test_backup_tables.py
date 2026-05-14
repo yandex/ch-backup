@@ -6,10 +6,8 @@ import pytest
 
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata, TableMetadata
 from ch_backup.backup_context import BackupContext
-from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.models import Database, Table
 from ch_backup.config import DEFAULT_CONFIG
-from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.logic.table import TableBackup
 
 UUID = "fa8ff291-1922-4b7f-afa7-06633d5e16ae"
