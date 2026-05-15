@@ -14,6 +14,7 @@ from nacl.exceptions import CryptoError
 
 from ch_backup import logging
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
+from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.calculators import calc_encrypted_size, calc_tarball_size
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.config import Config
@@ -652,6 +653,7 @@ class BackupLayout:
         backup_name: str,
         source_disk_name: str,
         compression: bool,
+        tables_needed: Optional[Sequence[TableMetadata]] = None,
     ) -> Sequence[str]:
         backup_path = self.get_backup_path(backup_name)
         # Check if metadata is stored as 'disks/s3.tar.gz' for backwards compatibility
@@ -660,11 +662,26 @@ class BackupLayout:
         )
         if self._storage_loader.path_exists(old_style_remote_path):
             return [old_style_remote_path]
-        return self._storage_loader.list_dir(
-            str(os.path.join(backup_path, "disks", source_disk_name)),
-            recursive=True,
-            absolute=True,
-        )
+
+        if tables_needed is None:
+            return self._storage_loader.list_dir(
+                str(os.path.join(backup_path, "disks", source_disk_name)),
+                recursive=True,
+                absolute=True,
+            )
+
+        remote_paths = []
+        for table in tables_needed:
+            remote_path = _disk_metadata_path(
+                backup_path,
+                table.database,
+                table.name,
+                source_disk_name,
+                compression,
+            )
+            if self._storage_loader.path_exists(remote_path):
+                remote_paths.append(remote_path)
+        return remote_paths
 
     @contextmanager
     def _get_cloud_storage_metadata_dst(
@@ -696,12 +713,14 @@ class BackupLayout:
             assert isinstance(path, str)
             return os.path.exists(path)
 
+    # pylint: disable=too-many-positional-arguments
     def download_cloud_storage_metadata(
         self,
         backup_meta: BackupMetadata,
         disk: Disk,
         source_disk_name: str,
         file_path: Optional[str] = None,
+        needed_tables: Optional[Sequence[TableMetadata]] = None,
     ) -> None:
         """
         Download files packed in tarball and unpacks them into specified directory.
@@ -711,7 +730,10 @@ class BackupLayout:
         compression = backup_meta.cloud_storage.compressed
         encryption = backup_meta.cloud_storage.encrypted
         metadata_remote_paths = self._get_cloud_storage_metadata_remote_paths(
-            backup_name, source_disk_name, compression
+            backup_name,
+            source_disk_name,
+            compression,
+            tables_needed=needed_tables,
         )
 
         with self._get_cloud_storage_metadata_dst(backup_meta, disk, file_path) as dst:

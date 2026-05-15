@@ -421,6 +421,7 @@ class TableBackup(BackupManager):
             context.ch_config,
             use_local_copy=use_inplace_cloud_restore,
         ) as disks:
+            disks.restore_cloud_storage_metadata(cloud_metadata_tables=tables_meta)
             self._restore_data(
                 context,
                 tables=tables_to_restore_data,
