@@ -8,7 +8,7 @@ from ch_backup.backup.metadata import BackupMetadata, PartMetadata, TableMetadat
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.models import Database, Table
 from ch_backup.config import DEFAULT_CONFIG
-from ch_backup.logic.table import RestorePreprocessResult, TableBackup
+from ch_backup.logic.table import TableBackup
 
 UUID = "fa8ff291-1922-4b7f-afa7-06633d5e16ae"
 
@@ -232,20 +232,6 @@ class TestValidateUploadedParts:
 
 
 class TestRestorePreprocessing:
-    def test_resolve_duplicate_backup_tables_keep_going(self):
-        # pylint: disable=protected-access
-        tables_meta = [
-            TableMetadata("db1", "table1", "MergeTree", UUID),
-            TableMetadata("db2", "table2", "MergeTree", UUID),
-        ]
-
-        result, skipped = TableBackup._resolve_duplicate_backup_tables(
-            tables_meta, keep_going=True
-        )
-
-        assert skipped == 1
-        assert [(table.database, table.name) for table in result] == [("db1", "table1")]
-
     @pytest.mark.parametrize(
         ("backup_uuid", "expected_detached_name"),
         [
@@ -284,7 +270,7 @@ class TestRestorePreprocessing:
                 backup_table, "create_statement", "CREATE TABLE"
             ),
         ):
-            result = table_backup._preprocess_tables_to_restore(
+            result, _ = table_backup._preprocess_tables_to_restore(
                 context,
                 databases,
                 [backup_table],
@@ -295,7 +281,7 @@ class TestRestorePreprocessing:
 
         attached_table = context.ch_ctl.attach_table.call_args.args[0]
         assert attached_table.name == expected_detached_name
-        assert result.tables == [backup_table]
+        assert result == [backup_table]
 
     def test_restore_keep_going_accumulates_skips_and_restores_remaining_tables(self):
         table_backup = TableBackup()
@@ -353,9 +339,7 @@ class TestRestorePreprocessing:
             patch.object(
                 table_backup,
                 "_preprocess_tables_to_restore",
-                return_value=RestorePreprocessResult(
-                    tables=restored_tables, preprocessing_failed_skipped=1
-                ),
+                return_value=(restored_tables, 1),
             ) as preprocess_tables,
             patch.object(
                 table_backup,
@@ -442,9 +426,7 @@ class TestRestorePreprocessing:
             patch.object(
                 table_backup,
                 "_preprocess_tables_to_restore",
-                return_value=RestorePreprocessResult(
-                    tables=[restored_table], preprocessing_failed_skipped=0
-                ),
+                return_value=([restored_table], 0),
             ) as preprocess_tables,
             patch.object(table_backup, "_restore_tables", return_value=[]),
             patch.object(table_backup, "_restore_data"),
