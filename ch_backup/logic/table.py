@@ -465,8 +465,10 @@ class TableBackup(BackupManager):
             return
 
         failed_tables_names = [f"`{t.database}`.`{t.name}`" for t in failed_tables]
+        tables_to_restore_names = [f"`{t.database}`.`{t.name}`" for t in tables_to_restore]
         tables_to_restore_data = filter(
-            lambda t: f"`{t.database}`.`{t.name}`" not in failed_tables_names,
+            lambda t: f"`{t.database}`.`{t.name}`" in tables_to_restore_names
+            and f"`{t.database}`.`{t.name}`" not in failed_tables_names,
             tables_meta,
         )
 

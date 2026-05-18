@@ -399,6 +399,220 @@ Feature: Backup & Restore
     0
     """
 
+  Scenario: Restore requested subset when one requested table is missing and keep-going is enabled
+    When we drop all databases at clickhouse01
+    And we drop all databases at clickhouse02
+    And we execute queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table1 (partition_id Int32, n Int32) ENGINE MergeTree PARTITION BY partition_id ORDER BY (partition_id, n);
+    INSERT INTO test_db.table1 SELECT number % 2, number FROM system.numbers LIMIT 7;
+    """
+    And we create clickhouse01 clickhouse backup
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    table_included_patterns: test_db.table1,test_db.missing_table
+    keep_going: true
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT database,name FROM system.tables WHERE database = 'test_db' ORDER BY name FORMAT CSV
+    """
+    Then we get response
+    """
+    "test_db","table1"
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM test_db.table1;
+    """
+    Then we get response
+    """
+    7
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM system.tables WHERE database = 'test_db' AND name = 'missing_table';
+    """
+    Then we get response
+    """
+    0
+    """
+
+  Scenario: Restore requested subset ignores duplicate UUID conflict outside subset
+    When we drop all databases at clickhouse01
+    And we drop all databases at clickhouse02
+    And we execute queries on clickhouse01
+    """
+    CREATE DATABASE test_db1;
+    CREATE DATABASE test_db2;
+    ATTACH TABLE test_db1.test_table_1 UUID 'fa8ff291-1922-4b7f-afa7-06633d5e16ae' (partition_id Int32, n Int32)
+    ENGINE = MergeTree PARTITION BY partition_id ORDER BY (partition_id, n);
+    ATTACH TABLE test_db2.test_table_2 UUID 'b91d4ef5-8f6d-4c88-93b4-111111111111' (partition_id Int32, n Int32)
+    ENGINE = MergeTree PARTITION BY partition_id ORDER BY (partition_id, n);
+
+    INSERT INTO test_db1.test_table_1 SELECT number % 2, number FROM system.numbers LIMIT 10;
+    INSERT INTO test_db2.test_table_2 SELECT number % 2, number FROM system.numbers LIMIT 20;
+    """
+    And we create clickhouse01 clickhouse backup
+    Given metadata of clickhouse01 backup #0 was adjusted with
+    """
+    databases:
+      test_db2:
+        tables:
+          test_table_2:
+            uuid: fa8ff291-1922-4b7f-afa7-06633d5e16ae
+    """
+    When we drop restore context at clickhouse02
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    table_included_patterns: test_db1.test_table_1
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT database,name FROM system.tables WHERE database IN ('test_db1', 'test_db2') ORDER BY database, name FORMAT CSV
+    """
+    Then we get response
+    """
+    "test_db1","test_table_1"
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM test_db1.test_table_1;
+    """
+    Then we get response
+    """
+    10
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM system.tables WHERE database = 'test_db2' AND name = 'test_table_2';
+    """
+    Then we get response
+    """
+    0
+    """
+
+  Scenario: Keep-going skips tables with missing create statements
+    When we drop all databases at clickhouse01
+    And we drop all databases at clickhouse02
+    And we execute queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    ATTACH TABLE test_db.good_table UUID '11111111-1111-4111-8111-111111111111' (partition_id Int32, n Int32)
+    ENGINE MergeTree PARTITION BY partition_id ORDER BY (partition_id, n);
+
+    INSERT INTO test_db.good_table SELECT number % 2, number FROM system.numbers LIMIT 11;
+    """
+    And we create clickhouse01 clickhouse backup
+    Given metadata of clickhouse01 backup #0 was adjusted with
+    """
+    databases:
+      test_db:
+        tables:
+          missing_create_statement_table:
+            engine: MergeTree
+            uuid: 33333333-3333-4333-8333-333333333333
+            parts: {}
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    keep_going: true
+    """
+    Then clickhouse02 has the subset of clickhouse01 data
+    """
+    tables:
+      - test_db.good_table
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM system.tables WHERE database = 'test_db' AND name IN ('missing_create_statement_table');
+    """
+    Then we get response
+    """
+    0
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM test_db.good_table;
+    """
+    Then we get response
+    """
+    11
+    """
+
+  Scenario: Failed table object restore does not leak into data restore of healthy tables
+    When we drop all databases at clickhouse01
+    And we drop all databases at clickhouse02
+    And we execute queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.good_table (partition_id Int32, n Int32)
+    ENGINE MergeTree PARTITION BY partition_id ORDER BY (partition_id, n);
+    CREATE TABLE test_db.broken_table (partition_id Int32, n Int32)
+    ENGINE MergeTree PARTITION BY partition_id ORDER BY (partition_id, n);
+
+    INSERT INTO test_db.good_table SELECT number % 2, number FROM system.numbers LIMIT 11;
+    INSERT INTO test_db.broken_table SELECT number % 2, number FROM system.numbers LIMIT 13;
+    """
+    Given ch-backup configuration on clickhouse01
+    """
+    encryption:
+      enabled: False
+    """
+    Given ch-backup configuration on clickhouse02
+    """
+    encryption:
+      enabled: False
+    """
+    When we create clickhouse01 clickhouse backup
+    Given file "metadata/test_db.tar" was deleted from clickhouse01 backup #0
+    Given file "metadata/test_db/good_table.sql" in clickhouse01 backup #0 data set to
+    """
+    ATTACH TABLE test_db.good_table (
+        partition_id Int32,
+        n Int32
+    )
+    ENGINE = MergeTree
+    PARTITION BY partition_id
+    ORDER BY (partition_id, n)
+    """
+    Given file "metadata/test_db/broken_table.sql" in clickhouse01 backup #0 data set to
+    """
+    ATTACH TABLE test_db.broken_table (
+        partition_id Int32,
+        n Int32
+    )
+    ENGINE = DefinitelyBrokenEngine()
+    PARTITION BY partition_id
+    ORDER BY (partition_id, n)
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    keep_going: true
+    """
+    Then clickhouse02 has the subset of clickhouse01 data
+    """
+    tables:
+      - test_db.good_table
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM system.tables WHERE database = 'test_db' AND name = 'broken_table';
+    """
+    Then we get response
+    """
+    0
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM test_db.good_table;
+    """
+    Then we get response
+    """
+    11
+    """
+
   Scenario: Partial restore of a backup
     When we drop all databases at clickhouse01
     And we drop all databases at clickhouse02
