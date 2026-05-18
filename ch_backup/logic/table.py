@@ -424,13 +424,9 @@ class TableBackup(BackupManager):
             return
 
         failed_tables_names = [f"`{t.database}`.`{t.name}`" for t in failed_tables]
-        tables_to_restore_names = [
-            f"`{t.database}`.`{t.name}`" for t in tables_to_restore
-        ]
         tables_to_restore_data = filter(
-            lambda t: f"`{t.database}`.`{t.name}`" in tables_to_restore_names
-            and f"`{t.database}`.`{t.name}`" not in failed_tables_names,
-            filtered_tables_meta,
+            lambda t: f"`{t.database}`.`{t.name}`" not in failed_tables_names,
+            tables_meta,
         )
 
         use_inplace_cloud_restore = context.config_root["restore"][
@@ -1048,6 +1044,11 @@ class TableBackup(BackupManager):
                     table_meta.database, table_meta.name, short_query=True
                 )
                 if not maybe_table_short:
+                    if keep_going:
+                        logging.warning(
+                            f"Haven't found table {table_meta.database}.{table_meta.name} keep going"
+                        )
+                        continue
                     raise ClickhouseBackupError(
                         f"Table not found {table_meta.database}.{table_meta.name}"
                     )

@@ -544,6 +544,7 @@ Feature: Backup & Restore
   Scenario: Failed table object restore does not leak into data restore of healthy tables
     When we drop all databases at clickhouse01
     And we drop all databases at clickhouse02
+    And we drop restore context at clickhouse02
     And we execute queries on clickhouse01
     """
     CREATE DATABASE test_db;
