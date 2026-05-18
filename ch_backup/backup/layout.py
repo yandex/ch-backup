@@ -663,25 +663,32 @@ class BackupLayout:
         if self._storage_loader.path_exists(old_style_remote_path):
             return [old_style_remote_path]
 
+        disk_path = os.path.join(backup_path, "disks", source_disk_name)
         if tables_needed is None:
             return self._storage_loader.list_dir(
-                str(os.path.join(backup_path, "disks", source_disk_name)),
+                disk_path,
                 recursive=True,
                 absolute=True,
             )
 
-        remote_paths = []
-        for table in tables_needed:
-            remote_path = _disk_metadata_path(
+        remote_paths = {
+            _disk_metadata_path(
                 backup_path,
                 table.database,
                 table.name,
                 source_disk_name,
                 compression,
             )
-            if self._storage_loader.path_exists(remote_path):
-                remote_paths.append(remote_path)
-        return remote_paths
+            for table in tables_needed
+        }
+        existing_paths = self._storage_loader.list_dir(
+            disk_path, recursive=True, absolute=True
+        )
+        needed_paths = remote_paths.intersection(existing_paths)
+        missing_paths = remote_paths.difference(existing_paths)
+        for path in missing_paths:
+            logging.warning(f"Missing path {path} on remote")
+        return list(needed_paths)
 
     @contextmanager
     def _get_cloud_storage_metadata_dst(
