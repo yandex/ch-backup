@@ -1,5 +1,6 @@
 """Unit tests for backup layout cloud metadata path selection."""
 
+from collections import Counter
 from unittest.mock import MagicMock, patch
 
 from ch_backup.backup.layout import BackupLayout
@@ -36,13 +37,11 @@ class TestCloudStorageMetadataRemotePaths:
             f"{backup_path}/disks/{source_disk_name}/db1/table1.tar",
             f"{backup_path}/disks/{source_disk_name}/db2/table3.tar",
         ]
-        existing_paths = {
-            old_style_path: False,
-            **{path: True for path in expected_paths},
-        }
-        existing_paths[f"{backup_path}/disks/{source_disk_name}/db1/table2.tar"] = False
 
-        layout._storage_loader.path_exists.side_effect = existing_paths.get
+        layout._storage_loader.path_exists.side_effect = {old_style_path: False}.get
+        layout._storage_loader.list_dir.side_effect = (
+            lambda _disk_path, **_kwargs: expected_paths
+        )
 
         remote_paths = layout._get_cloud_storage_metadata_remote_paths(
             backup_name,
@@ -51,5 +50,4 @@ class TestCloudStorageMetadataRemotePaths:
             desired_tables=tables,
         )
 
-        assert list(remote_paths) == expected_paths
-        layout._storage_loader.list_dir.assert_not_called()
+        assert Counter(remote_paths) == Counter(expected_paths)

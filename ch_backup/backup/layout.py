@@ -696,6 +696,7 @@ class BackupLayout:
         missing_paths = remote_paths.difference(existing_paths)
         for path in missing_paths:
             logging.warning(f"Missing path {path} on remote")
+
         return list(needed_paths)
 
     @contextmanager
