@@ -471,7 +471,7 @@ class ClickhouseBackup:
             return False
 
         self._context.backup_layout.download_cloud_storage_metadata(
-            backup_meta, source_disk, disk_name, local_path
+            backup_meta, source_disk, disk_name, "all", local_path
         )
         self._context.backup_layout.wait()
 

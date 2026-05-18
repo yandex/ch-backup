@@ -674,10 +674,11 @@ class BackupLayout:
             return [old_style_remote_path]
 
         disk_path = os.path.join(backup_path, "disks", source_disk_name)
+        existing_paths = self._storage_loader.list_dir(
+            disk_path, recursive=True, absolute=True
+        )
         if desired_tables == "all":
-            return self._storage_loader.list_dir(
-                disk_path, recursive=True, absolute=True
-            )
+            return existing_paths
 
         remote_paths = {
             _disk_metadata_path(
@@ -689,9 +690,6 @@ class BackupLayout:
             )
             for table in desired_tables
         }
-        existing_paths = self._storage_loader.list_dir(
-            disk_path, recursive=True, absolute=True
-        )
         needed_paths = remote_paths.intersection(existing_paths)
         missing_paths = remote_paths.difference(existing_paths)
         for path in missing_paths:

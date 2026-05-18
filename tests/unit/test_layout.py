@@ -39,9 +39,10 @@ class TestCloudStorageMetadataRemotePaths:
         ]
 
         layout._storage_loader.path_exists.side_effect = {old_style_path: False}.get
-        layout._storage_loader.list_dir.side_effect = (
-            lambda _disk_path, **_kwargs: expected_paths
-        )
+        layout._storage_loader.list_dir.side_effect = lambda _disk_path, **_kwargs: [
+            *expected_paths,
+            f"{backup_path}/disks/{source_disk_name}/db2/table4.tar",
+        ]
 
         remote_paths = layout._get_cloud_storage_metadata_remote_paths(
             backup_name,
