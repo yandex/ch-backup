@@ -48,7 +48,7 @@ class TestCloudStorageMetadataRemotePaths:
             backup_name,
             source_disk_name,
             compression=False,
-            tables_needed=tables,
+            desired_tables=tables,
         )
 
         assert list(remote_paths) == expected_paths

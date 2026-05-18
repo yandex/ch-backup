@@ -7,7 +7,17 @@ from contextlib import contextmanager
 from functools import partial
 from io import IOBase
 from pathlib import Path
-from typing import Any, BinaryIO, Callable, Iterator, List, Optional, Sequence, Union
+from typing import (
+    Any,
+    BinaryIO,
+    Callable,
+    Iterator,
+    List,
+    Literal,
+    Optional,
+    Sequence,
+    Union,
+)
 from urllib.parse import quote
 
 from nacl.exceptions import CryptoError
@@ -653,7 +663,7 @@ class BackupLayout:
         backup_name: str,
         source_disk_name: str,
         compression: bool,
-        tables_needed: Optional[Sequence[TableMetadata]] = None,
+        desired_tables: Sequence[TableMetadata] | Literal["all"],
     ) -> Sequence[str]:
         backup_path = self.get_backup_path(backup_name)
         # Check if metadata is stored as 'disks/s3.tar.gz' for backwards compatibility
@@ -664,11 +674,9 @@ class BackupLayout:
             return [old_style_remote_path]
 
         disk_path = os.path.join(backup_path, "disks", source_disk_name)
-        if tables_needed is None:
+        if desired_tables == "all":
             return self._storage_loader.list_dir(
-                disk_path,
-                recursive=True,
-                absolute=True,
+                disk_path, recursive=True, absolute=True
             )
 
         remote_paths = {
@@ -679,7 +687,7 @@ class BackupLayout:
                 source_disk_name,
                 compression,
             )
-            for table in tables_needed
+            for table in desired_tables
         }
         existing_paths = self._storage_loader.list_dir(
             disk_path, recursive=True, absolute=True
@@ -726,8 +734,8 @@ class BackupLayout:
         backup_meta: BackupMetadata,
         disk: Disk,
         source_disk_name: str,
+        desired_tables: Sequence[TableMetadata] | Literal["all"],
         file_path: Optional[str] = None,
-        needed_tables: Optional[Sequence[TableMetadata]] = None,
     ) -> None:
         """
         Download files packed in tarball and unpacks them into specified directory.
@@ -740,7 +748,7 @@ class BackupLayout:
             backup_name,
             source_disk_name,
             compression,
-            tables_needed=needed_tables,
+            desired_tables,
         )
 
         with self._get_cloud_storage_metadata_dst(backup_meta, disk, file_path) as dst:

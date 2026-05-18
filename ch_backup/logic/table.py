@@ -419,9 +419,9 @@ class TableBackup(BackupManager):
             cloud_storage_source_path,
             cloud_storage_source_endpoint,
             context.ch_config,
+            desired_tables=tables_meta,
             use_local_copy=use_inplace_cloud_restore,
         ) as disks:
-            disks.restore_cloud_storage_metadata(cloud_metadata_tables=tables_meta)
             self._restore_data(
                 context,
                 tables=tables_to_restore_data,

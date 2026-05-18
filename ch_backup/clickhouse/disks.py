@@ -7,7 +7,7 @@ import os
 from functools import partial
 from subprocess import PIPE, Popen
 from types import TracebackType
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Type
+from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple, Type
 from urllib.parse import urlparse
 
 import xmltodict
@@ -15,6 +15,7 @@ import xmltodict
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
+from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.models import Disk, Table
@@ -41,7 +42,7 @@ class ClickHouseTemporaryDisks:
     Manages temporary cloud storage disks.
     """
 
-    # pylint: disable=too-many-instance-attributes,too-many-positional-arguments
+    # pylint: disable=too-many-instance-attributes,too-many-positional-arguments,too-many-arguments
     def __init__(
         self,
         ch_ctl: ClickhouseCTL,
@@ -52,6 +53,7 @@ class ClickHouseTemporaryDisks:
         source_path: Optional[str],
         source_endpoint: Optional[str],
         ch_config: ClickhouseConfig,
+        desired_tables: Sequence[TableMetadata] | Literal["all"] = "all",
         use_local_copy: bool = False,
     ):
         self._ch_ctl = ch_ctl
@@ -68,6 +70,7 @@ class ClickHouseTemporaryDisks:
             raise RuntimeError(
                 "Backup contains cloud storage data, cloud-storage-source-bucket must be set."
             )
+        self._desired_tables: Sequence[TableMetadata] | Literal["all"] = desired_tables
 
         self._disks: Dict[str, Dict] = {}
         self._created_disks: Dict[str, Disk] = {}
@@ -77,7 +80,16 @@ class ClickHouseTemporaryDisks:
         self._disks = self._ch_config.config.get("storage_configuration", {}).get(
             "disks", {}
         )
-        self._prepare_temporary_disks()
+        for disk_name in self._backup_meta.cloud_storage.disks:
+            self._create_temporary_disk(
+                self._backup_meta,
+                disk_name,
+                self._source_bucket,
+                self._source_path,
+                self._source_endpoint,
+                self._desired_tables,
+            )
+        self._backup_layout.wait()
         self._ch_availible_disks = self._ch_ctl.get_disks()
         self._render_disks_config(
             CH_DISK_CONFIG_PATH,
@@ -124,31 +136,6 @@ class ClickHouseTemporaryDisks:
                 pretty=True,
             )
 
-    def restore_cloud_storage_metadata(
-        self,
-        cloud_metadata_tables: Optional[Sequence] = None,
-    ) -> None:
-        """
-        Restores storage metadata, filtering for provided tables.
-        If no tables are provided, every table metadata is considered.
-        """
-        self._prepare_temporary_disks(cloud_metadata_tables)
-
-    def _prepare_temporary_disks(
-        self,
-        cloud_metadata_tables: Optional[Sequence] = None,
-    ) -> None:
-        for disk_name in self._backup_meta.cloud_storage.disks:
-            self._create_temporary_disk(
-                self._backup_meta,
-                disk_name,
-                self._source_bucket,
-                self._source_path,
-                self._source_endpoint,
-                cloud_metadata_tables,
-            )
-        self._backup_layout.wait()
-
     # pylint: disable=too-many-positional-arguments
     def _create_temporary_disk(
         self,
@@ -157,7 +144,7 @@ class ClickHouseTemporaryDisks:
         source_bucket: str,
         source_path: str,
         source_endpoint: str,
-        cloud_metadata_tables: Optional[Sequence] = None,
+        desired_tables: Sequence[TableMetadata] | Literal["all"] = "all",
     ) -> None:
         tmp_disk_name = _get_tmp_disk_name(disk_name)
         logging.debug(f"Creating tmp disk {tmp_disk_name}")
@@ -219,7 +206,7 @@ class ClickHouseTemporaryDisks:
             backup_meta,
             source_disk,
             disk_name,
-            needed_tables=cloud_metadata_tables,
+            desired_tables,
         )
 
         self._created_disks[tmp_disk_name] = source_disk
