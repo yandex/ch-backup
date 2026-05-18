@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from ch_backup.backup.metadata import BackupMetadata, PartMetadata, TableMetadata
+from ch_backup.backup.metadata import BackupMetadata, PartMetadata
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.models import Database, Table
 from ch_backup.config import DEFAULT_CONFIG

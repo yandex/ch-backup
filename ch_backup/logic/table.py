@@ -384,56 +384,15 @@ class TableBackup(BackupManager):
                 )
                 return
 
-        tables_by_uuid: dict[str, TableMetadata] = {}
-        duplicate_uuid_skipped = 0
-        filtered_tables_meta: list[TableMetadata] = []
-        for table_meta in tables_meta:
-            if not table_meta.uuid:
-                filtered_tables_meta.append(table_meta)
-                continue
-
-            kept_table_meta = tables_by_uuid.get(table_meta.uuid)
-            if not kept_table_meta:
-                tables_by_uuid[table_meta.uuid] = table_meta
-                filtered_tables_meta.append(table_meta)
-                continue
-
-            duplicate_uuid_skipped += 1
-            if (
-                kept_table_meta.database == table_meta.database
-                and kept_table_meta.name == table_meta.name
-            ):
-                logging.warning(
-                    "Skipping duplicate metadata entry for table {}.{} with UUID {}",
-                    table_meta.database,
-                    table_meta.name,
-                    table_meta.uuid,
-                )
-                continue
-
-            if not keep_going:
-                raise ClickhouseBackupError(
-                    "Backup metadata contains conflicting tables with same UUID "
-                    f"{table_meta.uuid}: {kept_table_meta.database}.{kept_table_meta.name} "
-                    f"and {table_meta.database}.{table_meta.name}"
-                )
-
-            logging.warning(
-                "Skipping table {}.{} from backup restore: UUID {} duplicates {}.{} in backup metadata and --keep-going is enabled",
-                table_meta.database,
-                table_meta.name,
-                table_meta.uuid,
-                kept_table_meta.database,
-                kept_table_meta.name,
-            )
-
-        tables_meta = filtered_tables_meta
+        filtered_tables_meta, duplicate_uuid_skipped = self._filter_duplicate_uuid(
+            tables_meta, keep_going
+        )
 
         logging.debug("Retrieving tables from tables metadata")
         (
             tables_to_preprocess,
             missing_create_statement_skipped,
-        ) = self._get_tables_from_meta(context, tables_meta, keep_going)
+        ) = self._get_tables_from_meta(context, filtered_tables_meta, keep_going)
         (
             tables_to_restore,
             preprocessing_failed_skipped,
@@ -465,11 +424,13 @@ class TableBackup(BackupManager):
             return
 
         failed_tables_names = [f"`{t.database}`.`{t.name}`" for t in failed_tables]
-        tables_to_restore_names = [f"`{t.database}`.`{t.name}`" for t in tables_to_restore]
+        tables_to_restore_names = [
+            f"`{t.database}`.`{t.name}`" for t in tables_to_restore
+        ]
         tables_to_restore_data = filter(
             lambda t: f"`{t.database}`.`{t.name}`" in tables_to_restore_names
             and f"`{t.database}`.`{t.name}`" not in failed_tables_names,
-            tables_meta,
+            filtered_tables_meta,
         )
 
         use_inplace_cloud_restore = context.config_root["restore"][
@@ -964,6 +925,54 @@ class TableBackup(BackupManager):
             )
 
         return result, missing_create_statement_skipped
+
+    @staticmethod
+    def _filter_duplicate_uuid(
+        tables_meta: list[TableMetadata], keep_going: bool
+    ) -> tuple[list[TableMetadata], int]:
+        tables_by_uuid: dict[str, TableMetadata] = {}
+        duplicate_uuid_skipped = 0
+        filtered_tables_meta: list[TableMetadata] = []
+        for table_meta in tables_meta:
+            if not table_meta.uuid:
+                filtered_tables_meta.append(table_meta)
+                continue
+
+            kept_table_meta = tables_by_uuid.get(table_meta.uuid)
+            if not kept_table_meta:
+                tables_by_uuid[table_meta.uuid] = table_meta
+                filtered_tables_meta.append(table_meta)
+                continue
+
+            duplicate_uuid_skipped += 1
+            if (
+                kept_table_meta.database == table_meta.database
+                and kept_table_meta.name == table_meta.name
+            ):
+                logging.warning(
+                    "Skipping duplicate metadata entry for table {}.{} with UUID {}",
+                    table_meta.database,
+                    table_meta.name,
+                    table_meta.uuid,
+                )
+                continue
+
+            if not keep_going:
+                raise ClickhouseBackupError(
+                    "Backup metadata contains conflicting tables with same UUID "
+                    f"{table_meta.uuid}: {kept_table_meta.database}.{kept_table_meta.name} "
+                    f"and {table_meta.database}.{table_meta.name}"
+                )
+
+            logging.warning(
+                "Skipping table {}.{} from backup restore: UUID {} duplicates {}.{} in backup metadata and --keep-going is enabled",
+                table_meta.database,
+                table_meta.name,
+                table_meta.uuid,
+                kept_table_meta.database,
+                kept_table_meta.name,
+            )
+        return filtered_tables_meta, duplicate_uuid_skipped
 
     @staticmethod
     def _log_restore_preprocess_summary(
