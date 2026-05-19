@@ -7,13 +7,24 @@ from contextlib import contextmanager
 from functools import partial
 from io import IOBase
 from pathlib import Path
-from typing import Any, BinaryIO, Callable, Iterator, List, Optional, Sequence, Union
+from typing import (
+    Any,
+    BinaryIO,
+    Callable,
+    Iterator,
+    List,
+    Literal,
+    Optional,
+    Sequence,
+    Union,
+)
 from urllib.parse import quote
 
 from nacl.exceptions import CryptoError
 
 from ch_backup import logging
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
+from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.calculators import calc_encrypted_size, calc_tarball_size
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.config import Config
@@ -652,6 +663,7 @@ class BackupLayout:
         backup_name: str,
         source_disk_name: str,
         compression: bool,
+        desired_tables: Sequence[TableMetadata] | Literal["all"],
     ) -> Sequence[str]:
         backup_path = self.get_backup_path(backup_name)
         # Check if metadata is stored as 'disks/s3.tar.gz' for backwards compatibility
@@ -660,11 +672,30 @@ class BackupLayout:
         )
         if self._storage_loader.path_exists(old_style_remote_path):
             return [old_style_remote_path]
-        return self._storage_loader.list_dir(
-            str(os.path.join(backup_path, "disks", source_disk_name)),
-            recursive=True,
-            absolute=True,
+
+        disk_path = os.path.join(backup_path, "disks", source_disk_name)
+        existing_paths = self._storage_loader.list_dir(
+            disk_path, recursive=True, absolute=True
         )
+        if desired_tables == "all":
+            return existing_paths
+
+        remote_paths = {
+            _disk_metadata_path(
+                backup_path,
+                table.database,
+                table.name,
+                source_disk_name,
+                compression,
+            )
+            for table in desired_tables
+        }
+        needed_paths = remote_paths.intersection(existing_paths)
+        missing_paths = remote_paths.difference(existing_paths)
+        for path in missing_paths:
+            logging.warning(f"Missing path {path} on remote")
+
+        return list(needed_paths)
 
     @contextmanager
     def _get_cloud_storage_metadata_dst(
@@ -696,11 +727,13 @@ class BackupLayout:
             assert isinstance(path, str)
             return os.path.exists(path)
 
+    # pylint: disable=too-many-positional-arguments
     def download_cloud_storage_metadata(
         self,
         backup_meta: BackupMetadata,
         disk: Disk,
         source_disk_name: str,
+        desired_tables: Sequence[TableMetadata] | Literal["all"],
         file_path: Optional[str] = None,
     ) -> None:
         """
@@ -711,7 +744,10 @@ class BackupLayout:
         compression = backup_meta.cloud_storage.compressed
         encryption = backup_meta.cloud_storage.encrypted
         metadata_remote_paths = self._get_cloud_storage_metadata_remote_paths(
-            backup_name, source_disk_name, compression
+            backup_name,
+            source_disk_name,
+            compression,
+            desired_tables,
         )
 
         with self._get_cloud_storage_metadata_dst(backup_meta, disk, file_path) as dst:
