@@ -354,9 +354,9 @@ INSERT_DEDUP_INFO_BATCH_SQL = strip_query(
 
 GET_DEDUPLICATED_PARTS_SQL = strip_query(
     """
-    SELECT 
+    SELECT
         `{system_db}`._deduplication_info_current.name AS current_name,
-        `{system_db}`._deduplication_info.* 
+        `{system_db}`._deduplication_info.*
     FROM `{system_db}`._deduplication_info
     JOIN `{system_db}`._deduplication_info_current
     ON _deduplication_info.checksum = _deduplication_info_current.checksum
