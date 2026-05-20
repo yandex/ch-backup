@@ -245,10 +245,11 @@ def deduplicate_parts(
         part = PartMetadata(
             database=database,
             table=table,
-            name=existing_part["name"],
+            name=existing_part["current_name"],
             checksum=existing_part["checksum"],
             size=int(existing_part["size"]),
             link=existing_part["backup_name"],
+            link_part_name=existing_part["name"],
             files=existing_part["files"],
             tarball=existing_part["tarball"],
             disk_name=existing_part["disk_name"],
@@ -267,8 +268,9 @@ def deduplicate_parts(
         deduplicated_parts[part.name] = part
 
         logging.debug(
-            'Part "{}" found in backup "{}", reusing',
+            'Part "{}" (linked to storage path "{}") found in backup "{}", reusing',
             part.name,
+            part.link_part_name,
             existing_part["backup_name"],
         )
 

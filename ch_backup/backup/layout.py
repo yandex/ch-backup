@@ -561,9 +561,12 @@ class BackupLayout:
         """
         Download part data to the specified directory.
         """
+        storage_name = part.link_part_name if part.link_part_name else part.name
+
         logging.debug(
-            'Downloading data part {} of "{}"."{}"',
+            'Downloading data part {} (stored as {}) of "{}"."{}"',
             part.name,
+            storage_name,
             part.database,
             part.table,
         )
@@ -578,11 +581,11 @@ class BackupLayout:
             backup_path,
             part.database,
             part.table,
-            part.name,
+            storage_name,
         )
 
         if part.tarball:
-            remote_path = os.path.join(remote_dir_path, f"{part.name}.tar")
+            remote_path = os.path.join(remote_dir_path, f"{storage_name}.tar")
             logging.debug("Downloading part tarball file: {}", remote_path)
             try:
                 self._storage_loader.download_files(
@@ -615,6 +618,8 @@ class BackupLayout:
         """
         Check availability of part data in storage.
         """
+        storage_name = part.link_part_name if part.link_part_name else part.name
+
         try:
             # part.link is the source backup name for deduplicated parts (or None).
             source_backup_name = part.link or backup_name
@@ -624,18 +629,18 @@ class BackupLayout:
                 resolved_backup_path,
                 part.database,
                 part.table,
-                part.name,
+                storage_name,
             )
             remote_files = self._storage_loader.list_dir(remote_dir_path)
 
-            if remote_files == [f"{part.name}.tar"]:
+            if remote_files == [f"{storage_name}.tar"]:
                 actual_size = self._storage_loader.get_file_size(
-                    os.path.join(remote_dir_path, f"{part.name}.tar")
+                    os.path.join(remote_dir_path, f"{storage_name}.tar")
                 )
                 target_size = self._target_part_size(part, encrypted=part.encrypted)
                 if target_size != actual_size:
                     logging.warning(
-                        f"Part {part.name} files stored in tar, size not match {target_size} != {actual_size}"
+                        f"Part {storage_name} files stored in tar, size not match {target_size} != {actual_size}"
                     )
                     return False
                 return True
