@@ -229,3 +229,56 @@ class TestValidateUploadedParts:
             TableBackup._validate_uploaded_parts(context, parts)
 
         assert check_mock.call_count == 3
+
+
+class TestRestorePreprocessing:
+    @pytest.mark.parametrize(
+        ("backup_uuid", "expected_detached_name"),
+        [
+            (UUID, "detached_by_uuid"),
+            ("uuid-missed", "table1"),
+        ],
+    )
+    def test_preprocess_tables_to_restore_matches_detached_table_by_uuid_then_name(
+        self,
+        backup_uuid,
+        expected_detached_name,
+    ):
+        # pylint: disable=protected-access
+        table_backup = TableBackup()
+        context = Mock(spec=BackupContext)
+        context.ch_ctl = Mock()
+        uuid_matched_table = Table(
+            "db1", "detached_by_uuid", "MergeTree", [], [], "meta-uuid.sql", "", UUID
+        )
+        name_matched_table = Table(
+            "db1", "table1", "MergeTree", [], [], "meta-name.sql", "", "uuid-other"
+        )
+        context.ch_ctl.get_detached_tables.return_value = [
+            name_matched_table,
+            uuid_matched_table,
+        ]
+        context.ch_ctl.get_tables.return_value = []
+        context.ch_ctl.get_replicas.return_value = []
+        backup_table = Table("db1", "table1", "MergeTree", [], [], "", "", backup_uuid)
+        databases = {"db1": Database("db1", "Atomic", None, None, None)}
+
+        with patch.object(
+            table_backup,
+            "_rewrite_table_schema",
+            side_effect=lambda *_args, **_kwargs: setattr(
+                backup_table, "create_statement", "CREATE TABLE"
+            ),
+        ):
+            result, _ = table_backup._preprocess_tables_to_restore(
+                context,
+                databases,
+                [backup_table],
+                keep_going=False,
+                restore_tables_in_replicated_database=True,
+                metadata_cleaner=None,
+            )
+
+        attached_table = context.ch_ctl.attach_table.call_args.args[0]
+        assert attached_table.name == expected_detached_name
+        assert result == [backup_table]
