@@ -235,6 +235,7 @@ DEFAULT_CONFIG = {
         "cert": None,
         "key": None,
         "ca": None,
+        "timeout": 10,
         "connect_timeout": 10,
         "hosts": [],
         "root_path": "",
