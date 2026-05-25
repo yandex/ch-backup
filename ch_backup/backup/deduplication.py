@@ -225,6 +225,18 @@ def _populate_dedup_info(
             break
 
 
+def _is_mutation_renamed(current_name: str, stored_name: str) -> bool:
+    current_segments = current_name.split("_")
+    stored_segments = stored_name.split("_")
+
+    if len(current_segments) not in (4, 5):
+        return False
+    if len(stored_segments) not in (4, 5):
+        return False
+
+    return current_segments[:4] == stored_segments[:4]
+
+
 def deduplicate_parts(
     context: BackupContext,
     database: str,
@@ -242,13 +254,24 @@ def deduplicate_parts(
     deduplicated_parts: Dict[str, PartMetadata] = {}
 
     for existing_part in existing_parts:
+        current_name = existing_part["current_name"]
+        storage_name = existing_part["backup_name"]
+
+        if current_name != storage_name and not _is_mutation_renamed(current_name, storage_name):
+            logging.debug(
+                'Part "{}" and stored part "{}" differ in more than just mutation suffix, skipping deduplication',
+                current_name,
+                storage_name,
+            )
+            continue
+
         part = PartMetadata(
             database=database,
             table=table,
-            name=existing_part["current_name"],
+            name=current_name,
             checksum=existing_part["checksum"],
             size=int(existing_part["size"]),
-            link=existing_part["backup_name"],
+            link=storage_name,
             link_part_name=existing_part["name"],
             files=existing_part["files"],
             tarball=existing_part["tarball"],
