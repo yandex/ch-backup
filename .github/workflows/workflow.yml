@@ -38,8 +38,6 @@ jobs:
       matrix:
         include:
         - python: "3.10"
-          clickhouse: "22.8.21.38"
-        - python: "3.10"
           clickhouse: "23.3.22.3"
         - python: "3.10"
           clickhouse: "23.8.16.40"
@@ -48,7 +46,11 @@ jobs:
         - python: "3.10"
           clickhouse: "24.8.14.39"
         - python: "3.10"
-          clickhouse: "25.3.3.42"
+          clickhouse: "25.3.12.8"
+        - python: "3.10"
+          clickhouse: "25.8.23.13"
+        - python: "3.10"
+          clickhouse: "26.3.12.3"
         - python: "3.10"
           clickhouse: "latest"
         - python: "3.11"
