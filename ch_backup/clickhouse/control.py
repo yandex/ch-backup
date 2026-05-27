@@ -525,6 +525,46 @@ SETTINGS index_granularity = 8192
 )
 
 
+def _fix_create_statement(create_statement: str) -> str:
+    """
+    Fix DDL that was stored by ClickHouse without properly escaping reserved
+    keywords used as identifiers (column names, aliases).
+
+    This is a known ClickHouse bug where keywords like TOP are not backtick-escaped
+    during DDL serialization to .sql files, making stored DDL unparseable on ATTACH.
+
+    Example of broken DDL:
+        SELECT TOP AS c FROM default.test_3
+        -- TOP is treated as TOP N syntax
+
+    Fixed DDL:
+        SELECT `TOP` AS c FROM default.test_3
+    """
+    UNESCAPED_KEYWORDS = [
+        "TOP",
+    ]
+
+    fixed = create_statement
+    for keyword in UNESCAPED_KEYWORDS:
+        fixed = re.sub(
+            rf'(?<![`\w]){keyword}(?![`\w])\s+AS\s',
+            f'`{keyword}` AS ',
+            fixed,
+            flags=re.IGNORECASE,
+        )
+
+    if fixed != create_statement:
+        logging.warning(
+            "DDL was modified to fix unescaped reserved keywords. "
+            "This is likely a ClickHouse bug. "
+            "Original: {!r}. Fixed: {!r}",
+            create_statement,
+            fixed,
+        )
+
+    return fixed
+
+
 # pylint: disable=too-many-public-methods
 class ClickhouseCTL:
     """
@@ -959,7 +999,8 @@ class ClickhouseCTL:
         """
         Restore table.
         """
-        self._ch_client.query(table.create_statement)
+        fixed_statement = _fix_create_statement(table.create_statement)
+        self._ch_client.query(fixed_statement)
 
     def restore_replica(self, table: Table) -> None:
         """
