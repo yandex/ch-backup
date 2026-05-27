@@ -1,6 +1,10 @@
 import pytest
 
-from ch_backup.clickhouse.control import _format_string_array, _parse_version, _fix_create_statement
+from ch_backup.clickhouse.control import (
+    _fix_create_statement,
+    _format_string_array,
+    _parse_version,
+)
 from tests.unit.utils import parametrize
 
 
@@ -49,6 +53,7 @@ def test_format_string_array(value, result):
 )
 def test_parse_version(version: str, expected: list[int]) -> None:
     assert _parse_version(version) == expected
+
 
 def test_fix_create_statement_top_keyword():
     broken = (

@@ -524,6 +524,10 @@ SETTINGS index_granularity = 8192
 """
 )
 
+UNESCAPED_KEYWORDS = [
+    "TOP",
+]
+
 
 def _fix_create_statement(create_statement: str) -> str:
     """
@@ -531,7 +535,7 @@ def _fix_create_statement(create_statement: str) -> str:
     keywords used as identifiers (column names, aliases).
 
     This is a known ClickHouse bug where keywords like TOP are not backtick-escaped
-    during DDL serialization to .sql files, making stored DDL unparseable on ATTACH.
+    during DDL serialization to .sql files, making stored DDL unparsable on ATTACH.
 
     Example of broken DDL:
         SELECT TOP AS c FROM default.test_3
@@ -540,15 +544,12 @@ def _fix_create_statement(create_statement: str) -> str:
     Fixed DDL:
         SELECT `TOP` AS c FROM default.test_3
     """
-    UNESCAPED_KEYWORDS = [
-        "TOP",
-    ]
 
     fixed = create_statement
     for keyword in UNESCAPED_KEYWORDS:
         fixed = re.sub(
-            rf'(?<![`\w]){keyword}(?![`\w])\s+AS\s',
-            f'`{keyword}` AS ',
+            rf"(?<![`\w]){keyword}(?![`\w])\s+AS\s",
+            f"`{keyword}` AS ",
             fixed,
             flags=re.IGNORECASE,
         )
