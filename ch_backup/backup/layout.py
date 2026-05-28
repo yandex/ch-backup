@@ -561,7 +561,7 @@ class BackupLayout:
         """
         Download part data to the specified directory.
         """
-        storage_name = part.link_part_name if part.link_part_name else part.name
+        source_part_name = part.link_part_name or part.name
 
         logging.debug(
             'Downloading data part {} (stored as {}) of "{}"."{}"',
