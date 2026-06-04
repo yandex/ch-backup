@@ -566,7 +566,7 @@ class BackupLayout:
         logging.debug(
             'Downloading data part {} (stored as {}) of "{}"."{}"',
             part.name,
-            storage_name,
+            source_part_name,
             part.database,
             part.table,
         )
@@ -581,11 +581,11 @@ class BackupLayout:
             backup_path,
             part.database,
             part.table,
-            storage_name,
+            source_part_name,
         )
 
         if part.tarball:
-            remote_path = os.path.join(remote_dir_path, f"{storage_name}.tar")
+            remote_path = os.path.join(remote_dir_path, f"{source_part_name}.tar")
             logging.debug("Downloading part tarball file: {}", remote_path)
             try:
                 self._storage_loader.download_files(
