@@ -21,6 +21,29 @@ class PartInfo(NamedTuple):
     mutation: int
 
 
+def split_part_name(part: str) -> PartInfo:
+    """
+    Splitting part's name to get underlying information.
+    """
+
+    max_split = 4
+    chunks = part.split("_", maxsplit=max_split)
+    partition_id = ""
+    level = 0
+    mutation = 0
+    try:
+        partition_id = chunks[0]
+        min_block_num = int(chunks[1])
+        max_block_num = int(chunks[2])
+        level = int(chunks[3])
+        if max_split + 1 == len(chunks):
+            mutation = int(chunks[4])
+    except (IndexError, ValueError):
+        min_block_num = 0
+        max_block_num = 0
+    return PartInfo(partition_id, min_block_num, max_block_num, level, mutation)
+
+
 class TableMetadata(SimpleNamespace):
     """
     Backup metadata for ClickHouse table.
@@ -65,24 +88,6 @@ class TableMetadata(SimpleNamespace):
                 result.append(
                     PartMetadata.load(self.database, self.name, part_name, raw_metadata)
                 )
-
-        def split_part_name(part: str) -> PartInfo:
-            max_split = 4
-            chunks = part.split("_", maxsplit=max_split)
-            partition_id = ""
-            level = 0
-            mutation = 0
-            try:
-                partition_id = chunks[0]
-                min_block_num = int(chunks[1])
-                max_block_num = int(chunks[2])
-                level = int(chunks[3])
-                if max_split + 1 == len(chunks):
-                    mutation = int(chunks[4])
-            except (IndexError, ValueError):
-                min_block_num = 0
-                max_block_num = 0
-            return PartInfo(partition_id, min_block_num, max_block_num, level, mutation)
 
         result.sort(key=lambda part: split_part_name(part.name))
         return result
