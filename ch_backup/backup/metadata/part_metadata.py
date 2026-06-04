@@ -3,10 +3,25 @@ Backup metadata for ClickHouse data part.
 """
 
 import os
-from typing import Optional, Sequence
+from typing import Any, Dict, NamedTuple, Optional, Sequence
 
 from ch_backup.clickhouse.models import FrozenPart
 from ch_backup.util import Slotted
+
+
+class Link(NamedTuple):
+    """
+    Reference to a deduplicated part in another backup.
+
+    Attributes:
+        backup_name: The name of the source backup (e.g., "20240101T120000").
+        part_name: The name of the part inside that backup. This may differ
+                   from the current part's name when the part has been
+                   mutated (e.g., "all_1_1_0" -> "all_1_1_0_2").
+    """
+
+    backup_name: str
+    part_name: str
 
 
 def normalize_backup_link(raw_link: Optional[str]) -> Optional[str]:
@@ -30,6 +45,35 @@ def normalize_backup_link(raw_link: Optional[str]) -> Optional[str]:
     return os.path.basename(raw_link.rstrip("/"))
 
 
+def _deserialize_link(raw_metadata: Dict[str, Any], part_name: str) -> Optional[Link]:
+    """
+    Deserialize a Link from raw metadata.
+
+    Handles three formats:
+    - None / missing -> None (non-deduplicated part)
+    - String (legacy) -> Link(backup_name=<normalized>, part_name=<part_name>)
+    - Dict (new)      -> Link(backup_name=..., part_name=...)
+    """
+    raw_link = raw_metadata.get("link")
+    if not raw_link:
+        return None
+
+    # New format: serialized as a dict
+    if isinstance(raw_link, dict):
+        return Link(
+            backup_name=raw_link["backup_name"],
+            part_name=raw_link["part_name"],
+        )
+
+    # Legacy format: serialized as a string (full path or plain backup name).
+    # Default the part_name to the current part name since legacy backups
+    # never had renamed (mutated) deduplicated parts.
+    backup_name = normalize_backup_link(raw_link)
+    if backup_name is None:
+        return None
+    return Link(backup_name=backup_name, part_name=part_name)
+
+
 class RawMetadata(Slotted):
     """
     Raw metadata for ClickHouse data part.
@@ -41,7 +85,6 @@ class RawMetadata(Slotted):
         "files",
         "tarball",
         "link",
-        "link_part_name",
         "disk_name",
         "encrypted",
     )
@@ -53,8 +96,7 @@ class RawMetadata(Slotted):
         size: int,
         files: Sequence[str],
         tarball: bool,
-        link: Optional[str] = None,
-        link_part_name: Optional[str] = None,
+        link: Optional[Link] = None,
         disk_name: Optional[str] = None,
         encrypted: bool = True,
     ) -> None:
@@ -63,7 +105,6 @@ class RawMetadata(Slotted):
         self.files = files
         self.tarball = tarball
         self.link = link
-        self.link_part_name = link_part_name
         self.disk_name = disk_name
         self.encrypted = encrypted
 
@@ -85,8 +126,7 @@ class PartMetadata(Slotted):
         size: int,
         files: Sequence[str],
         tarball: bool,
-        link: Optional[str] = None,
-        link_part_name: Optional[str] = None,
+        link: Optional[Link] = None,
         disk_name: Optional[str] = None,
         encrypted: bool = True,
     ) -> None:
@@ -94,7 +134,7 @@ class PartMetadata(Slotted):
         self.table: str = table
         self.name: str = name
         self.raw_metadata: RawMetadata = RawMetadata(
-            checksum, size, files, tarball, link, link_part_name, disk_name, encrypted
+            checksum, size, files, tarball, link, disk_name, encrypted
         )
 
     @property
@@ -119,20 +159,12 @@ class PartMetadata(Slotted):
         return self.raw_metadata.files
 
     @property
-    def link(self) -> Optional[str]:
+    def link(self) -> Optional[Link]:
         """
         For deduplicated data parts returns the name of the source backup.
         For non-deduplicated parts returns None.
         """
         return self.raw_metadata.link
-
-    @property
-    def link_part_name(self) -> Optional[str]:
-        """
-        For deduplicated data parts returns the name of the source part in backup.
-        For non-deduplicated parts returns None.
-        """
-        return self.raw_metadata.link_part_name
 
     @property
     def disk_name(self) -> str:
@@ -162,6 +194,8 @@ class PartMetadata(Slotted):
         """
         Deserialize data part metadata.
         """
+        link = _deserialize_link(raw_metadata, part_name)
+
         return cls(
             database=db_name,
             table=table_name,
@@ -170,7 +204,7 @@ class PartMetadata(Slotted):
             size=raw_metadata["bytes"],
             files=raw_metadata["files"],
             tarball=raw_metadata.get("tarball", False),
-            link=normalize_backup_link(raw_metadata.get("link")),
+            link=link,
             disk_name=raw_metadata.get("disk_name", "default"),
             encrypted=raw_metadata.get("encrypted", True),
         )

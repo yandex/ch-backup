@@ -250,7 +250,7 @@ class ClickHouseTemporaryDisks:
         """
         Copy data from temporary cloud storage disk to actual.
         """
-        storage_name = part.link_part_name if part.link_part_name else part.name
+        storage_name = part.link.part_name if part.link else part.name
 
         routine_tag = f"{table.database}.{table.name}::{storage_name}"
         target_disk = self._ch_availible_disks[part.disk_name]

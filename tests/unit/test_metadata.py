@@ -12,6 +12,7 @@ from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
     BackupStorageFormat,
+    Link,
     PartMetadata,
     normalize_backup_link,
 )
@@ -324,13 +325,25 @@ class TestPartMetadata:
         ("raw_link", "expected_link"),
         [
             # New format: plain backup name — returned as-is.
-            ("20181017T210300", "20181017T210300"),
+            (
+                "20181017T210300",
+                Link(backup_name="20181017T210300", part_name="part1"),
+            ),
             # Old format: full path with path_root prefix.
-            ("ch_backup/20181017T210300", "20181017T210300"),
+            (
+                "ch_backup/20181017T210300",
+                Link(backup_name="20181017T210300", part_name="part1"),
+            ),
             # Old format: absolute path.
-            ("/srv/backups/20181017T210300", "20181017T210300"),
+            (
+                "/srv/backups/20181017T210300",
+                Link(backup_name="20181017T210300", part_name="part1"),
+            ),
             # Nested path with trailing slash — must reduce to last component.
-            ("/srv/backups/daily/20181017T210300/", "20181017T210300"),
+            (
+                "/srv/backups/daily/20181017T210300/",
+                Link(backup_name="20181017T210300", part_name="part1"),
+            ),
             # No link (non-deduplicated part).
             (None, None),
             # Empty string treated as no link.

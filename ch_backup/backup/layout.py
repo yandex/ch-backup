@@ -561,7 +561,7 @@ class BackupLayout:
         """
         Download part data to the specified directory.
         """
-        source_part_name = part.link_part_name or part.name
+        source_part_name = part.link.part_name if part.link else part.name
 
         logging.debug(
             'Downloading data part {} (stored as {}) of "{}"."{}"',
@@ -574,7 +574,7 @@ class BackupLayout:
         os.makedirs(fs_part_path, exist_ok=True)
 
         # part.link is the source backup name for deduplicated parts (or None).
-        source_backup_name = part.link or backup_meta.name
+        source_backup_name = part.link.backup_name if part.link else backup_meta.name
         backup_path = self.get_backup_path(source_backup_name)
         remote_dir_path = self._get_escaped_if_exists(
             _part_path,
@@ -618,11 +618,11 @@ class BackupLayout:
         """
         Check availability of part data in storage.
         """
-        storage_name = part.link_part_name if part.link_part_name else part.name
+        storage_name = part.link.part_name if part.link else part.name
 
         try:
             # part.link is the source backup name for deduplicated parts (or None).
-            source_backup_name = part.link or backup_name
+            source_backup_name = part.link.backup_name if part.link else backup_name
             resolved_backup_path = self.get_backup_path(source_backup_name)
             remote_dir_path = self._get_escaped_if_exists(
                 _part_path,
@@ -803,7 +803,9 @@ class BackupLayout:
         deleting_files: List[str] = []
         for part in parts:
             # part.link is the source backup name for deduplicated parts (or None).
-            source_backup_name = part.link or backup_meta.name
+            source_backup_name = (
+                part.link.backup_name if part.link else backup_meta.name
+            )
             part_path = self._get_escaped_if_exists(
                 _part_path,
                 self.get_backup_path(source_backup_name),

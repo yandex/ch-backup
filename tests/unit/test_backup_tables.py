@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from ch_backup.backup.metadata import BackupMetadata, PartMetadata
+from ch_backup.backup.metadata import BackupMetadata, Link, PartMetadata
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.models import Database, Table
 from ch_backup.config import DEFAULT_CONFIG
@@ -155,7 +155,7 @@ class TestValidateUploadedParts:
 
     _BACKUP_NAME = "20181017T210300"
 
-    def _make_part(self, name: str, link: Optional[str] = None) -> PartMetadata:
+    def _make_part(self, name: str, link: Optional[Link] = None) -> PartMetadata:
         return PartMetadata(
             database="db1",
             table="table1",
@@ -213,7 +213,7 @@ class TestValidateUploadedParts:
         check_data_part — the layout itself resolves the link internally.
         """
         source_backup = "20181010T120000"
-        part = self._make_part("all_1_1_0", link=source_backup)
+        part = self._make_part("all_1_1_0", link=Link(source_backup, ""))
         context, check_mock = self._make_context(validate=True, check_returns=True)
 
         TableBackup._validate_uploaded_parts(context, [part])
