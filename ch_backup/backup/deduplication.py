@@ -231,14 +231,30 @@ def _populate_dedup_info(
 
 
 def _is_mutation_renamed(current_name: str, dedup_part_name: str) -> bool:
+    """
+    Returns True if two part names differ ONLY by their mutation suffix.
+
+    ClickHouse part name format:
+        {partition_id}_{min_block_num}_{max_block_num}_{level}[_{mutation}]
+
+    Valid pairs (return True):
+        all_1_1_0       <-> all_1_1_0_2    (mutation added)
+        all_1_1_0_1     <-> all_1_1_0_2    (mutation version changed)
+        20230601_1_1_0  <-> 20230601_1_1_0_5
+
+    Invalid pairs (return False):
+        all_1_1_0       <-> all_2_2_0      (different block numbers)
+        all_1_1_0       <-> all_1_1_1      (different merge level)
+        20230601_1_1_0  <-> 20230602_1_1_0 (different partitions)
+    """
     current_segments = split_part_name(current_name)
     dedup_part_segments = split_part_name(dedup_part_name)
 
     return (
-        current_segments.partition_id != dedup_part_segments.partition_id
-        or current_segments.min_block_num != dedup_part_segments.min_block_num
-        or current_segments.max_block_num != dedup_part_segments.max_block_num
-        or current_segments.level != dedup_part_segments.level
+        current_segments.partition_id == dedup_part_segments.partition_id
+        and current_segments.min_block_num == dedup_part_segments.min_block_num
+        and current_segments.max_block_num == dedup_part_segments.max_block_num
+        and current_segments.level == dedup_part_segments.level
     )
 
 
@@ -259,8 +275,8 @@ def deduplicate_parts(
     deduplicated_parts: Dict[str, PartMetadata] = {}
 
     for existing_part in existing_parts:
-        current_name = existing_part["name"]
-        dedup_part_name = existing_part["backup_name"]
+        current_name = existing_part["current_name"]
+        dedup_part_name = existing_part["name"]
 
         if current_name != dedup_part_name and not _is_mutation_renamed(
             current_name, dedup_part_name
@@ -279,7 +295,7 @@ def deduplicate_parts(
             checksum=existing_part["checksum"],
             size=int(existing_part["size"]),
             link=dedup_part_name,
-            link_part_name=existing_part["name"],
+            link_part_name=dedup_part_name if current_name != dedup_part_name else None,
             files=existing_part["files"],
             tarball=existing_part["tarball"],
             disk_name=existing_part["disk_name"],
