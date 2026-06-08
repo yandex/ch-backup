@@ -295,7 +295,7 @@ GET_DATABASES_SQL = strip_query(
         engine,
         metadata_path,
         uuid,
-        engine_full
+        if(engine = 'Replicated', engine_full, NULL) AS engine_full
     FROM system.databases
     WHERE name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', '{system_db}')
     FORMAT JSON
