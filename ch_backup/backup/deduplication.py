@@ -12,7 +12,6 @@ from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
-    Link,
     PartMetadata,
     split_part_name,
 )
@@ -196,7 +195,7 @@ def _populate_dedup_info(
 
                     if part.link:
                         verified = True
-                        backup_name = part.link.backup_name
+                        backup_name = part.link
                         if backup_name not in dedup_backup_names:
                             continue
                     else:
@@ -289,18 +288,14 @@ def deduplicate_parts(
             )
             continue
 
-        link = Link(
-            backup_name=existing_part["backup_name"],
-            part_name=dedup_part_name,
-        )
-
         part = PartMetadata(
             database=database,
             table=table,
             name=current_name,
             checksum=existing_part["checksum"],
             size=int(existing_part["size"]),
-            link=link,
+            link=dedup_part_name,
+            link_part_name=dedup_part_name if current_name != dedup_part_name else None,
             files=existing_part["files"],
             tarball=existing_part["tarball"],
             disk_name=existing_part["disk_name"],
@@ -321,7 +316,7 @@ def deduplicate_parts(
         logging.debug(
             'Part "{}" (linked to storage path "{}") found in backup "{}", reusing',
             part.name,
-            link.part_name,
+            part.link_part_name,
             existing_part["backup_name"],
         )
 
@@ -353,9 +348,7 @@ def collect_dedup_references_for_batch_backup_deletion(
                     if part.link not in deleting_backup_names:
                         continue
 
-                    _add_part_to_dedup_references(
-                        dedup_references[part.link.backup_name], part
-                    )
+                    _add_part_to_dedup_references(dedup_references[part.link], part)
 
     return dedup_references
 

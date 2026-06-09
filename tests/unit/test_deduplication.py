@@ -111,6 +111,7 @@ def test_split_part_name(part_name, expected):
             "stored_name": "all_1_1_0",
             "current_name": "all_1_1_0",
             "should_deduplicate": True,
+            "expected_link_name": None,
         },
     },
     {
@@ -119,6 +120,7 @@ def test_split_part_name(part_name, expected):
             "stored_name": "all_1_1_0",
             "current_name": "all_1_1_0_2",
             "should_deduplicate": True,
+            "expected_link_name": "all_1_1_0",
         },
     },
     {
@@ -127,6 +129,7 @@ def test_split_part_name(part_name, expected):
             "stored_name": "all_1_1_0_1",
             "current_name": "all_1_1_0_2",
             "should_deduplicate": True,
+            "expected_link_name": "all_1_1_0_1",
         },
     },
     {
@@ -135,6 +138,7 @@ def test_split_part_name(part_name, expected):
             "stored_name": "all_1_1_0",
             "current_name": "all_2_2_0",
             "should_deduplicate": False,
+            "expected_link_name": None,
         },
     },
     {
@@ -143,6 +147,7 @@ def test_split_part_name(part_name, expected):
             "stored_name": "20230601_1_1_0",
             "current_name": "20230602_1_1_0",
             "should_deduplicate": False,
+            "expected_link_name": None,
         },
     },
     {
@@ -151,10 +156,13 @@ def test_split_part_name(part_name, expected):
             "stored_name": "all_1_1_0",
             "current_name": "all_1_1_1",
             "should_deduplicate": False,
+            "expected_link_name": None,
         },
     },
 )
-def test_deduplicate_parts(stored_name, current_name, should_deduplicate):
+def test_deduplicate_parts(
+    stored_name, current_name, should_deduplicate, expected_link_name
+):
     context = _make_context()
     context.ch_ctl.get_deduplication_info.return_value = [
         _make_existing_part(name=stored_name, current_name=current_name)
@@ -165,11 +173,8 @@ def test_deduplicate_parts(stored_name, current_name, should_deduplicate):
 
     if should_deduplicate:
         assert current_name in result, f"Expected '{current_name}' to be deduplicated"
-        link = result[current_name].link
-        assert link
         assert_equal(result[current_name].name, current_name)
-        assert_equal(link.backup_name, "backup1")
-        assert_equal(link.part_name, stored_name)
+        assert_equal(result[current_name].link_part_name, expected_link_name)
     else:
         assert (
             current_name not in result
