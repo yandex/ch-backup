@@ -274,8 +274,17 @@ def deduplicate_parts(
     )
     deduplicated_parts: Dict[str, PartMetadata] = {}
 
+    logging.debug(
+        'Deduplication lookup for {}.{}: {} frozen parts, {} matches found. First match: {}',
+        database,
+        table,
+        len(frozen_parts),
+        len(existing_parts),
+        existing_parts[0] if existing_parts else "none",
+    )
+
     for existing_part in existing_parts:
-        current_name = existing_part["current_name"]
+        current_name = existing_part.get("current_name") or existing_part["name"]
         dedup_part_name = existing_part["name"]
 
         if current_name != dedup_part_name and not _is_mutation_renamed(
