@@ -152,11 +152,27 @@ class WorkloadEntitiesBackup(BackupManager):
         """
         Drop a workload entity, choosing WORKLOAD or RESOURCE based on its
         create statement (`CREATE WORKLOAD ...` / `CREATE RESOURCE ...`).
+
+        Both patterns are handled explicitly so that an unknown or malformed
+        statement fails loudly instead of being silently misclassified as a
+        RESOURCE and issuing the wrong DROP.
         """
-        if create_statement.lstrip().upper().startswith("CREATE WORKLOAD"):
+        normalized_statement = create_statement.lstrip().upper()
+
+        if normalized_statement.startswith("CREATE WORKLOAD"):
             context.ch_ctl.drop_workload(entity_name)
-        else:
+        elif normalized_statement.startswith("CREATE RESOURCE"):
             context.ch_ctl.drop_resource(entity_name)
+        else:
+            logging.error(
+                "Unsupported workload entity create statement for {}: {}",
+                entity_name,
+                create_statement,
+            )
+            raise ValueError(
+                f"Unsupported workload entity create statement for '{entity_name}': "
+                f"{create_statement!r}"
+            )
 
     def _copy_directory_content_from_zookeeper(
         self,
@@ -250,6 +266,10 @@ class WorkloadEntitiesStorageConfig:
         storage_type_from_config = we_config.get("type")
         storage_path_from_config = we_config.get("path")
         encryption_key_hex_from_config = we_config.get("key_hex")
+
+        assert (
+            storage_path_from_config
+        ), "path missing from workload_entity_storage config"
 
         storage_type = WorkloadEntitiesStorageConfig.StorageType.LOCAL
         storage_path = storage_path_from_config
