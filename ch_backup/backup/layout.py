@@ -298,6 +298,24 @@ class BackupLayout:
             msg = f"Failed to create async upload of {remote_path}"
             raise StorageError(msg) from e
 
+    def upload_workload_entity_ddl_from_file(
+        self, local_path: str, backup_name: str, entity_name: str
+    ) -> None:
+        """
+        Upload workload entity create statement file.
+        """
+        remote_path = _workload_entities_data_path(
+            self.get_backup_path(backup_name), entity_name
+        )
+        try:
+            logging.debug('Uploading workload entity create statement "{}"', entity_name)
+            self._storage_loader.upload_file(
+                local_path, remote_path=remote_path, encryption=True
+            )
+        except Exception as e:
+            msg = f"Failed to create async upload of {remote_path}"
+            raise StorageError(msg) from e
+
     def get_udf_create_statement(
         self, backup_meta: BackupMetadata, filename: str
     ) -> str:
@@ -325,7 +343,7 @@ class BackupLayout:
                 str(e),
             )
             return None
-
+        
     def get_named_collection_create_statement(
         self, backup_meta: BackupMetadata, filename: str
     ) -> str:
@@ -335,25 +353,7 @@ class BackupLayout:
         remote_path = _named_collections_data_path(backup_meta.path, filename)
         return self._storage_loader.download_data(remote_path, encryption=True)
 
-    def upload_workload_entity_ddl_from_file(
-        self, local_path: str, backup_name: str, entity_name: str
-    ) -> None:
-        """
-        Upload workload entity create statement file.
-        """
-        remote_path = _workload_entities_data_path(
-            self.get_backup_path(backup_name), entity_name
-        )
-        try:
-            logging.debug('Uploading workload entity create statement "{}"', entity_name)
-            self._storage_loader.upload_file(
-                local_path, remote_path=remote_path, encryption=True
-            )
-        except Exception as e:
-            msg = f"Failed to create async upload of {remote_path}"
-            raise StorageError(msg) from e
-
-    def get_local_we_create_statement(self, entity_name: str) -> Optional[str]:
+    def get_local_workload_entity_create_statement(self, entity_name: str) -> Optional[str]:
         """
         Read workload entity create statement from local file.
         """

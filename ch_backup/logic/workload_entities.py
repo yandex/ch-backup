@@ -120,10 +120,15 @@ class WorkloadEntitiesBackup(BackupManager):
 
             if entity_name in we_on_clickhouse_list:
                 we_on_clickhouse_statement = (
-                    context.backup_layout.get_local_we_create_statement(entity_name)
+                    context.backup_layout.get_local_workload_entity_create_statement(entity_name)
                 )
                 if we_on_clickhouse_statement != statement:
-                    context.ch_ctl.drop_workload_entity(entity_name)
+                    # The entity already on ClickHouse is the one being dropped,
+                    # so derive its type from its own create statement when
+                    # available, falling back to the backup statement.
+                    self._drop_workload_entity(
+                        context, entity_name, we_on_clickhouse_statement or statement
+                    )
                     context.ch_ctl.restore_workload_entity(statement)
 
             if entity_name not in we_on_clickhouse_list:
@@ -139,6 +144,19 @@ class WorkloadEntitiesBackup(BackupManager):
         Get workload entities list
         """
         return context.backup_meta.get_workload_entities()
+
+    @staticmethod
+    def _drop_workload_entity(
+        context: BackupContext, entity_name: str, create_statement: str
+    ) -> None:
+        """
+        Drop a workload entity, choosing WORKLOAD or RESOURCE based on its
+        create statement (`CREATE WORKLOAD ...` / `CREATE RESOURCE ...`).
+        """
+        if create_statement.lstrip().upper().startswith("CREATE WORKLOAD"):
+            context.ch_ctl.drop_workload(entity_name)
+        else:
+            context.ch_ctl.drop_resource(entity_name)
 
     def _copy_directory_content_from_zookeeper(
         self,

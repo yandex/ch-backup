@@ -998,15 +998,17 @@ class ClickhouseCTL:
         """
         self._ch_client.query(DROP_NAMED_COLLECTION_SQL.format(nc_name=escape(nc_name)))
 
-    def drop_workload_entity(self, entity_name: str) -> None:
+    def drop_workload(self, entity_name: str) -> None:
         """
-        Drop workload entity (WORKLOAD or RESOURCE).
-        Try dropping as WORKLOAD first, then as RESOURCE if that fails.
+        Drop WORKLOAD entity.
         """
-        try:
-            self._ch_client.query(DROP_WORKLOAD_SQL.format(entity_name=escape(entity_name)))
-        except Exception:
-            self._ch_client.query(DROP_RESOURCE_SQL.format(entity_name=escape(entity_name)))
+        self._ch_client.query(DROP_WORKLOAD_SQL.format(entity_name=escape(entity_name)))
+
+    def drop_resource(self, entity_name: str) -> None:
+        """
+        Drop RESOURCE entity.
+        """
+        self._ch_client.query(DROP_RESOURCE_SQL.format(entity_name=escape(entity_name)))
 
     def system_drop_replica(self, replica: str, zookeeper_path: str) -> None:
         """
