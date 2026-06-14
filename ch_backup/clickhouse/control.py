@@ -325,6 +325,7 @@ CREATE_IF_NOT_EXISTS_DEDUP_TABLE_SQL = strip_query(
         table String,
         name String,
         backup_name String,
+        link_part_name String,
         checksum String,
         size Int64,
         files Array(String),
@@ -361,6 +362,7 @@ GET_DEDUPLICATED_PARTS_SQL = strip_query(
     JOIN `{system_db}`._deduplication_info_current
     ON _deduplication_info.checksum = _deduplication_info_current.checksum
     WHERE database='{database}' AND table='{table}'
+    ORDER BY backup_name DESC
     LIMIT 1 BY current_name
     FORMAT JSON
 """

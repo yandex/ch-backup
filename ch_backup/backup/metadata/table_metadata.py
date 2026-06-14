@@ -105,6 +105,7 @@ class TableMetadata(SimpleNamespace):
             "bytes": part.size,
             "files": part.files,
             "link": part.link,
+            "link_part_name": part.link_part_name,
             "tarball": part.tarball,
             "disk_name": part.disk_name,
             "encrypted": part.encrypted,

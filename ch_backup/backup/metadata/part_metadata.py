@@ -135,6 +135,14 @@ class PartMetadata(Slotted):
         return self.raw_metadata.link_part_name
 
     @property
+    def deduplicated_part_name(self) -> str:
+        """
+        Return the name under which the part's data files are physically stored
+        in the source backup.
+        """
+        return self.link_part_name or self.name
+
+    @property
     def disk_name(self) -> str:
         """
         Return disk name where part is stored.
@@ -162,6 +170,9 @@ class PartMetadata(Slotted):
         """
         Deserialize data part metadata.
         """
+        link = normalize_backup_link(raw_metadata.get("link"))
+        link_part_name = raw_metadata.get("link_part_name") or None
+
         return cls(
             database=db_name,
             table=table_name,
@@ -170,7 +181,8 @@ class PartMetadata(Slotted):
             size=raw_metadata["bytes"],
             files=raw_metadata["files"],
             tarball=raw_metadata.get("tarball", False),
-            link=normalize_backup_link(raw_metadata.get("link")),
+            link=link,
+            link_part_name=link_part_name,
             disk_name=raw_metadata.get("disk_name", "default"),
             encrypted=raw_metadata.get("encrypted", True),
         )

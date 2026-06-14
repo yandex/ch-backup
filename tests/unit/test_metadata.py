@@ -321,7 +321,7 @@ class TestPartMetadata:
     }
 
     @pytest.mark.parametrize(
-        ("raw_link", "expected_link"),
+        ("raw_link", "expected_backup_name"),
         [
             # New format: plain backup name — returned as-is.
             ("20181017T210300", "20181017T210300"),
@@ -337,7 +337,7 @@ class TestPartMetadata:
             ("", None),
         ],
     )
-    def test_load_link_normalization(self, raw_link, expected_link):
+    def test_load_link_normalization(self, raw_link, expected_backup_name):
         """
         PartMetadata.load() must normalise the ``link`` field to a plain
         backup name regardless of whether it was stored as a full path
@@ -348,14 +348,29 @@ class TestPartMetadata:
         raw = {**self._BASE_RAW, "link": raw_link}
         part = PartMetadata.load("db1", "table1", "part1", raw)
 
-        # link normalization
-        assert part.link == expected_link
+        assert part.link == expected_backup_name
+        assert part.link_part_name is None
 
         # non-link fields must be preserved
         assert part.database == "db1"
         assert part.table == "table1"
         assert part.name == "part1"
         assert part.files == raw["files"]
+
+    def test_link_with_part_name(self):
+        """
+        When link_part_name is present in raw metadata, it must be
+        accessible via the link_part_name property.
+        """
+        raw = {
+            **self._BASE_RAW,
+            "link": "20240101T000000",
+            "link_part_name": "all_1_1_0",
+        }
+        part = PartMetadata.load("db1", "table1", "part1", raw)
+
+        assert part.link == "20240101T000000"
+        assert part.link_part_name == "all_1_1_0"
 
 
 class TestNormalizeBackupLink:

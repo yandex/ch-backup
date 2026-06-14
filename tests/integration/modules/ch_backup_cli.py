@@ -182,15 +182,20 @@ class Backup:
                     source_path = (
                         os.path.join(path_root, link_name) if link_name else backup_path
                     )
+                    # For deduplicated mutated parts the data is stored under
+                    # link_part_name in the source backup, not under the current part_name.
+                    deduplicated_part_name = part_obj.get("link_part_name") or part_name
                     part_path = os.path.join(
                         source_path,
                         "data",
                         _quote(db_name),
                         _quote(table_name),
-                        part_name,
+                        deduplicated_part_name,
                     )
                     if part_obj.get("tarball", False):
-                        file_paths.add(os.path.join(part_path, f"{part_name}.tar"))
+                        file_paths.add(
+                            os.path.join(part_path, f"{deduplicated_part_name}.tar")
+                        )
                     else:
                         file_paths.update(
                             os.path.join(part_path, f) for f in part_obj["files"]

@@ -250,9 +250,9 @@ class ClickHouseTemporaryDisks:
         """
         Copy data from temporary cloud storage disk to actual.
         """
-        storage_name = part.link_part_name if part.link_part_name else part.name
+        source_part_name = part.deduplicated_part_name
 
-        routine_tag = f"{table.database}.{table.name}::{storage_name}"
+        routine_tag = f"{table.database}.{table.name}::{source_part_name}"
         target_disk = self._ch_availible_disks[part.disk_name]
         source_disk = self._ch_availible_disks[_get_tmp_disk_name(part.disk_name)]
         for path, disk in table.paths_with_disks:
@@ -265,7 +265,7 @@ class ClickHouseTemporaryDisks:
                     "shadow",
                     backup_meta.get_sanitized_name(),
                     table_path,
-                    storage_name,
+                    source_part_name,
                     "",
                 )
                 self._copy_dir(

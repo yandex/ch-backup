@@ -561,7 +561,7 @@ class BackupLayout:
         """
         Download part data to the specified directory.
         """
-        source_part_name = part.link_part_name or part.name
+        source_part_name = part.deduplicated_part_name
 
         logging.debug(
             'Downloading data part {} (stored as {}) of "{}"."{}"',
@@ -618,7 +618,7 @@ class BackupLayout:
         """
         Check availability of part data in storage.
         """
-        storage_name = part.link_part_name if part.link_part_name else part.name
+        source_part_name = part.deduplicated_part_name
 
         try:
             # part.link is the source backup name for deduplicated parts (or None).
@@ -629,18 +629,18 @@ class BackupLayout:
                 resolved_backup_path,
                 part.database,
                 part.table,
-                storage_name,
+                source_part_name,
             )
             remote_files = self._storage_loader.list_dir(remote_dir_path)
 
-            if remote_files == [f"{storage_name}.tar"]:
+            if remote_files == [f"{source_part_name}.tar"]:
                 actual_size = self._storage_loader.get_file_size(
-                    os.path.join(remote_dir_path, f"{storage_name}.tar")
+                    os.path.join(remote_dir_path, f"{source_part_name}.tar")
                 )
                 target_size = self._target_part_size(part, encrypted=part.encrypted)
                 if target_size != actual_size:
                     logging.warning(
-                        f"Part {storage_name} files stored in tar, size not match {target_size} != {actual_size}"
+                        f"Part {source_part_name} files stored in tar, size not match {target_size} != {actual_size}"
                     )
                     return False
                 return True
@@ -804,16 +804,19 @@ class BackupLayout:
         for part in parts:
             # part.link is the source backup name for deduplicated parts (or None).
             source_backup_name = part.link or backup_meta.name
+            source_part_name = part.deduplicated_part_name
             part_path = self._get_escaped_if_exists(
                 _part_path,
                 self.get_backup_path(source_backup_name),
                 part.database,
                 part.table,
-                part.name,
+                source_part_name,
             )
             logging.debug("Deleting data part {}", part_path)
             if part.tarball:
-                deleting_files.append(os.path.join(part_path, f"{part.name}.tar"))
+                deleting_files.append(
+                    os.path.join(part_path, f"{source_part_name}.tar")
+                )
             else:
                 deleting_files.extend(os.path.join(part_path, f) for f in part.files)
 
