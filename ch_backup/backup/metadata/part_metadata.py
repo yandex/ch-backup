@@ -35,7 +35,16 @@ class RawMetadata(Slotted):
     Raw metadata for ClickHouse data part.
     """
 
-    __slots__ = "checksum", "size", "files", "tarball", "link", "disk_name", "encrypted"
+    __slots__ = (
+        "checksum",
+        "size",
+        "files",
+        "tarball",
+        "link",
+        "link_part_name",
+        "disk_name",
+        "encrypted",
+    )
 
     # pylint: disable=too-many-positional-arguments
     def __init__(
@@ -45,6 +54,7 @@ class RawMetadata(Slotted):
         files: Sequence[str],
         tarball: bool,
         link: Optional[str] = None,
+        link_part_name: Optional[str] = None,
         disk_name: Optional[str] = None,
         encrypted: bool = True,
     ) -> None:
@@ -53,6 +63,7 @@ class RawMetadata(Slotted):
         self.files = files
         self.tarball = tarball
         self.link = link
+        self.link_part_name = link_part_name
         self.disk_name = disk_name
         self.encrypted = encrypted
 
@@ -75,6 +86,7 @@ class PartMetadata(Slotted):
         files: Sequence[str],
         tarball: bool,
         link: Optional[str] = None,
+        link_part_name: Optional[str] = None,
         disk_name: Optional[str] = None,
         encrypted: bool = True,
     ) -> None:
@@ -82,7 +94,7 @@ class PartMetadata(Slotted):
         self.table: str = table
         self.name: str = name
         self.raw_metadata: RawMetadata = RawMetadata(
-            checksum, size, files, tarball, link, disk_name, encrypted
+            checksum, size, files, tarball, link, link_part_name, disk_name, encrypted
         )
 
     @property
@@ -115,6 +127,22 @@ class PartMetadata(Slotted):
         return self.raw_metadata.link
 
     @property
+    def link_part_name(self) -> Optional[str]:
+        """
+        For deduplicated data parts returns the name of the source part in backup.
+        For non-deduplicated parts returns None.
+        """
+        return self.raw_metadata.link_part_name
+
+    @property
+    def deduplicated_part_name(self) -> str:
+        """
+        Return the name under which the part's data files are physically stored
+        in the source backup.
+        """
+        return self.link_part_name or self.name
+
+    @property
     def disk_name(self) -> str:
         """
         Return disk name where part is stored.
@@ -142,6 +170,9 @@ class PartMetadata(Slotted):
         """
         Deserialize data part metadata.
         """
+        link = normalize_backup_link(raw_metadata.get("link"))
+        link_part_name = raw_metadata.get("link_part_name") or None
+
         return cls(
             database=db_name,
             table=table_name,
@@ -150,7 +181,8 @@ class PartMetadata(Slotted):
             size=raw_metadata["bytes"],
             files=raw_metadata["files"],
             tarball=raw_metadata.get("tarball", False),
-            link=normalize_backup_link(raw_metadata.get("link")),
+            link=link,
+            link_part_name=link_part_name,
             disk_name=raw_metadata.get("disk_name", "default"),
             encrypted=raw_metadata.get("encrypted", True),
         )

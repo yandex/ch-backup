@@ -15,6 +15,7 @@ from ch_backup.backup.metadata import (
     PartMetadata,
     normalize_backup_link,
 )
+from ch_backup.backup.metadata.table_metadata import PartInfo, split_part_name
 
 
 class TestBackupMetadata:
@@ -321,7 +322,7 @@ class TestPartMetadata:
     }
 
     @pytest.mark.parametrize(
-        ("raw_link", "expected_link"),
+        ("raw_link", "expected_backup_name"),
         [
             # New format: plain backup name — returned as-is.
             ("20181017T210300", "20181017T210300"),
@@ -337,7 +338,7 @@ class TestPartMetadata:
             ("", None),
         ],
     )
-    def test_load_link_normalization(self, raw_link, expected_link):
+    def test_load_link_normalization(self, raw_link, expected_backup_name):
         """
         PartMetadata.load() must normalise the ``link`` field to a plain
         backup name regardless of whether it was stored as a full path
@@ -348,14 +349,29 @@ class TestPartMetadata:
         raw = {**self._BASE_RAW, "link": raw_link}
         part = PartMetadata.load("db1", "table1", "part1", raw)
 
-        # link normalization
-        assert part.link == expected_link
+        assert part.link == expected_backup_name
+        assert part.link_part_name is None
 
         # non-link fields must be preserved
         assert part.database == "db1"
         assert part.table == "table1"
         assert part.name == "part1"
         assert part.files == raw["files"]
+
+    def test_link_with_part_name(self):
+        """
+        When link_part_name is present in raw metadata, it must be
+        accessible via the link_part_name property.
+        """
+        raw = {
+            **self._BASE_RAW,
+            "link": "20240101T000000",
+            "link_part_name": "all_1_1_0",
+        }
+        part = PartMetadata.load("db1", "table1", "part1", raw)
+
+        assert part.link == "20240101T000000"
+        assert part.link_part_name == "all_1_1_0"
 
 
 class TestNormalizeBackupLink:
@@ -386,3 +402,143 @@ class TestNormalizeBackupLink:
         old full-path and new name-only formats, and None for falsy input.
         """
         assert normalize_backup_link(raw_link) == expected
+
+
+class TestSplitPartName:
+    """
+    Tests for split_part_name().
+    """
+
+    @pytest.mark.parametrize(
+        ("part_name", "expected"),
+        [
+            # Standard format without mutation: partition_min_max_level
+            (
+                "all_1_1_0",
+                PartInfo(
+                    partition_id="all",
+                    min_block_num=1,
+                    max_block_num=1,
+                    level=0,
+                    mutation=0,
+                ),
+            ),
+            # Numeric partition_id
+            (
+                "20200101_1_5_2",
+                PartInfo(
+                    partition_id="20200101",
+                    min_block_num=1,
+                    max_block_num=5,
+                    level=2,
+                    mutation=0,
+                ),
+            ),
+            # Format with mutation: partition_min_max_level_mutation
+            (
+                "all_1_1_0_42",
+                PartInfo(
+                    partition_id="all",
+                    min_block_num=1,
+                    max_block_num=1,
+                    level=0,
+                    mutation=42,
+                ),
+            ),
+            # Numeric partition_id with mutation
+            (
+                "20200101_3_7_1_100",
+                PartInfo(
+                    partition_id="20200101",
+                    min_block_num=3,
+                    max_block_num=7,
+                    level=1,
+                    mutation=100,
+                ),
+            ),
+            # Large block numbers
+            (
+                "all_1000000_9999999_999",
+                PartInfo(
+                    partition_id="all",
+                    min_block_num=1000000,
+                    max_block_num=9999999,
+                    level=999,
+                    mutation=0,
+                ),
+            ),
+            # partition_id is the first chunk only; remaining chunks are parsed as numbers
+            (
+                "tuple_1_2_3",
+                PartInfo(
+                    partition_id="tuple",
+                    min_block_num=1,
+                    max_block_num=2,
+                    level=3,
+                    mutation=0,
+                ),
+            ),
+        ],
+    )
+    def test_valid_part_names(self, part_name: str, expected: PartInfo) -> None:
+        """
+        split_part_name() must correctly parse valid part names.
+        """
+        assert split_part_name(part_name) == expected
+
+    @pytest.mark.parametrize(
+        "part_name",
+        [
+            # Too few segments
+            "all",
+            "all_1",
+            "all_1_2",
+            # Empty string
+            "",
+        ],
+    )
+    def test_too_few_segments_raises(self, part_name: str) -> None:
+        """
+        split_part_name() must raise ValueError when fewer than four segments are present.
+        """
+        with pytest.raises(ValueError, match="Invalid part name format"):
+            split_part_name(part_name)
+
+    @pytest.mark.parametrize(
+        "part_name",
+        [
+            # Non-numeric values in numeric fields
+            "all_x_1_0",
+            "all_1_y_0",
+            "all_1_1_z",
+            "all_1_1_0_abc",
+        ],
+    )
+    def test_non_numeric_segments_raises(self, part_name: str) -> None:
+        """
+        split_part_name() must raise ValueError when numeric fields contain
+        non-numeric values.
+        """
+        with pytest.raises(ValueError, match="Invalid part name format"):
+            split_part_name(part_name)
+
+    def test_returns_part_info_namedtuple(self) -> None:
+        """
+        split_part_name() must return a PartInfo instance.
+        """
+        result = split_part_name("all_1_1_0")
+        assert isinstance(result, PartInfo)
+
+    def test_mutation_zero_when_absent(self) -> None:
+        """
+        When mutation is not specified, the mutation field must default to 0.
+        """
+        result = split_part_name("all_1_1_0")
+        assert result.mutation == 0
+
+    def test_mutation_present(self) -> None:
+        """
+        When mutation is specified, the mutation field must contain its value.
+        """
+        result = split_part_name("all_1_1_0_7")
+        assert result.mutation == 7

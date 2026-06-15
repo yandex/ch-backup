@@ -325,6 +325,7 @@ CREATE_IF_NOT_EXISTS_DEDUP_TABLE_SQL = strip_query(
         table String,
         name String,
         backup_name String,
+        link_part_name String,
         checksum String,
         size Int64,
         files Array(String),
@@ -354,11 +355,15 @@ INSERT_DEDUP_INFO_BATCH_SQL = strip_query(
 
 GET_DEDUPLICATED_PARTS_SQL = strip_query(
     """
-    SELECT `{system_db}`._deduplication_info.* FROM `{system_db}`._deduplication_info
+    SELECT
+        `{system_db}`._deduplication_info_current.name AS current_name,
+        `{system_db}`._deduplication_info.*
+    FROM `{system_db}`._deduplication_info
     JOIN `{system_db}`._deduplication_info_current
-    ON _deduplication_info.name = _deduplication_info_current.name
-        AND _deduplication_info.checksum = _deduplication_info_current.checksum
+    ON _deduplication_info.checksum = _deduplication_info_current.checksum
     WHERE database='{database}' AND table='{table}'
+    ORDER BY _deduplication_info.backup_name DESC
+    LIMIT 1 BY current_name
     FORMAT JSON
 """
 )

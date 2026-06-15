@@ -30,7 +30,7 @@ DB = Database(
         "id": "One part before interval",
         "args": {
             "times": [0, 1],
-            "part_names": ["1"],
+            "part_names": ["all_1_1_0"],
             "interval": 2,
             "expected_upload_metadata": 0,
         },
@@ -39,7 +39,7 @@ DB = Database(
         "id": "One part after interval",
         "args": {
             "times": [0, 2],
-            "part_names": ["1"],
+            "part_names": ["all_1_1_0"],
             "interval": 1,
             "expected_upload_metadata": 1,
         },
@@ -48,7 +48,7 @@ DB = Database(
         "id": "One before. One after",
         "args": {
             "times": [0, 1, 10],
-            "part_names": ["1", "2"],
+            "part_names": ["all_1_1_0", "all_2_2_0"],
             "interval": 5,
             "expected_upload_metadata": 1,
         },
@@ -57,7 +57,7 @@ DB = Database(
         "id": "Two parts after interval",
         "args": {
             "times": [0, 1, 10],
-            "part_names": ["1", "2"],
+            "part_names": ["all_1_1_0", "all_2_2_0"],
             "interval": 1,
             "expected_upload_metadata": 2,
         },
@@ -66,7 +66,7 @@ DB = Database(
         "id": "Mix",
         "args": {
             "times": [0, 1, 2, 10, 20],
-            "part_names": ["1", "2", "3", "4"],
+            "part_names": ["all_1_1_0", "all_2_2_0", "all_3_3_0", "all_4_4_0"],
             "interval": 5,
             "expected_upload_metadata": 2,
         },

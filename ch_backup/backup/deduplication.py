@@ -5,11 +5,16 @@ Data part deduplication.
 from collections import defaultdict
 from copy import copy
 from datetime import timedelta
-from typing import Dict, List, Sequence, Set
+from typing import Dict, List, Optional, Sequence, Set
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
-from ch_backup.backup.metadata import BackupMetadata, BackupState, PartMetadata
+from ch_backup.backup.metadata import (
+    BackupMetadata,
+    BackupState,
+    PartMetadata,
+    split_part_name,
+)
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.models import Database, FrozenPart, Table
 from ch_backup.util import Slotted, utcnow
@@ -26,6 +31,7 @@ class PartDedupInfo(Slotted):
         "table",
         "name",
         "backup_name",
+        "link_part_name",
         "checksum",
         "size",
         "files",
@@ -49,11 +55,13 @@ class PartDedupInfo(Slotted):
         disk_name: str,
         verified: bool,
         encrypted: bool,
+        link_part_name: Optional[str] = None,
     ) -> None:
         self.database = database
         self.table = table
         self.name = name
         self.backup_name = backup_name
+        self.link_part_name = link_part_name
         self.checksum = checksum
         self.size = size
         self.files = files
@@ -67,7 +75,8 @@ class PartDedupInfo(Slotted):
         Convert to string to use it in insert query
         """
         files_array = "[" + ",".join(f"'{file}'" for file in self.files) + "]"
-        return f"('{self.database}','{self.table}','{self.name}','{self.backup_name}','{self.checksum}',{self.size},{files_array},{int(self.tarball)},'{self.disk_name}',{int(self.verified)}, {int(self.encrypted)})"
+        link_part_name = self.link_part_name or ""
+        return f"('{self.database}','{self.table}','{self.name}','{self.backup_name}','{link_part_name}','{self.checksum}',{self.size},{files_array},{int(self.tarball)},'{self.disk_name}',{int(self.verified)}, {int(self.encrypted)})"
 
 
 TableDedupReferences = Set[str]
@@ -209,6 +218,9 @@ def _populate_dedup_info(
                         disk_name=part.disk_name,
                         verified=verified,
                         encrypted=part.encrypted,
+                        # Propagate link_part_name so that downstream deduplication
+                        # knows the actual storage name in the source backup.
+                        link_part_name=part.link_part_name,
                     )
 
                     table_dedup_info.add(part.name)
@@ -223,6 +235,34 @@ def _populate_dedup_info(
 
         if not databases_to_handle:
             break
+
+
+def _is_mutation_renamed(current_name: str, dedup_part_name: str) -> bool:
+    """
+    Returns True if two part names differ ONLY by their mutation suffix.
+
+    ClickHouse part name format:
+        {partition_id}_{min_block_num}_{max_block_num}_{level}[_{mutation}]
+
+    Valid pairs (return True):
+        all_1_1_0       <-> all_1_1_0_2    (mutation added)
+        all_1_1_0_1     <-> all_1_1_0_2    (mutation version changed)
+        20230601_1_1_0  <-> 20230601_1_1_0_5
+
+    Invalid pairs (return False):
+        all_1_1_0       <-> all_2_2_0      (different block numbers)
+        all_1_1_0       <-> all_1_1_1      (different merge level)
+        20230601_1_1_0  <-> 20230602_1_1_0 (different partitions)
+    """
+    current_segments = split_part_name(current_name)
+    dedup_part_segments = split_part_name(dedup_part_name)
+
+    return (
+        current_segments.partition_id == dedup_part_segments.partition_id
+        and current_segments.min_block_num == dedup_part_segments.min_block_num
+        and current_segments.max_block_num == dedup_part_segments.max_block_num
+        and current_segments.level == dedup_part_segments.level
+    )
 
 
 def deduplicate_parts(
@@ -241,14 +281,49 @@ def deduplicate_parts(
     )
     deduplicated_parts: Dict[str, PartMetadata] = {}
 
+    logging.debug(
+        "Deduplication lookup for {}.{}: {} frozen parts, {} matches found. First match: {}",
+        database,
+        table,
+        len(frozen_parts),
+        len(existing_parts),
+        existing_parts[0] if existing_parts else "none",
+    )
+
     for existing_part in existing_parts:
+        current_name = existing_part.get("current_name") or existing_part["name"]
+        dedup_part_name = existing_part["name"]
+
+        if current_name != dedup_part_name and not _is_mutation_renamed(
+            current_name, dedup_part_name
+        ):
+            logging.debug(
+                'Part "{}" and stored part "{}" have the same checksum but differ in name by more than just mutation suffix, skipping deduplication',
+                current_name,
+                dedup_part_name,
+            )
+            continue
+
+        if stored_link_part_name := (existing_part.get("link_part_name") or None):
+            # Chain: the stored part was itself deduplicated; the real file
+            # lives under stored_link_part_name in the source backup.
+            effective_link_part_name = stored_link_part_name
+        elif current_name != dedup_part_name:
+            # Direct mutation rename: file is stored under dedup_part_name.
+            effective_link_part_name = dedup_part_name
+        else:
+            effective_link_part_name = None
+
+        link = existing_part.get("backup_name") or None
+
         part = PartMetadata(
             database=database,
             table=table,
-            name=existing_part["name"],
+            name=current_name,
             checksum=existing_part["checksum"],
             size=int(existing_part["size"]),
-            link=existing_part["backup_name"],
+            link=link,
+            link_part_name=effective_link_part_name,
             files=existing_part["files"],
             tarball=existing_part["tarball"],
             disk_name=existing_part["disk_name"],
@@ -267,8 +342,9 @@ def deduplicate_parts(
         deduplicated_parts[part.name] = part
 
         logging.debug(
-            'Part "{}" found in backup "{}", reusing',
+            'Part "{}" (linked to storage path "{}") found in backup "{}", reusing',
             part.name,
+            part.link_part_name,
             existing_part["backup_name"],
         )
 
@@ -308,4 +384,4 @@ def collect_dedup_references_for_batch_backup_deletion(
 def _add_part_to_dedup_references(
     dedup_references: DedupReferences, part: PartMetadata
 ) -> None:
-    dedup_references[part.database][part.table].add(part.name)
+    dedup_references[part.database][part.table].add(part.deduplicated_part_name)
