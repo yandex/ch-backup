@@ -362,7 +362,7 @@ GET_DEDUPLICATED_PARTS_SQL = strip_query(
     JOIN `{system_db}`._deduplication_info_current
     ON _deduplication_info.checksum = _deduplication_info_current.checksum
     WHERE database='{database}' AND table='{table}'
-    ORDER BY backup_name DESC
+    ORDER BY _deduplication_info.backup_name DESC
     LIMIT 1 BY current_name
     FORMAT JSON
 """
