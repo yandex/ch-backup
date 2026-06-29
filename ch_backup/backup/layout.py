@@ -2,6 +2,8 @@
 Management of backup data layout.
 """
 
+# pylint: disable=too-many-lines
+
 import os
 from contextlib import contextmanager
 from functools import partial
@@ -358,6 +360,10 @@ class BackupLayout:
     def _load_metadata(self, path: str, encryption: bool) -> BackupMetadata:
         try:
             data = self._storage_loader.download_data(path, encryption=encryption)
+            logging.debug(
+                "Downloaded backup metadata: {}",
+                data,
+            )
             return BackupMetadata.load_json(data)
         except CryptoError:
             raise
@@ -401,6 +407,11 @@ class BackupLayout:
 
         backups = []
         for name in self.get_backup_names():
+            logging.debug(
+                "Collecting {} of backup: {}",
+                "light metadata" if use_light_meta else "metadata",
+                name,
+            )
             backup = self.get_backup(name, use_light_meta)
             if backup:
                 backups.append(backup)
