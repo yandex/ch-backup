@@ -10,6 +10,8 @@ from typing import Optional, Sequence
 import requests
 from botocore.exceptions import ClientError
 
+from ch_backup import logging
+from ch_backup.exceptions import StorageError
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
 from ch_backup.storage.engine.s3.s3_client_factory import (
     S3ClientCachedFactory,
@@ -195,34 +197,65 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
     def create_multipart_download(self, remote_path: str) -> str:
         remote_path = remote_path.lstrip("/")
 
-        resp = self._s3_client.get_object(Bucket=self._s3_bucket_name, Key=remote_path)
+        resp = self._s3_client.head_object(Bucket=self._s3_bucket_name, Key=remote_path)
         download_id = f"{remote_path}_{time.time()}"
         self._multipart_downloads[download_id] = {
             "path": remote_path,
             "range_start": 0,
             "total_size": resp["ContentLength"],
+            "etag": resp["ETag"],
         }
 
         return download_id
 
     def download_part(self, download_id: str, part_len: int = None) -> Optional[bytes]:
-        if part_len:
+        if not part_len:
             part_len = self.DEFAULT_DOWNLOAD_PART_LEN
 
         download = self._multipart_downloads[download_id]
 
-        if download["range_start"] == download["total_size"]:
+        if download["range_start"] >= download["total_size"]:
             return None
 
-        range_end = min(download["range_start"] + part_len, download["total_size"])
+        range_start = download["range_start"]
+        range_end = min(range_start + part_len, download["total_size"]) - 1
         part = self._s3_client.get_object(
             Bucket=self._s3_bucket_name,
             Key=download["path"],
-            Range=f'bytes={download["range_start"]}-{range_end - 1}',
+            Range=f"bytes={range_start}-{range_end}",
         )
+
+        # Detect concurrent object overwrite by comparing ETag.
+        part_etag = part.get("ETag")
+        if part_etag and part_etag != download["etag"]:
+            if range_start == 0:
+                # No data delivered yet — the object was overwritten before we
+                # started reading.  Update metadata and continue with the new
+                # version so the caller gets a consistent response.
+                logging.warning(
+                    "Object '{}' was overwritten before download started "
+                    "(old ETag: {}, new ETag: {}), restarting with new version",
+                    download["path"],
+                    download["etag"],
+                    part_etag,
+                )
+                # ContentRange format: "bytes <start>-<end>/<total>"
+                content_range = part.get("ContentRange", "")
+                if content_range:
+                    download["total_size"] = int(content_range.rsplit("/", 1)[1])
+                download["etag"] = part_etag
+            else:
+                # Already delivered chunks of the old version — the data stream
+                # is now inconsistent.
+                raise StorageError(
+                    f"Object '{download['path']}' was overwritten during download "
+                    f"after {range_start} bytes (old ETag: {download['etag']}, "
+                    f"new ETag: {part_etag})"
+                )
+
         buffer = part["Body"].read()
-        download["range_start"] = range_end
-        return buffer
+        download["range_start"] += len(buffer)
+        return buffer if buffer else None
 
     def complete_multipart_download(self, download_id):
         del self._multipart_downloads[download_id]
