@@ -43,25 +43,13 @@ class UDFBackup(BackupManager):
 
         logging.info("Restoring UDFs: {}", " ,".join(udf_list))
 
-        udf_on_clickhouse = context.ch_ctl.get_udf_query()
-        udf_on_clickhouse_list = udf_on_clickhouse.keys()
-
         for udf_name in udf_list:
             logging.debug("Restoring UDF {}", udf_name)
 
             statement = context.backup_layout.get_udf_create_statement(
                 context.backup_meta, udf_name
             )
-
-            if (
-                udf_name in udf_on_clickhouse_list
-                and udf_on_clickhouse[udf_name] != statement
-            ):
-                context.ch_ctl.drop_udf(udf_name)
-                context.ch_ctl.restore_udf(statement)
-
-            if udf_name not in udf_on_clickhouse_list:
-                context.ch_ctl.restore_udf(statement)
+            context.ch_ctl.restore_udf(statement)
 
             logging.debug("UDF {} restored", udf_name)
 

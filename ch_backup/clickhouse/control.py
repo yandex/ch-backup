@@ -952,13 +952,19 @@ class ClickhouseCTL:
         """
         Restore user defined function.
         """
-        self._ch_client.query(udf_statement)
+        self._ch_client.query(
+            udf_statement.replace("CREATE FUNCTION", "CREATE OR REPLACE FUNCTION", 1)
+        )
 
     def restore_named_collection(self, nc_statement):
         """
         Restore named collection.
         """
-        self._ch_client.query(nc_statement)
+        self._ch_client.query(
+            nc_statement.replace(
+                "CREATE NAMED COLLECTION", "CREATE OR REPLACE NAMED COLLECTION", 1
+            )
+        )
 
     def create_table(self, table: Table) -> None:
         """
