@@ -46,7 +46,7 @@ dependencies = [
     "tabulate >= 0.9",
     "tenacity >= 8.3",
     "xmltodict >= 0.14",
-    "setuptools >= 71, < 81",  # for the library "stopit" (dependency of "pypeln")
+    "setuptools >= 71, < 84",  # for the library "stopit" (dependency of "pypeln")
 ]
 
 [dependency-groups]
