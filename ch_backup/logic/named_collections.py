@@ -109,13 +109,25 @@ class NamedCollectionsBackup(BackupManager):
 
         logging.info("Restoring named collections: {}", " ,".join(nc_list))
 
+        nc_on_clickhouse_list = context.ch_ctl.get_named_collections_query()
+
         for nc_name in nc_list:
             logging.debug("Restoring named collection {}", nc_name)
 
             statement = context.backup_layout.get_named_collection_create_statement(
                 context.backup_meta, nc_name
             )
-            context.ch_ctl.restore_named_collection(statement)
+
+            if nc_name in nc_on_clickhouse_list:
+                nc_on_clickhouse_statement = (
+                    context.backup_layout.get_local_nc_create_statement(nc_name)
+                )
+                if nc_on_clickhouse_statement != statement:
+                    context.ch_ctl.drop_named_collection(nc_name)
+                    context.ch_ctl.restore_named_collection(statement)
+
+            if nc_name not in nc_on_clickhouse_list:
+                context.ch_ctl.restore_named_collection(statement)
 
             logging.debug("Named collection {} restored", nc_name)
 

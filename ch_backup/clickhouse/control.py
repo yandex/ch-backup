@@ -960,11 +960,7 @@ class ClickhouseCTL:
         """
         Restore named collection.
         """
-        self._ch_client.query(
-            nc_statement.replace(
-                "CREATE NAMED COLLECTION", "CREATE OR REPLACE NAMED COLLECTION", 1
-            )
-        )
+        self._ch_client.query(nc_statement)
 
     def create_table(self, table: Table) -> None:
         """
