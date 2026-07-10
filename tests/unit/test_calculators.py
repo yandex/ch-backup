@@ -7,13 +7,61 @@ from unittest.mock import Mock
 import pytest
 
 from ch_backup.calculators import (
+    calc_aligned_data_size,
     calc_aligned_files_size,
+    calc_aligned_files_size_scan,
     calc_encrypted_size,
     calc_tarball_size,
     calc_tarball_size_scan,
 )
 
 LENGTH_NAME = 100
+
+
+@pytest.mark.parametrize(
+    "data_list, alignment, expected_size",
+    [
+        ([b"a"], 1, 1),
+        ([b"a", b"b"], 1, 2),
+        ([b"a"], 512, 512),
+        ([b"a" * 512], 512, 512),
+        ([b"a" * 513], 512, 1024),
+        ([b"a", b"b" * 512], 512, 1024),
+        ([b"a", b"b"], 2, 4),
+        ([b"ab", b"cd"], 2, 4),
+        ([], 512, 0),
+    ],
+)
+def test_calc_aligned_data_size(
+    data_list: List[bytes], alignment: int, expected_size: int
+) -> None:
+    assert calc_aligned_data_size(data_list, alignment) == expected_size
+
+
+def test_calc_aligned_files_size_scan() -> None:
+
+    with TemporaryDirectory() as tmpdir:
+        dir_path = Path(tmpdir)
+        (dir_path / "file1.txt").write_text("a")
+        (dir_path / "file2.txt").write_text("b" * 512)
+        (dir_path / "empty.txt").touch()
+
+        assert calc_aligned_files_size_scan(dir_path, alignment=1) == 513
+
+        assert calc_aligned_files_size_scan(dir_path, alignment=512) == 1024
+
+        assert (
+            calc_aligned_files_size_scan(
+                dir_path, exclude_file_names=["file2.txt"], alignment=512
+            )
+            == 512
+        )
+
+        assert (
+            calc_aligned_files_size_scan(
+                dir_path, exclude_file_names=["file1.txt", "file2.txt"]
+            )
+        ) == 0
 
 
 @pytest.mark.parametrize(
