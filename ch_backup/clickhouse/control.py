@@ -952,9 +952,7 @@ class ClickhouseCTL:
         """
         Restore user defined function.
         """
-        self._ch_client.query(
-            udf_statement.replace("CREATE FUNCTION", "CREATE OR REPLACE FUNCTION", 1)
-        )
+        self._ch_client.query(udf_statement)
 
     def restore_named_collection(self, nc_statement):
         """
