@@ -58,14 +58,18 @@ class UDFBackup(BackupManager):
                 and udf_on_clickhouse[udf_name] != statement
             ):
                 context.ch_ctl.drop_udf(udf_name)
-                context.ch_ctl.restore_udf(statement)
+                context.ch_ctl.restore_udf(self._rewrite_udf_schema(statement))
 
             if udf_name not in udf_on_clickhouse_list:
-                context.ch_ctl.restore_udf(statement)
+                context.ch_ctl.restore_udf(self._rewrite_udf_schema(statement))
 
             logging.debug("UDF {} restored", udf_name)
 
         logging.info("All UDFs restored")
+
+    @staticmethod
+    def _rewrite_udf_schema(statement: str) -> str:
+        return statement.replace("CREATE FUNCTION", "CREATE OR REPLACE FUNCTION", 1)
 
     @staticmethod
     def get_udf_list(context: BackupContext) -> List[str]:
