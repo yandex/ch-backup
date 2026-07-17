@@ -297,7 +297,7 @@ GET_DATABASES_SQL = strip_query(
         uuid,
         CAST(engine_full, 'Nullable(String)') AS engine_full
     FROM system.databases
-    WHERE 
+    WHERE
         engine = 'Replicated' AND
         name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', '{system_db}')
     UNION ALL
@@ -308,7 +308,7 @@ GET_DATABASES_SQL = strip_query(
         uuid,
         CAST(NULL, 'Nullable(String)') AS engine_full
     FROM system.databases
-    WHERE 
+    WHERE
         engine != 'Replicated' AND
         name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', '{system_db}')
     FORMAT JSON
