@@ -42,7 +42,7 @@
 			<s3>
 				<volumes>
 					<main>
-{% if ch_version_ge('22.8') and ch_version_lt('26.2') %}
+{% if ch_version_ge('22.8') %}
 						<disk>s3_cache</disk>
 {% else %}
 						<disk>s3</disk>
@@ -61,7 +61,7 @@
 						<disk>default</disk>
 					</main>
 					<external>
-{% if ch_version_ge('22.8') and ch_version_lt('26.2') %}
+{% if ch_version_ge('22.8') %}
 						<disk>s3_cache</disk>
 {% else %}
 						<disk>s3</disk>

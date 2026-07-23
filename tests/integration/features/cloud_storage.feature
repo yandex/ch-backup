@@ -254,3 +254,66 @@ Feature: Backup & Clean & Restore
     Examples:
     | object_count |
     | 11           |
+
+  Scenario: Restore succeeds when target node has no storage_configuration section
+    # Regression test for: ClickHouseTemporaryDisks.__enter__ raised KeyError when
+    # storage_configuration was absent from the ClickHouse config.
+    # The backup here uses only the default disk (no cloud_storage disks),
+    # so __enter__ must complete without error even on a node with no
+    # storage_configuration section.
+    Given a working clickhouse on clickhouse02
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    CREATE TABLE test_db.table_no_s3 (
+        CounterID UInt32,
+        UserID    UInt32
+    )
+    ENGINE = MergeTree()
+    ORDER BY UserID;
+    INSERT INTO test_db.table_no_s3 VALUES (0, 1), (1, 2);
+    """
+    And we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 1          | 0          |
+    When we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse02 with restart
+    And we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
+  @require_version_22.8
+  Scenario: Restore with cloud_storage disks fails with a clear error when disk is absent from target config
+    # Regression test for: _create_temporary_disk raised an opaque KeyError instead of
+    # ClickHouseDisksException when the disk referenced in backup cloud_storage metadata
+    # was missing from the target node's storage_configuration.
+    # We use storage_configuration_without_s3.xml on clickhouse02: it keeps the s3/s3_cold
+    # storage policies (so the table schema can be restored) but removes the actual 's3'
+    # disk entry, which triggers ClickHouseDisksException in __enter__.
+    Given a working clickhouse on clickhouse02
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    CREATE TABLE test_db.table_s3 (
+        CounterID UInt32,
+        UserID    UInt32
+    )
+    ENGINE = MergeTree()
+    ORDER BY UserID
+    SETTINGS storage_policy = 's3';
+    INSERT INTO test_db.table_s3 VALUES (0, 1), (1, 2);
+    """
+    And we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 1          | 0          |
+    When we replace config file storage_configuration.xml in favor of storage_configuration_without_s3.xml on clickhouse02 with restart
+    And we try to execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore LAST \
+        --cloud-storage-source-bucket cloud-storage-01 \
+        --cloud-storage-source-path data
+    """
+    Then we get response contains
+    """
+    missing from ClickHouse storage_configuration
+    """

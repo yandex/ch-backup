@@ -12,7 +12,7 @@ from itertools import chain
 from pathlib import Path
 from random import choices
 from string import ascii_lowercase
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from ch_backup import logging
 from ch_backup.backup.deduplication import deduplicate_parts
@@ -84,6 +84,15 @@ class TableBackup(BackupManager):
         ):
             context.ch_ctl.kill_old_freeze_queries()
 
+        # Collect modification timestamps of table metadata files for all databases
+        # for optimistic concurrency control of backup creation.
+        # To ensure consistency between metadata and data backups in case of EXCHANGE TABLES
+        # within a single backup run.
+        # See https://en.wikipedia.org/wiki/Optimistic_concurrency_control
+        change_times = self._collect_local_metadata_change_times(
+            context, databases, db_tables
+        )
+
         for db in databases:
             self._backup(
                 context,
@@ -92,28 +101,35 @@ class TableBackup(BackupManager):
                 backup_name,
                 schema_only,
                 multiprocessing_config,
+                change_times,
             )
 
     def _collect_local_metadata_change_times(
-        self, context: BackupContext, db: Database, tables: Sequence[str]
-    ) -> Dict[str, TableMetadataChangeTime]:
+        self,
+        context: BackupContext,
+        databases: Sequence[Database],
+        db_tables: Dict[str, list],
+    ) -> Dict[Table, TableMetadataChangeTime]:
         """
         Collect modification timestamps of table metadata files.
         """
         logging.debug("Collecting local metadata modification times")
-        res = {}
+        res: Dict[Table, TableMetadataChangeTime] = {}
 
-        for table in context.ch_ctl.get_tables(db.name, tables):
-            change_time = self._get_change_time(table.metadata_path)
-            if change_time is None:
-                logging.warning(
-                    'Cannot get metadata change time for table "{}"."{}". Skipping it',
-                    table.database,
-                    table.name,
-                )
+        for db in databases:
+            if db.is_external_db_engine():
                 continue
+            for table in context.ch_ctl.get_tables(db.name, db_tables[db.name]):
+                change_time = self._get_change_time(table.metadata_path)
+                if change_time is None:
+                    logging.warning(
+                        'Cannot get metadata change time for table "{}"."{}". Skipping it',
+                        table.database,
+                        table.name,
+                    )
+                    continue
 
-            res[table.name] = change_time
+                res[table] = change_time
 
         return res
 
@@ -126,24 +142,17 @@ class TableBackup(BackupManager):
         backup_name: str,
         schema_only: bool,
         multiprocessing_config: Dict,
+        change_times: Dict[Table, TableMetadataChangeTime],
     ) -> None:
         """
         Backup single database tables.
         """
         if not db.is_external_db_engine():
-            # Collect modification timestamps of table metadata files for optimistic concurrency
-            # control of backup creation.
-            # To ensure consistency between metadata and data backups.
-            # See https://en.wikipedia.org/wiki/Optimistic_concurrency_control
-            change_times = self._collect_local_metadata_change_times(
-                context, db, tables
-            )
-            tables_ = list(
-                filter(
-                    lambda table: table.name in change_times,
-                    context.ch_ctl.get_tables(db.name, tables),
-                )
-            )
+            tables_ = [
+                table
+                for table in context.ch_ctl.get_tables(db.name, tables)
+                if table in change_times
+            ]
 
             create_statements_to_backup = []
 
@@ -349,15 +358,19 @@ class TableBackup(BackupManager):
                 if (table.database, table.name) not in db_tables
             ]
             if missed_tables:
-                logging.critical(
-                    "Required tables {} were not found in backup metadata",
-                    ", ".join([f"{t.database}.{t.name}" for t in missed_tables]),
+                missed_tables_names = ", ".join(
+                    f"{t.database}.{t.name}" for t in missed_tables
                 )
-                raise ClickhouseBackupError(
-                    "Required tables were not found in backup metadata"
+                if not keep_going:
+                    raise ClickhouseBackupError(
+                        f"Required tables {missed_tables_names} were not found in backup metadata"
+                    )
+                logging.warning(
+                    "Required tables {} were not found in backup metadata, skipping due to --keep-going flag",
+                    missed_tables_names,
                 )
-
-            logging.debug("All required tables are present")
+            else:
+                logging.debug("All required tables are present")
 
             logging.debug("Leaving only required tables metadata")
             required_tables = [(table.database, table.name) for table in tables]
@@ -365,17 +378,36 @@ class TableBackup(BackupManager):
                 filter(lambda t: (t.database, t.name) in required_tables, tables_meta)
             )
 
-        logging.debug("Retrieving tables from tables metadata")
-        tables_to_preprocess: List[Table] = self._get_tables_from_meta(
-            context, tables_meta
+            if not tables_meta:
+                logging.warning(
+                    "No tables remain to restore after filtering missing required tables"
+                )
+                return
+
+        filtered_tables_meta, duplicate_uuid_skipped = self._filter_duplicate_uuid(
+            tables_meta, keep_going
         )
-        tables_to_restore = self._preprocess_tables_to_restore(
+
+        logging.debug("Retrieving tables from tables metadata")
+        (
+            tables_to_preprocess,
+            missing_create_statement_skipped,
+        ) = self._get_tables_from_meta(context, filtered_tables_meta, keep_going)
+        (
+            tables_to_restore,
+            preprocessing_failed_skipped,
+        ) = self._preprocess_tables_to_restore(
             context,
             databases,
             tables_to_preprocess,
             keep_going,
             restore_tables_in_replicated_database,
             metadata_cleaner,
+        )
+        self._log_restore_preprocess_summary(
+            duplicate_uuid_skipped=duplicate_uuid_skipped,
+            missing_create_statement_skipped=missing_create_statement_skipped,
+            preprocessing_failed_skipped=preprocessing_failed_skipped,
         )
 
         failed_tables = self._restore_tables(
@@ -410,6 +442,7 @@ class TableBackup(BackupManager):
             cloud_storage_source_path,
             cloud_storage_source_endpoint,
             context.ch_config,
+            desired_tables=tables_meta,
             use_local_copy=use_inplace_cloud_restore,
         ) as disks:
             self._restore_data(
@@ -425,13 +458,13 @@ class TableBackup(BackupManager):
         context: BackupContext,
         table: Table,
         backup_name: str,
-        change_times: Dict[str, TableMetadataChangeTime],
+        change_times: Dict[Table, TableMetadataChangeTime],
     ) -> bool:
         """
         Check if table metadata was updated.
         """
         new_change_time = self._get_change_time(table.metadata_path)
-        if new_change_time is not None and change_times[table.name] == new_change_time:
+        if new_change_time is not None and change_times[table] == new_change_time:
             return True
 
         logging.warning(
@@ -547,7 +580,8 @@ class TableBackup(BackupManager):
 
             for part in uploaded_parts:
                 if not context.backup_layout.check_data_part(
-                    context.backup_meta.path, part
+                    context.backup_meta.name,
+                    part,
                 ):
                     invalid_parts.append(part)
 
@@ -576,6 +610,15 @@ class TableBackup(BackupManager):
             logging.debug(f"Failed to get stat of {file_name}: {str(e)}")
             return None
 
+    def _try_fix_broken_detached_table(
+        self, context: BackupContext, detached_table: Table
+    ) -> None:
+        context.ch_ctl.create_metadata_for_missed_detached_table(
+            detached_table.metadata_path, detached_table.uuid  # type: ignore
+        )
+        context.ch_ctl.attach_table(detached_table)
+        context.ch_ctl.drop_table_if_exists(detached_table)
+
     # pylint: disable=too-many-branches
     # pylint: disable=too-many-statements
     def _preprocess_tables_to_restore(
@@ -586,27 +629,15 @@ class TableBackup(BackupManager):
         keep_going: bool,
         restore_tables_in_replicated_database: bool,
         metadata_cleaner: Optional[MetadataCleaner],
-    ) -> List[Table]:
+    ) -> tuple[list[Table], int]:
         # Prepare table schema to restore.
 
-        for table in tables:
-            self._rewrite_table_schema(
-                context, databases[table.database], table, add_uuid_if_required=True
-            )
-
-        detached_tables = {}
+        detached_tables_by_uuid = {}
+        detached_tables_by_name = {}
         for table in context.ch_ctl.get_detached_tables():
+            detached_tables_by_name[(table.database, table.name)] = table
             if table.uuid:
-                detached_tables[table.uuid] = table
-
-        for table in tables:
-            if detached_table := (
-                detached_tables.get(table.uuid) if table.uuid else None
-            ):
-                logging.debug(
-                    f'Table with uuid "{table.uuid}" already exists as detached, attaching it'
-                )
-                context.ch_ctl.attach_table(detached_table)
+                detached_tables_by_uuid[table.uuid] = table
 
         # Filter out already restored tables.
         existing_tables_by_name = {}
@@ -616,112 +647,234 @@ class TableBackup(BackupManager):
             if table.uuid:
                 existing_tables_by_uuid[table.uuid] = table
 
+        existing_readonly_tables, readonly_cleaned_metadata = (
+            self._get_remaining_readonly_tables_after_fix_attempt(
+                context, tables, metadata_cleaner
+            )
+        )
+
+        result: List[Table] = []
+        tables_to_clean_metadata: List[Table] = []
+        preprocessing_failed_skipped = 0
+        for table in tables:
+            table_name_for_logs = f'"{table.database}"."{table.name}"'
+            try:
+                self._rewrite_table_schema(
+                    context, databases[table.database], table, add_uuid_if_required=True
+                )
+
+                detached_table = None
+                if table.uuid:
+                    detached_table = detached_tables_by_uuid.get(table.uuid)
+                if not detached_table:
+                    detached_table = detached_tables_by_name.get(
+                        (table.database, table.name)
+                    )
+
+                if detached_table:
+                    try:
+                        logging.debug(
+                            "Table {} already exists as detached, attaching it",
+                            table_name_for_logs,
+                        )
+                        context.ch_ctl.attach_table(detached_table)
+                    except ClickhouseError as ch_err:
+                        if "CANNOT_GET_CREATE_TABLE_QUERY" in str(ch_err):
+                            logging.warning(
+                                "Got an exception during attaching detached table. "
+                                "Will ignore the ignore and try to restore table as usual {}",
+                                repr(ch_err),
+                            )
+                            self._try_fix_broken_detached_table(context, detached_table)
+                        else:
+                            raise
+
+                existing_table: Optional[Table] = None
+                if (table.database, table.name) in existing_readonly_tables:
+                    existing_table = table
+                    logging.warning(
+                        f"Table {table_name_for_logs} will be recreated because it is in readonly state",
+                    )
+
+                elif existing_table := existing_tables_by_name.get(
+                    (table.database, table.name)
+                ):
+                    if compare_schema(
+                        existing_table.create_statement, table.create_statement
+                    ):
+                        logging.debug(
+                            f"Table {table_name_for_logs} already exists and its schema is the same as the schema from backup. Skipping it.",
+                        )
+                        continue
+                    logging.warning(
+                        'Table {} will be recreated as its schema mismatches the schema from backup: "{}" != "{}"',
+                        table_name_for_logs,
+                        existing_table.create_statement,
+                        table.create_statement,
+                    )
+                elif existing_table := (
+                    existing_tables_by_uuid.get(table.uuid) if table.uuid else None
+                ):
+                    # Schemas mismatch here at least in name
+                    logging.warning(
+                        'Table "{}"."{}" will be dropped as its UUID is equal but schema mismatches the schema from backup: "{}" != "{}"',
+                        existing_table.database,
+                        existing_table.name,
+                        existing_table.create_statement,
+                        table.create_statement,
+                    )
+
+                drop_performed = False
+
+                if (
+                    databases[table.database].is_replicated_db_engine()
+                    and not restore_tables_in_replicated_database
+                ):
+                    action = "drop" if existing_table else "restore"
+                    logging.info(
+                        f"Skipping {action} of table {table_name_for_logs} because it is in replicated database "
+                        f"and --restore-tables-in-replicated-database flag is not set",
+                    )
+                elif not existing_table:
+                    result.append(table)
+                else:
+                    self._drop_existing_table(context, table, existing_table)
+                    drop_performed = True
+                    result.append(table)
+
+                if (
+                    metadata_cleaner
+                    and table.is_replicated()
+                    and not drop_performed
+                    and (table.database, table.name) not in readonly_cleaned_metadata
+                ):
+                    logging.debug(
+                        f"Will clean ZooKeeper metadata for table {table_name_for_logs}"
+                    )
+                    tables_to_clean_metadata.append(table)
+            except (ClickhouseBackupError, ClickhouseError, OSError, ValueError) as e:
+                if not keep_going:
+                    raise
+                preprocessing_failed_skipped += 1
+                logging.exception(
+                    f"Preprocessing of table {table.database}.{table.name} failed, skipping due to --keep-going flag. Reason: {e}"
+                )
+                continue
+
+        if metadata_cleaner and tables_to_clean_metadata:
+            metadata_cleaner.clean_tables_metadata(tables_to_clean_metadata)
+
+        return result, preprocessing_failed_skipped
+
+    def _get_remaining_readonly_tables_after_fix_attempt(
+        self,
+        context: BackupContext,
+        tables: List[Table],
+        metadata_cleaner: Optional[MetadataCleaner],
+    ) -> Tuple[Set[Tuple[str, str]], Set[Tuple[str, str]]]:
+        """
+        Find replicated tables that are in readonly state and attempt to fix them in-place by:
+        1. Cleaning ZooKeeper metadata via MetadataCleaner
+        2. Running SYSTEM RESTORE REPLICA
+
+        Returns a tuple of:
+        - set of (database, table_name) tuples for tables that are still readonly
+          after the fix attempt (or all readonly tables if metadata_cleaner is not provided).
+        - set of (database, table_name) tuples for tables whose metadata was already cleaned
+          during the fix attempt (to avoid redundant re-cleaning later).
+        """
         existing_readonly_tables = {
             (replica["database"], replica["table"])
             for replica in context.ch_ctl.get_replicas(readonly=True)
         }
 
-        result: List[Table] = []
-        tables_to_clean_metadata: List[Table] = []
-        for table in tables:
-            table_name_for_logs = f'"{table.database}"."{table.name}"'
-            existing_table: Optional[Table] = None
-            if (table.database, table.name) in existing_readonly_tables:
-                existing_table = table
-                logging.warning(
-                    f"Table {table_name_for_logs} will be recreated because it is in readonly state",
-                )
+        if not metadata_cleaner or not existing_readonly_tables:
+            return existing_readonly_tables, set()
 
-            elif existing_table := existing_tables_by_name.get(
-                (table.database, table.name)
-            ):
-                if compare_schema(
-                    existing_table.create_statement, table.create_statement
-                ):
-                    logging.debug(
-                        f"Table {table_name_for_logs} already exists and its schema is the same as the schema from backup. Skipping it.",
-                    )
-                    continue
-                logging.warning(
-                    'Table {} will be recreated as its schema mismatches the schema from backup: "{}" != "{}"',
-                    table_name_for_logs,
-                    existing_table.create_statement,
-                    table.create_statement,
-                )
-            elif existing_table := (
-                existing_tables_by_uuid.get(table.uuid) if table.uuid else None
-            ):
-                # Schemas mismatch here at least in name
-                logging.warning(
-                    'Table "{}"."{}" will be dropped as its UUID is equal but schema mismatches the schema from backup: "{}" != "{}"',
-                    existing_table.database,
-                    existing_table.name,
-                    existing_table.create_statement,
-                    table.create_statement,
-                )
+        replicated_readonly_tables = [
+            table
+            for table in tables
+            if table.is_replicated()
+            and (table.database, table.name) in existing_readonly_tables
+        ]
 
-            if existing_table:
-                try:
-                    ### If table name longer than `getMaxTableNameLengthForDatabase()` ch function result
-                    ### then we can't drop the table. Just rename it to some random name and drop the table.
-                    ### But for dictionaries doesn't works create/attach with long name, so we can't even restore the dictionary
-                    ### with long name. So it better to keep it.
-                    if existing_table.is_dictionary():
-                        context.ch_ctl.drop_dictionary_if_exists(existing_table)
-                    else:
-                        ### The lightweight copy to that we can modify and use for ch queries
-                        table_to_drop = Table.make_dummy(
-                            existing_table.database,
-                            existing_table.name,
-                        )
-                        if (
-                            len(table.name)
-                            > context.config_root["restore"]["max_table_name"]
-                        ):
-                            new_table_name = "to_drop_" + "".join(
-                                choices(ascii_lowercase, k=RANDOM_TABLE_NAME_LENGTH)
-                            )
-                            table_to_drop.name = new_table_name
-                            context.ch_ctl.drop_table_if_exists(table_to_drop)
-                            context.ch_ctl.rename_table(
-                                existing_table, table_to_drop.name
-                            )
+        if not replicated_readonly_tables:
+            return existing_readonly_tables, set()
 
-                        context.ch_ctl.drop_table_if_exists(table_to_drop)
+        logging.info(
+            f"Attempting to fix {len(replicated_readonly_tables)} readonly table(s) via metadata cleanup + SYSTEM RESTORE REPLICA"
+        )
 
-                except Exception as e:
-                    if not keep_going:
-                        raise
-                    logging.exception(
-                        f"Drop of table {existing_table.name} was failed, skipping due to --keep-going flag. Reason {e}"
-                    )
-                    continue
+        metadata_cleaner.clean_tables_metadata(replicated_readonly_tables)
 
-            if metadata_cleaner and table.is_replicated():
+        for table in replicated_readonly_tables:
+            try:
                 logging.debug(
-                    f"Will clean ZooKeeper metadata for table {table_name_for_logs}"
+                    f'Running SYSTEM RESTORE REPLICA for "{table.database}"."{table.name}"'
                 )
-                tables_to_clean_metadata.append(table)
+                context.ch_ctl.restore_replica(table)
+            except Exception as e:
+                logging.warning(
+                    f'SYSTEM RESTORE REPLICA failed for "{table.database}"."{table.name}", will attempt to recreate: {repr(e)}'
+                )
 
-            if (
-                not restore_tables_in_replicated_database
-                and databases[table.database].is_replicated_db_engine()
-            ):
+        still_readonly = {
+            (replica["database"], replica["table"])
+            for replica in context.ch_ctl.get_replicas(readonly=True)
+        }
+
+        already_cleaned: Set[Tuple[str, str]] = {
+            (table.database, table.name) for table in replicated_readonly_tables
+        }
+        for table in replicated_readonly_tables:
+            key = (table.database, table.name)
+            if key not in still_readonly:
                 logging.info(
-                    f"Skipping table {table_name_for_logs} because it is in replicated database and --restore-tables-in-replicated-database flag is not set",
+                    f'Table "{table.database}"."{table.name}" successfully fixed from readonly state'
                 )
+                existing_readonly_tables.discard(key)
             else:
-                result.append(table)
+                logging.warning(
+                    f'Table "{table.database}"."{table.name}" is still readonly after fix attempt'
+                )
 
-        if metadata_cleaner:  # type: ignore
-            metadata_cleaner.clean_tables_metadata(tables_to_clean_metadata)
+        return existing_readonly_tables, already_cleaned
 
-        return result
+    @staticmethod
+    def _drop_existing_table(
+        context: BackupContext,
+        table: Table,
+        existing_table: Table,
+    ) -> None:
+        """
+        Drop an existing table, handling long table names and dictionaries.
+        """
+        ### If table name longer than `getMaxTableNameLengthForDatabase()` ch function result
+        ### then we can't drop the table. Just rename it to some random name and drop the table.
+        ### But for dictionaries doesn't works create/attach with long name, so we can't even restore the dictionary
+        ### with long name. So it better to keep it.
+        if existing_table.is_dictionary():
+            context.ch_ctl.drop_dictionary_if_exists(existing_table)
+        else:
+            ### The lightweight copy to that we can modify and use for ch queries
+            table_to_drop = Table.make_dummy(
+                existing_table.database,
+                existing_table.name,
+            )
+            if len(table.name) > context.config_root["restore"]["max_table_name"]:
+                new_table_name = "to_drop_" + "".join(
+                    choices(ascii_lowercase, k=RANDOM_TABLE_NAME_LENGTH)
+                )
+                table_to_drop.name = new_table_name
+                context.ch_ctl.drop_table_if_exists(table_to_drop)
+                context.ch_ctl.rename_table(existing_table, table_to_drop.name)
+
+            context.ch_ctl.drop_table_if_exists(table_to_drop)
 
     @staticmethod
     def _get_tables_from_meta(
-        context: BackupContext, tables_meta: list[TableMetadata]
-    ) -> list[Table]:
+        context: BackupContext, tables_meta: list[TableMetadata], keep_going: bool
+    ) -> tuple[list[Table], int]:
         databases_to_download: set[str] = set()
         tables: dict[tuple[str, str], Table] = {}
         for table_meta in tables_meta:
@@ -745,11 +898,100 @@ class TableBackup(BackupManager):
                 database,
                 [table.name for table in tables_meta if table.database == database],
             )
-            for table, create_statement in statements:
-                if (database, table) in tables:
-                    tables[(database, table)].create_statement = create_statement
+            for table_name, create_statement in statements:
+                if (database, table_name) in tables:
+                    tables[(database, table_name)].create_statement = create_statement
 
-        return list(tables.values())
+        result = []
+        missing_create_statement_skipped = 0
+        for table in tables.values():
+            if table.create_statement:
+                result.append(table)
+                continue
+
+            if not keep_going:
+                raise ClickhouseBackupError(
+                    f"Create statement for table {table.database}.{table.name} is missing in backup layout"
+                )
+
+            missing_create_statement_skipped += 1
+            logging.warning(
+                "Create statement for table {}.{} is missing in backup layout, skipping due to --keep-going flag",
+                table.database,
+                table.name,
+            )
+
+        return result, missing_create_statement_skipped
+
+    @staticmethod
+    def _filter_duplicate_uuid(
+        tables_meta: list[TableMetadata], keep_going: bool
+    ) -> tuple[list[TableMetadata], int]:
+        tables_by_uuid: dict[str, TableMetadata] = {}
+        duplicate_uuid_skipped = 0
+        filtered_tables_meta: list[TableMetadata] = []
+        for table_meta in tables_meta:
+            if not table_meta.uuid:
+                filtered_tables_meta.append(table_meta)
+                continue
+
+            kept_table_meta = tables_by_uuid.get(table_meta.uuid)
+            if not kept_table_meta:
+                tables_by_uuid[table_meta.uuid] = table_meta
+                filtered_tables_meta.append(table_meta)
+                continue
+
+            duplicate_uuid_skipped += 1
+            if (
+                kept_table_meta.database == table_meta.database
+                and kept_table_meta.name == table_meta.name
+            ):
+                logging.warning(
+                    "Skipping duplicate metadata entry for table {}.{} with UUID {}",
+                    table_meta.database,
+                    table_meta.name,
+                    table_meta.uuid,
+                )
+                continue
+
+            if not keep_going:
+                raise ClickhouseBackupError(
+                    "Backup metadata contains conflicting tables with same UUID "
+                    f"{table_meta.uuid}: {kept_table_meta.database}.{kept_table_meta.name} "
+                    f"and {table_meta.database}.{table_meta.name}"
+                )
+
+            logging.warning(
+                "Skipping table {}.{} from backup restore: UUID {} duplicates {}.{} in backup metadata and --keep-going is enabled",
+                table_meta.database,
+                table_meta.name,
+                table_meta.uuid,
+                kept_table_meta.database,
+                kept_table_meta.name,
+            )
+        return filtered_tables_meta, duplicate_uuid_skipped
+
+    @staticmethod
+    def _log_restore_preprocess_summary(
+        duplicate_uuid_skipped: int,
+        missing_create_statement_skipped: int,
+        preprocessing_failed_skipped: int,
+    ) -> None:
+        skipped_total = (
+            duplicate_uuid_skipped
+            + missing_create_statement_skipped
+            + preprocessing_failed_skipped
+        )
+        if skipped_total == 0:
+            return
+
+        logging.info(
+            "Restore preprocessing skipped {} table(s): {} duplicate UUID, {} missing create statement, {} preprocessing failures",
+            skipped_total,
+            duplicate_uuid_skipped,
+            missing_create_statement_skipped,
+            preprocessing_failed_skipped,
+        )
 
     # pylint: disable=too-many-positional-arguments
     def _restore_tables(
@@ -803,6 +1045,11 @@ class TableBackup(BackupManager):
                     table_meta.database, table_meta.name, short_query=True
                 )
                 if not maybe_table_short:
+                    if keep_going:
+                        logging.warning(
+                            f"Haven't found table {table_meta.database}.{table_meta.name} keep going"
+                        )
+                        continue
                     raise ClickhouseBackupError(
                         f"Table not found {table_meta.database}.{table_meta.name}"
                     )

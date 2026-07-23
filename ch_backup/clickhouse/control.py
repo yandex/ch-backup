@@ -52,7 +52,7 @@ GET_TABLES_SQL = strip_query(
     FROM system.tables
     WHERE ({db_condition})
       AND ({tables_condition})
-      AND engine != 'StorageProxy'
+      AND engine NOT IN ('Proxy', 'StorageProxy')
 
     UNION ALL
 
@@ -68,7 +68,7 @@ GET_TABLES_SQL = strip_query(
     FROM system.tables
     WHERE ({db_condition})
       AND ({tables_condition})
-      AND engine = 'StorageProxy'
+      AND engine IN ('Proxy', 'StorageProxy')
 
     ORDER BY metadata_modification_time
     FORMAT JSON
@@ -139,7 +139,12 @@ GET_DETACHED_TABLES_SQL = strip_query(
         database,
         table,
         uuid,
+        metadata_path
     FROM system.detached_tables
+    WHERE database IN (
+        SELECT name FROM system.databases
+        WHERE engine IN ('Atomic', 'Ordinary', 'Replicated', 'Lazy')
+    )
     FORMAT JSON
 """
 )
@@ -279,9 +284,19 @@ DROP_DATABASE_REPLICA_BY_ZK_PATH_SQL = strip_query(
 """
 )
 
-SYNC_DATABASE_REPLICA_SQL = strip_query(
+GET_DDL_QUEUE_STATUS_SQL = strip_query(
     """
-    SYSTEM SYNC DATABASE REPLICA `{db_name}`
+    SELECT
+        entry,
+        query,
+        status,
+        exception_code,
+        exception_text
+    FROM system.distributed_ddl_queue
+    WHERE cluster = '{db_name}'
+      AND status != 'Finished'
+    ORDER BY entry
+    FORMAT JSON
 """
 )
 
@@ -292,7 +307,7 @@ GET_DATABASES_SQL = strip_query(
         engine,
         metadata_path,
         uuid,
-        engine_full
+        if(engine = 'Replicated', engine_full, NULL) AS engine_full
     FROM system.databases
     WHERE name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', '{system_db}')
     FORMAT JSON
@@ -321,7 +336,8 @@ CREATE_IF_NOT_EXISTS_DEDUP_TABLE_SQL = strip_query(
         database String,
         table String,
         name String,
-        backup_path String,
+        backup_name String,
+        link_part_name String,
         checksum String,
         size Int64,
         files Array(String),
@@ -351,11 +367,15 @@ INSERT_DEDUP_INFO_BATCH_SQL = strip_query(
 
 GET_DEDUPLICATED_PARTS_SQL = strip_query(
     """
-    SELECT `{system_db}`._deduplication_info.* FROM `{system_db}`._deduplication_info
+    SELECT
+        `{system_db}`._deduplication_info_current.name AS current_name,
+        `{system_db}`._deduplication_info.*
+    FROM `{system_db}`._deduplication_info
     JOIN `{system_db}`._deduplication_info_current
-    ON _deduplication_info.name = _deduplication_info_current.name
-        AND _deduplication_info.checksum = _deduplication_info_current.checksum
+    ON _deduplication_info.checksum = _deduplication_info_current.checksum
     WHERE database='{database}' AND table='{table}'
+    ORDER BY _deduplication_info.backup_name DESC
+    LIMIT 1 BY current_name
     FORMAT JSON
 """
 )
@@ -521,6 +541,18 @@ GET_PARTITIONS = strip_query(
 """
 )
 
+METADATA_PLACEHOLDER_FOR_MISSED_DETACHED_TABLE = strip_query(
+    """
+ATTACH TABLE _ UUID '{uuid}'
+(
+    `a` UInt32
+)
+ENGINE = MergeTree
+ORDER BY a
+SETTINGS index_granularity = 8192
+"""
+)
+
 
 # pylint: disable=too-many-public-methods
 class ClickhouseCTL:
@@ -542,9 +574,6 @@ class ClickhouseCTL:
         self._freeze_timeout = self._ch_ctl_config["freeze_timeout"]
         self._unfreeze_timeout = self._ch_ctl_config["unfreeze_timeout"]
         self._restore_replica_timeout = self._ch_ctl_config["restore_replica_timeout"]
-        self._sync_database_replica_timeout = self._ch_ctl_config[
-            "sync_database_replica_timeout"
-        ]
         self._drop_replica_timeout = self._ch_ctl_config["drop_replica_timeout"]
         self._ch_client = ClickhouseClient(self._ch_ctl_config)
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
@@ -841,6 +870,25 @@ class ClickhouseCTL:
 
         return result
 
+    def create_metadata_for_missed_detached_table(
+        self, metadata_path: str, uuid: str
+    ) -> None:
+        """
+        Clickhouse keeps info about detached tables in memory and doesn't expect that
+        metadata could be removed. So we put the file manually to remove the info from clickhouse.
+        """
+        attach_statement = METADATA_PLACEHOLDER_FOR_MISSED_DETACHED_TABLE.format(
+            uuid=uuid
+        )
+        if self.ch_version_ge("25.3"):
+            metadata_file_path = f"{self._root_data_path}/{metadata_path}"
+        else:
+            # Until 25.3 the metadata is path abs.
+            metadata_file_path = metadata_path
+
+        with open(metadata_file_path, "w", encoding="utf-8") as f:
+            f.write(attach_statement)
+
     def get_detached_tables(self) -> Sequence[Table]:
         """
         Get detached tables.
@@ -854,7 +902,11 @@ class ClickhouseCTL:
             return result
 
         for row in self._ch_client.query(GET_DETACHED_TABLES_SQL)["data"]:
-            result.append(Table.make_dummy(row["database"], row["table"], row["uuid"]))
+            result.append(
+                Table.make_dummy(
+                    row["database"], row["table"], row["uuid"], row["metadata_path"]
+                )
+            )
         return result
 
     def get_table(
@@ -1032,28 +1084,22 @@ class ClickhouseCTL:
             timeout=self._drop_replica_timeout,
         )
 
-    def system_sync_database_replica(
-        self,
-        db_name: str,
-        timeout: Optional[int] = None,
-        settings: Optional[Dict[str, Any]] = None,
-    ) -> None:
+    def get_ddl_queue_unfinished_status(self, db_name: str) -> List[Dict]:
         """
-        Synchronize Replicated Database replica.
+        Get pending DDL entries from system.distributed_ddl_queue for a replicated database.
+        Returns list of entries with status, exception_code and exception_text.
+        An empty list means all DDL entries have been processed (sync is complete).
         """
-        if not self.ch_version_ge("23.8"):
-            raise RuntimeError(
-                "SYSTEM SYNC DATABASE REPLICA is not stable in ClickHouse version < 23.8"
+        try:
+            result = self._ch_client.query(
+                GET_DDL_QUEUE_STATUS_SQL.format(db_name=escape(db_name))
             )
-
-        query_timeout = timeout or self._sync_database_replica_timeout
-        query_settings = settings or {}
-
-        self._ch_client.query(
-            SYNC_DATABASE_REPLICA_SQL.format(db_name=escape(db_name)),
-            timeout=query_timeout,
-            settings=query_settings,
-        )
+            return result.get("data", [])
+        except Exception as e:
+            logging.warning(
+                f"Failed to query system.distributed_ddl_queue for database {db_name}: {e}"
+            )
+            return []
 
     def get_database_metadata_path(self, database: str) -> str:
         """

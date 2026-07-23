@@ -1064,3 +1064,80 @@ Feature: Backup replicated merge tree table
     """
     20
     """
+
+  ## Reproduces TABLE_WAS_NOT_DROPPED (error 305): ClickHouse refuses SYSTEM DROP REPLICA FROM ZKPATH
+  ## when the table exists locally. The fix falls back to direct ZK node deletion via kazoo client.
+  ## Setup: table exists on clickhouse02 with ZK replica node present but corrupted (empty),
+  ## so the table is in readonly state. SYSTEM DROP REPLICA FROM ZKPATH fails because the table
+  ## exists locally, triggering the ZK client fallback.
+  ## Note: In CH < 23.3, SYSTEM RESTART REPLICA with a corrupted (empty) ZK replica node crashes
+  ## instead of transitioning the table to is_readonly=1, so this scenario requires CH >= 23.9.
+  @require_version_23.3
+  Scenario: Restore readonly table when SYSTEM DROP REPLICA fails with TABLE_WAS_NOT_DROPPED
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (
+        EventDate DateTime,
+        CounterID UInt32,
+        UserID UInt32
+    )
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_01', '{replica}')
+    PARTITION BY CounterID % 10
+    ORDER BY (CounterID, EventDate, intHash32(UserID))
+    SAMPLE BY intHash32(UserID);
+    INSERT INTO test_db.table_01 SELECT now(), number, rand() FROM system.numbers LIMIT 10
+    """
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 10         | 0          |
+    Given we have executed queries on clickhouse02
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (
+        EventDate DateTime,
+        CounterID UInt32,
+        UserID UInt32
+    )
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_01', '{replica}')
+    PARTITION BY CounterID % 10
+    ORDER BY (CounterID, EventDate, intHash32(UserID))
+    SAMPLE BY intHash32(UserID);
+    """
+    ## Delete the replica ZK node entirely, then recreate it as an empty node.
+    ## This makes the table go readonly (ZK node exists but is corrupted/empty),
+    ## while keeping the local table — exactly the condition that triggers TABLE_WAS_NOT_DROPPED.
+    Given on zookeeper01 we delete /clickhouse02/clickhouse/tables/shard_01/test_db.table_01/replicas/clickhouse02
+    When on zookeeper01 we create /clickhouse02/clickhouse/tables/shard_01/test_db.table_01/replicas/clickhouse02
+    Given we have executed queries on clickhouse02
+    """
+    SYSTEM RESTART REPLICA test_db.table_01
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT is_readonly FROM system.replicas WHERE table = 'table_01' and database = 'test_db'
+    """
+    Then we get response
+    """
+    1
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    Then clickhouse02 has same schema as clickhouse01
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+    When we execute query on clickhouse02
+    """
+    SELECT is_readonly FROM system.replicas WHERE table = 'table_01' and database = 'test_db'
+    """
+    Then we get response
+    """
+    0
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM test_db.table_01
+    """
+    Then we get response
+    """
+    10
+    """

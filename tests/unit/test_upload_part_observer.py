@@ -2,9 +2,7 @@ import copy
 from typing import List
 from unittest.mock import Mock, patch
 
-from ch_backup.backup.metadata.backup_metadata import BackupMetadata
-from ch_backup.backup.metadata.part_metadata import PartMetadata
-from ch_backup.backup.metadata.table_metadata import TableMetadata
+from ch_backup.backup.metadata import BackupMetadata, PartMetadata, TableMetadata
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.models import Database
 from ch_backup.logic.upload_part_observer import UploadPartObserver
@@ -17,7 +15,6 @@ ENGINE = "MergeTree"
 BACKUP_NAME = "TestBackup"
 BACKUP_META = BackupMetadata(
     name=BACKUP_NAME,
-    path=f"ch_backup/{BACKUP_NAME}",
     version="1.0.100",
     ch_version="19.1.16",
     time_format="%Y-%m-%dT%H:%M:%S%Z",
@@ -33,7 +30,7 @@ DB = Database(
         "id": "One part before interval",
         "args": {
             "times": [0, 1],
-            "part_names": ["1"],
+            "part_names": ["all_1_1_0"],
             "interval": 2,
             "expected_upload_metadata": 0,
         },
@@ -42,7 +39,7 @@ DB = Database(
         "id": "One part after interval",
         "args": {
             "times": [0, 2],
-            "part_names": ["1"],
+            "part_names": ["all_1_1_0"],
             "interval": 1,
             "expected_upload_metadata": 1,
         },
@@ -51,7 +48,7 @@ DB = Database(
         "id": "One before. One after",
         "args": {
             "times": [0, 1, 10],
-            "part_names": ["1", "2"],
+            "part_names": ["all_1_1_0", "all_2_2_0"],
             "interval": 5,
             "expected_upload_metadata": 1,
         },
@@ -60,7 +57,7 @@ DB = Database(
         "id": "Two parts after interval",
         "args": {
             "times": [0, 1, 10],
-            "part_names": ["1", "2"],
+            "part_names": ["all_1_1_0", "all_2_2_0"],
             "interval": 1,
             "expected_upload_metadata": 2,
         },
@@ -69,7 +66,7 @@ DB = Database(
         "id": "Mix",
         "args": {
             "times": [0, 1, 2, 10, 20],
-            "part_names": ["1", "2", "3", "4"],
+            "part_names": ["all_1_1_0", "all_2_2_0", "all_3_3_0", "all_4_4_0"],
             "interval": 5,
             "expected_upload_metadata": 2,
         },

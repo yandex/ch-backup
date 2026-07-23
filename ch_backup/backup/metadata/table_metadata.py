@@ -21,6 +21,35 @@ class PartInfo(NamedTuple):
     mutation: int
 
 
+def split_part_name(part: str) -> PartInfo:
+    """
+    Splitting part's name to get underlying information.
+
+    Raises ValueError if the part name does not match the ClickHouse
+    part name format: ``{partition_id}_{min_block}_{max_block}_{level}[_{mutation}]``.
+    """
+
+    max_split = 4
+    chunks = part.split("_", maxsplit=max_split)
+    if len(chunks) < 4:
+        raise ValueError(
+            f"Invalid part name format: '{part}'. "
+            f"Expected format: partition_id_minBlock_maxBlock_level[_mutation]"
+        )
+    try:
+        partition_id = chunks[0]
+        min_block_num = int(chunks[1])
+        max_block_num = int(chunks[2])
+        level = int(chunks[3])
+        mutation = int(chunks[4]) if max_split + 1 == len(chunks) else 0
+    except (IndexError, ValueError) as e:
+        raise ValueError(
+            f"Invalid part name format: '{part}'. "
+            f"Failed to parse numeric segments: {e}"
+        )
+    return PartInfo(partition_id, min_block_num, max_block_num, level, mutation)
+
+
 class TableMetadata(SimpleNamespace):
     """
     Backup metadata for ClickHouse table.
@@ -66,24 +95,6 @@ class TableMetadata(SimpleNamespace):
                     PartMetadata.load(self.database, self.name, part_name, raw_metadata)
                 )
 
-        def split_part_name(part: str) -> PartInfo:
-            max_split = 4
-            chunks = part.split("_", maxsplit=max_split)
-            partition_id = ""
-            level = 0
-            mutation = 0
-            try:
-                partition_id = chunks[0]
-                min_block_num = int(chunks[1])
-                max_block_num = int(chunks[2])
-                level = int(chunks[3])
-                if max_split + 1 == len(chunks):
-                    mutation = int(chunks[4])
-            except (IndexError, ValueError):
-                min_block_num = 0
-                max_block_num = 0
-            return PartInfo(partition_id, min_block_num, max_block_num, level, mutation)
-
         result.sort(key=lambda part: split_part_name(part.name))
         return result
 
@@ -100,6 +111,7 @@ class TableMetadata(SimpleNamespace):
             "bytes": part.size,
             "files": part.files,
             "link": part.link,
+            "link_part_name": part.link_part_name,
             "tarball": part.tarball,
             "disk_name": part.disk_name,
             "encrypted": part.encrypted,

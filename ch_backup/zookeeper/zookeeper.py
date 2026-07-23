@@ -23,6 +23,7 @@ class ZookeeperClient:
     def __init__(self, config: dict):
         self._client = KazooClient(
             config["hosts"],
+            timeout=config.get("timeout"),
             use_ssl=config.get("secure"),
             certfile=config.get("cert"),
             keyfile=config.get("key"),

@@ -266,11 +266,37 @@ def list_command(
 
 @command(name="show")  # type: ignore
 @argument("name", metavar="BACKUP")
-def show_command(ctx: Context, ch_backup: ClickhouseBackup, name: str) -> None:
+@option("--pretty", is_flag=True, default=False, help="Pretty output.")
+@option(
+    "-d",
+    "--database",
+    type=str,
+    help="Filter output to show only the specified database.",
+)
+@option(
+    "-t",
+    "--table",
+    type=str,
+    help="Filter output to show only the specified table (format: db.table or table when used with --database).",
+)
+# pylint: disable=too-many-positional-arguments
+def show_command(
+    ctx: Context,
+    ch_backup: ClickhouseBackup,
+    name: str,
+    pretty: bool,
+    database: Optional[str],
+    table: Optional[str],
+) -> None:
     """Show details for a particular backup."""
     name = _validate_and_resolve_name(ctx, ch_backup, name)
 
-    print(ch_backup.get(name))
+    try:
+        print(
+            ch_backup.get(name).dump_json(pretty=pretty, database=database, table=table)
+        )
+    except ValueError as e:
+        ctx.fail(str(e))
 
 
 @command(name="backup")
@@ -522,6 +548,7 @@ def backup_command(
         type=List(regexp=r"\w+\.[\w*]+"),
         help="Comma-separated list of db.tables to skip on restore. Other tables will be restored. "
         "Patterns support Unix shell-style wildcards(*) and are supported only for tables."
+        "When used together with option table-included-patterns, it has a higher priority and excludes tables from final result."
         "Examples: db1.table1 | db1.table2,db2.* | db1.prefix*,db2.*suffix | db1.*",
     ),
     option("--nc", is_flag=True, help="Perform partial restore of named collections."),
@@ -536,9 +563,7 @@ def backup_command(
     is_flag=True,
     help="Restore tables in Replicated databases",
 )
-@constraint(mutually_exclusive, ["table_included_patterns", "table_excluded_patterns"])
 @constraint(mutually_exclusive, ["table_included_patterns", "exclude_databases"])
-@constraint(mutually_exclusive, ["schema_only", "table_included_patterns"])
 @constraint(mutually_exclusive, ["schema_only", "access"])
 @constraint(mutually_exclusive, ["schema_only", "data"])
 @constraint(mutually_exclusive, ["schema_only", "schema"])

@@ -68,7 +68,7 @@ Feature: Backup & Restore multiple disks and S3
     """
     And we execute query on clickhouse02
     """
-    SELECT count() FROM system.parts WHERE table = 'table_01' and disk_name = 's3'
+    SELECT count() FROM system.parts WHERE table = 'table_01' and disk_name = '<disk_name>'
     """
     Then we get response
     """
@@ -76,13 +76,20 @@ Feature: Backup & Restore multiple disks and S3
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
+    @require_version_less_than_26.2
     Examples:
-      | compression       |
-      | True              |
-      | False             |
+      | compression       | disk_name |
+      | True              | s3        |
+      | False             | s3        |
+
+    @require_version_26.2
+    Examples:
+      | compression       | disk_name |
+      | True              | s3_cache  |
+      | False             | s3_cache  |
 
   @require_version_22.8
-  Scenario: Backup table with S3-cold storage policy
+  Scenario Outline: Backup table with S3-cold storage policy
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE IF NOT EXISTS test_db;
@@ -111,13 +118,25 @@ Feature: Backup & Restore multiple disks and S3
     """
     And we execute query on clickhouse02
     """
-    SELECT count() FROM system.parts WHERE table = 'table_01' and disk_name = 's3'
+    SELECT count() FROM system.parts WHERE table = 'table_01' and disk_name = '<disk_name>'
     """
     Then we get response
     """
     1
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
+
+    @require_version_less_than_26.2
+    Examples:
+      | disk_name |
+      | s3        |
+      | s3        |
+
+    @require_version_26.2
+    Examples:
+      | disk_name |
+      | s3_cache  |
+      | s3_cache  |
 
   @require_version_22.8
   Scenario Outline:: Backup multiple tables with S3 storage policy
@@ -160,7 +179,7 @@ Feature: Backup & Restore multiple disks and S3
     """
     And we execute query on clickhouse02
     """
-    SELECT count() FROM system.parts WHERE disk_name = 's3'
+    SELECT count() FROM system.parts WHERE disk_name = '<disk_name>'
     """
     Then we get response
     """
@@ -168,10 +187,17 @@ Feature: Backup & Restore multiple disks and S3
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
+    @require_version_less_than_26.2
     Examples:
-      | compression       |
-      | True              |
-      | False             |
+      | compression       | disk_name |
+      | True              | s3        |
+      | False             | s3        |
+
+    @require_version_26.2
+    Examples:
+      | compression       | disk_name |
+      | True              | s3_cache  |
+      | False             | s3_cache  |
 
   @require_version_22.8
   Scenario: Multiple backups with S3 storage policy
@@ -256,7 +282,7 @@ Feature: Backup & Restore multiple disks and S3
     """
     And we execute query on clickhouse02
     """
-    SELECT count() FROM system.parts WHERE table = 'table_01' and disk_name = 's3'
+    SELECT count() FROM system.parts WHERE table = 'table_01' and disk_name = '<disk_name>'
     """
     Then we get response
     """
@@ -264,7 +290,14 @@ Feature: Backup & Restore multiple disks and S3
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
+    @require_version_less_than_26.2
     Examples:
-      | compression       |
-      | True              |
-      | False             |
+      | compression       | disk_name |
+      | True              | s3        |
+      | False             | s3        |
+
+    @require_version_26.2
+    Examples:
+      | compression       | disk_name |
+      | True              | s3_cache  |
+      | False             | s3_cache  |

@@ -7,7 +7,7 @@ import os
 from functools import partial
 from subprocess import PIPE, Popen
 from types import TracebackType
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type
+from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple, Type
 from urllib.parse import urlparse
 
 import xmltodict
@@ -15,6 +15,7 @@ import xmltodict
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
+from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.models import Disk, Table
@@ -41,7 +42,7 @@ class ClickHouseTemporaryDisks:
     Manages temporary cloud storage disks.
     """
 
-    # pylint: disable=too-many-instance-attributes,too-many-positional-arguments
+    # pylint: disable=too-many-instance-attributes,too-many-positional-arguments,too-many-arguments
     def __init__(
         self,
         ch_ctl: ClickhouseCTL,
@@ -52,6 +53,7 @@ class ClickHouseTemporaryDisks:
         source_path: Optional[str],
         source_endpoint: Optional[str],
         ch_config: ClickhouseConfig,
+        desired_tables: Sequence[TableMetadata] | Literal["all"] = "all",
         use_local_copy: bool = False,
     ):
         self._ch_ctl = ch_ctl
@@ -68,13 +70,16 @@ class ClickHouseTemporaryDisks:
             raise RuntimeError(
                 "Backup contains cloud storage data, cloud-storage-source-bucket must be set."
             )
+        self._desired_tables: Sequence[TableMetadata] | Literal["all"] = desired_tables
 
         self._disks: Dict[str, Dict] = {}
         self._created_disks: Dict[str, Disk] = {}
         self._ch_availible_disks: Dict[str, Disk] = {}
 
     def __enter__(self):
-        self._disks = self._ch_config.config["storage_configuration"]["disks"]
+        self._disks = self._ch_config.config.get("storage_configuration", {}).get(
+            "disks", {}
+        )
         for disk_name in self._backup_meta.cloud_storage.disks:
             self._create_temporary_disk(
                 self._backup_meta,
@@ -82,6 +87,7 @@ class ClickHouseTemporaryDisks:
                 self._source_bucket,
                 self._source_path,
                 self._source_endpoint,
+                self._desired_tables,
             )
         self._backup_layout.wait()
         self._ch_availible_disks = self._ch_ctl.get_disks()
@@ -138,32 +144,35 @@ class ClickHouseTemporaryDisks:
         source_bucket: str,
         source_path: str,
         source_endpoint: str,
+        desired_tables: Sequence[TableMetadata] | Literal["all"] = "all",
     ) -> None:
         tmp_disk_name = _get_tmp_disk_name(disk_name)
         logging.debug(f"Creating tmp disk {tmp_disk_name}")
-        disk_config = copy.copy(
-            self._ch_config.config["storage_configuration"]["disks"][disk_name]
-        )
+        if disk_name not in self._disks:
+            raise ClickHouseDisksException(
+                f'Disk "{disk_name}" is present in backup cloud storage metadata'
+                f" but is missing from ClickHouse storage_configuration."
+                f" Add the disk to the ClickHouse configuration and retry."
+            )
+        disk_config = copy.copy(self._disks[disk_name])
 
         endpoint = urlparse(disk_config["endpoint"])
         endpoint_netloc = source_endpoint or endpoint.netloc
 
-        tmp_disk_enpoint = os.path.join(
+        tmp_disk_endpoint = os.path.join(
             f"{endpoint.scheme}://{endpoint_netloc}", source_bucket, source_path, ""
         )
-        orig_disk_enpoint = self._ch_config.config["storage_configuration"]["disks"][
-            disk_name
-        ]["endpoint"]
+        orig_disk_endpoint = self._disks[disk_name]["endpoint"]
 
         if self._use_local_copy and not is_equal_s3_endpoints(
-            tmp_disk_enpoint, orig_disk_enpoint
+            tmp_disk_endpoint, orig_disk_endpoint
         ):
             raise RuntimeError(
-                f"Endpoint of tmp object storage disk is not equal to original (original {orig_disk_enpoint}  tmp: {tmp_disk_enpoint})."
+                f"Endpoint of tmp object storage disk is not equal to original (original {orig_disk_endpoint}  tmp: {tmp_disk_endpoint})."
                 "It is required for inplace restore mode."
             )
 
-        disk_config["endpoint"] = tmp_disk_enpoint
+        disk_config["endpoint"] = tmp_disk_endpoint
 
         disks_config = {tmp_disk_name: disk_config}
 
@@ -194,7 +203,10 @@ class ClickHouseTemporaryDisks:
         source_disk = self._ch_ctl.get_disk(tmp_disk_name)
         logging.debug(f'Restoring Cloud Storage "shadow" data of disk "{disk_name}"')
         self._backup_layout.download_cloud_storage_metadata(
-            backup_meta, source_disk, disk_name
+            backup_meta,
+            source_disk,
+            disk_name,
+            desired_tables,
         )
 
         self._created_disks[tmp_disk_name] = source_disk
@@ -238,7 +250,9 @@ class ClickHouseTemporaryDisks:
         """
         Copy data from temporary cloud storage disk to actual.
         """
-        routine_tag = f"{table.database}.{table.name}::{part.name}"
+        source_part_name = part.deduplicated_part_name
+
+        routine_tag = f"{table.database}.{table.name}::{source_part_name}"
         target_disk = self._ch_availible_disks[part.disk_name]
         source_disk = self._ch_availible_disks[_get_tmp_disk_name(part.disk_name)]
         for path, disk in table.paths_with_disks:
@@ -251,7 +265,7 @@ class ClickHouseTemporaryDisks:
                     "shadow",
                     backup_meta.get_sanitized_name(),
                     table_path,
-                    part.name,
+                    source_part_name,
                     "",
                 )
                 self._copy_dir(

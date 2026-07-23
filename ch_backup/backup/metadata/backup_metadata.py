@@ -2,7 +2,9 @@
 Backup metadata.
 """
 
+import copy
 import json
+import os
 import socket
 from datetime import datetime, timezone
 from enum import Enum
@@ -41,7 +43,6 @@ class BackupMetadata:
     def __init__(
         self,
         name: str,
-        path: str,
         version: str,
         ch_version: str,
         time_format: str,
@@ -49,9 +50,17 @@ class BackupMetadata:
         labels: dict = None,
         schema_only: bool = False,
         encrypted: bool = True,
+        path: Optional[str] = None,
     ) -> None:
         self.name = name
-        self.path = path
+        # DEPRECATED: ``path`` is kept solely for backward compatibility with
+        # older versions of ch-backup that read the full backup path from
+        # metadata. New code MUST NOT rely on it — use ``name`` instead and
+        # resolve the storage path through ``BackupLayout.get_backup_path()``.
+        # TODO: remove the ``path`` field completely in a few releases once
+        #       all running hosts are guaranteed to be on a version that does
+        #       not read it.  Tracked in a separate ticket.
+        self.path = path if path is not None else name
         self.version = version
         self.ch_version = ch_version
         self.hostname = hostname or socket.getfqdn()
@@ -124,8 +133,19 @@ class BackupMetadata:
         """
         Serialize backup metadata.
         """
+        if light:
+            databases: Dict[str, dict] = {}
+        else:
+            # Rewrite ``link`` of every part from a plain backup name back to a
+            # full storage path (``<path_root>/<source_backup_name>``) so that
+            # older ch-backup versions, which expect the legacy full-path
+            # format, can still read backups produced by this version.
+            # DEPRECATED: this conversion will be removed once the legacy
+            # format is no longer supported.
+            databases = self._databases_with_legacy_part_links()
+
         return {
-            "databases": self._databases if not light else {},
+            "databases": databases,
             "access_controls": self._access_control.dump() if not light else {},
             "user_defined_functions": self._user_defined_functions if not light else [],
             "named_collections": self._named_collections if not light else [],
@@ -133,6 +153,7 @@ class BackupMetadata:
             "cloud_storage": self.cloud_storage.dump(),
             "meta": {
                 "name": self.name,
+                # DEPRECATED: kept for backward compatibility; see __init__.
                 "path": self.path,
                 "version": self.version,
                 "ch_version": self.ch_version,
@@ -153,11 +174,101 @@ class BackupMetadata:
             },
         }
 
-    def dump_json(self, light: bool = False) -> str:
+    def _databases_with_legacy_part_links(self) -> Dict[str, dict]:
+        """
+        Return a deep-copy of ``self._databases`` where every part's ``link``
+        field is rewritten from a plain backup name (new format) to a full
+        storage path (legacy format).
+
+        Required for backward compatibility with ch-backup versions that
+        still read the ``link`` field as a full storage path.
+        """
+        # ``self.path`` is in the form "<path_root>/<backup_name>". Strip the
+        # backup name to obtain the path root that prefixes any source backup.
+        path_root = os.path.dirname(self.path) if self.path else ""
+
+        databases = copy.deepcopy(self._databases)
+        # Defensive: in some test fixtures ``_databases`` may be an empty list.
+        if not isinstance(databases, dict):
+            return databases
+        for db in databases.values():
+            for table in db.get("tables", {}).values():
+                for part in table.get("parts", {}).values():
+                    link = part.get("link")
+                    if not link:
+                        continue
+                    # Skip already legacy-formatted links (defensive).
+                    if "/" in link:
+                        continue
+                    part["link"] = os.path.join(path_root, link) if path_root else link
+        return databases
+
+    def dump_json(
+        self,
+        light: bool = False,
+        pretty: bool = False,
+        database: Optional[str] = None,
+        table: Optional[str] = None,
+    ) -> str:
         """
         Return json representation of backup metadata.
+
+        Args:
+            light: If True, return lightweight metadata without detailed information
+            pretty: If True, format JSON with indentation
+            database: Filter to show only this database
+            table: Filter to show only this table (format: db.table or table when database is set)
+
+        Returns:
+            JSON string representation of backup metadata
+
+        Raises:
+            ValueError: If database or table not found, or if table format is invalid
         """
-        return json.dumps(self.dump(light), separators=(",", ":"))
+        indent = 2 if pretty else None
+        separators = None if pretty else (",", ":")
+
+        # If no filters, use standard dump
+        if not database and not table:
+            return json.dumps(self.dump(light), separators=separators, indent=indent)
+
+        # Apply filters
+        data = self.dump(light)
+
+        # Parse table specification if provided
+        table_name = None
+        if table:
+            if "." in table:
+                db_name, table_name = table.split(".", 1)
+                if database and database != db_name:
+                    raise ValueError(
+                        f'Table specification "{table}" conflicts with database "{database}"'
+                    )
+                database = db_name
+            elif database:
+                table_name = table
+            else:
+                raise ValueError(
+                    f'Table "{table}" must be in format "database.table" or database must be specified'
+                )
+
+        # Filter by database
+        if database:
+            if database not in data["databases"]:
+                raise ValueError(f'Database "{database}" not found in backup')
+            data["databases"] = {database: data["databases"][database]}
+
+            # Filter by table if specified
+            if table_name:
+                if table_name not in data["databases"][database]["tables"]:
+                    raise ValueError(
+                        f'Table "{database}.{table_name}" not found in backup'
+                    )
+                data["databases"][database]["tables"] = {
+                    table_name: data["databases"][database]["tables"][table_name]
+                }
+
+        return json.dumps(data, separators=(",", ":"), indent=indent)
 
     @classmethod
     def load(cls, data: dict) -> "BackupMetadata":
@@ -170,7 +281,10 @@ class BackupMetadata:
 
             backup = cls.__new__(cls)
             backup.name = meta["name"]
-            backup.path = meta["path"]
+            # DEPRECATED: kept for backward compatibility — fall back to the
+            # backup name when the legacy ``path`` field is missing (new
+            # backups still write it for forward compatibility).
+            backup.path = meta.get("path", meta["name"])
             backup.hostname = meta["hostname"]
             backup.time_format = meta["time_format"]
             backup._databases = data["databases"]

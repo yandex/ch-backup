@@ -2,18 +2,31 @@
 Management of backup data layout.
 """
 
+# pylint: disable=too-many-lines
+
 import os
 from contextlib import contextmanager
 from functools import partial
 from io import IOBase
 from pathlib import Path
-from typing import Any, BinaryIO, Callable, Iterator, List, Optional, Sequence, Union
+from typing import (
+    Any,
+    BinaryIO,
+    Callable,
+    Iterator,
+    List,
+    Literal,
+    Optional,
+    Sequence,
+    Union,
+)
 from urllib.parse import quote
 
 from nacl.exceptions import CryptoError
 
 from ch_backup import logging
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
+from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.calculators import calc_encrypted_size, calc_tarball_size
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.config import Config
@@ -323,7 +336,7 @@ class BackupLayout:
         Download user defined function create statement.
         """
         remote_path = self._get_escaped_if_exists(
-            _udf_data_path, backup_meta.path, filename
+            _udf_data_path, self.get_backup_path(backup_meta.name), filename
         )
         return self._storage_loader.download_data(remote_path, encryption=True)
 
@@ -350,7 +363,9 @@ class BackupLayout:
         """
         Download named collection create statement.
         """
-        remote_path = _named_collections_data_path(backup_meta.path, filename)
+        remote_path = _named_collections_data_path(
+            self.get_backup_path(backup_meta.name), filename
+        )
         return self._storage_loader.download_data(remote_path, encryption=True)
 
     def get_local_workload_entity_create_statement(self, entity_name: str) -> Optional[str]:
@@ -390,6 +405,10 @@ class BackupLayout:
     def _load_metadata(self, path: str, encryption: bool) -> BackupMetadata:
         try:
             data = self._storage_loader.download_data(path, encryption=encryption)
+            logging.debug(
+                "Downloaded backup metadata: {}",
+                data,
+            )
             return BackupMetadata.load_json(data)
         except CryptoError:
             raise
@@ -433,6 +452,11 @@ class BackupLayout:
 
         backups = []
         for name in self.get_backup_names():
+            logging.debug(
+                "Collecting {} of backup: {}",
+                "light metadata" if use_light_meta else "metadata",
+                name,
+            )
             backup = self.get_backup(name, use_light_meta)
             if backup:
                 backups.append(backup)
@@ -464,7 +488,7 @@ class BackupLayout:
         """
         Download and return database create statement.
         """
-        remote_path = _db_metadata_path(backup_meta.path, db_name)
+        remote_path = _db_metadata_path(self.get_backup_path(backup_meta.name), db_name)
         return self._storage_loader.download_data(
             remote_path, encryption=backup_meta.encrypted
         )
@@ -475,7 +499,7 @@ class BackupLayout:
         """
         Download and return database create statements.
         """
-        remote_path = _db_metadata_path_tar(backup_meta.path)
+        remote_path = _db_metadata_path_tar(self.get_backup_path(backup_meta.name))
         if not self._storage_loader.path_exists(remote_path):
             logging.debug(
                 f"File {remote_path} doesn't exist, fallback to old metadata style"
@@ -508,7 +532,9 @@ class BackupLayout:
         """
         Download and return table create statement.
         """
-        remote_path = _table_metadata_path(backup_meta.path, db_name, table_name)
+        remote_path = _table_metadata_path(
+            self.get_backup_path(backup_meta.name), db_name, table_name
+        )
         data = self._storage_loader.download_data(
             remote_path, encryption=backup_meta.encrypted, encoding=None
         )
@@ -520,7 +546,9 @@ class BackupLayout:
         """
         Download and return table create statements.
         """
-        remote_path = _table_metadata_path_tar(backup_meta.path, db_name)
+        remote_path = _table_metadata_path_tar(
+            self.get_backup_path(backup_meta.name), db_name
+        )
         if not self._storage_loader.path_exists(remote_path):
             logging.debug(
                 f"File {remote_path} doesn't exist, fallback to old metadata style"
@@ -589,25 +617,31 @@ class BackupLayout:
         """
         Download part data to the specified directory.
         """
+        source_part_name = part.deduplicated_part_name
+
         logging.debug(
-            'Downloading data part {} of "{}"."{}"',
+            'Downloading data part {} (stored as {}) of "{}"."{}"',
             part.name,
+            source_part_name,
             part.database,
             part.table,
         )
 
         os.makedirs(fs_part_path, exist_ok=True)
 
+        # part.link is the source backup name for deduplicated parts (or None).
+        source_backup_name = part.link or backup_meta.name
+        backup_path = self.get_backup_path(source_backup_name)
         remote_dir_path = self._get_escaped_if_exists(
             _part_path,
-            part.link or backup_meta.path,
+            backup_path,
             part.database,
             part.table,
-            part.name,
+            source_part_name,
         )
 
         if part.tarball:
-            remote_path = os.path.join(remote_dir_path, f"{part.name}.tar")
+            remote_path = os.path.join(remote_dir_path, f"{source_part_name}.tar")
             logging.debug("Downloading part tarball file: {}", remote_path)
             try:
                 self._storage_loader.download_files(
@@ -636,28 +670,33 @@ class BackupLayout:
                     msg = f"Failed to download part file {remote_path}"
                     raise StorageError(msg) from e
 
-    def check_data_part(self, backup_path: str, part: PartMetadata) -> bool:
+    def check_data_part(self, backup_name: str, part: PartMetadata) -> bool:
         """
         Check availability of part data in storage.
         """
+        source_part_name = part.deduplicated_part_name
+
         try:
+            # part.link is the source backup name for deduplicated parts (or None).
+            source_backup_name = part.link or backup_name
+            resolved_backup_path = self.get_backup_path(source_backup_name)
             remote_dir_path = self._get_escaped_if_exists(
                 _part_path,
-                part.link or backup_path,
+                resolved_backup_path,
                 part.database,
                 part.table,
-                part.name,
+                source_part_name,
             )
             remote_files = self._storage_loader.list_dir(remote_dir_path)
 
-            if remote_files == [f"{part.name}.tar"]:
+            if remote_files == [f"{source_part_name}.tar"]:
                 actual_size = self._storage_loader.get_file_size(
-                    os.path.join(remote_dir_path, f"{part.name}.tar")
+                    os.path.join(remote_dir_path, f"{source_part_name}.tar")
                 )
                 target_size = self._target_part_size(part, encrypted=part.encrypted)
                 if target_size != actual_size:
                     logging.warning(
-                        f"Part {part.name} files stored in tar, size not match {target_size} != {actual_size}"
+                        f"Part {source_part_name} files stored in tar, size not match {target_size} != {actual_size}"
                     )
                     return False
                 return True
@@ -685,22 +724,39 @@ class BackupLayout:
         backup_name: str,
         source_disk_name: str,
         compression: bool,
+        desired_tables: Sequence[TableMetadata] | Literal["all"],
     ) -> Sequence[str]:
+        backup_path = self.get_backup_path(backup_name)
         # Check if metadata is stored as 'disks/s3.tar.gz' for backwards compatibility
         old_style_remote_path = _disk_metadata_path(
-            self.get_backup_path(backup_name), None, None, source_disk_name, compression
+            backup_path, None, None, source_disk_name, compression
         )
         if self._storage_loader.path_exists(old_style_remote_path):
             return [old_style_remote_path]
-        return self._storage_loader.list_dir(
-            str(
-                os.path.join(
-                    self.get_backup_path(backup_name), "disks", source_disk_name
-                )
-            ),
-            recursive=True,
-            absolute=True,
+
+        disk_path = os.path.join(backup_path, "disks", source_disk_name)
+        existing_paths = self._storage_loader.list_dir(
+            disk_path, recursive=True, absolute=True
         )
+        if desired_tables == "all":
+            return existing_paths
+
+        remote_paths = {
+            _disk_metadata_path(
+                backup_path,
+                table.database,
+                table.name,
+                source_disk_name,
+                compression,
+            )
+            for table in desired_tables
+        }
+        needed_paths = remote_paths.intersection(existing_paths)
+        missing_paths = remote_paths.difference(existing_paths)
+        for path in missing_paths:
+            logging.warning(f"Missing path {path} on remote")
+
+        return list(needed_paths)
 
     @contextmanager
     def _get_cloud_storage_metadata_dst(
@@ -732,11 +788,13 @@ class BackupLayout:
             assert isinstance(path, str)
             return os.path.exists(path)
 
+    # pylint: disable=too-many-positional-arguments
     def download_cloud_storage_metadata(
         self,
         backup_meta: BackupMetadata,
         disk: Disk,
         source_disk_name: str,
+        desired_tables: Sequence[TableMetadata] | Literal["all"],
         file_path: Optional[str] = None,
     ) -> None:
         """
@@ -747,7 +805,10 @@ class BackupLayout:
         compression = backup_meta.cloud_storage.compressed
         encryption = backup_meta.cloud_storage.encrypted
         metadata_remote_paths = self._get_cloud_storage_metadata_remote_paths(
-            backup_name, source_disk_name, compression
+            backup_name,
+            source_disk_name,
+            compression,
+            desired_tables,
         )
 
         with self._get_cloud_storage_metadata_dst(backup_meta, disk, file_path) as dst:
@@ -797,16 +858,21 @@ class BackupLayout:
 
         deleting_files: List[str] = []
         for part in parts:
+            # part.link is the source backup name for deduplicated parts (or None).
+            source_backup_name = part.link or backup_meta.name
+            source_part_name = part.deduplicated_part_name
             part_path = self._get_escaped_if_exists(
                 _part_path,
-                part.link or backup_meta.path,
+                self.get_backup_path(source_backup_name),
                 part.database,
                 part.table,
-                part.name,
+                source_part_name,
             )
             logging.debug("Deleting data part {}", part_path)
             if part.tarball:
-                deleting_files.append(os.path.join(part_path, f"{part.name}.tar"))
+                deleting_files.append(
+                    os.path.join(part_path, f"{source_part_name}.tar")
+                )
             else:
                 deleting_files.extend(os.path.join(part_path, f) for f in part.files)
 

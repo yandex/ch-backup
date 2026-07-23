@@ -7,7 +7,7 @@ from behave import given, then, when
 from hamcrest import assert_that, contains_string, equal_to, has_length
 from tenacity import retry, stop_after_attempt, wait_fixed
 
-from tests.integration.modules.ch_backup import BackupManager
+from tests.integration.modules.ch_backup_cli import BackupManager
 from tests.integration.modules.clickhouse import ClickhouseClient
 from tests.integration.modules.docker import get_container, put_file
 from tests.integration.modules.steps import get_step_data
@@ -349,3 +349,19 @@ def step_create_multiple_tables(context, table_count, node):
     for i in range(table_count):
         table_schema = schema_template.format(table_number=i)
         ch_client.execute(table_schema)
+
+
+@given("all mutations on {node:w} are done")
+@when("all mutations on {node:w} are done")
+@retry(wait=wait_fixed(1), stop=stop_after_attempt(120))
+def step_wait_mutations_done(context, node):
+    """
+    Wait until all pending mutations in system.mutations are finished.
+    Polls system.mutations WHERE is_done = 0 until the result is empty.
+    """
+    ch_client = ClickhouseClient(context, node)
+    result = ch_client.get_response(
+        "SELECT count() FROM system.mutations WHERE is_done = 0 FORMAT TabSeparated"
+    )
+    pending = int(result.strip())
+    assert pending == 0, f"{pending} mutation(s) still pending on {node}"

@@ -1,0 +1,6 @@
+<yandex>
+    <!-- Intentionally empty: no storage_configuration section.
+         Used in integration tests to verify that ch-backup handles
+         a ClickHouse instance that relies solely on the built-in
+         default disk (no custom disks / S3 configuration). -->
+</yandex>

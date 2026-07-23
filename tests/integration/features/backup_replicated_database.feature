@@ -309,3 +309,101 @@ Feature: Backup and restore Replicated Database with synchronization
       | create_table_settings |
       |  SETTINGS database_replicated_allow_explicit_uuid=1  |
 
+
+  Scenario Outline: Readonly table in Replicated Database is not deleted on other replicas during restore
+    Given we have enabled shared zookeeper for clickhouse01
+    And we have enabled shared zookeeper for clickhouse02
+    And ClickHouse settings
+    """
+    allow_experimental_database_replicated: 1
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_replicated_db
+    ENGINE = Replicated('/clickhouse/databases/test_db', '{shard}', '{replica}');
+    """
+    And we have executed queries on clickhouse02
+    """
+    CREATE DATABASE test_replicated_db
+    ENGINE = Replicated('/clickhouse/databases/test_db', '{shard}', '{replica}');
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE TABLE test_replicated_db.test_table UUID '82aa76a0-45cd-42f2-b355-852cc8c9c0af' (id UInt32, name String)
+    ENGINE = ReplicatedMergeTree() ORDER BY id PARTITION BY id <create_table_settings>;
+
+    INSERT INTO test_replicated_db.test_table VALUES (1, 'one'), (2, 'two'), (3, 'three');
+    """
+    When we execute query on clickhouse02
+    """
+    SYSTEM SYNC DATABASE REPLICA test_replicated_db
+    """
+    When we execute query on clickhouse02
+    """
+    SYSTEM SYNC REPLICA test_replicated_db.test_table
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM test_replicated_db.test_table
+    """
+    Then we get response
+    """
+    3
+    """
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 3          | 0          |
+    When on zookeeper01 we delete /shared/clickhouse/tables/82aa76a0-45cd-42f2-b355-852cc8c9c0af/shard1/replicas/clickhouse02
+    When we restart clickhouse on clickhouse02
+    When we execute query on clickhouse02
+    """
+    SELECT is_readonly FROM system.replicas
+    WHERE database = 'test_replicated_db' AND table = 'test_table'
+    """
+    Then we get response
+    """
+    1
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    restore_tables_in_replicated_database: false
+    schema_only: true
+    """
+    When we execute query on clickhouse01
+    """
+    SELECT count() FROM test_replicated_db.test_table
+    """
+    Then we get response
+    """
+    3
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM system.tables
+    WHERE database = 'test_replicated_db' AND name = 'test_table'
+    """
+    Then we get response
+    """
+    1
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT is_readonly FROM system.replicas
+    WHERE database = 'test_replicated_db' AND table = 'test_table'
+    """
+    Then we get response
+    """
+    0
+    """
+
+    @require_version_23.8
+    @require_version_less_than_25.3
+    Examples:
+      | create_table_settings |
+      |    |
+
+    @require_version_25.3
+    Examples:
+      | create_table_settings |
+      |  SETTINGS database_replicated_allow_explicit_uuid=1  |

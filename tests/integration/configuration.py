@@ -15,7 +15,7 @@ def create():
     """
     # Docker network name. Also used as an instance and domain name.
     network_suffix = random.randint(0, 4096)
-    network_name = f"test_net_{network_suffix}"
+    network_name = f"test-net-{network_suffix}"
 
     s3 = {
         "container": "minio01",

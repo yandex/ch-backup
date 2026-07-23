@@ -27,6 +27,7 @@ from ch_backup.exceptions import (
 )
 from ch_backup.logic.access import AccessBackup
 from ch_backup.logic.database import DatabaseBackup
+from ch_backup.logic.database_sync import SyncStatus, wait_sync_replicated_databases
 from ch_backup.logic.named_collections import NamedCollectionsBackup
 from ch_backup.logic.workload_entities import WorkloadEntitiesBackup
 from ch_backup.logic.partial_restore import PartialRestoreFilter
@@ -160,6 +161,8 @@ class ClickhouseBackup:
 
         self._context.backup_meta = BackupMetadata(
             name=name,
+            # DEPRECATED: ``path`` is populated for backward compatibility
+            # with older ch-backup versions and is not used by new code.
             path=self._context.backup_layout.get_backup_path(name),
             labels=backup_labels,
             version=get_version(),
@@ -176,7 +179,7 @@ class ClickhouseBackup:
                 self._context.backup_meta
             )
             logging.debug(
-                'Starting backup "{}" for databases: {}',
+                'Starting backup "%s" for databases: %s',
                 self._context.backup_meta.name,
                 ", ".join(map(lambda db: db.name, databases)),
             )
@@ -279,9 +282,9 @@ class ClickhouseBackup:
             ]
             if missed_databases:
                 logging.critical(
-                    "Required databases {} were not found in backup metadata: {}",
+                    "Required databases %s were not found in backup metadata: %s",
                     ", ".join(missed_databases),
-                    self._context.backup_meta.path,
+                    self._context.backup_meta.name,
                 )
                 raise ClickhouseBackupError(
                     "Required databases were not found in backup metadata"
@@ -403,13 +406,13 @@ class ClickhouseBackup:
             # Use light metadata in backups iteration to avoid high memory usage.
             for backup in self._context.backup_layout.get_backups(use_light_meta=True):
                 if backup.name not in backup_names:
-                    logging.info("Deleting backup without metadata: {}", backup.name)
+                    logging.info("Deleting backup without metadata: %s", backup.name)
                     self._context.backup_layout.delete_backup(backup.name)
                     continue
 
                 if retain_count > 0:
                     logging.info(
-                        "Preserving backup per retain count policy: {}, state {}",
+                        "Preserving backup per retain count policy: %s, state %s",
                         backup.name,
                         backup.state,
                     )
@@ -420,7 +423,7 @@ class ClickhouseBackup:
 
                 if retain_time_limit and backup.start_time >= retain_time_limit:
                     logging.info(
-                        "Preserving backup per retain time policy: {}, state {}",
+                        "Preserving backup per retain time policy: %s, state %s",
                         backup.name,
                         backup.state,
                     )
@@ -472,7 +475,7 @@ class ClickhouseBackup:
             return False
 
         self._context.backup_layout.download_cloud_storage_metadata(
-            backup_meta, source_disk, disk_name, local_path
+            backup_meta, source_disk, disk_name, "all", local_path
         )
         self._context.backup_layout.wait()
 
@@ -482,7 +485,7 @@ class ClickhouseBackup:
         self, backup_light_meta: BackupMetadata, dedup_references: DedupReferences
     ) -> Tuple[Optional[str], Optional[str]]:
         logging.info(
-            "Deleting backup {}, state: {}",
+            "Deleting backup %s, state: %s",
             backup_light_meta.name,
             backup_light_meta.state,
         )
@@ -604,6 +607,13 @@ class ClickhouseBackup:
                 metadata_cleaner,
             )
 
+            # Wait for replicated databases to sync by tracking log_ptr in ZooKeeper.
+            # Always use keep_going=True here: FAILED is an expected intermediate state
+            # that will be retried after table restore below.
+            sync_results = wait_sync_replicated_databases(
+                self._context, restored_databases, keep_going=True
+            )
+
             # Restore tables and data stored on local disks.
             self._table_backup_manager.restore(
                 context=self._context,
@@ -619,9 +629,21 @@ class ClickhouseBackup:
                 restore_tables_in_replicated_database=restore_tables_in_replicated_database,
             )
 
-            self._database_backup_manager.wait_sync_replicated_databases(
-                self._context, restored_databases, keep_going
-            )
+            # Retry sync for databases that failed during initial sync.
+            # After table restore, broken tables should be fixed and DDL worker
+            # should be able to proceed.
+            failed_databases = [
+                db
+                for db in restored_databases
+                if sync_results.get(db.name) == SyncStatus.FAILED
+            ]
+            if failed_databases:
+                logging.info(
+                    f"Retrying sync for {len(failed_databases)} database(s) that failed: {', '.join(db.name for db in failed_databases)}"
+                )
+                wait_sync_replicated_databases(
+                    self._context, failed_databases, keep_going
+                )
 
             if sources.data and self._context.restore_context.has_failed_parts():
                 msg = "Some parts are failed to attach"

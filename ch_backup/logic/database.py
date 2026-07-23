@@ -1,22 +1,13 @@
 """
-Clickhouse backup logic for databases
+ClickHouse backup logic for databases.
 """
 
-import time
-from typing import Dict, Iterable, List, Optional, Sequence
+from __future__ import annotations
 
-from tenacity import (
-    retry,
-    retry_if_exception_type,
-    retry_if_not_exception_message,
-    stop_after_attempt,
-    stop_after_delay,
-    wait_random_exponential,
-)
+from typing import Dict, List, Optional, Sequence
 
 from ch_backup import logging
 from ch_backup.backup_context import BackupContext
-from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner
 from ch_backup.clickhouse.models import Database
 from ch_backup.clickhouse.schema import (
@@ -104,9 +95,14 @@ class DatabaseBackup(BackupManager):
             metadata_cleaner.clean_database_metadata(replicated_databases)
 
         logging.debug("Downloading database create statements")
+        databases_to_download = [
+            name
+            for name, db in databases_to_restore.items()
+            if not db.has_embedded_metadata()
+        ]
         create_statements = dict(
             context.backup_layout.get_database_create_statements(
-                context.backup_meta, list(databases_to_restore.keys())
+                context.backup_meta, databases_to_download
             )
         )
 
@@ -144,72 +140,3 @@ class DatabaseBackup(BackupManager):
 
         logging.info("All databases restored")
         return list(databases_to_restore.values())
-
-    @staticmethod
-    def wait_sync_replicated_databases(
-        context: BackupContext, databases: Iterable[Database], keep_going: bool
-    ) -> None:
-        """
-        Call SYNC DATABASE REPLICA for replicated databases.
-        """
-        if context.config["force_non_replicated"]:
-            logging.info("Skipping synchronizing replicated database replicas.")
-            return
-
-        logging.info("Synchronizing replicated database replicas")
-
-        # Common deadline for all databases
-        deadline = time.time() + context.ch_ctl_conf["sync_database_replica_timeout"]
-        max_retries = context.ch_ctl_conf["sync_database_replica_max_retries"]
-        max_backoff = context.ch_ctl_conf["sync_database_replica_max_backoff"]
-
-        for db in databases:
-            if db.is_replicated_db_engine():
-                try:
-                    logging.info(f"Synchronizing replicated database: {db.name}")
-                    DatabaseBackup._sync_replicated_database_with_retries(
-                        context, db.name, deadline, max_retries, max_backoff
-                    )
-                except Exception as e:
-                    if keep_going:
-                        logging.exception(
-                            f"Sync of replicated database {db.name} failed, skipping due to --keep-going flag. Reason {e}"
-                        )
-                    else:
-                        raise
-
-    @staticmethod
-    def _sync_replicated_database_with_retries(
-        context: BackupContext,
-        db_name: str,
-        deadline: float,
-        max_retries: int,
-        max_backoff: int,
-    ) -> None:
-        """
-        Synchronize Replicated Database replica with retries.
-        """
-        timeout_exceeded_exception_pattern = r".*Timeout exceeded.*"
-        time_left = max(deadline - time.time(), 1)
-
-        retry_decorator = retry(
-            retry=(
-                retry_if_exception_type(ClickhouseError)
-                & retry_if_not_exception_message(
-                    match=timeout_exceeded_exception_pattern
-                )
-            ),
-            stop=(stop_after_attempt(max_retries) | stop_after_delay(time_left)),
-            wait=wait_random_exponential(max=max_backoff),
-            reraise=True,
-        )
-
-        @retry_decorator
-        def execute_sync():
-            current_time_left = max(deadline - time.time(), 1)
-            settings = {"receive_timeout": current_time_left}
-            context.ch_ctl.system_sync_database_replica(
-                db_name, timeout=int(current_time_left), settings=settings
-            )
-
-        execute_sync()

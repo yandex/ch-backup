@@ -68,7 +68,7 @@ def _generate_compose_config(context: ContextT) -> dict:
 
     compose_conf: dict = {
         "networks": {
-            "test_net": {
+            "test-net": {
                 "name": network_name,
                 "external": True,
             },
@@ -139,7 +139,7 @@ def _generate_service_config(
         "domainname": network_name,
         "depends_on": dependency_list,
         # Networks. We use external anyway.
-        "networks": instance_config.get("networks", ["test_net"]),
+        "networks": instance_config.get("networks", ["test-net"]),
         "environment": instance_config.get("environment", []),
         # Nice container name with domain name part.
         # This results, however, in a strange rdns name:

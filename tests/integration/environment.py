@@ -87,28 +87,31 @@ def _update_feature_flags(context, feature_tags):
 def _check_tags(context, scenario):
     ch_version = context.conf["ch_version"]
 
-    require_version = _parse_version_tag(scenario.tags, "require_version")
-    if require_version:
-        if not version_ge(ch_version, require_version):
-            logging.info("Skipping scenario due to require_version mismatch")
-            scenario.mark_skipped()
-            return False
+    for tag in scenario.tags:
+        require_version = _parse_version_tag(tag, "require_version")
+        if require_version:
+            if not version_ge(ch_version, require_version):
+                logging.info("Skipping scenario due to require_version mismatch")
+                scenario.mark_skipped()
+                return False
 
-    require_lt_version = _parse_version_tag(scenario.tags, "require_version_less_than")
-    if require_lt_version:
-        if not version_lt(ch_version, require_lt_version):
-            logging.info("Skipping scenario due to require_version_less_than mismatch")
-            scenario.mark_skipped()
-            return False
+        require_lt_version = _parse_version_tag(tag, "require_version_less_than")
+        if require_lt_version:
+            if not version_lt(ch_version, require_lt_version):
+                logging.info(
+                    "Skipping scenario due to require_version_less_than mismatch"
+                )
+                scenario.mark_skipped()
+                return False
 
     return True
 
 
-def _parse_version_tag(tags, prefix):
+def _parse_version_tag(tag, prefix):
     tag_pattern = prefix + r"_(?P<version>[\d\.]+)"
-    for tag in tags:
-        match = re.fullmatch(tag_pattern, tag)
-        if match:
-            return match.group("version")
+
+    match = re.fullmatch(tag_pattern, tag)
+    if match:
+        return match.group("version")
 
     return None
