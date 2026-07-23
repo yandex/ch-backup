@@ -44,7 +44,13 @@ class BackupSources:
         if any([access, data, schema, udf, named_collections, workload_entities]):
             schema = data or schema
         else:
-            access, schema, udf, named_collections, workload_entities = True, True, True, True, True
+            access, schema, udf, named_collections, workload_entities = (
+                True,
+                True,
+                True,
+                True,
+                True,
+            )
             data = not schema_only
 
         return cls(
@@ -77,7 +83,13 @@ class BackupSources:
         if any([access, data, schema, udf, named_collections, workload_entities]):
             schema = data or schema
         else:
-            access, schema, udf, named_collections, workload_entities = False, True, True, True, True
+            access, schema, udf, named_collections, workload_entities = (
+                False,
+                True,
+                True,
+                True,
+                True,
+            )
             data = not schema_only
 
         return cls(

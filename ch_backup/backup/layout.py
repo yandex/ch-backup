@@ -321,7 +321,9 @@ class BackupLayout:
             self.get_backup_path(backup_name), entity_name
         )
         try:
-            logging.debug('Uploading workload entity create statement "{}"', entity_name)
+            logging.debug(
+                'Uploading workload entity create statement "{}"', entity_name
+            )
             self._storage_loader.upload_file(
                 local_path, remote_path=remote_path, encryption=True
             )
@@ -356,7 +358,7 @@ class BackupLayout:
                 str(e),
             )
             return None
-        
+
     def get_named_collection_create_statement(
         self, backup_meta: BackupMetadata, filename: str
     ) -> str:
@@ -368,7 +370,9 @@ class BackupLayout:
         )
         return self._storage_loader.download_data(remote_path, encryption=True)
 
-    def get_local_workload_entity_create_statement(self, entity_name: str) -> Optional[str]:
+    def get_local_workload_entity_create_statement(
+        self, entity_name: str
+    ) -> Optional[str]:
         """
         Read workload entity create statement from local file.
         """

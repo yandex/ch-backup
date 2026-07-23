@@ -29,10 +29,10 @@ from ch_backup.logic.access import AccessBackup
 from ch_backup.logic.database import DatabaseBackup
 from ch_backup.logic.database_sync import SyncStatus, wait_sync_replicated_databases
 from ch_backup.logic.named_collections import NamedCollectionsBackup
-from ch_backup.logic.workload_entities import WorkloadEntitiesBackup
 from ch_backup.logic.partial_restore import PartialRestoreFilter
 from ch_backup.logic.table import TableBackup
 from ch_backup.logic.udf import UDFBackup
+from ch_backup.logic.workload_entities import WorkloadEntitiesBackup
 from ch_backup.storage.async_pipeline.stages import EncryptStage
 from ch_backup.util import cached_property, now, utcnow
 from ch_backup.version import get_version
@@ -124,6 +124,7 @@ class ClickhouseBackup:
         """
         # pylint: disable=too-many-branches
         # pylint: disable=too-many-locals
+        # pylint: disable=too-many-statements
         backups_with_light_meta = self._context.backup_layout.get_backups(
             use_light_meta=True
         )
