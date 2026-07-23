@@ -11,7 +11,7 @@ from contextlib import contextmanager, suppress
 from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE  # type: ignore
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from ch_backup import logging
 from ch_backup.backup.metadata import TableMetadata
@@ -480,10 +480,10 @@ GET_NAMED_COLLECTIONS_QUERY_SQL = strip_query(
 
 GET_WORKLOAD_ENTITIES_QUERY_SQL = strip_query(
     """
-    SELECT name FROM (
-        SELECT name FROM system.workloads
+    SELECT name, type FROM (
+        SELECT name, 'workload' AS type FROM system.workloads
         UNION ALL
-        SELECT name FROM system.resources
+        SELECT name, 'resource' AS type FROM system.resources
     )
     ORDER BY name
     FORMAT JSON
@@ -1293,12 +1293,12 @@ class ClickhouseCTL:
         resp = self._ch_client.query(GET_NAMED_COLLECTIONS_QUERY_SQL)
         return [row["name"] for row in resp.get("data", [])]
 
-    def get_workload_entities_query(self) -> List[str]:
+    def get_workload_entities_query(self) -> List[Tuple[str, str]]:
         """
         Get workload entities (WORKLOADs and RESOURCEs) from system tables.
         """
         resp = self._ch_client.query(GET_WORKLOAD_ENTITIES_QUERY_SQL)
-        return [row["name"] for row in resp.get("data", [])]
+        return [(row["name"], row["type"]) for row in resp.get("data", [])]
 
     def decrypt_aes_ctr(
         self, data_hex: str, key_hex: str, key_size: int, iv_hex: str

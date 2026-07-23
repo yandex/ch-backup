@@ -6,7 +6,7 @@ import os
 import posixpath
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List
+from typing import List, Tuple
 
 from ch_backup import logging
 from ch_backup.backup_context import BackupContext
@@ -44,7 +44,9 @@ class WorkloadEntitiesBackup(BackupManager):
             context.ch_ctl_conf, context.ch_config
         )
 
-        workload_entities = context.ch_ctl.get_workload_entities_query()
+        workload_entities: List[Tuple[str, str]] = (
+            context.ch_ctl.get_workload_entities_query()
+        )
 
         if len(workload_entities) == 0:
             return
@@ -59,7 +61,7 @@ class WorkloadEntitiesBackup(BackupManager):
             tmp_path,
             context.backup_meta.name,
         ) as backup_tmp_path:
-            for entity_name in workload_entities:
+            for entity_name, _ in workload_entities:
                 context.backup_meta.add_workload_entity(entity_name)
 
             if we_config.is_local_storage():
@@ -80,9 +82,10 @@ class WorkloadEntitiesBackup(BackupManager):
 
             chown_dir_contents(user, group, backup_tmp_path)
 
-            for entity_name in workload_entities:
+            for entity_name, entity_type in workload_entities:
                 local_path = os.path.join(
-                    backup_tmp_path, f"{escape_metadata_file_name(entity_name)}.sql"
+                    backup_tmp_path,
+                    f"{entity_type}_{escape_metadata_file_name(entity_name)}.sql",
                 )
 
                 context.backup_layout.upload_workload_entity_ddl_from_file(
@@ -120,7 +123,9 @@ class WorkloadEntitiesBackup(BackupManager):
 
             if entity_name in we_on_clickhouse_list:
                 we_on_clickhouse_statement = (
-                    context.backup_layout.get_local_workload_entity_create_statement(entity_name)
+                    context.backup_layout.get_local_workload_entity_create_statement(
+                        entity_name
+                    )
                 )
                 if we_on_clickhouse_statement != statement:
                     # The entity already on ClickHouse is the one being dropped,
