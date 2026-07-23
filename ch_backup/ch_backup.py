@@ -29,6 +29,7 @@ from ch_backup.logic.access import AccessBackup
 from ch_backup.logic.database import DatabaseBackup
 from ch_backup.logic.database_sync import SyncStatus, wait_sync_replicated_databases
 from ch_backup.logic.named_collections import NamedCollectionsBackup
+from ch_backup.logic.workload_entities import WorkloadEntitiesBackup
 from ch_backup.logic.partial_restore import PartialRestoreFilter
 from ch_backup.logic.table import TableBackup
 from ch_backup.logic.udf import UDFBackup
@@ -62,6 +63,7 @@ class ClickhouseBackup:
         self._table_backup_manager = TableBackup()
         self._udf_backup_manager = UDFBackup()
         self._nc_backup_manager = NamedCollectionsBackup()
+        self._we_backup_manager = WorkloadEntitiesBackup()
 
     @property
     def config(self) -> Config:
@@ -188,6 +190,8 @@ class ClickhouseBackup:
                     self._udf_backup_manager.backup(self._context)
                 if sources.named_collections:
                     self._nc_backup_manager.backup(self._context)
+                if sources.workload_entities:
+                    self._we_backup_manager.backup(self._context)
                 if sources.schemas_included():
                     databases = self._database_backup_manager.backup(
                         self._context, databases
@@ -565,6 +569,10 @@ class ClickhouseBackup:
         if sources.named_collections:
             # Restore named collections
             self._nc_backup_manager.restore(self._context)
+
+        if sources.workload_entities:
+            # Restore workload entities
+            self._we_backup_manager.restore(self._context)
 
         if sources.schemas_included():
             databases: Dict[str, Database] = {
