@@ -4,16 +4,17 @@ Clickhouse backup logic for workload entities (WORKLOADs and RESOURCEs)
 
 import os
 import posixpath
+import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from ch_backup import logging
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.config import ClickhouseConfig
-from ch_backup.clickhouse.encryption import ClickHouseEncryption
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.util import (
+    WorkloadEntityType,
     chown_dir_contents,
     copy_directory_content,
     ensure_owned_directory,
@@ -21,6 +22,69 @@ from ch_backup.util import (
     temp_directory,
 )
 from ch_backup.zookeeper.zookeeper import ZookeeperCTL
+
+
+@dataclass
+class WorkloadEntity:
+    """
+    Class representing workload entity.
+    """
+
+    name: str
+    type: WorkloadEntityType
+    create_statement: str
+    parent: Optional[str] = None
+
+    def filename_on_disk(self) -> str:
+        """
+        Entities have 'workload_' or 'resource_' prefix in file name.
+        """
+        return f"{self.type.value}_{escape_metadata_file_name(self.name)}.sql"
+
+    @classmethod
+    def from_create_statement(cls, create_statement: str) -> "WorkloadEntity":
+        """
+        Create WorkloadEntity from a CREATE WORKLOAD / CREATE RESOURCE statement.
+
+        Supported forms:
+            CREATE RESOURCE <name> (...)[;]
+            CREATE WORKLOAD <name> [IN <parent>] [SETTINGS ...][;]
+        """
+        workload_re = re.compile(
+            r"^\s*CREATE\s+WORKLOAD\s+(\S+)"
+            r"(?:\s+IN\s+([^;\s]+))?"
+            r"(?:\s+SETTINGS\s+.*)?\s*;?$",
+            re.IGNORECASE | re.DOTALL,
+        )
+        resource_re = re.compile(
+            r"^\s*CREATE\s+RESOURCE\s+(\S+)\s*\(.*\)\s*;?$",
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        m = workload_re.match(create_statement)
+        if m:
+            name = m.group(1).strip("`")
+            parent = m.group(2).strip("`") if m.group(2) else None
+            return cls(
+                name=name,
+                type=WorkloadEntityType.WORKLOAD,
+                create_statement=create_statement,
+                parent=parent,
+            )
+
+        m = resource_re.match(create_statement)
+        if m:
+            name = m.group(1).strip("`")
+            return cls(
+                name=name,
+                type=WorkloadEntityType.RESOURCE,
+                create_statement=create_statement,
+                parent=None,
+            )
+
+        raise RuntimeError(
+            f"Cannot parse workload entity from statement: {create_statement!r}",
+        )
 
 
 class WorkloadEntitiesBackup(BackupManager):
@@ -40,11 +104,7 @@ class WorkloadEntitiesBackup(BackupManager):
             )
             return
 
-        we_config = WorkloadEntitiesStorageConfig.from_ch_config(
-            context.ch_ctl_conf, context.ch_config
-        )
-
-        workload_entities: List[Tuple[str, str]] = (
+        workload_entities: List[Tuple[str, WorkloadEntityType]] = (
             context.ch_ctl.get_workload_entities_query()
         )
 
@@ -64,20 +124,16 @@ class WorkloadEntitiesBackup(BackupManager):
             for entity_name, _ in workload_entities:
                 context.backup_meta.add_workload_entity(entity_name)
 
+            we_config = WorkloadEntitiesStorageConfig.from_ch_config(
+                context.ch_ctl_conf, context.ch_config
+            )
             if we_config.is_local_storage():
                 copy_directory_content(we_config.storage_path, backup_tmp_path)
             elif we_config.is_storage_zookeeper():
-                self._copy_directory_content_from_zookeeper(
+                self._write_entities_from_zookeeper_node(
                     context.zk_ctl,
                     we_config.storage_path,
                     backup_tmp_path,
-                )
-
-            if we_config.is_encrypted():
-                decryptor = ClickHouseEncryption(context.ch_ctl)
-                decryptor.decrypt_directory_content(
-                    backup_tmp_path,
-                    we_config.encryption_key_hex,
                 )
 
             chown_dir_contents(user, group, backup_tmp_path)
@@ -85,7 +141,9 @@ class WorkloadEntitiesBackup(BackupManager):
             for entity_name, entity_type in workload_entities:
                 local_path = os.path.join(
                     backup_tmp_path,
-                    f"{entity_type}_{escape_metadata_file_name(entity_name)}.sql",
+                    WorkloadEntity(
+                        name=entity_name, type=entity_type, create_statement=""
+                    ).filename_on_disk(),
                 )
 
                 context.backup_layout.upload_workload_entity_ddl_from_file(
@@ -106,104 +164,157 @@ class WorkloadEntitiesBackup(BackupManager):
             )
             return
 
-        we_list = self.get_workload_entities_list(context)
+        we_list = context.backup_meta.get_workload_entities()
         if not we_list:
             return
 
         logging.info("Restoring workload entities: {}", " ,".join(we_list))
 
-        we_on_clickhouse_list = context.ch_ctl.get_workload_entities_query()
+        we_on_clickhouse = dict(context.ch_ctl.get_workload_entities_query())
+
+        resources_from_backup: List[WorkloadEntity] = []
+        workloads_from_backup: List[WorkloadEntity] = []
 
         for entity_name in we_list:
-            logging.debug("Restoring workload entity {}", entity_name)
-
             statement = context.backup_layout.get_workload_entity_create_statement(
                 context.backup_meta, entity_name
             )
 
-            if entity_name in we_on_clickhouse_list:
-                we_on_clickhouse_statement = (
-                    context.backup_layout.get_local_workload_entity_create_statement(
-                        entity_name
-                    )
-                )
-                if we_on_clickhouse_statement != statement:
-                    # The entity already on ClickHouse is the one being dropped,
-                    # so derive its type from its own create statement when
-                    # available, falling back to the backup statement.
-                    self._drop_workload_entity(
-                        context, entity_name, we_on_clickhouse_statement or statement
-                    )
-                    context.ch_ctl.restore_workload_entity(statement)
+            entity = WorkloadEntity.from_create_statement(statement)
 
-            if entity_name not in we_on_clickhouse_list:
-                context.ch_ctl.restore_workload_entity(statement)
+            if entity.type == WorkloadEntityType.RESOURCE:
+                resources_from_backup.append(entity)
+            else:
+                workloads_from_backup.append(entity)
 
-            logging.debug("Workload entity {} restored", entity_name)
+        sorted_workloads = self.topologically_sort_workload_entities(
+            workloads_from_backup
+        )
+
+        for entity in [*resources_from_backup, *sorted_workloads]:
+            self._restore_entity_with_collision_check(context, entity, we_on_clickhouse)
 
         logging.info("All workload entities restored")
 
     @staticmethod
-    def get_workload_entities_list(context: BackupContext) -> List[str]:
-        """
-        Get workload entities list
-        """
-        return context.backup_meta.get_workload_entities()
-
-    @staticmethod
-    def _drop_workload_entity(
-        context: BackupContext, entity_name: str, create_statement: str
+    def _restore_entity_with_collision_check(
+        context: BackupContext,
+        entity: "WorkloadEntity",
+        existing: dict,
     ) -> None:
         """
-        Drop a workload entity, choosing WORKLOAD or RESOURCE based on its
-        create statement (`CREATE WORKLOAD ...` / `CREATE RESOURCE ...`).
+        Restore a single workload entity, handling collisions with existing entities on server.
 
-        Both patterns are handled explicitly so that an unknown or malformed
-        statement fails loudly instead of being silently misclassified as a
-        RESOURCE and issuing the wrong DROP.
+        - If name collision with different type: raise RuntimeError.
+        - If name collision with same type and same create statement: skip.
+        - If name collision with same type but different create statement: drop + warning + restore.
         """
-        normalized_statement = create_statement.lstrip().upper()
+        if entity.name in existing:
+            existing_type = existing[entity.name]
+            if existing_type != entity.type:
+                raise RuntimeError(
+                    f"Cannot restore workload entity '{entity.name}': "
+                    f"type mismatch (backup has {entity.type.value!r}, "
+                    f"server has {existing_type.value!r})"
+                )
 
-        if normalized_statement.startswith("CREATE WORKLOAD"):
-            context.ch_ctl.drop_workload(entity_name)
-        elif normalized_statement.startswith("CREATE RESOURCE"):
-            context.ch_ctl.drop_resource(entity_name)
-        else:
-            logging.error(
-                "Unsupported workload entity create statement for {}: {}",
-                entity_name,
-                create_statement,
+            existing_statement = (
+                context.backup_layout.get_local_workload_entity_create_statement(
+                    entity.name
+                )
             )
-            raise ValueError(
-                f"Unsupported workload entity create statement for '{entity_name}': "
-                f"{create_statement!r}"
-            )
+            if existing_statement == entity.create_statement:
+                logging.debug(
+                    "Workload entity {} already exists with identical create statement, skipping",
+                    entity.name,
+                )
+                return
 
-    def _copy_directory_content_from_zookeeper(
+            logging.warning(
+                "Workload entity {} already exists with a different create statement, "
+                "dropping and re-creating",
+                entity.name,
+            )
+            WorkloadEntitiesBackup._drop_workload_entity(context, entity)
+
+        context.ch_ctl.restore_workload_entity(entity.create_statement)
+
+    @staticmethod
+    def topologically_sort_workload_entities(
+        workload_entities: List[WorkloadEntity],
+    ) -> List[WorkloadEntity]:
+        """
+        Sort WORKLOAD entities create them in the right order.
+        """
+        workload_map = {entity.name: entity for entity in workload_entities}
+        result = []
+        visited = set()
+
+        def _walk_to_parents(entity: WorkloadEntity) -> None:
+            if entity.name in visited:
+                return
+            visited.add(entity.name)
+
+            parent = entity.parent
+            if parent is not None:
+                if parent not in workload_map:
+                    raise RuntimeError(
+                        f"Parent {parent} for workload {entity.name} doesn't exist in backup"
+                    )
+                _walk_to_parents(workload_map[parent])
+
+            result.append(entity)
+
+        for workload in workload_entities:
+            _walk_to_parents(workload)
+
+        return result
+
+    @staticmethod
+    def _drop_workload_entity(context: BackupContext, entity: "WorkloadEntity") -> None:
+        """
+        Drop a workload entity using its type to choose the correct DROP statement.
+        """
+        if entity.type == WorkloadEntityType.WORKLOAD:
+            context.ch_ctl.drop_workload(entity.name)
+        elif entity.type == WorkloadEntityType.RESOURCE:
+            context.ch_ctl.drop_resource(entity.name)
+
+    def _write_entities_from_zookeeper_node(
         self,
         zk_ctl: ZookeeperCTL,
-        from_path_dir: str,
+        from_path: str,
         to_path_dir: str,
     ) -> None:
         """
-        Copy all files from zookeeper directory to destination.
+        All entities are stored in a single node. Read them and write to separate files to match local storage layout.
         """
-        if posixpath.isabs(from_path_dir):
-            from_path_dir = from_path_dir[1:]
+        if posixpath.isabs(from_path):
+            from_path = from_path[1:]
 
         with zk_ctl.zk_client as client:
-            target_dir = posixpath.normpath(
-                posixpath.join(zk_ctl.zk_root_path, from_path_dir)
+            from_path = posixpath.normpath(
+                posixpath.join(zk_ctl.zk_root_path, from_path)
             )
-            children_names = client.get_children(path=target_dir)
 
-            for child_name in children_names:
-                subpath_from = posixpath.join(target_dir, child_name)
-                child_data, _ = client.get(subpath_from)
-                subpath_to = os.path.join(to_path_dir, child_name)
+            if not client.exists(from_path):
+                return
+
+            # Layout example:
+            # CREATE RESOURCE s3_write (WRITE DISK s3);
+            # CREATE RESOURCE s3_read (READ DISK s3);
+            # CREATE WORKLOAD `all` SETTINGS max_bytes_per_second = 2147483648;
+            we_create_statements_binary, _ = client.get(from_path)
+            we_create_statements: List[str] = we_create_statements_binary.decode(
+                "utf-8"
+            ).splitlines()
+
+            for statement in we_create_statements:
+                entity = WorkloadEntity.from_create_statement(statement)
+                subpath_to = os.path.join(to_path_dir, entity.filename_on_disk())
                 if not os.path.exists(subpath_to):
-                    with open(subpath_to, "xb") as f:
-                        f.write(child_data)
+                    with open(subpath_to, "w", encoding="utf-8") as f:
+                        f.write(statement)
 
 
 @dataclass
@@ -218,40 +329,22 @@ class WorkloadEntitiesStorageConfig:
         """
 
         LOCAL = "local"
-        LOCAL_ENCRYPTED = "local_encrypted"
         ZOOKEEPER = "zookeeper"
-        ZOOKEEPER_ENCRYPTED = "zookeeper_encrypted"
 
     storage_type: StorageType = field(default=StorageType.LOCAL)
     storage_path: str = field(default="/")
-    encryption_key_hex: str = field(default="")
 
     def is_local_storage(self) -> bool:
         """
         Determines if config using local filesystem for storage.
         """
-        return self.storage_type in (
-            self.StorageType.LOCAL,
-            self.StorageType.LOCAL_ENCRYPTED,
-        )
+        return self.storage_type == self.StorageType.LOCAL
 
     def is_storage_zookeeper(self) -> bool:
         """
         Determines if config using zookeeper for storage.
         """
-        return self.storage_type in (
-            self.StorageType.ZOOKEEPER,
-            self.StorageType.ZOOKEEPER_ENCRYPTED,
-        )
-
-    def is_encrypted(self) -> bool:
-        """
-        Determines if config using encryption.
-        """
-        return self.storage_type in (
-            self.StorageType.LOCAL_ENCRYPTED,
-            self.StorageType.ZOOKEEPER_ENCRYPTED,
-        )
+        return self.storage_type == self.StorageType.ZOOKEEPER
 
     @classmethod
     def from_ch_config(
@@ -260,27 +353,13 @@ class WorkloadEntitiesStorageConfig:
         """
         Create WorkloadEntitiesStorageConfig from ClickhouseConfig.
         """
-        we_config = ch_config.config.get("workload_entity_storage")
-        if not we_config:
-            storage_path = ch_backup_config.get("workload_path")
-
-            assert storage_path, "workload_path missing from ch-backup config"
-
-            return WorkloadEntitiesStorageConfig(storage_path=storage_path)
-
-        storage_type_from_config = we_config.get("type")
-        storage_path_from_config = we_config.get("path")
-        encryption_key_hex_from_config = we_config.get("key_hex")
-
-        assert (
-            storage_path_from_config
-        ), "path missing from workload_entity_storage config"
-
-        storage_type = WorkloadEntitiesStorageConfig.StorageType.LOCAL
-        storage_path = storage_path_from_config
-        encryption_key_hex = encryption_key_hex_from_config
-
-        if storage_type_from_config:
-            storage_type = cls.StorageType(storage_type_from_config)
-
-        return cls(storage_type, storage_path, encryption_key_hex)
+        we_config = ch_config.config.get("workload_zookeeper_path")
+        if we_config:
+            return cls(storage_path=we_config, storage_type=cls.StorageType.ZOOKEEPER)
+        we_config = ch_backup_config.get("workload_path")
+        if we_config:
+            return cls(storage_path=we_config, storage_type=cls.StorageType.LOCAL)
+        return cls(
+            storage_path=ch_backup_config.get("workload_path", ""),
+            storage_type=cls.StorageType.LOCAL,
+        )

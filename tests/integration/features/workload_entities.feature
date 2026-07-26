@@ -8,113 +8,68 @@ Feature: Workload entities (WORKLOADs and RESOURCEs) support
     And a working clickhouse on clickhouse02
 
   @require_version_24.11
-  Scenario: Check RESOURCE restore
-    Given we have executed queries on clickhouse01
+  Scenario Outline: Check WORKLOAD and RESOURCE restore with hierarchy: <name>
+    Given we replace config file no_storage.xml in favor of <backup_storage_config_file> on clickhouse01 with restart
+    And we have executed queries on clickhouse01
     """
-    CREATE RESOURCE test_resource (WRITE DISK disk_s3, READ DISK disk_s3);
+    CREATE RESOURCE s3_read (READ DISK s3);
+    CREATE RESOURCE s3_write (WRITE DISK s3);
+    CREATE WORKLOAD all SETTINGS max_bytes_per_second = 2147483648;
+    CREATE WORKLOAD user IN all SETTINGS weight = 9;
+    CREATE WORKLOAD system IN all;
+    CREATE WORKLOAD development IN user;
+    CREATE WORKLOAD production IN user SETTINGS weight = 3;
     """
     When we create clickhouse01 clickhouse backup
     When we restore clickhouse backup #0 to clickhouse02
     When we execute query on clickhouse02
     """
-    SELECT name FROM system.resources WHERE name = 'test_resource' LIMIT 1;
+    SELECT count() FROM system.workloads WHERE name in ('all','user','system', 'development', 'production');
     """
     Then we get response
     """
-    test_resource
-    """
-
-  @require_version_24.11
-  Scenario: Check WORKLOAD restore
-    Given we have executed queries on clickhouse01
-    """
-    CREATE RESOURCE test_io_write (WRITE DISK disk_s3);
-    CREATE RESOURCE test_io_read (READ DISK disk_s3);
-    CREATE WORKLOAD test_workload SETTINGS max_requests = 100;
-    """
-    When we create clickhouse01 clickhouse backup
-    When we restore clickhouse backup #0 to clickhouse02
-    When we execute query on clickhouse02
-    """
-    SELECT name FROM system.workloads WHERE name = 'test_workload' LIMIT 1;
-    """
-    Then we get response
-    """
-    test_workload
-    """
-
-  @require_version_24.11
-  Scenario: Check workload entity restore with same name
-    Given we have executed queries on clickhouse01
-    """
-    CREATE RESOURCE test_resource (WRITE DISK disk_s3);
-    """
-    Given we have executed queries on clickhouse02
-    """
-    CREATE RESOURCE test_resource (READ DISK disk_s3);
-    """
-    When we create clickhouse01 clickhouse backup
-    When we restore clickhouse backup #0 to clickhouse02
-    When we execute query on clickhouse02
-    """
-    SELECT create_query FROM system.resources WHERE name = 'test_resource' LIMIT 1;
-    """
-    Then we get response contains
-    """
-    WRITE DISK disk_s3
-    """
-
-  @require_version_24.11
-  Scenario: Check workload entities restore-schema
-    Given we have executed queries on clickhouse01
-    """
-    CREATE RESOURCE test_resource (WRITE DISK disk_s3);
-    CREATE WORKLOAD test_workload SETTINGS max_requests = 100;
-    """
-    When we create clickhouse01 clickhouse backup
-    """
-    schema_only: true
-    """
-    When we restore clickhouse backup #0 to clickhouse02
-    """
-    schema_only: true
+    5
     """
     When we execute query on clickhouse02
     """
-    SELECT count() FROM (
-        SELECT name FROM system.resources WHERE name = 'test_resource'
-        UNION ALL
-        SELECT name FROM system.workloads WHERE name = 'test_workload'
-    );
+    SELECT count() FROM system.resources WHERE name in ('s3_read','s3_write');
     """
     Then we get response
     """
     2
     """
+    Examples:
+        | name | backup_storage_config_file |
+        | from local storage | workload_entity_storage/no_storage.xml |
+        | from zookeeper storage | workload_entity_storage/zookeeper.xml |
 
   @require_version_24.11
-  Scenario: Check workload entities restore-schema with same name
+  Scenario: Restore when clickhouse02 already has conflicting resources
     Given we have executed queries on clickhouse01
     """
-    CREATE RESOURCE test_resource (WRITE DISK disk_s3);
-    """
-    Given we have executed queries on clickhouse02
-    """
-    CREATE RESOURCE test_resource (READ DISK disk_s3);
+    CREATE RESOURCE s3_read (READ DISK s3);
+    CREATE RESOURCE s3_write (WRITE DISK s3);
     """
     When we create clickhouse01 clickhouse backup
+    And we execute queries on clickhouse02
     """
-    schema_only: true
+    CREATE RESOURCE s3_read (READ DISK s3);
+    CREATE RESOURCE s3_write (READ DISK s3);
     """
     When we restore clickhouse backup #0 to clickhouse02
+    When we execute query on clickhouse02
     """
-    schema_only: true
+    SELECT create_query FROM system.resources WHERE name = 's3_read';
+    """
+    Then we get response
+    """
+    CREATE RESOURCE s3_read (READ DISK s3)
     """
     When we execute query on clickhouse02
     """
-    SELECT create_query FROM system.resources WHERE name = 'test_resource' LIMIT 1;
+    SELECT create_query FROM system.resources WHERE name = 's3_write';
     """
-    Then we get response contains
+    Then we get response
     """
-    WRITE DISK disk_s3
+    CREATE RESOURCE s3_write (WRITE DISK s3)
     """

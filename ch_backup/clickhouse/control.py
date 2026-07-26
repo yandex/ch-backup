@@ -22,6 +22,7 @@ from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.util import (
+    WorkloadEntityType,
     chown_dir_contents,
     chown_file,
     escape,
@@ -479,15 +480,15 @@ GET_NAMED_COLLECTIONS_QUERY_SQL = strip_query(
 )
 
 GET_WORKLOAD_ENTITIES_QUERY_SQL = strip_query(
-    """
+    f"""
     SELECT name, type FROM (
-        SELECT name, 'workload' AS type FROM system.workloads
+        SELECT name, '{WorkloadEntityType.WORKLOAD.value}' AS type FROM system.workloads
         UNION ALL
-        SELECT name, 'resource' AS type FROM system.resources
+        SELECT name, '{WorkloadEntityType.RESOURCE.value}' AS type FROM system.resources
     )
     ORDER BY name
     FORMAT JSON
-"""
+"""  # noqa: S608
 )
 
 DECRYPT_AES_CTR_QUERY_SQL = strip_query(
@@ -1293,12 +1294,15 @@ class ClickhouseCTL:
         resp = self._ch_client.query(GET_NAMED_COLLECTIONS_QUERY_SQL)
         return [row["name"] for row in resp.get("data", [])]
 
-    def get_workload_entities_query(self) -> List[Tuple[str, str]]:
+    def get_workload_entities_query(self) -> List[Tuple[str, WorkloadEntityType]]:
         """
         Get workload entities (WORKLOADs and RESOURCEs) from system tables.
         """
         resp = self._ch_client.query(GET_WORKLOAD_ENTITIES_QUERY_SQL)
-        return [(row["name"], row["type"]) for row in resp.get("data", [])]
+        return [
+            (row["name"], WorkloadEntityType(row["type"]))
+            for row in resp.get("data", [])
+        ]
 
     def decrypt_aes_ctr(
         self, data_hex: str, key_hex: str, key_size: int, iv_hex: str
