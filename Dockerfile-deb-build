@@ -2,14 +2,16 @@ ARG BASE_IMAGE=ubuntu:22.04
 FROM --platform=$TARGETPLATFORM $BASE_IMAGE
 
 ARG DEBIAN_FRONTEND=noninteractive
+ARG DEB_BUILD_MIRROR=""
 ARG USE_YANDEX_MIRROR=false
 
 RUN <<'EOF'
 set -eux
 
-if [ "${USE_YANDEX_MIRROR}" = "true" ]; then
-    # Install TLS and GPG tooling from the original Ubuntu repositories before
-    # switching to the HTTPS mirror.
+arch="$(dpkg --print-architecture)"
+
+if [ -n "${DEB_BUILD_MIRROR}" ] || [ "${USE_YANDEX_MIRROR}" = "true" ]; then
+    # Bootstrap TLS and GPG tooling from the original Ubuntu repositories.
     apt-get update
 
     apt-get install -y --no-install-recommends \
@@ -17,21 +19,37 @@ if [ "${USE_YANDEX_MIRROR}" = "true" ]; then
         dirmngr \
         gnupg
 
-    # Замена Ubuntu Ports на зеркало Yandex
-    if [ -f /etc/apt/sources.list ]; then
-        sed -i \
-            's|https\?://ports.ubuntu.com/ubuntu-ports|https://mirror.yandex.ru/ubuntu-ports|g' \
-            /etc/apt/sources.list
+fi
+
+if [ -n "${DEB_BUILD_MIRROR}" ]; then
+    mirror="${DEB_BUILD_MIRROR%/}"
+
+    if [ "${arch}" = "amd64" ]; then
+        source_pattern='https?://(archive\.ubuntu\.com/ubuntu|security\.ubuntu\.com/ubuntu)'
+    elif [ "${arch}" = "arm64" ]; then
+        source_pattern='https?://ports\.ubuntu\.com/ubuntu-ports'
+    else
+        echo "Error: Ubuntu mirror replacement is not configured for architecture ${arch}" >&2
+        exit 1
     fi
 
-    if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
-        sed -i \
-            's|https\?://ports.ubuntu.com/ubuntu-ports|https://mirror.yandex.ru/ubuntu-ports|g' \
-            /etc/apt/sources.list.d/ubuntu.sources
-    fi
+    echo "Using Ubuntu mirror ${mirror} for architecture ${arch}"
+
+    for sources_file in \
+        /etc/apt/sources.list \
+        /etc/apt/sources.list.d/ubuntu.sources
+    do
+        if [ -f "${sources_file}" ]; then
+            sed -Ei \
+                "s#${source_pattern}#${mirror}#g" \
+                "${sources_file}"
+        fi
+    done
 
     apt-get update
+fi
 
+if [ "${USE_YANDEX_MIRROR}" = "true" ]; then
     repo_gnupg="$(mktemp -d)"
 
     GNUPGHOME="${repo_gnupg}" gpg --batch \
@@ -43,8 +61,6 @@ if [ "${USE_YANDEX_MIRROR}" = "true" ]; then
         > /usr/share/keyrings/common.dist.yandex.gpg
 
     rm -rf "${repo_gnupg}"
-
-    arch="$(dpkg --print-architecture)"
 
     printf '%s\n' \
         'deb [signed-by=/usr/share/keyrings/common.dist.yandex.gpg] http://common.dist.yandex.ru/common stable/all/' \
