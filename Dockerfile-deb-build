@@ -13,8 +13,9 @@ RUN if [ "$USE_YANDEX_MIRROR" = "true" ]; then \
 RUN set -ex \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
+        yandex-internal-root-ca \
         # Debian packaging tools
-        build-essential \
+        build-essential \        
         debhelper \
         devscripts \
         fakeroot \
