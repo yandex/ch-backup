@@ -2,6 +2,13 @@ ARG BASE_IMAGE=ubuntu:22.04
 FROM --platform=$TARGETPLATFORM $BASE_IMAGE
 
 ARG DEBIAN_FRONTEND=noninteractive
+ARG USE_YANDEX_MIRROR=false
+
+RUN if [ "$USE_YANDEX_MIRROR" = "true" ]; then \
+      sed -i \
+        's|http://ports.ubuntu.com/ubuntu-ports|https://mirror.yandex.ru/ubuntu-ports|g' \
+        /etc/apt/sources.list; \
+    fi
 
 RUN set -ex \
     && apt-get update \
