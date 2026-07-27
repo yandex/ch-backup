@@ -4,18 +4,67 @@ FROM --platform=$TARGETPLATFORM $BASE_IMAGE
 ARG DEBIAN_FRONTEND=noninteractive
 ARG USE_YANDEX_MIRROR=false
 
-RUN if [ "$USE_YANDEX_MIRROR" = "true" ]; then \
-      sed -i \
-        's|http://ports.ubuntu.com/ubuntu-ports|https://mirror.yandex.ru/ubuntu-ports|g' \
-        /etc/apt/sources.list; \
+RUN <<'EOF'
+set -eux
+
+if [ "${USE_YANDEX_MIRROR}" = "true" ]; then
+    # Install TLS and GPG tooling from the original Ubuntu repositories before
+    # switching to the HTTPS mirror.
+    apt-get update
+
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        dirmngr \
+        gnupg
+
+    # Замена Ubuntu Ports на зеркало Yandex
+    if [ -f /etc/apt/sources.list ]; then
+        sed -i \
+            's|https\?://ports.ubuntu.com/ubuntu-ports|https://mirror.yandex.ru/ubuntu-ports|g' \
+            /etc/apt/sources.list
     fi
+
+    if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+        sed -i \
+            's|https\?://ports.ubuntu.com/ubuntu-ports|https://mirror.yandex.ru/ubuntu-ports|g' \
+            /etc/apt/sources.list.d/ubuntu.sources
+    fi
+
+    apt-get update
+
+    repo_gnupg="$(mktemp -d)"
+
+    GNUPGHOME="${repo_gnupg}" gpg --batch \
+        --keyserver hkps://keyserver.ubuntu.com \
+        --recv-keys 38D6BC95962097203B8E2E45FF5F4D0E27393420
+
+    GNUPGHOME="${repo_gnupg}" gpg --batch \
+        --export 38D6BC95962097203B8E2E45FF5F4D0E27393420 \
+        > /usr/share/keyrings/common.dist.yandex.gpg
+
+    rm -rf "${repo_gnupg}"
+
+    arch="$(dpkg --print-architecture)"
+
+    printf '%s\n' \
+        'deb [signed-by=/usr/share/keyrings/common.dist.yandex.gpg] http://common.dist.yandex.ru/common stable/all/' \
+        "deb [arch=${arch} signed-by=/usr/share/keyrings/common.dist.yandex.gpg] http://common.dist.yandex.ru/common stable/${arch}/" \
+        > /etc/apt/sources.list.d/yandex.list
+
+    apt-get update
+
+    apt-get install -y --no-install-recommends \
+        yandex-internal-root-ca
+
+    update-ca-certificates
+fi
+EOF
 
 RUN set -ex \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-        yandex-internal-root-ca \
         # Debian packaging tools
-        build-essential \        
+        build-essential \
         debhelper \
         devscripts \
         fakeroot \
