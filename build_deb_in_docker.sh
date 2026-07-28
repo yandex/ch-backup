@@ -15,6 +15,12 @@ if [[ -n "${DEB_BUILD_DISTRIBUTION}" ]]; then
     BUILD_ARGS+=(--build-arg BASE_IMAGE=${DEB_BUILD_DISTRIBUTION})
     BUILD_IMAGE="${BUILD_IMAGE}-${DEB_BUILD_DISTRIBUTION}"
 fi
+if [[ -n "${DEB_BUILD_MIRROR}" ]]; then
+    BUILD_ARGS+=(--build-arg "DEB_BUILD_MIRROR=${DEB_BUILD_MIRROR}")
+fi
+if [[ -n "${USE_YANDEX_MIRROR}" ]]; then
+    BUILD_ARGS+=(--build-arg "USE_YANDEX_MIRROR=${USE_YANDEX_MIRROR}")
+fi
 # Normalize docker image name
 BUILD_IMAGE=$(echo ${BUILD_IMAGE} | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g')
 

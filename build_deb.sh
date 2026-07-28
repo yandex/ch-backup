@@ -12,26 +12,45 @@ if (( COUNT > 1 )); then
     exit 1
 fi
 
+# Return the fingerprint of the first available secret key.
+get_secret_key_id() {
+    gpg --batch --list-secret-keys --with-colons "$@" 2>/dev/null \
+        | awk -F: '$1 == "fpr" {print $10; exit}'
+}
+
+# Use an isolated keyring for private keys supplied as data or as a file.
+setup_signing_keyring() {
+    SIGNING_GNUPGHOME=$(mktemp -d) || {
+        echo "Error: unable to create temporary GNUPGHOME" >&2
+        exit 1
+    }
+    chmod 700 "${SIGNING_GNUPGHOME}"
+    export GNUPGHOME="${SIGNING_GNUPGHOME}"
+    trap 'rm -rf -- "${SIGNING_GNUPGHOME}"' EXIT
+}
+
 # Import GPG signing private key if it is provided
 if [[ -n "${DEB_SIGN_KEY_ID}" ]]; then
-    # Check if gpg knows about this key id
-    if [[ $(gpg --list-keys ${DEB_SIGN_KEY_ID} 2>&1) =~ "No public key" ]]; then
-        echo "Error: No public key ${DEB_SIGN_KEY_ID}" >&2
+    # Check that gpg has the secret part of this key.
+    KEY_ID=$(get_secret_key_id "${DEB_SIGN_KEY_ID}")
+    if [[ -z ${KEY_ID} ]]; then
+        echo "Error: No secret key ${DEB_SIGN_KEY_ID}" >&2
         exit 1
-    else
-        SIGN_ARGS="-k${DEB_SIGN_KEY_ID}"
     fi
+    SIGN_ARGS="-k${KEY_ID}"
 elif [[ -n "${DEB_SIGN_KEY}" ]]; then
-    echo "${DEB_SIGN_KEY}" | gpg --import
-    KEY_ID=$(gpg --list-keys --with-colon | awk -F: '/^fpr/ {print $10;exit}')
+    setup_signing_keyring
+    printf '%s\n' "${DEB_SIGN_KEY}" | gpg --batch --import
+    KEY_ID=$(get_secret_key_id)
     if [[ -z ${KEY_ID} ]]; then
         echo "Error: Unable to import signing key from var DEB_SIGN_KEY" >&2
         exit 1
     fi
     SIGN_ARGS="-k${KEY_ID}"
 elif [[ -n "${DEB_SIGN_KEY_PATH}" ]]; then
-    gpg --import --with-colons "${DEB_SIGN_KEY_PATH}"
-    KEY_ID=$(gpg --list-keys --with-colon | awk -F: '/^fpr/ {print $10;exit}')
+    setup_signing_keyring
+    gpg --batch --import "${DEB_SIGN_KEY_PATH}"
+    KEY_ID=$(get_secret_key_id)
     if [[ -z ${KEY_ID} ]]; then
         echo "Error: Unable to import signing key from path: ${DEB_SIGN_KEY_PATH}" >&2
         exit 1
@@ -40,6 +59,10 @@ elif [[ -n "${DEB_SIGN_KEY_PATH}" ]]; then
 else
     # Do not sign debian package
     SIGN_ARGS="-us -uc"
+fi
+
+if [[ -n "${KEY_ID}" ]]; then
+    echo "Using GPG secret key: ${KEY_ID}"
 fi
 
 # Build package
