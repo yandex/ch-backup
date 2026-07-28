@@ -248,7 +248,7 @@ dev = [
     { name = "hypothesis", specifier = ">=6.131.9" },
     { name = "isort", specifier = ">=6.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
-    { name = "mypy", specifier = ">=1.10,<2.2" },
+    { name = "mypy", specifier = ">=1.10,<2.4" },
     { name = "mypy-boto3-s3", specifier = ">=1.38" },
     { name = "pyhamcrest", specifier = ">=2.1" },
     { name = "pylint", specifier = ">=3.0,<5.0" },

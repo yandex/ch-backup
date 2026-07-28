@@ -20,7 +20,10 @@ get_secret_key_id() {
 
 # Use an isolated keyring for private keys supplied as data or as a file.
 setup_signing_keyring() {
-    SIGNING_GNUPGHOME=$(mktemp -d)
+    SIGNING_GNUPGHOME=$(mktemp -d) || {
+        echo "Error: unable to create temporary GNUPGHOME" >&2
+        exit 1
+    }
     chmod 700 "${SIGNING_GNUPGHOME}"
     export GNUPGHOME="${SIGNING_GNUPGHOME}"
     trap 'rm -rf -- "${SIGNING_GNUPGHOME}"' EXIT
