@@ -25,6 +25,7 @@ DEFAULT_CONFIG = {
         "config_dir": "/etc/clickhouse-server/config.d/",
         "preprocessed_config_path": "/var/lib/clickhouse/preprocessed_configs/config.xml",
         "named_collections_path": "/var/lib/clickhouse/named_collections",
+        "workload_path": "/var/lib/clickhouse/workload",
         "host": socket.gethostname(),
         "protocol": "http",
         "port": None,

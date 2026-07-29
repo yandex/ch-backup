@@ -1,0 +1,3 @@
+<yandex>
+    <workload_zookeeper_path>/clickhouse/workload/definitions.sql</workload_zookeeper_path>
+</yandex>

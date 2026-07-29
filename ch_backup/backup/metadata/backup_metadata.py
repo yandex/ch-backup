@@ -80,6 +80,7 @@ class BackupMetadata:
         self._access_control = AccessControlMetadata()
         self._user_defined_functions: List[str] = []
         self._named_collections: List[str] = []
+        self._workload_entities: List[str] = []
 
     def __str__(self) -> str:
         return self.dump_json()
@@ -148,6 +149,7 @@ class BackupMetadata:
             "access_controls": self._access_control.dump() if not light else {},
             "user_defined_functions": self._user_defined_functions if not light else [],
             "named_collections": self._named_collections if not light else [],
+            "workload_entities": self._workload_entities if not light else [],
             "cloud_storage": self.cloud_storage.dump(),
             "meta": {
                 "name": self.name,
@@ -322,6 +324,9 @@ class BackupMetadata:
             backup._named_collections = data.get(
                 "named_collections", meta.get("named_collections", [])
             )
+            backup._workload_entities = data.get(
+                "workload_entities", meta.get("workload_entities", [])
+            )
 
             return backup
 
@@ -439,6 +444,19 @@ class BackupMetadata:
         Get named collections data.
         """
         return self._named_collections
+
+    def add_workload_entity(self, entity_name: str) -> None:
+        """
+        Add workload entity in metadata.
+        """
+        assert entity_name not in self._workload_entities
+        self._workload_entities.append(entity_name)
+
+    def get_workload_entities(self) -> List[str]:
+        """
+        Get workload entities data.
+        """
+        return self._workload_entities
 
     def find_part(
         self, db_name: str, table_name: str, part_name: str

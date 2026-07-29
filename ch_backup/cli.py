@@ -2,6 +2,7 @@
 """
 Command-line interface.
 """
+
 import json
 import os
 import signal
@@ -359,6 +360,9 @@ def show_command(
         "--udf", is_flag=True, help="Perform partial backup of user defined functions."
     ),
     option("--nc", is_flag=True, help="Perform partial backup of named collections."),
+    option(
+        "--workload", is_flag=True, help="Perform partial backup of workload entities."
+    ),
 )
 @option_group(
     "Timeout configuration",
@@ -400,6 +404,7 @@ def show_command(
 @constraint(mutually_exclusive, ["schema_only", "schema"])
 @constraint(mutually_exclusive, ["schema_only", "udf"])
 @constraint(mutually_exclusive, ["schema_only", "nc"])
+@constraint(mutually_exclusive, ["schema_only", "workload"])
 @constraint(mutually_exclusive, ["data", "schema"])
 # pylint: disable=too-many-positional-arguments
 def backup_command(
@@ -417,6 +422,7 @@ def backup_command(
     schema: bool,
     udf: bool,
     nc: bool,
+    workload: bool,
 ) -> None:
     """Perform backup."""
     # pylint: disable=too-many-arguments,too-many-locals
@@ -433,8 +439,10 @@ def backup_command(
         value = key_value.pop() if key_value else None
         labels[key] = value
 
-    sources = BackupSources.for_backup(access, data, schema, udf, nc, schema_only)
-    (name, msg) = ch_backup.backup(
+    sources = BackupSources.for_backup(
+        access, data, schema, udf, nc, workload, schema_only
+    )
+    name, msg = ch_backup.backup(
         sources, name, db_names=databases, tables=tables, force=force, labels=labels
     )
 
@@ -552,6 +560,9 @@ def backup_command(
         "Examples: db1.table1 | db1.table2,db2.* | db1.prefix*,db2.*suffix | db1.*",
     ),
     option("--nc", is_flag=True, help="Perform partial restore of named collections."),
+    option(
+        "--workload", is_flag=True, help="Perform partial restore of workload entities."
+    ),
 )
 @option(
     "--keep-going",
@@ -569,6 +580,7 @@ def backup_command(
 @constraint(mutually_exclusive, ["schema_only", "schema"])
 @constraint(mutually_exclusive, ["schema_only", "udf"])
 @constraint(mutually_exclusive, ["schema_only", "nc"])
+@constraint(mutually_exclusive, ["schema_only", "workload"])
 @constraint(mutually_exclusive, ["data", "schema"])
 # pylint: disable=too-many-positional-arguments
 def restore_command(
@@ -595,6 +607,7 @@ def restore_command(
     table_included_patterns: Optional[typing.List[str]] = None,
     table_excluded_patterns: Optional[typing.List[str]] = None,
     nc: bool = False,
+    workload: bool = False,
 ) -> None:
     """Restore data from a particular backup."""
     # pylint: disable=too-many-arguments,too-many-locals
@@ -610,7 +623,9 @@ def restore_command(
     if table_excluded_patterns:
         matcher = PartialRestoreFilter(inverted=True, patterns=table_excluded_patterns)
 
-    sources = BackupSources.for_restore(access, data, schema, udf, nc, schema_only)
+    sources = BackupSources.for_restore(
+        access, data, schema, udf, nc, workload, schema_only
+    )
     ch_backup.restore(
         sources=sources,
         backup_name=name,

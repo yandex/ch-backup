@@ -11,14 +11,20 @@ from contextlib import contextmanager, suppress
 from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE  # type: ignore
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from ch_backup import logging
 from ch_backup.backup.metadata import TableMetadata
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.calculators import calc_aligned_files_size
 from ch_backup.clickhouse.client import ClickhouseClient
-from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
+from ch_backup.clickhouse.models import (
+    Database,
+    Disk,
+    FrozenPart,
+    Table,
+    WorkloadEntityType,
+)
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.util import (
@@ -245,6 +251,18 @@ DROP_UDF_SQL = strip_query(
 DROP_NAMED_COLLECTION_SQL = strip_query(
     """
     DROP NAMED COLLECTION `{nc_name}`
+"""
+)
+
+DROP_WORKLOAD_SQL = strip_query(
+    """
+    DROP WORKLOAD IF EXISTS `{entity_name}`
+"""
+)
+
+DROP_RESOURCE_SQL = strip_query(
+    """
+    DROP RESOURCE IF EXISTS `{entity_name}`
 """
 )
 
@@ -477,6 +495,18 @@ GET_NAMED_COLLECTIONS_QUERY_SQL = strip_query(
     SELECT name FROM system.named_collections
     FORMAT JSON
 """
+)
+
+GET_WORKLOAD_ENTITIES_QUERY_SQL = strip_query(
+    f"""
+    SELECT name, type FROM (
+        SELECT name, '{WorkloadEntityType.WORKLOAD.value}' AS type FROM system.workloads
+        UNION ALL
+        SELECT name, '{WorkloadEntityType.RESOURCE.value}' AS type FROM system.resources
+    )
+    ORDER BY name
+    FORMAT JSON
+"""  # noqa: S608
 )
 
 DECRYPT_AES_CTR_QUERY_SQL = strip_query(
@@ -973,6 +1003,12 @@ class ClickhouseCTL:
         """
         self._ch_client.query(nc_statement)
 
+    def restore_workload_entity(self, entity_statement):
+        """
+        Restore workload entity (WORKLOAD or RESOURCE).
+        """
+        self._ch_client.query(entity_statement)
+
     def create_table(self, table: Table) -> None:
         """
         Restore table.
@@ -1032,6 +1068,18 @@ class ClickhouseCTL:
         Drop named collection.
         """
         self._ch_client.query(DROP_NAMED_COLLECTION_SQL.format(nc_name=escape(nc_name)))
+
+    def drop_workload(self, entity_name: str) -> None:
+        """
+        Drop WORKLOAD entity.
+        """
+        self._ch_client.query(DROP_WORKLOAD_SQL.format(entity_name=escape(entity_name)))
+
+    def drop_resource(self, entity_name: str) -> None:
+        """
+        Drop RESOURCE entity.
+        """
+        self._ch_client.query(DROP_RESOURCE_SQL.format(entity_name=escape(entity_name)))
 
     def system_drop_replica(self, replica: str, zookeeper_path: str) -> None:
         """
@@ -1263,6 +1311,16 @@ class ClickhouseCTL:
         """
         resp = self._ch_client.query(GET_NAMED_COLLECTIONS_QUERY_SQL)
         return [row["name"] for row in resp.get("data", [])]
+
+    def get_workload_entities_query(self) -> List[Tuple[str, WorkloadEntityType]]:
+        """
+        Get workload entities (WORKLOADs and RESOURCEs) from system tables.
+        """
+        resp = self._ch_client.query(GET_WORKLOAD_ENTITIES_QUERY_SQL)
+        return [
+            (row["name"], WorkloadEntityType(row["type"]))
+            for row in resp.get("data", [])
+        ]
 
     def decrypt_aes_ctr(
         self, data_hex: str, key_hex: str, key_size: int, iv_hex: str
