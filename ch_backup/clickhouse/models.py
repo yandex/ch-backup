@@ -4,6 +4,7 @@ ClickHouse resource models.
 
 import os
 import re
+from enum import Enum
 from types import SimpleNamespace
 
 # from typing import Any, List, Optional, Tuple
@@ -11,6 +12,15 @@ from typing import List, Optional, Tuple
 
 import ch_backup.logging
 from ch_backup.util import Slotted
+
+
+class WorkloadEntityType(Enum):
+    """
+    Workload scheduling entities types
+    """
+
+    RESOURCE = "resource"
+    WORKLOAD = "workload"
 
 
 class Disk(SimpleNamespace):

@@ -395,7 +395,9 @@ class BackupLayout:
         """
         Download workload entity create statement.
         """
-        remote_path = _workload_entities_data_path(backup_meta.path, filename)
+        remote_path = _workload_entities_data_path(
+            self.get_backup_path(backup_meta.name), filename
+        )
         return self._storage_loader.download_data(remote_path, encryption=True)
 
     def get_backup_names(self) -> Sequence[str]:

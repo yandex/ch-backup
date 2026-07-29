@@ -12,9 +12,9 @@ from typing import List, Optional, Tuple
 from ch_backup import logging
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.config import ClickhouseConfig
+from ch_backup.clickhouse.models import WorkloadEntityType
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.util import (
-    WorkloadEntityType,
     chown_dir_contents,
     copy_directory_content,
     ensure_owned_directory,
@@ -50,14 +50,15 @@ class WorkloadEntity:
             CREATE RESOURCE <name> (...)[;]
             CREATE WORKLOAD <name> [IN <parent>] [SETTINGS ...][;]
         """
+        _name = r"(`[^`]+`|[^\s;]+)"
         workload_re = re.compile(
-            r"^\s*CREATE\s+WORKLOAD\s+(\S+)"
-            r"(?:\s+IN\s+([^;\s]+))?"
+            rf"^\s*CREATE\s+WORKLOAD\s+{_name}"
+            rf"(?:\s+IN\s+{_name})?"
             r"(?:\s+SETTINGS\s+.*)?\s*;?$",
             re.IGNORECASE | re.DOTALL,
         )
         resource_re = re.compile(
-            r"^\s*CREATE\s+RESOURCE\s+(\S+)\s*\(.*\)\s*;?$",
+            rf"^\s*CREATE\s+RESOURCE\s+{_name}\s*\(.*\)\s*;?$",
             re.IGNORECASE | re.DOTALL,
         )
 
@@ -168,7 +169,7 @@ class WorkloadEntitiesBackup(BackupManager):
         if not we_list:
             return
 
-        logging.info("Restoring workload entities: {}", " ,".join(we_list))
+        logging.info("Restoring workload entities: {}", ", ".join(we_list))
 
         we_on_clickhouse = dict(context.ch_ctl.get_workload_entities_query())
 
@@ -356,7 +357,7 @@ class WorkloadEntitiesStorageConfig:
         we_config = ch_config.config.get("workload_zookeeper_path")
         if we_config:
             return cls(storage_path=we_config, storage_type=cls.StorageType.ZOOKEEPER)
-        we_config = ch_backup_config.get("workload_path")
+        we_config = ch_config.config.get("workload_path")
         if we_config:
             return cls(storage_path=we_config, storage_type=cls.StorageType.LOCAL)
         return cls(

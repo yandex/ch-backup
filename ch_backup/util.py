@@ -13,7 +13,6 @@ import time
 from contextlib import contextmanager
 from dataclasses import fields as data_fields
 from datetime import datetime, timedelta, timezone
-from enum import Enum
 from functools import partial
 from inspect import currentframe
 from itertools import islice
@@ -63,15 +62,6 @@ _HEX_UPPERCASE_TABLE = [
     "E",
     "F",
 ]
-
-
-class WorkloadEntityType(Enum):
-    """
-    Workload scheduling entities types
-    """
-
-    RESOURCE = "resource"
-    WORKLOAD = "workload"
 
 
 def chown_dir_contents(

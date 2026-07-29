@@ -18,11 +18,16 @@ from ch_backup.backup.metadata import TableMetadata
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.calculators import calc_aligned_files_size
 from ch_backup.clickhouse.client import ClickhouseClient
-from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
+from ch_backup.clickhouse.models import (
+    Database,
+    Disk,
+    FrozenPart,
+    Table,
+    WorkloadEntityType,
+)
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.util import (
-    WorkloadEntityType,
     chown_dir_contents,
     chown_file,
     escape,
@@ -251,13 +256,13 @@ DROP_NAMED_COLLECTION_SQL = strip_query(
 
 DROP_WORKLOAD_SQL = strip_query(
     """
-    DROP WORKLOAD `{entity_name}`
+    DROP WORKLOAD IF EXISTS `{entity_name}`
 """
 )
 
 DROP_RESOURCE_SQL = strip_query(
     """
-    DROP RESOURCE `{entity_name}`
+    DROP RESOURCE IF EXISTS `{entity_name}`
 """
 )
 
