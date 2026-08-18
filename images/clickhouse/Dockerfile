@@ -34,7 +34,7 @@ ENV LC_ALL en_US.UTF-8
 # setup ssh for debugging
 RUN echo "root:root" | chpasswd && \
     sed -i -e '/PermitRootLogin/ s/.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
-    mkdir /var/run/sshd -p
+    mkdir -p /var/run/sshd
 
 RUN curl -fsSL https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key -o /tmp/clickhouse-key.asc && \
     gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg /tmp/clickhouse-key.asc && \
