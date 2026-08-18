@@ -1,6 +1,6 @@
 ARG PYTHON_VERSION=3
 
-FROM python:${PYTHON_VERSION}-bullseye
+FROM python:${PYTHON_VERSION}-slim
 
 ARG CLICKHOUSE_VERSION=latest
 ARG DEV_MODE=false
@@ -14,6 +14,8 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone &
     apt-get install -y \
         apt-transport-https \
         ca-certificates \
+        curl \
+        gpg \
         tzdata \
         locales \
         python3-pip \
@@ -32,10 +34,11 @@ ENV LC_ALL en_US.UTF-8
 # setup ssh for debugging
 RUN echo "root:root" | chpasswd && \
     sed -i -e '/PermitRootLogin/ s/.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
-    mkdir /var/run/sshd
+    mkdir /var/run/sshd -p
 
-COPY staging/images/{{ instance_name }}/config/clickhouse-keyring.gpg /usr/share/keyrings/clickhouse-keyring.gpg
-RUN mkdir -p /etc/apt/sources.list.d && \
+RUN curl -fsSL https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key -o /tmp/clickhouse-key.asc && \
+    gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg /tmp/clickhouse-key.asc && \
+    mkdir -p /etc/apt/sources.list.d && \
     echo "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg] https://packages.clickhouse.com/deb stable main" | tee /etc/apt/sources.list.d/clickhouse.list && \
     apt-get update -qq && \
     if [ "${CLICKHOUSE_VERSION}" = "latest" ]; then \
