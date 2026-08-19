@@ -82,14 +82,19 @@ def _get_zookeeper_client(context: ContextT, node: str) -> KazooClient:
     zk_container = get_container(context, node)
     host, port = get_exposed_port(zk_container, 2181)
     zk_client = KazooClient(f"{host}:{port}")
-    zk_client.start()
+    try:
+        zk_client.start()
 
-    # Add credentials from ClickHouse <zookeeper>...</zookeeper> config
-    # to the session to access nodes created by ClickHouse
-    zk_config = context.conf.get("zk", {})
-    if zk_config.get("user") and zk_config.get("password"):
-        zk_client.add_auth(
-            "digest", f'{zk_config.get("user")}:{zk_config.get("password")}'
-        )
+        # Add credentials from ClickHouse <zookeeper>...</zookeeper> config
+        # to the session to access nodes created by ClickHouse
+        zk_config = context.conf.get("zk", {})
+        if zk_config.get("user") and zk_config.get("password"):
+            zk_client.add_auth(
+                "digest", f'{zk_config.get("user")}:{zk_config.get("password")}'
+            )
+    except Exception:
+        zk_client.stop()
+        zk_client.close()
+        raise
 
     return zk_client

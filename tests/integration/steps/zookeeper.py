@@ -4,6 +4,7 @@ Steps for interacting with ZooKeeper.
 
 from behave import given, step, then, when
 from hamcrest import assert_that, has_length
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 from tests.integration.modules.steps import get_step_data
 from tests.integration.modules.zookeeper import (
@@ -16,6 +17,7 @@ from tests.integration.modules.zookeeper import (
 
 
 @given("a working zookeeper on {node:w}")
+@retry(wait=wait_fixed(0.5), stop=stop_after_attempt(360))
 def step_wait_for_zookeeper_alive(context, node):
     initialize_zookeeper_roots(context, node)
 
