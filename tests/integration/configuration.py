@@ -107,6 +107,9 @@ def create():
                     "tcp": 2181,
                     "tls": 2281,
                 },
+                "args": {
+                    "CLICKHOUSE_VERSION": "$CLICKHOUSE_VERSION",
+                },
             },
         },
     }
