@@ -14,8 +14,6 @@ RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone &
     apt-get install -y \
         apt-transport-https \
         ca-certificates \
-        curl \
-        gpg \
         tzdata \
         locales \
         python3-pip \
@@ -36,9 +34,8 @@ RUN echo "root:root" | chpasswd && \
     sed -i -e '/PermitRootLogin/ s/.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
     mkdir -p /var/run/sshd
 
-RUN curl -fsSL https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key -o /tmp/clickhouse-key.asc && \
-    gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg /tmp/clickhouse-key.asc && \
-    mkdir -p /etc/apt/sources.list.d && \
+COPY staging/images/{{ instance_name }}/config/clickhouse-keyring.gpg /usr/share/keyrings/clickhouse-keyring.gpg
+RUN mkdir -p /etc/apt/sources.list.d && \
     echo "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg] https://packages.clickhouse.com/deb stable main" | tee /etc/apt/sources.list.d/clickhouse.list && \
     apt-get update -qq && \
     if [ "${CLICKHOUSE_VERSION}" = "latest" ]; then \
