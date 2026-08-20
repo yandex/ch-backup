@@ -1,6 +1,6 @@
 ARG PYTHON_VERSION=3
 
-FROM python:${PYTHON_VERSION}-bullseye
+FROM python:${PYTHON_VERSION}-slim
 
 ARG CLICKHOUSE_VERSION=latest
 ARG DEV_MODE=false
@@ -32,7 +32,7 @@ ENV LC_ALL en_US.UTF-8
 # setup ssh for debugging
 RUN echo "root:root" | chpasswd && \
     sed -i -e '/PermitRootLogin/ s/.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
-    mkdir /var/run/sshd
+    mkdir -p /var/run/sshd
 
 COPY staging/images/{{ instance_name }}/config/clickhouse-keyring.gpg /usr/share/keyrings/clickhouse-keyring.gpg
 RUN mkdir -p /etc/apt/sources.list.d && \

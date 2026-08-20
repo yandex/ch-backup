@@ -9,4 +9,4 @@ if TYPE_CHECKING:
     from mypy_boto3_s3.type_defs import ObjectIdentifierTypeDef  # noqa: F401
 else:
     # TODO: Use module level __getattr_() as fallback (PEP 562) in Python 3.7+
-    S3Client = Any
+    S3Client = Any  # pylint: disable=invalid-name

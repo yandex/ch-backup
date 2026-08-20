@@ -1276,7 +1276,7 @@ class ClickhouseCTL:
                     f"Ignoring FileNotFoundError for {path} during removing shadow"
                 )
 
-            shutil.rmtree(path, onerror=_onerror)
+            shutil.rmtree(path, onerror=_onerror)  # pylint: disable=W4903
 
             msg = "shutil.rmtree has done working"
             if os.path.exists(path):
