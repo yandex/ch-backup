@@ -45,9 +45,9 @@ def test_is_empty_patterns(patterns, db_name, table_name, included_result):
 
 
 @pytest.mark.parametrize(
-    ("database", "pattern_str", "db", "included_result"),
-    (["db1", "db1.table1", "db1", True], ["db2", "db2.table2", "some_db", False]),
+    ("pattern_str", "db", "included_result"),
+    (["db1.table1", "db1", True], ["db2.table2", "some_db", False]),
 )
-def test_related_to_db(database, pattern_str, db, included_result):
-    pattern = PartialRestorePattern(database, pattern_str)
+def test_related_to_db(pattern_str, db, included_result):
+    pattern = PartialRestorePattern.from_pattern(pattern_str)
     assert pattern.related_to_db(db) == included_result
