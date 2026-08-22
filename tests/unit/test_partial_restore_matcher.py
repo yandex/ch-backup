@@ -4,7 +4,7 @@ Unit tests partial restore matcher.
 
 import pytest
 
-from ch_backup.logic.partial_restore import PartialRestoreFilter
+from ch_backup.logic.partial_restore import PartialRestoreFilter, PartialRestorePattern
 
 
 @pytest.mark.parametrize(
@@ -30,3 +30,24 @@ def test_contains_table(patterns, db_name, table_name, included_result):
     assert pattern_matcher.accept_table(db_name, table_name) == included_result
     pattern_matcher_inverted = PartialRestoreFilter(patterns=patterns, inverted=True)
     assert pattern_matcher_inverted.accept_table(db_name, table_name) != included_result
+
+
+@pytest.mark.parametrize(
+    ("patterns", "db_name", "table_name", "included_result"),
+    (
+        [[], "db1", "table1", True],
+        [[], "db2", "table2", True],
+    ),
+)
+def test_is_empty_patterns(patterns, db_name, table_name, included_result):
+    pattern_matcher = PartialRestoreFilter(patterns=patterns, inverted=False)
+    assert pattern_matcher.accept_table(db_name, table_name) == included_result
+
+
+@pytest.mark.parametrize(
+    ("database", "pattern_str", "db", "included_result"),
+    (["db1", "db1.table1", "db1", True], ["db2", "db2.table2", "some_db", False]),
+)
+def test_related_to_db(database, pattern_str, db, included_result):
+    pattern = PartialRestorePattern(database, pattern_str)
+    assert pattern.related_to_db(db) == included_result
