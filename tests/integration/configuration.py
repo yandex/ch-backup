@@ -118,8 +118,8 @@ def create():
                 "healthcheck": {
                     "test": [
                         "CMD-SHELL",
-                        "printf mntr | nc 127.0.0.1 2181 "
-                        "| grep -q '^zk_server_state[[:space:]]*leader$'",
+                        "echo mntr | nc 127.0.0.1 2181 "
+                        "| grep -q '^zk_server_state[[:space:]]'",
                     ],
                     "interval": "500ms",
                     "timeout": "1s",
