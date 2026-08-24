@@ -51,7 +51,7 @@ def after_step(context, step):
     """
     Per-step cleanup function.
     """
-    if step.status == "failed":
+    if step.status in ("failed", "error"):
         save_logs(context)
         if context.config.userdata.getbool("debug"):
             pdb.post_mortem(step.exc_traceback)
