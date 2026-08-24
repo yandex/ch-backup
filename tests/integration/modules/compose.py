@@ -121,12 +121,12 @@ def _generate_service_config(
     for port in instance_config.get("expose", {}).values():
         ports_list.append(port)
 
-    dependency_list = []
-    for dependency in instance_config.get("depends_on", {}):
+    dependencies = {}
+    for dependency, condition in instance_config.get("depends_on", {}).items():
         for num in range(
             1, config["services"][dependency].get("docker_instances", 1) + 1
         ):
-            dependency_list.append(f"{dependency}{num:02d}")
+            dependencies[f"{dependency}{num:02d}"] = {"condition": condition}
 
     service = {
         "build": {
@@ -137,7 +137,7 @@ def _generate_service_config(
         "image": f"{instance_name}:{network_name}",
         "hostname": instance_name,
         "domainname": network_name,
-        "depends_on": dependency_list,
+        "depends_on": dependencies,
         # Networks. We use external anyway.
         "networks": instance_config.get("networks", ["test-net"]),
         "environment": instance_config.get("environment", []),
@@ -153,6 +153,9 @@ def _generate_service_config(
         "tmpfs": "/var/run",
         "external_links": instance_config.get("external_links", []),
     }
+
+    if "healthcheck" in instance_config:
+        service["healthcheck"] = instance_config["healthcheck"]
 
     return service
 

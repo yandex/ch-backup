@@ -72,7 +72,12 @@ def create():
                     "ssh": 22,
                 },
                 "docker_instances": 2,
-                "depends_on": ["minio", "proxy", "proxy-api", "zookeeper"],
+                "depends_on": {
+                    "minio": "service_started",
+                    "proxy": "service_started",
+                    "proxy-api": "service_started",
+                    "zookeeper": "service_healthy",
+                },
                 "external_links": [f'{s3["host"]}:minio', f'{zk["uri"]}:zookeeper'],
                 "args": {
                     "PYTHON_VERSION": ".".join(map(str, sys.version_info[:2])),
@@ -109,6 +114,15 @@ def create():
                 },
                 "args": {
                     "CLICKHOUSE_VERSION": "$CLICKHOUSE_VERSION",
+                },
+                "healthcheck": {
+                    "test": [
+                        "CMD-SHELL",
+                        "echo ruok | nc 127.0.0.1 2181 | grep -q imok",
+                    ],
+                    "interval": "500ms",
+                    "timeout": "1s",
+                    "retries": 60,
                 },
             },
         },
