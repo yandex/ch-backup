@@ -72,7 +72,12 @@ def create():
                     "ssh": 22,
                 },
                 "docker_instances": 2,
-                "depends_on": ["minio", "proxy", "proxy-api", "zookeeper"],
+                "depends_on": {
+                    "minio": "service_started",
+                    "proxy": "service_started",
+                    "proxy-api": "service_started",
+                    "zookeeper": "service_healthy",
+                },
                 "external_links": [f'{s3["host"]}:minio', f'{zk["uri"]}:zookeeper'],
                 "args": {
                     "PYTHON_VERSION": ".".join(map(str, sys.version_info[:2])),
@@ -106,6 +111,19 @@ def create():
                 "expose": {
                     "tcp": 2181,
                     "tls": 2281,
+                },
+                "args": {
+                    "CLICKHOUSE_VERSION": "$CLICKHOUSE_VERSION",
+                },
+                "healthcheck": {
+                    "test": [
+                        "CMD-SHELL",
+                        "echo mntr | nc 127.0.0.1 2181 "
+                        "| grep -q '^zk_server_state[[:space:]]'",
+                    ],
+                    "interval": "500ms",
+                    "timeout": "1s",
+                    "retries": 60,
                 },
             },
         },

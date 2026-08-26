@@ -1,0 +1,48 @@
+<clickhouse>
+    <logger>
+        <level>information</level>
+        <log>/var/log/clickhouse-keeper/clickhouse-keeper.log</log>
+        <errorlog>/var/log/clickhouse-keeper/clickhouse-keeper.err.log</errorlog>
+        <console>1</console>
+    </logger>
+
+    <listen_host>0.0.0.0</listen_host>
+    <max_connections>4096</max_connections>
+
+    <keeper_server>
+        <tcp_port>2181</tcp_port>
+        <tcp_port_secure>2281</tcp_port_secure>
+        <server_id>1</server_id>
+        <four_letter_word_allow_list>mntr</four_letter_word_allow_list>
+
+        <log_storage_path>/var/lib/clickhouse/coordination/log</log_storage_path>
+        <snapshot_storage_path>/var/lib/clickhouse/coordination/snapshots</snapshot_storage_path>
+
+        <coordination_settings>
+            <operation_timeout_ms>10000</operation_timeout_ms>
+            <min_session_timeout_ms>1000</min_session_timeout_ms>
+            <session_timeout_ms>100000</session_timeout_ms>
+        </coordination_settings>
+
+        <raft_configuration>
+            <server>
+                <id>1</id>
+                <hostname>localhost</hostname>
+                <port>9234</port>
+            </server>
+        </raft_configuration>
+    </keeper_server>
+
+    <openSSL>
+        <server>
+            <certificateFile>/etc/clickhouse-keeper/server.crt</certificateFile>
+            <privateKeyFile>/etc/clickhouse-keeper/server.key</privateKeyFile>
+            <caConfig>/etc/clickhouse-keeper/rootCACert.pem</caConfig>
+            <verificationMode>none</verificationMode>
+            <loadDefaultCAFile>false</loadDefaultCAFile>
+            <cacheSessions>true</cacheSessions>
+            <disableProtocols>sslv2,sslv3</disableProtocols>
+            <preferServerCiphers>true</preferServerCiphers>
+        </server>
+    </openSSL>
+</clickhouse>
