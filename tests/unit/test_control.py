@@ -1,6 +1,12 @@
+from unittest.mock import Mock
+
 import pytest
 
-from ch_backup.clickhouse.control import _format_string_array, _parse_version
+from ch_backup.clickhouse.control import (
+    ClickhouseCTL,
+    _format_string_array,
+    _parse_version,
+)
 from tests.unit.utils import parametrize
 
 
@@ -49,3 +55,14 @@ def test_format_string_array(value, result):
 )
 def test_parse_version(version: str, expected: list[int]) -> None:
     assert _parse_version(version) == expected
+
+
+def test_reload_users() -> None:
+    ch_ctl = object.__new__(ClickhouseCTL)
+    ch_client = Mock()
+    setattr(ch_ctl, "_ch_client", ch_client)
+    setattr(ch_ctl, "_timeout", 42)
+
+    ch_ctl.reload_users()
+
+    ch_client.query.assert_called_once_with("SYSTEM RELOAD USERS", timeout=42)
