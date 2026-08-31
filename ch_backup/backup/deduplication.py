@@ -5,7 +5,7 @@ Data part deduplication.
 from collections import defaultdict
 from copy import copy
 from datetime import timedelta
-from typing import Dict, List, Optional, Sequence, Set
+from typing import Optional, Sequence
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
@@ -79,11 +79,11 @@ class PartDedupInfo(Slotted):
         return f"('{self.database}','{self.table}','{self.name}','{self.backup_name}','{link_part_name}','{self.checksum}',{self.size},{files_array},{int(self.tarball)},'{self.disk_name}',{int(self.verified)}, {int(self.encrypted)})"
 
 
-TableDedupReferences = Set[str]
+TableDedupReferences = set[str]
 
-DatabaseDedupReferences = Dict[str, TableDedupReferences]
+DatabaseDedupReferences = dict[str, TableDedupReferences]
 
-DedupReferences = Dict[str, DatabaseDedupReferences]
+DedupReferences = dict[str, DatabaseDedupReferences]
 
 
 def _create_empty_dedup_references() -> DedupReferences:
@@ -96,7 +96,7 @@ def _create_empty_dedup_references() -> DedupReferences:
 def collect_dedup_info(
     context: BackupContext,
     databases: Sequence[Database],
-    backups_with_light_meta: List[BackupMetadata],
+    backups_with_light_meta: list[BackupMetadata],
 ) -> None:
     """
     Collect deduplication information for creating incremental backups.
@@ -147,7 +147,7 @@ class _DatabaseToHandle:
 
 def _populate_dedup_info(
     context: BackupContext,
-    dedup_backups_with_light_meta: List[BackupMetadata],
+    dedup_backups_with_light_meta: list[BackupMetadata],
     databases: Sequence[Database],
 ) -> None:
     # pylint: disable=too-many-locals,too-many-branches
@@ -269,8 +269,8 @@ def deduplicate_parts(
     context: BackupContext,
     database: str,
     table: str,
-    frozen_parts: Dict[str, FrozenPart],
-) -> Dict[str, PartMetadata]:
+    frozen_parts: dict[str, FrozenPart],
+) -> dict[str, PartMetadata]:
     """
     Deduplicate part if it's possible.
     """
@@ -279,7 +279,7 @@ def deduplicate_parts(
     existing_parts = context.ch_ctl.get_deduplication_info(
         database, table, frozen_parts
     )
-    deduplicated_parts: Dict[str, PartMetadata] = {}
+    deduplicated_parts: dict[str, PartMetadata] = {}
 
     logging.debug(
         "Deduplication lookup for {}.{}: {} frozen parts, {} matches found. First match: {}",
@@ -353,14 +353,14 @@ def deduplicate_parts(
 
 def collect_dedup_references_for_batch_backup_deletion(
     layout: BackupLayout,
-    retained_backups_light_meta: List[BackupMetadata],
-    deleting_backups_light_meta: List[BackupMetadata],
-) -> Dict[str, DedupReferences]:
+    retained_backups_light_meta: list[BackupMetadata],
+    deleting_backups_light_meta: list[BackupMetadata],
+) -> dict[str, DedupReferences]:
     """
     Collect deduplication information for deleting multiple backups. It contains names of data parts that should
     pe preserved during deletion.
     """
-    dedup_references: Dict[str, DedupReferences] = defaultdict(
+    dedup_references: dict[str, DedupReferences] = defaultdict(
         _create_empty_dedup_references
     )
 

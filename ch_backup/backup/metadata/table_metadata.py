@@ -3,7 +3,7 @@ Backup metadata for ClickHouse table.
 """
 
 from types import SimpleNamespace
-from typing import List, NamedTuple, Optional, Set
+from typing import NamedTuple, Optional
 
 from ch_backup.backup.metadata.part_metadata import PartMetadata
 
@@ -81,7 +81,7 @@ class TableMetadata(SimpleNamespace):
         """
         return self.raw_metadata["uuid"]
 
-    def get_parts(self, *, excluded_parts: Set[str] = None) -> List[PartMetadata]:
+    def get_parts(self, *, excluded_parts: set[str] = None) -> list[PartMetadata]:
         """
         Return data parts (sorted).
         """

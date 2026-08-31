@@ -14,11 +14,9 @@ from typing import (
     BinaryIO,
     Callable,
     Iterator,
-    List,
     Literal,
     Optional,
     Sequence,
-    Union,
 )
 from urllib.parse import quote
 
@@ -183,7 +181,7 @@ class BackupLayout:
             raise StorageError(msg) from e
 
     def upload_access_control_files(
-        self, local_path: str, backup_name: str, file_names: List[str]
+        self, local_path: str, backup_name: str, file_names: list[str]
     ) -> None:
         """
         Upload access control list.
@@ -447,7 +445,7 @@ class BackupLayout:
             )
             return self._load_metadata(path, False)
 
-    def get_backups(self, use_light_meta: bool = False) -> List[BackupMetadata]:
+    def get_backups(self, use_light_meta: bool = False) -> list[BackupMetadata]:
         """
         Return list of existing backups sorted by start_time in descent order.
         """
@@ -770,7 +768,7 @@ class BackupLayout:
         backup_meta: BackupMetadata,
         disk: Disk,
         file_path: Optional[str] = None,
-    ) -> Iterator[Union[str, BinaryIO]]:
+    ) -> Iterator[str | BinaryIO]:
         """
         Opening file only once is necessary when file is actually a named pipe.
         Reader may receive EOF when file is closed, but not all metadata is downloaded.
@@ -862,7 +860,7 @@ class BackupLayout:
         if not parts:
             return
 
-        deleting_files: List[str] = []
+        deleting_files: list[str] = []
         for part in parts:
             # part.link is the source backup name for deduplicated parts (or None).
             source_backup_name = part.link or backup_meta.name

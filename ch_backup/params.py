@@ -4,7 +4,6 @@ ParamType declarations.
 
 import json
 import re
-import typing
 from collections import defaultdict
 
 from click import ParamType
@@ -48,7 +47,7 @@ class List(ParamType):
             self.fail(msg, param, ctx)
 
 
-KeyValue = typing.Dict[str, str]
+KeyValue = dict[str, str]
 
 
 class KeyValueList(List):
@@ -81,7 +80,7 @@ class KeyValueList(List):
             self.fail(f'"{value}" is not a valid list of key-value', param, ctx)
 
 
-KeyValues = typing.Dict[str, typing.List[str]]
+KeyValues = dict[str, list[str]]
 
 
 class KeyValuesList(KeyValueList):

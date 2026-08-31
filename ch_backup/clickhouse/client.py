@@ -3,7 +3,7 @@ ClickHouse client.
 """
 
 from contextlib import contextmanager
-from typing import Any, Iterator, Optional, Union
+from typing import Any, Iterator
 
 import requests
 
@@ -56,7 +56,7 @@ class ClickhouseClient:
     # pylint: disable=too-many-positional-arguments
     def query(
         self,
-        query: Union[bytes, str],
+        query: bytes | str,
         post_data: dict = None,
         settings: dict = None,
         timeout: float = None,
@@ -102,7 +102,7 @@ class ClickhouseClient:
 
     @contextmanager
     def _get_session(
-        self, new_session: Optional[bool] = False
+        self, new_session: bool | None = False
     ) -> Iterator[requests.Session]:
         session = (
             self._create_session(self._config, self._settings)

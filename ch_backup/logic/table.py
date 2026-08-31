@@ -12,7 +12,7 @@ from itertools import chain
 from pathlib import Path
 from random import choices
 from string import ascii_lowercase
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Dict, Iterable, Optional, Sequence
 
 from ch_backup import logging
 from ch_backup.backup.deduplication import deduplicate_parts
@@ -60,9 +60,9 @@ class TableBackup(BackupManager):
         self,
         context: BackupContext,
         databases: Sequence[Database],
-        db_tables: Dict[str, list],
+        db_tables: dict[str, list],
         schema_only: bool,
-        multiprocessing_config: Dict,
+        multiprocessing_config: dict,
     ) -> None:
         """
         Backup tables metadata, MergeTree data and Cloud storage metadata.
@@ -108,13 +108,13 @@ class TableBackup(BackupManager):
         self,
         context: BackupContext,
         databases: Sequence[Database],
-        db_tables: Dict[str, list],
+        db_tables: dict[str, list],
     ) -> Dict[Table, TableMetadataChangeTime]:
         """
         Collect modification timestamps of table metadata files.
         """
         logging.debug("Collecting local metadata modification times")
-        res: Dict[Table, TableMetadataChangeTime] = {}
+        res: dict[Table, TableMetadataChangeTime] = {}
 
         for db in databases:
             if db.is_external_db_engine():
@@ -324,11 +324,11 @@ class TableBackup(BackupManager):
         context: BackupContext,
         databases: Dict[str, Database],
         schema_only: bool,
-        tables: List[TableMetadata],
-        metadata_cleaner: Optional[MetadataCleaner],
-        cloud_storage_source_bucket: Optional[str],
-        cloud_storage_source_path: Optional[str],
-        cloud_storage_source_endpoint: Optional[str],
+        tables: list[TableMetadata],
+        metadata_cleaner: MetadataCleaner | None,
+        cloud_storage_source_bucket: str | None,
+        cloud_storage_source_path: str | None,
+        cloud_storage_source_endpoint: str | None,
         skip_cloud_storage: bool,
         keep_going: bool,
         restore_tables_in_replicated_database: bool,
@@ -337,7 +337,7 @@ class TableBackup(BackupManager):
         Restore tables and MergeTree data.
         """
         logging.debug("Retrieving tables metadata")
-        tables_meta: List[TableMetadata] = list(
+        tables_meta: list[TableMetadata] = list(
             chain(
                 *[
                     context.backup_meta.get_tables(db.name)
@@ -624,11 +624,11 @@ class TableBackup(BackupManager):
     def _preprocess_tables_to_restore(
         self,
         context: BackupContext,
-        databases: Dict[str, Database],
-        tables: List[Table],
+        databases: dict[str, Database],
+        tables: list[Table],
         keep_going: bool,
         restore_tables_in_replicated_database: bool,
-        metadata_cleaner: Optional[MetadataCleaner],
+        metadata_cleaner: MetadataCleaner | None,
     ) -> tuple[list[Table], int]:
         # Prepare table schema to restore.
 
@@ -653,8 +653,8 @@ class TableBackup(BackupManager):
             )
         )
 
-        result: List[Table] = []
-        tables_to_clean_metadata: List[Table] = []
+        result: list[Table] = []
+        tables_to_clean_metadata: list[Table] = []
         preprocessing_failed_skipped = 0
         for table in tables:
             table_name_for_logs = f'"{table.database}"."{table.name}"'
@@ -769,9 +769,9 @@ class TableBackup(BackupManager):
     def _get_remaining_readonly_tables_after_fix_attempt(
         self,
         context: BackupContext,
-        tables: List[Table],
-        metadata_cleaner: Optional[MetadataCleaner],
-    ) -> Tuple[Set[Tuple[str, str]], Set[Tuple[str, str]]]:
+        tables: list[Table],
+        metadata_cleaner: MetadataCleaner | None,
+    ) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
         """
         Find replicated tables that are in readonly state and attempt to fix them in-place by:
         1. Cleaning ZooKeeper metadata via MetadataCleaner
@@ -823,7 +823,7 @@ class TableBackup(BackupManager):
             for replica in context.ch_ctl.get_replicas(readonly=True)
         }
 
-        already_cleaned: Set[Tuple[str, str]] = {
+        already_cleaned: set[tuple[str, str]] = {
             (table.database, table.name) for table in replicated_readonly_tables
         }
         for table in replicated_readonly_tables:
@@ -1000,7 +1000,7 @@ class TableBackup(BackupManager):
         databases: Dict[str, Database],
         tables: Iterable[Table],
         keep_going: bool = False,
-    ) -> List[Table]:
+    ) -> list[Table]:
         logging.info("Preparing tables for restoring")
 
         merge_tree_tables = []
@@ -1208,12 +1208,12 @@ class TableBackup(BackupManager):
     def _restore_table_objects(
         self,
         context: BackupContext,
-        databases: Dict[str, Database],
+        databases: dict[str, Database],
         tables: Iterable[Table],
         keep_going: bool = False,
-    ) -> List[Table]:
+    ) -> list[Table]:
         logging.info("Restoring tables")
-        errors: List[Tuple[Table, Exception]] = []
+        errors: list[tuple[Table, Exception]] = []
         unprocessed = deque(table for table in tables)
         while unprocessed:
             table = unprocessed.popleft()
@@ -1271,7 +1271,7 @@ class TableBackup(BackupManager):
     def _check_readonly_restored_tables(
         context: BackupContext,
         tables: Iterable[Table],
-        errors: List[Tuple[Table, Exception]],
+        errors: list[tuple[Table, Exception]],
     ) -> None:
         """
         Successful RESTORE REPLICA doesn't mean that replica becomes active.

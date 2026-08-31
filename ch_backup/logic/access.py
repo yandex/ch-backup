@@ -5,7 +5,7 @@ Clickhouse backup logic for access entities.
 import os
 import re
 import shutil
-from typing import Any, Dict, List, Sequence, Union
+from typing import Any, Sequence
 
 from kazoo.client import KazooClient
 from kazoo.exceptions import NoNodeError
@@ -176,7 +176,7 @@ class AccessBackup(BackupManager):
                     logging.debug(f"File {file_path} not found.")
 
     def _download_access_control_list(
-        self, context: BackupContext, restore_tmp_path: str, acl_ids: List[str]
+        self, context: BackupContext, restore_tmp_path: str, acl_ids: list[str]
     ) -> None:
         if context.backup_meta.access_control.backup_format == BackupStorageFormat.TAR:
             context.backup_layout.download_access_control(
@@ -233,7 +233,7 @@ class AccessBackup(BackupManager):
         self,
         restore_tmp_path: str,
         acl_list: Sequence[str],
-        acl_meta: Dict[str, Dict[str, Any]],
+        acl_meta: dict[str, dict[str, Any]],
         context: BackupContext,
     ) -> None:
         """
@@ -296,7 +296,7 @@ class AccessBackup(BackupManager):
         )
 
 
-def _get_access_control_files(objects: Sequence[str]) -> List[str]:
+def _get_access_control_files(objects: Sequence[str]) -> list[str]:
     """
     Return list of file to be backuped/restored.
     """
@@ -313,7 +313,7 @@ def _get_access_zk_path(context: BackupContext, zk_path: str) -> str:
     return "/" + os.path.join(*map(lambda x: x.lstrip("/"), paths))
 
 
-def _zk_upsert_data(zk: KazooClient, path: str, value: Union[str, bytes]) -> None:
+def _zk_upsert_data(zk: KazooClient, path: str, value: str | bytes) -> None:
     if isinstance(value, str):
         value = value.encode()
 

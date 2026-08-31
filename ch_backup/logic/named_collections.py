@@ -6,7 +6,6 @@ import os
 import posixpath
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List
 
 from ch_backup import logging
 from ch_backup.backup_context import BackupContext
@@ -134,7 +133,7 @@ class NamedCollectionsBackup(BackupManager):
         logging.info("All named collections restored")
 
     @staticmethod
-    def get_named_collections_list(context: BackupContext) -> List[str]:
+    def get_named_collections_list(context: BackupContext) -> list[str]:
         """
         Get named collections list
         """

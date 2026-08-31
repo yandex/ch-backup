@@ -1,7 +1,6 @@
 """Uploading part observer."""
 
 import time
-from typing import List
 
 from ch_backup.backup.metadata import PartMetadata
 from ch_backup.backup_context import BackupContext
@@ -18,7 +17,7 @@ class UploadPartObserver:
     def __init__(self, context: BackupContext) -> None:
         self._context = context
         self._last_time = time.time()
-        self._uploaded_parts: List[PartMetadata] = []
+        self._uploaded_parts: list[PartMetadata] = []
         self._interval = self._context.config["update_metadata_interval"]
 
     def __call__(self, part: PartMetadata) -> None:
@@ -33,7 +32,7 @@ class UploadPartObserver:
             self._last_time = now
 
     @property
-    def uploaded_parts(self) -> List[PartMetadata]:
+    def uploaded_parts(self) -> list[PartMetadata]:
         """
         Return uploaded parts metadata.
         """
