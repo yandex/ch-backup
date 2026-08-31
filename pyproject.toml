@@ -33,7 +33,7 @@ classifiers = [
 ]
 dependencies = [
     "boto3 >= 1.24, < 1.36",
-    "click >= 8.1, < 8.2",
+    "click >= 8.1, < 8.6",
     "cloup >= 3.0",
     "humanfriendly >= 10.0",
     "kazoo >= 2.10",
