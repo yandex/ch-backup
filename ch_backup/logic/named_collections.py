@@ -4,14 +4,18 @@ Clickhouse backup logic for named collections
 
 import os
 import posixpath
+import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List
+from pathlib import Path
+from typing import List, Optional
+
+from kazoo.exceptions import NoNodeError
 
 from ch_backup import logging
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.config import ClickhouseConfig
-from ch_backup.clickhouse.encryption import ClickHouseEncryption
+from ch_backup.clickhouse.encryption import ClickHouseEncryption, EncryptedFile
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.util import (
     chown_dir_contents,
@@ -110,6 +114,9 @@ class NamedCollectionsBackup(BackupManager):
         logging.info("Restoring named collections: {}", " ,".join(nc_list))
 
         nc_on_clickhouse_list = context.ch_ctl.get_named_collections_query()
+        nc_config = NamedCollectionsStorageConfig.from_ch_config(
+            context.ch_ctl_conf, context.ch_config
+        )
 
         for nc_name in nc_list:
             logging.debug("Restoring named collection {}", nc_name)
@@ -119,15 +126,27 @@ class NamedCollectionsBackup(BackupManager):
             )
 
             if nc_name in nc_on_clickhouse_list:
-                nc_on_clickhouse_statement = (
-                    context.backup_layout.get_local_nc_create_statement(nc_name)
+                nc_on_clickhouse_statement = self._get_existing_create_statement(
+                    context, nc_config, nc_name
                 )
-                if nc_on_clickhouse_statement != statement:
-                    context.ch_ctl.drop_named_collection(nc_name)
-                    context.ch_ctl.restore_named_collection(statement)
+                if self._normalize_create_statement(
+                    nc_on_clickhouse_statement
+                ) == self._normalize_create_statement(statement):
+                    logging.debug(
+                        "Named collection {} already exists with identical create "
+                        "statement, skipping",
+                        nc_name,
+                    )
+                    continue
 
-            if nc_name not in nc_on_clickhouse_list:
-                context.ch_ctl.restore_named_collection(statement)
+                logging.warning(
+                    "Named collection {} already exists with a different create "
+                    "statement, dropping and re-creating",
+                    nc_name,
+                )
+                context.ch_ctl.drop_named_collection(nc_name)
+
+            context.ch_ctl.restore_named_collection(self._add_if_not_exists(statement))
 
             logging.debug("Named collection {} restored", nc_name)
 
@@ -139,6 +158,95 @@ class NamedCollectionsBackup(BackupManager):
         Get named collections list
         """
         return context.backup_meta.get_named_collections()
+
+    @staticmethod
+    def _add_if_not_exists(statement: str) -> str:
+        """
+        Add IF NOT EXISTS to a CREATE NAMED COLLECTION statement.
+        """
+        if re.match(
+            r"^\s*CREATE\s+NAMED\s+COLLECTION\s+IF\s+NOT\s+EXISTS\b",
+            statement,
+            flags=re.IGNORECASE,
+        ):
+            return statement
+
+        result, replacements = re.subn(
+            r"^(\s*CREATE\s+NAMED\s+COLLECTION\s+)",
+            r"\1IF NOT EXISTS ",
+            statement,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+        if replacements == 0:
+            raise RuntimeError(
+                "Expected CREATE NAMED COLLECTION statement, got: " f"{statement!r}"
+            )
+        return result
+
+    @staticmethod
+    def _normalize_create_statement(statement: Optional[str]) -> Optional[str]:
+        """
+        Normalize non-semantic CREATE NAMED COLLECTION modifiers.
+
+        ClickHouse persists IF NOT EXISTS in the collection DDL, even though it
+        only changes CREATE behavior. Ignore it when comparing a collection with
+        the backup statement.
+        """
+        if statement is None:
+            return None
+        return re.sub(
+            r"^(\s*CREATE\s+NAMED\s+COLLECTION\s+)IF\s+NOT\s+EXISTS\s+",
+            r"\1",
+            statement,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+
+    @staticmethod
+    def _get_existing_create_statement(
+        context: BackupContext,
+        nc_config: "NamedCollectionsStorageConfig",
+        nc_name: str,
+    ) -> Optional[str]:
+        """
+        Read a collection DDL from its configured storage.
+        """
+        filename = f"{escape_metadata_file_name(nc_name)}.sql"
+
+        if nc_config.is_local_storage():
+            try:
+                data = Path(os.path.join(nc_config.storage_path, filename)).read_bytes()
+            except OSError as err:
+                logging.debug(
+                    'Cannot load a create statement of the named collection "{}": {}',
+                    nc_name,
+                    str(err),
+                )
+                return None
+        else:
+            storage_path = nc_config.storage_path.lstrip("/")
+            zk_path = posixpath.normpath(
+                posixpath.join(context.zk_ctl.zk_root_path, storage_path, filename)
+            )
+            try:
+                with context.zk_ctl.zk_client as client:
+                    data, _ = client.get(zk_path)
+            except NoNodeError:
+                logging.debug(
+                    'Cannot load a create statement of the named collection "{}": '
+                    "ZooKeeper node {} does not exist",
+                    nc_name,
+                    zk_path,
+                )
+                return None
+
+        if nc_config.is_encrypted():
+            return EncryptedFile(data).get_decrypted_data(
+                context.ch_ctl.decrypt_aes_ctr,
+                nc_config.encryption_key_hex,
+            )
+        return data.decode("utf-8")
 
     def _copy_directory_content_from_zookeeper(
         self,
