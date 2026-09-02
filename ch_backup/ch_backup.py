@@ -17,8 +17,9 @@ from ch_backup.backup.deduplication import (
 from ch_backup.backup.metadata import BackupMetadata, BackupState, TableMetadata
 from ch_backup.backup.sources import BackupSources
 from ch_backup.backup_context import BackupContext
+from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner, select_replica_drop
-from ch_backup.clickhouse.models import Database
+from ch_backup.clickhouse.models import Database, Table
 from ch_backup.config import Config
 from ch_backup.exceptions import (
     BackupNotFound,
@@ -324,6 +325,8 @@ class ClickhouseBackup:
         else:
             logging.debug("Picking all tables from backup.")
 
+        self._check_zookeeper_for_restore(sources, databases, tables)
+
         with self._context.locker(
             distributed=not sources.schema_only, operation="RESTORE"
         ):
@@ -340,6 +343,65 @@ class ClickhouseBackup:
                 keep_going=keep_going,
                 restore_tables_in_replicated_database=restore_tables_in_replicated_database,
             )
+
+    def _check_zookeeper_for_restore(
+        self,
+        sources: BackupSources,
+        databases: Sequence[str],
+        tables: Sequence[TableMetadata],
+    ) -> None:
+        """Fail early if selected schemas require unavailable ZooKeeper or Keeper."""
+        if not sources.schemas_included():
+            return
+
+        if self._context.config["force_non_replicated"]:
+            return
+
+        replicated_databases = [
+            database
+            for database in (
+                self._context.backup_meta.get_database(name) for name in databases
+            )
+            if database.is_replicated_db_engine()
+        ]
+
+        tables_to_restore = tables or [
+            table
+            for database in databases
+            for table in self._context.backup_meta.get_tables(database)
+        ]
+        replicated_tables = [
+            table
+            for table in tables_to_restore
+            if Table.engine_is_replicated(table.engine)
+        ]
+
+        if not replicated_databases and not replicated_tables:
+            return
+
+        try:
+            self._context.ch_ctl.check_zookeeper_available()
+        except ClickhouseError as error:
+            replicated_objects = []
+            if replicated_databases:
+                replicated_objects.append(
+                    "databases: "
+                    + ", ".join(
+                        f"`{database.name}`" for database in replicated_databases
+                    )
+                )
+            if replicated_tables:
+                replicated_objects.append(
+                    "tables: "
+                    + ", ".join(
+                        f"`{table.database}`.`{table.name}`"
+                        for table in replicated_tables
+                    )
+                )
+            raise ClickhouseBackupError(
+                f"Restore requires ZooKeeper or ClickHouse Keeper because we have replicated {', '.join(replicated_objects)}. "
+                f"Availability check through ClickHouse failed: {error}"
+            ) from error
 
     def delete(
         self, backup_name: str, purge_partial: bool
