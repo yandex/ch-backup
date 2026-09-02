@@ -1,6 +1,7 @@
 from unittest.mock import Mock
 
 import pytest
+import requests
 
 from ch_backup.backup.metadata import TableMetadata
 from ch_backup.backup.sources import BackupSources
@@ -79,11 +80,18 @@ def test_restore_checks_only_selected_tables() -> None:
     context.ch_ctl.check_zookeeper_available.assert_not_called()
 
 
-def test_restore_reports_failed_zookeeper_check() -> None:
+@pytest.mark.parametrize(
+    "error",
+    [
+        ClickhouseError("There is no Zookeeper configuration"),
+        requests.exceptions.ConnectionError("ClickHouse is unreachable"),
+        requests.exceptions.ReadTimeout("ClickHouse query timed out"),
+    ],
+)
+def test_restore_reports_failed_zookeeper_check(error: Exception) -> None:
     backup, context = _backup_with_context(
         database_engine="Replicated", table_engine="ReplicatedMergeTree"
     )
-    error = ClickhouseError("There is no Zookeeper configuration")
     context.ch_ctl.check_zookeeper_available.side_effect = error
 
     with pytest.raises(ClickhouseBackupError) as exc:
@@ -94,6 +102,6 @@ def test_restore_reports_failed_zookeeper_check() -> None:
     assert str(exc.value) == (
         "Restore requires ZooKeeper or ClickHouse Keeper because we have replicated "
         "databases: `db`, tables: `db`.`table`. Availability check through "
-        "ClickHouse failed: There is no Zookeeper configuration"
+        f"ClickHouse failed: {error}"
     )
     assert exc.value.__cause__ is error

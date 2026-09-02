@@ -8,6 +8,8 @@ from datetime import timedelta
 from enum import Enum
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
+import requests
+
 from ch_backup import logging
 from ch_backup.backup.deduplication import (
     DedupReferences,
@@ -381,7 +383,7 @@ class ClickhouseBackup:
 
         try:
             self._context.ch_ctl.check_zookeeper_available()
-        except ClickhouseError as error:
+        except (ClickhouseError, requests.exceptions.RequestException) as error:
             replicated_objects = []
             if replicated_databases:
                 replicated_objects.append(
