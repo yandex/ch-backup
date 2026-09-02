@@ -60,7 +60,6 @@ write_result = ""
                     </object_storage>
                   </disks>
                 </storage_configuration>
-                <history-file>/tmp/.disks-file-history</history-file>
               </clickhouse>
               """,
         },
@@ -106,7 +105,6 @@ write_result = ""
                     </object_storage>
                   </disks>
                 </storage_configuration>
-                <history-file>/tmp/.disks-file-history</history-file>
               </clickhouse>
               """,
         },
@@ -149,7 +147,6 @@ write_result = ""
                     </object_storage_source>
                   </disks>
                 </storage_configuration>
-                <history-file>/tmp/.disks-file-history</history-file>
               </clickhouse>
               """,
         },

@@ -124,17 +124,16 @@ class ClickHouseTemporaryDisks:
         return True
 
     def _render_disks_config(self, path, disks):
+        config: Dict[str, Any] = {
+            "clickhouse": {
+                "storage_configuration": {"disks": disks},
+            },
+        }
+        if path == CH_DISK_CONFIG_PATH:
+            config["clickhouse"]["history-file"] = CH_DISK_HISTORY_FILE_PATH
+
         with open(path, "w", encoding="utf-8") as f:
-            xmltodict.unparse(
-                {
-                    "clickhouse": {
-                        "storage_configuration": {"disks": disks},
-                        "history-file": CH_DISK_HISTORY_FILE_PATH,
-                    },
-                },
-                f,
-                pretty=True,
-            )
+            xmltodict.unparse(config, f, pretty=True)
 
     # pylint: disable=too-many-positional-arguments
     def _create_temporary_disk(
