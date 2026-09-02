@@ -172,6 +172,7 @@ class TableBackup(BackupManager):
                             table,
                             backup_name,
                             schema_only,
+                            change_times[table],
                             multiprocessing_config.get(
                                 "parallelize_freeze_in_clickhouse", False
                             ),
@@ -228,6 +229,7 @@ class TableBackup(BackupManager):
         table: Table,
         backup_name: str,
         schema_only: bool,
+        expected_change_time: TableMetadataChangeTime,
         parallelize_freeze_in_ch: bool,
         freeze_partition_threads: int,
         freeze_table_query_max_threads: int,
@@ -257,7 +259,12 @@ class TableBackup(BackupManager):
                     freeze_table_query_max_threads,
                 )
             except ClickhouseError:
-                if context.ch_ctl.does_table_exist(table.database, table.name):
+                metadata_is_unchanged = TableBackup._metadata_change_time_matches(
+                    table, expected_change_time
+                )
+                if metadata_is_unchanged and context.ch_ctl.does_table_exist(
+                    table.database, table.name
+                ):
                     logging.error(
                         'Cannot freeze table "{}"."{}"',
                         table.database,
@@ -266,10 +273,11 @@ class TableBackup(BackupManager):
                     raise
 
                 logging.warning(
-                    'Table "{}"."{}" was removed by a user during backup',
+                    'Skipping table backup for "{}"."{}". The metadata file was updated or removed while freezing it',
                     table.database,
                     table.name,
                 )
+                context.ch_ctl.remove_freezed_data(backup_name, table)
                 return None
 
         return table
@@ -463,8 +471,7 @@ class TableBackup(BackupManager):
         """
         Check if table metadata was updated.
         """
-        new_change_time = self._get_change_time(table.metadata_path)
-        if new_change_time is not None and change_times[table] == new_change_time:
+        if self._metadata_change_time_matches(table, change_times[table]):
             return True
 
         logging.warning(
@@ -474,6 +481,19 @@ class TableBackup(BackupManager):
         )
         context.ch_ctl.remove_freezed_data(backup_name, table)
         return False
+
+    @staticmethod
+    def _metadata_change_time_matches(
+        table: Table, expected_change_time: TableMetadataChangeTime
+    ) -> bool:
+        """
+        Check that the table name still refers to the metadata captured initially.
+        """
+        current_change_time = TableBackup._get_change_time(table.metadata_path)
+        return (
+            current_change_time is not None
+            and current_change_time == expected_change_time
+        )
 
     def _backup_frozen_table_data(
         self,

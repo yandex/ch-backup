@@ -3,6 +3,9 @@ Steps related to ch-backup command-line tool.
 """
 
 import json
+import time
+from concurrent.futures import Future, ThreadPoolExecutor
+from typing import Any, Dict
 
 from behave import given, then, when
 from hamcrest import (
@@ -15,9 +18,47 @@ from hamcrest import (
     starts_with,
 )
 
-from tests.integration.modules.ch_backup_cli import BackupManager
+from tests.integration.modules.ch_backup_cli import BackupId, BackupManager
 from tests.integration.modules.docker import get_container
 from tests.integration.modules.steps import get_step_data
+from tests.integration.modules.typing import ContextT
+
+CH_BACKUP_LOG_PATH = "/var/log/ch-backup/ch-backup.log"
+
+
+def _assert_backup_name(name: str, options: Dict[str, Any]) -> None:
+    name_regexp = options.get("name", "{uuid}")
+    name_regexp = name_regexp.replace("{timestamp}", "[0-9]{8}T[0-9]{6}")
+    name_regexp = name_regexp.replace("{uuid}", "[0-9a-f-]{36}")
+    assert_that(name, matches_regexp(name_regexp))
+
+
+def _wait_for_table_freeze(
+    future: Future[str],
+    context: ContextT,
+    node: str,
+    database: str,
+    table: str,
+    *,
+    timeout: float = 60,
+) -> None:
+    marker = f'Trying to freeze "{database}"."{table}"'
+    container = get_container(context, node)
+    deadline = time.monotonic() + timeout
+
+    while time.monotonic() < deadline:
+        if future.done():
+            future.result()
+            raise AssertionError(f'Backup finished before log marker "{marker}"')
+
+        result = container.exec_run(
+            ["grep", "-Fq", marker, CH_BACKUP_LOG_PATH], user="root"
+        )
+        if result.exit_code == 0:
+            return
+        time.sleep(0.02)
+
+    raise AssertionError(f'Timed out waiting for log marker "{marker}"')
 
 
 @given("ch-backup configuration on {node:w}")
@@ -31,10 +72,47 @@ def step_update_ch_backup_config(context, node):
 def step_create_backup(context, node):
     options = get_step_data(context)
     name = BackupManager(context, node).backup(**options)
-    name_regexp = options.get("name", "{uuid}")
-    name_regexp = name_regexp.replace("{timestamp}", "[0-9]{8}T[0-9]{6}")
-    name_regexp = name_regexp.replace("{uuid}", "[0-9a-f-]{36}")
-    assert_that(name, matches_regexp(name_regexp))
+    _assert_backup_name(name, options)
+
+
+@when("we start creating {node:w} clickhouse backup in background")
+def step_start_backup_in_background(context, node):
+    options = get_step_data(context)
+    backup_manager = BackupManager(context, node, timeout=120)
+    executor = ThreadPoolExecutor(max_workers=1)
+    context.background_backup = {
+        "executor": executor,
+        "future": executor.submit(backup_manager.backup, **options),
+        "node": node,
+        "options": options,
+    }
+
+
+@when('we wait until {node:w} starts freezing table "{database:w}"."{table:w}"')
+def step_wait_for_table_freeze(context, node, database, table):
+    background_backup = context.background_backup
+    assert_that(background_backup["node"], equal_to(node))
+    _wait_for_table_freeze(
+        background_backup["future"],
+        context,
+        node,
+        database,
+        table,
+    )
+
+
+@when("we wait for background {node:w} clickhouse backup")
+def step_wait_for_background_backup(context, node):
+    background_backup = context.background_backup
+    assert_that(background_backup["node"], equal_to(node))
+
+    try:
+        name = background_backup["future"].result(timeout=130)
+    finally:
+        background_backup["executor"].shutdown(wait=True)
+        del context.background_backup
+
+    _assert_backup_name(name, background_backup["options"])
 
 
 @when("we try to create {node:w} clickhouse backup")
@@ -165,6 +243,38 @@ def step_backup_metadata_absent(context, node, backup_id):
 
     backup = BackupManager(context, node).get_backup(backup_id)
     assert_that(backup.meta, not has_entries(expected_meta))
+
+
+def _backup_contains_table(
+    context: ContextT,
+    node: str,
+    backup_id: BackupId,
+    database: str,
+    table: str,
+) -> bool:
+    backup = BackupManager(context, node).get_backup(backup_id)
+    database_metadata = backup.metadata.get("databases", {}).get(database, {})
+    return table in database_metadata.get("tables", {})
+
+
+@then('backup #{backup_id:d} on {node:w} contains table "{database:w}"."{table:w}"')
+def step_backup_contains_table(context, backup_id, node, database, table):
+    assert_that(
+        _backup_contains_table(context, node, backup_id, database, table),
+        equal_to(True),
+        f'Backup #{backup_id} does not contain table "{database}"."{table}"',
+    )
+
+
+@then(
+    'backup #{backup_id:d} on {node:w} does not contain table "{database:w}"."{table:w}"'
+)
+def step_backup_does_not_contain_table(context, backup_id, node, database, table):
+    assert_that(
+        _backup_contains_table(context, node, backup_id, database, table),
+        equal_to(False),
+        f'Backup #{backup_id} contains table "{database}"."{table}"',
+    )
 
 
 @then("we got no backups on {node:w}")
