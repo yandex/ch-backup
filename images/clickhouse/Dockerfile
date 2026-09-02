@@ -102,6 +102,6 @@ RUN openssl genrsa -out /var/tmp/ssl/server.key 2048 && \
 
 COPY staging/images/{{ instance_name }}/entrypoint.py /entrypoint.py
 
-EXPOSE 8123 8443 9000 9440
+EXPOSE 8123 8443 9000
 
 CMD ["python3", "/entrypoint.py"]
