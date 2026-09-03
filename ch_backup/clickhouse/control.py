@@ -1190,7 +1190,7 @@ class ClickhouseCTL:
         """
         Check that ClickHouse can access its configured ZooKeeper or Keeper.
         """
-        self._ch_client.query(_CHECK_ZOOKEEPER_SQL, should_retry=False)
+        self._ch_client.query(_CHECK_ZOOKEEPER_SQL)
 
     @staticmethod
     def scan_frozen_parts(
