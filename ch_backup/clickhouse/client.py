@@ -62,8 +62,8 @@ class ClickhouseClient:
         timeout: float = None,
         should_retry: bool = True,
         new_session: bool = False,
-        sensitive: bool = False,
         encoding: str = "utf-8",
+        sensitive: bool = False,
     ) -> Any:
         """
         Execute query.
