@@ -251,9 +251,15 @@ Feature: Backup & Clean & Restore
     | 10           |
 
     @require_version_25.8
+    @require_version_less_than_26.8
     Examples:
     | object_count |
     | 11           |
+
+    @require_version_26.8
+    Examples:
+    | object_count |
+    | 12           |
 
   Scenario: Restore succeeds when target node has no storage_configuration section
     # Regression test for: ClickHouseTemporaryDisks.__enter__ raised KeyError when
