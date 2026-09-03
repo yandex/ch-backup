@@ -180,13 +180,15 @@ def command(*args, **kwargs):
         @profile(10)
         def wrapper(ctx, *args, **kwargs):
             try:
+                params = {**ctx.parent.params, **ctx.params}
+                if params.get("config_parameters"):
+                    params["config_parameters"] = [
+                        (path, "[HIDDEN]") for path, _ in params["config_parameters"]
+                    ]
                 logging.info(
                     "Executing command '{}', params: {}, args: {}, version: {}",
                     ctx.command.name,
-                    {
-                        **ctx.parent.params,
-                        **ctx.params,
-                    },
+                    params,
                     ctx.args,
                     get_version(),
                 )

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from typing import List, Optional, Tuple
 
 import ch_backup.logging
-from ch_backup.util import Slotted
+from ch_backup.util import Slotted, mask_sql_literals
 
 
 class WorkloadEntityType(Enum):
@@ -284,7 +284,7 @@ class Database(SimpleNamespace):
         match = re.search(r"(?i)Engine\s*=\s*(?P<engine>\S+)", db_sql)
         if match is None:
             ch_backup.logging.warning(
-                f'Failed to parse engine for database "{self.name}", from query: "{db_sql}"'
+                f'Failed to parse engine for database "{self.name}", from query: "{mask_sql_literals(db_sql)}"'
             )
         else:
             self.engine = match.group("engine")

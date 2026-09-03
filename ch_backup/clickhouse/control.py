@@ -989,31 +989,31 @@ class ClickhouseCTL:
         """
         Restore database.
         """
-        self._ch_client.query(database_schema)
+        self._ch_client.query(database_schema, sensitive=True)
 
     def restore_udf(self, udf_statement):
         """
         Restore user defined function.
         """
-        self._ch_client.query(udf_statement)
+        self._ch_client.query(udf_statement, sensitive=True)
 
     def restore_named_collection(self, nc_statement):
         """
         Restore named collection.
         """
-        self._ch_client.query(nc_statement)
+        self._ch_client.query(nc_statement, sensitive=True)
 
     def restore_workload_entity(self, entity_statement):
         """
         Restore workload entity (WORKLOAD or RESOURCE).
         """
-        self._ch_client.query(entity_statement)
+        self._ch_client.query(entity_statement, sensitive=True)
 
     def create_table(self, table: Table) -> None:
         """
         Restore table.
         """
-        self._ch_client.query(table.create_statement)
+        self._ch_client.query(table.create_statement, sensitive=True)
 
     def restore_replica(self, table: Table) -> None:
         """
@@ -1339,7 +1339,8 @@ class ClickhouseCTL:
                 data_hex=data_hex,
                 key_hex=key_hex,
                 iv_hex=iv_hex,
-            )
+            ),
+            sensitive=True,
         )
 
         first_row = resp.get("data")[0]
