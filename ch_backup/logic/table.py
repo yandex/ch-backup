@@ -12,7 +12,7 @@ from itertools import chain
 from pathlib import Path
 from random import choices
 from string import ascii_lowercase
-from typing import Dict, Iterable, Optional, Sequence
+from typing import Iterable, Sequence
 
 from ch_backup import logging
 from ch_backup.backup.deduplication import deduplicate_parts
@@ -109,7 +109,7 @@ class TableBackup(BackupManager):
         context: BackupContext,
         databases: Sequence[Database],
         db_tables: dict[str, list],
-    ) -> Dict[Table, TableMetadataChangeTime]:
+    ) -> dict[Table, TableMetadataChangeTime]:
         """
         Collect modification timestamps of table metadata files.
         """
@@ -141,8 +141,8 @@ class TableBackup(BackupManager):
         tables: Sequence[str],
         backup_name: str,
         schema_only: bool,
-        multiprocessing_config: Dict,
-        change_times: Dict[Table, TableMetadataChangeTime],
+        multiprocessing_config: dict,
+        change_times: dict[Table, TableMetadataChangeTime],
     ) -> None:
         """
         Backup single database tables.
@@ -231,7 +231,7 @@ class TableBackup(BackupManager):
         parallelize_freeze_in_ch: bool,
         freeze_partition_threads: int,
         freeze_table_query_max_threads: int,
-    ) -> Optional[Table]:
+    ) -> Table | None:
         """
         Freeze table and return it's create statement
         """
@@ -275,7 +275,7 @@ class TableBackup(BackupManager):
         return table
 
     @staticmethod
-    def _load_create_statement_from_disk(table: Table) -> Optional[str]:
+    def _load_create_statement_from_disk(table: Table) -> str | None:
         """
         Load a create statement of the table from a metadata file on the disk.
         """
@@ -322,7 +322,7 @@ class TableBackup(BackupManager):
     def restore(
         self,
         context: BackupContext,
-        databases: Dict[str, Database],
+        databases: dict[str, Database],
         schema_only: bool,
         tables: list[TableMetadata],
         metadata_cleaner: MetadataCleaner | None,
@@ -458,7 +458,7 @@ class TableBackup(BackupManager):
         context: BackupContext,
         table: Table,
         backup_name: str,
-        change_times: Dict[Table, TableMetadataChangeTime],
+        change_times: dict[Table, TableMetadataChangeTime],
     ) -> bool:
         """
         Check if table metadata was updated.
@@ -488,7 +488,7 @@ class TableBackup(BackupManager):
         def deduplicate_parts_in_batch(
             context: BackupContext,
             upload_observer: UploadPartObserver,
-            frozen_parts: Dict[str, FrozenPart],
+            frozen_parts: dict[str, FrozenPart],
         ) -> None:
             logging.debug(
                 "Working on deduplication of {} frozen parts", len(frozen_parts)
@@ -535,7 +535,7 @@ class TableBackup(BackupManager):
 
         upload_observer = UploadPartObserver(context)
 
-        frozen_parts_batch: Dict[str, FrozenPart] = {}
+        frozen_parts_batch: dict[str, FrozenPart] = {}
         dedup_batch_size = context.config["deduplication_batch_size"]
         for data_path, disk in table.paths_with_disks:
             for fpart in context.ch_ctl.scan_frozen_parts(
@@ -595,7 +595,7 @@ class TableBackup(BackupManager):
                 )
 
     @staticmethod
-    def _get_change_time(file_name: str) -> Optional[TableMetadataChangeTime]:
+    def _get_change_time(file_name: str) -> TableMetadataChangeTime | None:
         """
         Fetch change time of the table metadata file safely.
         """
@@ -689,7 +689,7 @@ class TableBackup(BackupManager):
                         else:
                             raise
 
-                existing_table: Optional[Table] = None
+                existing_table: Table | None = None
                 if (table.database, table.name) in existing_readonly_tables:
                     existing_table = table
                     logging.warning(
@@ -997,7 +997,7 @@ class TableBackup(BackupManager):
     def _restore_tables(
         self,
         context: BackupContext,
-        databases: Dict[str, Database],
+        databases: dict[str, Database],
         tables: Iterable[Table],
         keep_going: bool = False,
     ) -> list[Table]:

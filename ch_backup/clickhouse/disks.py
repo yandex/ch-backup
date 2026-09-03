@@ -7,7 +7,7 @@ import os
 from functools import partial
 from subprocess import PIPE, Popen
 from types import TracebackType
-from typing import Any, Callable, Literal, Sequence, Type
+from typing import Any, Callable, Literal, Sequence
 from urllib.parse import urlparse
 
 import xmltodict
@@ -104,7 +104,7 @@ class ClickHouseTemporaryDisks:
 
     def __exit__(
         self,
-        exc_type: Type[BaseException] | None,
+        exc_type: type[BaseException] | None,
         value: BaseException | None,
         traceback: TracebackType | None,
     ) -> bool:

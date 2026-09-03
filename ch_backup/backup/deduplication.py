@@ -5,7 +5,7 @@ Data part deduplication.
 from collections import defaultdict
 from copy import copy
 from datetime import timedelta
-from typing import Optional, Sequence
+from typing import Sequence
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
@@ -55,7 +55,7 @@ class PartDedupInfo(Slotted):
         disk_name: str,
         verified: bool,
         encrypted: bool,
-        link_part_name: Optional[str] = None,
+        link_part_name: str | None = None,
     ) -> None:
         self.database = database
         self.table = table

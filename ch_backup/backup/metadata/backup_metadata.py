@@ -8,7 +8,7 @@ import os
 import socket
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Optional, Sequence
+from typing import Any, Sequence
 
 from ch_backup.backup.metadata.access_control_metadata import AccessControlMetadata
 from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageMetadata
@@ -99,14 +99,14 @@ class BackupMetadata:
         self._state = value
 
     @property
-    def exception(self) -> Optional[str]:
+    def exception(self) -> str | None:
         """
         Exception type and message for failed backup.
         """
         return self._exception
 
     @exception.setter
-    def exception(self, value: Optional[str]) -> None:
+    def exception(self, value: str | None) -> None:
         self._exception = value
 
     @property
@@ -117,7 +117,7 @@ class BackupMetadata:
         return self._format_time(self.start_time)
 
     @property
-    def end_time_str(self) -> Optional[str]:
+    def end_time_str(self) -> str | None:
         """
         String representation of backup end time.
         """
@@ -207,8 +207,8 @@ class BackupMetadata:
         self,
         light: bool = False,
         pretty: bool = False,
-        database: Optional[str] = None,
-        table: Optional[str] = None,
+        database: str | None = None,
+        table: str | None = None,
     ) -> str:
         """
         Return json representation of backup metadata.
@@ -373,7 +373,7 @@ class BackupMetadata:
             "tables": {},
         }
 
-    def get_tables(self, db_name: Optional[str] = None) -> Sequence[TableMetadata]:
+    def get_tables(self, db_name: str | None = None) -> Sequence[TableMetadata]:
         """
         Get tables for the specified database.
         """
@@ -460,7 +460,7 @@ class BackupMetadata:
 
     def find_part(
         self, db_name: str, table_name: str, part_name: str
-    ) -> Optional[PartMetadata]:
+    ) -> PartMetadata | None:
         """
         Find and return data part. If not found, None is returned.
         """

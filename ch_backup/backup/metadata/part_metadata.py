@@ -3,13 +3,13 @@ Backup metadata for ClickHouse data part.
 """
 
 import os
-from typing import Optional, Sequence
+from typing import Sequence
 
 from ch_backup.clickhouse.models import FrozenPart
 from ch_backup.util import Slotted
 
 
-def normalize_backup_link(raw_link: Optional[str]) -> Optional[str]:
+def normalize_backup_link(raw_link: str | None) -> str | None:
     """
     Normalize the ``link`` field to a plain backup name.
 
@@ -53,9 +53,9 @@ class RawMetadata(Slotted):
         size: int,
         files: Sequence[str],
         tarball: bool,
-        link: Optional[str] = None,
-        link_part_name: Optional[str] = None,
-        disk_name: Optional[str] = None,
+        link: str | None = None,
+        link_part_name: str | None = None,
+        disk_name: str | None = None,
         encrypted: bool = True,
     ) -> None:
         self.checksum = checksum
@@ -85,9 +85,9 @@ class PartMetadata(Slotted):
         size: int,
         files: Sequence[str],
         tarball: bool,
-        link: Optional[str] = None,
-        link_part_name: Optional[str] = None,
-        disk_name: Optional[str] = None,
+        link: str | None = None,
+        link_part_name: str | None = None,
+        disk_name: str | None = None,
         encrypted: bool = True,
     ) -> None:
         self.database: str = database
@@ -119,7 +119,7 @@ class PartMetadata(Slotted):
         return self.raw_metadata.files
 
     @property
-    def link(self) -> Optional[str]:
+    def link(self) -> str | None:
         """
         For deduplicated data parts returns the name of the source backup.
         For non-deduplicated parts returns None.
@@ -127,7 +127,7 @@ class PartMetadata(Slotted):
         return self.raw_metadata.link
 
     @property
-    def link_part_name(self) -> Optional[str]:
+    def link_part_name(self) -> str | None:
         """
         For deduplicated data parts returns the name of the source part in backup.
         For non-deduplicated parts returns None.

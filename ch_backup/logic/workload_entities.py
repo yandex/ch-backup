@@ -7,7 +7,6 @@ import posixpath
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
 
 from ch_backup import logging
 from ch_backup.backup_context import BackupContext
@@ -33,7 +32,7 @@ class WorkloadEntity:
     name: str
     type: WorkloadEntityType
     create_statement: str
-    parent: Optional[str] = None
+    parent: str | None = None
 
     def filename_on_disk(self) -> str:
         """

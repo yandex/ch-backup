@@ -4,7 +4,6 @@ Testing utilities.
 
 from collections import defaultdict
 from datetime import timedelta
-from typing import List
 
 import pytest
 from deepdiff import DeepDiff
@@ -54,8 +53,8 @@ def parametrize(*tests):
     )
     ```
     """
-    ids: List[str] = []
-    argnames: List[str] = []
+    ids: list[str] = []
+    argnames: list[str] = []
     argvalues: list = []
     for test in tests:
         ids.append(test["id"])
@@ -82,7 +81,7 @@ def backup_metadata(
     age: timedelta = timedelta(minutes=1),
     schema_only: bool = False,
     databases: dict = None,
-    user_defined_functions: List[str] = None,
+    user_defined_functions: list[str] = None,
 ) -> BackupMetadata:
     """
     Build and return backup metadata.

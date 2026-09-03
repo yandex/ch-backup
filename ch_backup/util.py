@@ -25,9 +25,7 @@ from typing import (
     Callable,
     Iterable,
     Iterator,
-    Type,
     TypeVar,
-    Union,
 )
 
 import tenacity
@@ -259,7 +257,7 @@ def wait_for(
 
 
 def retry(
-    exception_types: Union[type, tuple] = Exception,
+    exception_types: type | tuple = Exception,
     max_attempts: int = 5,
     max_interval: float = 5,
     retry_if: tenacity.retry_base = tenacity.retry_always,
@@ -421,7 +419,7 @@ def exhaust_iterator(iterator: Iterator) -> None:
     collections.deque(iterator, maxlen=0)
 
 
-def dataclass_from_dict(type_: Type[T], data: dict) -> T:
+def dataclass_from_dict(type_: type[T], data: dict) -> T:
     """
     Create dataclass instance from dictionary.
 

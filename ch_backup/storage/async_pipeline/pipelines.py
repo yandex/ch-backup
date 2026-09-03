@@ -9,11 +9,7 @@ from typing import (
     AnyStr,
     BinaryIO,
     Iterator,
-    List,
-    Optional,
     Sequence,
-    Tuple,
-    Union,
 )
 
 from ch_backup import logging
@@ -54,8 +50,8 @@ def upload_data_pipeline(
 # pylint: disable=too-many-positional-arguments
 def upload_data_tarball_pipeline(
     config: dict,
-    file_names: List[str],
-    data_list: List[bytes],
+    file_names: list[str],
+    data_list: list[bytes],
     remote_path: str,
     encrypt: bool,
     compress: bool,
@@ -111,8 +107,8 @@ def upload_files_tarball_scan_pipeline(
     encrypt: bool,
     delete_after: bool,
     compression: bool,
-    tar_base_dir: Optional[str] = None,
-    exclude_file_names: Optional[List[str]] = None,
+    tar_base_dir: str | None = None,
+    exclude_file_names: list[str] | None = None,
 ) -> None:
     """
     Entrypoint of upload files tarball pipeline.
@@ -146,7 +142,7 @@ def upload_files_tarball_scan_pipeline(
 def upload_files_tarball_pipeline(
     config: dict,
     base_path: Path,
-    file_relative_paths: List[Path],
+    file_relative_paths: list[Path],
     remote_path: str,
     encrypt: bool,
     delete_after: bool,
@@ -196,7 +192,7 @@ def download_data_tarball_pipeline(
     remote_path: str,
     decrypt: bool,
     decompress: bool,
-) -> List[Tuple[str, bytes]]:
+) -> list[tuple[str, bytes]]:
     """
     Entrypoint of download data tarball pipeline.
     Downloads tarball and unpacks it into list of (filename, data) pairs.
@@ -216,7 +212,7 @@ def download_data_tarball_pipeline(
 def download_file_pipeline(
     config: dict,
     remote_path: str,
-    local_path: Union[Path, BinaryIO],
+    local_path: Path | BinaryIO,
     decrypt: bool,
     decompress: bool,
 ) -> None:
@@ -296,7 +292,7 @@ def run_and_return_first(pipeline: PypelnStage) -> Any:
     return result
 
 
-def run_and_collect_all(pipeline: PypelnStage) -> List[Any]:
+def run_and_collect_all(pipeline: PypelnStage) -> list[Any]:
     """
     Run pipeline until it is complete and collect all results.
     """

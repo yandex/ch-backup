@@ -2,11 +2,12 @@
 Clickhouse backup logic
 """
 
+import builtins
 from collections import defaultdict
 from copy import copy
 from datetime import timedelta
 from enum import Enum
-from typing import List, Sequence
+from typing import Sequence
 
 from ch_backup import logging
 from ch_backup.backup.deduplication import (
@@ -302,7 +303,7 @@ class ClickhouseBackup:
         tables = []
         if partial_restore_filter:
             excluded_tables = []
-            all_tables: List[TableMetadata] = []
+            all_tables: list[TableMetadata] = []
             for db_name in databases:
                 all_tables.extend(self._context.backup_meta.get_tables(db_name))
             for table in all_tables:
@@ -389,7 +390,7 @@ class ClickhouseBackup:
         retain_time = self._context.config["retain_time"]
         retain_count = self._context.config["retain_count"]
 
-        deleted_backup_names: List[str] = []
+        deleted_backup_names: list[str] = []
 
         if not retain_time and retain_count is None:
             logging.info("Retain policies are not specified")
@@ -399,8 +400,8 @@ class ClickhouseBackup:
         if retain_time:
             retain_time_limit = now() - timedelta(**retain_time)
 
-        retained_backups: List[BackupMetadata] = []
-        deleting_backups: List[BackupMetadata] = []
+        retained_backups: list[BackupMetadata] = []
+        deleting_backups: list[BackupMetadata] = []
         backup_names = self._context.backup_layout.get_backup_names()
 
         with self._context.locker(operation="PURGE"):
@@ -547,7 +548,7 @@ class ClickhouseBackup:
         self,
         sources: BackupSources,
         db_names: Sequence[str],
-        tables: List[TableMetadata],
+        tables: builtins.list[TableMetadata],
         replica_name: str | None = None,
         cloud_storage_source_bucket: str | None = None,
         cloud_storage_source_path: str | None = None,

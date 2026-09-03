@@ -3,7 +3,7 @@ Read file stage.
 """
 
 from pathlib import Path
-from typing import BinaryIO, Iterable, Optional
+from typing import BinaryIO, Iterable
 
 from ch_backup.storage.async_pipeline.base_pipeline.handler import InputHandler
 from ch_backup.storage.async_pipeline.stages.types import StageType
@@ -19,7 +19,7 @@ class ReadFileStage(InputHandler):
     def __init__(self, config: dict, file_path: Path) -> None:
         self._chunk_size = config["chunk_size"]
         self._file_path = file_path
-        self._fobj: Optional[BinaryIO] = None
+        self._fobj: BinaryIO | None = None
 
     def on_start(self) -> None:
         self._fobj = self._file_path.open(mode="rb")

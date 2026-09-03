@@ -15,7 +15,6 @@ from typing import (
     Callable,
     Iterator,
     Literal,
-    Optional,
     Sequence,
 )
 from urllib.parse import quote
@@ -340,7 +339,7 @@ class BackupLayout:
         )
         return self._storage_loader.download_data(remote_path, encryption=True)
 
-    def get_local_nc_create_statement(self, nc_name: str) -> Optional[str]:
+    def get_local_nc_create_statement(self, nc_name: str) -> str | None:
         """
         Read named collection create statement from local file.
         """
@@ -370,7 +369,7 @@ class BackupLayout:
 
     def get_local_workload_entity_create_statement(
         self, entity_name: str
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Read workload entity create statement from local file.
         """
@@ -421,7 +420,7 @@ class BackupLayout:
 
     def get_backup(
         self, backup_name: str, use_light_meta: bool = False
-    ) -> Optional[BackupMetadata]:
+    ) -> BackupMetadata | None:
         """
         Download and return backup metadata.
         """
@@ -767,7 +766,7 @@ class BackupLayout:
         self,
         backup_meta: BackupMetadata,
         disk: Disk,
-        file_path: Optional[str] = None,
+        file_path: str | None = None,
     ) -> Iterator[str | BinaryIO]:
         """
         Opening file only once is necessary when file is actually a named pipe.
@@ -799,7 +798,7 @@ class BackupLayout:
         disk: Disk,
         source_disk_name: str,
         desired_tables: Sequence[TableMetadata] | Literal["all"],
-        file_path: Optional[str] = None,
+        file_path: str | None = None,
     ) -> None:
         """
         Download files packed in tarball and unpacks them into specified directory.
@@ -1021,8 +1020,8 @@ def _part_path(
 
 def _disk_metadata_path(
     backup_path: str,
-    db_name: Optional[str],
-    table_name: Optional[str],
+    db_name: str | None,
+    table_name: str | None,
     disk_name: str,
     compressed: bool = False,
 ) -> str:

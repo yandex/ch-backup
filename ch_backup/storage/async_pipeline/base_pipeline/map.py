@@ -4,7 +4,7 @@ Map runner for stage.
 
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Callable, Iterable, Optional, Union
+from typing import Any, Callable, Iterable
 
 from pypeln import utils as pypeln_utils
 from pypeln.thread import Worker
@@ -36,7 +36,7 @@ class Map:
                 )
                 idx += 1
 
-    def process(self, worker: Worker) -> Iterable[Optional[B]]:
+    def process(self, worker: Worker) -> Iterable[B | None]:
         """
         Process map handler.
         """
@@ -51,16 +51,14 @@ class Map:
 # pylint: disable=too-many-positional-arguments
 def map_(
     f: Handler,
-    stage: Union[
-        Stage[A], Iterable[A], pypeln_utils.Undefined
-    ] = pypeln_utils.UNDEFINED,
+    stage: Stage[A] | Iterable[A] | pypeln_utils.Undefined = pypeln_utils.UNDEFINED,
     workers: int = 1,
     maxsize: int = 0,
     timeout: float = 0,
     on_start: Callable = None,
     on_done: Callable = None,
     use_threads: bool = True,
-) -> Union[Optional[Stage[None]], pypeln_utils.Partial[Optional[Stage[None]]]]:
+) -> Stage[None] | pypeln_utils.Partial[Stage[None] | None] | None:
     """
     Create map stage.
     """

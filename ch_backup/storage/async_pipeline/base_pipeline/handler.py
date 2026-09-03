@@ -3,7 +3,7 @@ Abstract base classes for stage handlers.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable
 
 
 class Handler(ABC):
@@ -12,7 +12,7 @@ class Handler(ABC):
     """
 
     @abstractmethod
-    def __call__(self, value: Any, index: int) -> Optional[Any]:
+    def __call__(self, value: Any, index: int) -> Any | None:
         """
         Process value at number index from pipeline and optionally produce result.
 
@@ -20,7 +20,7 @@ class Handler(ABC):
         """
         pass
 
-    def on_start(self) -> Optional[Any]:
+    def on_start(self) -> Any | None:
         """
         Executed on starting pipeline and return optional value to pipeline.
 
@@ -28,7 +28,7 @@ class Handler(ABC):
         """
         pass
 
-    def on_done(self) -> Optional[Any]:
+    def on_done(self) -> Any | None:
         """
         Executed when all previous stages are done and return optional value to pipeline.
 
@@ -43,7 +43,7 @@ class IterableHandler(ABC):
     """
 
     @abstractmethod
-    def __call__(self, value: Any, index: int) -> Optional[Iterable[Any]]:
+    def __call__(self, value: Any, index: int) -> Iterable[Any] | None:
         """
         Process value at number index from pipeline and optionally produce iterable result.
 
@@ -51,7 +51,7 @@ class IterableHandler(ABC):
         """
         pass
 
-    def on_start(self) -> Optional[Iterable[Any]]:
+    def on_start(self) -> Iterable[Any] | None:
         """
         Executed on starting pipeline and return optional iterable value to pipeline.
 
@@ -59,7 +59,7 @@ class IterableHandler(ABC):
         """
         pass
 
-    def on_done(self) -> Optional[Iterable[Any]]:
+    def on_done(self) -> Iterable[Any] | None:
         """
         Executed when all previous stages are done and return optional iterable value to pipeline.
 
@@ -74,7 +74,7 @@ class InputHandler(ABC):
     """
 
     @abstractmethod
-    def __call__(self) -> Optional[Iterable[Any]]:
+    def __call__(self) -> Iterable[Any] | None:
         """
         Executed on starting pipeline (but after on_start) and return optional iterable value to pipeline.
 
@@ -82,7 +82,7 @@ class InputHandler(ABC):
         """
         pass
 
-    def on_start(self) -> Optional[Any]:
+    def on_start(self) -> Any | None:
         """
         Executed on starting pipeline and return optional iterable value to pipeline.
 
@@ -90,7 +90,7 @@ class InputHandler(ABC):
         """
         pass
 
-    def on_done(self) -> Optional[Any]:
+    def on_done(self) -> Any | None:
         """
         Executed when all previous stages are done and return optional iterable value to pipeline.
 

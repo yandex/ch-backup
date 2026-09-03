@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import List, Optional
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -57,7 +56,7 @@ _STAT_CTIME_CHANGED = FakeStatResult(
     ],
 )
 def test_backup_table_skipping_if_metadata_updated_during_backup(
-    fake_stats: List[FakeStatResult],
+    fake_stats: list[FakeStatResult],
     backups_expected_db1: int,
     backups_expected_db2: int,
 ) -> None:
@@ -155,7 +154,7 @@ class TestValidateUploadedParts:
 
     _BACKUP_NAME = "20181017T210300"
 
-    def _make_part(self, name: str, link: Optional[str] = None) -> PartMetadata:
+    def _make_part(self, name: str, link: str | None = None) -> PartMetadata:
         return PartMetadata(
             database="db1",
             table="table1",

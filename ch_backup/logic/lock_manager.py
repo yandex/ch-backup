@@ -7,7 +7,7 @@ import socket
 import sys
 from fcntl import LOCK_SH, flock
 from types import TracebackType
-from typing import IO, Any, Type
+from typing import IO, Any
 
 from kazoo.exceptions import LockTimeout
 from kazoo.recipe.lock import Lock
@@ -80,7 +80,7 @@ class LockManager:
 
     def __exit__(
         self,
-        exc_type: Type[BaseException] | None,
+        exc_type: type[BaseException] | None,
         exc_inst: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:

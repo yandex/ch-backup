@@ -9,11 +9,7 @@ from typing import (
     AnyStr,
     BinaryIO,
     Callable,
-    List,
-    Optional,
     Sequence,
-    Tuple,
-    Union,
 )
 
 from ch_backup.profile import profile
@@ -46,7 +42,7 @@ class PipelineExecutor:
 
     def __init__(self, config: dict) -> None:
         self._config = config
-        self._exec_pool: Optional[ProcessExecPool] = None
+        self._exec_pool: ProcessExecPool | None = None
 
         worker_count = self._config["multiprocessing"].get("workers")
         if worker_count:
@@ -68,8 +64,8 @@ class PipelineExecutor:
     # pylint: disable=too-many-positional-arguments
     def upload_data_tarball(
         self,
-        file_names: List[str],
-        data_list: List[bytes],
+        file_names: list[str],
+        data_list: list[bytes],
         remote_path: str,
         is_async: bool,
         encryption: bool,
@@ -129,9 +125,9 @@ class PipelineExecutor:
         encryption: bool,
         delete: bool,
         compression: bool,
-        tar_base_dir: Optional[str] = None,
-        exclude_file_names: Optional[List[str]] = None,
-        callback: Optional[Callable] = None,
+        tar_base_dir: str | None = None,
+        exclude_file_names: list[str] | None = None,
+        callback: Callable | None = None,
     ) -> None:
         """
         Archive to tarball and upload files from local filesystem.
@@ -161,8 +157,8 @@ class PipelineExecutor:
         encryption: bool,
         delete: bool,
         compression: bool,
-        files: List[str],
-        callback: Optional[Callable] = None,
+        files: list[str],
+        callback: Callable | None = None,
     ) -> None:
         """
         Archive to tarball and upload files from local filesystem.
@@ -200,7 +196,7 @@ class PipelineExecutor:
         is_async: bool,
         encryption: bool,
         compression: bool,
-    ) -> List[Tuple[str, bytes]]:
+    ) -> list[tuple[str, bytes]]:
         """
         Download tarball from storage and return list of (filename, data) pairs.
         """
@@ -218,7 +214,7 @@ class PipelineExecutor:
     def download_file(
         self,
         remote_path: str,
-        local_path: Union[str, BinaryIO],
+        local_path: str | BinaryIO,
         is_async: bool,
         encryption: bool,
         compression: bool,
@@ -246,7 +242,7 @@ class PipelineExecutor:
         is_async: bool,
         encryption: bool,
         compression: bool,
-        callback: Optional[Callable],
+        callback: Callable | None,
     ) -> None:
         """
         Download and unarchive tarball to files on local filesystem.
@@ -291,7 +287,7 @@ class PipelineExecutor:
         job_id: str,
         pipeline: Callable,
         is_async: bool,
-        callback: Optional[Callable] = None,
+        callback: Callable | None = None,
     ) -> Any:
         """
         Run pipeline inplace or schedule for exec in process pool
