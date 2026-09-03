@@ -98,6 +98,7 @@ class ClickHouseTemporaryDisks:
                 for name, conf in self._disks.items()
                 if not conf or conf.get("type") != "cache"
             },
+            history_file=CH_DISK_HISTORY_FILE_PATH,
         )
         return self
 
@@ -123,15 +124,14 @@ class ClickHouseTemporaryDisks:
                 pass
         return True
 
-    def _render_disks_config(self, path, disks):
+    def _render_disks_config(self, path, disks, history_file=None):
+        config = {"storage_configuration": {"disks": disks}}
+        if history_file is not None:
+            config["history-file"] = history_file
+
         with open(path, "w", encoding="utf-8") as f:
             xmltodict.unparse(
-                {
-                    "clickhouse": {
-                        "storage_configuration": {"disks": disks},
-                        "history-file": CH_DISK_HISTORY_FILE_PATH,
-                    },
-                },
+                {"clickhouse": config},
                 f,
                 pretty=True,
             )
