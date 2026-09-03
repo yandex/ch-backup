@@ -7,12 +7,16 @@ All hosts, buckets and object names below are synthetic.
 """
 
 import copy
+import re
 from contextlib import contextmanager
 from typing import Any, Generator, List, Optional, cast
 from unittest.mock import MagicMock, patch
 
 import click
+import pytest
 import requests
+from hypothesis import given
+from hypothesis import strategies as st
 from loguru import logger
 
 from ch_backup import cli
@@ -45,30 +49,34 @@ NC_S3_STATEMENT = (
     " url = 'https://s3.example.com/test-bucket/data/*.xz'"
 )
 
+# The names behind MySQL point at the remote side, so they are deliberately
+# different from the local test_db.test_table: the assertions below reject
+# every quoted value, and a value that doubles as a local identifier would
+# make them fire on a log line that is perfectly fine.
 NC_MYSQL_STATEMENT = (
     f"CREATE NAMED COLLECTION {NC_MYSQL_NAME} AS"
     " addresses_expr = 'db-host.example.com:3306',"
-    " db = 'test_db',"
+    " db = 'remote_db',"
     f" password = '{PLAIN_TEXT_PASSWORD}',"
-    " table = 'test_table',"
-    " user = 'test_user'"
+    " table = 'remote_table',"
+    " user = 'remote_user'"
 )
 
 MYSQL_ENGINE_CLAUSE = (
-    " ENGINE = MySQL('db-host.example.com:3306', 'test_db', 'test_table',"
-    f" 'test_user', '{PLAIN_TEXT_PASSWORD}')"
+    " ENGINE = MySQL('db-host.example.com:3306', 'remote_db', 'remote_table',"
+    f" 'remote_user', '{PLAIN_TEXT_PASSWORD}')"
 )
 
 MYSQL_TABLE_STATEMENT = (
     "CREATE TABLE test_db.test_table (s String, n Int32)" + MYSQL_ENGINE_CLAUSE
 )
 
-ALL_SECRETS = (
-    S3_ACCESS_KEY_ID,
-    S3_SECRET_ACCESS_KEY,
-    PLAIN_TEXT_PASSWORD,
-    ENCRYPTION_KEY_HEX,
-)
+MASK = "'[HIDDEN]'"
+
+# Deliberately not the regex from ch_backup.util: a check that reused it would
+# extract exactly what the masking replaces, and a literal the production regex
+# fails to see would be invisible here as well.
+_QUOTED_VALUE_RE = re.compile(r"'((?:[^'\\]|\\.)*)'")
 
 
 class _FakeResponse:
@@ -146,13 +154,69 @@ def capture_logs() -> Generator[List[str], None, None]:
         logger.remove(sink_id)
 
 
-def assert_no_secrets(messages: List[str]) -> None:
+def quoted_values(*statements: str) -> List[str]:
     """
-    Fail if any known secret value appears in the captured log.
+    Every value the statements put in single quotes, without the quotes.
+    """
+    values: List[str] = []
+    for statement in statements:
+        values.extend(value for value in _QUOTED_VALUE_RE.findall(statement) if value)
+    return values
+
+
+def assert_no_unmasked_literals(sql: str) -> None:
+    """
+    Fail if any quoted value survived masking in a piece of raw SQL.
+
+    Structural, so it needs no list of secrets: a literal the masking did not
+    replace keeps its own quotes, so once every mask is removed, no single
+    quote may be left.
+
+    Only for raw SQL, never for a log line: log lines carry the statement as
+    a repr, and repr uses a single quote as its own delimiter whenever the
+    payload has none.
+    """
+    residue = sql.replace(MASK, "")
+
+    assert "'" not in residue, f"unmasked literal: {sql}"
+
+
+def assert_no_values(messages: List[str], *values: str) -> None:
+    """
+    Fail if one of the given values appears in the captured log.
     """
     log = "".join(messages)
-    for secret in ALL_SECRETS:
-        assert secret not in log, f"secret leaked into the log: {log}"
+    for value in values:
+        assert value not in log, f"value leaked into the log: {log}"
+
+
+def assert_mask_count(messages: List[str], expected: int) -> None:
+    """
+    Fail unless the log masked exactly the expected number of literals.
+
+    Counting is immune to the repr framing around the statement, and a literal
+    the masking failed to replace shows up as a missing mask.
+    """
+    log = "".join(messages)
+
+    assert log.count(MASK) == expected, f"expected {expected} masked literals: {log}"
+
+
+def assert_masked(messages: List[str], *statements: str, times: int = 1) -> None:
+    """
+    Fail if anything the statements put in quotes is readable in the log.
+
+    Two independent checks, neither of which needs a list of known secrets:
+    no quoted value of the statements is present, and every one of them was
+    replaced by a mask. Adding a credential to a fixture is therefore covered
+    automatically.
+
+    :param times: how many times the caller writes the statement to the log.
+    """
+    values = quoted_values(*statements)
+
+    assert_no_values(messages, *values)
+    assert_mask_count(messages, len(values) * times)
 
 
 def make_table(engine: str, create_statement: str, name: str = "test_table") -> Table:
@@ -183,7 +247,7 @@ def test_sensitive_query_is_not_logged() -> None:
     with clickhouse_client() as client, capture_logs() as messages:
         client.query(NC_MYSQL_STATEMENT, sensitive=True)
 
-    assert_no_secrets(messages)
+    assert_masked(messages, NC_MYSQL_STATEMENT)
 
 
 def test_sensitive_query_logs_a_placeholder() -> None:
@@ -222,7 +286,7 @@ def test_restore_named_collection_does_not_log_the_statement() -> None:
     with clickhouse_ctl() as ctl, capture_logs() as messages:
         ctl.restore_named_collection(NC_S3_STATEMENT)
 
-    assert_no_secrets(messages)
+    assert_masked(messages, NC_S3_STATEMENT)
 
 
 def test_restore_database_does_not_log_the_statement() -> None:
@@ -234,7 +298,7 @@ def test_restore_database_does_not_log_the_statement() -> None:
     with clickhouse_ctl() as ctl, capture_logs() as messages:
         ctl.restore_database(statement)
 
-    assert_no_secrets(messages)
+    assert_masked(messages, statement)
 
 
 def test_restore_udf_does_not_log_the_statement() -> None:
@@ -246,7 +310,7 @@ def test_restore_udf_does_not_log_the_statement() -> None:
     with clickhouse_ctl() as ctl, capture_logs() as messages:
         ctl.restore_udf(statement)
 
-    assert_no_secrets(messages)
+    assert_masked(messages, statement)
 
 
 def test_restore_workload_entity_does_not_log_the_statement() -> None:
@@ -258,7 +322,7 @@ def test_restore_workload_entity_does_not_log_the_statement() -> None:
     with clickhouse_ctl() as ctl, capture_logs() as messages:
         ctl.restore_workload_entity(statement)
 
-    assert_no_secrets(messages)
+    assert_masked(messages, statement)
 
 
 def test_create_table_does_not_log_the_statement() -> None:
@@ -270,7 +334,7 @@ def test_create_table_does_not_log_the_statement() -> None:
     with clickhouse_ctl() as ctl, capture_logs() as messages:
         ctl.create_table(table)
 
-    assert_no_secrets(messages)
+    assert_masked(messages, MYSQL_TABLE_STATEMENT)
 
 
 def test_decrypt_aes_ctr_does_not_log_the_key() -> None:
@@ -280,7 +344,8 @@ def test_decrypt_aes_ctr_does_not_log_the_key() -> None:
     with clickhouse_ctl() as ctl, capture_logs() as messages:
         ctl.decrypt_aes_ctr("aabb", ENCRYPTION_KEY_HEX, 128, "ccdd")
 
-    assert_no_secrets(messages)
+    assert_no_values(messages, ENCRYPTION_KEY_HEX, "aabb", "ccdd")
+    assert_mask_count(messages, 4)
 
 
 #
@@ -302,7 +367,7 @@ def test_named_collection_restore_sequence_writes_no_secrets() -> None:
         ctl.drop_named_collection(NC_MYSQL_NAME)
         ctl.restore_named_collection(NC_MYSQL_STATEMENT)
 
-    assert_no_secrets(messages)
+    assert_masked(messages, NC_S3_STATEMENT, NC_MYSQL_STATEMENT)
 
 
 def test_drop_statement_stays_visible() -> None:
@@ -367,10 +432,51 @@ def test_mask_sql_literals_hides_values_and_keeps_structure() -> None:
     """
     masked = mask_sql_literals(NC_S3_STATEMENT)
 
-    for secret in (S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY):
-        assert secret not in masked
+    assert_masked([masked], NC_S3_STATEMENT)
     assert f"CREATE NAMED COLLECTION IF NOT EXISTS {NC_S3_NAME} AS" in masked
     assert "access_key_id = '[HIDDEN]'" in masked
+
+
+# Values carry a "v-" prefix and the scaffolding around them contains no
+# hyphen, so a generated value can only appear in the result if it was left
+# unmasked -- it cannot collide with the rest of the statement.
+_generated_values = st.lists(
+    st.text(alphabet=st.characters(blacklist_characters="'\\"), min_size=1).map(
+        lambda value: f"v-{value}"
+    ),
+    min_size=1,
+    max_size=5,
+)
+
+
+@given(values=_generated_values)
+def test_mask_sql_literals_leaves_no_generated_value(values: List[str]) -> None:
+    """
+    No hand-written list of secrets: the values are generated.
+
+    This is what makes the masking itself, rather than a fixed set of
+    fixtures, the thing under test.
+    """
+    statement = "CREATE NAMED COLLECTION nc AS " + ", ".join(
+        f"key{i} = '{value}'" for i, value in enumerate(values)
+    )
+
+    masked = mask_sql_literals(statement)
+
+    assert_no_unmasked_literals(masked)
+    assert_no_values([masked], *values)
+
+
+def test_the_unmasked_literal_check_can_fail() -> None:
+    """
+    A guard that cannot fail guards nothing.
+    """
+    clean = "Executing query: b\"CREATE NAMED COLLECTION nc AS password = '[HIDDEN]'\""
+    leaking = clean.replace(MASK, "'hunter2'")
+
+    assert_no_unmasked_literals(clean)
+    with pytest.raises(AssertionError):
+        assert_no_unmasked_literals(leaking)
 
 
 def test_mask_sql_literals_handles_escaped_quotes() -> None:
@@ -394,7 +500,7 @@ def test_rewrite_table_schema_masks_external_engine() -> None:
     with capture_logs() as messages:
         rewrite_table_schema(table)
 
-    assert_no_secrets(messages)
+    assert_masked(messages, table.create_statement, times=2)
 
 
 def test_rewrite_table_schema_masks_merge_tree_too() -> None:
@@ -416,7 +522,7 @@ def test_rewrite_table_schema_masks_merge_tree_too() -> None:
     with capture_logs() as messages:
         rewrite_table_schema(table)
 
-    assert_no_secrets(messages)
+    assert_masked(messages, table.create_statement, times=2)
 
 
 def test_rewrite_table_schema_keeps_the_structure_readable() -> None:
@@ -476,7 +582,8 @@ def test_rewrite_table_schema_masks_dictionary() -> None:
     with capture_logs() as messages:
         rewrite_table_schema(table)
 
-    assert_no_secrets(messages)
+    # The statement is logged twice: before and after the rewrite.
+    assert_masked(messages, table.create_statement, times=2)
 
 
 def test_no_secret_survives_repr_escaping() -> None:
@@ -518,7 +625,7 @@ def test_set_engine_from_sql_masks_the_query_it_failed_to_parse() -> None:
     with capture_logs() as messages:
         make_database().set_engine_from_sql(db_sql)
 
-    assert_no_secrets(messages)
+    assert_masked(messages, db_sql)
 
 
 def test_set_engine_from_sql_keeps_the_warning_useful() -> None:
@@ -593,7 +700,7 @@ def test_config_parameter_values_are_masked() -> None:
         }
     )
 
-    assert_no_secrets(messages)
+    assert_no_values(messages, PLAIN_TEXT_PASSWORD, ENCRYPTION_KEY_HEX)
 
 
 def test_config_parameter_paths_stay_visible() -> None:
