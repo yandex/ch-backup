@@ -3,6 +3,7 @@ Unit tests disks module.
 """
 
 import unittest
+import unittest.mock
 from typing import List, Optional
 
 import xmltodict
@@ -258,10 +259,20 @@ def test_enter_without_storage_configuration():
     """
     disk_manager = _make_temporary_disks(clickhouse_config_xml, cloud_storage_disks=[])
 
-    with unittest.mock.patch("builtins.open", new=unittest.mock.mock_open()):
+    # pylint: disable=global-statement
+    global write_result
+    write_result = ""
+    with unittest.mock.patch("builtins.open", new=unittest.mock.mock_open()) as m:
+        m().write = write_collector
         with disk_manager:
             # pylint: disable=protected-access
             assert disk_manager._disks == {}
+
+    actual_content = xmltodict.parse(write_result, disable_entities=False)
+    assert_equal(
+        actual_content["clickhouse"]["history-file"],
+        "/tmp/.disks-file-history",
+    )
 
 
 def test_create_temporary_disk_missing_disk_raises():
