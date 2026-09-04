@@ -69,7 +69,7 @@ class AccessBackup(BackupManager):
                 acl_file_names,
             )
 
-    def restore(self, context: BackupContext) -> None:
+    def restore(self, context: BackupContext, reload_users: bool = False) -> None:
         """
         Restore access rights
         """
@@ -105,6 +105,9 @@ class AccessBackup(BackupManager):
                 self._restore_local(
                     restore_tmp_path, clickhouse_access_path, user, group
                 )
+
+        if reload_users and not has_replicated_access:
+            context.ch_ctl.reload_users()
 
     def fix_admin_user(self, context: BackupContext, dry_run: bool = True) -> None:
         """
