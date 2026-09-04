@@ -75,7 +75,7 @@ def create():
                 },
                 "docker_instances": 2,
                 "depends_on": {
-                    "minio": "service_started",
+                    "minio": "service_healthy",
                     "proxy": "service_started",
                     "proxy-api": "service_started",
                     "zookeeper": "service_healthy",
