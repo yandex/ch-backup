@@ -73,3 +73,30 @@ Feature: Workload entities (WORKLOADs and RESOURCEs) support
     """
     CREATE RESOURCE s3_write (WRITE DISK s3)
     """
+
+  @require_version_25.10
+  Scenario: Skip configuration-defined workload entities during backup
+    Given we replace config file no_storage.xml in favor of workload_entity_storage/resources_and_workloads.xml on clickhouse01 with restart
+    When we execute query on clickhouse01
+    """
+    SELECT count() FROM system.workloads WHERE name IN ('xml_all', 'xml_production');
+    """
+    Then we get response
+    """
+    2
+    """
+    When we execute query on clickhouse01
+    """
+    SELECT count() FROM system.resources WHERE name = 'xml_s3_read';
+    """
+    Then we get response
+    """
+    1
+    """
+    When we create clickhouse01 clickhouse backup
+    Then clickhouse01 backup #0 contains no workload entities
+    When we create clickhouse01 clickhouse backup
+    """
+    schema_only: true
+    """
+    Then clickhouse01 backup #1 contains no workload entities

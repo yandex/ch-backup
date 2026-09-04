@@ -122,14 +122,12 @@ class WorkloadEntitiesBackup(BackupManager):
             tmp_path,
             context.backup_meta.name,
         ) as backup_tmp_path:
-            for entity_name, _ in workload_entities:
-                context.backup_meta.add_workload_entity(entity_name)
-
             we_config = WorkloadEntitiesStorageConfig.from_ch_config(
                 context.ch_ctl_conf, context.ch_config
             )
             if we_config.is_local_storage():
-                copy_directory_content(we_config.storage_path, backup_tmp_path)
+                if os.path.exists(we_config.storage_path):
+                    copy_directory_content(we_config.storage_path, backup_tmp_path)
             elif we_config.is_storage_zookeeper():
                 self._write_entities_from_zookeeper_node(
                     context.zk_ctl,
@@ -146,7 +144,17 @@ class WorkloadEntitiesBackup(BackupManager):
                         name=entity_name, type=entity_type, create_statement=""
                     ).filename_on_disk(),
                 )
+                if not os.path.isfile(local_path):
+                    logging.info(
+                        "Skipping {} workload entity {} because no matching SQL "
+                        "definition was found in {} storage",
+                        entity_type.value,
+                        entity_name,
+                        we_config.storage_type.value,
+                    )
+                    continue
 
+                context.backup_meta.add_workload_entity(entity_name)
                 context.backup_layout.upload_workload_entity_ddl_from_file(
                     local_path,
                     context.backup_meta.name,
