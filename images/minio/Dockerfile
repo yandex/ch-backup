@@ -9,8 +9,8 @@ ENV MINIO_SECRET_KEY {{ conf.s3.access_secret_key }}
 
 ENTRYPOINT ["/usr/bin/docker-entrypoint.sh"]
 
-HEALTHCHECK --interval=30s --timeout=5s CMD /usr/bin/healthcheck.sh
+HEALTHCHECK --interval=500ms --timeout=1s --retries=60 CMD /usr/bin/healthcheck.sh
 
-EXPOSE 9000
+EXPOSE 9000 9001
 
-CMD ["server", "/export"]
+CMD ["server", "/export", "--console-address", ":9001"]
