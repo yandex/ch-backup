@@ -146,7 +146,10 @@ class NamedCollectionsBackup(BackupManager):
                 )
                 context.ch_ctl.drop_named_collection(nc_name)
 
-            context.ch_ctl.restore_named_collection(self._add_if_not_exists(statement))
+            if context.ch_ctl.ch_version_ge("23.8"):
+                statement = self._add_if_not_exists(statement)
+
+            context.ch_ctl.restore_named_collection(statement)
 
             logging.debug("Named collection {} restored", nc_name)
 
