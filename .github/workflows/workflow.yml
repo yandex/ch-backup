@@ -70,12 +70,22 @@ jobs:
     - name: run unit tests
       run: make test-unit
     - name: run integration tests
-      run: make test-integration
+      run: |
+        case "$INTEGRATION_JOBS" in
+          1) make test-integration ;;
+          2|3) make test-integration-parallel ;;
+          *) echo 'INTEGRATION_JOBS must be 1, 2 or 3' >&2; exit 2 ;;
+        esac
       env:
+        INTEGRATION_JOBS: '3'
+        BEHAVE_ARGS: --junit --junit-directory staging/junit
         CLICKHOUSE_VERSION: ${{ matrix.clickhouse == 'latest' && env.LATEST_CLICKHOUSE_VERSION || matrix.clickhouse }}
     - uses: actions/upload-artifact@v7
-      if: ${{ failure() }}
+      if: ${{ always() }}
       with:
-        name: integration-test-logs-py${{ matrix.python }}-clickhouse-${{ matrix.clickhouse }}
-        path: staging/logs/
+        name: integration-test-results-py${{ matrix.python }}-clickhouse-${{ matrix.clickhouse }}-attempt-${{ github.run_attempt }}
+        path: |
+          staging/logs/
+          staging/junit/
+          staging/parallel/*/results/
         if-no-files-found: ignore

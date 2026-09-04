@@ -1,0 +1,40 @@
+name: integration benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      clickhouse_version:
+        description: 'Exact latest version to compare (for example 26.8.2.7); do not use latest'
+        required: true
+        type: string
+
+jobs:
+  benchmark:
+    name: benchmark (${{ matrix.mode }}, repeat ${{ matrix.repeat }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [serial, '1', '2', '3']
+        repeat: [1, 2]
+    steps:
+    - uses: actions/checkout@v7
+    - uses: astral-sh/setup-uv@v7
+      with:
+        python-version: '3.10'
+    - name: benchmark complete integration suite
+      env:
+        CLICKHOUSE_VERSION: ${{ inputs.clickhouse_version }}
+        BENCHMARK_MODE: ${{ matrix.mode }}
+      run: uv run python -m tests.integration.benchmark --mode "$BENCHMARK_MODE"
+    - uses: actions/upload-artifact@v7
+      if: ${{ always() }}
+      with:
+        name: integration-benchmark-${{ matrix.mode }}-repeat-${{ matrix.repeat }}-attempt-${{ github.run_attempt }}
+        path: |
+          staging/benchmark/
+          staging/parallel/*/results/
+          staging/junit/
+          staging/logs/
+        if-no-files-found: ignore

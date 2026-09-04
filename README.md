@@ -180,3 +180,94 @@ separately with `make test-integration`. Additionally, `BEHAVE_ARGS` parameter
 can be used to pass additional arguments to underlying `behave` invocation.
 For example, `make test-integration BEHAVE_ARGS='-i ssl_support'` executes
 tests that belongs to SSL support feature (`ssl_support.feature`).
+
+#### Parallel integration tests on one Docker host
+
+```bash
+make test-integration-parallel INTEGRATION_JOBS=3
+make test-integration-parallel INTEGRATION_JOBS=1 BEHAVE_ARGS='-i ssl_support'
+uv run python -m tests.integration.parallel --jobs 3 --dry-run
+```
+
+Each worker uses its own source snapshot, session file, configuration, Docker
+network and containers. Dependencies and the wheel are prepared once; worker
+images are built sequentially using the shared Docker build cache. Tests install
+the wheel just as in the serial runner. The original checkout's session and
+containers are not reused. Do not run `make clean-test-env` while a parallel run
+is active: it removes the parent `staging/` directory.
+
+Only `tests/integration/ch_backup.featureset` controls suite membership. Adding a
+feature there is sufficient; there are no worker-specific feature lists. The
+optional `INTEGRATION_FEATURESET` selects a different list of files under `tests/`.
+`BEHAVE_ARGS` supports the usual feature, scenario-name and tag filters. Feature
+files are indivisible, including `@dependent-scenarios` features: their scenarios
+retain their original order and environment hooks.
+
+The scheduler starts longer features first and gives free workers the next
+eligible feature. Features tagged `@parallel_heavy` reserve two slots (one when
+`INTEGRATION_JOBS=1`); `@parallel_exclusive` reserves every slot and waits for the
+active features to finish. The initial heavy features are `backup_restore` and
+`freeze_parallel`; this is a conservative classification from their fixtures,
+not a measured claim about runner utilization.
+
+After a failure, no new features start; active features finish. `--stop` also
+remains enabled within each feature. Interrupted or incomplete runs fail, even
+when JUnit output is missing. Normal completion, errors and handled termination
+signals clean up only owned containers, networks and image tags. Workspaces and
+reports remain available for diagnosis. Cleanup failures are reported as failures;
+the runner never performs a global Docker prune.
+
+Results are printed at startup under `staging/parallel/<run-id>/results/`:
+
+- `summary.json`: final status, selected feature outcomes, process wall times,
+  worker preparation times, image IDs and actual ClickHouse versions. Features
+  not started after a failure have status `not_run`, distinct from version skips.
+- Per-feature directories: `behave.log`, `junit/`, `outcome.json`, `stages.jsonl`
+  and `resources.jsonl`. Failure diagnostics are also retained in the worker's
+  `staging/logs/` directory and copied into the feature's reports.
+- Global `resources.jsonl`: five-second samples of host CPU, memory, swap, disk
+  space, coordinator descendants and owned containers' CPU, memory and block I/O.
+  Per-feature samples retain only that worker's containers and process tree.
+
+JUnit durations exclude environment hooks in Behave. Use measured process wall
+times, which include feature setup and teardown, for scheduling and comparisons:
+
+```bash
+make test-integration-parallel INTEGRATION_JOBS=3 \
+  INTEGRATION_TIMINGS=staging/parallel/<previous-run-id>/results/summary.json
+```
+
+Without timings, expanded scenario counts provide the initial weights. Unknown
+features use the mean measured seconds per scenario when available. Failed and
+skipped feature timings are not reused. Use a matching Python/ClickHouse version
+and the same filters when reusing timings.
+
+#### Benchmark and CI activation
+
+The manual **integration benchmark** workflow compares the original serial runner
+and the new runner with one, two and three slots on `ubuntu-22.04`, Python 3.10.
+Each mode runs twice on separate runners. Supply an exact ClickHouse version
+resolved from `latest` (for example `26.8.2.7`) so comparisons do not mix releases.
+The existing manual ClickHouse-version workflow is unchanged.
+
+Benchmark reports include total `make` wall time, including wheel and image
+preparation. The parallel runner's own summary starts after the wheel is built;
+use the benchmark's `benchmark.json` and Actions job duration for end-to-end
+comparisons. A clean checkout can run one benchmark locally:
+
+```bash
+CLICKHOUSE_VERSION=26.8.2.7 uv run python -m tests.integration.benchmark --mode 3
+```
+
+Compare full-suite outcomes, version skips, both repetitions' wall times, peak
+memory, swap activity and available disk space. If three slots are unstable or
+slower than two, use two. Mark a feature exclusive only after confirming that it
+passes alone and suffers resource-related failures when sharing the runner.
+Do not hide contention by increasing timeouts or automatically retrying failures.
+
+All twelve existing CI combinations run with three slots without changing job
+names. Adjust `INTEGRATION_JOBS` in the main workflow after comparing CI results:
+use `2` for two slots or `1` to restore the original serial runner.
+JUnit and diagnostics are uploaded on both success and failure, with run-attempt
+specific artifact names. Local timings on a larger machine do not establish the
+speedup or memory requirements of the 4-vCPU, 16-GB CI runner.
