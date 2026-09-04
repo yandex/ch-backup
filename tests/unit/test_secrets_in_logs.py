@@ -149,6 +149,7 @@ from tests.unit.utils import parametrize
 def test_mask_sql_literals(sql: str, expected: str) -> None:
     assert mask_sql_literals(sql) == expected
 
+
 def test_mask_secret_params():
     # pylint: disable=protected-access
     assert cli._mask_secret_params(
