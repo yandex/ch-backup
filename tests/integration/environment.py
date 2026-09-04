@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from tests.integration import env_control
+from tests.integration.diagnostics import record_step_failure
 from tests.integration.modules.logs import save_logs
 from tests.integration.modules.utils import version_ge, version_lt
 
@@ -79,6 +80,7 @@ def after_step(context, step):
     Per-step cleanup function.
     """
     if step.status in ("failed", "error"):
+        record_step_failure(context, step)
         save_logs(context)
         if context.config.userdata.getbool("debug"):
             pdb.post_mortem(step.exc_traceback)

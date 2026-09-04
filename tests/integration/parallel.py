@@ -16,6 +16,7 @@ from types import FrameType
 from typing import IO
 
 from ch_backup import logging
+from tests.integration.diagnostics import print_failure, print_process_failure
 from tests.integration.feature_queue import Feature, FeatureQueue, load_features
 from tests.integration.parallel_runtime import (
     cleanup_environment,
@@ -25,6 +26,7 @@ from tests.integration.parallel_runtime import (
     snapshot,
 )
 from tests.integration.profiling import ResourceSampler, write_feature_profiles
+from tests.integration.resource_summary import write_resource_summary
 
 
 @dataclass
@@ -41,6 +43,7 @@ class Worker:
             "INTEGRATION_ENV_ID": self.environment,
             "INTEGRATION_STAGE_PROFILE": str(output / "stages.jsonl"),
             "INTEGRATION_FEATURE_RESULT": str(output / "outcome.json"),
+            "INTEGRATION_FEATURE_FAILURE": str(output / "failure.json"),
             "PYTHONDONTWRITEBYTECODE": "1",
         }
 
@@ -55,6 +58,7 @@ class RunningFeature:
     output: Path
     log: IO
     started: float
+    failure_reported: bool = False
 
 
 class ParallelRun:
@@ -133,6 +137,7 @@ class ParallelRun:
             sampler.stop()
             try:
                 write_feature_profiles(self.results, self.report)
+                write_resource_summary(self.results, self.report)
             except Exception as error:
                 self.report["errors"].append(f"Writing resource profiles: {error}")
             self.report["wall_seconds"] = time.monotonic() - started
@@ -162,6 +167,8 @@ class ParallelRun:
     def _wait(self, process: subprocess.Popen) -> int:
         interrupted = None
         while process.poll() is None:
+            for running in self.active:
+                self._report_failure(running)
             if self.cancelled:
                 if interrupted is None:
                     interrupted = time.monotonic()
@@ -194,16 +201,16 @@ class ParallelRun:
                 start_new_session=True,
             ) as process:
                 code = self._wait(process)
+        if code:
+            message = f"{worker.path.name}: environment setup exited {code}"
+            print_process_failure(message, output / "setup.log")
+            raise RuntimeError(message)
         images = image_inventory(worker.path)
         self.report["workers"][worker.path.name] = {
             "environment": worker.environment,
             "images": images,
             "setup_seconds": time.monotonic() - started,
         }
-        if code:
-            raise RuntimeError(
-                f"{worker.path.name} setup exited {code}; see {output / 'setup.log'}"
-            )
         # Probe the built binary without starting a server or attaching a test network.
         with (output / "clickhouse-version.txt").open("w") as log:
             with subprocess.Popen(
@@ -218,6 +225,7 @@ class ParallelRun:
                     "--entrypoint",
                     "clickhouse",
                     f"clickhouse01:{worker.environment}",
+                    "server",
                     "--version",
                 ],
                 stdout=log,
@@ -226,7 +234,9 @@ class ParallelRun:
             ) as process:
                 code = self._wait(process)
         if code:
-            raise RuntimeError(f"ClickHouse version probe exited {code}")
+            message = f"{worker.path.name}: ClickHouse version probe exited {code}"
+            print_process_failure(message, output / "clickhouse-version.txt")
+            raise RuntimeError(message)
         self.report["workers"][worker.path.name]["clickhouse_version"] = (
             (output / "clickhouse-version.txt").read_text().strip()
         )
@@ -286,7 +296,25 @@ class ParallelRun:
         )
         self._save()
 
+    def _report_failure(self, running: RunningFeature) -> None:
+        if running.failure_reported:
+            return
+        failure_path = running.output / "failure.json"
+        if not failure_path.exists():
+            return
+        failure = json.loads(failure_path.read_text())
+        self.queue.stopped = True
+        running.failure_reported = True
+        self.report["features"][running.feature.path]["failure"] = failure
+        print_failure(
+            f"{running.worker.path.name}: {failure['filename']}:{failure['line']}: "
+            f"{failure['scenario']} — {failure['step']}",
+            failure["error"],
+        )
+        self._save()
+
     def _complete(self, running: RunningFeature) -> None:
+        self._report_failure(running)
         running.log.close()
         outcome = read_outcome(
             running.output, running.process.returncode, running.feature.scenarios
@@ -307,6 +335,13 @@ class ParallelRun:
             flush=True,
         )
         if not success:
+            if not running.failure_reported:
+                print_process_failure(
+                    f"{running.worker.path.name}: {running.feature.path}: "
+                    f"exit {running.process.returncode}; "
+                    f"{outcome.get('error', 'failed scenario or environment hook')}",
+                    running.output / "behave.log",
+                )
             logs = running.worker.path / "staging/logs"
             if logs.exists():
                 try:
@@ -325,6 +360,7 @@ class ParallelRun:
         while self.active or (self.queue.pending and not self.queue.stopped):
             # Reap every completion before handing out any new work.
             for running in list(self.active):
+                self._report_failure(running)
                 if running.process.poll() is not None:
                     self._complete(running)
             if self.cancelled:

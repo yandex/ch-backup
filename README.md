@@ -211,7 +211,10 @@ active features to finish. The initial heavy features are `backup_restore` and
 not a measured claim about runner utilization.
 
 After a failure, no new features start; active features finish. `--stop` also
-remains enabled within each feature. Interrupted or incomplete runs fail, even
+remains enabled within each feature. Failed steps print their feature, scenario,
+step and traceback in the coordinator log before collecting diagnostics. GitHub
+Actions also receives an error annotation. Setup failures and crashes without
+step results print the process log tail. Interrupted or incomplete runs fail, even
 when JUnit output is missing. Normal completion, errors and handled termination
 signals clean up only owned containers, networks and image tags. Workspaces and
 reports remain available for diagnosis. Cleanup failures are reported as failures;
@@ -226,8 +229,27 @@ Results are printed at startup under `staging/parallel/<run-id>/results/`:
   and `resources.jsonl`. Failure diagnostics are also retained in the worker's
   `staging/logs/` directory and copied into the feature's reports.
 - Global `resources.jsonl`: five-second samples of host CPU, memory, swap, disk
-  space, coordinator descendants and owned containers' CPU, memory and block I/O.
+  space and I/O, coordinator descendants' CPU/RSS/I/O, and owned containers' CPU,
+  memory and block I/O.
   Per-feature samples retain only that worker's containers and process tree.
+- `resource-summary.json` and `resource-summary.md`: per-feature CPU cores
+  (mean/p95), simultaneous container working set plus Python RSS, I/O rates,
+  restart counts and wall times, neighbors, and host pressure during each feature.
+  The Markdown table is also published in GitHub Job Summary. Missing counters
+  are reported as `n/a`, never zero. Five-second samples miss short bursts and
+  processes that start and exit between samples; RSS may include shared pages.
+
+Use the resource summary to choose features for a four-worker benchmark. Compare
+full runs on the same pinned images; p95 demand alone cannot guarantee a safe
+combination. Keep `@parallel_heavy` for two-slot features. Use the existing
+`@parallel_exclusive` only after a repeatable failure with neighbors and resource
+pressure, followed by a successful isolated comparison; no additional tag is
+needed. Host disk I/O includes other work and cannot be attributed to one feature.
+Regenerate a summary from downloaded artifacts without Docker:
+
+```bash
+uv run python -m tests.integration.resource_summary /path/to/results
+```
 
 JUnit durations exclude environment hooks in Behave. Use measured process wall
 times, which include feature setup and teardown, for scheduling and comparisons:
@@ -245,7 +267,7 @@ and the same filters when reusing timings.
 #### Benchmark and CI activation
 
 The manual **integration benchmark** workflow compares the original serial runner
-and the new runner with one, two and three slots on `ubuntu-22.04`, Python 3.10.
+and the new runner with one, two, three and four slots on `ubuntu-22.04`, Python 3.10.
 Each mode runs twice on separate runners. Supply an exact ClickHouse version
 resolved from `latest` (for example `26.8.2.7`) so comparisons do not mix releases.
 The existing manual ClickHouse-version workflow is unchanged.

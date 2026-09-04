@@ -101,8 +101,10 @@ class ResourceSampler:
                         "pid": process.pid,
                         "ppid": process.ppid(),
                         "name": process.name(),
+                        "created_at": process.create_time(),
                         "cpu": process.cpu_times()._asdict(),
                         "memory": process.memory_info()._asdict(),
+                        "io": process.io_counters()._asdict(),
                     }
                 )
             except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -110,9 +112,11 @@ class ResourceSampler:
         return {
             "time": time.time(),
             "cpu": psutil.cpu_times()._asdict(),
+            "cpu_count": psutil.cpu_count(),
             "memory": psutil.virtual_memory()._asdict(),
             "swap": psutil.swap_memory()._asdict(),
             "disk": psutil.disk_usage(str(self.destination.parent))._asdict(),
+            "disk_io": psutil.disk_io_counters()._asdict(),
             "processes": processes,
             "containers": containers,
         }

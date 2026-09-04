@@ -9,13 +9,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.integration.diagnostics import (
+    print_failure,
+    print_process_failure,
+    record_step_failure,
+)
 from tests.integration.feature_queue import (
     Feature,
     FeatureQueue,
     load_features,
     load_timings,
 )
-from tests.integration.parallel import ParallelRun
+from tests.integration.parallel import ParallelRun, RunningFeature, Worker
 from tests.integration.parallel_runtime import (
     cleanup_environment,
     image_inventory,
@@ -29,7 +34,70 @@ def feature(name, weight=1, tags=()):
     return Feature(name, 1, frozenset(tags), weight)
 
 
-@pytest.mark.parametrize("jobs", [1, 2, 3])
+def test_step_failure_is_reported_before_process_exit_and_closes_admission(
+    tmp_path, monkeypatch, capsys
+):
+    selected = feature("tests/one.feature")
+    run = ParallelRun(tmp_path, [selected, feature("tests/two.feature")], 2, [])
+    run.results.mkdir(parents=True)
+    output = run.results / "one"
+    output.mkdir()
+    monkeypatch.setenv("INTEGRATION_FEATURE_FAILURE", str(output / "failure.json"))
+    record_step_failure(
+        SimpleNamespace(scenario=SimpleNamespace(name="restore after restart")),
+        SimpleNamespace(
+            keyword="When",
+            name="we query ClickHouse",
+            filename="tests/one.feature",
+            line=12,
+            error_message="Traceback:\nConnectionError: connection closed",
+            exception=None,
+        ),
+    )
+    process = MagicMock()
+    process.poll.return_value = None
+    running = RunningFeature(
+        Worker(tmp_path, "worker-1"), selected, process, output, MagicMock(), 0
+    )
+    assert run.queue.take() == selected
+    run._report_failure(running)  # pylint: disable=protected-access
+    printed = capsys.readouterr().out
+    assert "tests/one.feature:12" in printed
+    assert "restore after restart" in printed
+    assert "ConnectionError: connection closed" in printed
+    assert run.queue.take() is None
+    assert run.report["features"][selected.path]["failure"]["line"] == 12
+    assert process.poll() is None
+    run._report_failure(running)  # pylint: disable=protected-access
+    assert capsys.readouterr().out == ""
+
+
+def test_error_output_cannot_inject_actions_commands(monkeypatch, capsys):
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    print_failure(
+        "failed\n::warning::fake", "::error::from subprocess\nValueError: bad"
+    )
+    output = capsys.readouterr().out
+    assert output.startswith("::error::failed%0A::warning::fake\n")
+    assert "\n  ::error::from subprocess" in output
+    assert "\n::warning::fake" not in output
+
+
+@pytest.mark.parametrize("exists", [False, True])
+def test_process_failure_reports_available_log_tail(tmp_path, capsys, exists):
+    path = tmp_path / "setup.log"
+    if exists:
+        path.write_text("earlier output\n" * 10000 + "Docker build failed: no space\n")
+    print_process_failure("worker-2: setup exited 1", path)
+    output = capsys.readouterr().out
+    assert "worker-2: setup exited 1" in output
+    assert (
+        "Docker build failed: no space" if exists else "Cannot read process log"
+    ) in output
+    assert len(output) < 5000
+
+
+@pytest.mark.parametrize("jobs", [1, 2, 3, 4])
 def test_queue_visits_each_feature_once_within_budget(jobs):
     features = [
         feature("heavy1", 9, ["parallel_heavy"]),
