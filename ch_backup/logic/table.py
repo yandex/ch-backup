@@ -461,7 +461,6 @@ class TableBackup(BackupManager):
         context: BackupContext,
         table: Table,
         backup_name: str,
-        change_times: dict[Table, TableMetadataChangeTime],
         expected_change_time: TableMetadataChangeTime,
         *,
         check_table_exists: bool = False,
