@@ -2,12 +2,6 @@
 Unit tests for masking secrets before they reach the log.
 """
 
-from contextlib import contextmanager
-from typing import Any, Generator, List
-
-import click
-from loguru import logger
-
 from ch_backup import cli
 from ch_backup.util import mask_sql_literals
 from tests.unit.utils import parametrize
