@@ -2,8 +2,12 @@
 Behave entry point.
 """
 
+import json
 import logging
+import os
 import re
+import time
+from pathlib import Path
 
 from tests.integration import env_control
 from tests.integration.modules.logs import save_logs
@@ -29,10 +33,33 @@ def before_feature(context, feature):
     """
     Per-feature setup function.
     """
+    context.feature_started = time.monotonic()
+    context.selected_scenario_lines = {
+        s.line for s in feature.walk_scenarios() if s.should_run(context.config)
+    }
     _update_feature_flags(context, feature.tags)
     env_control.update(context)
     if "dependent-scenarios" in feature.tags:
         env_control.restart(context)
+
+
+def after_feature(context, feature):
+    """Record complete feature time and outcomes, including version skips."""
+    destination = os.getenv("INTEGRATION_FEATURE_RESULT")
+    if destination:
+        Path(destination).write_text(
+            json.dumps(
+                {
+                    "feature_seconds": time.monotonic() - context.feature_started,
+                    "scenarios": [
+                        {"name": s.name, "line": s.line, "status": s.status.name}
+                        for s in feature.walk_scenarios()
+                        if s.line in context.selected_scenario_lines
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
 
 
 def before_scenario(context, scenario):

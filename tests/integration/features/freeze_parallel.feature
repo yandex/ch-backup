@@ -1,3 +1,4 @@
+@parallel_heavy
 Feature: Parallel freeze
 
   Background:

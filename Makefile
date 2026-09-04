@@ -5,6 +5,9 @@ export COMPOSE_HTTP_TIMEOUT ?= 300
 export CLICKHOUSE_VERSION ?= latest
 export PROJECT_NAME ?= ch-backup
 export DEV_MODE ?= false
+export INTEGRATION_JOBS ?= 3
+export INTEGRATION_FEATURESET ?= tests/integration/ch_backup.featureset
+export INTEGRATION_TIMINGS ?=
 
 export BUILD_PYTHON_OUTPUT_DIR ?= dist
 export BUILD_DEB_OUTPUT_DIR ?= out
@@ -104,6 +107,11 @@ test-unit: setup
 test-integration: create-test-env
 	rm -rf staging/logs
 	uv run behave --show-timings --stop -D skip_setup $(BEHAVE_ARGS) @tests/integration/ch_backup.featureset
+
+
+.PHONY: test-integration-parallel
+test-integration-parallel: check-docker-compose build
+	uv run python -m tests.integration.parallel
 
 
 .PHONY: clean
@@ -220,6 +228,7 @@ help:
 	@echo "  lint                       Run all linter tools. Alias for \"isort black codespell ruff pylint mypy\"."
 	@echo "  test-unit                  Run unit tests."
 	@echo "  test-integration           Run integration tests."
+	@echo "  test-integration-parallel  Run whole features in isolated parallel environments."
 	@echo "  isort                      Perform isort checks."
 	@echo "  black                      Perform black checks."
 	@echo "  codespell                  Perform codespell checks."
@@ -241,3 +250,6 @@ help:
 	@echo "  PYTEST_ARGS                Arguments to pass to pytest (unit tests)."
 	@echo "  BEHAVE_ARGS                Arguments to pass to behave (integration tests)."
 	@echo "  CLICKHOUSE_VERSION         ClickHouse version to use in integration tests (default: \"$(CLICKHOUSE_VERSION)\")."
+	@echo "  INTEGRATION_JOBS           Slot budget for test-integration-parallel (default: $(INTEGRATION_JOBS))."
+	@echo "  INTEGRATION_FEATURESET     Canonical feature list for parallel runs."
+	@echo "  INTEGRATION_TIMINGS        Optional previous summary.json for wall-time scheduling."
