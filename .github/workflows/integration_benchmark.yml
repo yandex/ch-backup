@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [serial, '1', '2', '3']
+        mode: [serial, '1', '2', '3', '4']
         repeat: [1, 2]
     steps:
     - uses: actions/checkout@v7

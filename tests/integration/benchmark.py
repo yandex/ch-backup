@@ -24,7 +24,7 @@ from tests.integration.profiling import ResourceSampler
 def cli_main() -> None:
     """Each benchmark matrix job measures exactly one mode on its own runner."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--mode", choices=["serial", "1", "2", "3"], required=True)
+    parser.add_argument("--mode", choices=["serial", "1", "2", "3", "4"], required=True)
     args = parser.parse_args()
     version = os.getenv("CLICKHOUSE_VERSION", "")
     if not re.fullmatch(r"\d+(?:\.\d+){3}", version):

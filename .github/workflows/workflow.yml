@@ -73,8 +73,8 @@ jobs:
       run: |
         case "$INTEGRATION_JOBS" in
           1) make test-integration ;;
-          2|3) make test-integration-parallel ;;
-          *) echo 'INTEGRATION_JOBS must be 1, 2 or 3' >&2; exit 2 ;;
+          2|3|4) make test-integration-parallel ;;
+          *) echo 'INTEGRATION_JOBS must be 1, 2, 3 or 4' >&2; exit 2 ;;
         esac
       env:
         INTEGRATION_JOBS: '3'
