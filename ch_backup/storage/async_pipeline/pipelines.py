@@ -272,15 +272,7 @@ def run(pipeline: PypelnStage) -> None:
         itr = iter(pipeline)
         exhaust_iterator(itr)
     except ValueError as e:
-        # The library "stopit" (dependency of "pypeln") as of the version 1.1.2, incorrectly handle the case when
-        # timeout exception is sent to already terminated thread. It's incorrectly interpreted as an internal error.
-        # https://github.com/glenfant/stopit/blob/dda4bd181d1d29ab1fb22314dc9bde0e3c931abc/src/stopit/threadstop.py#L37
-        if "Invalid thread ID" in str(e):
-            logging.warning(
-                "Thread ID error due to incorrect handling of thread termination in stopit library, skipping",
-                exc_info=True,
-            )
-        else:
+        if not _ignore_invalid_thread_id_error(e):
             raise
 
 
@@ -291,7 +283,11 @@ def run_and_return_first(pipeline: PypelnStage) -> Any:
     itr = iter(pipeline)
 
     result = next(itr)  # Fetch and save first item
-    exhaust_iterator(itr)
+    try:
+        exhaust_iterator(itr)
+    except ValueError as e:
+        if not _ignore_invalid_thread_id_error(e):
+            raise
 
     return result
 
@@ -303,13 +299,32 @@ def run_and_collect_all(pipeline: PypelnStage) -> List[Any]:
     itr = iter(pipeline)
     results: list = []
 
-    for item in itr:
-        if isinstance(item, Iterator):
-            results.extend(item)
-        else:
-            results.append(item)
+    try:
+        for item in itr:
+            if isinstance(item, Iterator):
+                results.extend(item)
+            else:
+                results.append(item)
+    except ValueError as e:
+        if not _ignore_invalid_thread_id_error(e):
+            raise
 
     return results
+
+
+def _ignore_invalid_thread_id_error(error: ValueError) -> bool:
+    # The library "stopit" (dependency of "pypeln") as of version 1.1.2
+    # incorrectly handles a timeout exception sent to an already terminated
+    # thread as an internal error.
+    # https://github.com/glenfant/stopit/blob/dda4bd181d1d29ab1fb22314dc9bde0e3c931abc/src/stopit/threadstop.py#L37
+    if "Invalid thread ID" not in str(error):
+        return False
+
+    logging.warning(
+        "Thread ID error due to incorrect handling of thread termination in stopit library, skipping",
+        exc_info=True,
+    )
+    return True
 
 
 def _calc_encrypted_size(config: dict, data_size: int) -> int:

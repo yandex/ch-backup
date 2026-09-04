@@ -561,7 +561,7 @@ class ClickhouseBackup:
 
         if sources.access:
             # Restore access control entities
-            self._access_backup_manager.restore(self._context)
+            self._access_backup_manager.restore(self._context, reload_users=True)
 
         if sources.udf:
             # Restore UDF
