@@ -305,6 +305,8 @@ class ClickhouseClient:
         url: str = None,
         data: Union[bytes, str] = None,
     ) -> Any:
+        # HTTP handlers such as /ping do not accept SQL query settings.
+        params = {} if url else copy(self._settings)
         if url:
             url = urljoin(self._url, url)
         else:
@@ -313,7 +315,6 @@ class ClickhouseClient:
         if isinstance(data, str):
             data = data.encode()
 
-        params = copy(self._settings)
         if query:
             params["query"] = query
         if self._user:
