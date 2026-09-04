@@ -522,6 +522,12 @@ RELOAD_CONFIG_SQL = strip_query(
 """
 )
 
+RELOAD_USERS_SQL = strip_query(
+    """
+    SYSTEM RELOAD USERS
+"""
+)
+
 RENAME_TABLE_SQL = strip_query(
     """
     RENAME TABLE `{db_name}`.`{old_table_name}` TO `{db_name}`.`{new_table_name}`
@@ -1468,6 +1474,12 @@ class ClickhouseCTL:
         Reload ClickHouse configuration query.
         """
         self._ch_client.query(RELOAD_CONFIG_SQL, timeout=self._timeout)
+
+    def reload_users(self) -> None:
+        """
+        Reload ClickHouse access control entities.
+        """
+        self._ch_client.query(RELOAD_USERS_SQL, timeout=self._timeout)
 
     def create_deduplication_table(self):
         """
