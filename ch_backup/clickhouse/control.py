@@ -557,6 +557,16 @@ GET_ZOOKEEPER_ADMIN_UUID = strip_query(
 """
 )
 
+_CHECK_ZOOKEEPER_SQL = strip_query(
+    """
+    SELECT 1
+    FROM system.zookeeper
+    WHERE path = '/'
+    LIMIT 1
+    FORMAT Null
+"""
+)
+
 GET_PARTITIONS = strip_query(
     """
     SELECT DISTINCT partition_id
@@ -1181,6 +1191,12 @@ class ClickhouseCTL:
         """
         result = self._ch_client.query(GET_ZOOKEEPER_ADMIN_UUID).get("data", [])
         return {item["name"]: item["value"] for item in result}
+
+    def check_zookeeper_available(self) -> None:
+        """
+        Check that ClickHouse can access its configured ZooKeeper or Keeper.
+        """
+        self._ch_client.query(_CHECK_ZOOKEEPER_SQL)
 
     @staticmethod
     def scan_frozen_parts(
