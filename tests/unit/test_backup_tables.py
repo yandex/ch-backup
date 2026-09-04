@@ -1,64 +1,123 @@
 from dataclasses import dataclass
 from unittest.mock import MagicMock, Mock, patch
+from contextlib import AbstractContextManager, nullcontext
+from dataclasses import replace
+from typing import List, Optional
+from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
 
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
 from ch_backup.backup_context import BackupContext
+from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.models import Database, Table
 from ch_backup.config import DEFAULT_CONFIG
-from ch_backup.logic.table import TableBackup
+from ch_backup.logic.table import TableBackup, TableMetadataChangeTime
 
 UUID = "fa8ff291-1922-4b7f-afa7-06633d5e16ae"
 
 
-@dataclass
-class FakeStatResult:
-    st_mtime_ns: int
-    st_ctime_ns: int
-
-
-_STAT_UNCHANGED = FakeStatResult(
-    st_mtime_ns=16890001958000000, st_ctime_ns=16890001958000000
+_METADATA_UNCHANGED = TableMetadataChangeTime(
+    metadata_path="", mtime_ns=16890001958000000, ctime_ns=16890001958000000
 )
-_STAT_MTIME_CHANGED = FakeStatResult(
-    st_mtime_ns=16890001958000111, st_ctime_ns=16890001958000000
-)
-_STAT_CTIME_CHANGED = FakeStatResult(
-    st_mtime_ns=16890001958000000, st_ctime_ns=16890001958000111
-)
+_METADATA_MTIME_CHANGED = replace(_METADATA_UNCHANGED, mtime_ns=16890001958000111)
+_METADATA_CTIME_CHANGED = replace(_METADATA_UNCHANGED, ctime_ns=16890001958000111)
+_FREEZE_ERROR = ClickhouseError("Cannot freeze table")
+_EXISTS_ERROR = ClickhouseError("Cannot check table existence")
 
 
 @pytest.mark.parametrize(
-    "fake_stats, backups_expected_db1, backups_expected_db2",
+    "metadata_after_freeze, freeze_error, table_exists, expected_error, expected_databases",
     [
-        # Metadata unchanged in both dbs -> both tables backed up
-        ([_STAT_UNCHANGED, _STAT_UNCHANGED, _STAT_UNCHANGED, _STAT_UNCHANGED], 1, 1),
-        # db1 table mtime changed after freeze -> db1 skipped, db2 backed up
-        (
-            [_STAT_UNCHANGED, _STAT_UNCHANGED, _STAT_MTIME_CHANGED, _STAT_UNCHANGED],
-            0,
-            1,
+        pytest.param(
+            [_METADATA_UNCHANGED, _METADATA_UNCHANGED],
+            None,
+            True,
+            None,
+            ["db1", "db2"],
+            id="metadata-unchanged",
         ),
-        # db1 table ctime changed after freeze -> db1 skipped, db2 backed up
-        (
-            [_STAT_UNCHANGED, _STAT_UNCHANGED, _STAT_CTIME_CHANGED, _STAT_UNCHANGED],
-            0,
-            1,
+        pytest.param(
+            [_METADATA_MTIME_CHANGED, _METADATA_UNCHANGED],
+            None,
+            True,
+            None,
+            ["db2"],
+            id="mtime-changed-after-freeze",
         ),
-        # EXCHANGE TABLES between db1 and db2: db1 backed up normally,
-        # db2 table ctime changed (EXCHANGE happened) -> db2 skipped
-        (
-            [_STAT_UNCHANGED, _STAT_UNCHANGED, _STAT_UNCHANGED, _STAT_CTIME_CHANGED],
-            1,
-            0,
+        pytest.param(
+            [_METADATA_CTIME_CHANGED, _METADATA_UNCHANGED],
+            None,
+            True,
+            None,
+            ["db2"],
+            id="ctime-changed-after-freeze",
+        ),
+        pytest.param(
+            [_METADATA_UNCHANGED, _METADATA_CTIME_CHANGED],
+            None,
+            True,
+            None,
+            ["db1"],
+            id="exchange-between-databases",
+        ),
+        pytest.param(
+            [_METADATA_MTIME_CHANGED, _METADATA_UNCHANGED],
+            _FREEZE_ERROR,
+            True,
+            None,
+            ["db2"],
+            id="freeze-error-mtime-changed",
+        ),
+        pytest.param(
+            [_METADATA_CTIME_CHANGED, _METADATA_UNCHANGED],
+            _FREEZE_ERROR,
+            True,
+            None,
+            ["db2"],
+            id="freeze-error-ctime-changed",
+        ),
+        pytest.param(
+            [None, _METADATA_UNCHANGED],
+            _FREEZE_ERROR,
+            True,
+            None,
+            ["db2"],
+            id="freeze-error-metadata-missing",
+        ),
+        pytest.param(
+            [_METADATA_UNCHANGED, _METADATA_UNCHANGED],
+            _FREEZE_ERROR,
+            False,
+            None,
+            ["db2"],
+            id="freeze-error-table-missing",
+        ),
+        pytest.param(
+            [_METADATA_UNCHANGED, _METADATA_UNCHANGED],
+            _FREEZE_ERROR,
+            True,
+            _FREEZE_ERROR,
+            [],
+            id="freeze-error-table-unchanged",
+        ),
+        pytest.param(
+            [_METADATA_UNCHANGED, _METADATA_UNCHANGED],
+            _FREEZE_ERROR,
+            _EXISTS_ERROR,
+            _EXISTS_ERROR,
+            [],
+            id="existence-check-error",
         ),
     ],
 )
+# pylint: disable=too-many-locals
 def test_backup_table_skipping_if_metadata_updated_during_backup(
-    fake_stats: list[FakeStatResult],
-    backups_expected_db1: int,
-    backups_expected_db2: int,
+    metadata_after_freeze: List[Optional[TableMetadataChangeTime]],
+    freeze_error: Optional[ClickhouseError],
+    table_exists: bool | ClickhouseError,
+    expected_error: Optional[ClickhouseError],
+    expected_databases: List[str],
 ) -> None:
     table_name = "table1"
     db1_name = "db1"
@@ -125,11 +184,48 @@ def test_backup_table_skipping_if_metadata_updated_during_backup(
 
     context.backup_layout = Mock()
 
-    read_bytes_mock = Mock(return_value=creation_statement.encode())
+    clickhouse_ctl_mock.freeze_table.side_effect = [freeze_error, None]
+    if isinstance(table_exists, ClickhouseError):
+        clickhouse_ctl_mock.does_table_exist.side_effect = table_exists
+    else:
+        clickhouse_ctl_mock.does_table_exist.return_value = table_exists
 
+    # Capture metadata for both databases before freezing either table.
+    # Keep reads scoped to each path, without mocking global filesystem calls.
+    change_times = {
+        table.metadata_path: iter(
+            [
+                replace(_METADATA_UNCHANGED, metadata_path=table.metadata_path),
+                replace(after, metadata_path=table.metadata_path) if after else None,
+            ]
+        )
+        for tables, after in zip(tables_by_db.values(), metadata_after_freeze)
+        for table in tables
+    }
+    error_context: AbstractContextManager[
+        Optional[pytest.ExceptionInfo[ClickhouseError]]
+    ]
+    if expected_error:
+        error_context = pytest.raises(ClickhouseError)
+    else:
+        error_context = nullcontext()
     with (
-        patch("os.stat", side_effect=fake_stats),
-        patch("ch_backup.logic.table.Path", read_bytes=read_bytes_mock),
+        patch.object(
+            TableBackup,
+            "_get_change_time",
+            side_effect=lambda path: next(change_times[path]),
+        ),
+        patch.object(
+            TableBackup,
+            "_load_create_statement_from_disk",
+            return_value=creation_statement,
+        ),
+        patch.object(
+            table_backup,
+            "_backup_frozen_table_data",
+            wraps=table_backup._backup_frozen_table_data,  # pylint: disable=protected-access
+        ) as backup_frozen_table_data,
+        error_context as raised,
     ):
         table_backup.backup(
             context,
@@ -139,10 +235,38 @@ def test_backup_table_skipping_if_metadata_updated_during_backup(
             multiprocessing_config=DEFAULT_CONFIG["multiprocessing"],  # type: ignore
         )
 
-    assert len(context.backup_meta.get_tables(db1_name)) == backups_expected_db1
-    assert len(context.backup_meta.get_tables(db2_name)) == backups_expected_db2
-    # One call after each table and one after each database is backed up
-    assert clickhouse_ctl_mock.remove_freezed_data.call_count == 4
+    if expected_error:
+        assert raised is not None
+        assert raised.value is expected_error
+        clickhouse_ctl_mock.remove_freezed_data.assert_not_called()
+    else:
+        # Exactly one cleanup per table, whether skipped or successfully backed up,
+        # and one cleanup after each database.
+        assert clickhouse_ctl_mock.remove_freezed_data.call_args_list == [
+            call(backup_meta.get_sanitized_name(), tables_by_db[db1_name][0]),
+            call(),
+            call(backup_meta.get_sanitized_name(), tables_by_db[db2_name][0]),
+            call(),
+        ]
+
+    assert [(table.database, table.name) for table in backup_meta.get_tables()] == [
+        (db_name, table_name) for db_name in expected_databases
+    ]
+    assert context.backup_layout.upload_create_statements.call_args_list == [
+        call(backup_meta, db, [(table_name, creation_statement)])
+        for db in [db1, db2]
+        if db.name in expected_databases
+    ]
+    assert backup_frozen_table_data.call_args_list == [
+        call(context, tables_by_db[db_name][0], backup_meta.get_sanitized_name())
+        for db_name in expected_databases
+    ]
+    if freeze_error and metadata_after_freeze[0] == _METADATA_UNCHANGED:
+        clickhouse_ctl_mock.does_table_exist.assert_called_once_with(
+            db1_name, table_name
+        )
+    else:
+        clickhouse_ctl_mock.does_table_exist.assert_not_called()
 
 
 class TestValidateUploadedParts:
