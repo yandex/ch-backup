@@ -5,7 +5,7 @@ Pipeline builder.
 from functools import reduce
 from math import ceil
 from pathlib import Path
-from typing import Any, BinaryIO, Iterable, List, Optional, Sequence, Union
+from typing import Any, BinaryIO, Iterable, Sequence, Union
 
 from pypeln import utils as pypeln_utils
 from pypeln.thread.api.from_iterable import from_iterable
@@ -41,7 +41,7 @@ from ch_backup.storage.async_pipeline.stages import (
 from ch_backup.storage.engine import get_storage_engine
 
 # Union here is a workaround according to https://github.com/python/mypy/issues/7866
-PypelnStage = Union[pypeln_utils.BaseStage]
+PypelnStage = Union[pypeln_utils.BaseStage]  # noqa: UP007
 
 
 class PipelineBuilder:
@@ -53,7 +53,7 @@ class PipelineBuilder:
 
     def __init__(self, config: dict) -> None:
         self._config = config
-        self._stages: List[PypelnStage] = []
+        self._stages: list[PypelnStage] = []
 
     def build_iterable_stage(self, iterable: Iterable[Any]) -> "PipelineBuilder":
         """
@@ -116,8 +116,8 @@ class PipelineBuilder:
     def build_read_files_tarball_scan_stage(
         self,
         dir_path: Path,
-        tar_base_dir: Optional[str] = None,
-        exclude_file_names: Optional[List[str]] = None,
+        tar_base_dir: str | None = None,
+        exclude_file_names: list[str] | None = None,
     ) -> "PipelineBuilder":
         """
         Build reading files to tarball stage.
@@ -137,7 +137,7 @@ class PipelineBuilder:
         return self
 
     def build_read_files_tarball_stage(
-        self, dir_path: Path, file_relative_paths: List[Path]
+        self, dir_path: Path, file_relative_paths: list[Path]
     ) -> "PipelineBuilder":
         """
         Build reading files to tarball stage.
@@ -155,7 +155,7 @@ class PipelineBuilder:
         return self
 
     def build_read_data_tarball_stage(
-        self, file_names: List[str], data_list: List[bytes]
+        self, file_names: list[str], data_list: list[bytes]
     ) -> "PipelineBuilder":
         """
         Build reading in-memory data to tarball stage.
@@ -267,7 +267,7 @@ class PipelineBuilder:
         return self
 
     def build_delete_files_scan_stage(
-        self, base_path: Path, exclude_file_names: Optional[List[str]] = None
+        self, base_path: Path, exclude_file_names: list[str] | None = None
     ) -> "PipelineBuilder":
         """
         Build deleting files stage.
@@ -281,7 +281,7 @@ class PipelineBuilder:
         )
         return self
 
-    def build_delete_files_stage(self, files: List[Path]) -> "PipelineBuilder":
+    def build_delete_files_stage(self, files: list[Path]) -> "PipelineBuilder":
         """
         Build deleting files stage.
         """
@@ -346,9 +346,7 @@ class PipelineBuilder:
         self.append(thread_map(CollectDataStage()))
         return self
 
-    def build_write_file_stage(
-        self, file_path: Union[Path, BinaryIO]
-    ) -> "PipelineBuilder":
+    def build_write_file_stage(self, file_path: Path | BinaryIO) -> "PipelineBuilder":
         """
         Build writing single file stage.
         """

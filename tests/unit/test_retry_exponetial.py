@@ -2,8 +2,6 @@
 Unit test for RateLimiter.
 """
 
-from typing import List
-
 import pytest
 
 from ch_backup.storage.engine.s3.s3_retry import retry
@@ -40,7 +38,7 @@ from tests.unit.time_mocker import TimeMocker
     ],
 )
 def test_rate_limiter_extract(
-    max_attempts: int, max_interval: float, multiplier: float, expected_sleep_time: List
+    max_attempts: int, max_interval: float, multiplier: float, expected_sleep_time: list
 ) -> None:
     timer = TimeMocker()
     execution_count = 0

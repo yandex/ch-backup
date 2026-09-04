@@ -15,7 +15,7 @@ from concurrent.futures import (
 )
 from dataclasses import dataclass
 from multiprocessing import get_context
-from typing import Any, Callable, Dict, Iterable, Optional
+from typing import Any, Callable, Iterable
 
 from ch_backup import logging
 from ch_backup.util import exhaust_iterator
@@ -32,7 +32,7 @@ class Job:
     """
 
     id_: str
-    callback: Optional[Callable]
+    callback: Callable | None
 
 
 class ExecPool:
@@ -43,7 +43,7 @@ class ExecPool:
     """
 
     def __init__(self, executor: Executor) -> None:
-        self._future_to_job: Dict[Future, Job] = {}
+        self._future_to_job: dict[Future, Job] = {}
         self._pool = executor
         # It is necessary to start all processes while there are no running threads
         # Used to freeze and backup tables at the same time
@@ -60,7 +60,7 @@ class ExecPool:
         job_id: str,
         func: Callable,
         *args: Any,
-        callback: Optional[Callable] = None,
+        callback: Callable | None = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -81,7 +81,7 @@ class ExecPool:
         future.result()
 
     def as_completed(
-        self, keep_going: bool = False, timeout: Optional[float] = None
+        self, keep_going: bool = False, timeout: float | None = None
     ) -> Iterable[Any]:
         """
         Return result from futures as they are completed.
@@ -115,9 +115,7 @@ class ExecPool:
 
         self._future_to_job = {}
 
-    def wait_all(
-        self, keep_going: bool = False, timeout: Optional[float] = None
-    ) -> None:
+    def wait_all(self, keep_going: bool = False, timeout: float | None = None) -> None:
         """
         Wait workers for complete jobs.
 

@@ -5,7 +5,7 @@ S3 client factory.
 import socket
 import threading
 from functools import wraps
-from typing import Callable, Optional, Union
+from typing import Callable
 
 import boto3
 import requests
@@ -36,9 +36,7 @@ class S3ClientFactory:
         )
 
     @retry((S3BalancerUnknownHost, requests.RequestException))
-    def _resolve_proxies(
-        self, resolver_path: str, proxy_port: int
-    ) -> Union[dict, None]:
+    def _resolve_proxies(self, resolver_path: str, proxy_port: int) -> dict | None:
         """
         Get proxy host name via a special handler
         """
@@ -106,7 +104,7 @@ class S3ClientCachedFactory:
 
     def __init__(self, s3_client_factory: S3ClientFactory) -> None:
         self._s3_client_factory = s3_client_factory
-        self._cached_s3_client: Optional[S3Client] = None
+        self._cached_s3_client: S3Client | None = None
 
     @synchronized
     def create_s3_client(self, cached: bool = True) -> S3Client:

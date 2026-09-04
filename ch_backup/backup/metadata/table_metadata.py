@@ -3,7 +3,7 @@ Backup metadata for ClickHouse table.
 """
 
 from types import SimpleNamespace
-from typing import List, NamedTuple, Optional, Set
+from typing import NamedTuple
 
 from ch_backup.backup.metadata.part_metadata import PartMetadata
 
@@ -55,9 +55,7 @@ class TableMetadata(SimpleNamespace):
     Backup metadata for ClickHouse table.
     """
 
-    def __init__(
-        self, database: str, name: str, engine: str, uuid: Optional[str]
-    ) -> None:
+    def __init__(self, database: str, name: str, engine: str, uuid: str | None) -> None:
         super().__init__()
         self.database: str = database
         self.name: str = name
@@ -75,13 +73,13 @@ class TableMetadata(SimpleNamespace):
         return self.raw_metadata["engine"]
 
     @property
-    def uuid(self) -> Optional[str]:
+    def uuid(self) -> str | None:
         """
         Return uuid of the table if not zero. Used for view restore in ch > 20.10
         """
         return self.raw_metadata["uuid"]
 
-    def get_parts(self, *, excluded_parts: Set[str] = None) -> List[PartMetadata]:
+    def get_parts(self, *, excluded_parts: set[str] = None) -> list[PartMetadata]:
         """
         Return data parts (sorted).
         """

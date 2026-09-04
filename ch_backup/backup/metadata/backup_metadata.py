@@ -8,7 +8,7 @@ import os
 import socket
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Sequence
 
 from ch_backup.backup.metadata.access_control_metadata import AccessControlMetadata
 from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageMetadata
@@ -50,7 +50,7 @@ class BackupMetadata:
         labels: dict = None,
         schema_only: bool = False,
         encrypted: bool = True,
-        path: Optional[str] = None,
+        path: str | None = None,
     ) -> None:
         self.name = name
         # DEPRECATED: ``path`` is kept solely for backward compatibility with
@@ -67,7 +67,7 @@ class BackupMetadata:
         self.labels = labels or {}
         self.time_format = time_format
         self.start_time = now()
-        self.end_time: Optional[datetime] = None
+        self.end_time: datetime | None = None
         self.size = 0
         self.real_size = 0
         self.schema_only = schema_only
@@ -75,12 +75,12 @@ class BackupMetadata:
         self.cloud_storage: CloudStorageMetadata = CloudStorageMetadata()
 
         self._state = BackupState.CREATING
-        self._exception: Optional[str] = None
-        self._databases: Dict[str, dict] = {}
+        self._exception: str | None = None
+        self._databases: dict[str, dict] = {}
         self._access_control = AccessControlMetadata()
-        self._user_defined_functions: List[str] = []
-        self._named_collections: List[str] = []
-        self._workload_entities: List[str] = []
+        self._user_defined_functions: list[str] = []
+        self._named_collections: list[str] = []
+        self._workload_entities: list[str] = []
 
     def __str__(self) -> str:
         return self.dump_json()
@@ -99,14 +99,14 @@ class BackupMetadata:
         self._state = value
 
     @property
-    def exception(self) -> Optional[str]:
+    def exception(self) -> str | None:
         """
         Exception type and message for failed backup.
         """
         return self._exception
 
     @exception.setter
-    def exception(self, value: Optional[str]) -> None:
+    def exception(self, value: str | None) -> None:
         self._exception = value
 
     @property
@@ -117,7 +117,7 @@ class BackupMetadata:
         return self._format_time(self.start_time)
 
     @property
-    def end_time_str(self) -> Optional[str]:
+    def end_time_str(self) -> str | None:
         """
         String representation of backup end time.
         """
@@ -134,7 +134,7 @@ class BackupMetadata:
         Serialize backup metadata.
         """
         if light:
-            databases: Dict[str, dict] = {}
+            databases: dict[str, dict] = {}
         else:
             # Rewrite ``link`` of every part from a plain backup name back to a
             # full storage path (``<path_root>/<source_backup_name>``) so that
@@ -174,7 +174,7 @@ class BackupMetadata:
             },
         }
 
-    def _databases_with_legacy_part_links(self) -> Dict[str, dict]:
+    def _databases_with_legacy_part_links(self) -> dict[str, dict]:
         """
         Return a deep-copy of ``self._databases`` where every part's ``link``
         field is rewritten from a plain backup name (new format) to a full
@@ -207,8 +207,8 @@ class BackupMetadata:
         self,
         light: bool = False,
         pretty: bool = False,
-        database: Optional[str] = None,
-        table: Optional[str] = None,
+        database: str | None = None,
+        table: str | None = None,
     ) -> str:
         """
         Return json representation of backup metadata.
@@ -373,7 +373,7 @@ class BackupMetadata:
             "tables": {},
         }
 
-    def get_tables(self, db_name: Optional[str] = None) -> Sequence[TableMetadata]:
+    def get_tables(self, db_name: str | None = None) -> Sequence[TableMetadata]:
         """
         Get tables for the specified database.
         """
@@ -422,7 +422,7 @@ class BackupMetadata:
         assert nc_name not in self._named_collections
         self._named_collections.append(nc_name)
 
-    def get_udf(self) -> List[str]:
+    def get_udf(self) -> list[str]:
         """
         Get user defined function data.
         """
@@ -432,14 +432,14 @@ class BackupMetadata:
         """
         Get data parts of all tables.
         """
-        parts: List[PartMetadata] = []
+        parts: list[PartMetadata] = []
         for db_name in self.get_databases():
             for table in self.get_tables(db_name):
                 parts.extend(table.get_parts())
 
         return parts
 
-    def get_named_collections(self) -> List[str]:
+    def get_named_collections(self) -> list[str]:
         """
         Get named collections data.
         """
@@ -452,7 +452,7 @@ class BackupMetadata:
         assert entity_name not in self._workload_entities
         self._workload_entities.append(entity_name)
 
-    def get_workload_entities(self) -> List[str]:
+    def get_workload_entities(self) -> list[str]:
         """
         Get workload entities data.
         """
@@ -460,7 +460,7 @@ class BackupMetadata:
 
     def find_part(
         self, db_name: str, table_name: str, part_name: str
-    ) -> Optional[PartMetadata]:
+    ) -> PartMetadata | None:
         """
         Find and return data part. If not found, None is returned.
         """
@@ -480,7 +480,7 @@ class BackupMetadata:
         if not part.link:
             self.real_size += part.size
 
-    def remove_parts(self, table: TableMetadata, parts: List[PartMetadata]) -> None:
+    def remove_parts(self, table: TableMetadata, parts: list[PartMetadata]) -> None:
         """
         Remove data parts from backup metadata.
         """
@@ -506,7 +506,7 @@ class BackupMetadata:
         """
         return self._access_control
 
-    def set_access_control(self, objects: Sequence[Dict[str, Any]]) -> None:
+    def set_access_control(self, objects: Sequence[dict[str, Any]]) -> None:
         """
         Build and add access control objects to backup metadata.
         """
@@ -523,7 +523,7 @@ class BackupMetadata:
         return value.strftime(self.time_format)
 
     @staticmethod
-    def _load_time(meta: dict, attr: str) -> Optional[datetime]:
+    def _load_time(meta: dict, attr: str) -> datetime | None:
         attr_value = meta.get(attr)
         if not attr_value:
             return None

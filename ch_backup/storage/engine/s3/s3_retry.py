@@ -8,7 +8,7 @@ from http.client import HTTPException
 from inspect import isfunction
 from random import uniform
 from time import sleep
-from typing import TYPE_CHECKING, Any, Callable, TypeVar, Union
+from typing import TYPE_CHECKING, Any, Callable, TypeVar
 
 from botocore.exceptions import BotoCoreError, ClientError
 from urllib3.exceptions import HTTPError
@@ -66,7 +66,7 @@ class S3RetryMeta(ABCMeta):
 
 # pylint: disable=too-many-positional-arguments
 def retry(
-    exception_types: Union[type, tuple] = Exception,
+    exception_types: type | tuple = Exception,
     max_attempts: int = 5,
     max_interval: float = 5,
     multiplier: float = 0.5,
@@ -98,7 +98,7 @@ class RetryExponential:
     # pylint: disable=too-many-positional-arguments
     def __init__(
         self,
-        exception_types: Union[type, tuple] = Exception,
+        exception_types: type | tuple = Exception,
         max_attempts: int = 5,
         max_interval: float = 5,
         multiplier: float = 0.5,

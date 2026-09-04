@@ -6,7 +6,7 @@ import json
 from collections import defaultdict
 from enum import Enum
 from os.path import exists
-from typing import Any, Callable, Dict, Mapping
+from typing import Any, Callable, Mapping
 
 from ch_backup.backup.metadata import PartMetadata
 
@@ -27,12 +27,12 @@ class RestoreContext:
     Backup restore context. Allows continue restore process after errors.
     """
 
-    def __init__(self, config: Dict):
+    def __init__(self, config: dict):
         self._state_file = config["restore_context_path"]
         self._state_file_dump_threshold = config["restore_context_sync_threshold_ops"]
         self._state_updates_cnt = 0
 
-        self._databases_dict: Dict[str, Dict[str, Dict[str, PartState]]] = defaultdict(
+        self._databases_dict: dict[str, dict[str, dict[str, PartState]]] = defaultdict(
             lambda: defaultdict(lambda: defaultdict(lambda: PartState.NOT_DOWNLOADED))
         )
         self._failed: Mapping[str, Any] = defaultdict(
@@ -58,7 +58,7 @@ class RestoreContext:
         return wrapper
 
     @property
-    def _databases(self) -> Dict[str, Dict[str, Dict[str, PartState]]]:
+    def _databases(self) -> dict[str, dict[str, dict[str, PartState]]]:
         """
         Databases property with lazy load.
         """
@@ -68,7 +68,7 @@ class RestoreContext:
         return self._databases_dict
 
     @_databases.setter
-    def _databases(self, databases: Dict[str, Dict[str, Dict[str, PartState]]]) -> None:
+    def _databases(self, databases: dict[str, dict[str, dict[str, PartState]]]) -> None:
         """
         Databases property setter.
         """
@@ -134,8 +134,8 @@ class RestoreContext:
 
     def _load_state(self) -> None:
         with open(self._state_file, "r", encoding="utf-8") as f:
-            state: Dict[str, Any] = json.load(f)
-            databases: Dict[str, Dict[str, Dict[str, PartState]]] = defaultdict(
+            state: dict[str, Any] = json.load(f)
+            databases: dict[str, dict[str, dict[str, PartState]]] = defaultdict(
                 lambda: defaultdict(
                     lambda: defaultdict(lambda: PartState.NOT_DOWNLOADED)
                 )

@@ -5,7 +5,7 @@ S3 storage engine.
 import os
 import time
 from tempfile import TemporaryFile
-from typing import Optional, Sequence
+from typing import Sequence
 
 import requests
 from botocore.exceptions import ClientError
@@ -185,7 +185,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
         data: bytes,
         remote_path: str,
         upload_id: str,
-        part_num: Optional[int] = None,
+        part_num: int | None = None,
     ) -> None:
         self._multipart_uploader.upload_part(
             data, remote_path, upload_id, part_num=part_num
@@ -208,7 +208,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
 
         return download_id
 
-    def download_part(self, download_id: str, part_len: int = None) -> Optional[bytes]:
+    def download_part(self, download_id: str, part_len: int = None) -> bytes | None:
         if not part_len:
             part_len = self.DEFAULT_DOWNLOAD_PART_LEN
 

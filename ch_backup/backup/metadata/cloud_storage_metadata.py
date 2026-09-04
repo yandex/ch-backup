@@ -2,7 +2,7 @@
 Backup metadata for Cloud Storage.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class CloudStorageMetadata:
@@ -14,11 +14,11 @@ class CloudStorageMetadata:
         self,
         encryption: bool = True,
         compression: bool = True,
-        disks: Optional[List[str]] = None,
+        disks: list[str] | None = None,
     ) -> None:
         self._encryption: bool = encryption
         self._compression: bool = compression
-        self._disks: List[str] = disks or []
+        self._disks: list[str] = disks or []
 
     @property
     def enabled(self) -> bool:
@@ -28,7 +28,7 @@ class CloudStorageMetadata:
         return len(self._disks) > 0
 
     @property
-    def disks(self) -> List[str]:
+    def disks(self) -> list[str]:
         """
         Return list of backed up disks names.
         """
@@ -68,7 +68,7 @@ class CloudStorageMetadata:
         self._compression = True
 
     @classmethod
-    def load(cls, data: Dict[str, Any]) -> "CloudStorageMetadata":
+    def load(cls, data: dict[str, Any]) -> "CloudStorageMetadata":
         """
         Deserialize Cloud Storage metadata.
         """
@@ -78,7 +78,7 @@ class CloudStorageMetadata:
             disks=data.get("disks", []),
         )
 
-    def dump(self) -> Dict[str, Any]:
+    def dump(self) -> dict[str, Any]:
         """
         Serialize Cloud Storage metadata.
         """

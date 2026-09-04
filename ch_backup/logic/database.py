@@ -4,7 +4,7 @@ ClickHouse backup logic for databases.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Sequence
+from typing import Sequence
 
 from ch_backup import logging
 from ch_backup.backup_context import BackupContext
@@ -59,10 +59,10 @@ class DatabaseBackup(BackupManager):
     @staticmethod
     def restore(
         context: BackupContext,
-        databases: Dict[str, Database],
+        databases: dict[str, Database],
         keep_going: bool,
-        metadata_cleaner: Optional[MetadataCleaner],
-    ) -> List[Database]:
+        metadata_cleaner: MetadataCleaner | None,
+    ) -> list[Database]:
         """
         Restore database objects.
         """
@@ -70,7 +70,7 @@ class DatabaseBackup(BackupManager):
         logging.debug("Retrieving list of databases")
         present_databases = {db.name: db for db in context.ch_ctl.get_databases()}
 
-        databases_to_restore: Dict[str, Database] = {}
+        databases_to_restore: dict[str, Database] = {}
         for name, db in databases.items():
             if (
                 name in present_databases
