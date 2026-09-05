@@ -63,6 +63,15 @@ _HEX_UPPERCASE_TABLE = [
     "F",
 ]
 
+_SQL_LITERAL_RE = re.compile(r"'(?:[^'\\]|\\.)*'")
+
+
+def mask_sql_literals(sql: str) -> str:
+    """
+    Mask SQL literals
+    """
+    return _SQL_LITERAL_RE.sub("'[HIDDEN]'", sql)
+
 
 def chown_dir_contents(
     user: str, group: str, dir_path: str, need_recursion: bool = False

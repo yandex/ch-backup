@@ -57,6 +57,21 @@ def signal_handler(signum, _frame):
     raise TerminatingSignal(f"Execution was interrupted by the signal {signum}")
 
 
+def _mask_secret_params(params: dict) -> dict:
+    """
+    Replace parameter values that may carry credentials with a placeholder.
+    """
+    if not params.get("config_parameters"):
+        return params
+
+    return {
+        **params,
+        "config_parameters": [
+            (path, "[HIDDEN]") for path, _ in params["config_parameters"]
+        ],
+    }
+
+
 signal.signal(signal.SIGTERM, signal_handler)
 # SIGKILL can't be handled.
 # signal.signal(signal.SIGKILL, signal_handler)
@@ -180,13 +195,12 @@ def command(*args, **kwargs):
         @profile(10)
         def wrapper(ctx, *args, **kwargs):
             try:
+                params = {**ctx.parent.params, **ctx.params}
+                params = _mask_secret_params({**ctx.parent.params, **ctx.params})
                 logging.info(
                     "Executing command '{}', params: {}, args: {}, version: {}",
                     ctx.command.name,
-                    {
-                        **ctx.parent.params,
-                        **ctx.params,
-                    },
+                    params,
                     ctx.args,
                     get_version(),
                 )
