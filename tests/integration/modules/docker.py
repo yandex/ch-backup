@@ -4,7 +4,6 @@ Docker interface.
 
 import io
 import os
-import random
 import re
 import tarfile
 from typing import List, Sequence, Tuple
@@ -17,6 +16,7 @@ from . import utils
 from .typing import ContextT
 
 DOCKER_API = docker.from_env()
+ENVIRONMENT_LABEL = "ch-backup.integration.environment"
 
 
 def get_containers(context: ContextT) -> Sequence[Container]:
@@ -116,24 +116,23 @@ def create_network(context: ContextT) -> None:
     """
     conf = context.conf
     net_name = conf["network_name"]
-    # Unfortunately docker is retarded and not able to create
-    # ipv6-only network (see https://github.com/docker/libnetwork/issues/1192)
-    # Do not create new network if there is an another net with the same name.
-    if DOCKER_API.networks.list(names=f"^{net_name}$"):
+    try:
+        network = DOCKER_API.networks.get(net_name)
+    except docker.errors.NotFound:
+        network = None
+    if network is not None:
+        if (network.attrs.get("Labels") or {}).get(ENVIRONMENT_LABEL) != net_name:
+            raise RuntimeError(f"Network {net_name} belongs to another environment")
         return
-    ip_subnet_pool = docker.types.IPAMConfig(
-        pool_configs=[
-            docker.types.IPAMPool(subnet=_generate_ipv4_subnet()),
-            # docker.types.IPAMPool(subnet=_generate_ipv6_subnet()),
-        ]
-    )
     net_opts = {
         "com.docker.network.bridge.enable_ip_masquerade": "true",
         "com.docker.network.bridge.enable_icc": "true",
-        "com.docker.network.bridge.name": net_name,
     }
     DOCKER_API.networks.create(
-        net_name, options=net_opts, enable_ipv6=False, ipam=ip_subnet_pool
+        net_name,
+        options=net_opts,
+        enable_ipv6=False,
+        labels={ENVIRONMENT_LABEL: net_name},
     )
 
 
@@ -142,22 +141,11 @@ def shutdown_network(context: ContextT) -> None:
     """
     Stop docker network(s).
     """
-    nets = DOCKER_API.networks.list(names=context.conf["network_name"])
-    for net in nets:
-        net.remove()
-
-
-def _generate_ipv6_subnet() -> str:
-    """
-    Generates a random IPv6 address in the provided subnet.
-    """
-    random_part = ":".join([f"{random.randint(0, 16**4):x}" for _ in range(3)])
-    return f"fd00:dead:beef:{random_part}::/96"
-
-
-def _generate_ipv4_subnet() -> str:
-    """
-    Generates a random IPv4 address in the provided subnet.
-    """
-    random_part = ".".join([str(random.randint(0, 255)) for _ in range(2)])
-    return f"10.{random_part}.0/24"
+    name = context.conf["network_name"]
+    try:
+        network = DOCKER_API.networks.get(name)
+    except docker.errors.NotFound:
+        return
+    if (network.attrs.get("Labels") or {}).get(ENVIRONMENT_LABEL) != name:
+        raise RuntimeError(f"Refusing to remove unowned network {name}")
+    network.remove()
