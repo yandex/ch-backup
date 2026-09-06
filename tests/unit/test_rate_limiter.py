@@ -2,8 +2,6 @@
 Unit test for RateLimiter.
 """
 
-from typing import List
-
 import pytest
 
 from ch_backup.storage.async_pipeline.base_pipeline.rate_limiter import RateLimiter
@@ -50,7 +48,7 @@ def test_rate_limiter_extract(data_size: int, rate: int, expected_time: int) -> 
     ],
 )
 def test_rate_limiter_grand(
-    chunks_sizes: List[int], rate: int, expected_time: int
+    chunks_sizes: list[int], rate: int, expected_time: int
 ) -> None:
     timer = TimeMocker()
 

@@ -5,7 +5,7 @@ ClickHouse client.
 import logging
 from copy import copy
 from datetime import datetime, timedelta
-from typing import Any, List, Sequence, Tuple, Union
+from typing import Any, Sequence
 from urllib.parse import urljoin
 
 from requests import HTTPError, Session
@@ -149,7 +149,7 @@ class ClickhouseClient:
                 # Make all possible merges to make tests more determined
                 self._query("POST", f"OPTIMIZE TABLE `{db_name}`.`{table_name}`")
 
-    def get_all_user_data(self) -> Tuple[int, dict]:
+    def get_all_user_data(self) -> tuple[int, dict]:
         """
         Retrieve all user data.
         """
@@ -303,7 +303,7 @@ class ClickhouseClient:
         method: str,
         query: str = None,
         url: str = None,
-        data: Union[bytes, str] = None,
+        data: bytes | str | None = None,
     ) -> Any:
         if url:
             url = urljoin(self._url, url)
@@ -361,14 +361,14 @@ class ClickhouseClient:
         """
         Generate test rows.
         """
-        rows: List[str] = []
+        rows: list[str] = []
 
         if str_prefix is None:
             str_prefix = ""
         else:
             str_prefix = f"{str_prefix}_"
 
-        dates: List[datetime] = []
+        dates: list[datetime] = []
         dt_now = datetime.utcnow()
         # PARTITION BY date
         for i in range(partitions_count):

@@ -5,7 +5,7 @@ Interface to ch-backup command-line tool.
 import json
 import os
 from copy import copy
-from typing import Sequence, Set, Union
+from typing import Sequence
 from urllib.parse import quote
 
 import yaml
@@ -18,7 +18,7 @@ from .typing import ContextT
 CH_BACKUP_CLI_PATH = "/usr/local/bin/ch-backup"
 CH_BACKUP_CONF_PATH = "/etc/yandex/ch-backup/ch-backup.conf"
 
-BackupId = Union[int, str]
+BackupId = int | str
 
 
 class Backup:
@@ -169,7 +169,7 @@ class Backup:
         """
         backup_path = self.get_backup_path(path_root)
         cloud_stage_disks = set(self._metadata["cloud_storage"]["disks"])
-        file_paths: Set[str] = set()
+        file_paths: set[str] = set()
         for db_name, db_obj in self._metadata["databases"].items():
             for table_name, table_obj in db_obj["tables"].items():
                 for part_name, part_obj in table_obj["parts"].items():
