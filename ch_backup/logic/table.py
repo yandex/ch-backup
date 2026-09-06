@@ -172,6 +172,7 @@ class TableBackup(BackupManager):
                             table,
                             backup_name,
                             schema_only,
+                            change_times[table],
                             multiprocessing_config.get(
                                 "parallelize_freeze_in_clickhouse", False
                             ),
@@ -187,7 +188,7 @@ class TableBackup(BackupManager):
                                 context,
                                 freezed_table,
                                 backup_name,
-                                change_times,
+                                change_times[freezed_table],
                             ):
                                 create_statements_to_backup.append(
                                     (freezed_table.name, freezed_table.create_statement)
@@ -228,6 +229,7 @@ class TableBackup(BackupManager):
         table: Table,
         backup_name: str,
         schema_only: bool,
+        expected_change_time: TableMetadataChangeTime,
         parallelize_freeze_in_ch: bool,
         freeze_partition_threads: int,
         freeze_table_query_max_threads: int,
@@ -257,7 +259,13 @@ class TableBackup(BackupManager):
                     freeze_table_query_max_threads,
                 )
             except ClickhouseError:
-                if context.ch_ctl.does_table_exist(table.database, table.name):
+                if TableBackup._check_metadata_change_time(
+                    context,
+                    table,
+                    backup_name,
+                    expected_change_time,
+                    check_table_exists=True,
+                ):
                     logging.error(
                         'Cannot freeze table "{}"."{}"',
                         table.database,
@@ -265,11 +273,6 @@ class TableBackup(BackupManager):
                     )
                     raise
 
-                logging.warning(
-                    'Table "{}"."{}" was removed by a user during backup',
-                    table.database,
-                    table.name,
-                )
                 return None
 
         return table
@@ -453,22 +456,32 @@ class TableBackup(BackupManager):
                 keep_going=keep_going,
             )
 
+    @staticmethod
     def _check_metadata_change_time(
-        self,
         context: BackupContext,
         table: Table,
         backup_name: str,
-        change_times: Dict[Table, TableMetadataChangeTime],
+        expected_change_time: TableMetadataChangeTime,
+        *,
+        check_table_exists: bool = False,
     ) -> bool:
         """
-        Check if table metadata was updated.
+        Check table metadata and clean up frozen data if the table changed or disappeared.
+        Check existence in ClickHouse only when handling a freeze error.
         """
-        new_change_time = self._get_change_time(table.metadata_path)
-        if new_change_time is not None and change_times[table] == new_change_time:
+        current_change_time = TableBackup._get_change_time(table.metadata_path)
+        if (
+            current_change_time is not None
+            and current_change_time == expected_change_time
+            and (
+                not check_table_exists
+                or context.ch_ctl.does_table_exist(table.database, table.name)
+            )
+        ):
             return True
 
         logging.warning(
-            'Skipping table backup for "{}"."{}". The metadata file was updated or removed during backup',
+            'Skipping table backup for "{}"."{}". The metadata file was updated or removed, or the table was removed during backup',
             table.database,
             table.name,
         )
