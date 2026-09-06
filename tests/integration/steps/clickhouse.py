@@ -23,13 +23,6 @@ def step_wait_for_clickhouse_alive(context, node):
     ClickhouseClient(context, node).ping()
 
 
-@when("we restart clickhouse on {node:w}")
-def step_restart_clickhouse(context, node):
-    container = get_container(context, node)
-    assert container.exec_run("supervisorctl restart clickhouse").exit_code == 0
-    step_wait_for_clickhouse_alive(context, node)
-
-
 @given("we have enabled shared zookeeper for {node:w}")
 def step_enable_shared_zookeeper_for_clickhouse(context, node):
     """
