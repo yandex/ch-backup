@@ -8,7 +8,6 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional
 
 from kazoo.exceptions import NoNodeError
 
@@ -156,7 +155,7 @@ class NamedCollectionsBackup(BackupManager):
         logging.info("All named collections restored")
 
     @staticmethod
-    def get_named_collections_list(context: BackupContext) -> List[str]:
+    def get_named_collections_list(context: BackupContext) -> list[str]:
         """
         Get named collections list
         """

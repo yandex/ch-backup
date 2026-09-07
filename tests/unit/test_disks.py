@@ -3,8 +3,6 @@ Unit tests disks module.
 """
 
 import unittest
-import unittest.mock
-from typing import List, Optional
 
 import xmltodict
 
@@ -214,7 +212,7 @@ def write_collector(x):
 
 def _make_temporary_disks(
     clickhouse_config_xml: str,
-    cloud_storage_disks: Optional[List[str]] = None,
+    cloud_storage_disks: list[str] | None = None,
 ) -> ClickHouseTemporaryDisks:
     """Helper: build ClickHouseTemporaryDisks with mocked dependencies."""
     context = BackupContext(DEFAULT_CONFIG)  # type: ignore[arg-type]

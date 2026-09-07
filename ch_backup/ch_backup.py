@@ -2,11 +2,14 @@
 Clickhouse backup logic
 """
 
+import builtins
 from collections import defaultdict
 from copy import copy
 from datetime import timedelta
 from enum import Enum
-from typing import Dict, List, Optional, Sequence, Set, Tuple
+from typing import Sequence
+
+import requests
 
 from ch_backup import logging
 from ch_backup.backup.deduplication import (
@@ -17,8 +20,9 @@ from ch_backup.backup.deduplication import (
 from ch_backup.backup.metadata import BackupMetadata, BackupState, TableMetadata
 from ch_backup.backup.sources import BackupSources
 from ch_backup.backup_context import BackupContext
+from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner, select_replica_drop
-from ch_backup.clickhouse.models import Database
+from ch_backup.clickhouse.models import Database, Table
 from ch_backup.config import Config
 from ch_backup.exceptions import (
     BackupNotFound,
@@ -116,7 +120,7 @@ class ClickhouseBackup:
         tables: Sequence[str] = None,
         force: bool = False,
         labels: dict = None,
-    ) -> Tuple[str, Optional[str]]:
+    ) -> tuple[str, str | None]:
         """
         Perform backup.
 
@@ -140,7 +144,7 @@ class ClickhouseBackup:
         if labels:
             backup_labels.update(labels)
 
-        db_tables: Dict[str, list] = defaultdict(list)
+        db_tables: dict[str, list] = defaultdict(list)
         if tables:
             for table in tables or []:
                 db_name, table_name = table.split(".", 1)
@@ -238,7 +242,7 @@ class ClickhouseBackup:
         exclude_databases: Sequence[str],
         override_replica_name: str = None,
         force_non_replicated: bool = False,
-        replica_name: Optional[str] = None,
+        replica_name: str | None = None,
         cloud_storage_source_bucket: str = None,
         cloud_storage_source_path: str = None,
         cloud_storage_source_endpoint: str = None,
@@ -246,7 +250,7 @@ class ClickhouseBackup:
         clean_zookeeper_mode: CleanZooKeeperMode = CleanZooKeeperMode.DISABLED,
         keep_going: bool = False,
         restore_tables_in_replicated_database: bool = False,
-        partial_restore_filter: Optional[PartialRestoreFilter] = None,
+        partial_restore_filter: PartialRestoreFilter | None = None,
     ) -> None:
         """
         Restore specified backup
@@ -302,7 +306,7 @@ class ClickhouseBackup:
         tables = []
         if partial_restore_filter:
             excluded_tables = []
-            all_tables: List[TableMetadata] = []
+            all_tables: list[TableMetadata] = []
             for db_name in databases:
                 all_tables.extend(self._context.backup_meta.get_tables(db_name))
             for table in all_tables:
@@ -324,6 +328,8 @@ class ClickhouseBackup:
         else:
             logging.debug("Picking all tables from backup.")
 
+        self._check_zookeeper_for_restore(sources, databases, tables)
+
         with self._context.locker(
             distributed=not sources.schema_only, operation="RESTORE"
         ):
@@ -341,9 +347,68 @@ class ClickhouseBackup:
                 restore_tables_in_replicated_database=restore_tables_in_replicated_database,
             )
 
+    def _check_zookeeper_for_restore(
+        self,
+        sources: BackupSources,
+        databases: Sequence[str],
+        tables: Sequence[TableMetadata],
+    ) -> None:
+        """Fail early if selected schemas require unavailable ZooKeeper or Keeper."""
+        if not sources.schemas_included():
+            return
+
+        if self._context.config["force_non_replicated"]:
+            return
+
+        replicated_databases = [
+            database
+            for database in (
+                self._context.backup_meta.get_database(name) for name in databases
+            )
+            if database.is_replicated_db_engine()
+        ]
+
+        tables_to_restore = tables or [
+            table
+            for database in databases
+            for table in self._context.backup_meta.get_tables(database)
+        ]
+        replicated_tables = [
+            table
+            for table in tables_to_restore
+            if Table.engine_is_replicated(table.engine)
+        ]
+
+        if not replicated_databases and not replicated_tables:
+            return
+
+        try:
+            self._context.ch_ctl.check_zookeeper_available()
+        except (ClickhouseError, requests.exceptions.RequestException) as error:
+            replicated_objects = []
+            if replicated_databases:
+                replicated_objects.append(
+                    "databases: "
+                    + ", ".join(
+                        f"`{database.name}`" for database in replicated_databases
+                    )
+                )
+            if replicated_tables:
+                replicated_objects.append(
+                    "tables: "
+                    + ", ".join(
+                        f"`{table.database}`.`{table.name}`"
+                        for table in replicated_tables
+                    )
+                )
+            raise ClickhouseBackupError(
+                f"Restore requires ZooKeeper or ClickHouse Keeper because we have replicated {', '.join(replicated_objects)}. "
+                f"Availability check through ClickHouse failed: {error}"
+            ) from error
+
     def delete(
         self, backup_name: str, purge_partial: bool
-    ) -> Tuple[Optional[str], Optional[str]]:
+    ) -> tuple[str | None, str | None]:
         """
         Delete the specified backup.
         """
@@ -374,7 +439,7 @@ class ClickhouseBackup:
                 deleting_backups_light_meta=deleting_backups,
             )
 
-            result: Tuple[Optional[str], Optional[str]] = (None, None)
+            result: tuple[str | None, str | None] = (None, None)
             for backup in deleting_backups:
                 deleted_name, msg = self._delete(backup, dedup_references[backup.name])
                 if backup_name == backup.name:
@@ -382,14 +447,14 @@ class ClickhouseBackup:
 
         return result
 
-    def purge(self) -> Tuple[Sequence[str], Optional[str]]:
+    def purge(self) -> tuple[Sequence[str], str | None]:
         """
         Purge backups.
         """
         retain_time = self._context.config["retain_time"]
         retain_count = self._context.config["retain_count"]
 
-        deleted_backup_names: List[str] = []
+        deleted_backup_names: list[str] = []
 
         if not retain_time and retain_count is None:
             logging.info("Retain policies are not specified")
@@ -399,8 +464,8 @@ class ClickhouseBackup:
         if retain_time:
             retain_time_limit = now() - timedelta(**retain_time)
 
-        retained_backups: List[BackupMetadata] = []
-        deleting_backups: List[BackupMetadata] = []
+        retained_backups: list[BackupMetadata] = []
+        deleting_backups: list[BackupMetadata] = []
         backup_names = self._context.backup_layout.get_backup_names()
 
         with self._context.locker(operation="PURGE"):
@@ -461,7 +526,7 @@ class ClickhouseBackup:
         self,
         backup_name: str,
         disk_name: str,
-        local_path: Optional[str] = None,
+        local_path: str | None = None,
     ) -> bool:
         """Download cloud storage metadata to shadow directory or to a file at given path. Returns false if metadata is already present."""
         backup_meta = self._get_backup(backup_name)
@@ -484,7 +549,7 @@ class ClickhouseBackup:
 
     def _delete(
         self, backup_light_meta: BackupMetadata, dedup_references: DedupReferences
-    ) -> Tuple[Optional[str], Optional[str]]:
+    ) -> tuple[str | None, str | None]:
         logging.info(
             "Deleting backup %s, state: %s",
             backup_light_meta.name,
@@ -535,7 +600,7 @@ class ClickhouseBackup:
         self,
         backup: BackupMetadata,
         table: TableMetadata,
-        excluded_parts: Set[str] = None,
+        excluded_parts: set[str] = None,
     ) -> None:
         parts = table.get_parts(excluded_parts=excluded_parts)
         own_parts = [part for part in parts if not part.link]
@@ -547,11 +612,11 @@ class ClickhouseBackup:
         self,
         sources: BackupSources,
         db_names: Sequence[str],
-        tables: List[TableMetadata],
-        replica_name: Optional[str] = None,
-        cloud_storage_source_bucket: Optional[str] = None,
-        cloud_storage_source_path: Optional[str] = None,
-        cloud_storage_source_endpoint: Optional[str] = None,
+        tables: builtins.list[TableMetadata],
+        replica_name: str | None = None,
+        cloud_storage_source_bucket: str | None = None,
+        cloud_storage_source_path: str | None = None,
+        cloud_storage_source_endpoint: str | None = None,
         skip_cloud_storage: bool = False,
         clean_zookeeper_mode: CleanZooKeeperMode = CleanZooKeeperMode.DISABLED,
         keep_going: bool = False,
@@ -576,12 +641,12 @@ class ClickhouseBackup:
             self._we_backup_manager.restore(self._context)
 
         if sources.schemas_included():
-            databases: Dict[str, Database] = {
+            databases: dict[str, Database] = {
                 db_name: self._context.backup_meta.get_database(db_name)
                 for db_name in db_names
             }
 
-            metadata_cleaner: Optional[MetadataCleaner] = None
+            metadata_cleaner: MetadataCleaner | None = None
 
             if (
                 clean_zookeeper_mode != CleanZooKeeperMode.DISABLED
