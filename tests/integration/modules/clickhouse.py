@@ -64,7 +64,7 @@ class ClickhouseClient:
         """
         Ping ClickHouse server.
         """
-        self._query("GET", url="ping")
+        self._query("GET", url="ping", settings={})
 
     def execute(self, query: str) -> None:
         """
@@ -303,13 +303,13 @@ class ClickhouseClient:
         query: str = None,
         url: str = None,
         data: Union[bytes, str] = None,
+        settings: dict = None,
     ) -> Any:
-        params = {}
+        params = dict(self._settings if settings is None else settings)
         if url:
             url = urljoin(self._url, url)
         else:
             url = self._url
-            params.update(self._settings)
 
         if isinstance(data, str):
             data = data.encode()
