@@ -356,6 +356,7 @@ Feature: Backup and restore Replicated Database with synchronization
       | 0   | created | 3          | 0          |
     When on zookeeper01 we delete /shared/clickhouse/tables/82aa76a0-45cd-42f2-b355-852cc8c9c0af/shard1/replicas/clickhouse02
     When we restart clickhouse on clickhouse02
+    Given a working clickhouse on clickhouse02
     When we execute query on clickhouse02
     """
     SELECT is_readonly FROM system.replicas

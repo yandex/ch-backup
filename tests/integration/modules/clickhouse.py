@@ -3,7 +3,6 @@ ClickHouse client.
 """
 
 import logging
-from copy import copy
 from datetime import datetime, timedelta
 from typing import Any, Sequence
 from urllib.parse import urljoin
@@ -65,7 +64,7 @@ class ClickhouseClient:
         """
         Ping ClickHouse server.
         """
-        self._query("GET", url="ping")
+        self._query("GET", url="ping", settings={})
 
     def execute(self, query: str) -> None:
         """
@@ -304,9 +303,9 @@ class ClickhouseClient:
         query: str = None,
         url: str = None,
         data: bytes | str | None = None,
+        settings: dict = None,
     ) -> Any:
-        # HTTP handlers such as /ping do not accept SQL query settings.
-        params = {} if url else copy(self._settings)
+        params = dict(self._settings if settings is None else settings)
         if url:
             url = urljoin(self._url, url)
         else:
