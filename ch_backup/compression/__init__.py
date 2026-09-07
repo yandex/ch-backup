@@ -8,7 +8,7 @@ from ch_backup.compression.base import BaseCompression
 from ch_backup.compression.gzip import GZIPCompression
 from ch_backup.exceptions import UnknownEncryptionError
 
-SUPPORTED_COMPRESSION: Mapping[str, Type[BaseCompression]] = {
+SUPPORTED_COMPRESSION: Mapping[str, type[BaseCompression]] = {
     "gzip": GZIPCompression,
 }
 

@@ -46,6 +46,33 @@ Feature: Backup and restore functionality of access control entities
     password: password
     """
 
+  @require_version_24.3
+  Scenario: restore local access before a view with definer
+    Given we have executed queries on clickhouse01
+    """
+    CREATE USER view_definer IDENTIFIED WITH no_password;
+    GRANT SELECT ON test_db.table_01 TO view_definer;
+    CREATE VIEW test_db.definer_view
+    DEFINER = view_definer SQL SECURITY DEFINER
+    AS SELECT * FROM test_db.table_01;
+    """
+    When we create clickhouse01 clickhouse backup
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    access: True
+    data: True
+    """
+    Then clickhouse01 has same access control objects as clickhouse02
+    And clickhouse01 has same schema as clickhouse02
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM test_db.definer_view
+    """
+    Then we get response
+    """
+    1000
+    """
+
   @require_version_22.3
   Scenario: from local to replicated storage
     Given we have dirty enabled replicated access on clickhouse02 with restart

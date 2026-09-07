@@ -5,13 +5,13 @@ Auxiliary functions for calculation sizes of backped data blocks.
 import math
 from pathlib import Path
 from tarfile import BLOCKSIZE, LENGTH_NAME
-from typing import Iterable, List, Optional
+from typing import Iterable
 
 from ch_backup.util import scan_dir_files
 
 
 def calc_aligned_files_size_scan(
-    base_path: Path, exclude_file_names: Optional[List[str]] = None, alignment: int = 1
+    base_path: Path, exclude_file_names: list[str] | None = None, alignment: int = 1
 ) -> int:
     """
     Calculate total size of files on disk with padding added after each file.
@@ -27,7 +27,7 @@ def calc_aligned_files_size_scan(
     return size
 
 
-def calc_aligned_files_size(files: List[Path], alignment: int = 1) -> int:
+def calc_aligned_files_size(files: list[Path], alignment: int = 1) -> int:
     """
     Calculate total size of files on disk with padding added after each file.
     """
@@ -41,7 +41,7 @@ def calc_aligned_files_size(files: List[Path], alignment: int = 1) -> int:
     return size
 
 
-def calc_aligned_data_size(data_list: List[bytes], alignment: int = 1) -> int:
+def calc_aligned_data_size(data_list: list[bytes], alignment: int = 1) -> int:
     """
     Calculate total size of data with padding added after each element.
     """
@@ -58,7 +58,7 @@ def calc_aligned_data_size(data_list: List[bytes], alignment: int = 1) -> int:
 def calc_tarball_size_scan(
     dir_path: Path,
     aligned_files_size: int,
-    exclude_file_names: Optional[List[str]] = None,
+    exclude_file_names: list[str] | None = None,
 ) -> int:
     """
     Calculate tarball (TAR archive) size.

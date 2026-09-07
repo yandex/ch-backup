@@ -11,7 +11,7 @@ from contextlib import contextmanager, suppress
 from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE  # type: ignore
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Iterable, Sequence
 
 from ch_backup import logging
 from ch_backup.backup.metadata import TableMetadata
@@ -522,6 +522,12 @@ RELOAD_CONFIG_SQL = strip_query(
 """
 )
 
+RELOAD_USERS_SQL = strip_query(
+    """
+    SYSTEM RELOAD USERS
+"""
+)
+
 RENAME_TABLE_SQL = strip_query(
     """
     RENAME TABLE `{db_name}`.`{old_table_name}` TO `{db_name}`.`{new_table_name}`
@@ -548,6 +554,16 @@ GET_ZOOKEEPER_ADMIN_UUID = strip_query(
     FROM system.zookeeper
     WHERE (path = '/clickhouse/access/uuid') AND (value LIKE 'ATTACH USER admin%')
     FORMAT JSON
+"""
+)
+
+_CHECK_ZOOKEEPER_SQL = strip_query(
+    """
+    SELECT 1
+    FROM system.zookeeper
+    WHERE path = '/'
+    LIMIT 1
+    FORMAT Null
 """
 )
 
@@ -656,7 +672,7 @@ class ClickhouseCTL:
 
         self._ch_client.query(query_sql)
 
-    def attach_table(self, table: Union[TableMetadata, Table]) -> None:
+    def attach_table(self, table: TableMetadata | Table) -> None:
         """
         Attach data part to the specified table.
         """
@@ -699,7 +715,7 @@ class ClickhouseCTL:
             and "PARTITION BY" in table.create_statement
         )
 
-        query_settings: Dict[str, Any] = {"max_threads": 1}
+        query_settings: dict[str, Any] = {"max_threads": 1}
 
         # Since https://github.com/ClickHouse/ClickHouse/pull/75016
         if self.ch_version_ge("25.2"):
@@ -751,7 +767,7 @@ class ClickhouseCTL:
             new_session=True,
         )
 
-    def list_partitions(self, table: Table) -> List[str]:
+    def list_partitions(self, table: Table) -> list[str]:
         """
         Get list of active partitions for table.
         """
@@ -771,7 +787,7 @@ class ClickhouseCTL:
             self._ch_client.query(query_sql, timeout=self._unfreeze_timeout)
 
     def remove_freezed_data(
-        self, backup_name: Optional[str] = None, table: Optional[Table] = None
+        self, backup_name: str | None = None, table: Table | None = None
     ) -> None:
         """
         Remove all freezed partitions from all local disks.
@@ -805,7 +821,7 @@ class ClickhouseCTL:
         self._remove_shadow_data(part.path)
 
     def get_databases(
-        self, exclude_dbs: Optional[Sequence[str]] = None
+        self, exclude_dbs: Sequence[str] | None = None
     ) -> Sequence[Database]:
         """
         Get list of all databases.
@@ -813,7 +829,7 @@ class ClickhouseCTL:
         if not exclude_dbs:
             exclude_dbs = []
 
-        result: List[Database] = []
+        result: list[Database] = []
         system_database = self._backup_config["system_database"]
 
         query = (
@@ -855,7 +871,7 @@ class ClickhouseCTL:
     def get_tables(
         self,
         db_name: str = None,
-        tables: Optional[Sequence[str]] = None,
+        tables: Sequence[str] | None = None,
         short_query: bool = False,
     ) -> Sequence[Table]:
         """
@@ -883,7 +899,7 @@ class ClickhouseCTL:
             db_condition=db_condition,
             tables_condition=tables_condition,
         )
-        result: List[Table] = []
+        result: list[Table] = []
         for row in self._ch_client.query(query_sql)["data"]:
             result.append(self._make_table(row))
 
@@ -912,7 +928,7 @@ class ClickhouseCTL:
         """
         Get detached tables.
         """
-        result: List[Table] = []
+        result: list[Table] = []
 
         if not self.ch_version_ge("24.8"):
             logging.warning(
@@ -930,7 +946,7 @@ class ClickhouseCTL:
 
     def get_table(
         self, db_name: str, table_name: str, short_query: bool = False
-    ) -> Optional[Table]:
+    ) -> Table | None:
         """
         Get table by name, returns None if no table has found.
         """
@@ -945,9 +961,9 @@ class ClickhouseCTL:
 
     def get_replicas(
         self,
-        db_name: Optional[str] = None,
+        db_name: str | None = None,
         tables: Sequence[str] = None,
-        readonly: Optional[bool] = None,
+        readonly: bool | None = None,
     ) -> list[dict]:
         """
         Get table replicas from system.replicas
@@ -1103,7 +1119,7 @@ class ClickhouseCTL:
             timeout=self._drop_replica_timeout,
         )
 
-    def get_ddl_queue_unfinished_status(self, db_name: str) -> List[Dict]:
+    def get_ddl_queue_unfinished_status(self, db_name: str) -> list[dict]:
         """
         Get pending DDL entries from system.distributed_ddl_queue for a replicated database.
         Returns list of entries with status, exception_code and exception_text.
@@ -1144,11 +1160,11 @@ class ClickhouseCTL:
         """
         return self._ch_version
 
-    def get_access_control_objects(self) -> Sequence[Dict[str, Any]]:
+    def get_access_control_objects(self) -> Sequence[dict[str, Any]]:
         """
         Returns all access control objects.
         """
-        result: List[Dict[str, Any]] = []
+        result: list[dict[str, Any]] = []
 
         for obj_type, obj_char in ACCESS_ENTITY_CHAR.items():
             ch_resp = self._ch_client.query(
@@ -1169,12 +1185,18 @@ class ClickhouseCTL:
         assert len(result) == 1
         return result[0]["value"]
 
-    def get_zookeeper_admin_uuid(self) -> Dict[str, str]:
+    def get_zookeeper_admin_uuid(self) -> dict[str, str]:
         """
         Returns all UUIDs associated with admin user.
         """
         result = self._ch_client.query(GET_ZOOKEEPER_ADMIN_UUID).get("data", [])
         return {item["name"]: item["value"] for item in result}
+
+    def check_zookeeper_available(self) -> None:
+        """
+        Check that ClickHouse can access its configured ZooKeeper or Keeper.
+        """
+        self._ch_client.query(_CHECK_ZOOKEEPER_SQL)
 
     @staticmethod
     def scan_frozen_parts(
@@ -1291,28 +1313,28 @@ class ClickhouseCTL:
         """
         return _parse_version(self.get_version()) >= _parse_version(comparing_version)
 
-    def get_macros(self) -> Dict:
+    def get_macros(self) -> dict:
         """
         Get ClickHouse macros.
         """
         ch_resp = self._ch_client.query(GET_MACROS_SQL)
         return {row["macro"]: row["substitution"] for row in ch_resp.get("data", [])}
 
-    def get_udf_query(self) -> Dict[str, str]:
+    def get_udf_query(self) -> dict[str, str]:
         """
         Get udf query from system table.
         """
         resp = self._ch_client.query(GET_UDF_QUERY_SQL)
         return {row["name"]: row["create_query"] for row in resp.get("data", [])}
 
-    def get_named_collections_query(self) -> List[str]:
+    def get_named_collections_query(self) -> list[str]:
         """
         Get named collections query from system table.
         """
         resp = self._ch_client.query(GET_NAMED_COLLECTIONS_QUERY_SQL)
         return [row["name"] for row in resp.get("data", [])]
 
-    def get_workload_entities_query(self) -> List[Tuple[str, WorkloadEntityType]]:
+    def get_workload_entities_query(self) -> list[tuple[str, WorkloadEntityType]]:
         """
         Get workload entities (WORKLOADs and RESOURCEs) from system tables.
         """
@@ -1373,7 +1395,7 @@ class ClickhouseCTL:
             resp.get("cache_path"),
         )
 
-    def get_disks(self) -> Dict[str, Disk]:
+    def get_disks(self) -> dict[str, Disk]:
         """
         Get all configured disks.
         """
@@ -1435,7 +1457,7 @@ class ClickhouseCTL:
 
         return metadata_path
 
-    def read_s3_disk_revision(self, disk_name: str, backup_name: str) -> Optional[int]:
+    def read_s3_disk_revision(self, disk_name: str, backup_name: str) -> int | None:
         """
         Reads S3 disk revision counter.
         """
@@ -1453,6 +1475,12 @@ class ClickhouseCTL:
         Reload ClickHouse configuration query.
         """
         self._ch_client.query(RELOAD_CONFIG_SQL, timeout=self._timeout)
+
+    def reload_users(self) -> None:
+        """
+        Reload ClickHouse access control entities.
+        """
+        self._ch_client.query(RELOAD_USERS_SQL, timeout=self._timeout)
 
     def create_deduplication_table(self):
         """
@@ -1475,7 +1503,7 @@ class ClickhouseCTL:
             )
         )
 
-    def insert_deduplication_info(self, batch: List[str]) -> None:
+    def insert_deduplication_info(self, batch: list[str]) -> None:
         """
         Insert deduplication info in batch
         """
@@ -1488,8 +1516,8 @@ class ClickhouseCTL:
         )
 
     def get_deduplication_info(
-        self, database: str, table: str, frozen_parts: Dict[str, FrozenPart]
-    ) -> List[Dict]:
+        self, database: str, table: str, frozen_parts: dict[str, FrozenPart]
+    ) -> list[dict]:
         """
         Get deduplication info for given frozen parts of a table
         """

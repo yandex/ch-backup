@@ -37,6 +37,11 @@ def save_logs(context: ContextT) -> None:
 def _save_container_logs(container: Container, logs_dir: str) -> None:
     base = os.path.join(logs_dir, container.name)
     os.makedirs(base, exist_ok=True)
+
+    container.reload()
+    with open(os.path.join(base, "state.json"), "w", encoding="utf-8") as out:
+        json.dump(container.attrs["State"], out, default=repr, indent=4)
+
     with open(os.path.join(base, "docker.log"), "wb") as out:
         out.write(container.logs(stdout=True, stderr=True, timestamps=True))
 

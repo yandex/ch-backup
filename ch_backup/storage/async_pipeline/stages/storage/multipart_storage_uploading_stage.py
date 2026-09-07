@@ -3,7 +3,6 @@ Multipart uploading to storage stage.
 """
 
 from dataclasses import dataclass
-from typing import Optional
 
 from ch_backup.storage.async_pipeline.base_pipeline.handler import Handler
 from ch_backup.storage.async_pipeline.stages.types import StageType
@@ -21,7 +20,7 @@ class UploadingPart(Slotted):
 
     __slots__ = "data", "upload_id"
     data: bytes
-    upload_id: Optional[str]
+    upload_id: str | None
 
 
 class StartMultipartUploadStage(Handler):
@@ -43,7 +42,7 @@ class StartMultipartUploadStage(Handler):
         self._config = config
         self._loader = loader
         self._remote_path = remote_path
-        self._upload_id: Optional[str] = None
+        self._upload_id: str | None = None
         self._chunk_size = chunk_size
 
     def __call__(self, data: bytes, index: int) -> UploadingPart:
@@ -103,7 +102,7 @@ class CompleteMultipartUploadStage(Handler):
         self._config = config
         self._loader = loader
         self._remote_path = remote_path
-        self._upload_id: Optional[str] = None
+        self._upload_id: str | None = None
 
     def __call__(self, part: UploadingPart, index: int) -> None:
         if self._upload_id is None and part.upload_id:

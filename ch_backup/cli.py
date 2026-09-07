@@ -12,7 +12,7 @@ import uuid
 from collections import OrderedDict
 from functools import wraps
 from pathlib import Path as PathlibPath
-from typing import Iterable, Optional, Tuple, Union
+from typing import Iterable
 
 from click import Choice, Path, argument, pass_context, style
 from cloup import (
@@ -123,10 +123,10 @@ def cli(
     protocol: str,
     host: str,
     port: int,
-    ca_path: Union[str, bool],
+    ca_path: str | bool,
     insecure: bool,
     zk_hosts: str,
-    config_parameters: Iterable[Tuple[str, dict]],
+    config_parameters: Iterable[tuple[str, dict]],
 ) -> None:
     """Tool for managing ClickHouse backups."""
     if insecure:
@@ -286,8 +286,8 @@ def show_command(
     ch_backup: ClickhouseBackup,
     name: str,
     pretty: bool,
-    database: Optional[str],
-    table: Optional[str],
+    database: str | None,
+    table: str | None,
 ) -> None:
     """Show details for a particular backup."""
     name = _validate_and_resolve_name(ctx, ch_backup, name)
@@ -380,9 +380,9 @@ def show_command(
             d=style(
                 '"{}"'.format(
                     format_timespan(
-                        typing.cast(
-                            typing.Dict[str, dict], DEFAULT_CONFIG["clickhouse"]
-                        )["freeze_timeout"]
+                        typing.cast(dict[str, dict], DEFAULT_CONFIG["clickhouse"])[
+                            "freeze_timeout"
+                        ]
                     )
                 ),
                 fg=Color.cyan,
@@ -604,8 +604,8 @@ def restore_command(
     data: bool = False,
     schema: bool = False,
     udf: bool = False,
-    table_included_patterns: Optional[typing.List[str]] = None,
-    table_excluded_patterns: Optional[typing.List[str]] = None,
+    table_included_patterns: list[str] | None = None,
+    table_excluded_patterns: list[str] | None = None,
     nc: bool = False,
     workload: bool = False,
 ) -> None:
@@ -613,8 +613,8 @@ def restore_command(
     # pylint: disable=too-many-arguments,too-many-locals
     name = _validate_and_resolve_name(ctx, ch_backup, name)
 
-    specified_databases: typing.List[str] = _list_to_database_names(databases)
-    excluded_databases: typing.List[str] = _list_to_database_names(exclude_databases)
+    specified_databases: list[str] = _list_to_database_names(databases)
+    excluded_databases: list[str] = _list_to_database_names(exclude_databases)
 
     matcher = None
     if table_included_patterns:
@@ -775,7 +775,7 @@ def _validate_and_resolve_name(
     return name
 
 
-def _list_to_database_names(dbs: typing.Optional[typing.List[str]]) -> typing.List[str]:
+def _list_to_database_names(dbs: list[str] | None) -> list[str]:
     if not dbs:
         return []
 
@@ -783,9 +783,9 @@ def _list_to_database_names(dbs: typing.Optional[typing.List[str]]) -> typing.Li
 
 
 def _key_values_to_tables_metadata(
-    kvs: typing.Optional[KeyValues],
-) -> typing.List[TableMetadata]:
-    result: typing.List[TableMetadata] = []
+    kvs: KeyValues | None,
+) -> list[TableMetadata]:
+    result: list[TableMetadata] = []
 
     if not kvs:
         return result
@@ -797,13 +797,13 @@ def _key_values_to_tables_metadata(
     return result
 
 
-def _build_cli_cfg_from_config_parameters(values: Iterable[Tuple[str, dict]]) -> dict:
+def _build_cli_cfg_from_config_parameters(values: Iterable[tuple[str, dict]]) -> dict:
     """
     Build config dict from specified keys and values in plain format.
     Duplicate keys are ignored in favor of the last entry.
     """
 
-    def _split_key(key: str) -> typing.List[str]:
+    def _split_key(key: str) -> list[str]:
         return key.split(".")
 
     values_by_uniq_key: dict[str, dict] = {}

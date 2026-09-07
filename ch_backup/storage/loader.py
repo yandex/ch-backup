@@ -3,7 +3,7 @@ Module providing API for storage management (upload and download data, check
 remote path on existence, etc.).
 """
 
-from typing import BinaryIO, Callable, List, Optional, Sequence, Union
+from typing import BinaryIO, Callable, Sequence
 
 from ch_backup.storage.async_pipeline.pipeline_executor import PipelineExecutor
 from ch_backup.storage.engine import get_storage_engine
@@ -43,8 +43,8 @@ class StorageLoader:
     # pylint: disable=too-many-positional-arguments
     def upload_data_tarball(
         self,
-        file_names: List[str],
-        data_list: List[bytes],
+        file_names: list[str],
+        data_list: list[bytes],
         remote_path: str,
         is_async: bool = False,
         encryption: bool = False,
@@ -95,12 +95,12 @@ class StorageLoader:
         self,
         dir_path: str,
         remote_path: str,
-        tar_base_dir: Optional[str] = None,
-        exclude_file_names: Optional[List[str]] = None,
+        tar_base_dir: str | None = None,
+        exclude_file_names: list[str] | None = None,
         is_async: bool = False,
         encryption: bool = False,
         delete: bool = False,
-        callback: Optional[Callable] = None,
+        callback: Callable | None = None,
         compression: bool = False,
     ) -> str:
         """
@@ -127,11 +127,11 @@ class StorageLoader:
         self,
         dir_path: str,
         remote_path: str,
-        files: List[str],
+        files: list[str],
         is_async: bool = False,
         encryption: bool = False,
         delete: bool = False,
-        callback: Optional[Callable] = None,
+        callback: Callable | None = None,
         compression: bool = False,
     ) -> str:
         """
@@ -188,7 +188,7 @@ class StorageLoader:
     def download_file(
         self,
         remote_path: str,
-        local_path: Union[str, BinaryIO],
+        local_path: str | BinaryIO,
         is_async: bool = False,
         encryption: bool = False,
         compression: bool = False,
@@ -212,7 +212,7 @@ class StorageLoader:
         is_async: bool = False,
         encryption: bool = False,
         compression: bool = False,
-        callback: Optional[Callable] = None,
+        callback: Callable | None = None,
     ) -> None:
         """
         Download file to local filesystem.
