@@ -14,11 +14,8 @@ from typing import (
     BinaryIO,
     Callable,
     Iterator,
-    List,
     Literal,
-    Optional,
     Sequence,
-    Union,
 )
 from urllib.parse import quote
 
@@ -183,7 +180,7 @@ class BackupLayout:
             raise StorageError(msg) from e
 
     def upload_access_control_files(
-        self, local_path: str, backup_name: str, file_names: List[str]
+        self, local_path: str, backup_name: str, file_names: list[str]
     ) -> None:
         """
         Upload access control list.
@@ -342,7 +339,7 @@ class BackupLayout:
         )
         return self._storage_loader.download_data(remote_path, encryption=True)
 
-    def get_local_nc_create_statement(self, nc_name: str) -> Optional[str]:
+    def get_local_nc_create_statement(self, nc_name: str) -> str | None:
         """
         Read named collection create statement from local file.
         """
@@ -372,7 +369,7 @@ class BackupLayout:
 
     def get_local_workload_entity_create_statement(
         self, entity_name: str
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Read workload entity create statement from local file.
         """
@@ -423,7 +420,7 @@ class BackupLayout:
 
     def get_backup(
         self, backup_name: str, use_light_meta: bool = False
-    ) -> Optional[BackupMetadata]:
+    ) -> BackupMetadata | None:
         """
         Download and return backup metadata.
         """
@@ -447,7 +444,7 @@ class BackupLayout:
             )
             return self._load_metadata(path, False)
 
-    def get_backups(self, use_light_meta: bool = False) -> List[BackupMetadata]:
+    def get_backups(self, use_light_meta: bool = False) -> list[BackupMetadata]:
         """
         Return list of existing backups sorted by start_time in descent order.
         """
@@ -769,8 +766,8 @@ class BackupLayout:
         self,
         backup_meta: BackupMetadata,
         disk: Disk,
-        file_path: Optional[str] = None,
-    ) -> Iterator[Union[str, BinaryIO]]:
+        file_path: str | None = None,
+    ) -> Iterator[str | BinaryIO]:
         """
         Opening file only once is necessary when file is actually a named pipe.
         Reader may receive EOF when file is closed, but not all metadata is downloaded.
@@ -801,7 +798,7 @@ class BackupLayout:
         disk: Disk,
         source_disk_name: str,
         desired_tables: Sequence[TableMetadata] | Literal["all"],
-        file_path: Optional[str] = None,
+        file_path: str | None = None,
     ) -> None:
         """
         Download files packed in tarball and unpacks them into specified directory.
@@ -862,7 +859,7 @@ class BackupLayout:
         if not parts:
             return
 
-        deleting_files: List[str] = []
+        deleting_files: list[str] = []
         for part in parts:
             # part.link is the source backup name for deduplicated parts (or None).
             source_backup_name = part.link or backup_meta.name
@@ -1023,8 +1020,8 @@ def _part_path(
 
 def _disk_metadata_path(
     backup_path: str,
-    db_name: Optional[str],
-    table_name: Optional[str],
+    db_name: str | None,
+    table_name: str | None,
     disk_name: str,
     compressed: bool = False,
 ) -> str:

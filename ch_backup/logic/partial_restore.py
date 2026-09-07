@@ -3,7 +3,6 @@ Clickhouse partial restore helper
 """
 
 import fnmatch
-from typing import List
 
 
 class PartialRestorePattern:
@@ -44,7 +43,7 @@ class PartialRestoreFilter:
     Contains filtering logic for partial restore command
     """
 
-    def __init__(self, inverted: bool, patterns: List[str]):
+    def __init__(self, inverted: bool, patterns: list[str]):
         """
         @param inverted: include(false) or exclude(true) matcher
         @param patterns: table patterns in format db_name.table_name with possible * in table_name

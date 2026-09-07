@@ -7,7 +7,6 @@ import posixpath
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional, Tuple
 
 from ch_backup import logging
 from ch_backup.backup_context import BackupContext
@@ -33,7 +32,7 @@ class WorkloadEntity:
     name: str
     type: WorkloadEntityType
     create_statement: str
-    parent: Optional[str] = None
+    parent: str | None = None
 
     def filename_on_disk(self) -> str:
         """
@@ -105,7 +104,7 @@ class WorkloadEntitiesBackup(BackupManager):
             )
             return
 
-        workload_entities: List[Tuple[str, WorkloadEntityType]] = (
+        workload_entities: list[tuple[str, WorkloadEntityType]] = (
             context.ch_ctl.get_workload_entities_query()
         )
 
@@ -173,8 +172,8 @@ class WorkloadEntitiesBackup(BackupManager):
 
         we_on_clickhouse = dict(context.ch_ctl.get_workload_entities_query())
 
-        resources_from_backup: List[WorkloadEntity] = []
-        workloads_from_backup: List[WorkloadEntity] = []
+        resources_from_backup: list[WorkloadEntity] = []
+        workloads_from_backup: list[WorkloadEntity] = []
 
         for entity_name in we_list:
             statement = context.backup_layout.get_workload_entity_create_statement(
@@ -242,8 +241,8 @@ class WorkloadEntitiesBackup(BackupManager):
 
     @staticmethod
     def topologically_sort_workload_entities(
-        workload_entities: List[WorkloadEntity],
-    ) -> List[WorkloadEntity]:
+        workload_entities: list[WorkloadEntity],
+    ) -> list[WorkloadEntity]:
         """
         Sort WORKLOAD entities create them in the right order.
         """
@@ -306,7 +305,7 @@ class WorkloadEntitiesBackup(BackupManager):
             # CREATE RESOURCE s3_read (READ DISK s3);
             # CREATE WORKLOAD `all` SETTINGS max_bytes_per_second = 2147483648;
             we_create_statements_binary, _ = client.get(from_path)
-            we_create_statements: List[str] = we_create_statements_binary.decode(
+            we_create_statements: list[str] = we_create_statements_binary.decode(
                 "utf-8"
             ).splitlines()
 
