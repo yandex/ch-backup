@@ -3,7 +3,6 @@ ClickHouse client.
 """
 
 import logging
-from copy import copy
 from datetime import datetime, timedelta
 from typing import Any, List, Sequence, Tuple, Union
 from urllib.parse import urljoin
@@ -305,15 +304,16 @@ class ClickhouseClient:
         url: str = None,
         data: Union[bytes, str] = None,
     ) -> Any:
+        params = {}
         if url:
             url = urljoin(self._url, url)
         else:
             url = self._url
+            params.update(self._settings)
 
         if isinstance(data, str):
             data = data.encode()
 
-        params = copy(self._settings)
         if query:
             params["query"] = query
         if self._user:
