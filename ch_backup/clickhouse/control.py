@@ -989,13 +989,13 @@ class ClickhouseCTL:
         """
         Restore database.
         """
-        self._ch_client.query(database_schema, sensitive=True)
+        self._ch_client.query(database_schema)
 
     def restore_udf(self, udf_statement):
         """
         Restore user defined function.
         """
-        self._ch_client.query(udf_statement, sensitive=True)
+        self._ch_client.query(udf_statement)
 
     def restore_named_collection(self, nc_statement):
         """
@@ -1007,13 +1007,13 @@ class ClickhouseCTL:
         """
         Restore workload entity (WORKLOAD or RESOURCE).
         """
-        self._ch_client.query(entity_statement, sensitive=True)
+        self._ch_client.query(entity_statement)
 
     def create_table(self, table: Table) -> None:
         """
         Restore table.
         """
-        self._ch_client.query(table.create_statement, sensitive=True)
+        self._ch_client.query(table.create_statement)
 
     def restore_replica(self, table: Table) -> None:
         """

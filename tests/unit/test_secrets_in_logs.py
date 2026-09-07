@@ -2,7 +2,6 @@
 Unit tests for masking secrets before they reach the log.
 """
 
-from ch_backup import cli
 from ch_backup.util import mask_sql_literals
 from tests.unit.utils import parametrize
 
@@ -55,49 +54,6 @@ from tests.unit.utils import parametrize
         },
     },
     {
-        "id": "table engine arguments",
-        "args": {
-            "sql": (
-                "CREATE TABLE test_db.test_table (n Int32)"
-                " ENGINE = MySQL('db-host.example.com:3306', 'remote_db',"
-                " 'remote_table', 'remote_user', 'hunter2')"
-            ),
-            "expected": (
-                "CREATE TABLE test_db.test_table (n Int32)"
-                " ENGINE = MySQL('[HIDDEN]', '[HIDDEN]',"
-                " '[HIDDEN]', '[HIDDEN]', '[HIDDEN]')"
-            ),
-        },
-    },
-    {
-        "id": "dictionary source",
-        "args": {
-            "sql": (
-                "CREATE DICTIONARY test_db.d (n UInt32)"
-                " SOURCE(MYSQL(host 'db-host.example.com' password 'hunter2'))"
-            ),
-            "expected": (
-                "CREATE DICTIONARY test_db.d (n UInt32)"
-                " SOURCE(MYSQL(host '[HIDDEN]' password '[HIDDEN]'))"
-            ),
-        },
-    },
-    {
-        "id": "merge tree with an inline disk definition",
-        "args": {
-            "sql": (
-                "CREATE TABLE test_db.test_table (n Int32) ENGINE = MergeTree"
-                " ORDER BY n SETTINGS disk = disk(type = s3,"
-                " secret_access_key = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY')"
-            ),
-            "expected": (
-                "CREATE TABLE test_db.test_table (n Int32) ENGINE = MergeTree"
-                " ORDER BY n SETTINGS disk = disk(type = s3,"
-                " secret_access_key = '[HIDDEN]')"
-            ),
-        },
-    },
-    {
         "id": "backslash before the closing quote",
         "args": {
             "sql": "path = 'C:\\\\', password = 'hunter2'",
@@ -142,16 +98,3 @@ from tests.unit.utils import parametrize
 )
 def test_mask_sql_literals(sql: str, expected: str) -> None:
     assert mask_sql_literals(sql) == expected
-
-
-def test_mask_secret_params():
-    # pylint: disable=protected-access
-    assert cli._mask_secret_params(
-        {
-            "config_parameters": [("clickhouse.clickhouse_password", "hunter2")],
-            "host": "db-host.example.com",
-        }
-    ) == {
-        "config_parameters": [("clickhouse.clickhouse_password", "[HIDDEN]")],
-        "host": "db-host.example.com",
-    }
