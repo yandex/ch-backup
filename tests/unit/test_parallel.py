@@ -156,6 +156,51 @@ def test_failure_closes_queue_without_cancelling_active_feature():
     assert queue.pending == [third]
 
 
+def test_report_reserves_heavy_and_exclusive_slots_and_closes_pending_queue(
+    tmp_path, monkeypatch
+):
+    heavy = feature("heavy", tags=["parallel_heavy"])
+    exclusive = feature("exclusive", tags=["parallel_exclusive"])
+    run = ParallelRun(tmp_path, [heavy, exclusive], 3, [])
+    assert run.report["features"]["heavy"]["slots_reserved"] == 2
+    assert run.report["features"]["exclusive"]["slots_reserved"] == 3
+
+    run._scheduler_started = 10  # pylint: disable=protected-access
+    run.report["scheduler"]["started_at"] = 100
+    monkeypatch.setattr("tests.integration.parallel.time.monotonic", lambda: 15)
+    monkeypatch.setattr("tests.integration.parallel.time.time", lambda: 105)
+    run._close_admission("cancelled")  # pylint: disable=protected-access
+
+    for outcome in run.report["features"].values():
+        assert outcome["queue_wait_seconds"] == 5
+        assert outcome["queue_exit_reason"] == "cancelled"
+    assert run.report["scheduler"]["events"][-1]["slots_used"] == 0
+    assert run.report["scheduler"]["admission_close_reason"] == "cancelled"
+
+
+def test_feature_start_failure_closes_admission_and_records_queue_exit(
+    tmp_path, monkeypatch
+):
+    selected = feature("one.feature")
+    run = ParallelRun(tmp_path, [selected, feature("two.feature")], 2, [])
+    run._start_scheduler()  # pylint: disable=protected-access
+    assert run.queue.take() == selected
+    monkeypatch.setattr(
+        "tests.integration.parallel.subprocess.Popen",
+        MagicMock(side_effect=OSError("cannot start")),
+    )
+    with pytest.raises(OSError, match="cannot start"):
+        run._start(run.workers[0], selected)  # pylint: disable=protected-access
+    assert run.report["features"][selected.path]["status"] == "failed"
+    assert (
+        run.report["features"][selected.path]["queue_exit_reason"]
+        == "feature_start_failure"
+    )
+    assert run.report["features"]["two.feature"]["queue_exit_reason"] == (
+        "feature_start_failure"
+    )
+
+
 @pytest.fixture(name="feature_root")
 def fixture_feature_root(tmp_path):
     directory = tmp_path / "tests/integration"

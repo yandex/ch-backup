@@ -58,6 +58,28 @@ def counter_delta(previous: dict, current: dict) -> float:
     )
 
 
+def cumulative_delta(samples: list[dict], *path: str) -> float | None:
+    """Sum monotonic counter deltas while tolerating resets and missing fields."""
+
+    def value(sample: dict) -> float | None:
+        current = sample
+        for key in path:
+            if not isinstance(current, dict) or key not in current:
+                return None
+            current = current[key]
+        return current if isinstance(current, (int, float)) else None
+
+    total = 0.0
+    observed = False
+    for previous, current in zip(samples, samples[1:]):
+        before, after = value(previous), value(current)
+        if before is None or after is None or after < before:
+            continue
+        total += after - before
+        observed = True
+    return total if observed else None
+
+
 def block_counters(sample: dict) -> dict:
     result = {}
     for item in sample.get("containers", []):
@@ -130,6 +152,67 @@ def container_memory(sample: dict) -> int:
     )
 
 
+def pressure_resources(samples: list[dict]) -> dict:
+    """Summarize PSI avg10 observations and cumulative stall time."""
+    result: dict[str, dict[str, dict]] = {}
+    for resource in ("cpu", "memory", "io"):
+        result[resource] = {}
+        for kind in ("some", "full"):
+            avg10 = [
+                value
+                for sample in samples
+                if isinstance(
+                    value := (
+                        sample.get("pressure", {})
+                        .get(resource, {})
+                        .get(kind, {})
+                        .get("avg10")
+                    ),
+                    (int, float),
+                )
+            ]
+            total = cumulative_delta(samples, "pressure", resource, kind, "total")
+            result[resource][kind] = {
+                "avg10_percent": distribution(avg10),
+                "total_seconds": None if total is None else total / 1_000_000,
+            }
+    return result
+
+
+def scheduler_resources(report: dict) -> dict:
+    """Calculate exact queue and slot metrics from scheduler transitions."""
+    events = report.get("scheduler", {}).get("events", [])
+    occupancy: dict[str, float] = {}
+    elapsed = 0.0
+    slot_seconds = 0.0
+    for previous, current in zip(events, events[1:]):
+        seconds = current.get("time", 0) - previous.get("time", 0)
+        slots = previous.get("slots_used")
+        if seconds < 0 or not isinstance(slots, int):
+            continue
+        elapsed += seconds
+        slot_seconds += slots * seconds
+        key = str(slots)
+        occupancy[key] = occupancy.get(key, 0.0) + seconds
+    jobs = report.get("jobs")
+    utilization = (
+        100 * slot_seconds / (jobs * elapsed)
+        if isinstance(jobs, int) and jobs > 0 and elapsed > 0
+        else None
+    )
+    waits = [
+        outcome["queue_wait_seconds"]
+        for outcome in report.get("features", {}).values()
+        if isinstance(outcome.get("queue_wait_seconds"), (int, float))
+    ]
+    return {
+        "elapsed_seconds": elapsed if events else None,
+        "slot_utilization_percent": utilization,
+        "slot_occupancy_seconds": occupancy,
+        "queue_wait_seconds": distribution(waits),
+    }
+
+
 def feature_resources(samples: list[dict], report: dict) -> dict:
     memory = []
     docker_memory = []
@@ -185,6 +268,7 @@ def host_resources(samples: list[dict], report: dict) -> dict:
     valid = [s for s in samples if "cpu" in s and "memory" in s]
     cpu = []
     iowait = []
+    steal = []
     overlaps = []
     for previous, current in zip(valid, valid[1:]):
         delta = {
@@ -195,9 +279,19 @@ def host_resources(samples: list[dict], report: dict) -> dict:
         total = sum(delta.values())
         if total <= 0 or any(value < 0 for value in delta.values()):
             continue
-        busy = 100 * (total - delta.get("idle", 0) - delta.get("iowait", 0)) / total
+        busy = (
+            100
+            * (
+                total
+                - delta.get("idle", 0)
+                - delta.get("iowait", 0)
+                - delta.get("steal", 0)
+            )
+            / total
+        )
         cpu.append(busy)
         iowait.append(100 * delta.get("iowait", 0) / total)
+        steal.append(100 * delta.get("steal", 0) / total)
         active = active_features(report, current["time"])
         if active:
             overlaps.append(
@@ -229,16 +323,34 @@ def host_resources(samples: list[dict], report: dict) -> dict:
         "sample_errors": sum("error" in s for s in samples),
         "cpu_percent": distribution(cpu),
         "iowait_percent": distribution(iowait),
+        "steal_percent": distribution(steal),
+        "pressure": pressure_resources(samples),
         "disk_bytes_per_second": io_rates(valid, "host"),
         "memory_total_bytes": valid[0]["memory"]["total"] if valid else None,
         "available_memory_min_bytes": min(
             (s["memory"]["available"] for s in valid), default=None
         ),
         "swap_used_max_bytes": max(
-            (s.get("swap", {}).get("used", 0) for s in valid), default=None
+            (
+                s["swap"]["used"]
+                for s in valid
+                if isinstance(s.get("swap", {}).get("used"), (int, float))
+            ),
+            default=None,
         ),
+        "swap_in_bytes": cumulative_delta(valid, "swap", "sin"),
+        "swap_out_bytes": cumulative_delta(valid, "swap", "sout"),
+        "oom_kill_delta": cumulative_delta(valid, "vmstat", "oom_kill"),
         "disk_free_min_bytes": min(
             (s["disk"]["free"] for s in valid if "disk" in s), default=None
+        ),
+        "disk_inodes_free_min": min(
+            (
+                s["disk_inodes"]["available"]
+                for s in valid
+                if s.get("disk_inodes", {}).get("available") is not None
+            ),
+            default=None,
         ),
         "busiest_combinations": list(busiest.values())[:5],
     }
@@ -250,12 +362,31 @@ def format_value(value: float | None, divisor: float = 1) -> str:
 
 def markdown_summary(summary: dict) -> str:
     host = summary["host"]
+    scheduler = summary["scheduler"]
+    pressure = host["pressure"]
     lines = [
         "## Integration resource profile",
         f"Workers: {summary['jobs']}; CPUs: {host['cpu_count']}; "
         f"host CPU mean/p95: {format_value(host['cpu_percent']['mean'])}% / "
         f"{format_value(host['cpu_percent']['p95'])}%; "
         f"minimum available RAM: {format_value(host['available_memory_min_bytes'], 2**30)} GiB.",
+        f"Host iowait mean/p95: {format_value(host['iowait_percent']['mean'])}% / "
+        f"{format_value(host['iowait_percent']['p95'])}%; steal mean/p95: "
+        f"{format_value(host['steal_percent']['mean'])}% / "
+        f"{format_value(host['steal_percent']['p95'])}%.",
+        "PSI avg10 p95 (cpu some / memory full / io full): "
+        f"{format_value(pressure['cpu']['some']['avg10_percent']['p95'])}% / "
+        f"{format_value(pressure['memory']['full']['avg10_percent']['p95'])}% / "
+        f"{format_value(pressure['io']['full']['avg10_percent']['p95'])}%.",
+        f"Swap peak/in/out: {format_value(host['swap_used_max_bytes'], 2**20)} / "
+        f"{format_value(host['swap_in_bytes'], 2**20)} / "
+        f"{format_value(host['swap_out_bytes'], 2**20)} MiB; OOM kills: "
+        f"{format_value(host['oom_kill_delta'])}; minimum disk free: "
+        f"{format_value(host['disk_free_min_bytes'], 2**30)} GiB; minimum free inodes: "
+        f"{format_value(host['disk_inodes_free_min'])}.",
+        f"Slot utilization: {format_value(scheduler['slot_utilization_percent'])}%; "
+        f"queue wait p95/max: {format_value(scheduler['queue_wait_seconds']['p95'], 60)} / "
+        f"{format_value(scheduler['queue_wait_seconds']['max'], 60)} min.",
         "",
         "CPU includes containers and the feature's Python process tree. Memory is simultaneous "
         "container working set plus Python RSS. Sampling every 5 seconds misses short peaks "
@@ -266,9 +397,9 @@ def markdown_summary(summary: dict) -> str:
         "High CPU demand alone does not prove that a feature needs exclusive execution. "
         "Correlate failures with neighbors and host pressure; confirm separately before changing tags.",
         "",
-        "| Feature | Status | Wall min | Restart count / min | CPU cores mean / p95 | "
+        "| Feature | Status | Slots / queue min | Wall min | Restart count / min | CPU cores mean / p95 | "
         "Peak GiB (containers / Python / simultaneous total) | Docker I/O p95 MiB/s | Neighbors (samples) |",
-        "|---|---|---:|---:|---:|---:|---:|---|",
+        "|---|---|---:|---:|---:|---:|---:|---:|---|",
     ]
     for path, item in sorted(
         summary["features"].items(),
@@ -279,7 +410,10 @@ def markdown_summary(summary: dict) -> str:
             for key in restart:
                 restart[key] += item["stages"].get(name, {}).get(key, 0)
         lines.append(
-            f"| {Path(path).stem} | {item['status']} | {format_value(item.get('wall_seconds'), 60)} | "
+            f"| {Path(path).stem} | {item['status']} | "
+            f"{format_value(item.get('slots_reserved'))} / "
+            f"{format_value(item.get('queue_wait_seconds'), 60)} | "
+            f"{format_value(item.get('wall_seconds'), 60)} | "
             f"{restart.get('count', 0)} / {format_value(restart.get('wall_seconds', 0), 60)} | "
             f"{format_value(item['cpu_cores']['mean'])} / {format_value(item['cpu_cores']['p95'])} | "
             f"{format_value(item['container_working_set_bytes']['max'], 2**30)} / "
@@ -307,6 +441,7 @@ def write_resource_summary(results: Path, report: dict) -> dict:
         "workers": report.get("workers", {}),
         "features": {},
         "host": host_resources(read_samples(results / "resources.jsonl"), report),
+        "scheduler": scheduler_resources(report),
     }
     for path, outcome in report["features"].items():
         directory = results / "features" / Path(path).with_suffix("")
@@ -333,6 +468,9 @@ def write_resource_summary(results: Path, report: dict) -> dict:
             **metrics,
             "status": outcome["status"],
             "wall_seconds": outcome.get("wall_seconds"),
+            "slots_reserved": outcome.get("slots_reserved"),
+            "queue_wait_seconds": outcome.get("queue_wait_seconds"),
+            "queue_exit_reason": outcome.get("queue_exit_reason"),
             "stages": stages,
         }
     (results / "resource-summary.json").write_text(json.dumps(summary, indent=2) + "\n")

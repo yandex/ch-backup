@@ -13,6 +13,56 @@ import psutil
 ENVIRONMENT_LABEL = "ch-backup.integration.environment"
 
 
+def read_pressure(root: Path = Path("/proc/pressure")) -> dict:
+    """Read Linux pressure-stall counters without making them mandatory."""
+    pressure = {}
+    for resource in ("cpu", "memory", "io"):
+        try:
+            lines = (root / resource).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        values = {}
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 2:
+                continue
+            metrics = {}
+            try:
+                for field in fields[1:]:
+                    name, value = field.split("=", 1)
+                    metrics[name] = int(value) if name == "total" else float(value)
+            except (TypeError, ValueError):
+                continue
+            values[fields[0]] = metrics
+        if values:
+            pressure[resource] = values
+    return pressure
+
+
+def read_vmstat(path: Path = Path("/proc/vmstat")) -> dict:
+    """Read the host OOM counter when exposed by the kernel."""
+    try:
+        values = dict(
+            line.split() for line in path.read_text(encoding="utf-8").splitlines()
+        )
+        return {"oom_kill": int(values["oom_kill"])} if "oom_kill" in values else {}
+    except (OSError, TypeError, ValueError):
+        return {}
+
+
+def disk_inodes(path: Path) -> dict:
+    """Return filesystem inode capacity for the report destination."""
+    try:
+        stats = os.statvfs(path)
+    except OSError:
+        return {}
+    return {
+        "total": stats.f_files,
+        "free": stats.f_ffree,
+        "available": stats.f_favail,
+    }
+
+
 def record_stage(stage: str, started: float, success: bool) -> None:
     """Append stage timing only when profiling is requested by the coordinator."""
     destination = os.getenv("INTEGRATION_STAGE_PROFILE")
@@ -116,7 +166,10 @@ class ResourceSampler:
             "memory": psutil.virtual_memory()._asdict(),
             "swap": psutil.swap_memory()._asdict(),
             "disk": psutil.disk_usage(str(self.destination.parent))._asdict(),
+            "disk_inodes": disk_inodes(self.destination.parent),
             "disk_io": psutil.disk_io_counters()._asdict(),
+            "pressure": read_pressure(),
+            "vmstat": read_vmstat(),
             "processes": processes,
             "containers": containers,
         }

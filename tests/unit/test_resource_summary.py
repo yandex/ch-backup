@@ -2,8 +2,11 @@
 
 import json
 
+from tests.integration.profiling import disk_inodes, read_pressure, read_vmstat
 from tests.integration.resource_summary import (
     feature_resources,
+    host_resources,
+    scheduler_resources,
     write_resource_summary,
 )
 
@@ -33,6 +36,30 @@ def sample(timestamp, container_cpu, process_cpu, identity="container"):
     }
 
 
+def test_linux_pressure_vmstat_and_inode_readers_are_best_effort(tmp_path):
+    pressure = tmp_path / "pressure"
+    pressure.mkdir()
+    (pressure / "cpu").write_text(
+        "some avg10=1.25 avg60=2.50 avg300=3.75 total=12345\nmalformed value\n"
+    )
+    (pressure / "memory").write_text("full avg10=bad total=7\n")
+    assert read_pressure(pressure) == {
+        "cpu": {
+            "some": {
+                "avg10": 1.25,
+                "avg60": 2.5,
+                "avg300": 3.75,
+                "total": 12345,
+            }
+        }
+    }
+    vmstat = tmp_path / "vmstat"
+    vmstat.write_text("pgfault 10\noom_kill 2\n")
+    assert read_vmstat(vmstat) == {"oom_kill": 2}
+    assert not read_vmstat(tmp_path / "missing")
+    assert disk_inodes(tmp_path)["available"] >= 0
+
+
 def test_cpu_includes_python_without_double_counting_children_and_memory_is_simultaneous():
     samples = [sample(0, 0, 0), sample(5, 10, 5)]
     metrics = feature_resources(samples, {"features": {}})
@@ -48,6 +75,69 @@ def test_counter_restarts_and_pid_reuse_do_not_create_spikes():
     metrics = feature_resources(samples, {"features": {}})
     assert metrics["cpu_cores"]["max"] == 0
     assert metrics["cpu_observed_seconds"] == 10
+
+
+def test_host_pressure_separates_busy_iowait_and_steal_and_tracks_counters():
+    samples = [sample(0, 0, 0), sample(5, 0, 0)]
+    samples[0].update(
+        {
+            "cpu": {"user": 0, "idle": 0, "iowait": 0, "steal": 0},
+            "swap": {"used": 0, "sin": 100, "sout": 200},
+            "vmstat": {"oom_kill": 4},
+            "disk": {"free": 900},
+            "disk_inodes": {"available": 90},
+            "pressure": {"cpu": {"some": {"avg10": 1.0, "total": 1_000_000}}},
+        }
+    )
+    samples[1].update(
+        {
+            "cpu": {"user": 10, "idle": 10, "iowait": 5, "steal": 5},
+            "swap": {"used": 10, "sin": 112, "sout": 220},
+            "vmstat": {"oom_kill": 5},
+            "disk": {"free": 800},
+            "disk_inodes": {"available": 80},
+            "pressure": {"cpu": {"some": {"avg10": 3.0, "total": 3_500_000}}},
+        }
+    )
+    metrics = host_resources(samples, {"features": {}})
+    assert metrics["cpu_percent"]["mean"] == 100 / 3
+    assert metrics["iowait_percent"]["mean"] == 100 / 6
+    assert metrics["steal_percent"]["mean"] == 100 / 6
+    assert metrics["pressure"]["cpu"]["some"]["total_seconds"] == 2.5
+    assert metrics["swap_in_bytes"] == 12
+    assert metrics["swap_out_bytes"] == 20
+    assert metrics["oom_kill_delta"] == 1
+    assert metrics["disk_free_min_bytes"] == 800
+    assert metrics["disk_inodes_free_min"] == 80
+
+
+def test_scheduler_summary_integrates_slots_and_queue_wait():
+    report = {
+        "jobs": 3,
+        "features": {
+            "a": {"queue_wait_seconds": 1},
+            "b": {"queue_wait_seconds": 5},
+            "c": {"queue_wait_seconds": 9, "queue_exit_reason": "failure"},
+        },
+        "scheduler": {
+            "events": [
+                {"time": 0, "slots_used": 0},
+                {"time": 1, "slots_used": 2},
+                {"time": 5, "slots_used": 3},
+                {"time": 9, "slots_used": 1},
+                {"time": 10, "slots_used": 0},
+            ]
+        },
+    }
+    metrics = scheduler_resources(report)
+    assert metrics["slot_utilization_percent"] == 70
+    assert metrics["slot_occupancy_seconds"] == {
+        "0": 1.0,
+        "2": 4.0,
+        "3": 4.0,
+        "1": 1.0,
+    }
+    assert metrics["queue_wait_seconds"]["p95"] == 9
 
 
 def test_io_does_not_count_total_twice_and_ignores_missing_intervals():

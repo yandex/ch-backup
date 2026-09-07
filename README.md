@@ -228,16 +228,19 @@ Results are printed at startup under `staging/parallel/<run-id>/results/`:
 - Per-feature directories: `behave.log`, `junit/`, `outcome.json`, `stages.jsonl`
   and `resources.jsonl`. Failure diagnostics are also retained in the worker's
   `staging/logs/` directory and copied into the feature's reports.
-- Global `resources.jsonl`: five-second samples of host CPU, memory, swap, disk
-  space and I/O, coordinator descendants' CPU/RSS/I/O, and owned containers' CPU,
-  memory and block I/O.
+- Global `resources.jsonl`: five-second samples of host CPU (including iowait
+  and steal), PSI, memory, swap, OOM kills, disk space, inodes and I/O,
+  coordinator descendants' CPU/RSS/I/O, and owned containers' CPU, memory and
+  block I/O. Kernel counters that are unavailable are retained as `n/a` in the
+  summary rather than treated as zero.
   Per-feature samples retain only that worker's containers and process tree.
 - `resource-summary.json` and `resource-summary.md`: per-feature CPU cores
   (mean/p95), simultaneous container working set plus Python RSS, I/O rates,
-  restart counts and wall times, neighbors, and host pressure during each feature.
-  The Markdown table is also published in GitHub Job Summary. Missing counters
-  are reported as `n/a`, never zero. Five-second samples miss short bursts and
-  processes that start and exit between samples; RSS may include shared pages.
+  restart counts and wall times, neighbors, queue wait, reserved slots, exact
+  time-weighted slot utilization, and host pressure during each feature. The
+  Markdown table is also published in GitHub Job Summary. Five-second samples
+  miss short bursts and processes that start and exit between samples; RSS may
+  include shared pages.
 
 Use the resource summary to choose features for a four-worker benchmark. Compare
 full runs on the same pinned images; p95 demand alone cannot guarantee a safe
