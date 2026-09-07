@@ -2,6 +2,8 @@
 Steps for interacting with ClickHouse DBMS.
 """
 
+import time
+
 import yaml
 from behave import given, then, when
 from hamcrest import assert_that, contains_string, equal_to, has_length
@@ -12,15 +14,20 @@ from tests.integration.modules.clickhouse import ClickhouseClient
 from tests.integration.modules.docker import get_container, put_file
 from tests.integration.modules.steps import get_step_data
 from tests.integration.modules.templates import render_template
+from tests.integration.profiling import record_stage
 
 
-@given("a working clickhouse on {node:w}")
 @retry(wait=wait_fixed(0.5), stop=stop_after_attempt(360))
-def step_wait_for_clickhouse_alive(context, node):
+def _wait_for_clickhouse_alive(context, node):
     """
     Wait until clickhouse is ready to accept incoming requests.
     """
     ClickhouseClient(context, node).ping()
+
+
+@given("a working clickhouse on {node:w}")
+def step_wait_for_clickhouse_alive(context, node):
+    _wait_for_clickhouse_alive(context, node)
 
 
 @given("we have enabled shared zookeeper for {node:w}")
@@ -294,7 +301,14 @@ def step_replace_config_file(context, config_to_replace, new_config, node):
         ).exit_code
         == 0
     )
-    assert container.exec_run("supervisorctl restart clickhouse").exit_code == 0
+    started = time.monotonic()
+    success = False
+    try:
+        assert container.exec_run("supervisorctl restart clickhouse").exit_code == 0
+        _wait_for_clickhouse_alive(context, node)
+        success = True
+    finally:
+        record_stage("environment:restart_clickhouse", started, success)
 
 
 @when("we stop clickhouse at {node:w}")
@@ -310,11 +324,19 @@ def step_stop_clickhouse(context, node):
 @when("we start clickhouse at {node:w}")
 def step_start_clickhouse(context, node):
     container = get_container(context, node)
-    result = container.exec_run(
-        ["bash", "-c", "supervisorctl start clickhouse"], user="root"
-    )
-    context.response = result.output.decode().strip()
-    context.exit_code = result.exit_code
+    started = time.monotonic()
+    success = False
+    try:
+        result = container.exec_run(
+            ["bash", "-c", "supervisorctl start clickhouse"], user="root"
+        )
+        context.response = result.output.decode().strip()
+        context.exit_code = result.exit_code
+        if result.exit_code == 0:
+            _wait_for_clickhouse_alive(context, node)
+            success = True
+    finally:
+        record_stage("environment:start_clickhouse", started, success)
 
 
 @when("we save all user's data in context on {node:w}")
