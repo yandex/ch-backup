@@ -5,7 +5,7 @@ Writing files from TAR stream stage.
 from enum import Enum
 from pathlib import Path
 from tarfile import BLOCKSIZE, ENCODING, GNUTYPE_LONGNAME, NUL, TarInfo
-from typing import IO, Any, Iterator, Optional
+from typing import IO, Any, Iterator
 
 from ch_backup.storage.async_pipeline.base_pipeline.bytes_fifo import BytesFIFO
 from ch_backup.storage.async_pipeline.base_pipeline.handler import Handler
@@ -45,8 +45,8 @@ class TarStreamProcessorBase(Handler):
         self._state: State = State.READ_HEADER
 
         self._bytes_to_process: int = 0
-        self._tarinfo: Optional[TarInfo] = None
-        self._name_from_buffer: Optional[bytes] = None
+        self._tarinfo: TarInfo | None = None
+        self._name_from_buffer: bytes | None = None
 
     def __call__(self, data: bytes, index: int) -> None:
         written = self._tarstream.write(data)
@@ -156,7 +156,7 @@ class WriteFilesStage(TarStreamProcessorBase):
     def __init__(self, config: dict, dir_path: Path, buffer_size: int) -> None:
         super().__init__(config, buffer_size)
         self._dir: Path = dir_path
-        self._fobj: Optional[IO] = None
+        self._fobj: IO | None = None
 
     def _on_file_complete(self) -> None:
         if self._fobj:

@@ -1,6 +1,5 @@
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
-from typing import List, Optional
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
@@ -111,11 +110,11 @@ _EXISTS_ERROR = ClickhouseError("Cannot check table existence")
 )
 # pylint: disable=too-many-locals
 def test_backup_table_skipping_if_metadata_updated_during_backup(
-    metadata_after_freeze: List[Optional[TableMetadataChangeTime]],
-    freeze_error: Optional[ClickhouseError],
+    metadata_after_freeze: list[TableMetadataChangeTime | None],
+    freeze_error: ClickhouseError | None,
     table_exists: bool | ClickhouseError,
-    expected_error: Optional[ClickhouseError],
-    expected_databases: List[str],
+    expected_error: ClickhouseError | None,
+    expected_databases: list[str],
 ) -> None:
     table_name = "table1"
     db1_name = "db1"
@@ -200,9 +199,7 @@ def test_backup_table_skipping_if_metadata_updated_during_backup(
         for tables, after in zip(tables_by_db.values(), metadata_after_freeze)
         for table in tables
     }
-    error_context: AbstractContextManager[
-        Optional[pytest.ExceptionInfo[ClickhouseError]]
-    ]
+    error_context: AbstractContextManager[pytest.ExceptionInfo[ClickhouseError] | None]
     if expected_error:
         error_context = pytest.raises(ClickhouseError)
     else:
@@ -276,7 +273,7 @@ class TestValidateUploadedParts:
 
     _BACKUP_NAME = "20181017T210300"
 
-    def _make_part(self, name: str, link: Optional[str] = None) -> PartMetadata:
+    def _make_part(self, name: str, link: str | None = None) -> PartMetadata:
         return PartMetadata(
             database="db1",
             table="table1",
