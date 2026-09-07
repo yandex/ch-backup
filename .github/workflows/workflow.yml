@@ -70,12 +70,7 @@ jobs:
     - name: run unit tests
       run: make test-unit
     - name: run integration tests
-      run: |
-        case "$INTEGRATION_JOBS" in
-          1) make test-integration ;;
-          2|3|4) make test-integration-parallel ;;
-          *) echo 'INTEGRATION_JOBS must be 1, 2, 3 or 4' >&2; exit 2 ;;
-        esac
+      run: make test-integration-parallel
       env:
         INTEGRATION_JOBS: '3'
         BEHAVE_ARGS: --junit --junit-directory staging/junit

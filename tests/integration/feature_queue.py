@@ -1,7 +1,5 @@
-"""Select whole Behave features and schedule them within a resource budget."""
+"""Select whole Behave features and schedule them within a slot budget."""
 
-import json
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -17,7 +15,6 @@ class Feature:
     path: str
     scenarios: int
     tags: frozenset[str]
-    weight: float
 
     def slots(self, jobs: int) -> int:
         """Reserve the entire budget for exclusive features."""
@@ -27,7 +24,7 @@ class Feature:
 
 
 def load_features(
-    root: Path, featureset: Path, behave_args: Sequence[str], timings: Path = None
+    root: Path, featureset: Path, behave_args: Sequence[str]
 ) -> list[Feature]:
     """Validate the canonical list before selecting features with Behave filters."""
     config = Configuration(list(behave_args))
@@ -35,7 +32,6 @@ def load_features(
         raise ValueError("Use INTEGRATION_FEATURESET instead of positional BEHAVE_ARGS")
     if config.dry_run:
         raise ValueError("Use the parallel runner's --dry-run option")
-    durations = load_timings(timings) if timings else {}
     selected = []
     seen = set()
     for line_number, raw_line in enumerate(featureset.read_text().splitlines(), 1):
@@ -53,40 +49,10 @@ def load_features(
         scenarios = [s for s in model.walk_scenarios() if s.should_run(config)]
         if config.exclude(relative) or not scenarios:
             continue
-        selected.append(Feature(relative, len(scenarios), frozenset(model.tags), 0.0))
+        selected.append(Feature(relative, len(scenarios), frozenset(model.tags)))
     if not selected:
         raise ValueError("No features selected")
-
-    # Convert the fallback scenario count to seconds when some timings exist.
-    known = [durations[f.path] / f.scenarios for f in selected if f.path in durations]
-    seconds_per_scenario = sum(known) / len(known) if known else 1.0
-    return [
-        Feature(
-            f.path,
-            f.scenarios,
-            f.tags,
-            durations.get(f.path, f.scenarios * seconds_per_scenario),
-        )
-        for f in selected
-    ]
-
-
-def load_timings(path: Path) -> dict[str, float]:
-    """Read successful wall times from a previous parallel summary."""
-    report = json.loads(path.read_text())
-    result = {}
-    for feature, outcome in report["features"].items():
-        duration = outcome.get("wall_seconds")
-        if outcome.get("status") != "passed":
-            continue
-        if (
-            not isinstance(duration, (int, float))
-            or not math.isfinite(duration)
-            or duration <= 0
-        ):
-            raise ValueError(f"Invalid duration for {feature} in {path}")
-        result[feature] = float(duration)
-    return result
+    return selected
 
 
 class FeatureQueue:
@@ -96,7 +62,7 @@ class FeatureQueue:
         if jobs < 1:
             raise ValueError("INTEGRATION_JOBS must be positive")
         self.jobs = jobs
-        self.pending = sorted(features, key=lambda feature: -feature.weight)
+        self.pending = sorted(features, key=lambda feature: -feature.scenarios)
         self.active: dict[str, Feature] = {}
         self.stopped = False
 

@@ -9,7 +9,7 @@ from pathlib import Path
 import docker
 import yaml
 
-from tests.integration.profiling import ENVIRONMENT_LABEL
+ENVIRONMENT_LABEL = "ch-backup.integration.environment"
 
 
 def snapshot(root: Path, destination: Path) -> None:
@@ -143,11 +143,19 @@ def read_outcome(destination: Path, returncode: int, expected: int) -> dict:
             case.find("failure") is not None or case.find("error") is not None
             for case in cases
         )
-        stages = destination / "stages.jsonl"
-        stage_failed = stages.exists() and any(
-            not json.loads(line)["success"] for line in stages.read_text().splitlines()
+        stage_failures_path = destination / "stage-failures.jsonl"
+        stage_failures = (
+            [
+                json.loads(line)
+                for line in stage_failures_path.read_text().splitlines()
+                if line
+            ]
+            if stage_failures_path.exists()
+            else []
         )
-        if returncode == 0 and complete and not junit_failed and not stage_failed:
+        if stage_failures:
+            outcome["stage_failures"] = stage_failures
+        if returncode == 0 and complete and not junit_failed and not stage_failures:
             outcome["status"] = (
                 "skipped" if all(s == "skipped" for s in statuses) else "passed"
             )

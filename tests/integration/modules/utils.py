@@ -5,13 +5,12 @@ Utility functions.
 import logging
 import re
 import string
-import time
 from functools import wraps
 from random import choice as random_choise
 from types import SimpleNamespace
 from typing import Mapping, MutableMapping, MutableSequence
 
-from tests.integration.profiling import record_stage
+from tests.integration.diagnostics import record_stage_failure
 
 from .typing import ContextT
 
@@ -58,18 +57,13 @@ def env_stage(event, fail=False):
         def _wrapped_fun(*args, **kwargs):
             stage_name = f"{fun.__module__}.{fun.__name__}"
             logging.info("initiating %s stage %s", event, stage_name)
-            started = time.monotonic()
-            success = False
             try:
-                result = fun(*args, **kwargs)
-                success = True
-                return result
+                return fun(*args, **kwargs)
             except Exception as e:
                 logging.error("%s failed: %s", stage_name, e)
+                record_stage_failure(f"{event}:{stage_name}", e)
                 if fail:
                     raise
-            finally:
-                record_stage(f"{event}:{stage_name}", started, success)
 
         return _wrapped_fun
 

@@ -12,26 +12,22 @@ import pytest
 from tests.integration.diagnostics import (
     print_failure,
     print_process_failure,
+    record_stage_failure,
     record_step_failure,
 )
-from tests.integration.feature_queue import (
-    Feature,
-    FeatureQueue,
-    load_features,
-    load_timings,
-)
+from tests.integration.feature_queue import Feature, FeatureQueue, load_features
 from tests.integration.parallel import ParallelRun, RunningFeature, Worker
 from tests.integration.parallel_runtime import (
+    ENVIRONMENT_LABEL,
     cleanup_environment,
     image_inventory,
     read_outcome,
     snapshot,
 )
-from tests.integration.profiling import ENVIRONMENT_LABEL, write_feature_profiles
 
 
-def feature(name, weight=1, tags=()):
-    return Feature(name, 1, frozenset(tags), weight)
+def feature(name, scenarios=1, tags=()):
+    return Feature(name, scenarios, frozenset(tags))
 
 
 def test_step_failure_is_reported_before_process_exit_and_closes_admission(
@@ -57,7 +53,7 @@ def test_step_failure_is_reported_before_process_exit_and_closes_admission(
     process = MagicMock()
     process.poll.return_value = None
     running = RunningFeature(
-        Worker(tmp_path, "worker-1"), selected, process, output, MagicMock(), 0
+        Worker(tmp_path, "worker-1"), selected, process, output, MagicMock()
     )
     assert run.queue.take() == selected
     run._report_failure(running)  # pylint: disable=protected-access
@@ -97,7 +93,7 @@ def test_process_failure_reports_available_log_tail(tmp_path, capsys, exists):
     assert len(output) < 5000
 
 
-@pytest.mark.parametrize("jobs", [1, 2, 3, 4])
+@pytest.mark.parametrize("jobs", [1, 2, 3])
 def test_queue_visits_each_feature_once_within_budget(jobs):
     features = [
         feature("heavy1", 9, ["parallel_heavy"]),
@@ -156,26 +152,17 @@ def test_failure_closes_queue_without_cancelling_active_feature():
     assert queue.pending == [third]
 
 
-def test_report_reserves_heavy_and_exclusive_slots_and_closes_pending_queue(
-    tmp_path, monkeypatch
-):
+def test_report_reserves_heavy_and_exclusive_slots_and_closes_pending_queue(tmp_path):
     heavy = feature("heavy", tags=["parallel_heavy"])
     exclusive = feature("exclusive", tags=["parallel_exclusive"])
     run = ParallelRun(tmp_path, [heavy, exclusive], 3, [])
     assert run.report["features"]["heavy"]["slots_reserved"] == 2
     assert run.report["features"]["exclusive"]["slots_reserved"] == 3
 
-    run._scheduler_started = 10  # pylint: disable=protected-access
-    run.report["scheduler"]["started_at"] = 100
-    monkeypatch.setattr("tests.integration.parallel.time.monotonic", lambda: 15)
-    monkeypatch.setattr("tests.integration.parallel.time.time", lambda: 105)
     run._close_admission("cancelled")  # pylint: disable=protected-access
 
     for outcome in run.report["features"].values():
-        assert outcome["queue_wait_seconds"] == 5
-        assert outcome["queue_exit_reason"] == "cancelled"
-    assert run.report["scheduler"]["events"][-1]["slots_used"] == 0
-    assert run.report["scheduler"]["admission_close_reason"] == "cancelled"
+        assert outcome["not_run_reason"] == "cancelled"
 
 
 def test_feature_start_failure_closes_admission_and_records_queue_exit(
@@ -183,7 +170,6 @@ def test_feature_start_failure_closes_admission_and_records_queue_exit(
 ):
     selected = feature("one.feature")
     run = ParallelRun(tmp_path, [selected, feature("two.feature")], 2, [])
-    run._start_scheduler()  # pylint: disable=protected-access
     assert run.queue.take() == selected
     monkeypatch.setattr(
         "tests.integration.parallel.subprocess.Popen",
@@ -192,11 +178,7 @@ def test_feature_start_failure_closes_admission_and_records_queue_exit(
     with pytest.raises(OSError, match="cannot start"):
         run._start(run.workers[0], selected)  # pylint: disable=protected-access
     assert run.report["features"][selected.path]["status"] == "failed"
-    assert (
-        run.report["features"][selected.path]["queue_exit_reason"]
-        == "feature_start_failure"
-    )
-    assert run.report["features"]["two.feature"]["queue_exit_reason"] == (
+    assert run.report["features"]["two.feature"]["not_run_reason"] == (
         "feature_start_failure"
     )
 
@@ -253,44 +235,6 @@ def test_no_selection_is_an_error(feature_root):
     root, featureset = feature_root
     with pytest.raises(ValueError, match="No features"):
         load_features(root, featureset, ["-n", "does-not-exist"])
-
-
-def test_timings_ignore_failed_and_skipped_runs_and_scale_unknown_features(
-    feature_root,
-):
-    root, featureset = feature_root
-    timings = root / "summary.json"
-    timings.write_text(
-        json.dumps(
-            {
-                "features": {
-                    "tests/integration/one.feature": {
-                        "status": "passed",
-                        "wall_seconds": 200,
-                    },
-                    "tests/integration/two.feature": {
-                        "status": "failed",
-                        "wall_seconds": 2,
-                    },
-                }
-            }
-        )
-    )
-    assert [f.weight for f in load_features(root, featureset, [], timings)] == [
-        200,
-        100,
-    ]
-    assert len(load_timings(timings)) == 1
-
-
-@pytest.mark.parametrize("duration", [-1, 0, "bad", float("nan"), float("inf")])
-def test_invalid_timings_are_rejected(tmp_path, duration):
-    timings = tmp_path / "summary.json"
-    timings.write_text(
-        json.dumps({"features": {"f": {"status": "passed", "wall_seconds": duration}}})
-    )
-    with pytest.raises(ValueError):
-        load_timings(timings)
 
 
 def test_workspaces_have_independent_mutable_inputs(tmp_path):
@@ -363,10 +307,24 @@ def test_scenario_outcomes(reports, status, expected):
 
 
 def test_ignored_cleanup_failure_is_not_success(reports):
-    (reports / "stages.jsonl").write_text(
-        json.dumps({"stage": "stop", "success": False}) + "\n"
+    (reports / "stage-failures.jsonl").write_text(
+        json.dumps({"stage": "stop", "error": "network cleanup failed"}) + "\n"
     )
-    assert read_outcome(reports, 0, 1)["status"] == "failed"
+    outcome = read_outcome(reports, 0, 1)
+    assert outcome["status"] == "failed"
+    assert outcome["stage_failures"] == [
+        {"stage": "stop", "error": "network cleanup failed"}
+    ]
+
+
+def test_stage_failure_diagnostic_contains_no_timing(tmp_path, monkeypatch):
+    destination = tmp_path / "stage-failures.jsonl"
+    monkeypatch.setenv("INTEGRATION_STAGE_FAILURES", str(destination))
+    record_stage_failure("environment:stop", RuntimeError("cleanup failed"))
+    assert json.loads(destination.read_text()) == {
+        "stage": "environment:stop",
+        "error": "cleanup failed",
+    }
 
 
 def test_junit_failure_overrides_successful_process(reports):
@@ -420,39 +378,6 @@ def test_inventory_closes_docker_client_without_context_manager(tmp_path):
     client.close.assert_called_once()
 
 
-def test_feature_profile_excludes_other_workers_and_tracks_descendants(tmp_path):
-    report = {
-        "workers": {"w1": {"environment": "env1"}},
-        "features": {
-            "one.feature": {
-                "started_at": 10,
-                "finished_at": 20,
-                "pid": 1,
-                "worker": "w1",
-            },
-            "not-run.feature": {"status": "not_run"},
-        },
-    }
-    sample = {
-        "time": 15,
-        "memory": {"available": 100},
-        "containers": [{"environment": "env1"}, {"environment": "env2"}],
-        "processes": [
-            {"pid": 3, "ppid": 2},
-            {"pid": 2, "ppid": 1},
-            {"pid": 1, "ppid": 10},
-            {"pid": 4, "ppid": 10},
-        ],
-    }
-    (tmp_path / "resources.jsonl").write_text(json.dumps(sample) + "\n")
-    (tmp_path / "features/one").mkdir(parents=True)
-    write_feature_profiles(tmp_path, report)
-    result = json.loads((tmp_path / "features/one/resources.jsonl").read_text())
-    assert result["containers"] == [{"environment": "env1"}]
-    assert {p["pid"] for p in result["processes"]} == {1, 2, 3}
-    assert result["memory"] == {"available": 100}
-
-
 @pytest.mark.parametrize("cancel", [False, True])
 def test_setup_failure_and_cancellation_leave_failed_report_and_cleanup(
     tmp_path, monkeypatch, cancel
@@ -467,7 +392,6 @@ def test_setup_failure_and_cancellation_leave_failed_report_and_cleanup(
 
     monkeypatch.setattr(run, "_prepare", prepare)
     monkeypatch.setattr("tests.integration.parallel.snapshot", lambda *_args: None)
-    monkeypatch.setattr("tests.integration.parallel.ResourceSampler", MagicMock())
     cleanup = MagicMock(return_value=[])
     monkeypatch.setattr("tests.integration.parallel.cleanup_environment", cleanup)
     monkeypatch.setattr("tests.integration.parallel.image_inventory", lambda _path: {})

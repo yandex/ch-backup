@@ -203,12 +203,11 @@ optional `INTEGRATION_FEATURESET` selects a different list of files under `tests
 files are indivisible, including `@dependent-scenarios` features: their scenarios
 retain their original order and environment hooks.
 
-The scheduler starts longer features first and gives free workers the next
-eligible feature. Features tagged `@parallel_heavy` reserve two slots (one when
-`INTEGRATION_JOBS=1`); `@parallel_exclusive` reserves every slot and waits for the
-active features to finish. The initial heavy features are `backup_restore` and
-`freeze_parallel`; this is a conservative classification from their fixtures,
-not a measured claim about runner utilization.
+The scheduler starts features with more selected scenarios first and gives free
+workers the next eligible feature. Features tagged `@parallel_heavy` reserve two
+slots (one when `INTEGRATION_JOBS=1`); `@parallel_exclusive` reserves every slot
+and waits for the active features to finish. The initial heavy features are
+`backup_restore` and `freeze_parallel`.
 
 After a failure, no new features start; active features finish. `--stop` also
 remains enabled within each feature. Failed steps print their feature, scenario,
@@ -222,81 +221,12 @@ the runner never performs a global Docker prune.
 
 Results are printed at startup under `staging/parallel/<run-id>/results/`:
 
-- `summary.json`: final status, selected feature outcomes, process wall times,
-  worker preparation times, image IDs and actual ClickHouse versions. Features
-  not started after a failure have status `not_run`, distinct from version skips.
-- Per-feature directories: `behave.log`, `junit/`, `outcome.json`, `stages.jsonl`
-  and `resources.jsonl`. Failure diagnostics are also retained in the worker's
-  `staging/logs/` directory and copied into the feature's reports.
-- Global `resources.jsonl`: five-second samples of host CPU (including iowait
-  and steal), PSI, memory, swap, OOM kills, disk space, inodes and I/O,
-  coordinator descendants' CPU/RSS/I/O, and owned containers' CPU, memory and
-  block I/O. Kernel counters that are unavailable are retained as `n/a` in the
-  summary rather than treated as zero.
-  Per-feature samples retain only that worker's containers and process tree.
-- `resource-summary.json` and `resource-summary.md`: per-feature CPU cores
-  (mean/p95), simultaneous container working set plus Python RSS, I/O rates,
-  restart counts and wall times, neighbors, queue wait, reserved slots, exact
-  time-weighted slot utilization, and host pressure during each feature. The
-  Markdown table is also published in GitHub Job Summary. Five-second samples
-  miss short bursts and processes that start and exit between samples; RSS may
-  include shared pages.
+- `summary.json`: final status, selected feature outcomes, reserved slots, image
+  IDs and actual ClickHouse versions. Features not started after a failure have
+  status `not_run`, distinct from version skips.
+- Per-feature directories: `behave.log`, `junit/` and `outcome.json`. Failure-only
+  stage diagnostics are written to `stage-failures.jsonl`; worker logs and
+  container diagnostics are retained for failed runs.
 
-Use the resource summary to choose features for a four-worker benchmark. Compare
-full runs on the same pinned images; p95 demand alone cannot guarantee a safe
-combination. Keep `@parallel_heavy` for two-slot features. Use the existing
-`@parallel_exclusive` only after a repeatable failure with neighbors and resource
-pressure, followed by a successful isolated comparison; no additional tag is
-needed. Host disk I/O includes other work and cannot be attributed to one feature.
-Regenerate a summary from downloaded artifacts without Docker:
-
-```bash
-uv run python -m tests.integration.resource_summary /path/to/results
-```
-
-JUnit durations exclude environment hooks in Behave. Use measured process wall
-times, which include feature setup and teardown, for scheduling and comparisons:
-
-```bash
-make test-integration-parallel INTEGRATION_JOBS=3 \
-  INTEGRATION_TIMINGS=staging/parallel/<previous-run-id>/results/summary.json
-```
-
-Without timings, expanded scenario counts provide the initial weights. Unknown
-features use the mean measured seconds per scenario when available. Failed and
-skipped feature timings are not reused. Use a matching Python/ClickHouse version
-and the same filters when reusing timings.
-
-#### Benchmark and CI activation
-
-The manual **integration benchmark** workflow compares three and four slots on
-`ubuntu-22.04`, Python 3.10. Each mode runs twice on separate runners. Supply an
-exact ClickHouse version resolved from `latest` (for example `26.8.2.7`) so
-comparisons do not mix releases. The local benchmark command still supports
-serial and one- or two-slot diagnostic runs. The existing manual
-ClickHouse-version workflow is unchanged.
-
-Benchmark reports include total `make` wall time, including wheel and image
-preparation. The parallel runner's own summary starts after the wheel is built;
-use the benchmark's `benchmark.json` and Actions job duration for end-to-end
-comparisons. A clean checkout can run one benchmark locally:
-
-```bash
-CLICKHOUSE_VERSION=26.8.2.7 uv run python -m tests.integration.benchmark --mode 3
-```
-
-Compare full-suite outcomes, version skips, both repetitions' wall times, peak
-memory, swap activity and available disk space. The workflow recommends four
-workers only when every first-attempt run passes without OOM, the median wall
-time improves by at least 15%, and no feature whose three-worker median is at
-least ten minutes grows by more than 20%. Otherwise it keeps three. Mark a
-feature exclusive only after confirming that it passes alone and suffers
-resource-related failures when sharing the runner. Do not hide contention by
-increasing timeouts or automatically retrying failures.
-
-All twelve existing CI combinations run with three slots without changing job
-names. Adjust `INTEGRATION_JOBS` in the main workflow after comparing CI results:
-use `2` for two slots or `1` to restore the original serial runner.
-JUnit and diagnostics are uploaded on both success and failure, with run-attempt
-specific artifact names. Local timings on a larger machine do not establish the
-speedup or memory requirements of the 4-vCPU, 16-GB CI runner.
+All twelve existing CI combinations use three slots. JUnit and diagnostics are
+uploaded on both success and failure with run-attempt-specific artifact names.

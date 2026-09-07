@@ -6,12 +6,11 @@ Manage test environment.
 import argparse
 import logging
 import pickle
-import time
 from types import SimpleNamespace
 
 from tests.integration import configuration
+from tests.integration.diagnostics import record_stage_failure
 from tests.integration.modules import compose, docker, minio, templates
-from tests.integration.profiling import record_stage
 
 SESSION_STATE_CONF = ".session_conf.sav"
 STAGES = {
@@ -95,14 +94,12 @@ def _run_stage(stage, context):
 
     _init_context(context)
 
-    started = time.monotonic()
-    success = False
     try:
         for step in STAGES[stage]:
             step(context)
-        success = True
-    finally:
-        record_stage(f"environment:{stage}", started, success)
+    except Exception as error:
+        record_stage_failure(f"environment:{stage}", error)
+        raise
 
 
 def _init_context(context):

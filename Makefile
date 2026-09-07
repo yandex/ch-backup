@@ -7,7 +7,6 @@ export PROJECT_NAME ?= ch-backup
 export DEV_MODE ?= false
 export INTEGRATION_JOBS ?= 3
 export INTEGRATION_FEATURESET ?= tests/integration/ch_backup.featureset
-export INTEGRATION_TIMINGS ?=
 
 export BUILD_PYTHON_OUTPUT_DIR ?= dist
 export BUILD_DEB_OUTPUT_DIR ?= out
@@ -252,4 +251,3 @@ help:
 	@echo "  CLICKHOUSE_VERSION         ClickHouse version to use in integration tests (default: \"$(CLICKHOUSE_VERSION)\")."
 	@echo "  INTEGRATION_JOBS           Slot budget for test-integration-parallel (default: $(INTEGRATION_JOBS))."
 	@echo "  INTEGRATION_FEATURESET     Canonical feature list for parallel runs."
-	@echo "  INTEGRATION_TIMINGS        Optional previous summary.json for wall-time scheduling."

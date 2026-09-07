@@ -25,8 +25,6 @@ from tests.integration.parallel_runtime import (
     remove_image_tags,
     snapshot,
 )
-from tests.integration.profiling import ResourceSampler, write_feature_profiles
-from tests.integration.resource_summary import write_resource_summary
 
 
 @dataclass
@@ -37,11 +35,11 @@ class Worker:
     environment: str
 
     def env(self, output: Path) -> dict[str, str]:
-        """Each child writes its stage timings and outcomes into its own report."""
+        """Each child writes outcomes and failures into its own report."""
         return {
             **os.environ,
             "INTEGRATION_ENV_ID": self.environment,
-            "INTEGRATION_STAGE_PROFILE": str(output / "stages.jsonl"),
+            "INTEGRATION_STAGE_FAILURES": str(output / "stage-failures.jsonl"),
             "INTEGRATION_FEATURE_RESULT": str(output / "outcome.json"),
             "INTEGRATION_FEATURE_FAILURE": str(output / "failure.json"),
             "PYTHONDONTWRITEBYTECODE": "1",
@@ -57,7 +55,6 @@ class RunningFeature:
     process: subprocess.Popen
     output: Path
     log: IO
-    started: float
     failure_reported: bool = False
 
 
@@ -80,7 +77,6 @@ class ParallelRun:
         ]
         self.cancelled = 0
         self.active: list[RunningFeature] = []
-        self._scheduler_started: float | None = None
         self.report: dict = {
             "run_id": self.run_id,
             "jobs": jobs,
@@ -95,7 +91,6 @@ class ParallelRun:
                 }
                 for f in features
             },
-            "scheduler": {"events": []},
             "workers": {},
             "errors": [],
             "status": "running",
@@ -110,86 +105,21 @@ class ParallelRun:
         temporary.write_text(json.dumps(self.report, indent=2) + "\n")
         temporary.replace(self.results / "summary.json")
 
-    def _record_scheduler_event(
-        self, event: str, feature: Feature | None = None, worker: Worker | None = None
-    ) -> None:
-        """Record the exact slot state after a scheduler transition."""
-        active: list[dict] = [
-            {
-                "feature": running.feature.path,
-                "worker": running.worker.path.name,
-                "slots": running.feature.slots(self.queue.jobs),
-            }
-            for running in self.active
-        ]
-        active.sort(key=lambda item: item["feature"])
-        item = {
-            "time": time.time(),
-            "event": event,
-            "slots_used": sum(entry["slots"] for entry in active),
-            "slots_total": self.queue.jobs,
-            "active": active,
-        }
-        if feature is not None:
-            item["feature"] = feature.path
-        if worker is not None:
-            item["worker"] = worker.path.name
-        self.report["scheduler"]["events"].append(item)
-
-    def _start_scheduler(self) -> None:
-        self._scheduler_started = time.monotonic()
-        started_at = time.time()
-        self.report["scheduler"]["started_at"] = started_at
-        for feature in self.queue.pending:
-            self.report["features"][feature.path]["queued_at"] = started_at
-        self._record_scheduler_event("scheduler_started")
-
-    def _close_admission(self, reason: str, feature: Feature | None = None) -> None:
-        """Stop new work and retain how long every pending feature waited."""
+    def _close_admission(self, reason: str) -> None:
+        """Stop new work and retain why pending features were not run."""
         self.queue.stopped = True
-        scheduler = self.report["scheduler"]
-        if "admission_closed_at" in scheduler:
-            return
-        scheduler["admission_closed_at"] = time.time()
-        scheduler["admission_close_reason"] = reason
-        waited = (
-            time.monotonic() - self._scheduler_started
-            if self._scheduler_started is not None
-            else 0.0
-        )
         for pending in self.queue.pending:
-            outcome = self.report["features"][pending.path]
-            outcome["queue_wait_seconds"] = waited
-            outcome["queue_exit_reason"] = reason
-        self._record_scheduler_event("admission_closed", feature)
-
-    def _finish_scheduler(self) -> None:
-        scheduler = self.report["scheduler"]
-        if self._scheduler_started is None:
-            reason = "cancelled_before_scheduler" if self.cancelled else "setup_failed"
-            for feature in self.queue.pending:
-                outcome = self.report["features"][feature.path]
-                outcome.setdefault("queue_wait_seconds", 0.0)
-                outcome.setdefault("queue_exit_reason", reason)
-            return
-        if "finished_at" not in scheduler:
-            scheduler["finished_at"] = time.time()
-            self._record_scheduler_event("scheduler_finished")
+            self.report["features"][pending.path].setdefault("not_run_reason", reason)
 
     def execute(self) -> int:
         """Always retain a final report, including setup and cancellation failures."""
-        started = time.monotonic()
         self.results.mkdir(parents=True)
         handlers = {
             sig: signal.signal(sig, self._signal)
             for sig in (signal.SIGINT, signal.SIGTERM)
         }
-        sampler = ResourceSampler(
-            self.results / "resources.jsonl", [w.environment for w in self.workers]
-        )
         self._save()
         print(f"Integration results: {self.results}", flush=True)
-        sampler.start()
         try:
             # Freeze inputs before slow builds; all workers must test the same files.
             snapshot(self.root, self.directory / "source")
@@ -198,7 +128,6 @@ class ParallelRun:
                     break
                 self._prepare(worker)
                 self._save()
-            self.report["preparation_seconds"] = time.monotonic() - started
             if not self.cancelled:
                 self._schedule()
         except Exception as error:
@@ -211,16 +140,8 @@ class ParallelRun:
                     "cancelled" if self.cancelled else "setup_or_feature_failure"
                 )
             self._finish_active()
-            self._finish_scheduler()
             for worker in self.workers:
                 self._cleanup(worker)
-            sampler.stop()
-            try:
-                write_feature_profiles(self.results, self.report)
-                write_resource_summary(self.results, self.report)
-            except Exception as error:
-                self.report["errors"].append(f"Writing resource profiles: {error}")
-            self.report["wall_seconds"] = time.monotonic() - started
             self.report["signal"] = self.cancelled or None
             successful = (
                 not self.cancelled
@@ -266,7 +187,6 @@ class ParallelRun:
             pass
 
     def _prepare(self, worker: Worker) -> None:
-        started = time.monotonic()
         output = self.results / worker.path.name
         output.mkdir()
         snapshot(self.directory / "source", worker.path)
@@ -289,7 +209,6 @@ class ParallelRun:
         self.report["workers"][worker.path.name] = {
             "environment": worker.environment,
             "images": images,
-            "setup_seconds": time.monotonic() - started,
         }
         # Probe the built binary without starting a server or attaching a test network.
         with (output / "clickhouse-version.txt").open("w") as log:
@@ -331,7 +250,6 @@ class ParallelRun:
             )
 
     def _start(self, worker: Worker, feature: Feature) -> None:
-        assert self._scheduler_started is not None
         output = self.results / "features" / Path(feature.path).with_suffix("")
         output.mkdir(parents=True)
         log = (output / "behave.log").open("w")
@@ -364,28 +282,20 @@ class ParallelRun:
             self.report["features"][feature.path].update(
                 {
                     "status": "failed",
-                    "queue_wait_seconds": time.monotonic() - self._scheduler_started,
-                    "queue_exit_reason": "feature_start_failure",
                     "error": str(error),
                 }
             )
-            self._close_admission("feature_start_failure", feature)
+            self._close_admission("feature_start_failure")
             self.queue.finish(feature, False)
             raise
-        self.active.append(
-            RunningFeature(worker, feature, process, output, log, time.monotonic())
-        )
+        self.active.append(RunningFeature(worker, feature, process, output, log))
         outcome = self.report["features"][feature.path]
         outcome.update(
             {
                 "status": "running",
                 "worker": worker.path.name,
-                "started_at": time.time(),
-                "queue_wait_seconds": time.monotonic() - self._scheduler_started,
-                "pid": process.pid,
             }
         )
-        self._record_scheduler_event("feature_started", feature, worker)
         print(
             f"{worker.path.name}: {feature.path} ({feature.slots(self.queue.jobs)} slots)",
             flush=True,
@@ -399,7 +309,7 @@ class ParallelRun:
         if not failure_path.exists():
             return
         failure = json.loads(failure_path.read_text())
-        self._close_admission("feature_failure", running.feature)
+        self._close_admission("feature_failure")
         running.failure_reported = True
         self.report["features"][running.feature.path]["failure"] = failure
         print_failure(
@@ -415,24 +325,15 @@ class ParallelRun:
         outcome = read_outcome(
             running.output, running.process.returncode, running.feature.scenarios
         )
-        outcome.update(
-            {
-                "wall_seconds": time.monotonic() - running.started,
-                "finished_at": time.time(),
-                "worker": running.worker.path.name,
-            }
-        )
+        outcome["worker"] = running.worker.path.name
         self.report["features"][running.feature.path].update(outcome)
         success = outcome["status"] in ("passed", "skipped")
         if not success:
-            self._close_admission("feature_failure", running.feature)
+            self._close_admission("feature_failure")
         self.queue.finish(running.feature, success)
         self.active.remove(running)
-        self._record_scheduler_event(
-            "feature_finished", running.feature, running.worker
-        )
         print(
-            f"{running.worker.path.name}: {running.feature.path}: {outcome['status']} ({outcome['wall_seconds']:.1f}s)",
+            f"{running.worker.path.name}: {running.feature.path}: {outcome['status']}",
             flush=True,
         )
         if not success:
@@ -458,7 +359,6 @@ class ParallelRun:
         self._save()
 
     def _schedule(self) -> None:
-        self._start_scheduler()
         while self.active or (self.queue.pending and not self.queue.stopped):
             # Reap every completion before handing out any new work.
             for running in list(self.active):
@@ -518,24 +418,19 @@ def cli_main() -> None:
             )
         ),
     )
-    parser.add_argument(
-        "--timings", type=Path, default=os.getenv("INTEGRATION_TIMINGS") or None
-    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     root = Path.cwd().resolve()
     behave_args = shlex.split(os.getenv("BEHAVE_ARGS", ""))
     try:
-        features = load_features(
-            root, args.featureset.resolve(), behave_args, args.timings
-        )
+        features = load_features(root, args.featureset.resolve(), behave_args)
         run = ParallelRun(root, features, args.jobs, behave_args)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     if args.dry_run:
         for feature in run.queue.pending:
             print(
-                f"{feature.slots(args.jobs)} slots, {feature.weight:g} weight, {feature.scenarios} scenarios: {feature.path}"
+                f"{feature.slots(args.jobs)} slots, {feature.scenarios} scenarios: {feature.path}"
             )
         return
     raise SystemExit(run.execute())

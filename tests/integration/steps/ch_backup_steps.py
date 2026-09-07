@@ -3,7 +3,6 @@ Steps related to ch-backup command-line tool.
 """
 
 import json
-import time
 
 from behave import given, then, when
 from hamcrest import (
@@ -19,7 +18,6 @@ from hamcrest import (
 from tests.integration.modules.ch_backup_cli import BackupManager
 from tests.integration.modules.docker import get_container
 from tests.integration.modules.steps import get_step_data
-from tests.integration.profiling import record_stage
 
 
 @given("ch-backup configuration on {node:w}")
@@ -236,14 +234,8 @@ def step_restore_access_control_backup(context, backup_id, node):
 @when("we restart clickhouse on {node:w}")
 def step_restart_clickhouse(context, node):
     container = get_container(context, node)
-    started = time.monotonic()
-    success = False
-    try:
-        assert container.exec_run("supervisorctl restart clickhouse").exit_code == 0
-        context.execute_steps(f"Given a working clickhouse on {node}")
-        success = True
-    finally:
-        record_stage("environment:restart_clickhouse", started, success)
+    assert container.exec_run("supervisorctl restart clickhouse").exit_code == 0
+    context.execute_steps(f"Given a working clickhouse on {node}")
 
 
 @then("we got the following s3 backup directories on {node:w}")

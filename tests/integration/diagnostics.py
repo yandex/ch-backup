@@ -10,6 +10,18 @@ from behave.model import Step
 from tests.integration.modules.typing import ContextT
 
 
+def record_stage_failure(stage: str, error: object = None) -> None:
+    """Record only unsuccessful environment stages for final status checks."""
+    destination = os.getenv("INTEGRATION_STAGE_FAILURES")
+    if not destination:
+        return
+    failure = {"stage": stage}
+    if error is not None:
+        failure["error"] = str(error)
+    with Path(destination).open("a", encoding="utf-8") as output:
+        output.write(json.dumps(failure) + "\n")
+
+
 def record_step_failure(context: ContextT, step: Step) -> None:
     """Use an atomic file so the coordinator can report a still-running feature."""
     destination = os.getenv("INTEGRATION_FEATURE_FAILURE")
