@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mode: [serial, '1', '2', '3', '4']
+        mode: ['3', '4']
         repeat: [1, 2]
     steps:
     - uses: actions/checkout@v7
@@ -38,3 +38,29 @@ jobs:
           staging/junit/
           staging/logs/
         if-no-files-found: ignore
+
+  compare:
+    name: compare three and four workers
+    needs: benchmark
+    if: ${{ always() }}
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v7
+    - uses: astral-sh/setup-uv@v7
+      with:
+        python-version: '3.10'
+    - uses: actions/download-artifact@v7
+      with:
+        pattern: integration-benchmark-*
+        path: staging/downloaded-benchmarks
+    - name: compare benchmark results
+      run: |
+        uv run python -m tests.integration.benchmark_summary \
+          staging/downloaded-benchmarks \
+          --output staging/benchmark-comparison
+    - uses: actions/upload-artifact@v7
+      if: ${{ always() }}
+      with:
+        name: integration-benchmark-comparison-attempt-${{ github.run_attempt }}
+        path: staging/benchmark-comparison/
+        if-no-files-found: error

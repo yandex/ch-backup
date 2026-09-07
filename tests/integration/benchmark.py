@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import platform
 import re
 import signal
 import subprocess
@@ -52,6 +53,8 @@ def cli_main() -> None:
     report = {
         "mode": args.mode,
         "clickhouse_version": version,
+        "python_version": platform.python_version(),
+        "git_sha": os.getenv("GITHUB_SHA"),
         "cpu_count": psutil.cpu_count(),
         "memory_bytes": psutil.virtual_memory().total,
     }

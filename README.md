@@ -269,11 +269,12 @@ and the same filters when reusing timings.
 
 #### Benchmark and CI activation
 
-The manual **integration benchmark** workflow compares the original serial runner
-and the new runner with one, two, three and four slots on `ubuntu-22.04`, Python 3.10.
-Each mode runs twice on separate runners. Supply an exact ClickHouse version
-resolved from `latest` (for example `26.8.2.7`) so comparisons do not mix releases.
-The existing manual ClickHouse-version workflow is unchanged.
+The manual **integration benchmark** workflow compares three and four slots on
+`ubuntu-22.04`, Python 3.10. Each mode runs twice on separate runners. Supply an
+exact ClickHouse version resolved from `latest` (for example `26.8.2.7`) so
+comparisons do not mix releases. The local benchmark command still supports
+serial and one- or two-slot diagnostic runs. The existing manual
+ClickHouse-version workflow is unchanged.
 
 Benchmark reports include total `make` wall time, including wheel and image
 preparation. The parallel runner's own summary starts after the wheel is built;
@@ -285,10 +286,13 @@ CLICKHOUSE_VERSION=26.8.2.7 uv run python -m tests.integration.benchmark --mode 
 ```
 
 Compare full-suite outcomes, version skips, both repetitions' wall times, peak
-memory, swap activity and available disk space. If three slots are unstable or
-slower than two, use two. Mark a feature exclusive only after confirming that it
-passes alone and suffers resource-related failures when sharing the runner.
-Do not hide contention by increasing timeouts or automatically retrying failures.
+memory, swap activity and available disk space. The workflow recommends four
+workers only when every first-attempt run passes without OOM, the median wall
+time improves by at least 15%, and no feature whose three-worker median is at
+least ten minutes grows by more than 20%. Otherwise it keeps three. Mark a
+feature exclusive only after confirming that it passes alone and suffers
+resource-related failures when sharing the runner. Do not hide contention by
+increasing timeouts or automatically retrying failures.
 
 All twelve existing CI combinations run with three slots without changing job
 names. Adjust `INTEGRATION_JOBS` in the main workflow after comparing CI results:
