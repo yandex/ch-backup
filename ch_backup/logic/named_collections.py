@@ -187,7 +187,7 @@ class NamedCollectionsBackup(BackupManager):
         return result
 
     @staticmethod
-    def _normalize_create_statement(statement: Optional[str]) -> Optional[str]:
+    def _normalize_create_statement(statement: str | None) -> str | None:
         """
         Normalize non-semantic CREATE NAMED COLLECTION modifiers.
 
@@ -210,7 +210,7 @@ class NamedCollectionsBackup(BackupManager):
         context: BackupContext,
         nc_config: "NamedCollectionsStorageConfig",
         nc_name: str,
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Read a collection DDL from its configured storage.
         """
