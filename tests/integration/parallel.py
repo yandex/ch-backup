@@ -25,7 +25,6 @@ from tests.integration.parallel_runtime import (
     remove_image_tags,
     snapshot,
 )
-from tests.integration.scenario_report import render_scenario
 
 
 @dataclass
@@ -41,7 +40,6 @@ class Worker:
             **os.environ,
             "INTEGRATION_ENV_ID": self.environment,
             "INTEGRATION_STAGE_FAILURES": str(output / "stage-failures.jsonl"),
-            "INTEGRATION_FEATURE_RESULT": str(output / "outcome.json"),
             "INTEGRATION_FEATURE_FAILURE": str(output / "failure.json"),
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONUNBUFFERED": "1",
@@ -260,8 +258,6 @@ class ParallelRun:
             "-m",
             "behave",
             *self.behave_args,
-            "--runner",
-            "tests.integration.scenario_report:ReportingRunner",
             "--show-timings",
             "--stop",
             "-D",
@@ -328,44 +324,15 @@ class ParallelRun:
         self.report["features"][running.feature.path]["failure"] = failure
         print_failure(
             title,
-            "Full scenario report follows when the worker finishes.",
+            "Process log follows when the worker finishes.",
         )
         self._save()
-
-    def _print_scenario_failure(self, running: RunningFeature) -> bool:
-        try:
-            report = json.loads((running.output / "scenario.json").read_text())
-            if report["completed"] and report["status"] in ("passed", "skipped"):
-                return False
-            worker = self.report["workers"].get(running.worker.path.name, {})
-            details = (
-                f"Worker: {running.worker.path.name}\n"
-                f"Python: {self.report['python']}\n"
-                f"ClickHouse: {worker.get('clickhouse_version', 'unknown')}\n"
-                f"Process exit: {running.process.returncode}\n\n"
-                + render_scenario(report)
-            )
-        except Exception as error:  # Fall back even if rendering itself is broken.
-            logging.warning("Cannot read complete scenario report: {}", error)
-            return False
-        try:
-            (running.output / "failed-scenario.log").write_text(
-                details, encoding="utf-8"
-            )
-        except OSError as error:
-            logging.warning("Cannot save failed scenario log: {}", error)
-        print_failure(
-            f"BEGIN FAILED SCENARIO: {running.worker.path.name}: {report['scenario']}",
-            details + "END FAILED SCENARIO",
-            annotate=not running.failure_reported,
-        )
-        return True
 
     def _complete(self, running: RunningFeature) -> None:
         self._report_failure(running)
         running.log.close()
         outcome = read_outcome(
-            running.output, running.process.returncode, running.feature.scenarios
+            running.output, running.process.returncode, running.feature.total_scenarios
         )
         outcome["worker"] = running.worker.path.name
         self.report["features"][running.feature.path].update(outcome)
@@ -379,13 +346,12 @@ class ParallelRun:
             flush=True,
         )
         if not success:
-            if not self._print_scenario_failure(running):
-                print_process_failure(
-                    f"{running.worker.path.name}: {running.feature.path}: "
-                    f"exit {running.process.returncode}; "
-                    f"{outcome.get('error', 'failed scenario or environment hook')}",
-                    running.output / "behave.log",
-                )
+            print_process_failure(
+                f"{running.worker.path.name}: {running.feature.path}: "
+                f"exit {running.process.returncode}; "
+                f"{outcome.get('error', 'failed scenario or environment hook')}",
+                running.output / "behave.log",
+            )
             logs = running.worker.path / "staging/logs"
             if logs.exists():
                 try:

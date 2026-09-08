@@ -2,7 +2,6 @@
 
 import json
 import os
-import traceback
 from pathlib import Path
 
 from behave.model import Step
@@ -25,20 +24,12 @@ def record_stage_failure(stage: str, error: object = None) -> None:
 
 def record_step_failure(context: ContextT, step: Step) -> None:
     """Use an atomic file so the coordinator can report a still-running feature."""
-    error = step.error_message or str(step.exception)
-    if step.exception:
-        error = "".join(
-            traceback.format_exception(
-                type(step.exception), step.exception, step.exception.__traceback__
-            )
-        )
     write_failure(
         {
             "scenario": context.scenario.name,
             "step": f"{step.keyword} {step.name}",
             "filename": str(step.filename),
             "line": step.line,
-            "error": error,
         }
     )
 

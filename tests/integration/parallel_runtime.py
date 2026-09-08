@@ -119,25 +119,17 @@ def read_outcome(destination: Path, returncode: int, expected: int) -> dict:
     """Missing, incomplete or contradictory reports cannot turn a run green."""
     outcome: dict = {"status": "failed", "returncode": returncode}
     try:
-        details = json.loads((destination / "outcome.json").read_text())
-        outcome.update(details)
-        outcome["status"] = "failed"
-        outcome["returncode"] = returncode
         reports = list((destination / "junit").glob("*.xml"))
         if not reports:
             raise ValueError("Missing JUnit report")
         cases = [
             case for report in reports for case in ET.parse(report).iter("testcase")
         ]
-        if len(cases) < expected:
+        if len(cases) != expected:
             raise ValueError(
-                f"JUnit report has {len(cases)} scenarios, expected at least {expected}"
+                f"JUnit report has {len(cases)} scenarios, expected {expected}"
             )
-        statuses = [scenario["status"] for scenario in details["scenarios"]]
-        if len(statuses) != expected:
-            raise ValueError(
-                f"Expected {expected} selected scenarios, found {len(statuses)}"
-            )
+        statuses = [case.get("status") for case in cases]
         complete = all(status in ("passed", "skipped") for status in statuses)
         junit_failed = any(
             case.find("failure") is not None or case.find("error") is not None

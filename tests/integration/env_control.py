@@ -9,7 +9,6 @@ import pickle
 from types import SimpleNamespace
 
 from tests.integration import configuration
-from tests.integration.diagnostics import record_stage_failure
 from tests.integration.modules import compose, docker, minio, templates
 
 SESSION_STATE_CONF = ".session_conf.sav"
@@ -94,12 +93,8 @@ def _run_stage(stage, context):
 
     _init_context(context)
 
-    try:
-        for step in STAGES[stage]:
-            step(context)
-    except Exception as error:
-        record_stage_failure(f"environment:{stage}", error)
-        raise
+    for step in STAGES[stage]:
+        step(context)
 
 
 def _init_context(context):

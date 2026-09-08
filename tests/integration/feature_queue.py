@@ -14,6 +14,7 @@ class Feature:
 
     path: str
     scenarios: int
+    total_scenarios: int  # JUnit also includes scenarios excluded by filters.
     tags: frozenset[str]
 
     def slots(self, jobs: int) -> int:
@@ -46,10 +47,13 @@ def load_features(
         if not relative.startswith("tests/") or not path.is_file():
             raise ValueError(f"Feature must be an existing file under tests/: {path}")
         model = parse_file(str(path))
-        scenarios = [s for s in model.walk_scenarios() if s.should_run(config)]
+        all_scenarios = list(model.walk_scenarios())
+        scenarios = [s for s in all_scenarios if s.should_run(config)]
         if config.exclude(relative) or not scenarios:
             continue
-        selected.append(Feature(relative, len(scenarios), frozenset(model.tags)))
+        selected.append(
+            Feature(relative, len(scenarios), len(all_scenarios), frozenset(model.tags))
+        )
     if not selected:
         raise ValueError("No features selected")
     return selected
