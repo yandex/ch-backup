@@ -20,13 +20,15 @@ def _ctl_config(settings=None):
     return config
 
 
-@mock.patch("ch_backup.clickhouse.control.ClickhouseClient")
-@mock.patch.object(ClickhouseCTL, "get_disks", return_value={})
-def _new_ctl(settings, _get_disks_mock, client_cls_mock):
-    client = client_cls_mock.return_value
-    client.query.return_value = "25.10.2.65"
-    client.settings = mock.Mock()
-    ClickhouseCTL(_ctl_config(settings=settings), {}, {})
+def _new_ctl(settings):
+    with (
+        mock.patch("ch_backup.clickhouse.control.ClickhouseClient") as client_cls_mock,
+        mock.patch.object(ClickhouseCTL, "get_disks", return_value={}),
+    ):
+        client = client_cls_mock.return_value
+        client.query.return_value = "25.10.2.65"
+        client.settings = mock.Mock()
+        ClickhouseCTL(_ctl_config(settings=settings), {}, {})
 
 
 @pytest.mark.parametrize(
@@ -44,9 +46,7 @@ def test_settings_non_mapping_raises_configuration_error(settings):
 
 @mock.patch("ch_backup.clickhouse.control.ClickhouseClient")
 @mock.patch.object(ClickhouseCTL, "get_disks", return_value={})
-def test_settings_validated_before_client_creation(
-    _get_disks_mock, client_cls_mock
-):
+def test_settings_validated_before_client_creation(_get_disks_mock, client_cls_mock):
     """Invalid settings must be rejected before any ClickHouse client is built.
 
     The client constructor connects/initializes, so a misconfigured `settings`
