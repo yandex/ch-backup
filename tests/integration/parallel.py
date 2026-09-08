@@ -262,6 +262,8 @@ class ParallelRun:
             "--stop",
             "-D",
             "skip_setup",
+            "-D",
+            "behave.reporter.junit.show_skipped_always=true",
             "--junit",
             "--junit-directory",
             str(output / "junit"),

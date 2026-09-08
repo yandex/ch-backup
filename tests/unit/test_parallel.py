@@ -3,6 +3,7 @@
 import importlib
 import json
 import signal
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -235,6 +236,54 @@ def test_no_selection_is_an_error(feature_root):
     root, featureset = feature_root
     with pytest.raises(ValueError, match="No features"):
         load_features(root, featureset, ["-n", "does-not-exist"])
+
+
+@pytest.mark.parametrize("all_skipped", [False, True])
+def test_worker_junit_keeps_skipped_scenarios(tmp_path, all_skipped):
+    directory = tmp_path / "tests/integration"
+    (directory / "steps").mkdir(parents=True)
+    (directory / "steps/passing.py").write_text(
+        'from behave import given\n@given("a passing step")\n'
+        "def passing(context):\n    pass\n"
+    )
+    (directory / "environment.py").write_text(
+        "def before_scenario(context, scenario):\n"
+        '    if "skip" in scenario.tags:\n'
+        '        scenario.mark_skipped("unsupported version")\n'
+    )
+    (directory / "example.feature").write_text(
+        "Feature: Version skips\n"
+        + ("  @skip\n" if all_skipped else "")
+        + "  Scenario: First\n    Given a passing step\n"
+        "  @skip\n  Scenario: Second\n    Given a passing step\n"
+    )
+    selected = feature("tests/integration/example.feature", scenarios=2)
+    run = ParallelRun(
+        tmp_path,
+        [selected],
+        1,
+        ["--no-skipped", "-D", "behave.reporter.junit.show_skipped_always=false"],
+    )
+    # pylint: disable-next=protected-access
+    run._start(Worker(tmp_path, "test-worker"), selected)
+    running = run.active[0]
+    try:
+        assert running.process.wait(timeout=30) == 0
+    finally:
+        if running.process.poll() is None:
+            running.process.kill()
+            running.process.wait()
+        running.log.close()
+
+    cases = [
+        case
+        for report in (running.output / "junit").glob("*.xml")
+        for case in ET.parse(report).iter("testcase")
+    ]
+    assert len(cases) == 2
+    assert sum(case.find("skipped") is not None for case in cases) == (
+        2 if all_skipped else 1
+    )
 
 
 def test_workspaces_have_independent_mutable_inputs(tmp_path):
