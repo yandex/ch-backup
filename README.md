@@ -210,9 +210,9 @@ and waits for the active features to finish. The initial heavy features are
 `backup_restore` and `freeze_parallel`.
 
 After a failure, no new features start; active features finish. `--stop` also
-remains enabled within each feature. Failed steps print their feature, scenario,
-step and traceback in the coordinator log before collecting diagnostics. GitHub
-Actions also receives an error annotation. Setup failures and crashes without
+remains enabled within each feature. Failed steps print their feature, scenario
+and step in the coordinator log before collecting diagnostics. GitHub Actions
+also receives an error annotation. Setup failures and crashes without
 step results print the process log tail. Interrupted or incomplete runs fail, even
 when JUnit output is missing. Normal completion, errors and handled termination
 signals clean up only owned containers, networks and image tags. Workspaces and
@@ -227,6 +227,14 @@ Results are printed at startup under `staging/parallel/<run-id>/results/`:
 - Per-feature directories: `behave.log`, `junit/` and `outcome.json`. Failure-only
   stage diagnostics are written to `stage-failures.jsonl`; worker logs and
   container diagnostics are retained for failed runs.
+- A failed scenario is first announced with a short annotation. When its worker
+  exits, the coordinator prints the complete scenario as one block and saves it
+  as `failed-scenario.log`. It includes worker/Python/ClickHouse versions,
+  Background steps, expanded example values, step statuses and timings, SQL and
+  other multiline data, tables, tracebacks and captured scenario output. Remaining
+  steps are marked `NOT RUN`; hook failures name the hook. `scenario.json` is an
+  atomic snapshot used to retain partial context after an abrupt worker exit.
+  Reports are not truncated and are independent of the selected Behave formatter.
 
 All twelve existing CI combinations use three slots. JUnit and diagnostics are
 uploaded on both success and failure with run-attempt-specific artifact names.
