@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Sequence, Tuple, cast
+from typing import Sequence, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -16,7 +16,7 @@ from ch_backup.logic.workload_entities import WorkloadEntitiesBackup, WorkloadEn
 def _backup_context(
     tmp_path: Path,
     storage_path: str,
-    entities: Sequence[Tuple[str, WorkloadEntityType]],
+    entities: Sequence[tuple[str, WorkloadEntityType]],
     *,
     zookeeper: bool = False,
 ) -> SimpleNamespace:
