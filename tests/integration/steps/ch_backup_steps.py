@@ -167,6 +167,12 @@ def step_backup_metadata_absent(context, node, backup_id):
     assert_that(backup.meta, not has_entries(expected_meta))
 
 
+@then("{node:w} backup #{backup_id:d} contains no workload entities")
+def step_backup_contains_no_workload_entities(context, node, backup_id):
+    backup = BackupManager(context, node).get_backup(backup_id)
+    assert_that(backup.metadata["workload_entities"], equal_to([]))
+
+
 @then("we got no backups on {node:w}")
 def step_no_backups(context, node):
     ch_backup = BackupManager(context, node)
