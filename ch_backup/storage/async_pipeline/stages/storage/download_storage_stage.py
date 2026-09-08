@@ -2,7 +2,7 @@
 Downloading object from a storage stage.
 """
 
-from typing import Iterable, Optional
+from typing import Iterable
 
 from ch_backup.storage.async_pipeline.base_pipeline.handler import InputHandler
 from ch_backup.storage.async_pipeline.stages.types import StageType
@@ -22,7 +22,7 @@ class DownloadStorageStage(InputHandler):
         self._chunk_size = config["chunk_size"]
         self._loader = loader
         self._remote_path = remote_path
-        self._download_id: Optional[str] = None
+        self._download_id: str | None = None
 
     def on_start(self) -> None:
         self._download_id = self._loader.create_multipart_download(self._remote_path)

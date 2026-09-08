@@ -1,5 +1,4 @@
 import copy
-from typing import List
 from unittest.mock import Mock, patch
 
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata, TableMetadata
@@ -73,8 +72,8 @@ DB = Database(
     },
 )
 def test_observer(
-    times: List[int],
-    part_names: List[str],
+    times: list[int],
+    part_names: list[str],
     interval: int,
     expected_upload_metadata: int,
 ) -> None:

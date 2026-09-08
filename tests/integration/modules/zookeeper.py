@@ -3,7 +3,6 @@ ZooKeeper client calls
 """
 
 import logging
-from typing import List, Optional
 
 from kazoo.client import KazooClient
 from kazoo.exceptions import NodeExistsError, NoNodeError
@@ -65,7 +64,7 @@ def znode_exists(context: ContextT, node: str, zk_path: str) -> bool:
     return result
 
 
-def get_children_list(context: ContextT, node: str, zk_path: str) -> Optional[List]:
+def get_children_list(context: ContextT, node: str, zk_path: str) -> list | None:
     zk = _get_zookeeper_client(context, node)
     try:
         return zk.get_children(zk_path)

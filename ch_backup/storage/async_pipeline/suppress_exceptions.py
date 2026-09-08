@@ -2,12 +2,12 @@
 Suppressing pipeline exception auxiliary function.
 """
 
-from typing import Any, Callable, Sequence, Type, TypeVar
+from typing import Any, Callable, Sequence, TypeVar
 
 from ch_backup import logging
 
 ExceptionT = TypeVar("ExceptionT", bound=Exception)
-ExceptionTypes = Sequence[Type[ExceptionT]]
+ExceptionTypes = Sequence[type[ExceptionT]]
 
 
 def suppress_exceptions(func: Callable, exceptions: ExceptionTypes = ()) -> Any:

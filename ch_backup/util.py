@@ -25,12 +25,7 @@ from typing import (
     Callable,
     Iterable,
     Iterator,
-    List,
-    Optional,
-    Tuple,
-    Type,
     TypeVar,
-    Union,
 )
 
 import tenacity
@@ -89,7 +84,7 @@ def chown_file(user: str, group: str, file_path: str) -> None:
     shutil.chown(file_path, user, group)
 
 
-def list_dir_files(dir_path: str) -> List[str]:
+def list_dir_files(dir_path: str) -> list[str]:
     """
     Returns paths of all files of directory (recursively), relative to its path
     """
@@ -100,7 +95,7 @@ def list_dir_files(dir_path: str) -> List[str]:
 
 
 def scan_dir_files(
-    dir_path: Path, exclude_file_names: Optional[List[str]] = None
+    dir_path: Path, exclude_file_names: list[str] | None = None
 ) -> Iterable[str]:
     """
     Yields relative file paths in a given directory and excludes files with given names
@@ -132,7 +127,7 @@ def scan_dir_files(
     yield from scan_recursive(dir_path)
 
 
-def dir_is_empty(dir_path: str, exclude_file_names: Optional[List[str]] = None) -> bool:
+def dir_is_empty(dir_path: str, exclude_file_names: list[str] | None = None) -> bool:
     """
     Returns True if directory contains some files other than excluded
     """
@@ -262,7 +257,7 @@ def wait_for(
 
 
 def retry(
-    exception_types: Union[type, tuple] = Exception,
+    exception_types: type | tuple = Exception,
     max_attempts: int = 5,
     max_interval: float = 5,
     retry_if: tenacity.retry_base = tenacity.retry_always,
@@ -292,7 +287,7 @@ def retry(
     )
 
 
-def get_table_zookeeper_paths(tables: Iterable) -> Iterable[Tuple]:
+def get_table_zookeeper_paths(tables: Iterable) -> Iterable[tuple]:
     """
     Parse ZooKeeper path from create statement.
     """
@@ -310,7 +305,7 @@ def get_table_zookeeper_paths(tables: Iterable) -> Iterable[Tuple]:
     return result
 
 
-def get_database_zookeeper_paths(databases: Iterable) -> Iterable[Tuple]:
+def get_database_zookeeper_paths(databases: Iterable) -> Iterable[tuple]:
     """
     Parse ZooKeeper path from database create statement and return path to database and shard from schema.
     """
@@ -424,7 +419,7 @@ def exhaust_iterator(iterator: Iterator) -> None:
     collections.deque(iterator, maxlen=0)
 
 
-def dataclass_from_dict(type_: Type[T], data: dict) -> T:
+def dataclass_from_dict(type_: type[T], data: dict) -> T:
     """
     Create dataclass instance from dictionary.
 

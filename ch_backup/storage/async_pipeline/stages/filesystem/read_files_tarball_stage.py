@@ -6,7 +6,7 @@ import tarfile
 import time
 from io import BytesIO
 from pathlib import Path
-from typing import Any, BinaryIO, Iterable, Iterator, List, Optional
+from typing import Any, BinaryIO, Iterable, Iterator
 
 from ch_backup.storage.async_pipeline.base_pipeline.handler import InputHandler
 from ch_backup.storage.async_pipeline.stages.types import StageType
@@ -45,12 +45,12 @@ class ReadFilesTarballStageBase(InputHandler):
         self,
         config: dict,
         base_path: Path,
-        tar_base_dir: Optional[str] = None,
+        tar_base_dir: str | None = None,
     ) -> None:
         self._chunk_size = config["chunk_size"]
         self._base_path = base_path
         self._file_source: Iterable[Any] = []
-        self._tar_base_dir: Optional[str] = tar_base_dir
+        self._tar_base_dir: str | None = tar_base_dir
 
     def __call__(self) -> Iterator[bytes]:
         """
@@ -96,8 +96,8 @@ class ReadFilesTarballScanStage(ReadFilesTarballStageBase):
         self,
         config: dict,
         base_path: Path,
-        tar_base_dir: Optional[str] = None,
-        exclude_file_names: Optional[List[str]] = None,
+        tar_base_dir: str | None = None,
+        exclude_file_names: list[str] | None = None,
     ) -> None:
         super().__init__(config, base_path, tar_base_dir)
         self._file_source = scan_dir_files(self._base_path, exclude_file_names)
@@ -112,8 +112,8 @@ class ReadFilesTarballStage(ReadFilesTarballStageBase):
         self,
         config: dict,
         base_path: Path,
-        file_relative_paths: List[Path],
-        tar_base_dir: Optional[str] = None,
+        file_relative_paths: list[Path],
+        tar_base_dir: str | None = None,
     ) -> None:
         super().__init__(config, base_path, tar_base_dir)
         self._file_source = file_relative_paths
@@ -127,8 +127,8 @@ class ReadDataTarballStage(ReadFilesTarballStageBase):
     def __init__(
         self,
         config: dict,
-        file_names: List[str],
-        data_list: List[bytes],
+        file_names: list[str],
+        data_list: list[bytes],
     ) -> None:
         # Call parent with dummy base_path since we don't use filesystem
         super().__init__(config, Path("."))

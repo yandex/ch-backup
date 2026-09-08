@@ -3,7 +3,7 @@ Write file stage.
 """
 
 from pathlib import Path
-from typing import BinaryIO, Optional, Union
+from typing import BinaryIO
 
 from ch_backup.storage.async_pipeline.base_pipeline.handler import Handler
 from ch_backup.storage.async_pipeline.stages.types import StageType
@@ -16,8 +16,8 @@ class WriteFileStage(Handler):
 
     stype = StageType.FILESYSTEM
 
-    def __init__(self, file: Union[Path, BinaryIO]) -> None:
-        self._fobj: Optional[BinaryIO] = None
+    def __init__(self, file: Path | BinaryIO) -> None:
+        self._fobj: BinaryIO | None = None
         self._file = file
 
     def on_start(self) -> None:

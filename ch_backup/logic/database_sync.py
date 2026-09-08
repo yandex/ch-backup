@@ -9,7 +9,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, Iterable
+from typing import Iterable
 
 from ch_backup import logging
 from ch_backup.backup_context import BackupContext
@@ -73,7 +73,7 @@ class DatabaseZookeeperData:
         return self._read_int_node(self._full_path("/max_log_ptr"))
 
     @staticmethod
-    def parse_replicated_db_zk_info(db: Database, macros: Dict[str, str]) -> tuple:
+    def parse_replicated_db_zk_info(db: Database, macros: dict[str, str]) -> tuple:
         """
         Parse ZooKeeper path, shard, and replica from Replicated database engine_full.
         """
@@ -209,7 +209,7 @@ def wait_sync_replicated_databases(
     context: BackupContext,
     databases: Iterable[Database],
     keep_going: bool,
-) -> Dict[str, SyncStatus]:
+) -> dict[str, SyncStatus]:
     """
     Wait for replicated databases to sync by polling ZooKeeper log pointers.
 
@@ -236,7 +236,7 @@ def wait_sync_replicated_databases(
 
     cfg = context.ch_ctl_conf
     deadline = time.time() + cfg["sync_database_replica_timeout"]
-    results: Dict[str, SyncStatus] = {}
+    results: dict[str, SyncStatus] = {}
 
     for db in databases:
         if not db.is_replicated_db_engine():

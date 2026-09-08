@@ -9,7 +9,7 @@ from ch_backup.encryption.nacl import NaClEncryption
 from ch_backup.encryption.noop import NoopEncryption
 from ch_backup.exceptions import UnknownEncryptionError
 
-SUPPORTED_CRYPTO: Mapping[str, Type[BaseEncryption]] = {
+SUPPORTED_CRYPTO: Mapping[str, type[BaseEncryption]] = {
     "noop": NoopEncryption,
     "nacl": NaClEncryption,
 }
