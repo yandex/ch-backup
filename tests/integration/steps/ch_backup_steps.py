@@ -16,6 +16,7 @@ from hamcrest import (
 )
 
 from tests.integration.modules.ch_backup_cli import BackupManager
+from tests.integration.modules.clickhouse import restart_clickhouse_and_wait
 from tests.integration.modules.docker import get_container
 from tests.integration.modules.steps import get_step_data
 
@@ -233,15 +234,12 @@ def step_check_backups_conditions(context, node):
 def step_restore_access_control_backup(context, backup_id, node):
     result = BackupManager(context, node).restore_access_control(backup_id)
     assert_that(result, matches_regexp("^$"))
-    container = get_container(context, node)
-    assert container.exec_run("supervisorctl restart clickhouse").exit_code == 0
+    restart_clickhouse_and_wait(context, node)
 
 
 @when("we restart clickhouse on {node:w}")
 def step_restart_clickhouse(context, node):
-    container = get_container(context, node)
-    assert container.exec_run("supervisorctl restart clickhouse").exit_code == 0
-    context.execute_steps(f"Given a working clickhouse on {node}")
+    restart_clickhouse_and_wait(context, node)
 
 
 @then("we got the following s3 backup directories on {node:w}")
