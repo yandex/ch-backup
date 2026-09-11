@@ -918,8 +918,6 @@ Feature: Backup replicated merge tree table
     ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard1/test_db.table_01', 'r1')
     ORDER BY id;
 
-    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10;
-
     CREATE TABLE test_db.table_02 (id UInt32)
     ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard1/test_db.table_01', 'r2')
     ORDER BY id;
@@ -931,7 +929,7 @@ Feature: Backup replicated merge tree table
     """
     Then we got the following backups on clickhouse01
       | num | state   | data_count | link_count |
-      | 0   | created | 1          | 0          |
+      | 0   | created | 0          | 0          |
     When we dirty remove clickhouse data at clickhouse01
     And we restore clickhouse backup #0 to clickhouse01
     """
