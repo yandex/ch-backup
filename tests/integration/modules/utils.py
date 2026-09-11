@@ -10,6 +10,8 @@ from random import choice as random_choise
 from types import SimpleNamespace
 from typing import Mapping, MutableMapping, MutableSequence
 
+from tests.integration.diagnostics import record_stage_failure
+
 from .typing import ContextT
 
 
@@ -59,6 +61,7 @@ def env_stage(event, fail=False):
                 return fun(*args, **kwargs)
             except Exception as e:
                 logging.error("%s failed: %s", stage_name, e)
+                record_stage_failure(f"{event}:{stage_name}", e)
                 if fail:
                     raise
 
