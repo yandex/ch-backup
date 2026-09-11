@@ -8,7 +8,7 @@ from typing import Any, Iterator
 import requests
 
 from ch_backup import logging
-from ch_backup.clickhouse.masking import mask_sql_literals
+from ch_backup.clickhouse.masking import mask_named_collection, mask_sql_literals
 from ch_backup.util import retry
 
 
@@ -76,13 +76,14 @@ class ClickhouseClient:
             if isinstance(query, str):
                 query = query.encode(encoding, "surrogateescape")
 
-            logged_query = query
             if sensitive:
                 query_text = query.decode(encoding, "surrogateescape")
-                logged_query = mask_sql_literals(query_text).encode(
-                    encoding, "surrogateescape"
+                logging.debug(
+                    "Executing sensitive query: {}",
+                    mask_named_collection(query_text) or f"<{len(query)} bytes>",
                 )
-            logging.debug("Executing query: {}", logged_query)
+            else:
+                logging.debug("Executing query: {}", query)
 
             # https://github.com/psf/requests/issues/2766
             # requests.Session object is not guaranteed to be thread-safe.
