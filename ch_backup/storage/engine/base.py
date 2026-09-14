@@ -3,7 +3,7 @@ Interfaces for storage engines.
 """
 
 from abc import ABCMeta, abstractmethod
-from typing import Optional, Sequence
+from typing import Sequence
 
 
 class StorageEngine(metaclass=ABCMeta):
@@ -80,7 +80,7 @@ class PipeLineCompatibleStorageEngine(StorageEngine):
         data: bytes,
         remote_path: str,
         upload_id: str,
-        part_num: Optional[int] = None,
+        part_num: int | None = None,
     ) -> None:
         """
         Upload data part in multipart upload.

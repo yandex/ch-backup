@@ -860,6 +860,10 @@ Feature: Backup replicated merge tree table
     """
     schema_only: true
     """
+    When we execute query on clickhouse02
+    """
+    SYSTEM SYNC REPLICA default.table_01;
+    """
     Then we got same clickhouse data at clickhouse01 clickhouse02
     
     @require_version_23.8

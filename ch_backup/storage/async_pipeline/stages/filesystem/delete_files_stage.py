@@ -3,7 +3,7 @@ Deleting files stage.
 """
 
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any
 
 from ch_backup.storage.async_pipeline.base_pipeline.handler import Handler
 from ch_backup.storage.async_pipeline.stages.types import StageType
@@ -22,7 +22,7 @@ class DeleteFilesScanStage(Handler):
         self,
         config: dict,
         base_path: Path,
-        exclude_file_names: Optional[List[str]] = None,
+        exclude_file_names: list[str] | None = None,
     ) -> None:
         self._config = config
         self._base_path = base_path
@@ -44,7 +44,7 @@ class DeleteFilesStage(Handler):
 
     stype = StageType.FILESYSTEM
 
-    def __init__(self, config: dict, files: List[Path]) -> None:
+    def __init__(self, config: dict, files: list[Path]) -> None:
         self._config = config
         self._files = files
 

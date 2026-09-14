@@ -7,9 +7,6 @@ import re
 from enum import Enum
 from types import SimpleNamespace
 
-# from typing import Any, List, Optional, Tuple
-from typing import List, Optional, Tuple
-
 import ch_backup.logging
 from ch_backup.util import Slotted
 
@@ -34,9 +31,9 @@ class Disk(SimpleNamespace):
         name: str,
         path: str,
         disk_type: str,
-        object_storage_type: Optional[str] = None,
-        metadata_storage_type: Optional[str] = None,
-        cache_path: Optional[str] = None,
+        object_storage_type: str | None = None,
+        metadata_storage_type: str | None = None,
+        cache_path: str | None = None,
     ):
         super().__init__()
         self.name = name
@@ -75,11 +72,11 @@ class Table(SimpleNamespace):
         database: str,
         name: str,
         engine: str,
-        disks: List[Disk],
-        data_paths: List[str],
+        disks: list[Disk],
+        data_paths: list[str],
         metadata_path: str,
         create_statement: str,
-        uuid: Optional[str],
+        uuid: str | None,
     ) -> None:
         super().__init__()
         self.database = database
@@ -96,7 +93,7 @@ class Table(SimpleNamespace):
             self.path_on_disk = os.path.relpath(path, disk.path)
 
     @property
-    def uuid(self) -> Optional[str]:
+    def uuid(self) -> str | None:
         """
         Return table UUID or None if it's a zero UUID (for Ordinary databases).
         """
@@ -105,7 +102,7 @@ class Table(SimpleNamespace):
         return self._uuid
 
     @uuid.setter
-    def uuid(self, value: Optional[str]) -> None:
+    def uuid(self, value: str | None) -> None:
         """
         Set table UUID.
         """
@@ -121,8 +118,8 @@ class Table(SimpleNamespace):
         return cls(database, name, "", [], [], metadata_path, "", uuid)
 
     def _map_paths_to_disks(
-        self, disks: List[Disk], data_paths: List[str]
-    ) -> List[Tuple[str, Disk]]:
+        self, disks: list[Disk], data_paths: list[str]
+    ) -> list[tuple[str, Disk]]:
         return list(
             map(
                 lambda data_path: (data_path, self._map_path_to_disk(disks, data_path)),
@@ -211,7 +208,7 @@ class Table(SimpleNamespace):
         return self.engine == "Dictionary"
 
     @staticmethod
-    def _map_path_to_disk(disks: List[Disk], data_path: str) -> Disk:
+    def _map_path_to_disk(disks: list[Disk], data_path: str) -> Disk:
         matched_disks = list(
             filter(lambda disk: data_path.startswith(disk.path), disks)
         )
@@ -230,10 +227,10 @@ class Database(SimpleNamespace):
     def __init__(
         self,
         name: str,
-        engine: Optional[str],
-        metadata_path: Optional[str],
-        uuid: Optional[str],
-        engine_full: Optional[str],
+        engine: str | None,
+        metadata_path: str | None,
+        uuid: str | None,
+        engine_full: str | None,
     ) -> None:
         super().__init__()
         self.name = name
@@ -316,7 +313,7 @@ class FrozenPart(Slotted):
         path: str,
         checksum: str,
         size: int,
-        files: List[str],
+        files: list[str],
     ):
         super().__init__()
         self.database = database

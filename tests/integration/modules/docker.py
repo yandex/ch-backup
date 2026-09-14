@@ -7,7 +7,7 @@ import os
 import random
 import re
 import tarfile
-from typing import List, Sequence, Tuple
+from typing import Sequence
 from urllib.parse import urlparse
 
 import docker
@@ -40,7 +40,7 @@ def get_container(context: ContextT, prefix: str) -> Container:
     return DOCKER_API.containers.get(f"{prefix}.{network_name}")
 
 
-def get_exposed_port(container: Container, port: int) -> Tuple[str, int]:
+def get_exposed_port(container: Container, port: int) -> tuple[str, int]:
     """
     Get pair of (host, port) for connection to exposed port.
     """
@@ -91,7 +91,7 @@ def copy_container_dir(
     buffer.seek(0)
 
     with tarfile.open(mode="r", fileobj=buffer) as tar:
-        members: List[tarfile.TarInfo] = []
+        members: list[tarfile.TarInfo] = []
         for member in tar.getmembers():
             if member.type == tarfile.SYMTYPE:
                 continue

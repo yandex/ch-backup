@@ -1,7 +1,6 @@
 import errno
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import List
 from unittest.mock import Mock
 
 import pytest
@@ -33,7 +32,7 @@ LENGTH_NAME = 100
     ],
 )
 def test_calc_aligned_data_size(
-    data_list: List[bytes], alignment: int, expected_size: int
+    data_list: list[bytes], alignment: int, expected_size: int
 ) -> None:
     assert calc_aligned_data_size(data_list, alignment) == expected_size
 
@@ -81,7 +80,7 @@ def test_calc_aligned_files_size_scan() -> None:
     ],
 )
 def test_calc_aligned_file_size(
-    file_sizes: List[int], alignment: int, expected_size: int
+    file_sizes: list[int], alignment: int, expected_size: int
 ) -> None:
     files = []
     for file_size in file_sizes:
@@ -114,7 +113,7 @@ def test_calc_aligned_file_size(
     ],
 )
 def test_calc_tarball_size(
-    name_lens: List[int], data_size: int, expected_size: int
+    name_lens: list[int], data_size: int, expected_size: int
 ) -> None:
     # Assuming name_lens size is less than 10
     names = [f"{i}" * name_len for i, name_len in enumerate(name_lens)]

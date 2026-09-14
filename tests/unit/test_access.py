@@ -2,7 +2,6 @@
 Access entities unit tests.
 """
 
-from typing import Optional
 from unittest import mock
 
 from ch_backup.backup_context import BackupContext
@@ -11,7 +10,7 @@ from ch_backup.zookeeper.zookeeper import ZookeeperCTL
 from tests.unit.utils import parametrize
 
 
-def zookeeper_mock(config: Optional[dict] = None) -> ZookeeperCTL:
+def zookeeper_mock(config: dict | None = None) -> ZookeeperCTL:
     config = config or {}
     default = {"hosts": [], "root_path": "/"}
     with mock.patch("ch_backup.zookeeper.zookeeper.KazooClient"):

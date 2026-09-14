@@ -5,7 +5,6 @@ S3 multipart uploader.
 import operator
 import threading
 import time
-from typing import Dict, Optional
 
 from ch_backup.storage.engine.s3.s3_client_factory import S3ClientCachedFactory
 from ch_backup.type_hints.boto3.s3 import S3Client
@@ -23,7 +22,7 @@ class S3MultipartUploader:
         self._s3_client_factory = s3_client_factory
         self._lock = threading.Lock()
 
-        self._uploads: Dict[str, dict] = {}
+        self._uploads: dict[str, dict] = {}
 
     @property
     def _s3_client(self) -> S3Client:
@@ -52,7 +51,7 @@ class S3MultipartUploader:
         data: bytes,
         remote_path: str,
         upload_id: str,
-        part_num: Optional[int] = None,
+        part_num: int | None = None,
     ) -> None:
         """
         Upload part to S3 storage for specified multipart upload.

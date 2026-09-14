@@ -2,7 +2,7 @@
 Module for working with Clickhouse configuration file.
 """
 
-from typing import Any, Dict
+from typing import Any
 
 import xmltodict
 
@@ -15,7 +15,7 @@ class ClickhouseConfig:
     """
 
     def __init__(self, config: Config) -> None:
-        self._ch_config: Dict[str, Any] = {}
+        self._ch_config: dict[str, Any] = {}
         self._ch_config_path = config["clickhouse"]["preprocessed_config_path"]
 
     def load(self) -> None:

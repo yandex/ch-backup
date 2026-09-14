@@ -6,7 +6,6 @@ import copy
 import os
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Dict, List, Optional
 
 from kazoo.exceptions import KazooException, NoNodeError
 
@@ -58,7 +57,7 @@ def _is_not_table_path_error(error: ClickhouseError) -> bool:
     return "does not look like a table path" in str(error)
 
 
-def select_replica_drop(replica_name: Optional[str], macros: Dict) -> str:
+def select_replica_drop(replica_name: str | None, macros: dict) -> str:
     """
     Select replica to drop from zookeeper.
     """
@@ -82,7 +81,7 @@ class MetadataCleaner:
         self,
         ch_ctl: ClickhouseCTL,
         zk_ctl: ZookeeperCTL,
-        replica_to_drop: Optional[str],
+        replica_to_drop: str | None,
         max_workers: int,
     ) -> None:
         self._ch_ctl = ch_ctl
@@ -91,13 +90,13 @@ class MetadataCleaner:
         self._replica_to_drop = replica_to_drop
         self._exec_pool = ThreadPoolExecutor(max_workers)
 
-    def clean_tables_metadata(self, replicated_tables: List[Table]) -> None:
+    def clean_tables_metadata(self, replicated_tables: list[Table]) -> None:
         """
         Remove replica tables metadata from zookeeper.
         """
         replicated_table_paths = get_table_zookeeper_paths(replicated_tables)
         # Key is "{table_name}/{replica}" to correctly handle multiple replicas per table.
-        cleanup_tasks: Dict[str, _TableCleanupTask] = {}
+        cleanup_tasks: dict[str, _TableCleanupTask] = {}
         for table, table_path in replicated_table_paths:
             self._schedule_table_replicas_cleanup(table, table_path, cleanup_tasks)
 
@@ -141,7 +140,7 @@ class MetadataCleaner:
         self,
         table: Table,
         table_path: str,
-        cleanup_tasks: Dict[str, _TableCleanupTask],
+        cleanup_tasks: dict[str, _TableCleanupTask],
     ) -> None:
         """
         Schedule ZK metadata cleanup tasks for all replicas of a single table.
@@ -219,7 +218,7 @@ class MetadataCleaner:
                 # Node already deleted, it's fine
                 logging.debug("ZK node {} was already deleted", zk_path)
 
-    def _list_replicas(self, zk_path: str) -> List[str]:
+    def _list_replicas(self, zk_path: str) -> list[str]:
         replicas_path = (
             self._zk_ctl.zk_root_path + zk_path + "/replicas/"  # type: ignore
         )
@@ -229,7 +228,7 @@ class MetadataCleaner:
             except NoNodeError:
                 return []
 
-    def clean_database_metadata(self, replicated_databases: List[Database]) -> None:
+    def clean_database_metadata(self, replicated_databases: list[Database]) -> None:
         """
         Remove replica database metadata from zookeeper.
         """
@@ -240,7 +239,7 @@ class MetadataCleaner:
             return
 
         replicated_databases_paths = get_database_zookeeper_paths(replicated_databases)
-        tasks: Dict[str, Future] = {}
+        tasks: dict[str, Future] = {}
 
         for database, database_path, shard in replicated_databases_paths:
             db_macros = copy.copy(self._macros)

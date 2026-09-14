@@ -38,3 +38,57 @@ Feature: Backup and restore functionality of named collections
         | from zookeeper to local | named_collections_storage/zookeeper.xml | named_collections_storage/local.xml |
         | from zookeeper to local encrypted | named_collections_storage/zookeeper_encrypted.xml | named_collections_storage/local_encrypted.xml |
 
+  @require_version_24.9
+  Scenario: restore skips an identical named collection in zookeeper encrypted storage
+    Given default configuration
+    And a working s3
+    And a working zookeeper on zookeeper01
+    And a working clickhouse on clickhouse01
+    And a working clickhouse on clickhouse02
+    And we have enabled shared zookeeper for clickhouse01
+    And we have enabled shared zookeeper for clickhouse02
+    And we replace config file no_storage.xml in favor of named_collections_storage/zookeeper_encrypted.xml on clickhouse01 with restart
+    And we replace config file no_storage.xml in favor of named_collections_storage/zookeeper_encrypted.xml on clickhouse02 with restart
+    And we have executed queries on clickhouse01
+    """
+    CREATE NAMED COLLECTION test_s3_nc AS
+      access_key_id = 'AKIAIOSFODNN7EXAMPLE',
+      secret_access_key = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+      format = 'CSV' NOT OVERRIDABLE,
+      url = 'https://s3.us-east-1.amazonaws.com/yourbucket/mydata/' OVERRIDABLE;
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (
+      key UInt32
+    )
+    ENGINE=S3(test_s3_nc);
+    """
+    And named collection "test_s3_nc" exists on clickhouse02
+    And ch-backup configuration on clickhouse02
+    """
+    clickhouse:
+      settings:
+        log_queries: 1
+    """
+    When we create clickhouse01 clickhouse backup
+    And we restore clickhouse backup #0 to clickhouse02
+    Given a working clickhouse on clickhouse02
+    And we have executed queries on clickhouse02
+    """
+    SYSTEM FLUSH LOGS
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count()
+    FROM system.query_log
+    WHERE type = 'QueryFinish'
+      AND (
+        query LIKE 'DROP NAMED COLLECTION%'
+        OR query LIKE 'CREATE NAMED COLLECTION%'
+      )
+    """
+    Then we get response
+    """
+    0
+    """
+    Then clickhouse01 has same named collections as clickhouse02
+    And clickhouse01 has same schema as clickhouse02

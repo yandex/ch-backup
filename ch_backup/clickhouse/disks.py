@@ -7,7 +7,7 @@ import os
 from functools import partial
 from subprocess import PIPE, Popen
 from types import TracebackType
-from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple, Type
+from typing import Any, Callable, Literal, Sequence
 from urllib.parse import urlparse
 
 import xmltodict
@@ -49,9 +49,9 @@ class ClickHouseTemporaryDisks:
         backup_layout: BackupLayout,
         config: Config,
         backup_meta: BackupMetadata,
-        source_bucket: Optional[str],
-        source_path: Optional[str],
-        source_endpoint: Optional[str],
+        source_bucket: str | None,
+        source_path: str | None,
+        source_endpoint: str | None,
         ch_config: ClickhouseConfig,
         desired_tables: Sequence[TableMetadata] | Literal["all"] = "all",
         use_local_copy: bool = False,
@@ -72,9 +72,9 @@ class ClickHouseTemporaryDisks:
             )
         self._desired_tables: Sequence[TableMetadata] | Literal["all"] = desired_tables
 
-        self._disks: Dict[str, Dict] = {}
-        self._created_disks: Dict[str, Disk] = {}
-        self._ch_availible_disks: Dict[str, Disk] = {}
+        self._disks: dict[str, dict] = {}
+        self._created_disks: dict[str, Disk] = {}
+        self._ch_availible_disks: dict[str, Disk] = {}
 
     def __enter__(self):
         self._disks = self._ch_config.config.get("storage_configuration", {}).get(
@@ -104,9 +104,9 @@ class ClickHouseTemporaryDisks:
 
     def __exit__(
         self,
-        exc_type: Optional[Type[BaseException]],
-        value: Optional[BaseException],
-        traceback: Optional[TracebackType],
+        exc_type: type[BaseException] | None,
+        value: BaseException | None,
+        traceback: TracebackType | None,
     ) -> bool:
         if exc_type is not None:
             logging.warning(
@@ -215,7 +215,7 @@ class ClickHouseTemporaryDisks:
     def copy_parts(
         self,
         backup_meta: BackupMetadata,
-        parts_to_copy: List[Tuple[Table, PartMetadata]],
+        parts_to_copy: list[tuple[Table, PartMetadata]],
         max_proccesses_count: int,
         keep_going: bool,
         part_callback: Callable,
@@ -379,9 +379,9 @@ def _get_tmp_disk_name(disk_name: str) -> str:
 def _exec(
     routine_tag: str,
     exe: str,
-    common_args: List[str],
-    command: Optional[str] = None,
-    command_args: Optional[List[str]] = None,
+    common_args: list[str],
+    command: str | None = None,
+    command_args: list[str] | None = None,
 ) -> Any:
 
     proc_logger = logging.getLogger("clickhouse-disks").bind(tag=routine_tag)

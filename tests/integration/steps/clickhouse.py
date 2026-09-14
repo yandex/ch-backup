@@ -225,6 +225,16 @@ def step_has_same_named_collections(context, node1, node2):
     assert_that(_get_ddl(node1), equal_to(_get_ddl(node2)))
 
 
+@given('named collection "{collection_name}" exists on {node:w}')
+@retry(wait=wait_fixed(0.5), stop=stop_after_attempt(360))
+def step_wait_for_named_collection(context, collection_name, node):
+    """
+    Wait for a named collection to appear in system.named_collections.
+    """
+    named_collections = ClickhouseClient(context, node).get_all_named_collections()
+    assert collection_name in named_collections
+
+
 @then("on {node:w} tables are empty")
 def step_check_tables_are_empty(context, node):
     ch_client = ClickhouseClient(context, node)

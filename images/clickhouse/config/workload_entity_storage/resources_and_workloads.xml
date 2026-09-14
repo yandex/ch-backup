@@ -1,0 +1,7 @@
+<yandex>
+    <resources_and_workloads>
+        CREATE RESOURCE xml_s3_read (READ DISK s3);
+        CREATE WORKLOAD xml_all;
+        CREATE WORKLOAD xml_production IN xml_all SETTINGS weight = 3;
+    </resources_and_workloads>
+</yandex>

@@ -1,4 +1,4 @@
-from typing import ContextManager, Optional
+from typing import ContextManager
 
 import pytest
 
@@ -205,7 +205,7 @@ def test_resize(
     init_size: int,
     prefill_size: int,
     new_size: int,
-    exception: Optional[ContextManager],
+    exception: ContextManager | None,
 ) -> None:
     fifo = BytesFIFO(init_size)
 

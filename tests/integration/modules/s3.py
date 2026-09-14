@@ -3,7 +3,6 @@ S3 client.
 """
 
 import logging
-from typing import List, Optional
 
 import boto3
 from botocore.client import Config
@@ -18,7 +17,7 @@ class S3Client:
     S3 client.
     """
 
-    def __init__(self, context: ContextT, bucket: Optional[str] = None) -> None:
+    def __init__(self, context: ContextT, bucket: str | None = None) -> None:
         config = context.conf["s3"]
         boto_config = config["boto_config"]
         self._s3_session = boto3.session.Session(
@@ -77,7 +76,7 @@ class S3Client:
         except ClientError:
             return False
 
-    def list_objects(self, prefix: str) -> List[str]:
+    def list_objects(self, prefix: str) -> list[str]:
         """
         List all objects with given prefix.
         """

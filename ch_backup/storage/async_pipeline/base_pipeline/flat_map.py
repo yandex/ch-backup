@@ -4,7 +4,7 @@ Flat map runner for stage.
 
 from dataclasses import dataclass
 from functools import partial
-from typing import Any, Callable, Iterable, Optional, Union
+from typing import Any, Callable, Iterable
 
 from pypeln import utils as pypeln_utils
 from pypeln.thread import Worker
@@ -46,16 +46,14 @@ class FlatMap:
 # pylint: disable=too-many-positional-arguments
 def flat_map(
     f: IterableHandler,
-    stage: Union[
-        Stage[A], Iterable[A], pypeln_utils.Undefined
-    ] = pypeln_utils.UNDEFINED,
+    stage: Stage[A] | Iterable[A] | pypeln_utils.Undefined = pypeln_utils.UNDEFINED,
     workers: int = 1,
     maxsize: int = 0,
     timeout: float = 0,
     on_start: Callable = None,
     on_done: Callable = None,
     use_threads: bool = True,
-) -> Union[Optional[Stage[None]], pypeln_utils.Partial[Optional[Stage[None]]]]:
+) -> (Stage[None] | None) | pypeln_utils.Partial[Stage[None] | None]:
     """
     Create flat map stage.
 

@@ -98,7 +98,7 @@ ignore-words-list = "sav,fpr"
 
 
 [tool.ruff]
-lint.select = ["E", "F", "W", "A", "S"]
+lint.select = ["E", "F", "W", "A", "S", "UP006", "UP007", "UP045"]
 lint.ignore = [
     "A003",  # "Class attribute is shadowing a Python builtin"
     "A005",  # Module `logging` shadows a Python standard-library module

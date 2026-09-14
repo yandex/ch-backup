@@ -2,8 +2,6 @@
 Clickhouse backup logic for UDFs
 """
 
-from typing import List
-
 from ch_backup import logging
 from ch_backup.backup_context import BackupContext
 from ch_backup.logic.backup_manager import BackupManager
@@ -72,7 +70,7 @@ class UDFBackup(BackupManager):
         return statement.replace("CREATE FUNCTION", "CREATE OR REPLACE FUNCTION", 1)
 
     @staticmethod
-    def get_udf_list(context: BackupContext) -> List[str]:
+    def get_udf_list(context: BackupContext) -> list[str]:
         """
         Get UDF list
         """
