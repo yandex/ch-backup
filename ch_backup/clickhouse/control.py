@@ -25,7 +25,7 @@ from ch_backup.clickhouse.models import (
     Table,
     WorkloadEntityType,
 )
-from ch_backup.exceptions import ClickhouseBackupError
+from ch_backup.exceptions import ClickhouseBackupError, ConfigurationError
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.util import (
     chown_dir_contents,
@@ -610,10 +610,14 @@ class ClickhouseCTL:
         self._unfreeze_timeout = self._ch_ctl_config["unfreeze_timeout"]
         self._restore_replica_timeout = self._ch_ctl_config["restore_replica_timeout"]
         self._drop_replica_timeout = self._ch_ctl_config["drop_replica_timeout"]
+        settings = self._ch_ctl_config.get("settings")
+        if settings is not None and not isinstance(settings, dict):
+            raise ConfigurationError(
+                f'"settings" must be a mapping, got {type(settings).__name__}'
+            )
         self._ch_client = ClickhouseClient(self._ch_ctl_config)
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
         self._disks = self.get_disks()
-        settings = self._ch_ctl_config.get("settings")
         if settings is None:
             settings = {
                 "allow_deprecated_database_ordinary": 1,
