@@ -17,7 +17,7 @@ SUPPORTED_CRYPTO: Mapping[str, type[BaseEncryption]] = {
 
 def get_encryption(type_id: str, config: dict) -> BaseEncryption:
     """
-    Get supported storage
+    Resolve and instantiate a supported encryption provider.
     """
     try:
         cls = SUPPORTED_CRYPTO[type_id]
