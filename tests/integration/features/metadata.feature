@@ -61,5 +61,9 @@ Feature: Metadata
     When we try to create clickhouse01 clickhouse backup
     Then metadata of clickhouse01 backup #0 contains value for "exception" which begins with
     """
-    FileNotFoundError: [Errno 2] No such file or directory
+    ClickhouseBackupError: Cannot read checksum '
+    """
+    And metadata of clickhouse01 backup #0 contains
+    """
+    state: failed
     """
