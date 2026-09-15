@@ -1080,7 +1080,8 @@ class ClickhouseCTL:
     def _get_refreshable_views(self, tables: Sequence[TableMetadata]) -> list[dict]:
         """Find restored views and existing views sharing a restored backend."""
         names = ", ".join(
-            f"('{escape(table.database)}', '{escape(table.name)}')" for table in tables
+            f"({_quote_string_literal(table.database)}, {_quote_string_literal(table.name)})"
+            for table in tables
         )
         if not names:
             return []
@@ -1105,7 +1106,7 @@ class ClickhouseCTL:
         while True:
             status = self._ch_client.query(
                 f"SELECT status FROM system.view_refreshes "  # noqa: S608
-                f"WHERE database = '{escape(database)}' AND view = '{escape(view)}'"
+                f"WHERE database = {_quote_string_literal(database)} AND view = {_quote_string_literal(view)}"
             ).strip()
             if status in ("", "Disabled"):
                 return
@@ -1670,6 +1671,11 @@ class ClickhouseCTL:
 def _get_part_checksum(part_path: str) -> str:
     with open(os.path.join(part_path, "checksums.txt"), "rb") as f:
         return md5(f.read()).hexdigest()  # nosec
+
+
+def _quote_string_literal(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{escaped}'"
 
 
 def _format_string_array(value: Sequence[str]) -> str:
