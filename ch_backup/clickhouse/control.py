@@ -4,6 +4,7 @@ Clickhouse-control classes module
 
 # pylint: disable=too-many-lines
 
+import errno
 import os
 import re
 import shutil
@@ -12,6 +13,8 @@ from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE  # type: ignore
 from typing import Any, Iterable, Sequence
+
+from tenacity import retry_if_exception
 
 from ch_backup import logging
 from ch_backup.backup.metadata import TableMetadata
@@ -1222,7 +1225,13 @@ class ClickhouseCTL:
         for dir_entry in os.scandir(path):
             part = dir_entry.name
             part_path = dir_entry.path
-            checksum = _get_part_checksum(part_path)
+            try:
+                checksum = _get_part_checksum(part_path)
+            except OSError as e:
+                raise ClickhouseBackupError(
+                    f"Cannot read checksum '{os.path.join(part_path, 'checksums.txt')}' "
+                    f"for frozen part '{part}' of table '{table.database}.{table.name}': {e}"
+                ) from e
             rel_paths = list_dir_files(part_path)
             abs_paths = [Path(part_path) / file for file in rel_paths]
 
@@ -1587,6 +1596,14 @@ class ClickhouseCTL:
         )
 
 
+@retry(
+    OSError,
+    max_attempts=3,
+    max_interval=10,
+    retry_if=retry_if_exception(
+        lambda e: isinstance(e, OSError) and e.errno == errno.EIO
+    ),
+)
 def _get_part_checksum(part_path: str) -> str:
     with open(os.path.join(part_path, "checksums.txt"), "rb") as f:
         return md5(f.read()).hexdigest()  # nosec
