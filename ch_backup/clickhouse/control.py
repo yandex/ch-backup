@@ -7,11 +7,12 @@ Clickhouse-control classes module
 import os
 import re
 import shutil
+import time
 from contextlib import contextmanager, suppress
 from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE  # type: ignore
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Iterator, Sequence
 
 from ch_backup import logging
 from ch_backup.backup.metadata import TableMetadata
@@ -1034,6 +1035,85 @@ class ClickhouseCTL:
         Restore table.
         """
         self._ch_client.query(table.create_statement)
+
+    @contextmanager
+    def suspend_refreshable_views(
+        self, tables: Sequence[TableMetadata]
+    ) -> Iterator[Callable[[], None]]:
+        """Prevent refresh from replacing table storage during restore."""
+        if not self.ch_version_ge("23.12"):
+            yield lambda: None
+            return
+
+        initial = self._get_refreshable_views(tables)
+        disabled = {
+            (row["database"], row["view"])
+            for row in initial
+            if row["status"] == "Disabled"
+        }
+        # Also track views excluded from a backend-only restore.
+        tracked = list(tables) + [
+            TableMetadata(row["database"], row["view"], "MaterializedView", None)
+            for row in initial
+        ]
+        for row in initial:
+            self._stop_refreshable_view(row["database"], row["view"])
+
+        def resume_views() -> None:
+            for row in self._get_refreshable_views(tracked):
+                if (row["database"], row["view"]) not in disabled:
+                    self._ch_client.query(
+                        f"SYSTEM START VIEW `{escape(row['database'])}`.`{escape(row['view'])}`"
+                    )
+
+        setting = "stop_refreshable_materialized_views_on_startup"
+        previous = self._ch_client.settings.get(setting)
+        self._ch_client.settings[setting] = 1
+        try:
+            yield resume_views
+        finally:
+            if previous is None:
+                self._ch_client.settings.pop(setting, None)
+            else:
+                self._ch_client.settings[setting] = previous
+
+    def _get_refreshable_views(self, tables: Sequence[TableMetadata]) -> list[dict]:
+        """Find restored views and existing views sharing a restored backend."""
+        names = ", ".join(
+            f"('{escape(table.database)}', '{escape(table.name)}')" for table in tables
+        )
+        if not names:
+            return []
+        return self._ch_client.query(
+            f"""
+            SELECT r.database, r.view, r.status
+            FROM system.view_refreshes AS r
+            INNER JOIN system.tables AS t ON r.database = t.database AND r.view = t.name
+            WHERE (r.database, r.view) IN ({names})
+               OR hasAny(t.data_paths, (
+                   SELECT arrayFlatten(groupArray(data_paths))
+                   FROM system.tables WHERE (database, name) IN ({names})
+               ))
+            FORMAT JSON
+            """  # noqa: S608 -- names are escaped above
+        )["data"]
+
+    def _stop_refreshable_view(self, database: str, view: str) -> None:
+        """Stop scheduling and wait until the current refresh has stopped."""
+        self._ch_client.query(f"SYSTEM STOP VIEW `{escape(database)}`.`{escape(view)}`")
+        deadline = time.monotonic() + self._timeout
+        while True:
+            status = self._ch_client.query(
+                f"SELECT status FROM system.view_refreshes "  # noqa: S608
+                f"WHERE database = '{escape(database)}' AND view = '{escape(view)}'"
+            ).strip()
+            if status in ("", "Disabled"):
+                return
+            if time.monotonic() >= deadline:
+                raise ClickhouseBackupError(
+                    f"Timed out stopping refresh of {database}.{view}"
+                )
+            time.sleep(0.1)
 
     def restore_replica(self, table: Table) -> None:
         """

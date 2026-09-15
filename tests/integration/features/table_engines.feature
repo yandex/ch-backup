@@ -384,6 +384,7 @@ Feature: Backup of tables with different engines and configurations
     FROM test_db.table_01;
 
     SYSTEM REFRESH VIEW test_db.mview_01;
+    SYSTEM WAIT VIEW test_db.mview_01;
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
@@ -392,6 +393,17 @@ Feature: Backup of tables with different engines and configurations
     When we restore clickhouse backup #0 to clickhouse02
     Then clickhouse02 has same schema as clickhouse01
     And we got same clickhouse data at clickhouse01 clickhouse02
+    When we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM system.view_refreshes
+    WHERE database = 'test_db' AND view = 'mview_01' AND status != 'Disabled'
+    """
+    Then we get response
+    """
+    1
+    """
 
   @rocksdb
   Scenario: Create backup containing tables with EmbeddedRocksDB engine
