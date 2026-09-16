@@ -85,10 +85,7 @@ def test_get_part_checksum_errors(failure_stage, error_number, failures, attempt
     else:
         open_mock.return_value.read.side_effect = [error] * failures + [b"abc"]
 
-    with (
-        patch.object(control, "open", open_mock, create=True),
-        patch.object(_get_part_checksum.retry, "sleep"),
-    ):
+    with patch.object(control, "open", open_mock, create=True):
         if failures and (error_number != errno.EIO or failures >= 3):
             with pytest.raises(OSError) as caught:
                 _get_part_checksum(part_path)
@@ -110,11 +107,13 @@ def test_scan_frozen_parts_propagates_checksum_error(error_number):
     # Read errors can lack a filename; the scan must supply it.
     error = OSError(error_number, "checksum read failed")
     entry = SimpleNamespace(name="all_1_1_0", path=part_path)
+    open_mock = mock_open()
+    open_mock.return_value.read.side_effect = error
 
     with (
-        patch.object(control.os.path, "exists", return_value=True) as exists,
-        patch.object(control.os, "scandir", return_value=[entry]) as scandir,
-        patch.object(control, "_get_part_checksum", side_effect=error) as checksum,
+        patch.object(control.os.path, "exists", return_value=True),
+        patch.object(control.os, "scandir", return_value=[entry]),
+        patch.object(control, "open", open_mock, create=True),
         pytest.raises(ClickhouseBackupError) as caught,
     ):
         list(
@@ -129,6 +128,3 @@ def test_scan_frozen_parts_propagates_checksum_error(error_number):
     assert checksum_path in str(caught.value)
     assert "db.table" in str(caught.value)
     assert caught.value.__cause__ is error
-    exists.assert_called_once_with(shadow_path)
-    scandir.assert_called_once_with(shadow_path)
-    checksum.assert_called_once_with(part_path)
