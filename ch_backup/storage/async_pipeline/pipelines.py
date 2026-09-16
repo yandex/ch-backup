@@ -277,12 +277,14 @@ def run_and_return_first(pipeline: PypelnStage) -> Any:
     Run pipeline until it is complete and return first its result.
     """
     itr = iter(pipeline)
+    result_fetched = False
 
-    result = next(itr)  # Fetch and save first item
     try:
+        result = next(itr)  # Fetch and save first item
+        result_fetched = True
         exhaust_iterator(itr)
     except ValueError as e:
-        if not _ignore_invalid_thread_id_error(e):
+        if not _ignore_invalid_thread_id_error(e) or not result_fetched:
             raise
 
     return result
@@ -315,6 +317,10 @@ def _ignore_invalid_thread_id_error(error: ValueError) -> bool:
     # https://github.com/glenfant/stopit/blob/dda4bd181d1d29ab1fb22314dc9bde0e3c931abc/src/stopit/threadstop.py#L37
     if "Invalid thread ID" not in str(error):
         return False
+
+    # stopit may fail during cleanup and mask the original pipeline exception.
+    if error.__context__ is not None:
+        raise error.__context__ from None
 
     logging.warning(
         "Thread ID error due to incorrect handling of thread termination in stopit library, skipping",
