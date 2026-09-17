@@ -146,6 +146,7 @@ def _generate_service_config(
         # the domain part will end up there twice.
         # Does not affect A or AAAA, though.
         "container_name": f"{instance_name}.{network_name}",
+        "labels": {"ch-backup.integration.environment": network_name},
         # Ports exposure
         "ports": ports_list,
         "volumes": volumes + instance_config.get("volumes", []),
@@ -191,13 +192,13 @@ def _call_compose(conf: dict, *, command: str, project_name: str = None) -> None
     if shutil.which(docker_compose) is None:
         docker_compose = "docker compose"
 
-    shell_command = f"{docker_compose} --file {_config_path(conf)}"
+    shell_command = shlex.split(docker_compose) + ["--file", _config_path(conf)]
     if project_name:
-        shell_command += f" -p {project_name}"
-    shell_command += f" {command}"
+        shell_command += ["-p", project_name]
+    shell_command += shlex.split(command)
 
     # Note: build paths are resolved relative to config file location.
-    subprocess.check_call(shlex.split(shell_command))
+    subprocess.check_call(shell_command)
 
 
 def _config_path(config: dict) -> str:

@@ -8,19 +8,20 @@ from hamcrest import assert_that, contains_string, equal_to, has_length
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 from tests.integration.modules.ch_backup_cli import BackupManager
-from tests.integration.modules.clickhouse import ClickhouseClient
+from tests.integration.modules.clickhouse import (
+    ClickhouseClient,
+    restart_clickhouse_and_wait,
+    start_clickhouse_and_wait,
+    wait_for_clickhouse_ready,
+)
 from tests.integration.modules.docker import get_container, put_file
 from tests.integration.modules.steps import get_step_data
 from tests.integration.modules.templates import render_template
 
 
 @given("a working clickhouse on {node:w}")
-@retry(wait=wait_fixed(0.5), stop=stop_after_attempt(360))
 def step_wait_for_clickhouse_alive(context, node):
-    """
-    Wait until clickhouse is ready to accept incoming requests.
-    """
-    ClickhouseClient(context, node).ping()
+    wait_for_clickhouse_ready(context, node)
 
 
 @given("we have enabled shared zookeeper for {node:w}")
@@ -37,7 +38,7 @@ def step_enable_shared_zookeeper_for_clickhouse(context, node):
         ).exit_code
         == 0
     )
-    assert container.exec_run("supervisorctl restart clickhouse").exit_code == 0
+    restart_clickhouse_and_wait(context, node)
 
     shared_zk_path = "/" + render_template(context, "{{ conf.zk.shared_node }}")
 
@@ -252,7 +253,7 @@ def step_dirty_remove_data(context, node):
     assert container.exec_run("rm -rf /var/lib/clickhouse/store").exit_code == 0
     assert container.exec_run("rm -rf /var/lib/clickhouse/disks").exit_code == 0
     assert container.exec_run("rm -rf /var/lib/clickhouse/access").exit_code == 0
-    assert container.exec_run("supervisorctl start clickhouse").exit_code == 0
+    start_clickhouse_and_wait(context, node)
 
 
 @when("we drop restore context at {node:w}")
@@ -276,7 +277,7 @@ def step_dirty_enable_replicated_access(context, node):
         ).exit_code
         == 0
     )
-    assert container.exec_run("supervisorctl restart clickhouse").exit_code == 0
+    restart_clickhouse_and_wait(context, node)
     assert container.exec_run("rm -rf /var/lib/clickhouse/access").exit_code == 0
 
 
@@ -304,7 +305,7 @@ def step_replace_config_file(context, config_to_replace, new_config, node):
         ).exit_code
         == 0
     )
-    assert container.exec_run("supervisorctl restart clickhouse").exit_code == 0
+    restart_clickhouse_and_wait(context, node)
 
 
 @when("we stop clickhouse at {node:w}")
@@ -319,10 +320,7 @@ def step_stop_clickhouse(context, node):
 
 @when("we start clickhouse at {node:w}")
 def step_start_clickhouse(context, node):
-    container = get_container(context, node)
-    result = container.exec_run(
-        ["bash", "-c", "supervisorctl start clickhouse"], user="root"
-    )
+    result = start_clickhouse_and_wait(context, node)
     context.response = result.output.decode().strip()
     context.exit_code = result.exit_code
 
