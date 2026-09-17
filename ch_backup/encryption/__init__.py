@@ -17,9 +17,11 @@ SUPPORTED_CRYPTO: Mapping[str, type[BaseEncryption]] = {
 
 def get_encryption(type_id: str, config: dict) -> BaseEncryption:
     """
-    Get supported storage
+    Resolve and instantiate a supported encryption provider.
     """
     try:
-        return SUPPORTED_CRYPTO[type_id](config)
+        cls = SUPPORTED_CRYPTO[type_id]
     except KeyError:
         raise UnknownEncryptionError(f'Unknown encryption type "{type_id}"')
+
+    return cls(config)
