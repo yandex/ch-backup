@@ -8,6 +8,7 @@ from typing import Any, Iterator
 import requests
 
 from ch_backup import logging
+from ch_backup.clickhouse.masking import mask_named_collection, mask_sql_literals
 from ch_backup.util import retry
 
 
@@ -63,6 +64,7 @@ class ClickhouseClient:
         should_retry: bool = True,
         new_session: bool = False,
         encoding: str = "utf-8",
+        sensitive: bool = False,
     ) -> Any:
         """
         Execute query.
@@ -74,7 +76,14 @@ class ClickhouseClient:
             if isinstance(query, str):
                 query = query.encode(encoding, "surrogateescape")
 
-            logging.debug("Executing query: {}", query)
+            if sensitive:
+                query_text = query.decode(encoding, "surrogateescape")
+                logging.debug(
+                    "Executing sensitive query: {}",
+                    mask_named_collection(query_text) or f"<{len(query)} bytes>",
+                )
+            else:
+                logging.debug("Executing query: {}", query)
 
             # https://github.com/psf/requests/issues/2766
             # requests.Session object is not guaranteed to be thread-safe.
@@ -91,9 +100,12 @@ class ClickhouseClient:
 
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
+            error_text = e.response.text.strip()
+            if sensitive:
+                error_text = mask_sql_literals(error_text)
             if should_retry:
-                raise ClickhouseErrorRetriable(e.response.text.strip()) from e
-            raise ClickhouseErrorNotRetriable(e.response.text.strip()) from e
+                raise ClickhouseErrorRetriable(error_text) from e
+            raise ClickhouseErrorNotRetriable(error_text) from e
 
         try:
             return response.json()

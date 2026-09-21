@@ -1021,7 +1021,7 @@ class ClickhouseCTL:
         """
         Restore named collection.
         """
-        self._ch_client.query(nc_statement)
+        self._ch_client.query(nc_statement, sensitive=True)
 
     def restore_workload_entity(self, entity_statement):
         """
@@ -1365,7 +1365,8 @@ class ClickhouseCTL:
                 data_hex=data_hex,
                 key_hex=key_hex,
                 iv_hex=iv_hex,
-            )
+            ),
+            sensitive=True,
         )
 
         first_row = resp.get("data")[0]
