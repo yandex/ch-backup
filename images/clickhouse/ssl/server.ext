@@ -2,3 +2,4 @@ authorityKeyIdentifier=keyid,issuer
 basicConstraints=CA:FALSE
 keyUsage = digitalSignature, nonRepudiation, keyEncipherment, dataEncipherment
 extendedKeyUsage = serverAuth, clientAuth
+subjectAltName = DNS:{{ instance_name }}, DNS:{{ instance_name }}.{{ conf.network_name }}, DNS:localhost, IP:127.0.0.1
