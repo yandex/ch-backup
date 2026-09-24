@@ -724,9 +724,7 @@ def test_backup_disk_is_cleaned_up_on_exit():
         [call.args[0] for call in remove_mock.call_args_list],
         [BACKUP_DISK_CONFIG_PATH, CH_DISK_CONFIG_PATH],
     )
-    rmtree_mock.assert_called_once_with(
-        os.path.join(BACKUP_DISK_PATH, "shadow"), ignore_errors=True
-    )
+    rmtree_mock.assert_called_once_with(os.path.join(BACKUP_DISK_PATH, "shadow"))
     assert ch_ctl.reload_config.call_count == 2
     # pylint: disable=protected-access
     assert "object_storage_backup" not in disk_manager._disks

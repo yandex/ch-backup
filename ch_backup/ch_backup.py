@@ -582,9 +582,6 @@ class ClickhouseBackup:
                 return backup.name, None
 
             logging.info("Removing non-shared backup data parts")
-            cloud_data_shared = backup.cloud_storage.enabled and (
-                self._cloud_storage_data_is_shared(backup, dedup_references)
-            )
             for db_name in backup.get_databases():
                 db_dedup_references = dedup_references[db_name]
                 for table in backup.get_tables(db_name):
@@ -593,7 +590,7 @@ class ClickhouseBackup:
                     )
 
             if backup.cloud_storage.enabled:
-                if cloud_data_shared:
+                if self._cloud_storage_data_is_shared(backup, dedup_references):
                     logging.info(
                         "Keeping cloud storage data of the backup, it is in use by subsequent backups"
                     )
@@ -627,8 +624,6 @@ class ClickhouseBackup:
 
         Keys of the objects are known only from the disk metadata inside the
         backup, so its data is kept whole until the last reference is gone.
-        Parts are read here, so this runs before _delete_data_parts drops them
-        from the metadata.
         """
         return any(
             part.name in dedup_references[table.database][table.name]

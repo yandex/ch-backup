@@ -490,9 +490,9 @@ class TestCloudStorageFlags:
         assert backup_meta.cloud_storage.data_copied is data_copied
 
 
-class TestBackupCloudStorageMetadata:
+class TestBackupCloudStorageData:
     """
-    Tests for TableBackup._backup_cloud_storage_metadata.
+    Tests for TableBackup._backup_cloud_storage_data.
     """
 
     # pylint: disable=protected-access
@@ -529,9 +529,7 @@ class TestBackupCloudStorageMetadata:
     ) -> None:
         """Helper: copy data of a table through the pool and upload its metadata."""
         with ThreadExecPool(1) as pool:
-            TableBackup._backup_cloud_storage_metadata(
-                context, pool, table, backup_disks
-            )
+            TableBackup._backup_cloud_storage_data(context, pool, table, backup_disks)
             TableBackup._upload_cloud_storage_metadata(context, pool)
 
     def test_metadata_is_uploaded_from_the_disk_itself_without_copying(self):

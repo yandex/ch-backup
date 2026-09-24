@@ -7,7 +7,7 @@ import os
 import shutil
 import threading
 from collections import defaultdict
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from functools import partial
 from subprocess import PIPE, Popen
 from types import TracebackType
@@ -46,6 +46,12 @@ class ClickHouseDisksException(RuntimeError):
 CH_DISK_CONFIG_PATH = "/tmp/clickhouse-disks-config.xml"
 CH_DISK_HISTORY_FILE_PATH = "/tmp/.disks-file-history"
 CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS = 1 * 60 * 60 * 1000
+BACKUP_DISK_CONFIG_KEYS = (
+    "type",
+    "object_storage_type",
+    "metadata_type",
+    "request_timeout_ms",
+)
 
 
 class ClickHouseDiskManager:
@@ -88,11 +94,20 @@ class ClickHouseDiskManager:
         """
         Build a disk configuration pointing to data of a disk in the backup.
 
+        Only settings known to be safe for the backup storage are taken from
+        the original disk. Others, like a proxy or encryption, belong to the
+        storage of the original disk, and a shared local metadata path would
+        make the cleanup of the temporary disk remove data of the original one.
+
         Access check is skipped: it writes to the backup bucket, which is
         already known to be writable, and ClickHouse retries a failed check
         far beyond the time ch-backup waits for SYSTEM RELOAD CONFIG.
         """
-        disk_config = copy.copy(self._disks[disk_name])
+        disk_config = {
+            key: value
+            for key, value in self._disks[disk_name].items()
+            if key in BACKUP_DISK_CONFIG_KEYS
+        }
         _set_backup_storage(
             disk_config,
             self._storage_config,
@@ -142,16 +157,16 @@ class ClickHouseDiskManager:
                 f'Keeping local data of tmp cloud storage disks due to exception: "{exc_type.__name__}: {value}"'
             )
 
-        for tmp_disk_name, disk in self._created_disks.items():
+        for tmp_disk_name in self._created_disks:
             logging.debug(f"Removing tmp disk {tmp_disk_name}")
             _remove_file(_get_config_path(self._config_dir, tmp_disk_name))
-            if exc_type is None:
-                self._on_disk_removed(disk)
             self._disks.pop(tmp_disk_name, None)
+        _remove_file(CH_DISK_CONFIG_PATH)
         if self._created_disks and exc_type is None:
             self._ch_ctl.reload_config()
+            for disk in self._created_disks.values():
+                self._on_disk_removed(disk)
         self._created_disks.clear()
-        _remove_file(CH_DISK_CONFIG_PATH)
         return exc_type is None
 
     def _on_disk_removed(self, disk: Disk) -> None:
@@ -443,12 +458,25 @@ class ClickHouseBackupDisks(ClickHouseDiskManager):
     """
     Manages temporary cloud storage disks pointing to the backup bucket.
 
-    Data is copied from several threads, so disks are created under a lock.
+    Data is copied from several threads, while neither the ClickHouse client
+    nor the configuration files are meant for concurrent use. So disks are
+    created upfront, and a disk missed there is created under a lock.
     """
 
     def __enter__(self) -> "ClickHouseBackupDisks":
         self._read_configured_disks()
         _render_ch_disks_config(self._disks)
+        try:
+            for disk in self._ch_ctl.get_disks().values():
+                if (
+                    disk.type == "s3"
+                    and not disk.cache_path
+                    and disk.name in self._disks
+                ):
+                    self.create_disk(disk.name)
+        except BaseException as e:
+            self._cleanup(type(e), e)
+            raise
         return self
 
     def __exit__(
@@ -462,8 +490,12 @@ class ClickHouseBackupDisks(ClickHouseDiskManager):
     def _on_disk_removed(self, disk: Disk) -> None:
         """
         Remove metadata of the copied objects left on the local disk.
+
+        Failure is not ignored: unfreezing the backup afterwards would remove
+        the copied objects through the metadata left behind.
         """
-        shutil.rmtree(os.path.join(disk.path, "shadow"), ignore_errors=True)
+        with suppress(FileNotFoundError):
+            shutil.rmtree(os.path.join(disk.path, "shadow"))
 
     def create_disk(self, disk_name: str) -> Disk:
         """
@@ -566,13 +598,8 @@ def _set_backup_storage(
 ) -> None:
     """
     Point a disk configuration to a location in the backup storage.
-
-    The local metadata path of the original disk is dropped, so that ClickHouse
-    gives the temporary disk its own one. Sharing it would make the cleanup of
-    the temporary disk remove data of the disk it was built from.
     """
     credentials = storage_config["credentials"]
-    disk_config.pop("metadata_path", None)
     disk_config["endpoint"] = _backup_storage_endpoint(storage_config, key_prefix)
     disk_config["access_key_id"] = credentials["access_key_id"]
     disk_config["secret_access_key"] = credentials["secret_access_key"]
@@ -840,7 +867,12 @@ def _exec(
     command: str | None = None,
     command_args: list[str] | None = None,
 ) -> Any:
+    """
+    Run a command and return its output lines.
 
+    clickhouse-disks may report a failed command with zero exit code, writing
+    only a line starting with "Error: " to stderr, so such a line fails the call.
+    """
     proc_logger = logging.getLogger("clickhouse-disks").bind(tag=routine_tag)
     args = [
         exe,
@@ -854,12 +886,16 @@ def _exec(
     logging.debug(f'Executing "{args}"')
 
     with Popen(args, stdout=PIPE, stderr=PIPE, shell=True) as proc:  # nosec
-        while proc.poll() is None:
-            for line in proc.stderr.readlines():  # type: ignore
-                proc_logger.info(line.decode("utf-8").strip())
-        if proc.returncode != 0:
+        errors = []
+        for line in proc.stderr:  # type: ignore
+            message = line.decode("utf-8").strip()
+            proc_logger.info(message)
+            if message.startswith("Error: "):
+                errors.append(message)
+        proc.wait()
+        if proc.returncode != 0 or errors:
             raise ClickHouseDisksException(
-                f"{exe} call failed with exitcode: {proc.returncode}"
+                f"{exe} call failed with exitcode: {proc.returncode}, errors: {errors}"
             )
 
         return list(map(lambda b: b.decode("utf-8"), proc.stdout.readlines()))  # type: ignore

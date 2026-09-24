@@ -6,7 +6,7 @@ Clickhouse backup logic for tables
 
 import os
 from collections import deque
-from contextlib import ExitStack
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from functools import partial
 from itertools import chain
@@ -67,6 +67,12 @@ class TableBackup(BackupManager):
     ) -> None:
         """
         Backup tables metadata, MergeTree data and Cloud storage metadata.
+
+        Frozen data holds the objects of cloud storage disks. Once the data is
+        copied into the backup it is unfrozen, so that those objects are not
+        kept in the bucket of the disk for as long as the backup lives. This
+        happens only after the temporary disks are gone: their frozen data
+        refers to the copies, and unfreezing it would delete them.
         """
 
         backup_name = context.backup_meta.get_sanitized_name()
@@ -102,28 +108,29 @@ class TableBackup(BackupManager):
             context, databases, db_tables
         )
 
-        with ExitStack() as stack:
-            backup_disks = None
-            if context.backup_meta.cloud_storage.data_copied:
-                copy_workers = multiprocessing_config.get(
-                    "cloud_storage_backup_workers", 1
-                )
-                if copy_workers > 1 and not context.ch_ctl.ch_version_ge("23.3"):
-                    logging.warning(
-                        "It is unsafe to use cloud_storage_backup_workers > 1 with clickhouse version < 23.3"
-                        f" (cloud_storage_backup_workers: {copy_workers}, ch_version: {context.ch_ctl.get_version()})"
-                    )
+        copy_workers = multiprocessing_config.get("cloud_storage_backup_workers", 1)
+        if (
+            data_copied
+            and copy_workers > 1
+            and not context.ch_ctl.ch_version_ge("23.3")
+        ):
+            raise ClickhouseBackupError(
+                "It is unsafe to use cloud_storage_backup_workers > 1 with clickhouse version < 23.3"
+                f" (cloud_storage_backup_workers: {copy_workers}, ch_version: {context.ch_ctl.get_version()})"
+            )
 
-                backup_disks = stack.enter_context(
-                    ClickHouseBackupDisks(
-                        context.ch_ctl,
-                        context.backup_layout,
-                        context.config_root,
-                        context.backup_meta,
-                        context.ch_config,
-                    )
-                )
-
+        disks_context: AbstractContextManager[ClickHouseBackupDisks | None] = (
+            nullcontext()
+        )
+        if data_copied:
+            disks_context = ClickHouseBackupDisks(
+                context.ch_ctl,
+                context.backup_layout,
+                context.config_root,
+                context.backup_meta,
+                context.ch_config,
+            )
+        with disks_context as backup_disks:
             for db in databases:
                 self._backup(
                     context,
@@ -135,6 +142,8 @@ class TableBackup(BackupManager):
                     change_times,
                     backup_disks,
                 )
+        if data_copied:
+            context.ch_ctl.system_unfreeze(backup_name)
 
     def _collect_local_metadata_change_times(
         self,
@@ -246,7 +255,7 @@ class TableBackup(BackupManager):
                                         backup_name,
                                         backup_disks,
                                     )
-                                    self._backup_cloud_storage_metadata(
+                                    self._backup_cloud_storage_data(
                                         context, copy_pool, freezed_table, backup_disks
                                     )
 
@@ -344,14 +353,15 @@ class TableBackup(BackupManager):
             return None
 
     @staticmethod
-    def _backup_cloud_storage_metadata(
+    def _backup_cloud_storage_data(
         context: BackupContext,
         pool: ThreadExecPool,
         table: Table,
         backup_disks: ClickHouseBackupDisks | None,
     ) -> None:
         """
-        Schedule backup of cloud storage metadata files of a table.
+        Schedule backup of cloud storage data of a table: a copy of the data
+        when backup disks are given, otherwise its metadata files alone.
 
         Data of every disk is copied on its own, so that copies of different
         tables and disks go in parallel.
