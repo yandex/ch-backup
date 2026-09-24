@@ -688,11 +688,19 @@ def _render_disks_config(
 def _render_ch_disks_config(disks: dict[str, dict]) -> None:
     """
     Write configuration of the clickhouse-disks utility.
+
+    Since ClickHouse 26.2 objects are removed in the background, and
+    clickhouse-disks exits before that happens unless it waits for the
+    removal, leaving the objects in the bucket (ClickHouse#98933).
     """
     _render_disks_config(
         CH_DISK_CONFIG_PATH,
         {
-            name: conf
+            name: (
+                {**conf, "wait_for_blob_removal": "true"}
+                if conf and conf.get("type") == "s3"
+                else conf
+            )
             for name, conf in disks.items()
             if not conf or conf.get("type") != "cache"
         },

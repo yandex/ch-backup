@@ -325,6 +325,77 @@ Feature: Full backup of cloud storage data
     Then s3 bucket cloud-storage-01 contains 0 objects
 
   @object_storage_copy
+  @require_version_26.2
+  Scenario: Removal of the last reference to a deduplicated part removes its objects
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    CREATE TABLE test_db.table_s3 (
+        CounterID UInt32,
+        UserID    UInt32,
+        Payload   String
+    )
+    ENGINE = MergeTree()
+    PARTITION BY CounterID
+    ORDER BY UserID
+    SETTINGS storage_policy = 's3';
+
+    INSERT INTO test_db.table_s3 SELECT 0, number, repeat('a', 256) FROM system.numbers LIMIT 1000;
+    INSERT INTO test_db.table_s3 SELECT 1, number, repeat('b', 256) FROM system.numbers LIMIT 1000;
+    """
+    # Without waiting clickhouse-disks exits before the objects are removed
+    # in the background (ClickHouse#98933).
+    When we put following info in "/etc/clickhouse-server/conf.d/wait_for_blob_removal.xml" at clickhouse01
+    """
+    <yandex>
+      <storage_configuration>
+        <disks>
+          <s3>
+            <wait_for_blob_removal>false</wait_for_blob_removal>
+          </s3>
+        </disks>
+      </storage_configuration>
+    </yandex>
+    """
+    And we execute query on clickhouse01
+    """
+    SYSTEM RELOAD CONFIG
+    """
+    And we create clickhouse01 clickhouse backup
+    """
+    name: test_backup1
+    copy_cloud_storage_data: true
+    """
+    And we execute query on clickhouse01
+    """
+    SYSTEM UNFREEZE WITH NAME 'test_backup1'
+    """
+    # The table goes right before the frozen data of a deduplicated part is
+    # removed, so that this data holds the last reference to the objects.
+    And we execute command on clickhouse01
+    """
+    rm /usr/bin/clickhouse-disks
+    cat > /usr/bin/clickhouse-disks <<'EOF'
+    #!/bin/bash
+    case "$*" in
+        *remove*) clickhouse client --query "DROP TABLE IF EXISTS test_db.table_s3 SYNC" ;;
+    esac
+    exec clickhouse disks "$@"
+    EOF
+    chmod +x /usr/bin/clickhouse-disks
+    """
+    And we create clickhouse01 clickhouse backup
+    """
+    name: test_backup2
+    copy_cloud_storage_data: true
+    """
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 0          | 2          |
+      | 1   | created | 2          | 0          |
+    And s3 bucket cloud-storage-01 contains 0 objects
+
+  @object_storage_copy
   @require_version_24.1
   Scenario: A backup that did not copy the data is not a source of links
     Given we have executed queries on clickhouse01
