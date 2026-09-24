@@ -269,6 +269,19 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         desired_tables: Sequence[TableMetadata] | Literal["all"] = "all",
         link: str | None = None,
     ) -> None:
+        """
+        Create a temporary disk with data of a disk in a given backup.
+
+        Inplace restore copies metadata files alone, and they name objects
+        relative to the disk endpoint. Objects copied into the backup are not
+        reachable from the original disk, so such backups are refused.
+        """
+        if self._use_local_copy and backup_meta.cloud_storage.data_copied:
+            raise ClickHouseDisksException(
+                f'Backup "{backup_meta.name}" holds a copy of cloud storage data,'
+                " it cannot be restored with use_inplace_cloud_restore."
+            )
+
         tmp_disk_name = _get_tmp_disk_name(disk_name, link)
         logging.debug(f"Creating tmp disk {tmp_disk_name}")
         if disk_name not in self._disks:
