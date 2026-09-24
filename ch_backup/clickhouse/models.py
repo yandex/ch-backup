@@ -146,6 +146,16 @@ class Table(SimpleNamespace):
         """
         return self.engine.find("MergeTree") != -1
 
+    def has_unique_key(self) -> bool:
+        """
+        Return True if the table is declared with a UNIQUE KEY clause.
+
+        The key is formatted like ORDER BY, so a single column comes without
+        parentheses. ClickHouse 26.5+ rejects ALTER ... PARTITION on such tables,
+        so they can neither be frozen nor restored with ATTACH PART.
+        """
+        return re.search(r"\bUNIQUE KEY[\s(]", self.create_statement) is not None
+
     def is_view(self) -> bool:
         """
         Return True if table engine is a view (either View or MaterializedView), or False otherwise.
