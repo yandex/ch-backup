@@ -27,6 +27,7 @@ from ch_backup.config import Config
 from ch_backup.exceptions import (
     BackupNotFound,
     ClickhouseBackupError,
+    InvalidBackupStruct,
     TerminatingSignal,
 )
 from ch_backup.logic.access import AccessBackup
@@ -466,19 +467,19 @@ class ClickhouseBackup:
 
         retained_backups: list[BackupMetadata] = []
         deleting_backups: list[BackupMetadata] = []
-        backup_names = self._context.backup_layout.get_backup_names()
+        backup_names = set(self._context.backup_layout.get_backup_names())
 
         with self._context.locker(operation="PURGE"):
             # Use light metadata in backups iteration to avoid high memory usage.
             for backup in self._context.backup_layout.get_backups(use_light_meta=True):
                 if backup.name not in backup_names:
-                    logging.info("Deleting backup without metadata: %s", backup.name)
-                    self._context.backup_layout.delete_backup(backup.name)
+                    logging.info("Deleting backup without metadata: {}", backup.name)
+                    deleting_backups.append(backup)
                     continue
 
                 if retain_count > 0:
                     logging.info(
-                        "Preserving backup per retain count policy: %s, state %s",
+                        "Preserving backup per retain count policy: {}, state {}",
                         backup.name,
                         backup.state,
                     )
@@ -489,7 +490,7 @@ class ClickhouseBackup:
 
                 if retain_time_limit and backup.start_time >= retain_time_limit:
                     logging.info(
-                        "Preserving backup per retain time policy: %s, state %s",
+                        "Preserving backup per retain time policy: {}, state {}",
                         backup.name,
                         backup.state,
                     )
@@ -551,24 +552,29 @@ class ClickhouseBackup:
         self, backup_light_meta: BackupMetadata, dedup_references: DedupReferences
     ) -> tuple[str | None, str | None]:
         logging.info(
-            "Deleting backup %s, state: %s",
+            "Deleting backup {}, state: {}",
             backup_light_meta.name,
             backup_light_meta.state,
         )
-        backup = self._context.backup_layout.reload_backup(
-            backup_light_meta, use_light_meta=False
-        )
+
+        # The reference scan has already completed under the delete lock.
+        if not dedup_references:
+            logging.info("Removing backup data entirely")
+            self._context.backup_layout.delete_backup(
+                backup_light_meta.name,
+                lambda: self._context.ch_ctl.system_unfreeze(backup_light_meta.name),
+            )
+            return backup_light_meta.name, None
+
+        backup = self._context.backup_layout.get_backup(backup_light_meta.name)
+        if backup is None:
+            raise InvalidBackupStruct(
+                f"Full metadata is missing for referenced backup {backup_light_meta.name}"
+            )
         backup.state = BackupState.DELETING
         self._context.backup_layout.upload_backup_metadata(backup)
 
         try:
-            # delete whole backup prefix if its data parts are not shared with other backups
-            if not dedup_references:
-                logging.info("Removing backup data entirely")
-                self._context.backup_layout.delete_backup(backup.name)
-                self._context.ch_ctl.system_unfreeze(backup.name)
-                return backup.name, None
-
             logging.info("Removing non-shared backup data parts")
             for db_name in backup.get_databases():
                 db_dedup_references = dedup_references[db_name]
@@ -577,7 +583,10 @@ class ClickhouseBackup:
                         backup, table, db_dedup_references[table.name]
                     )
 
+            self._context.backup_layout.wait()
             self._context.ch_ctl.system_unfreeze(backup.name)
+            backup.state = BackupState.PARTIALLY_DELETED
+            self._context.backup_layout.upload_backup_metadata(backup)
             return (
                 None,
                 "Backup was partially deleted as its data is in use by subsequent backups per "
@@ -589,12 +598,6 @@ class ClickhouseBackup:
             backup.state = BackupState.FAILED
             backup.exception = f"{type(e).__name__}: {e}"
             raise
-
-        finally:
-            self._context.backup_layout.wait()
-            if dedup_references:
-                backup.state = BackupState.PARTIALLY_DELETED
-                self._context.backup_layout.upload_backup_metadata(backup)
 
     def _delete_data_parts(
         self,

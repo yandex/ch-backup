@@ -416,7 +416,7 @@ class BackupLayout:
         except CryptoError:
             raise
         except Exception as e:
-            raise StorageError("Failed to download backup metadata") from e
+            raise StorageError(f"Failed to download backup metadata {path}") from e
 
     def get_backup(
         self, backup_name: str, use_light_meta: bool = False
@@ -838,18 +838,27 @@ class BackupLayout:
                     msg = f'Failed to download tarball file "{remote_path}"'
                     raise StorageError(msg) from e
 
-    def delete_backup(self, backup_name: str) -> None:
+    def delete_backup(self, backup_name: str, unfreeze: Callable[[], None]) -> None:
         """
-        Delete backup data and metadata from storage.
+        Delete backup data and metadata, keeping light metadata until completion.
         """
         backup_path = self.get_backup_path(backup_name)
-
         logging.debug("Deleting data in {}", backup_path)
-
+        full_metadata = self._backup_metadata_path(backup_name)
+        light_metadata = self._backup_light_metadata_path(backup_name)
         deleting_files = self._storage_loader.list_dir(
             backup_path, recursive=True, absolute=True
         )
-        self._delete_files(deleting_files)
+        metadata_paths = {full_metadata.lstrip("/"), light_metadata.lstrip("/")}
+        payload_files = [
+            path for path in deleting_files if path.lstrip("/") not in metadata_paths
+        ]
+        if payload_files:
+            self._delete_files(payload_files)
+        self.wait()
+        unfreeze()
+        self._storage_loader.delete_files([full_metadata], is_async=False)
+        self._storage_loader.delete_files([light_metadata], is_async=False)
 
     def delete_data_parts(
         self, backup_meta: BackupMetadata, parts: Sequence[PartMetadata]
