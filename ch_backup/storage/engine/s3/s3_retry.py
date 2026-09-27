@@ -63,10 +63,7 @@ class S3RetryMeta(ABCMeta):
                     "download_data",
                 ):
                     code = e.response.get("Error", {}).get("Code")
-                    status = e.response.get("ResponseMetadata", {}).get(
-                        "HTTPStatusCode"
-                    )
-                    if code in ("404", "NoSuchKey", "NotFound") or status == 404:
+                    if code in ("404", "NoSuchKey", "NotFound"):
                         raise
                 self._s3_client_factory.reset()  # pylint: disable=protected-access
                 raise S3RetryingError(f"Failed to make S3 operation: {str(e)}") from e

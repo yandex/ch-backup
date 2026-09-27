@@ -840,7 +840,7 @@ class BackupLayout:
 
     def delete_backup(self, backup_name: str, unfreeze: Callable[[], None]) -> None:
         """
-        Delete backup data and metadata, keeping light metadata until completion.
+        Delete backup data and metadata from storage.
         """
         backup_path = self.get_backup_path(backup_name)
         logging.debug("Deleting data in {}", backup_path)
