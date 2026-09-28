@@ -305,6 +305,7 @@ def step_replace_config_file(context, config_to_replace, new_config, node):
         == 0
     )
     assert container.exec_run("supervisorctl restart clickhouse").exit_code == 0
+    step_wait_for_clickhouse_alive(context, node)
 
 
 @when("we stop clickhouse at {node:w}")
