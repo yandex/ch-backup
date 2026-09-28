@@ -1,8 +1,4 @@
-FROM quay.io/minio/mc:RELEASE.2022-01-07T06-01-38Z
-
-FROM quay.io/minio/minio:RELEASE.2022-01-08T03-11-54Z
-
-COPY --from=0 /usr/bin/mc /usr/bin/mc
+FROM clickhouse/minio-minio:RELEASE.2024-09-13T20-26-02Z
 
 ENV MINIO_ACCESS_KEY {{ conf.s3.access_key_id }}
 ENV MINIO_SECRET_KEY {{ conf.s3.access_secret_key }}
