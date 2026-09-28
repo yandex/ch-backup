@@ -597,6 +597,7 @@ class ClickhouseBackup:
             logging.critical("Delete failed", exc_info=True)
             backup.state = BackupState.FAILED
             backup.exception = f"{type(e).__name__}: {e}"
+            self._context.backup_layout.upload_backup_metadata(backup)
             raise
 
     def _delete_data_parts(

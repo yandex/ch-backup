@@ -166,21 +166,37 @@ def test_delete_stops_when_reference_scan_fails() -> None:
     context.backup_layout.upload_backup_metadata.assert_not_called()
 
 
-def test_referenced_delete_wait_failure_does_not_mark_partial() -> None:
+@pytest.mark.parametrize("failure_stage", ["part", "wait"])
+def test_referenced_delete_failure_persists_failed_state(failure_stage: str) -> None:
     backup, context = _backup_with_context()
     light_metadata = Mock(name="old", state=BackupState.CREATED)
     light_metadata.name = "old"
     full_metadata = MagicMock()
     full_metadata.name = "old"
-    full_metadata.get_databases.return_value = []
+    full_metadata.exception = None
+    full_metadata.get_databases.return_value = ["db"] if failure_stage == "part" else []
+    table = Mock()
+    table.name = "table"
+    full_metadata.get_tables.return_value = [table]
     context.backup_layout.get_backup.return_value = full_metadata
-    context.backup_layout.wait.side_effect = StorageError("async deletion failed")
+    error = StorageError("deletion failed")
+    if failure_stage == "wait":
+        context.backup_layout.wait.side_effect = error
+    uploaded_states = []
+    context.backup_layout.upload_backup_metadata.side_effect = (
+        lambda metadata: uploaded_states.append((metadata.state, metadata.exception))
+    )
 
-    with pytest.raises(StorageError):
-        backup._delete(  # pylint: disable=protected-access
-            light_metadata, {"db": {"table": {"part"}}}
-        )
+    with patch.object(backup, "_delete_data_parts", side_effect=error):
+        with pytest.raises(StorageError) as exc:
+            backup._delete(  # pylint: disable=protected-access
+                light_metadata, {"db": {"table": {"part"}}}
+            )
 
+    assert exc.value is error
     assert full_metadata.state == BackupState.FAILED
     context.ch_ctl.system_unfreeze.assert_not_called()
-    context.backup_layout.upload_backup_metadata.assert_called_once_with(full_metadata)
+    assert uploaded_states == [
+        (BackupState.DELETING, None),
+        (BackupState.FAILED, "StorageError: deletion failed"),
+    ]
