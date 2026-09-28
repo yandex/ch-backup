@@ -792,95 +792,84 @@ def test_copy_table_data_copies_frozen_shadow_directory():
     )
 
 
-def _remove_frozen_part(
-    part_path: str, new_disks_interface: bool = True
-) -> unittest.mock.MagicMock:
-    """Helper: remove a frozen part of a disk and return the mocked call."""
-    disk_manager, ch_ctl = _make_backup_disks(BACKUP_DISK_CLICKHOUSE_CONFIG)
-    ch_ctl.ch_version_ge.return_value = new_disks_interface
-    source_disk = Disk("object_storage", "/var/lib/clickhouse/disks/s3/", "s3")
-    part = FrozenPart(
-        "db1", "table1", "all_1_1_0", "object_storage", part_path, "checksum", 1024, []
-    )
-
-    with _capture_config_files():
-        with unittest.mock.patch("ch_backup.clickhouse.disks._exec") as exec_mock:
-            with unittest.mock.patch("shutil.rmtree"):
-                with disk_manager:
-                    disk_manager.remove_frozen_part(source_disk, part)
-
-    return exec_mock
+FROZEN_TABLE_RELPATH = "shadow/20260101T000000/store/abc/abcdef"
 
 
-@pytest.mark.parametrize(
-    "new_disks_interface", [True, False], ids=["since 24.7", "before 24.7"]
-)
-def test_remove_frozen_part_goes_through_the_disk(new_disks_interface):
-    """
-    The reference count kept in the metadata of the objects is decremented
-    only when the part is removed through the disk. Removal of a directory
-    has to be asked for explicitly since 24.7.
-    """
-    exec_mock = _remove_frozen_part(
-        "/var/lib/clickhouse/disks/s3/shadow/20260101T000000/store/abc/abcdef/all_1_1_0",
-        new_disks_interface=new_disks_interface,
-    )
-
-    command_args = exec_mock.call_args.kwargs["command_args"]
-    assert exec_mock.call_args.kwargs["command"].endswith("remove")
-    assert "object_storage" in exec_mock.call_args.kwargs["common_args"]
-    assert "shadow/20260101T000000/store/abc/abcdef/all_1_1_0" in command_args
-    assert ("--recursive" in command_args) is new_disks_interface
-
-
-def test_remove_frozen_parts_removes_every_part_on_its_own_disk():
-    """
-    A batch of deduplicated parts is removed in parallel, each through the
-    disk it is frozen on.
-    """
-    disk_manager, ch_ctl = _make_backup_disks(BACKUP_DISK_CLICKHOUSE_CONFIG)
-    ch_ctl.ch_version_ge.return_value = False
-    disks = {
-        name: Disk(name, f"/var/lib/clickhouse/disks/{name}/", "s3")
-        for name in ("object_storage", "object_storage_second")
-    }
-    parts = [
-        FrozenPart(
-            "db1",
-            "table1",
-            f"all_{i}_{i}_0",
-            name,
-            f"/var/lib/clickhouse/disks/{name}/shadow/20260101T000000/all_{i}_{i}_0",
-            "checksum",
-            1024,
-            [],
+def _freeze_parts(
+    tmp_path: Path, *part_names: str
+) -> tuple[dict[str, Disk], list[FrozenPart]]:
+    """Helper: create frozen data of a table on a disk rooted at tmp_path."""
+    parts = []
+    for name in part_names:
+        part_path = tmp_path / FROZEN_TABLE_RELPATH / name
+        part_path.mkdir(parents=True)
+        parts.append(
+            FrozenPart(
+                "db1",
+                "table1",
+                name,
+                "object_storage",
+                str(part_path),
+                "checksum",
+                1024,
+                [],
+            )
         )
-        for i, name in enumerate(disks)
-    ]
 
-    with _capture_config_files():
-        with unittest.mock.patch("ch_backup.clickhouse.disks._exec") as exec_mock:
-            with unittest.mock.patch("shutil.rmtree"):
-                with disk_manager:
-                    disk_manager.remove_frozen_parts(disks, parts)
-
-    removed = {
-        call.kwargs["common_args"][-1]: call.kwargs["command_args"]
-        for call in exec_mock.call_args_list
-    }
-    assert removed == {
-        "object_storage": ["shadow/20260101T000000/all_0_0_0"],
-        "object_storage_second": ["shadow/20260101T000000/all_1_1_0"],
-    }
+    return {"object_storage": Disk("object_storage", str(tmp_path), "s3")}, parts
 
 
-def test_remove_frozen_part_outside_shadow_raises():
+def test_excluded_frozen_parts_leave_the_data_of_the_table(tmp_path):
     """
-    Removal through the disk deletes the objects of a part that is not frozen.
+    A deduplicated part has to leave the data of its table, since that data is
+    copied into the backup as a whole.
     """
+    disk_manager, _ = _make_backup_disks(BACKUP_DISK_CLICKHOUSE_CONFIG)
+    disks, parts = _freeze_parts(tmp_path, "all_1_1_0", "all_2_2_0")
+    table_path = tmp_path / FROZEN_TABLE_RELPATH
+
+    disk_manager.exclude_frozen_parts(disks, parts[1:])
+
+    assert os.listdir(table_path) == ["all_1_1_0"]
+    assert os.listdir(f"{table_path}_deduplicated") == ["all_2_2_0"]
+
+
+def test_excluded_frozen_parts_share_a_directory_of_the_clickhouse_user(tmp_path):
+    """
+    SYSTEM UNFREEZE removes the excluded parts on behalf of the server, so it
+    has to be able to write to the directory holding them.
+    """
+    disk_manager, ch_ctl = _make_backup_disks(BACKUP_DISK_CLICKHOUSE_CONFIG)
+    disks, parts = _freeze_parts(tmp_path, "all_1_1_0", "all_2_2_0")
+    excluded_path = f"{tmp_path / FROZEN_TABLE_RELPATH}_deduplicated"
+
+    disk_manager.exclude_frozen_parts(disks, parts)
+
+    assert sorted(os.listdir(excluded_path)) == ["all_1_1_0", "all_2_2_0"]
+    ch_ctl.chown_dir.assert_called_once_with(excluded_path)
+
+
+def test_excluded_frozen_part_outside_shadow_raises(tmp_path):
+    """
+    Moving data of a live table out of it would lose that data.
+    """
+    disk_manager, _ = _make_backup_disks(BACKUP_DISK_CLICKHOUSE_CONFIG)
+    part_path = tmp_path / "store/abc/abcdef/all_1_1_0"
+    part_path.mkdir(parents=True)
+    part = FrozenPart(
+        "db1",
+        "table1",
+        "all_1_1_0",
+        "object_storage",
+        str(part_path),
+        "checksum",
+        1024,
+        [],
+    )
+
     with pytest.raises(ClickHouseDisksException):
-        _remove_frozen_part(
-            "/var/lib/clickhouse/disks/s3/store/abc/abcdef/all_1_1_0",
+        disk_manager.exclude_frozen_parts(
+            {"object_storage": Disk("object_storage", str(tmp_path), "s3")}, [part]
         )
 
 

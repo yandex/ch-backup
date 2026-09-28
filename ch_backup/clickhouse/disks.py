@@ -52,6 +52,7 @@ BACKUP_DISK_CONFIG_KEYS = (
     "metadata_type",
     "request_timeout_ms",
 )
+DEDUPLICATED_DIR_SUFFIX = "_deduplicated"
 
 
 class ClickHouseDiskManager:
@@ -74,9 +75,6 @@ class ClickHouseDiskManager:
         self._storage_config = config["storage"]
         self._backup_meta = backup_meta
         self._ch_config = ch_config
-        self._backup_workers = config["multiprocessing"].get(
-            "cloud_storage_backup_workers", 1
-        )
 
         self._disks: dict[str, dict] = {}
         self._created_disks: dict[str, Disk] = {}
@@ -522,46 +520,29 @@ class ClickHouseBackupDisks(ClickHouseDiskManager):
             _render_ch_disks_config(self._disks)
             return disk
 
-    def remove_frozen_part(self, disk: Disk, part: FrozenPart) -> None:
-        """
-        Remove frozen data of a part from an object storage disk.
-
-        Freeze increments the reference count kept in the metadata of the
-        objects and hardlinks the metadata file. Removing that file directly
-        leaves the count incremented, so the objects of the part are never
-        deleted from the bucket. Removal through the disk decrements it.
-        """
-        part_path = os.path.relpath(part.path, disk.path)
-        if not part_path.startswith("shadow/"):
-            raise ClickHouseDisksException(
-                f'Path "{part.path}" of part {part.name} holds no frozen data'
-            )
-
-        _ch_disks_remove(
-            self._ch_ctl,
-            disk.name,
-            part_path,
-            f"Removal of frozen part {part.name} on disk {disk.name}",
-        )
-
-    def remove_frozen_parts(
+    def exclude_frozen_parts(
         self, disks: dict[str, Disk], parts: Sequence[FrozenPart]
     ) -> None:
         """
-        Remove frozen data of a batch of parts from object storage disks.
-        """
-        if not parts:
-            return
+        Move frozen data of a batch of parts aside from the data of their table.
 
-        with ThreadExecPool(self._backup_workers) as pool:
-            for part in parts:
-                pool.submit(
-                    f"Removal of frozen part {part.name}",
-                    self.remove_frozen_part,
-                    disks[part.disk_name],
-                    part,
+        Such parts are left out of the copy, and their frozen data is released by
+        SYSTEM UNFREEZE at the end of the backup: ClickHouse decrements the
+        reference count kept in the metadata of the objects and, on a disk with
+        zero-copy replication, asks ZooKeeper whether a replica still needs them.
+        """
+        for part in parts:
+            part_path = os.path.relpath(part.path, disks[part.disk_name].path)
+            if not part_path.startswith("shadow/"):
+                raise ClickHouseDisksException(
+                    f'Path "{part.path}" of part {part.name} holds no frozen data'
                 )
-            pool.wait_all(keep_going=False)
+
+            excluded_dir = os.path.dirname(part.path) + DEDUPLICATED_DIR_SUFFIX
+            if not os.path.isdir(excluded_dir):
+                os.mkdir(excluded_dir)
+                self._ch_ctl.chown_dir(excluded_dir)
+            os.rename(part.path, os.path.join(excluded_dir, part.name))
 
     def copy_table_data(self, disk_name: str, table: Table) -> Disk:
         """
@@ -728,19 +709,11 @@ def _render_disks_config(
 def _render_ch_disks_config(disks: dict[str, dict]) -> None:
     """
     Write configuration of the clickhouse-disks utility.
-
-    Since ClickHouse 26.2 objects are removed in the background, and
-    clickhouse-disks exits before that happens unless it waits for the
-    removal, leaving the objects in the bucket (ClickHouse#98933).
     """
     _render_disks_config(
         CH_DISK_CONFIG_PATH,
         {
-            name: (
-                {**conf, "wait_for_blob_removal": "true"}
-                if conf and conf.get("type") == "s3"
-                else conf
-            )
+            name: conf
             for name, conf in disks.items()
             if not conf or conf.get("type") != "cache"
         },
@@ -803,34 +776,6 @@ def _ch_disks_copy(
         command_args=command_args,
     )
     logging.info(f"clickhouse-disks copy result for {routine_tag}: {result}")
-
-
-def _ch_disks_remove(
-    ch_ctl: ClickhouseCTL,
-    disk: str,
-    path: str,
-    routine_tag: str,
-) -> None:
-    """
-    Remove a directory from a disk with the clickhouse-disks utility.
-    """
-    command = "remove"
-    common_args = ["--config", CH_DISK_CONFIG_PATH, "--disk", disk]
-    if ch_ctl.ch_version_ge("24.7"):
-        command_args = ["--recursive", path, "'"]
-        common_args.append("--query")
-        command = "'" + command
-    else:
-        command_args = [path]
-
-    result = _exec(
-        routine_tag,
-        exe="/usr/bin/clickhouse-disks",
-        common_args=common_args,
-        command=command,
-        command_args=command_args,
-    )
-    logging.info(f"clickhouse-disks remove result for {routine_tag}: {result}")
 
 
 def _get_config_path(config_dir: str, disk_name: str) -> str:

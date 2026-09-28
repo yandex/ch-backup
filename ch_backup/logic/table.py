@@ -652,8 +652,8 @@ class TableBackup(BackupManager):
             """
             Deduplicate parts stored on cloud storage disks.
 
-            Frozen data of a deduplicated part is removed, so that the part is
-            left out of the copy of the table data.
+            Frozen data of a deduplicated part is moved aside, so that the part
+            is left out of the copy of the table data.
             """
             assert backup_disks, "Cloud storage parts are deduplicated without disks"
             matched_parts = deduplicate_parts(
@@ -682,7 +682,7 @@ class TableBackup(BackupManager):
                     )
                 )
 
-            backup_disks.remove_frozen_parts(
+            backup_disks.exclude_frozen_parts(
                 {disk.name: disk for _, disk in table.paths_with_disks},
                 [frozen_parts[name] for name in deduplicated_parts],
             )

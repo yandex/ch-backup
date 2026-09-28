@@ -840,7 +840,7 @@ class TestCloudStorageDeduplication:
             )
         return backup_disks, deduplicate
 
-    def test_deduplicated_part_is_linked_and_dropped_from_shadow(self):
+    def test_deduplicated_part_is_linked_and_excluded_from_the_copy(self):
         """
         A deduplicated part must be left out of the copy of the table data.
         """
@@ -853,7 +853,7 @@ class TestCloudStorageDeduplication:
             {"all_1_1_0": self._make_deduplicated_part("all_1_1_0", "s3")},
         )
 
-        disks, removed = backup_disks.remove_frozen_parts.call_args.args  # type: ignore[union-attr]
+        disks, removed = backup_disks.exclude_frozen_parts.call_args.args  # type: ignore[union-attr]
         assert removed == [frozen_part]
         assert disks[frozen_part.disk_name] is self._DISK
         part = next(iter(context.backup_meta.get_tables("db1")[0].get_parts()))
@@ -870,7 +870,7 @@ class TestCloudStorageDeduplication:
             context, [self._make_frozen_part("all_1_1_0", self._DISK)], {}
         )
 
-        assert not backup_disks.remove_frozen_parts.call_args.args[1]  # type: ignore[union-attr]
+        assert not backup_disks.exclude_frozen_parts.call_args.args[1]  # type: ignore[union-attr]
         part = next(iter(context.backup_meta.get_tables("db1")[0].get_parts()))
         assert part.link is None
         assert context.backup_meta.cloud_storage.disks == ["s3"]
@@ -889,7 +889,7 @@ class TestCloudStorageDeduplication:
             {"all_1_1_0": self._make_deduplicated_part("all_1_1_0", "s3_second")},
         )
 
-        assert not backup_disks.remove_frozen_parts.call_args.args[1]  # type: ignore[union-attr]
+        assert not backup_disks.exclude_frozen_parts.call_args.args[1]  # type: ignore[union-attr]
         part = next(iter(context.backup_meta.get_tables("db1")[0].get_parts()))
         assert part.link is None
 
