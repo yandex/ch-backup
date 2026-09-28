@@ -2,6 +2,7 @@
 Backup metadata for ClickHouse table.
 """
 
+from enum import Enum
 from types import SimpleNamespace
 from typing import NamedTuple
 
@@ -50,7 +51,12 @@ def split_part_name(part: str) -> PartInfo:
     return PartInfo(partition_id, min_block_num, max_block_num, level, mutation)
 
 
-DATA_SKIPPED_UNIQUE_KEY = "unique_key"
+class DataSkippedReason(str, Enum):
+    """
+    Represents why the table data was left out of the backup.
+    """
+
+    UNIQUE_KEY = "unique_key"
 
 
 class TableMetadata(SimpleNamespace):

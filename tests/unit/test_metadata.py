@@ -16,7 +16,7 @@ from ch_backup.backup.metadata import (
     normalize_backup_link,
 )
 from ch_backup.backup.metadata.table_metadata import (
-    DATA_SKIPPED_UNIQUE_KEY,
+    DataSkippedReason,
     PartInfo,
     TableMetadata,
     split_part_name,
@@ -571,13 +571,17 @@ class TestTableMetadataDataSkippedReason:
 
     def test_reason_survives_a_dump_and_load(self) -> None:
         """
-        The reason reaches restore, which reads it back from the backup.
+        The reason reaches restore, which reads it back from the backup, and it
+        is stored as a plain string rather than an enum member.
         """
-        table = self._make(DATA_SKIPPED_UNIQUE_KEY)
+        table = self._make(DataSkippedReason.UNIQUE_KEY)
 
-        loaded = TableMetadata.load("db1", "table1", table.raw_metadata)
+        loaded = TableMetadata.load(
+            "db1", "table1", json.loads(json.dumps(table.raw_metadata))
+        )
 
-        assert loaded.data_skipped_reason == DATA_SKIPPED_UNIQUE_KEY
+        assert loaded.data_skipped_reason == DataSkippedReason.UNIQUE_KEY
+        assert loaded.raw_metadata["data_skipped_reason"] == "unique_key"
 
     def test_legacy_metadata_loads_without_the_key(self) -> None:
         """

@@ -17,7 +17,7 @@ from typing import Iterable, Sequence
 from ch_backup import logging
 from ch_backup.backup.deduplication import deduplicate_parts
 from ch_backup.backup.metadata import PartMetadata, TableMetadata
-from ch_backup.backup.metadata.table_metadata import DATA_SKIPPED_UNIQUE_KEY
+from ch_backup.backup.metadata.table_metadata import DataSkippedReason
 from ch_backup.backup.restore_context import PartState
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.client import ClickhouseError
@@ -203,15 +203,13 @@ class TableBackup(BackupManager):
                                         freezed_table.name,
                                         freezed_table.engine,
                                         freezed_table.uuid,
-                                        data_skipped_reason=(
-                                            DATA_SKIPPED_UNIQUE_KEY
-                                            if not schema_only
-                                            and freezed_table.has_unique_key()
-                                            else None
-                                        ),
+                                        freezed_table.data_skipped_reason,
                                     )
                                 )
-                                if not schema_only:
+                                if (
+                                    not schema_only
+                                    and not freezed_table.data_skipped_reason
+                                ):
                                     self._backup_frozen_table_data(
                                         context,
                                         freezed_table,
@@ -265,6 +263,7 @@ class TableBackup(BackupManager):
                 table.database,
                 table.name,
             )
+            table.data_skipped_reason = DataSkippedReason.UNIQUE_KEY
             return table
 
         # Freeze only MergeTree tables

@@ -468,9 +468,25 @@ class TestUniqueKeyTables:
         f"ATTACH TABLE {_DB}.{_TABLE} UUID '{UUID}' (id UInt64) "
         "ENGINE = MergeTree ORDER BY id"
     )
+    _ON_DISK_STATEMENT = (
+        f"ATTACH TABLE _ UUID '{UUID}'\n(\n"
+        "    `id` UInt64 COMMENT 'no UNIQUE KEY here'\n)\n"
+        "ENGINE = MergeTree\nORDER BY id\nUNIQUE KEY id\n"
+        "SETTINGS index_granularity = 8192"
+    )
     _UNIQUE_KEY_STATEMENTS = (
         f"{_PLAIN_STATEMENT} UNIQUE KEY (id)",
         f"{_PLAIN_STATEMENT} UNIQUE KEY id",
+        _ON_DISK_STATEMENT,
+    )
+    _LOOKALIKE_STATEMENTS = (
+        f"{_PLAIN_STATEMENT} COMMENT 'UNIQUE KEY (id) is kept by the application'",
+        f"{_PLAIN_STATEMENT} COMMENT 'it''s a UNIQUE KEY (id)'",
+        f"ATTACH TABLE {_DB}.{_TABLE} UUID '{UUID}' (`UNIQUE KEY (id)` UInt64) "
+        "ENGINE = MergeTree ORDER BY id",
+        f"ATTACH TABLE {_DB}.{_TABLE} UUID '{UUID}' (id UInt64) ENGINE = "
+        f"ReplicatedMergeTree('/clickhouse/tables/UNIQUE KEY (id)/{_TABLE}', 'r1') "
+        "ORDER BY id",
     )
 
     @classmethod
@@ -560,15 +576,29 @@ class TestUniqueKeyTables:
         assert table_meta.data_skipped_reason == "unique_key"
         assert not table_meta.get_parts()
 
-    def test_plain_table_is_frozen_and_not_marked(self) -> None:
+    @pytest.mark.parametrize(
+        "create_statement", (_PLAIN_STATEMENT, *_LOOKALIKE_STATEMENTS)
+    )
+    def test_plain_table_is_frozen_and_not_marked(self, create_statement: str) -> None:
         """
-        A table without a UNIQUE KEY clause keeps the usual behaviour.
+        A table without a UNIQUE KEY clause keeps the usual behaviour, even when
+        its comments, identifiers or engine arguments mention one.
         """
-        context = self._backup_with_statement(self._PLAIN_STATEMENT)
+        context = self._backup_with_statement(create_statement)
 
         context.ch_ctl.freeze_table.assert_called_once()  # type: ignore[attr-defined]
         table_meta = context.backup_meta.get_tables(self._DB)[0]
         assert table_meta.data_skipped_reason is None
+
+    def test_unique_key_is_only_looked_for_in_merge_tree(self) -> None:
+        """
+        The clause belongs to the MergeTree family, other engines are left alone.
+        """
+        table = self._table()
+        table.engine = "Distributed"
+        table.create_statement = self._UNIQUE_KEY_STATEMENTS[0]
+
+        assert not table.has_unique_key()
 
     def test_data_restore_is_skipped_for_marked_table(self) -> None:
         """

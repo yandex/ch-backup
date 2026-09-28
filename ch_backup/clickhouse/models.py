@@ -59,6 +59,10 @@ class Disk(SimpleNamespace):
         self._type = value
 
 
+_QUOTED_TEXT_RE = re.compile(r"'(?:[^'\\]|\\.|'')*'|`(?:[^`\\]|\\.|``)*`")
+_UNIQUE_KEY_RE = re.compile(r"\bUNIQUE KEY[\s(]")
+
+
 class Table(SimpleNamespace):
     """
     ClickHouse table.
@@ -86,6 +90,7 @@ class Table(SimpleNamespace):
         self._uuid = uuid
         self.paths_with_disks = self._map_paths_to_disks(disks, data_paths)
         self.metadata_path = metadata_path
+        self.data_skipped_reason: str | None = None
 
         self.path_on_disk = None
         if self.paths_with_disks:
@@ -150,11 +155,17 @@ class Table(SimpleNamespace):
         """
         Return True if the table is declared with a UNIQUE KEY clause.
 
-        The key is formatted like ORDER BY, so a single column comes without
-        parentheses. ClickHouse 26.5+ rejects ALTER ... PARTITION on such tables,
-        so they can neither be frozen nor restored with ATTACH PART.
+        Only the MergeTree family accepts the clause. String literals and quoted
+        identifiers are dropped first, so a comment mentioning UNIQUE KEY is not
+        taken for the clause. The key is formatted like ORDER BY, so a single
+        column comes without parentheses. ClickHouse 26.5+ rejects
+        ALTER ... PARTITION on such tables, so they can neither be frozen nor
+        restored with ATTACH PART.
         """
-        return re.search(r"\bUNIQUE KEY[\s(]", self.create_statement) is not None
+        if not self.is_merge_tree():
+            return False
+        statement = _QUOTED_TEXT_RE.sub("", self.create_statement)
+        return _UNIQUE_KEY_RE.search(statement) is not None
 
     def is_view(self) -> bool:
         """
