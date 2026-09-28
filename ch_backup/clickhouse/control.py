@@ -1209,6 +1209,7 @@ class ClickhouseCTL:
         disk: Disk,
         data_path: str,
         backup_name: str,
+        copy_data: bool = False,
     ) -> Iterable[FrozenPart]:
         """
         Yield frozen parts from specific disk and path.
@@ -1228,9 +1229,12 @@ class ClickhouseCTL:
                 checksum = _get_cloud_part_checksum(part_path, rel_paths)
             else:
                 checksum = _get_part_checksum(part_path)
-            abs_paths = [Path(part_path) / file for file in rel_paths]
 
-            size = calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE)
+            if copy_data and disk.keeps_object_metadata:
+                size = _get_cloud_part_size(part_path, rel_paths)
+            else:
+                abs_paths = [Path(part_path) / file for file in rel_paths]
+                size = calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE)
             logging.debug(
                 f"scan_freezed_parts: {table.name} -> {escape(table.name)} \n {part}"
             )
@@ -1613,24 +1617,39 @@ def _get_cloud_part_checksum(part_path: str, rel_paths: Sequence[str]) -> str:
         if rel_path in CLOUD_STORAGE_EXCLUDE_FILE_NAMES:
             continue
         checksum.update(rel_path.encode())
-        for object_key in _read_object_keys(os.path.join(part_path, rel_path)):
+        for object_key, _ in _read_objects(os.path.join(part_path, rel_path)):
             checksum.update(object_key.encode())
 
     return checksum.hexdigest()
 
 
-def _read_object_keys(metadata_path: str) -> list[str]:
+def _get_cloud_part_size(part_path: str, rel_paths: Sequence[str]) -> int:
     """
-    Read keys of the objects a disk metadata file refers to.
+    Calculate size of the objects of a part stored on an object storage disk.
+
+    That is what a copy of the part weighs in the backup, unlike its metadata.
+    """
+    return sum(
+        size
+        for rel_path in rel_paths
+        if rel_path not in CLOUD_STORAGE_EXCLUDE_FILE_NAMES
+        for _, size in _read_objects(os.path.join(part_path, rel_path))
+    )
+
+
+def _read_objects(metadata_path: str) -> list[tuple[str, int]]:
+    """
+    Read keys and sizes of the objects a disk metadata file refers to.
     """
     with open(metadata_path, encoding="utf-8") as f:
         version = f.readline().strip()
         try:
             objects_count = int(f.readline().split("\t")[0])
-            return [f.readline().split("\t")[1].strip() for _ in range(objects_count)]
+            objects = (f.readline().split("\t") for _ in range(objects_count))
+            return [(obj[1].strip(), int(obj[0])) for obj in objects]
         except (IndexError, ValueError) as e:
             raise ClickhouseBackupError(
-                f"Failed to read object keys of {metadata_path},"
+                f"Failed to read objects of {metadata_path},"
                 f" metadata version {version}"
             ) from e
 

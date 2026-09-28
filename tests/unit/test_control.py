@@ -3,6 +3,7 @@ import pytest
 from ch_backup.clickhouse.control import (
     _format_string_array,
     _get_cloud_part_checksum,
+    _get_cloud_part_size,
     _parse_version,
 )
 from ch_backup.clickhouse.models import Disk
@@ -110,6 +111,20 @@ def test_cloud_part_checksum_ignores_the_metadata_of_a_freeze(tmp_path):
         _get_cloud_part_checksum(str(path), ["checksums.txt", "frozen_metadata.txt"])
         == checksum
     )
+
+
+def test_cloud_part_size_is_the_size_of_its_objects(tmp_path):
+    path = tmp_path / "part"
+    _make_cloud_part(
+        path, {"checksums.txt": ["abc/defg"], "count.txt": ["hij/klmn", "opq/rstu"]}
+    )
+    (path / "frozen_metadata.txt").write_text("1\nclickhouse01\n", encoding="utf-8")
+
+    size = _get_cloud_part_size(
+        str(path), ["checksums.txt", "count.txt", "frozen_metadata.txt"]
+    )
+
+    assert size == 3 * 370
 
 
 def test_cloud_part_checksum_fails_on_unknown_metadata_format(tmp_path):

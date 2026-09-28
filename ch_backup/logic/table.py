@@ -713,6 +713,7 @@ class TableBackup(BackupManager):
                 disk,
                 data_path,
                 backup_name,
+                backup_disks is not None,
             ):
                 logging.debug("Working on {}", fpart)
                 if disk.type == "s3":
