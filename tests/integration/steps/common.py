@@ -6,6 +6,7 @@ import yaml
 from behave import given, when
 
 from tests.integration.modules.ch_backup_cli import get_version
+from tests.integration.modules.clickhouse import restart_clickhouse_and_wait
 from tests.integration.modules.docker import copy_between_containers, get_container
 from tests.integration.modules.steps import get_step_data
 from tests.integration.modules.utils import merge
@@ -64,4 +65,4 @@ def step_sync_storage_config(context, dst_node, src_node):
         storage_config_dir,
     )
 
-    assert container_to.exec_run("supervisorctl restart clickhouse").exit_code == 0
+    restart_clickhouse_and_wait(context, dst_node)
