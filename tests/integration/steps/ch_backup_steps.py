@@ -159,6 +159,16 @@ def step_backup_metadata_value(context, node, backup_id, field):
     assert_that(backup.meta[field], starts_with(expected_value))
 
 
+@then('metadata of {node:w} backup #{backup_id:d} for "{db:w}"."{table:w}" contains')
+def step_backup_table_metadata(context, node, backup_id, db, table):
+    expected_meta = get_step_data(context)
+
+    backup = BackupManager(context, node).get_backup(backup_id)
+    assert_that(
+        backup.metadata["databases"][db]["tables"][table], has_entries(expected_meta)
+    )
+
+
 @then("metadata of {node:w} backup #{backup_id:d} contains no")
 @then('metadata of {node:w} backup "{backup_id}" contains no')
 def step_backup_metadata_absent(context, node, backup_id):
