@@ -7,7 +7,11 @@ from datetime import datetime, timedelta
 from typing import Any, Sequence
 from urllib.parse import urljoin
 
+from docker.models.containers import ExecResult
 from requests import HTTPError, Session
+from tenacity import retry, stop_after_attempt, wait_fixed
+
+from tests.integration.diagnostics import record_stage_failure
 
 from . import docker
 from .typing import ContextT
@@ -65,6 +69,14 @@ class ClickhouseClient:
         Ping ClickHouse server.
         """
         self._query("GET", url="ping", settings={})
+
+    def check_ready(self) -> None:
+        """
+        Check that ClickHouse is ready to execute SQL queries.
+        """
+        response = self._query("GET", "SELECT 1", settings={})
+        if response != 1:
+            raise RuntimeError(f"Unexpected ClickHouse readiness response: {response}")
 
     def execute(self, query: str) -> None:
         """
@@ -388,3 +400,44 @@ class ClickhouseClient:
             rows.append(", ".join(row))
 
         return rows
+
+
+@retry(wait=wait_fixed(0.5), stop=stop_after_attempt(360), reraise=True)
+def wait_for_clickhouse_ready(context: ContextT, node: str) -> None:
+    """Wait until ClickHouse is ready to execute SQL queries."""
+    ClickhouseClient(context, node).check_ready()
+
+
+def _run_clickhouse_supervisor_action(
+    context: ContextT, node: str, action: str
+) -> ExecResult:
+    stage = f"environment:{action}_clickhouse"
+    container = docker.get_container(context, node)
+    result = container.exec_run(
+        ["bash", "-c", f"supervisorctl {action} clickhouse"], user="root"
+    )
+    output = result.output.decode().strip()
+    if result.exit_code != 0:
+        error = AssertionError(
+            f"supervisorctl {action} clickhouse exited {result.exit_code}: {output}"
+        )
+        record_stage_failure(stage, error)
+        raise error
+
+    try:
+        wait_for_clickhouse_ready(context, node)
+    except Exception as error:
+        record_stage_failure(stage, error)
+        raise
+
+    return result
+
+
+def start_clickhouse_and_wait(context: ContextT, node: str) -> ExecResult:
+    """Start ClickHouse and wait until it can execute SQL queries."""
+    return _run_clickhouse_supervisor_action(context, node, "start")
+
+
+def restart_clickhouse_and_wait(context: ContextT, node: str) -> ExecResult:
+    """Restart ClickHouse and wait until it can execute SQL queries."""
+    return _run_clickhouse_supervisor_action(context, node, "restart")

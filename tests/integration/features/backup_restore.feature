@@ -1,4 +1,4 @@
-@dependent-scenarios
+@dependent-scenarios @parallel_heavy
 Feature: Backup & Restore
 
   Background:

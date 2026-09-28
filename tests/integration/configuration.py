@@ -3,8 +3,9 @@ Variables that influence testing behavior are defined here.
 """
 
 import os
-import random
+import re
 import sys
+import uuid
 
 from tests.integration.modules.utils import generate_random_string
 
@@ -14,8 +15,9 @@ def create():
     Create test configuration (non-idempotent function).
     """
     # Docker network name. Also used as an instance and domain name.
-    network_suffix = random.randint(0, 4096)
-    network_name = f"test-net-{network_suffix}"
+    network_name = os.getenv("INTEGRATION_ENV_ID") or f"chb-{uuid.uuid4().hex}"
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", network_name):
+        raise ValueError("INTEGRATION_ENV_ID must be a lowercase DNS label")
 
     s3 = {
         "container": "minio01",

@@ -180,3 +180,55 @@ separately with `make test-integration`. Additionally, `BEHAVE_ARGS` parameter
 can be used to pass additional arguments to underlying `behave` invocation.
 For example, `make test-integration BEHAVE_ARGS='-i ssl_support'` executes
 tests that belongs to SSL support feature (`ssl_support.feature`).
+
+#### Parallel integration tests on one Docker host
+
+```bash
+make test-integration-parallel INTEGRATION_JOBS=3
+make test-integration-parallel INTEGRATION_JOBS=1 BEHAVE_ARGS='-i ssl_support'
+uv run python -m tests.integration.parallel --jobs 3 --dry-run
+```
+
+Each worker uses its own source snapshot, session file, configuration, Docker
+network and containers. Dependencies and the wheel are prepared once; worker
+images are built sequentially using the shared Docker build cache. Tests install
+the wheel just as in the serial runner. The original checkout's session and
+containers are not reused. Do not run `make clean-test-env` while a parallel run
+is active: it removes the parent `staging/` directory.
+
+Only `tests/integration/ch_backup.featureset` controls suite membership. Adding a
+feature there is sufficient; there are no worker-specific feature lists. The
+optional `INTEGRATION_FEATURESET` selects a different list of files under `tests/`.
+`BEHAVE_ARGS` supports the usual feature, scenario-name and tag filters. Feature
+files are indivisible, including `@dependent-scenarios` features: their scenarios
+retain their original order and environment hooks.
+
+The scheduler starts features with more selected scenarios first and gives free
+workers the next eligible feature. Features tagged `@parallel_heavy` reserve two
+slots (one when `INTEGRATION_JOBS=1`); `@parallel_exclusive` reserves every slot
+and waits for the active features to finish. The initial heavy features are
+`backup_restore` and `freeze_parallel`.
+
+After a failure, no new features start; active features finish. `--stop` also
+remains enabled within each feature. Failed steps print their feature, scenario
+and step in the coordinator log before collecting diagnostics. GitHub Actions
+also receives an error annotation. Failed processes print the log tail.
+Interrupted or incomplete runs fail, even when JUnit output is missing.
+Normal completion, errors and handled termination
+signals clean up only owned containers, networks and image tags. Workspaces and
+reports remain available for diagnosis. Cleanup failures are reported as failures;
+the runner never performs a global Docker prune.
+
+Results are printed at startup under `staging/parallel/<run-id>/results/`:
+
+- `summary.json`: final status, selected feature outcomes, reserved slots, image
+  IDs and actual ClickHouse versions. Features not started after a failure have
+  status `not_run`, distinct from version skips.
+- Per-feature directories: full `behave.log` and standard Behave `junit/` reports,
+  including skipped scenarios. Failure-only stage diagnostics are written to
+  `stage-failures.jsonl`; worker logs and container diagnostics are retained for
+  failed runs. Exit codes, report completeness and stage failures determine the
+  result; unfinished scenarios cannot turn a run green.
+
+All twelve existing CI combinations use three slots. JUnit and diagnostics are
+uploaded on both success and failure with run-attempt-specific artifact names.
