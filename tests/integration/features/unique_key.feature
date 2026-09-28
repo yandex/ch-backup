@@ -26,6 +26,7 @@ Feature: Backup of tables with UNIQUE KEY
     INSERT INTO test_db.table_unique_key SELECT number FROM numbers(100);
     """
 
+  @require_version_26.5
   Scenario: Create backup of a table with UNIQUE KEY
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
@@ -37,6 +38,7 @@ Feature: Backup of tables with UNIQUE KEY
     parts: {}
     """
 
+  @require_version_26.5
   Scenario: Restore backup of a table with UNIQUE KEY
     Given we have created clickhouse01 clickhouse backup
     When we restore clickhouse backup #0 to clickhouse02
@@ -58,6 +60,7 @@ Feature: Backup of tables with UNIQUE KEY
     100
     """
 
+  @require_version_26.5
   Scenario: Restore a table with UNIQUE KEY into a replicated database
     Given ClickHouse settings
     """

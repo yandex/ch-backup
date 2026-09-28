@@ -27,10 +27,8 @@ def step_wait_for_clickhouse_alive(context, node):
 @given("clickhouse on {node:w} supports UNIQUE KEY")
 def step_require_unique_key_support(context, node):
     """
-    Skip the scenario unless ClickHouse under test knows the UNIQUE KEY clause.
-
-    The clause is available in Yandex Cloud builds only, so the scenario stays
-    dormant on the vanilla packages the CI installs.
+    Skip the scenario unless ClickHouse under test knows the UNIQUE KEY clause,
+    which is available in Yandex Cloud builds only.
     """
     supported = ClickhouseClient(context, node).get_response(
         "SELECT count() FROM system.settings WHERE name = 'allow_experimental_unique_key'"

@@ -84,7 +84,6 @@ class TestCreateTable:
         ):
             client = client_cls.return_value
             client.query.return_value = "26.5.1.1"
-            client.settings = {}
             ch_ctl = ClickhouseCTL(config, {}, {})
 
         client.query.reset_mock()
@@ -94,27 +93,25 @@ class TestCreateTable:
     def _table(create_statement: str) -> Table:
         return Table("db1", "table1", "MergeTree", [], [], "", create_statement, None)
 
-    def test_unique_key_table_gets_the_experimental_setting(self) -> None:
+    @pytest.mark.parametrize(
+        "clause,settings",
+        [
+            (" UNIQUE KEY id", {"allow_experimental_unique_key": 1}),
+            ("", None),
+        ],
+        ids=["unique key table", "plain table"],
+    )
+    def test_experimental_setting_is_sent_only_for_a_unique_key_table(
+        self, clause: str, settings: dict | None
+    ) -> None:
         """
         ClickHouse gates the clause on CREATE, which is how tables of a replicated
-        database are restored.
+        database are restored. Other tables must not get the setting, as builds
+        without the clause do not have it.
         """
         ch_ctl, client = self._make_ctl()
-        statement = f"{self._PLAIN_STATEMENT} UNIQUE KEY id"
+        statement = f"{self._PLAIN_STATEMENT}{clause}"
 
         ch_ctl.create_table(self._table(statement))
 
-        client.query.assert_called_once_with(
-            statement, settings={"allow_experimental_unique_key": 1}
-        )
-
-    def test_plain_table_is_created_without_the_setting(self) -> None:
-        """
-        Builds without the clause have no such setting, so it is not sent for
-        tables that do not need it.
-        """
-        ch_ctl, client = self._make_ctl()
-
-        ch_ctl.create_table(self._table(self._PLAIN_STATEMENT))
-
-        client.query.assert_called_once_with(self._PLAIN_STATEMENT, settings=None)
+        client.query.assert_called_once_with(statement, settings=settings)

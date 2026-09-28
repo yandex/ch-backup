@@ -487,6 +487,7 @@ class TestUniqueKeyTables:
         f"ATTACH TABLE {_DB}.{_TABLE} UUID '{UUID}' (id UInt64) ENGINE = "
         f"ReplicatedMergeTree('/clickhouse/tables/UNIQUE KEY (id)/{_TABLE}', 'r1') "
         "ORDER BY id",
+        f"{_PLAIN_STATEMENT} COMMENT 'UNIQUE KEY (id)",
     )
 
     @classmethod
