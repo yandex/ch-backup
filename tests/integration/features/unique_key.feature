@@ -57,3 +57,34 @@ Feature: Backup of tables with UNIQUE KEY
     """
     100
     """
+
+  Scenario: Restore a table with UNIQUE KEY into a replicated database
+    Given ClickHouse settings
+    """
+    allow_experimental_unique_key: 1
+    allow_experimental_database_replicated: 1
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_replicated_db
+    ENGINE = Replicated('/clickhouse/databases/test_replicated_db', '{shard}', '{replica}');
+
+    CREATE TABLE test_replicated_db.table_unique_key (id UInt64)
+    ENGINE = MergeTree ORDER BY id UNIQUE KEY id;
+
+    INSERT INTO test_replicated_db.table_unique_key SELECT number FROM numbers(100);
+    """
+    And we have created clickhouse01 clickhouse backup
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    restore_tables_in_replicated_database: true
+    """
+    Then clickhouse02 has same schema as clickhouse01
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM test_replicated_db.table_unique_key
+    """
+    Then we get response
+    """
+    0
+    """
