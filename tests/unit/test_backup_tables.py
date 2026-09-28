@@ -513,9 +513,9 @@ class TestUniqueKeyTables:
     def _backup_with_statement(cls, create_statement: str) -> BackupContext:
         """Helper: back up the table with the given create statement."""
         context = cls._make_context()
-        context.ch_ctl.get_tables.return_value = [cls._table()]
-        context.ch_ctl.get_disks.return_value = {}
-        context.ch_ctl.scan_frozen_parts.return_value = []
+        context.ch_ctl.get_tables.return_value = [cls._table()]  # type: ignore[attr-defined]
+        context.ch_ctl.get_disks.return_value = {}  # type: ignore[attr-defined]
+        context.ch_ctl.scan_frozen_parts.return_value = []  # type: ignore[attr-defined]
 
         with (
             patch.object(
@@ -575,7 +575,7 @@ class TestUniqueKeyTables:
         Restore leaves a marked table empty instead of looking up its parts.
         """
         context = self._make_context()
-        context.ch_ctl.get_table.return_value = self._table()
+        context.ch_ctl.get_table.return_value = self._table()  # type: ignore[attr-defined]
         table_meta = TableMetadata(
             self._DB, self._TABLE, "MergeTree", UUID, "unique_key"
         )
