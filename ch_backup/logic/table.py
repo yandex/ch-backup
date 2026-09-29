@@ -87,7 +87,7 @@ class TableBackup(BackupManager):
             logging.debug('Cloud storage "shadow" backup will be compressed')
         context.backup_meta.cloud_storage.compressed = compressed
 
-        data_copied = context.cloud_conf.get("copy_data", False)
+        data_copied = context.cloud_conf.get("copy_data", False) and not schema_only
         if data_copied:
             logging.debug("Cloud storage data will be copied into the backup")
         context.backup_meta.cloud_storage.data_copied = data_copied

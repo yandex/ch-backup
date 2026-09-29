@@ -2,8 +2,7 @@ import pytest
 
 from ch_backup.clickhouse.control import (
     _format_string_array,
-    _get_cloud_part_checksum,
-    _get_cloud_part_size,
+    _get_cloud_part_checksum_and_size,
     _parse_version,
 )
 from ch_backup.clickhouse.models import Disk
@@ -66,7 +65,7 @@ def _make_cloud_part(path, object_keys, ref_count=0):
         (path / file_name).write_text(
             f"5\n{len(keys)}\t370\n{objects}{ref_count}\n0\n", encoding="utf-8"
         )
-    return _get_cloud_part_checksum(str(path), list(object_keys))
+    return _get_cloud_part_checksum_and_size(str(path), list(object_keys))[0]
 
 
 def test_cloud_part_checksum_ignores_rewritten_metadata(tmp_path):
@@ -108,7 +107,9 @@ def test_cloud_part_checksum_ignores_the_metadata_of_a_freeze(tmp_path):
     (path / "frozen_metadata.txt").write_text("1\nclickhouse01\n", encoding="utf-8")
 
     assert (
-        _get_cloud_part_checksum(str(path), ["checksums.txt", "frozen_metadata.txt"])
+        _get_cloud_part_checksum_and_size(
+            str(path), ["checksums.txt", "frozen_metadata.txt"]
+        )[0]
         == checksum
     )
 
@@ -120,7 +121,7 @@ def test_cloud_part_size_is_the_size_of_its_objects(tmp_path):
     )
     (path / "frozen_metadata.txt").write_text("1\nclickhouse01\n", encoding="utf-8")
 
-    size = _get_cloud_part_size(
+    _, size = _get_cloud_part_checksum_and_size(
         str(path), ["checksums.txt", "count.txt", "frozen_metadata.txt"]
     )
 
@@ -133,7 +134,7 @@ def test_cloud_part_checksum_fails_on_unknown_metadata_format(tmp_path):
     (path / "checksums.txt").write_text("6\nabc/defg\n", encoding="utf-8")
 
     with pytest.raises(ClickhouseBackupError):
-        _get_cloud_part_checksum(str(path), ["checksums.txt"])
+        _get_cloud_part_checksum_and_size(str(path), ["checksums.txt"])
 
 
 @pytest.mark.parametrize(

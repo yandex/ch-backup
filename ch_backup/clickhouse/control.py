@@ -1226,12 +1226,14 @@ class ClickhouseCTL:
             part_path = dir_entry.path
             rel_paths = list_dir_files(part_path)
             if disk.keeps_object_metadata:
-                checksum = _get_cloud_part_checksum(part_path, rel_paths)
+                checksum, objects_size = _get_cloud_part_checksum_and_size(
+                    part_path, rel_paths
+                )
             else:
-                checksum = _get_part_checksum(part_path)
+                checksum, objects_size = _get_part_checksum(part_path), 0
 
             if copy_data and disk.keeps_object_metadata:
-                size = _get_cloud_part_size(part_path, rel_paths)
+                size = objects_size
             else:
                 abs_paths = [Path(part_path) / file for file in rel_paths]
                 size = calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE)
@@ -1603,38 +1605,31 @@ def _get_part_checksum(part_path: str) -> str:
         return md5(f.read()).hexdigest()  # nosec
 
 
-def _get_cloud_part_checksum(part_path: str, rel_paths: Sequence[str]) -> str:
+def _get_cloud_part_checksum_and_size(
+    part_path: str, rel_paths: Sequence[str]
+) -> tuple[str, int]:
     """
-    Calculate checksum of a part stored on an object storage disk.
+    Calculate checksum and size of a part stored on an object storage disk.
 
     Files of such a part are metadata referring to objects with random keys.
     ClickHouse rewrites the metadata on every freeze, so the keys are what
     identifies the data of the part. Freezing a replicated table also leaves a
     file describing the replica, which refers to no object at all.
+
+    The size is that of the objects: what a copy of the part weighs in the
+    backup, unlike its metadata.
     """
     checksum = md5()  # nosec
+    size = 0
     for rel_path in sorted(rel_paths):
         if rel_path in CLOUD_STORAGE_EXCLUDE_FILE_NAMES:
             continue
         checksum.update(rel_path.encode())
-        for object_key, _ in _read_objects(os.path.join(part_path, rel_path)):
+        for object_key, object_size in _read_objects(os.path.join(part_path, rel_path)):
             checksum.update(object_key.encode())
+            size += object_size
 
-    return checksum.hexdigest()
-
-
-def _get_cloud_part_size(part_path: str, rel_paths: Sequence[str]) -> int:
-    """
-    Calculate size of the objects of a part stored on an object storage disk.
-
-    That is what a copy of the part weighs in the backup, unlike its metadata.
-    """
-    return sum(
-        size
-        for rel_path in rel_paths
-        if rel_path not in CLOUD_STORAGE_EXCLUDE_FILE_NAMES
-        for _, size in _read_objects(os.path.join(part_path, rel_path))
-    )
+    return checksum.hexdigest(), size
 
 
 def _read_objects(metadata_path: str) -> list[tuple[str, int]]:

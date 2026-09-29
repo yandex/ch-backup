@@ -438,15 +438,17 @@ class TestCloudStorageFlags:
     """
 
     @staticmethod
-    def _backup_with_cloud_conf(cloud_conf: dict) -> BackupMetadata:
-        """Helper: run a schema-only backup with a given cloud_storage config."""
+    def _backup_with_cloud_conf(
+        cloud_conf: dict, schema_only: bool = True
+    ) -> BackupMetadata:
+        """Helper: run a backup of no tables with a given cloud_storage config."""
         context = _make_backup_context(cloud_conf)
 
         TableBackup().backup(
             context,
             databases=[],
             db_tables={},
-            schema_only=True,
+            schema_only=schema_only,
             multiprocessing_config={},
         )
 
@@ -474,18 +476,24 @@ class TestCloudStorageFlags:
         assert backup_meta.cloud_storage.compressed is compressed
 
     @pytest.mark.parametrize(
-        "cloud_conf,data_copied",
-        [({"copy_data": True}, True), ({"copy_data": False}, False), ({}, False)],
-        ids=["enabled", "disabled", "absent"],
+        "cloud_conf,schema_only,data_copied",
+        [
+            ({"copy_data": True}, False, True),
+            ({"copy_data": True}, True, False),
+            ({"copy_data": False}, False, False),
+            ({}, False, False),
+        ],
+        ids=["enabled", "schema only", "disabled", "absent"],
     )
     def test_data_copying_follows_the_option(
-        self, cloud_conf: dict, data_copied: bool
+        self, cloud_conf: dict, schema_only: bool, data_copied: bool
     ) -> None:
         """
         The option marks the backup as containing copied cloud storage data.
         Disabled or absent, it keeps the default of storing references only.
+        A schema-only backup has no data to copy.
         """
-        backup_meta = self._backup_with_cloud_conf(cloud_conf)
+        backup_meta = self._backup_with_cloud_conf(cloud_conf, schema_only)
 
         assert backup_meta.cloud_storage.data_copied is data_copied
 

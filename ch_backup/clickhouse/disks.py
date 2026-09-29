@@ -831,16 +831,16 @@ def _exec(
     logging.debug(f'Executing "{args}"')
 
     with Popen(args, stdout=PIPE, stderr=PIPE, shell=True) as proc:  # nosec
+        stdout, stderr = proc.communicate()
         errors = []
-        for line in proc.stderr:  # type: ignore
+        for line in stderr.splitlines():
             message = line.decode("utf-8").strip()
             proc_logger.info(message)
             if message.startswith("Error: "):
                 errors.append(message)
-        proc.wait()
         if proc.returncode != 0 or errors:
             raise ClickHouseDisksException(
                 f"{exe} call failed with exitcode: {proc.returncode}, errors: {errors}"
             )
 
-        return list(map(lambda b: b.decode("utf-8"), proc.stdout.readlines()))  # type: ignore
+        return list(map(lambda b: b.decode("utf-8"), stdout.splitlines(keepends=True)))
