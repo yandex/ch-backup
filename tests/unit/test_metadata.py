@@ -15,7 +15,12 @@ from ch_backup.backup.metadata import (
     PartMetadata,
     normalize_backup_link,
 )
-from ch_backup.backup.metadata.table_metadata import PartInfo, split_part_name
+from ch_backup.backup.metadata.table_metadata import (
+    DataSkippedReason,
+    PartInfo,
+    TableMetadata,
+    split_part_name,
+)
 
 
 class TestBackupMetadata:
@@ -542,3 +547,48 @@ class TestSplitPartName:
         """
         result = split_part_name("all_1_1_0_7")
         assert result.mutation == 7
+
+
+class TestTableMetadataDataSkippedReason:
+    """
+    Tests for the reason a table ended up in a backup without its data.
+    """
+
+    @staticmethod
+    def _make(data_skipped_reason: str | None) -> TableMetadata:
+        """Helper: build table metadata with the given skip reason."""
+        return TableMetadata("db1", "table1", "MergeTree", None, data_skipped_reason)
+
+    def test_absent_reason_keeps_metadata_unchanged(self) -> None:
+        """
+        Tables backed up with their data carry no such key, so metadata of
+        existing backups stays byte for byte the same.
+        """
+        table = self._make(None)
+
+        assert "data_skipped_reason" not in table.raw_metadata
+        assert table.data_skipped_reason is None
+
+    def test_reason_survives_a_dump_and_load(self) -> None:
+        """
+        The reason reaches restore, which reads it back from the backup, and it
+        is stored as a plain string rather than an enum member.
+        """
+        table = self._make(DataSkippedReason.UNIQUE_KEY)
+
+        loaded = TableMetadata.load(
+            "db1", "table1", json.loads(json.dumps(table.raw_metadata))
+        )
+
+        assert loaded.data_skipped_reason == DataSkippedReason.UNIQUE_KEY
+        assert loaded.raw_metadata["data_skipped_reason"] == "unique_key"
+
+    def test_legacy_metadata_loads_without_the_key(self) -> None:
+        """
+        Backups made before the key existed are still readable.
+        """
+        loaded = TableMetadata.load(
+            "db1", "table1", {"engine": "MergeTree", "uuid": None, "parts": {}}
+        )
+
+        assert loaded.data_skipped_reason is None

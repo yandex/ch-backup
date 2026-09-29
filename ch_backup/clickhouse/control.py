@@ -1032,8 +1032,15 @@ class ClickhouseCTL:
     def create_table(self, table: Table) -> None:
         """
         Restore table.
+
+        A UNIQUE KEY table needs the experimental setting, which ClickHouse checks
+        for CREATE but not for ATTACH. The setting goes per query rather than into
+        the session, because builds without the clause do not have it.
         """
-        self._ch_client.query(table.create_statement)
+        settings = (
+            {"allow_experimental_unique_key": 1} if table.has_unique_key() else None
+        )
+        self._ch_client.query(table.create_statement, settings=settings)
 
     def restore_replica(self, table: Table) -> None:
         """

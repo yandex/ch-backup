@@ -28,3 +28,4 @@ features/operations_without_ch.feature
 features/partially_encrypted_backups.feature
 features/backup_replicated_database.feature
 features/workload_entities.feature
+features/unique_key.feature

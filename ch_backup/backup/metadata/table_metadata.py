@@ -2,6 +2,7 @@
 Backup metadata for ClickHouse table.
 """
 
+from enum import Enum
 from types import SimpleNamespace
 from typing import NamedTuple
 
@@ -50,12 +51,28 @@ def split_part_name(part: str) -> PartInfo:
     return PartInfo(partition_id, min_block_num, max_block_num, level, mutation)
 
 
+class DataSkippedReason(str, Enum):
+    """
+    Represents why the table data was left out of the backup.
+    """
+
+    UNIQUE_KEY = "unique_key"
+
+
 class TableMetadata(SimpleNamespace):
     """
     Backup metadata for ClickHouse table.
     """
 
-    def __init__(self, database: str, name: str, engine: str, uuid: str | None) -> None:
+    # pylint: disable=too-many-positional-arguments
+    def __init__(
+        self,
+        database: str,
+        name: str,
+        engine: str,
+        uuid: str | None,
+        data_skipped_reason: str | None = None,
+    ) -> None:
         super().__init__()
         self.database: str = database
         self.name: str = name
@@ -64,6 +81,15 @@ class TableMetadata(SimpleNamespace):
             "uuid": uuid,
             "parts": {},
         }
+        if data_skipped_reason:
+            self.raw_metadata["data_skipped_reason"] = data_skipped_reason
+
+    @property
+    def data_skipped_reason(self) -> str | None:
+        """
+        Return why the table data was left out of the backup, or None if it was backed up.
+        """
+        return self.raw_metadata.get("data_skipped_reason")
 
     @property
     def engine(self) -> str:
@@ -121,7 +147,11 @@ class TableMetadata(SimpleNamespace):
         Deserialize table metadata.
         """
         table = cls(
-            database, name, raw_metadata["engine"], raw_metadata.get("uuid", None)
+            database,
+            name,
+            raw_metadata["engine"],
+            raw_metadata.get("uuid", None),
+            raw_metadata.get("data_skipped_reason", None),
         )
         table.raw_metadata["parts"] = raw_metadata["parts"]
         return table
