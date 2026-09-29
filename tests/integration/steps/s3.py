@@ -67,9 +67,9 @@ def step_cloud_storage_bucket_has_no_prefix(context, bucket, prefix):
 @when("we delete all objects in s3 bucket {bucket}")
 def step_delete_all_objects_in_bucket(context, bucket):
     s3_client = s3.S3Client(context, bucket)
-    for path in s3_client.list_objects("/"):
+    for path in s3_client.list_objects(""):
         s3_client.delete_data(path)
-    assert_that(s3_client.list_objects("/"), equal_to([]))
+    assert_that(s3_client.list_objects(""), equal_to([]))
 
 
 @when("we put object in S3")
