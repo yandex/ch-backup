@@ -503,7 +503,7 @@ class TestBackupCloudStorageData:
     Tests for TableBackup._backup_cloud_storage_data.
     """
 
-    # pylint: disable=protected-access
+    # pylint: disable=protected-access,no-member
 
     @staticmethod
     def _make_table(disks: list[Disk]) -> Table:
