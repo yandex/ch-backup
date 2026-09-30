@@ -9,7 +9,7 @@ from ch_backup.storage.engine.s3.s3_engine import S3StorageEngine
 
 
 def _engine() -> tuple[S3StorageEngine, MagicMock]:
-    engine = S3StorageEngine.__new__(S3StorageEngine)
+    engine = object.__new__(S3StorageEngine)
     client = MagicMock()
     factory = MagicMock()
     factory.create_s3_client.return_value = client
