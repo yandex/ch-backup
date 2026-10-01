@@ -405,18 +405,20 @@ class TableBackup(BackupManager):
                 )
                 return
 
+        filtered_tables_meta, duplicate_uuid_skipped = self._filter_duplicate_uuid(
+            tables_meta, keep_going
+        )
+
+        logging.debug("Retrieving tables from tables metadata")
+        (
+            tables_to_preprocess,
+            missing_create_statement_skipped,
+        ) = self._get_tables_from_meta(context, filtered_tables_meta, keep_going)
+
+        # Keep refreshes stopped until all restored parts are attached.
         with context.ch_ctl.stop_refreshable_materialized_views_for_restore(
             list(databases)
         ):
-            filtered_tables_meta, duplicate_uuid_skipped = self._filter_duplicate_uuid(
-                tables_meta, keep_going
-            )
-
-            logging.debug("Retrieving tables from tables metadata")
-            (
-                tables_to_preprocess,
-                missing_create_statement_skipped,
-            ) = self._get_tables_from_meta(context, filtered_tables_meta, keep_going)
             (
                 tables_to_restore,
                 preprocessing_failed_skipped,

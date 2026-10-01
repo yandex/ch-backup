@@ -152,17 +152,23 @@ def test_refreshable_views_are_resumed_after_restore() -> None:
     )
 
 
-def test_refreshable_views_are_resumed_when_restore_fails() -> None:
+def test_restore_failure_is_preserved_when_starting_views_fails() -> None:
     ctl = _make_clickhouse_ctl()
-    ctl._ch_client.query.return_value = {"data": []}  # pylint: disable=protected-access
+    ctl._ch_client.query.side_effect = [  # pylint: disable=protected-access
+        {"data": []},
+        {"data": []},
+        RuntimeError("start views failed"),
+    ]
 
-    with pytest.raises(RuntimeError, match="restore failed"):
-        with ctl.stop_refreshable_materialized_views_for_restore(["db"]):
-            raise RuntimeError("restore failed")
+    with mock.patch("ch_backup.clickhouse.control.logging.exception") as log:
+        with pytest.raises(RuntimeError, match="restore failed"):
+            with ctl.stop_refreshable_materialized_views_for_restore(["db"]):
+                raise RuntimeError("restore failed")
 
     query_mock = ctl._ch_client.query  # pylint: disable=protected-access
     assert query_mock.call_args_list[0].args[0] == "SYSTEM STOP VIEWS"
     assert query_mock.call_args_list[-1].args[0] == "SYSTEM START VIEWS"
+    log.assert_called_once()
 
 
 def test_stop_refreshable_views_on_startup_is_scoped_to_restore() -> None:

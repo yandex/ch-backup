@@ -1147,7 +1147,15 @@ class ClickhouseCTL:
             self._wait_for_refreshable_materialized_views_to_stop(databases)
             with self._stop_refreshable_materialized_views_on_startup():
                 yield
-        finally:
+        except BaseException:
+            try:
+                self._ch_client.query(SYSTEM_START_VIEWS_SQL)
+            except Exception:
+                logging.exception(
+                    "Failed to start refreshable materialized views while restore was failing"
+                )
+            raise
+        else:
             self._ch_client.query(SYSTEM_START_VIEWS_SQL)
 
     def drop_table_if_exists(self, table: Table) -> None:
