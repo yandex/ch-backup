@@ -405,74 +405,77 @@ class TableBackup(BackupManager):
                 )
                 return
 
-        filtered_tables_meta, duplicate_uuid_skipped = self._filter_duplicate_uuid(
-            tables_meta, keep_going
-        )
-
-        logging.debug("Retrieving tables from tables metadata")
-        (
-            tables_to_preprocess,
-            missing_create_statement_skipped,
-        ) = self._get_tables_from_meta(context, filtered_tables_meta, keep_going)
-        (
-            tables_to_restore,
-            preprocessing_failed_skipped,
-        ) = self._preprocess_tables_to_restore(
-            context,
-            databases,
-            tables_to_preprocess,
-            keep_going,
-            restore_tables_in_replicated_database,
-            metadata_cleaner,
-        )
-        self._log_restore_preprocess_summary(
-            duplicate_uuid_skipped=duplicate_uuid_skipped,
-            missing_create_statement_skipped=missing_create_statement_skipped,
-            preprocessing_failed_skipped=preprocessing_failed_skipped,
-        )
-
-        failed_tables = self._restore_tables(
-            context,
-            databases,
-            tables_to_restore,
-            keep_going,
-        )
-
-        if schema_only:
-            logging.debug(
-                "Skipping restoring of table data as --schema-only flag passed"
+        with context.ch_ctl.stop_refreshable_materialized_views_for_restore(
+            list(databases)
+        ):
+            filtered_tables_meta, duplicate_uuid_skipped = self._filter_duplicate_uuid(
+                tables_meta, keep_going
             )
-            return
 
-        failed_tables_names = [f"`{t.database}`.`{t.name}`" for t in failed_tables]
-        tables_to_restore_data = filter(
-            lambda t: f"`{t.database}`.`{t.name}`" not in failed_tables_names,
-            tables_meta,
-        )
-
-        use_inplace_cloud_restore = context.config_root["restore"][
-            "use_inplace_cloud_restore"
-        ]
-
-        with ClickHouseTemporaryDisks(
-            context.ch_ctl,
-            context.backup_layout,
-            context.config_root,
-            context.backup_meta,
-            cloud_storage_source_bucket,
-            cloud_storage_source_path,
-            cloud_storage_source_endpoint,
-            context.ch_config,
-            desired_tables=tables_meta,
-            use_local_copy=use_inplace_cloud_restore,
-        ) as disks:
-            self._restore_data(
+            logging.debug("Retrieving tables from tables metadata")
+            (
+                tables_to_preprocess,
+                missing_create_statement_skipped,
+            ) = self._get_tables_from_meta(context, filtered_tables_meta, keep_going)
+            (
+                tables_to_restore,
+                preprocessing_failed_skipped,
+            ) = self._preprocess_tables_to_restore(
                 context,
-                tables=tables_to_restore_data,
-                disks=disks,
-                skip_cloud_storage=skip_cloud_storage,
-                keep_going=keep_going,
+                databases,
+                tables_to_preprocess,
+                keep_going,
+                restore_tables_in_replicated_database,
+                metadata_cleaner,
             )
+            self._log_restore_preprocess_summary(
+                duplicate_uuid_skipped=duplicate_uuid_skipped,
+                missing_create_statement_skipped=missing_create_statement_skipped,
+                preprocessing_failed_skipped=preprocessing_failed_skipped,
+            )
+
+            failed_tables = self._restore_tables(
+                context,
+                databases,
+                tables_to_restore,
+                keep_going,
+            )
+
+            if schema_only:
+                logging.debug(
+                    "Skipping restoring of table data as --schema-only flag passed"
+                )
+                return
+
+            failed_tables_names = [f"`{t.database}`.`{t.name}`" for t in failed_tables]
+            tables_to_restore_data = filter(
+                lambda t: f"`{t.database}`.`{t.name}`" not in failed_tables_names,
+                tables_meta,
+            )
+
+            use_inplace_cloud_restore = context.config_root["restore"][
+                "use_inplace_cloud_restore"
+            ]
+
+            with ClickHouseTemporaryDisks(
+                context.ch_ctl,
+                context.backup_layout,
+                context.config_root,
+                context.backup_meta,
+                cloud_storage_source_bucket,
+                cloud_storage_source_path,
+                cloud_storage_source_endpoint,
+                context.ch_config,
+                desired_tables=tables_meta,
+                use_local_copy=use_inplace_cloud_restore,
+            ) as disks:
+                self._restore_data(
+                    context,
+                    tables=tables_to_restore_data,
+                    disks=disks,
+                    skip_cloud_storage=skip_cloud_storage,
+                    keep_going=keep_going,
+                )
 
     @staticmethod
     def _check_metadata_change_time(

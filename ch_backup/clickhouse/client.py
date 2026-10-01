@@ -3,7 +3,7 @@ ClickHouse client.
 """
 
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any, Generator
 
 import requests
 
@@ -115,7 +115,7 @@ class ClickhouseClient:
     @contextmanager
     def _get_session(
         self, new_session: bool | None = False
-    ) -> Iterator[requests.Session]:
+    ) -> Generator[requests.Session, None, None]:
         session = (
             self._create_session(self._config, self._settings)
             if new_session
