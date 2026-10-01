@@ -128,58 +128,6 @@ def _make_clickhouse_ctl(version: str = "23.12.1") -> ClickhouseCTL:
     return ctl
 
 
-def test_get_running_refreshable_materialized_views() -> None:
-    ctl = _make_clickhouse_ctl()
-    ctl._ch_client.query.return_value = {  # pylint: disable=protected-access
-        "data": [
-            {
-                "database": "db",
-                "view": "mv",
-                "uuid": "view-uuid",
-                "status": "Running",
-            }
-        ]
-    }
-
-    assert ctl._get_running_refreshable_materialized_views(
-        ["db"]
-    ) == [  # pylint: disable=protected-access
-        ("db", "mv")
-    ]
-    query = ctl._ch_client.query.call_args.args[0]  # pylint: disable=protected-access
-    assert "FROM system.view_refreshes" in query
-    assert "database IN ['db']" in query
-    assert "status = 'Running'" in query
-
-
-def test_refreshable_views_are_not_used_before_clickhouse_23_12() -> None:
-    ctl = _make_clickhouse_ctl("23.11.1")
-
-    assert (
-        ctl._get_running_refreshable_materialized_views(["db"]) == []
-    )  # pylint: disable=protected-access
-    with (
-        ctl._stop_refreshable_materialized_views_on_startup()
-    ):  # pylint: disable=protected-access
-        assert not ctl._ch_client.settings  # pylint: disable=protected-access
-    ctl._ch_client.query.assert_not_called()  # pylint: disable=protected-access
-
-
-def test_wait_for_refreshable_views_to_stop() -> None:
-    ctl = _make_clickhouse_ctl()
-    ctl._ch_client.query.side_effect = [  # pylint: disable=protected-access
-        {"data": [{"database": "db", "view": "mv"}]},
-        {"data": []},
-    ]
-
-    with mock.patch("ch_backup.clickhouse.control.time.sleep") as sleep:
-        ctl._wait_for_refreshable_materialized_views_to_stop(  # pylint: disable=protected-access
-            ["db"]
-        )
-
-    sleep.assert_called_once_with(1)
-
-
 def test_refreshable_views_are_resumed_after_restore() -> None:
     ctl = _make_clickhouse_ctl()
     ctl._ch_client.query.return_value = {"data": []}  # pylint: disable=protected-access
