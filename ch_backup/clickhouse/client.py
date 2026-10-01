@@ -3,7 +3,7 @@ ClickHouse client.
 """
 
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any, Generator
 
 import requests
 
@@ -37,7 +37,6 @@ class ClickhouseClient:
 
     def __init__(self, config: dict, settings: dict = None) -> None:
         self._config = config
-        self._settings = settings
         host = config["host"]
         protocol = config["protocol"]
         port = config["port"] or (8123 if protocol == "http" else 8443)
@@ -115,9 +114,9 @@ class ClickhouseClient:
     @contextmanager
     def _get_session(
         self, new_session: bool | None = False
-    ) -> Iterator[requests.Session]:
+    ) -> Generator[requests.Session, None, None]:
         session = (
-            self._create_session(self._config, self._settings)
+            self._create_session(self._config, dict(self._session.params))
             if new_session
             else self._session
         )
