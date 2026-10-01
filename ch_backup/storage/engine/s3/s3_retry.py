@@ -58,6 +58,13 @@ class S3RetryMeta(ABCMeta):
             try:
                 return func(self, *args, **kwargs)
             except (ClientError, BotoCoreError, HTTPException, HTTPError) as e:
+                if isinstance(e, ClientError) and func.__name__ in (
+                    "download_file",
+                    "download_data",
+                ):
+                    code = e.response.get("Error", {}).get("Code")
+                    if code in ("404", "NoSuchKey", "NotFound"):
+                        raise
                 self._s3_client_factory.reset()  # pylint: disable=protected-access
                 raise S3RetryingError(f"Failed to make S3 operation: {str(e)}") from e
 
