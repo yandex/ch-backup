@@ -37,7 +37,6 @@ class ClickhouseClient:
 
     def __init__(self, config: dict, settings: dict = None) -> None:
         self._config = config
-        self._settings = settings
         host = config["host"]
         protocol = config["protocol"]
         port = config["port"] or (8123 if protocol == "http" else 8443)
@@ -117,7 +116,7 @@ class ClickhouseClient:
         self, new_session: bool | None = False
     ) -> Generator[requests.Session, None, None]:
         session = (
-            self._create_session(self._config, self._settings)
+            self._create_session(self._config, dict(self._session.params))
             if new_session
             else self._session
         )

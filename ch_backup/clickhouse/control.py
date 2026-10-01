@@ -1124,7 +1124,6 @@ class ClickhouseCTL:
         settings = self._ch_client.settings
         previous_value = settings.get(setting_name)
         was_set = setting_name in settings
-        # Queries with new_session=True do not use these temporary settings.
         settings[setting_name] = 1
         try:
             yield
