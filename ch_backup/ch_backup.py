@@ -467,16 +467,10 @@ class ClickhouseBackup:
 
         retained_backups: list[BackupMetadata] = []
         deleting_backups: list[BackupMetadata] = []
-        backup_names = set(self._context.backup_layout.get_backup_names())
 
         with self._context.locker(operation="PURGE"):
             # Use light metadata in backups iteration to avoid high memory usage.
             for backup in self._context.backup_layout.get_backups(use_light_meta=True):
-                if backup.name not in backup_names:
-                    logging.info("Deleting backup without metadata: {}", backup.name)
-                    deleting_backups.append(backup)
-                    continue
-
                 if retain_count > 0:
                     logging.info(
                         "Preserving backup per retain count policy: {}, state {}",
@@ -557,24 +551,27 @@ class ClickhouseBackup:
             backup_light_meta.state,
         )
 
-        # The reference scan has already completed under the delete lock.
-        if not dedup_references:
-            logging.info("Removing backup data entirely")
-            self._context.backup_layout.delete_backup(
-                backup_light_meta.name,
-                lambda: self._context.ch_ctl.system_unfreeze(backup_light_meta.name),
-            )
-            return backup_light_meta.name, None
-
         backup = self._context.backup_layout.get_backup(backup_light_meta.name)
-        if backup is None:
+        if backup is None and dedup_references:
             raise InvalidBackupStruct(
                 f"Full metadata is missing for referenced backup {backup_light_meta.name}"
             )
+        light_only = backup is None
+        backup = backup or backup_light_meta
         backup.state = BackupState.DELETING
-        self._context.backup_layout.upload_backup_metadata(backup)
 
         try:
+            self._context.backup_layout.upload_backup_metadata(
+                backup, light_only=light_only
+            )
+            if not dedup_references:
+                logging.info("Removing backup data entirely")
+                self._context.backup_layout.delete_backup(
+                    backup.name,
+                    lambda: self._context.ch_ctl.system_unfreeze(backup.name),
+                )
+                return backup.name, None
+
             logging.info("Removing non-shared backup data parts")
             for db_name in backup.get_databases():
                 db_dedup_references = dedup_references[db_name]
@@ -586,7 +583,9 @@ class ClickhouseBackup:
             self._context.backup_layout.wait()
             self._context.ch_ctl.system_unfreeze(backup.name)
             backup.state = BackupState.PARTIALLY_DELETED
-            self._context.backup_layout.upload_backup_metadata(backup)
+            self._context.backup_layout.upload_backup_metadata(
+                backup, light_only=light_only
+            )
             return (
                 None,
                 "Backup was partially deleted as its data is in use by subsequent backups per "
@@ -597,7 +596,9 @@ class ClickhouseBackup:
             logging.critical("Delete failed", exc_info=True)
             backup.state = BackupState.FAILED
             backup.exception = f"{type(e).__name__}: {e}"
-            self._context.backup_layout.upload_backup_metadata(backup)
+            self._context.backup_layout.upload_backup_metadata(
+                backup, light_only=light_only
+            )
             raise
 
     def _delete_data_parts(

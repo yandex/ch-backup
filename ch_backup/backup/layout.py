@@ -59,17 +59,22 @@ class BackupLayout:
             enc_conf["type"], enc_conf
         ).metadata_size()
 
-    def upload_backup_metadata(self, backup: BackupMetadata) -> None:
+    def upload_backup_metadata(
+        self, backup: BackupMetadata, light_only: bool = False
+    ) -> None:
         """
         Upload backup metadata.
         """
         remote_path = self._backup_metadata_path(backup.name)
         remote_light_path = self._backup_light_metadata_path(backup.name)
         try:
-            logging.debug("Saving backup metadata in {}", remote_path)
-            self._storage_loader.upload_data(
-                backup.dump_json(light=False), remote_path=remote_path, encryption=True
-            )
+            if not light_only:
+                logging.debug("Saving backup metadata in {}", remote_path)
+                self._storage_loader.upload_data(
+                    backup.dump_json(light=False),
+                    remote_path=remote_path,
+                    encryption=True,
+                )
             logging.debug("Saving backup light metadata in {}", remote_light_path)
             self._storage_loader.upload_data(
                 backup.dump_json(light=True), remote_path=remote_light_path

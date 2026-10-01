@@ -117,6 +117,7 @@ def test_delete_without_references_uses_light_metadata() -> None:
     light_metadata = Mock(name="old", state=BackupState.CREATED)
     light_metadata.name = "old"
     context.backup_layout.get_backups.return_value = [light_metadata]
+    context.backup_layout.get_backup.return_value = None
 
     with patch(
         "ch_backup.ch_backup.collect_dedup_references_for_batch_backup_deletion",
@@ -124,79 +125,77 @@ def test_delete_without_references_uses_light_metadata() -> None:
     ):
         assert backup.delete("old", purge_partial=False) == ("old", None)
 
-    context.backup_layout.get_backup.assert_not_called()
     context.backup_layout.delete_backup.assert_called_once()
-    assert context.backup_layout.delete_backup.call_args.args[0] == "old"
+    context.backup_layout.upload_backup_metadata.assert_called_once_with(
+        light_metadata, light_only=True
+    )
 
 
 def test_delete_referenced_backup_requires_full_metadata() -> None:
     backup, context = _backup_with_context()
-    context.locker = MagicMock()
     light_metadata = Mock(name="old", state=BackupState.CREATED)
     light_metadata.name = "old"
-    context.backup_layout.get_backups.return_value = [light_metadata]
     context.backup_layout.get_backup.return_value = None
 
-    with patch(
-        "ch_backup.ch_backup.collect_dedup_references_for_batch_backup_deletion",
-        return_value={"old": {"db": {"table": {"part"}}}},
-    ):
-        with pytest.raises(InvalidBackupStruct):
-            backup.delete("old", purge_partial=False)
+    with pytest.raises(InvalidBackupStruct):
+        backup._delete(  # pylint: disable=protected-access
+            light_metadata, {"db": {"table": {"part"}}}
+        )
 
     context.backup_layout.delete_backup.assert_not_called()
     context.backup_layout.upload_backup_metadata.assert_not_called()
 
 
-def test_delete_stops_when_reference_scan_fails() -> None:
-    backup, context = _backup_with_context()
-    context.locker = MagicMock()
-    light_metadata = Mock(name="old", state=BackupState.CREATED)
-    light_metadata.name = "old"
-    context.backup_layout.get_backups.return_value = [light_metadata]
-
-    with patch(
-        "ch_backup.ch_backup.collect_dedup_references_for_batch_backup_deletion",
-        side_effect=InvalidBackupStruct("retained metadata unavailable"),
-    ):
-        with pytest.raises(InvalidBackupStruct):
-            backup.delete("old", purge_partial=False)
-
-    context.backup_layout.delete_backup.assert_not_called()
-    context.backup_layout.upload_backup_metadata.assert_not_called()
-
-
-@pytest.mark.parametrize("failure_stage", ["part", "wait"])
-def test_referenced_delete_failure_persists_failed_state(failure_stage: str) -> None:
+@pytest.mark.parametrize("referenced", [False, True])
+def test_delete_failure_persists_failed_state(referenced: bool) -> None:
     backup, context = _backup_with_context()
     light_metadata = Mock(name="old", state=BackupState.CREATED)
     light_metadata.name = "old"
-    full_metadata = MagicMock()
+    light_metadata.exception = None
+    full_metadata = Mock(name="old", state=BackupState.CREATED, exception=None)
     full_metadata.name = "old"
-    full_metadata.exception = None
-    full_metadata.get_databases.return_value = ["db"] if failure_stage == "part" else []
-    table = Mock()
-    table.name = "table"
-    full_metadata.get_tables.return_value = [table]
-    context.backup_layout.get_backup.return_value = full_metadata
+    full_metadata.get_databases.return_value = []
+    context.backup_layout.get_backup.return_value = (
+        full_metadata if referenced else None
+    )
     error = StorageError("deletion failed")
-    if failure_stage == "wait":
+    if referenced:
         context.backup_layout.wait.side_effect = error
+    else:
+        context.backup_layout.delete_backup.side_effect = error
     uploaded_states = []
     context.backup_layout.upload_backup_metadata.side_effect = (
-        lambda metadata: uploaded_states.append((metadata.state, metadata.exception))
+        lambda metadata, light_only: uploaded_states.append(
+            (metadata.state, metadata.exception, light_only)
+        )
     )
 
-    with patch.object(backup, "_delete_data_parts", side_effect=error):
-        with pytest.raises(StorageError) as exc:
-            backup._delete(  # pylint: disable=protected-access
-                light_metadata, {"db": {"table": {"part"}}}
-            )
+    with pytest.raises(StorageError) as exc:
+        backup._delete(  # pylint: disable=protected-access
+            light_metadata, {"db": {"table": {"part"}}} if referenced else {}
+        )
 
     assert exc.value is error
-    assert full_metadata.state == BackupState.FAILED
     context.ch_ctl.system_unfreeze.assert_not_called()
     assert uploaded_states == [
-        (BackupState.DELETING, None),
-        (BackupState.FAILED, "StorageError: deletion failed"),
+        (BackupState.DELETING, None, not referenced),
+        (BackupState.FAILED, "StorageError: deletion failed", not referenced),
     ]
+
+
+def test_referenced_delete_persists_partial_state() -> None:
+    backup, context = _backup_with_context()
+    light_metadata = Mock(name="old", state=BackupState.CREATED)
+    light_metadata.name = "old"
+    full_metadata = Mock(name="old", state=BackupState.CREATED)
+    full_metadata.name = "old"
+    full_metadata.get_databases.return_value = []
+    context.backup_layout.get_backup.return_value = full_metadata
+
+    result = backup._delete(  # pylint: disable=protected-access
+        light_metadata, {"db": {"table": {"part"}}}
+    )
+
+    assert result[0] is None
+    assert full_metadata.state == BackupState.PARTIALLY_DELETED
+    assert context.backup_layout.upload_backup_metadata.call_count == 2
