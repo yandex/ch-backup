@@ -189,6 +189,7 @@ def test_referenced_delete_persists_partial_state() -> None:
     light_metadata.name = "old"
     full_metadata = Mock(name="old", state=BackupState.CREATED)
     full_metadata.name = "old"
+    full_metadata.exception = "Previous deletion failed"
     full_metadata.get_databases.return_value = []
     context.backup_layout.get_backup.return_value = full_metadata
 
@@ -198,4 +199,5 @@ def test_referenced_delete_persists_partial_state() -> None:
 
     assert result[0] is None
     assert full_metadata.state == BackupState.PARTIALLY_DELETED
+    assert full_metadata.exception is None
     assert context.backup_layout.upload_backup_metadata.call_count == 2

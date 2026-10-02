@@ -44,20 +44,25 @@ def test_bulk_delete_ignores_missing_objects() -> None:
     engine.delete_files(["missing"])
 
 
-@pytest.mark.parametrize("operation", ["download_file", "download_data"])
-def test_missing_download_is_not_retried(operation: str) -> None:
+@pytest.mark.parametrize(
+    "operation,client_method",
+    [
+        ("download_file", "download_file"),
+        ("download_data", "download_fileobj"),
+        ("create_multipart_download", "head_object"),
+    ],
+)
+def test_missing_download_is_not_retried(operation: str, client_method: str) -> None:
     engine, client = _engine()
     error = ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "GetObject")
-    download = getattr(
-        client, "download_fileobj" if operation == "download_data" else operation
-    )
+    download = getattr(client, client_method)
     download.side_effect = error
 
     with pytest.raises(ClientError) as exc:
         if operation == "download_file":
             engine.download_file("missing", "/tmp/missing")
         else:
-            engine.download_data("missing")
+            getattr(engine, operation)("missing")
 
     assert exc.value is error
     download.assert_called_once()

@@ -559,6 +559,7 @@ class ClickhouseBackup:
         light_only = backup is None
         backup = backup or backup_light_meta
         backup.state = BackupState.DELETING
+        backup.exception = None
 
         try:
             self._context.backup_layout.upload_backup_metadata(
