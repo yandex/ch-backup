@@ -236,11 +236,14 @@ class BackupManager:
         schema: bool = None,
         udf: bool = None,
         nc: bool = None,
+        copy_cloud_storage_data: bool = False,
     ) -> str:
         """
         Execute backup command.
         """
         options = [f"--name {name}"]
+        if copy_cloud_storage_data:
+            options.append("--copy-cloud-storage-data")
         if force:
             options.append("--force")
         if databases:
@@ -269,7 +272,7 @@ class BackupManager:
         """
         Execute delete command.
         """
-        backup_id = self._normalize_id(backup_id)
+        backup_id = self.normalize_id(backup_id)
 
         options = []
         if purge_partial:
@@ -319,7 +322,7 @@ class BackupManager:
         """
         Get backup entry metadata.
         """
-        backup_id = self._normalize_id(backup_id)
+        backup_id = self.normalize_id(backup_id)
         output = self._exec(f"show {backup_id}")
         return Backup(json.loads(output))
 
@@ -349,7 +352,7 @@ class BackupManager:
         """
         Restore backup entry.
         """
-        backup_id = self._normalize_id(backup_id)
+        backup_id = self.normalize_id(backup_id)
         options = []
         if schema_only:
             options.append("--schema-only")
@@ -505,7 +508,7 @@ class BackupManager:
 
         return result.output.decode().strip()
 
-    def _normalize_id(self, backup_id: BackupId) -> str:
+    def normalize_id(self, backup_id: BackupId) -> str:
         if isinstance(backup_id, int):
             return self.get_backup_ids()[backup_id]
         return backup_id

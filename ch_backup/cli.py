@@ -365,6 +365,17 @@ def show_command(
     ),
 )
 @option_group(
+    "Cloud Storage",
+    option(
+        "--copy-cloud-storage-data",
+        is_flag=True,
+        help="Copy object storage data into the backup instead of storing "
+        "references only. Increases backup size and duration. The data is copied "
+        "by ClickHouse as is: unlike the metadata, it is neither compressed nor "
+        "encrypted by ch-backup.",
+    ),
+)
+@option_group(
     "Timeout configuration",
     # pylint: disable=consider-using-f-string
     "Examples for {timespan_slug}: {examples}".format(
@@ -423,9 +434,12 @@ def backup_command(
     udf: bool,
     nc: bool,
     workload: bool,
+    copy_cloud_storage_data: bool,
 ) -> None:
     """Perform backup."""
     # pylint: disable=too-many-arguments,too-many-locals
+    if copy_cloud_storage_data:
+        ch_backup.config.merge({"cloud_storage": {"copy_data": True}})
     if freeze_timeout:
         logging.info(f"ALTER FREEZE timeout force set to {freeze_timeout} sec.")
         ch_backup.reload_config(

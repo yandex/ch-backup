@@ -42,6 +42,36 @@ def step_cloud_storage_bucket_contains_files(context, bucket, count):
     )
 
 
+@then('s3 bucket {bucket} contains objects with prefix "{prefix}"')
+def step_cloud_storage_bucket_contains_prefix(context, bucket, prefix):
+    s3_client = s3.S3Client(context, bucket)
+    objects = s3_client.list_objects(prefix)
+    assert_that(
+        len(objects) > 0,
+        equal_to(True),
+        f"No objects with prefix {prefix} in bucket {bucket}",
+    )
+
+
+@then('s3 bucket {bucket} contains no objects with prefix "{prefix}"')
+def step_cloud_storage_bucket_has_no_prefix(context, bucket, prefix):
+    s3_client = s3.S3Client(context, bucket)
+    objects = s3_client.list_objects(prefix)
+    assert_that(
+        objects,
+        equal_to([]),
+        f"Unexpected objects with prefix {prefix} in bucket {bucket}: {objects}",
+    )
+
+
+@when("we delete all objects in s3 bucket {bucket}")
+def step_delete_all_objects_in_bucket(context, bucket):
+    s3_client = s3.S3Client(context, bucket)
+    for path in s3_client.list_objects(""):
+        s3_client.delete_data(path)
+    assert_that(s3_client.list_objects(""), equal_to([]))
+
+
 @when("we put object in S3")
 def step_create_file_in_s3(context):
     conf = get_step_data(context)

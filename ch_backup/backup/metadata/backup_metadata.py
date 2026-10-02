@@ -20,6 +20,15 @@ from ch_backup.exceptions import InvalidBackupStruct, UnknownBackupStateError
 from ch_backup.util import now
 
 
+def sanitize_backup_name(name: str) -> str:
+    """
+    Return backup name usable as a directory name on ClickHouse side.
+
+    '-' character is replaced to '_' to avoid unnecessary escaping.
+    """
+    return name.replace("-", "_")
+
+
 class BackupState(Enum):
     """
     Backup states.
@@ -515,9 +524,8 @@ class BackupMetadata:
     def get_sanitized_name(self) -> str:
         """
         ClickHouse will place shadow data under this directory.
-        '-' character is replaced to '_' to avoid unnecessary escaping on CH side.
         """
-        return self.name.replace("-", "_")
+        return sanitize_backup_name(self.name)
 
     def _format_time(self, value: datetime) -> str:
         return value.strftime(self.time_format)

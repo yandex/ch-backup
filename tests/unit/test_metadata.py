@@ -12,6 +12,7 @@ from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
     BackupStorageFormat,
+    CloudStorageMetadata,
     PartMetadata,
     normalize_backup_link,
 )
@@ -547,6 +548,52 @@ class TestSplitPartName:
         """
         result = split_part_name("all_1_1_0_7")
         assert result.mutation == 7
+
+
+class TestCloudStorageMetadata:
+    """
+    Tests for CloudStorageMetadata.
+    """
+
+    def test_load_of_backup_without_cloud_storage_section(self) -> None:
+        """
+        Backups created before the field was introduced must remain readable
+        and must not claim that cloud storage data is copied.
+        """
+        metadata = CloudStorageMetadata.load({})
+
+        assert metadata.data_copied is False
+
+    def test_load_of_backup_without_data_copied_field(self) -> None:
+        """
+        Backups created by an older version have a cloud_storage section
+        without the data_copied field.
+        """
+        metadata = CloudStorageMetadata.load(
+            {"encryption": True, "compression": True, "disks": ["s3"]}
+        )
+
+        assert metadata.data_copied is False
+        assert metadata.disks == ["s3"]
+
+    def test_data_copied_survives_backup_metadata_round_trip(self) -> None:
+        """
+        The field must survive a round trip through the whole backup metadata,
+        which is what actually lands in backup_struct.json.
+        """
+        backup = BackupMetadata(
+            name="20181017T210300",
+            path="ch_backup/20181017T210300",
+            version="1.0.100",
+            ch_version="19.1.16",
+            time_format="%Y-%m-%d %H:%M:%S %z",
+            hostname="clickhouse01.test_net_711",
+        )
+        backup.cloud_storage.data_copied = True
+
+        restored = BackupMetadata.load(json.loads(backup.dump_json()))
+
+        assert restored.cloud_storage.data_copied is True
 
 
 class TestTableMetadataDataSkippedReason:

@@ -28,6 +28,7 @@ from ch_backup.clickhouse.models import (
 from ch_backup.exceptions import ClickhouseBackupError, ConfigurationError
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.util import (
+    CLOUD_STORAGE_EXCLUDE_FILE_NAMES,
     chown_dir_contents,
     chown_file,
     escape,
@@ -1215,6 +1216,7 @@ class ClickhouseCTL:
         disk: Disk,
         data_path: str,
         backup_name: str,
+        copy_data: bool = False,
     ) -> Iterable[FrozenPart]:
         """
         Yield frozen parts from specific disk and path.
@@ -1229,11 +1231,19 @@ class ClickhouseCTL:
         for dir_entry in os.scandir(path):
             part = dir_entry.name
             part_path = dir_entry.path
-            checksum = _get_part_checksum(part_path)
             rel_paths = list_dir_files(part_path)
-            abs_paths = [Path(part_path) / file for file in rel_paths]
+            if disk.keeps_object_metadata:
+                checksum, objects_size = _get_cloud_part_checksum_and_size(
+                    part_path, rel_paths
+                )
+            else:
+                checksum, objects_size = _get_part_checksum(part_path), 0
 
-            size = calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE)
+            if copy_data and disk.keeps_object_metadata:
+                size = objects_size
+            else:
+                abs_paths = [Path(part_path) / file for file in rel_paths]
+                size = calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE)
             logging.debug(
                 f"scan_freezed_parts: {table.name} -> {escape(table.name)} \n {part}"
             )
@@ -1595,8 +1605,55 @@ class ClickhouseCTL:
 
 
 def _get_part_checksum(part_path: str) -> str:
+    """
+    Calculate checksum of a part stored on a local disk.
+    """
     with open(os.path.join(part_path, "checksums.txt"), "rb") as f:
         return md5(f.read()).hexdigest()  # nosec
+
+
+def _get_cloud_part_checksum_and_size(
+    part_path: str, rel_paths: Sequence[str]
+) -> tuple[str, int]:
+    """
+    Calculate checksum and size of a part stored on an object storage disk.
+
+    Files of such a part are metadata referring to objects with random keys.
+    ClickHouse rewrites the metadata on every freeze, so the keys are what
+    identifies the data of the part. Freezing a replicated table also leaves a
+    file describing the replica, which refers to no object at all.
+
+    The size is that of the objects: what a copy of the part weighs in the
+    backup, unlike its metadata.
+    """
+    checksum = md5()  # nosec
+    size = 0
+    for rel_path in sorted(rel_paths):
+        if rel_path in CLOUD_STORAGE_EXCLUDE_FILE_NAMES:
+            continue
+        checksum.update(rel_path.encode())
+        for object_key, object_size in _read_objects(os.path.join(part_path, rel_path)):
+            checksum.update(object_key.encode())
+            size += object_size
+
+    return checksum.hexdigest(), size
+
+
+def _read_objects(metadata_path: str) -> list[tuple[str, int]]:
+    """
+    Read keys and sizes of the objects a disk metadata file refers to.
+    """
+    with open(metadata_path, encoding="utf-8") as f:
+        version = f.readline().strip()
+        try:
+            objects_count = int(f.readline().split("\t")[0])
+            objects = (f.readline().split("\t") for _ in range(objects_count))
+            return [(obj[1].strip(), int(obj[0])) for obj in objects]
+        except (IndexError, ValueError) as e:
+            raise ClickhouseBackupError(
+                f"Failed to read objects of {metadata_path},"
+                f" metadata version {version}"
+            ) from e
 
 
 def _format_string_array(value: Sequence[str]) -> str:
