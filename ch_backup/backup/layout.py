@@ -465,7 +465,7 @@ class BackupLayout:
                 "Attempt to download encrypted metadata from {} has failed. Will try to download it as not encrypted",
                 path,
             )
-            return self._load_metadata(path, False)
+        return self._load_metadata(path, False)
 
     def get_backups(self, use_light_meta: bool = False) -> list[BackupMetadata]:
         """
@@ -506,7 +506,8 @@ class BackupLayout:
         try:
             return self._load_metadata(path, not use_light_meta)
         except CryptoError:
-            return self._load_metadata(path, False)
+            pass
+        return self._load_metadata(path, False)
 
     def get_database_create_statement(
         self, backup_meta: BackupMetadata, db_name: str

@@ -1,3 +1,5 @@
+# pylint: disable=too-many-lines
+
 import copy
 import os
 import threading
@@ -915,3 +917,174 @@ class TestCloudStorageDeduplication:
         deduplicate.assert_not_called()
         part = next(iter(context.backup_meta.get_tables("db1")[0].get_parts()))
         assert part.link is None
+
+
+class TestUniqueKeyTables:
+    """
+    Tests that tables with a UNIQUE KEY clause are backed up without data.
+
+    ClickHouse 26.5+ rejects ALTER ... PARTITION on them, so FREEZE is not an
+    option and the backup must record that the data was left out.
+    """
+
+    _DB = "db1"
+    _TABLE = "table1"
+    _PLAIN_STATEMENT = (
+        f"ATTACH TABLE {_DB}.{_TABLE} UUID '{UUID}' (id UInt64) "
+        "ENGINE = MergeTree ORDER BY id"
+    )
+    _ON_DISK_STATEMENT = (
+        f"ATTACH TABLE _ UUID '{UUID}'\n(\n"
+        "    `id` UInt64 COMMENT 'no UNIQUE KEY here'\n)\n"
+        "ENGINE = MergeTree\nORDER BY id\nUNIQUE KEY id\n"
+        "SETTINGS index_granularity = 8192"
+    )
+    _UNIQUE_KEY_STATEMENTS = (
+        f"{_PLAIN_STATEMENT} UNIQUE KEY (id)",
+        f"{_PLAIN_STATEMENT} UNIQUE KEY id",
+        _ON_DISK_STATEMENT,
+    )
+    _LOOKALIKE_STATEMENTS = (
+        f"{_PLAIN_STATEMENT} COMMENT 'UNIQUE KEY (id) is kept by the application'",
+        f"{_PLAIN_STATEMENT} COMMENT 'it''s a UNIQUE KEY (id)'",
+        f"ATTACH TABLE {_DB}.{_TABLE} UUID '{UUID}' (`UNIQUE KEY (id)` UInt64) "
+        "ENGINE = MergeTree ORDER BY id",
+        f"ATTACH TABLE {_DB}.{_TABLE} UUID '{UUID}' (id UInt64) ENGINE = "
+        f"ReplicatedMergeTree('/clickhouse/tables/UNIQUE KEY (id)/{_TABLE}', 'r1') "
+        "ORDER BY id",
+        f"{_PLAIN_STATEMENT} COMMENT 'UNIQUE KEY (id)",
+    )
+
+    @classmethod
+    def _make_context(cls) -> BackupContext:
+        """Helper: build a context with db1 registered and ClickHouse mocked."""
+        context = BackupContext(DEFAULT_CONFIG)  # type: ignore[arg-type]
+        context.backup_meta = BackupMetadata(
+            name="20181017T210300",
+            path="ch_backup/20181017T210300",
+            version="1.0.100",
+            ch_version="19.1.16",
+            time_format="%Y-%m-%dT%H:%M:%S%Z",
+            hostname="clickhouse01.test_net_711",
+        )
+        context.backup_meta.add_database(cls._database())
+        context.ch_ctl = MagicMock()
+        context.backup_layout = MagicMock()
+        return context
+
+    @classmethod
+    def _database(cls) -> Database:
+        return Database(
+            cls._DB, "Atomic", f"/var/lib/clickhouse/metadata/{cls._DB}.sql", None, None
+        )
+
+    @classmethod
+    def _table(cls) -> Table:
+        return Table(
+            cls._DB,
+            cls._TABLE,
+            "MergeTree",
+            [],
+            [],
+            f"/var/lib/clickhouse/metadata/{cls._DB}/{cls._TABLE}.sql",
+            "",
+            UUID,
+        )
+
+    @classmethod
+    def _backup_with_statement(cls, create_statement: str) -> BackupContext:
+        """Helper: back up the table with the given create statement."""
+        context = cls._make_context()
+        context.ch_ctl.get_tables.return_value = [cls._table()]  # type: ignore[attr-defined]
+        context.ch_ctl.get_disks.return_value = {}  # type: ignore[attr-defined]
+        context.ch_ctl.scan_frozen_parts.return_value = []  # type: ignore[attr-defined]
+
+        with (
+            patch.object(
+                TableBackup, "_get_change_time", return_value=_METADATA_UNCHANGED
+            ),
+            patch.object(
+                TableBackup,
+                "_load_create_statement_from_disk",
+                return_value=create_statement,
+            ),
+        ):
+            TableBackup().backup(
+                context,
+                [cls._database()],
+                {cls._DB: [cls._TABLE]},
+                schema_only=False,
+                multiprocessing_config=DEFAULT_CONFIG["multiprocessing"],  # type: ignore[arg-type]
+            )
+
+        return context
+
+    @pytest.mark.parametrize("create_statement", _UNIQUE_KEY_STATEMENTS)
+    def test_unique_key_table_is_not_frozen(self, create_statement: str) -> None:
+        """
+        A UNIQUE KEY table never reaches FREEZE, so the backup does not fail.
+        """
+        context = self._backup_with_statement(create_statement)
+
+        context.ch_ctl.freeze_table.assert_not_called()  # type: ignore[attr-defined]
+
+    @pytest.mark.parametrize("create_statement", _UNIQUE_KEY_STATEMENTS)
+    def test_unique_key_table_is_marked_as_data_skipped(
+        self, create_statement: str
+    ) -> None:
+        """
+        The schema is backed up and the metadata says why there is no data.
+        """
+        context = self._backup_with_statement(create_statement)
+
+        table_meta = context.backup_meta.get_tables(self._DB)[0]
+        assert table_meta.name == self._TABLE
+        assert table_meta.data_skipped_reason == "unique_key"
+        assert not table_meta.get_parts()
+
+    @pytest.mark.parametrize(
+        "create_statement", (_PLAIN_STATEMENT, *_LOOKALIKE_STATEMENTS)
+    )
+    def test_plain_table_is_frozen_and_not_marked(self, create_statement: str) -> None:
+        """
+        A table without a UNIQUE KEY clause keeps the usual behaviour, even when
+        its comments, identifiers or engine arguments mention one.
+        """
+        context = self._backup_with_statement(create_statement)
+
+        context.ch_ctl.freeze_table.assert_called_once()  # type: ignore[attr-defined]
+        table_meta = context.backup_meta.get_tables(self._DB)[0]
+        assert table_meta.data_skipped_reason is None
+
+    def test_unique_key_is_only_looked_for_in_merge_tree(self) -> None:
+        """
+        The clause belongs to the MergeTree family, other engines are left alone.
+        """
+        table = self._table()
+        table.engine = "Distributed"
+        table.create_statement = self._UNIQUE_KEY_STATEMENTS[0]
+
+        assert not table.has_unique_key()
+
+    def test_data_restore_is_skipped_for_marked_table(self) -> None:
+        """
+        Restore leaves a marked table empty instead of looking up its parts.
+        """
+        context = self._make_context()
+        context.ch_ctl.get_table.return_value = self._table()  # type: ignore[attr-defined]
+        table_meta = TableMetadata(
+            self._DB, self._TABLE, "MergeTree", UUID, "unique_key"
+        )
+
+        TableBackup()._restore_data(  # pylint: disable=protected-access
+            context,
+            [table_meta],
+            MagicMock(),
+            skip_cloud_storage=False,
+            keep_going=False,
+        )
+
+        context.ch_ctl.attach_part.assert_not_called()  # type: ignore[attr-defined]
+        context.ch_ctl.get_table.assert_called_once_with(  # type: ignore[attr-defined]
+            self._DB, self._TABLE, short_query=True
+        )

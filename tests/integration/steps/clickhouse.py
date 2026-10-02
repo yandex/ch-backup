@@ -24,6 +24,19 @@ def step_wait_for_clickhouse_alive(context, node):
     wait_for_clickhouse_ready(context, node)
 
 
+@given("clickhouse on {node:w} supports UNIQUE KEY")
+def step_require_unique_key_support(context, node):
+    """
+    Skip the scenario unless ClickHouse under test knows the UNIQUE KEY clause,
+    which is available in Yandex Cloud builds only.
+    """
+    supported = ClickhouseClient(context, node).get_response(
+        "SELECT count() FROM system.settings WHERE name = 'allow_experimental_unique_key'"
+    )
+    if supported == "0":
+        context.scenario.skip("ClickHouse has no UNIQUE KEY support")
+
+
 @given("we have enabled shared zookeeper for {node:w}")
 def step_enable_shared_zookeeper_for_clickhouse(context, node):
     """
