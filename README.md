@@ -113,14 +113,14 @@ make all
 ### Manual
 
 The following steps describe how to set up testing infrastructure on top of
- ClickHouse and Minio (open source S3-compatible storage server) docker
+ ClickHouse and SeaweedFS (open source S3-compatible storage server) docker
  containers.
 
 1. Create and run docker containers.
 ```
 $ make start-test-env
 ...
-Creating minio01.test_net_711 ...
+Creating seaweedfs01.test_net_711 ...
 Creating clickhouse01.test_net_711 ...
 Creating clickhouse02.test_net_711 ... done
 ```
