@@ -1155,8 +1155,7 @@ class ClickhouseCTL:
                     "Failed to start refreshable materialized views while restore was failing"
                 )
             raise
-        else:
-            self._ch_client.query(SYSTEM_START_VIEWS_SQL)
+        self._ch_client.query(SYSTEM_START_VIEWS_SQL)
 
     def drop_table_if_exists(self, table: Table) -> None:
         """

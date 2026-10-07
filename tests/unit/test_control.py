@@ -177,9 +177,8 @@ def test_stop_refreshable_views_on_startup_is_scoped_to_restore() -> None:
         "stop_refreshable_materialized_views_on_startup"
     ] = 0
 
-    with (
-        ctl._stop_refreshable_materialized_views_on_startup()
-    ):  # pylint: disable=protected-access
+    # pylint: disable-next=protected-access
+    with ctl._stop_refreshable_materialized_views_on_startup():
         assert (  # pylint: disable=protected-access
             ctl._ch_client.settings["stop_refreshable_materialized_views_on_startup"]
             == 1
