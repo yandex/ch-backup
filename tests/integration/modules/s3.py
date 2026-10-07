@@ -3,13 +3,22 @@ S3 client.
 """
 
 import logging
+import os
 
 import boto3
 from botocore.client import Config
 from botocore.errorfactory import ClientError
+from botocore.exceptions import BotoCoreError
+from tenacity import retry, retry_if_exception_type, stop_after_delay, wait_fixed
 
 from . import docker
 from .typing import ContextT
+
+
+class S3NotReadyError(Exception):
+    """
+    S3 is not ready to serve requests yet.
+    """
 
 
 class S3Client:
@@ -59,6 +68,12 @@ class S3Client:
             Body=data, Bucket=self._s3_bucket_name, Key=remote_path
         )
 
+    def download_file(self, remote_path: str, local_path: str) -> None:
+        """
+        Download file from storage to the local path.
+        """
+        self._s3_client.download_file(self._s3_bucket_name, remote_path, local_path)
+
     def delete_data(self, remote_path: str) -> None:
         """
         Delete file from storage.
@@ -75,6 +90,27 @@ class S3Client:
             return True
         except ClientError:
             return False
+
+    def get_object_size(self, remote_path: str) -> int:
+        """
+        Return size of the object in bytes.
+        """
+        response = self._s3_client.head_object(
+            Bucket=self._s3_bucket_name, Key=remote_path
+        )
+        return response["ContentLength"]
+
+    def bucket_exists(self) -> bool:
+        """
+        Check if the bucket exists.
+        """
+        try:
+            self._s3_client.head_bucket(Bucket=self._s3_bucket_name)
+            return True
+        except ClientError as e:
+            if e.response["ResponseMetadata"]["HTTPStatusCode"] == 404:
+                return False
+            raise
 
     def list_objects(self, prefix: str) -> list[str]:
         """
@@ -94,3 +130,41 @@ class S3Client:
                     contents.append(file_key.get("Key"))
 
         return contents
+
+
+@retry(
+    retry=retry_if_exception_type((S3NotReadyError, BotoCoreError)),
+    wait=wait_fixed(0.5),
+    stop=stop_after_delay(180),
+    reraise=True,
+)
+def wait_for_s3_buckets(context: ContextT) -> None:
+    """
+    Wait until all S3 buckets specified in the config exist.
+    """
+    for bucket in context.conf["s3"]["buckets"]:
+        if not S3Client(context, bucket).bucket_exists():
+            raise S3NotReadyError(f"S3 bucket {bucket} does not exist")
+
+
+def export_s3_data(context: ContextT, path: str) -> None:
+    """
+    Export S3 data to the specified directory.
+    """
+    for bucket in context.conf["s3"]["buckets"]:
+        try:
+            s3_client = S3Client(context, bucket)
+            keys = s3_client.list_objects("")
+        except Exception:
+            logging.exception("Failed to list S3 bucket %s", bucket)
+            continue
+
+        for key in keys:
+            if key.endswith("/"):
+                continue
+            local_path = os.path.join(path, "s3", bucket, key.lstrip("/"))
+            try:
+                os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                s3_client.download_file(key, local_path)
+            except Exception:
+                logging.exception("Failed to export S3 object %s/%s", bucket, key)
