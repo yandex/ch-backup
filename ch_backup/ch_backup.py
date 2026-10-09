@@ -256,6 +256,7 @@ class ClickhouseBackup:
         override_replica_name: str = None,
         force_non_replicated: bool = False,
         replica_name: str | None = None,
+        parts_backup_name: str | None = None,
         cloud_storage_source_bucket: str = None,
         cloud_storage_source_path: str = None,
         cloud_storage_source_endpoint: str = None,
@@ -270,6 +271,8 @@ class ClickhouseBackup:
         """
         logging.info(f"Restore sources: {sources}")
         self._context.backup_meta = self._get_backup(backup_name)
+        if parts_backup_name:
+            self._context.parts_backup_meta = self._get_backup(parts_backup_name)
 
         if (
             cloud_storage_source_bucket is None

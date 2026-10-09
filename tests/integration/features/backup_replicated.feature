@@ -1143,3 +1143,67 @@ Feature: Backup replicated merge tree table
     """
     10
     """
+
+  Scenario: Restore replica with parts from another backup
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (n UInt32)
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard_01/test_db.table_01', '{replica}')
+    ORDER BY n;
+    SYSTEM STOP MERGES test_db.table_01;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10, 10;
+    """
+    And we have created clickhouse01 clickhouse backup
+    And we have executed queries on clickhouse01
+    """
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 20, 10;
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    schema_only: True
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    schema_only: True
+    parts_from_backup: 1
+    """
+    And we execute queries on clickhouse02
+    """
+    SYSTEM SYNC REPLICA test_db.table_01;
+    SYSTEM FLUSH LOGS
+    """
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+    When we execute query on clickhouse02
+    """
+    SELECT count(), uniqExact(n) FROM test_db.table_01 FORMAT CSV
+    """
+    Then we get response
+    """
+    30,30
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT groupArray(part_name) FROM (
+        SELECT part_name FROM system.part_log
+        WHERE database = 'test_db' AND table = 'table_01' AND event_type = 'NewPart'
+        ORDER BY part_name
+    )
+    """
+    Then we get response
+    """
+    ['all_0_0_0','all_1_1_0']
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT groupArray(part_name) FROM (
+        SELECT part_name FROM system.part_log
+        WHERE database = 'test_db' AND table = 'table_01' AND event_type = 'DownloadPart'
+        ORDER BY part_name
+    )
+    """
+    Then we get response
+    """
+    ['all_2_2_0']
+    """

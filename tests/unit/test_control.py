@@ -217,3 +217,45 @@ class TestCreateTable:
         ch_ctl.create_table(self._table(statement))
 
         client.query.assert_called_once_with(statement, settings=settings)
+
+
+class TestGetPartsOfOtherReplicas:
+    """
+    Tests for picking the parts that every other replica of a table has.
+    """
+
+    @staticmethod
+    def _parts(zookeeper: dict[str, list[str]]) -> set[str]:
+        """Helper: run the lookup against the given ZooKeeper children."""
+        ch_ctl, client = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+
+        def query(sql: str) -> dict:
+            """Answer the replica and ZooKeeper queries from the given data."""
+            if "system.replicas" in sql:
+                return {"data": [{"zookeeper_path": "/zk/t1", "replica_name": "new"}]}
+            path = sql.split("path = '")[1].split("'")[0]
+            return {"data": [{"name": name} for name in zookeeper.get(path, [])]}
+
+        client.query.side_effect = query
+        table = Table("db1", "table1", "ReplicatedMergeTree", [], [], "", "", None)
+        return ch_ctl.get_parts_of_other_replicas(table)
+
+    def test_parts_are_intersected_over_other_replicas(self) -> None:
+        """
+        The own replica is ignored, a lagging replica narrows the result.
+        """
+        assert self._parts(
+            {
+                "/zk/t1/replicas": ["new", "r1", "r2"],
+                "/zk/t1/replicas/new/parts": ["all_9_9_0"],
+                "/zk/t1/replicas/r1/parts": ["all_1_1_0", "all_2_2_0", "all_3_3_0"],
+                "/zk/t1/replicas/r2/parts": ["all_2_2_0", "all_3_3_0", "all_4_4_0"],
+            }
+        ) == {"all_2_2_0", "all_3_3_0"}
+
+    def test_no_parts_without_other_replicas(self) -> None:
+        """
+        A replica that would be the first one gets nothing, as ClickHouse would
+        attach everything from detached/ in that case.
+        """
+        assert not self._parts({"/zk/t1/replicas": ["new"]})

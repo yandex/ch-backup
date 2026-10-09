@@ -1088,3 +1088,99 @@ class TestUniqueKeyTables:
         context.ch_ctl.get_table.assert_called_once_with(  # type: ignore[attr-defined]
             self._DB, self._TABLE, short_query=True
         )
+
+
+class TestDownloadPartsOfOtherReplicas:
+    """
+    Tests for downloading parts from another backup before SYSTEM RESTORE REPLICA.
+    """
+
+    # pylint: disable=protected-access
+
+    _DB = "db1"
+    _TABLE = "table1"
+    _STATEMENT = (
+        f"CREATE TABLE {_DB}.{_TABLE} UUID '{UUID}' (id UInt64) ENGINE = "
+        "ReplicatedMergeTree('/clickhouse/tables/table1', '{replica}') ORDER BY id"
+    )
+
+    @classmethod
+    def _parts_backup(cls) -> BackupMetadata:
+        """Helper: a backup with parts on a local disk and on object storage."""
+        backup = TestUniqueKeyTables._make_context().backup_meta
+        table = TableMetadata(cls._DB, cls._TABLE, "ReplicatedMergeTree", UUID)
+        for name, disk in [
+            ("all_1_1_0", "default"),
+            ("all_2_2_0", "default"),
+            ("all_3_3_0", "s3"),
+        ]:
+            table.add_part(
+                PartMetadata(
+                    database=cls._DB,
+                    table=cls._TABLE,
+                    name=name,
+                    checksum="abc123",
+                    size=1024,
+                    files=["data.bin"],
+                    tarball=True,
+                    disk_name=disk,
+                )
+            )
+        backup.add_table(table)
+        return backup
+
+    @classmethod
+    def _restore(cls, parts_backup: BackupMetadata | None) -> MagicMock:
+        """Helper: restore the table object and return the mock that saw all calls."""
+        calls = MagicMock()
+        context = BackupContext(DEFAULT_CONFIG)  # type: ignore[arg-type]
+        context.ch_ctl = calls.ch_ctl
+        context.backup_layout = calls.backup_layout
+        context.parts_backup_meta = parts_backup
+        ch_table = MagicMock()
+        ch_table.paths_with_disks = [
+            ("", Disk("default", "", "local")),
+            ("", Disk("s3", "", "s3")),
+        ]
+        calls.ch_ctl.get_table.return_value = ch_table
+        calls.ch_ctl.get_parts_of_other_replicas.return_value = {
+            "all_1_1_0",
+            "all_3_3_0",
+        }
+        table = Table(
+            cls._DB, cls._TABLE, "ReplicatedMergeTree", [], [], "", cls._STATEMENT, UUID
+        )
+
+        TableBackup._restore_table_object(
+            context, TestUniqueKeyTables._database(), table
+        )
+        return calls
+
+    def test_only_parts_of_other_replicas_on_local_disks_are_downloaded_before_restore_replica(
+        self,
+    ) -> None:
+        """
+        A part missing on replicas or lying on object storage is left to replication,
+        and everything is downloaded before the replica starts cloning.
+        """
+        calls = self._restore(self._parts_backup())
+
+        names = [name for name, _, _ in calls.mock_calls if "." in name]
+        downloaded = [
+            args[1].name
+            for name, args, _ in calls.mock_calls
+            if name == "backup_layout.download_data_part"
+        ]
+        assert downloaded == ["all_1_1_0"]
+        calls.backup_layout.wait.assert_called_once_with(keep_going=True)
+        assert names.index("backup_layout.wait") < names.index("ch_ctl.restore_replica")
+
+    def test_nothing_is_downloaded_without_parts_backup(self) -> None:
+        """
+        Without the option the replica is restored exactly as before.
+        """
+        calls = self._restore(None)
+
+        calls.backup_layout.download_data_part.assert_not_called()
+        calls.ch_ctl.get_parts_of_other_replicas.assert_not_called()
+        calls.ch_ctl.restore_replica.assert_called_once()

@@ -161,7 +161,9 @@ GET_REPLICAS_SQL = strip_query(
     SELECT
         database,
         table,
-        is_readonly
+        is_readonly,
+        zookeeper_path,
+        replica_name
     FROM system.replicas
     WHERE ({db_condition})
       AND ({tables_condition})
@@ -276,6 +278,15 @@ TRUNCATE_TABLE_IF_EXISTS_SQL = strip_query(
 RESTORE_REPLICA_SQL = strip_query(
     """
     SYSTEM RESTORE REPLICA `{db_name}`.`{table_name}`
+"""
+)
+
+GET_ZOOKEEPER_CHILDREN_SQL = strip_query(
+    """
+    SELECT name
+    FROM system.zookeeper
+    WHERE path = '{path}'
+    FORMAT JSON
 """
 )
 
@@ -1054,6 +1065,28 @@ class ClickhouseCTL:
             ),
             timeout=self._restore_replica_timeout,
         )
+
+    def get_parts_of_other_replicas(self, table: Table) -> set[str]:
+        """
+        Get names of the parts that every other replica of the table has in ZooKeeper.
+        """
+        replica = self.get_replicas(table.database, [table.name])[0]
+        replicas_path = os.path.join(replica["zookeeper_path"], "replicas")
+        other_replicas = self._get_zookeeper_children(replicas_path) - {
+            replica["replica_name"]
+        }
+        parts = [
+            self._get_zookeeper_children(os.path.join(replicas_path, name, "parts"))
+            for name in other_replicas
+        ]
+        return set.intersection(*parts) if parts else set()
+
+    def _get_zookeeper_children(self, path: str) -> set[str]:
+        """
+        Get names of the child nodes of a ZooKeeper path, empty if the path is missing.
+        """
+        query_sql = GET_ZOOKEEPER_CHILDREN_SQL.format(path=escape(path))
+        return {row["name"] for row in self._ch_client.query(query_sql)["data"]}
 
     def drop_table_if_exists(self, table: Table) -> None:
         """
