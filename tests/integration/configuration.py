@@ -19,13 +19,20 @@ def create():
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", network_name):
         raise ValueError("INTEGRATION_ENV_ID must be a lowercase DNS label")
 
+    clickhouse_instances = 2
+    bucket = "ch-backup"
+    cloud_storage_bucket = "cloud-storage"
     s3 = {
-        "container": "minio01",
-        "host": f"minio01.{network_name}",
-        "bucket": "ch-backup",
-        "cloud_storage_bucket": "cloud-storage",
+        "container": "seaweedfs01",
+        "bucket": bucket,
+        "cloud_storage_bucket": cloud_storage_bucket,
+        "buckets": [bucket]
+        + [
+            f"{cloud_storage_bucket}-{num:02d}"
+            for num in range(1, clickhouse_instances + 1)
+        ],
         "port": 9000,
-        "endpoint": "http://minio01:9000",
+        "endpoint": "http://seaweedfs01:9000",
         "access_secret_key": generate_random_string(40),
         "access_key_id": generate_random_string(20),
         "proxy_resolver": {
@@ -73,21 +80,21 @@ def create():
                     "clickhouse": 9000,
                     "ssh": 22,
                 },
-                "docker_instances": 2,
+                "docker_instances": clickhouse_instances,
                 "depends_on": {
-                    "minio": "service_healthy",
+                    "seaweedfs": "service_healthy",
                     "proxy": "service_started",
                     "proxy-api": "service_started",
                     "zookeeper": "service_healthy",
                 },
-                "external_links": [f'{s3["host"]}:minio', f'{zk["uri"]}:zookeeper'],
+                "external_links": [f'{zk["uri"]}:zookeeper'],
                 "args": {
                     "PYTHON_VERSION": ".".join(map(str, sys.version_info[:2])),
                     "CLICKHOUSE_VERSION": "$CLICKHOUSE_VERSION",
                     "DEV_MODE": "$DEV_MODE",
                 },
             },
-            "minio": {
+            "seaweedfs": {
                 "expose": {
                     "http": s3["port"],
                 },

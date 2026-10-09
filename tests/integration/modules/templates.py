@@ -2,12 +2,13 @@
 Module responsible for template rendering.
 """
 
+import fnmatch
 import os
 import shutil
 
 from jinja2 import BaseLoader, Environment, FileSystemLoader, StrictUndefined
 
-from . import docker
+from . import s3
 from .datetime import decrease_time_str, increase_time_str
 from .typing import ContextT
 from .utils import context_to_dict, env_stage, version_ge, version_lt
@@ -93,9 +94,13 @@ def _environment(context: ContextT, loader: BaseLoader = None) -> Environment:
     Create Environment object.
     """
 
-    def _get_file_size(container_name, path):
-        container = docker.get_container(context, container_name)
-        return docker.get_file_size(container, path)
+    def _get_s3_object_size(path_pattern):
+        s3_client = s3.S3Client(context)
+        paths = fnmatch.filter(s3_client.list_objects(""), path_pattern)
+        assert (
+            len(paths) == 1
+        ), f"Expected exactly one S3 object matching {path_pattern}, got {paths}"
+        return s3_client.get_object_size(paths[0])
 
     def _ch_version_ge(comparing_version):
         return version_ge(context.conf["ch_version"], comparing_version)
@@ -120,7 +125,7 @@ def _environment(context: ContextT, loader: BaseLoader = None) -> Environment:
     environment.filters["increase_on"] = increase_time_str
     environment.filters["decrease_on"] = decrease_time_str
 
-    environment.globals["get_file_size"] = _get_file_size
+    environment.globals["get_s3_object_size"] = _get_s3_object_size
     environment.globals["ch_version_ge"] = _ch_version_ge
     environment.globals["ch_version_lt"] = _ch_version_lt
     environment.globals["feature_enabled"] = _feature_enabled

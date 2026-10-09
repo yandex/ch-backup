@@ -10,13 +10,22 @@ import pytest
 import requests
 
 from ch_backup.backup.deduplication import DedupReferences
-from ch_backup.backup.metadata import CloudStorageMetadata, PartMetadata, TableMetadata
+from ch_backup.backup.metadata import (
+    BackupState,
+    CloudStorageMetadata,
+    PartMetadata,
+    TableMetadata,
+)
 from ch_backup.backup.sources import BackupSources
 from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.models import Database
 from ch_backup.config import DEFAULT_CONFIG
-from ch_backup.exceptions import ClickhouseBackupError
+from ch_backup.exceptions import (
+    ClickhouseBackupError,
+    InvalidBackupStruct,
+    StorageError,
+)
 
 
 def _restore_backup_with_cloud_storage(
@@ -92,7 +101,7 @@ def _delete_backup_with_cloud_storage(referenced_parts: Sequence[str]) -> MagicM
     backup_meta.cloud_storage = CloudStorageMetadata(data_copied=True, disks=["s3"])
     backup_meta.get_databases.return_value = ["db1"]
     backup_meta.get_tables.return_value = [table]
-    backup.__dict__["_context"].backup_layout.reload_backup.return_value = backup_meta
+    backup.__dict__["_context"].backup_layout.get_backup.return_value = backup_meta
 
     dedup_references: DedupReferences = defaultdict(lambda: defaultdict(set))
     dedup_references["db1"]["table1"] = set(referenced_parts)
@@ -248,3 +257,97 @@ def test_restore_reports_failed_zookeeper_check(error: Exception) -> None:
         f"ClickHouse failed: {error}"
     )
     assert exc.value.__cause__ is error
+
+
+def test_delete_without_references_uses_light_metadata() -> None:
+    backup, context = _backup_with_context()
+    context.locker = MagicMock()
+    light_metadata = Mock(name="old", state=BackupState.CREATED)
+    light_metadata.name = "old"
+    context.backup_layout.get_backups.return_value = [light_metadata]
+    context.backup_layout.get_backup.return_value = None
+
+    with patch(
+        "ch_backup.ch_backup.collect_dedup_references_for_batch_backup_deletion",
+        return_value={"old": {}},
+    ):
+        assert backup.delete("old", purge_partial=False) == ("old", None)
+
+    context.backup_layout.delete_backup.assert_called_once()
+    context.backup_layout.upload_backup_metadata.assert_called_once_with(
+        light_metadata, light_only=True
+    )
+
+
+def test_delete_referenced_backup_requires_full_metadata() -> None:
+    backup, context = _backup_with_context()
+    light_metadata = Mock(name="old", state=BackupState.CREATED)
+    light_metadata.name = "old"
+    context.backup_layout.get_backup.return_value = None
+
+    with pytest.raises(InvalidBackupStruct):
+        backup._delete(  # pylint: disable=protected-access
+            light_metadata, {"db": {"table": {"part"}}}
+        )
+
+    context.backup_layout.delete_backup.assert_not_called()
+    context.backup_layout.upload_backup_metadata.assert_not_called()
+
+
+@pytest.mark.parametrize("referenced", [False, True])
+def test_delete_failure_persists_failed_state(referenced: bool) -> None:
+    backup, context = _backup_with_context()
+    light_metadata = Mock(name="old", state=BackupState.CREATED)
+    light_metadata.name = "old"
+    light_metadata.exception = None
+    full_metadata = Mock(name="old", state=BackupState.CREATED, exception=None)
+    full_metadata.name = "old"
+    full_metadata.get_databases.return_value = []
+    full_metadata.cloud_storage.enabled = False
+    context.backup_layout.get_backup.return_value = (
+        full_metadata if referenced else None
+    )
+    error = StorageError("deletion failed")
+    if referenced:
+        context.backup_layout.wait.side_effect = error
+    else:
+        context.backup_layout.delete_backup.side_effect = error
+    uploaded_states = []
+    context.backup_layout.upload_backup_metadata.side_effect = (
+        lambda metadata, light_only: uploaded_states.append(
+            (metadata.state, metadata.exception, light_only)
+        )
+    )
+
+    with pytest.raises(StorageError) as exc:
+        backup._delete(  # pylint: disable=protected-access
+            light_metadata, {"db": {"table": {"part"}}} if referenced else {}
+        )
+
+    assert exc.value is error
+    context.ch_ctl.system_unfreeze.assert_not_called()
+    assert uploaded_states == [
+        (BackupState.DELETING, None, not referenced),
+        (BackupState.FAILED, "StorageError: deletion failed", not referenced),
+    ]
+
+
+def test_referenced_delete_persists_partial_state() -> None:
+    backup, context = _backup_with_context()
+    light_metadata = Mock(name="old", state=BackupState.CREATED)
+    light_metadata.name = "old"
+    full_metadata = Mock(name="old", state=BackupState.CREATED)
+    full_metadata.name = "old"
+    full_metadata.exception = "Previous deletion failed"
+    full_metadata.get_databases.return_value = []
+    full_metadata.cloud_storage.enabled = False
+    context.backup_layout.get_backup.return_value = full_metadata
+
+    result = backup._delete(  # pylint: disable=protected-access
+        light_metadata, {"db": {"table": {"part"}}}
+    )
+
+    assert result[0] is None
+    assert full_metadata.state == BackupState.PARTIALLY_DELETED
+    assert full_metadata.exception is None
+    assert context.backup_layout.upload_backup_metadata.call_count == 2

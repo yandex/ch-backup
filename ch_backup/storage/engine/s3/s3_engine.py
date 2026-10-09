@@ -103,9 +103,16 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
             objects_to_delete: list = [
                 {"Key": path.lstrip("/")} for path in remote_paths
             ]
-            self._s3_client.delete_objects(
+            response = self._s3_client.delete_objects(
                 Bucket=self._s3_bucket_name, Delete={"Objects": objects_to_delete}
             )
+            errors = [
+                error
+                for error in response.get("Errors", [])
+                if error.get("Code") not in ("NoSuchKey", "NoSuchVersion", "404")
+            ]
+            if errors:
+                raise StorageError(f"Failed to delete S3 objects: {errors}")
         except ClientError as e:
             if "MalformedXML" not in repr(e):
                 raise

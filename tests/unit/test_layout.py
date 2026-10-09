@@ -3,12 +3,15 @@
 import copy
 import os
 from collections import Counter
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
+
+import pytest
 
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.clickhouse.models import Disk, Table
 from ch_backup.config import DEFAULT_CONFIG
+from ch_backup.exceptions import StorageError
 
 
 def make_layout() -> BackupLayout:
@@ -133,15 +136,15 @@ class TestCloudStorageMetadataUpload:
                 self._make_backup_meta(), disk, table, source_disk=source_disk
             )
 
-        call = loader.upload_files_tarball_scan.call_args.kwargs
-        assert call["dir_path"] == (
+        kwargs = loader.upload_files_tarball_scan.call_args.kwargs
+        assert kwargs["dir_path"] == (
             f"/var/lib/clickhouse/disks/s3_backup/shadow/{self._BACKUP_NAME}"
             "/store/abc/abcdef"
         )
-        assert call["remote_path"] == (
+        assert kwargs["remote_path"] == (
             f"ch_backup/{self._BACKUP_NAME}/disks/s3/db1/table1.tar"
         )
-        assert call["tar_base_dir"] == "store/abc/abcdef"
+        assert kwargs["tar_base_dir"] == "store/abc/abcdef"
 
     def test_upload_reads_files_from_the_disk_itself_by_default(self):
         """
@@ -154,8 +157,8 @@ class TestCloudStorageMetadataUpload:
         with patch("ch_backup.backup.layout.dir_is_empty", return_value=False):
             layout.upload_cloud_storage_metadata(self._make_backup_meta(), disk, table)
 
-        call = loader.upload_files_tarball_scan.call_args.kwargs
-        assert call["dir_path"] == (
+        kwargs = loader.upload_files_tarball_scan.call_args.kwargs
+        assert kwargs["dir_path"] == (
             f"/var/lib/clickhouse/disks/s3/shadow/{self._BACKUP_NAME}/store/abc/abcdef"
         )
 
@@ -230,7 +233,7 @@ class TestCloudStorageDataDeletion:
         """
         layout, delete_files = self._make_layout()
 
-        layout.delete_backup("my-backup")
+        layout.delete_backup("my-backup", MagicMock())
 
         assert delete_files.call_args.args[0] == [
             "ch_backup/my-backup/object",
@@ -258,10 +261,9 @@ class TestCloudStorageDataDeletion:
         delete_files = MagicMock()
         setattr(layout, "_delete_files", delete_files)
 
-        layout.delete_backup("my-backup")
+        layout.delete_backup("my-backup", MagicMock())
 
         assert delete_files.call_args.args[0] == [
-            "ch_backup/my-backup/backup_struct.json",
             "ch_backup/my_backup/disks/s3/db/table.tar",
         ]
 
@@ -271,7 +273,7 @@ class TestCloudStorageDataDeletion:
         """
         layout, delete_files = self._make_layout()
 
-        layout.delete_backup("20260101T000000")
+        layout.delete_backup("20260101T000000", MagicMock())
 
         assert delete_files.call_args.args[0] == ["ch_backup/20260101T000000/object"]
 
@@ -288,3 +290,33 @@ class TestCloudStorageDataDeletion:
             "ch_backup/my_backup/disks/object",
             "ch_backup/my_backup/cloud_storage/object",
         ]
+
+
+def test_prefix_delete_keeps_light_metadata_until_retry_succeeds() -> None:
+    layout = BackupLayout.__new__(BackupLayout)
+    layout._config = {"path_root": "backups"}  # pylint: disable=protected-access
+    layout._storage_loader = MagicMock()  # pylint: disable=protected-access
+    storage = layout._storage_loader  # pylint: disable=protected-access
+    storage.list_dir.return_value = [
+        "backups/old/data.tar",
+        "backups/old/backup_struct.json",
+        "backups/old/backup_light_struct.json",
+    ]
+    storage.wait.side_effect = [RuntimeError("async deletion failed"), None]
+    unfreeze = MagicMock()
+
+    with pytest.raises(StorageError):
+        layout.delete_backup("old", unfreeze)
+
+    storage.delete_files.assert_called_once_with(
+        remote_paths=["backups/old/data.tar"], is_async=True
+    )
+    unfreeze.assert_not_called()
+
+    layout.delete_backup("old", unfreeze)
+
+    unfreeze.assert_called_once_with()
+    assert storage.delete_files.call_args_list[-2:] == [
+        call(["backups/old/backup_struct.json"], is_async=False),
+        call(["backups/old/backup_light_struct.json"], is_async=False),
+    ]
