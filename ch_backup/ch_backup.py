@@ -17,7 +17,12 @@ from ch_backup.backup.deduplication import (
     collect_dedup_info,
     collect_dedup_references_for_batch_backup_deletion,
 )
-from ch_backup.backup.metadata import BackupMetadata, BackupState, TableMetadata
+from ch_backup.backup.metadata import (
+    BackupMetadata,
+    BackupState,
+    TableMetadata,
+    sanitize_backup_name,
+)
 from ch_backup.backup.sources import BackupSources
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.client import ClickhouseError
@@ -134,9 +139,16 @@ class ClickhouseBackup:
             use_light_meta=True
         )
 
+        sanitized_name = sanitize_backup_name(name)
         for backup in backups_with_light_meta:
             if name == backup.name:
                 raise ClickhouseBackupError(f"Backup with name {name} already exists")
+            if sanitized_name == sanitize_backup_name(backup.name):
+                raise ClickhouseBackupError(
+                    f"Backup with name {name} conflicts with existing backup "
+                    f"{backup.name}: names that differ only in '-' and '_' share "
+                    "the same cloud storage path"
+                )
 
         logging.info(f"Backup sources: {sources}")
         assert not (db_names and tables)
@@ -264,7 +276,7 @@ class ClickhouseBackup:
             and sources.data
             and not skip_cloud_storage
         ):
-            if self._context.backup_meta.cloud_storage.enabled:
+            if self._context.backup_meta.cloud_storage.requires_source_bucket:
                 raise ClickhouseBackupError(
                     "Cloud storage source bucket must be set if backup has data on S3 disks"
                 )
@@ -581,6 +593,13 @@ class ClickhouseBackup:
                         backup, table, db_dedup_references[table.name]
                     )
 
+            if backup.cloud_storage.enabled:
+                if self._cloud_storage_data_is_shared(backup, dedup_references):
+                    logging.info(
+                        "Keeping cloud storage data of the backup, it is in use by subsequent backups"
+                    )
+                else:
+                    self._context.backup_layout.delete_cloud_storage_data(backup.name)
             self._context.backup_layout.wait()
             self._context.ch_ctl.system_unfreeze(backup.name)
             backup.state = BackupState.PARTIALLY_DELETED
@@ -601,6 +620,23 @@ class ClickhouseBackup:
                 backup, light_only=light_only
             )
             raise
+
+    @staticmethod
+    def _cloud_storage_data_is_shared(
+        backup: BackupMetadata, dedup_references: DedupReferences
+    ) -> bool:
+        """
+        Return True if parts of cloud storage disks of a backup are reused.
+
+        Keys of the objects are known only from the disk metadata inside the
+        backup, so its data is kept whole until the last reference is gone.
+        """
+        return any(
+            part.name in dedup_references[table.database][table.name]
+            and part.disk_name in backup.cloud_storage.disks
+            for table in backup.get_tables()
+            for part in table.get_parts()
+        )
 
     def _delete_data_parts(
         self,

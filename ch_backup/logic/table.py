@@ -6,6 +6,7 @@ Clickhouse backup logic for tables
 
 import os
 from collections import deque
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from functools import partial
 from itertools import chain
@@ -21,9 +22,9 @@ from ch_backup.backup.metadata.table_metadata import DataSkippedReason
 from ch_backup.backup.restore_context import PartState
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.client import ClickhouseError
-from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
+from ch_backup.clickhouse.disks import ClickHouseBackupDisks, ClickHouseTemporaryDisks
 from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner
-from ch_backup.clickhouse.models import Database, FrozenPart, Table
+from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.clickhouse.schema import (
     rewrite_table_schema,
     to_attach_query,
@@ -67,6 +68,12 @@ class TableBackup(BackupManager):
     ) -> None:
         """
         Backup tables metadata, MergeTree data and Cloud storage metadata.
+
+        Frozen data holds the objects of cloud storage disks. Once the data is
+        copied into the backup it is unfrozen, so that those objects are not
+        kept in the bucket of the disk for as long as the backup lives. This
+        happens only after the temporary disks are gone: their frozen data
+        refers to the copies, and unfreezing it would delete them.
         """
 
         backup_name = context.backup_meta.get_sanitized_name()
@@ -80,6 +87,11 @@ class TableBackup(BackupManager):
         if compressed:
             logging.debug('Cloud storage "shadow" backup will be compressed')
         context.backup_meta.cloud_storage.compressed = compressed
+
+        data_copied = context.cloud_conf.get("copy_data", False) and not schema_only
+        if data_copied:
+            logging.debug("Cloud storage data will be copied into the backup")
+        context.backup_meta.cloud_storage.data_copied = data_copied
 
         # Since https://github.com/ClickHouse/ClickHouse/pull/75016
         if (
@@ -97,16 +109,42 @@ class TableBackup(BackupManager):
             context, databases, db_tables
         )
 
-        for db in databases:
-            self._backup(
-                context,
-                db,
-                db_tables[db.name],
-                backup_name,
-                schema_only,
-                multiprocessing_config,
-                change_times,
+        copy_workers = multiprocessing_config.get("cloud_storage_backup_workers", 1)
+        if (
+            data_copied
+            and copy_workers > 1
+            and not context.ch_ctl.ch_version_ge("23.3")
+        ):
+            raise ClickhouseBackupError(
+                "It is unsafe to use cloud_storage_backup_workers > 1 with clickhouse version < 23.3"
+                f" (cloud_storage_backup_workers: {copy_workers}, ch_version: {context.ch_ctl.get_version()})"
             )
+
+        disks_context: AbstractContextManager[ClickHouseBackupDisks | None] = (
+            nullcontext()
+        )
+        if data_copied:
+            disks_context = ClickHouseBackupDisks(
+                context.ch_ctl,
+                context.backup_layout,
+                context.config_root,
+                context.backup_meta,
+                context.ch_config,
+            )
+        with disks_context as backup_disks:
+            for db in databases:
+                self._backup(
+                    context,
+                    db,
+                    db_tables[db.name],
+                    backup_name,
+                    schema_only,
+                    multiprocessing_config,
+                    change_times,
+                    backup_disks,
+                )
+        if data_copied:
+            context.ch_ctl.system_unfreeze(backup_name)
 
     def _collect_local_metadata_change_times(
         self,
@@ -147,6 +185,7 @@ class TableBackup(BackupManager):
         schema_only: bool,
         multiprocessing_config: dict,
         change_times: dict[Table, TableMetadataChangeTime],
+        backup_disks: ClickHouseBackupDisks | None,
     ) -> None:
         """
         Backup single database tables.
@@ -164,9 +203,14 @@ class TableBackup(BackupManager):
             # race condition with parallel freeze
             context.ch_ctl.create_shadow_increment()
             try:
-                with ThreadExecPool(
-                    multiprocessing_config.get("freeze_threads", 1)
-                ) as pool:
+                with (
+                    ThreadExecPool(
+                        multiprocessing_config.get("cloud_storage_backup_workers", 1)
+                    ) as copy_pool,
+                    ThreadExecPool(
+                        multiprocessing_config.get("freeze_threads", 1)
+                    ) as pool,
+                ):
                     for table in tables_:
                         pool.submit(
                             f'Freeze table "{table.database}"."{table.name}"',
@@ -214,10 +258,13 @@ class TableBackup(BackupManager):
                                         context,
                                         freezed_table,
                                         backup_name,
+                                        backup_disks,
                                     )
-                                    self._backup_cloud_storage_metadata(
-                                        context, freezed_table
+                                    self._backup_cloud_storage_data(
+                                        context, copy_pool, freezed_table, backup_disks
                                     )
+
+                    self._upload_cloud_storage_metadata(context, copy_pool)
             finally:
                 if create_statements_to_backup:
                     context.backup_layout.upload_create_statements(
@@ -321,9 +368,18 @@ class TableBackup(BackupManager):
             return None
 
     @staticmethod
-    def _backup_cloud_storage_metadata(context: BackupContext, table: Table) -> None:
+    def _backup_cloud_storage_data(
+        context: BackupContext,
+        pool: ThreadExecPool,
+        table: Table,
+        backup_disks: ClickHouseBackupDisks | None,
+    ) -> None:
         """
-        Backup cloud storage metadata files.
+        Schedule backup of cloud storage data of a table: a copy of the data
+        when backup disks are given, otherwise its metadata files alone.
+
+        Data of every disk is copied on its own, so that copies of different
+        tables and disks go in parallel.
         """
         logging.debug(
             'Backing up Cloud Storage disks "shadow" directory of "{}"."{}"',
@@ -331,13 +387,66 @@ class TableBackup(BackupManager):
             table.name,
         )
         for _, disk in table.paths_with_disks:
-            if disk.type == "s3" and not disk.cache_path:
-                if not context.backup_layout.upload_cloud_storage_metadata(
-                    context.backup_meta, disk, table
-                ):
-                    logging.debug(f'No data frozen on disk "{disk.name}", skipping')
-                    continue
-                context.backup_meta.cloud_storage.add_disk(disk.name)
+            if disk.type != "s3" or disk.cache_path:
+                continue
+
+            if not context.backup_layout.has_frozen_cloud_storage_data(
+                context.backup_meta, disk, table
+            ):
+                logging.debug(f'No data frozen on disk "{disk.name}", skipping')
+                continue
+
+            pool.submit(
+                f'Backup of disk "{disk.name}" of "{table.database}"."{table.name}"',
+                TableBackup._copy_cloud_storage_data,
+                context,
+                table,
+                disk,
+                backup_disks,
+            )
+
+    @staticmethod
+    def _copy_cloud_storage_data(
+        context: BackupContext,
+        table: Table,
+        disk: Disk,
+        backup_disks: ClickHouseBackupDisks | None,
+    ) -> tuple[Table, Disk, Disk | None]:
+        """
+        Copy data of a table on a cloud storage disk into the backup.
+
+        The result is checked explicitly, since clickhouse-disks reports its
+        errors with a zero exit code.
+        """
+        if not backup_disks:
+            return table, disk, None
+
+        source_disk = backup_disks.copy_table_data(disk.name, table)
+        if not context.backup_layout.has_frozen_cloud_storage_data(
+            context.backup_meta, source_disk, table
+        ):
+            raise ClickhouseBackupError(
+                f'Copying data of disk "{disk.name}" of table '
+                f"`{table.database}`.`{table.name}` produced no metadata"
+            )
+
+        return table, disk, source_disk
+
+    @staticmethod
+    def _upload_cloud_storage_metadata(
+        context: BackupContext, pool: ThreadExecPool
+    ) -> None:
+        """
+        Upload cloud storage metadata files of tables as their data is copied.
+
+        Uploading stays in the calling thread: both the upload pipeline and the
+        backup metadata are not meant to be used from several threads.
+        """
+        for table, disk, source_disk in pool.as_completed(keep_going=False):
+            context.backup_layout.upload_cloud_storage_metadata(
+                context.backup_meta, disk, table, source_disk=source_disk
+            )
+            context.backup_meta.cloud_storage.add_disk(disk.name)
 
     # pylint: disable=too-many-arguments,too-many-locals,too-many-positional-arguments
     def restore(
@@ -511,6 +620,7 @@ class TableBackup(BackupManager):
         context: BackupContext,
         table: Table,
         backup_name: str,
+        backup_disks: ClickHouseBackupDisks | None,
     ) -> None:
         """
         Backup table with data opposed to schema only.
@@ -550,6 +660,49 @@ class TableBackup(BackupManager):
                     )
             frozen_parts.clear()
 
+        def deduplicate_cloud_parts_in_batch(
+            context: BackupContext,
+            frozen_parts: dict[str, FrozenPart],
+        ) -> None:
+            """
+            Deduplicate parts stored on cloud storage disks.
+
+            Frozen data of a deduplicated part is moved aside, so that the part
+            is left out of the copy of the table data.
+            """
+            assert backup_disks, "Cloud storage parts are deduplicated without disks"
+            matched_parts = deduplicate_parts(
+                context,
+                table.database,
+                table.name,
+                frozen_parts,
+                cloud_storage=True,
+            )
+            deduplicated_parts = {
+                name: part
+                for name, part in matched_parts.items()
+                if part.disk_name == frozen_parts[name].disk_name
+            }
+            logging.debug(
+                "{} out of {} cloud storage parts are deduplicated",
+                len(deduplicated_parts),
+                len(frozen_parts),
+            )
+
+            for part_name, frozen_part in frozen_parts.items():
+                context.backup_meta.add_part(
+                    deduplicated_parts.get(part_name)
+                    or PartMetadata.from_frozen_part(
+                        frozen_part, context.backup_meta.encrypted
+                    )
+                )
+
+            backup_disks.exclude_frozen_parts(
+                {disk.name: disk for _, disk in table.paths_with_disks},
+                [frozen_parts[name] for name in deduplicated_parts],
+            )
+            frozen_parts.clear()
+
         logging.debug(
             'Performing table backup for "{}"."{}"', table.database, table.name
         )
@@ -567,6 +720,7 @@ class TableBackup(BackupManager):
         upload_observer = UploadPartObserver(context)
 
         frozen_parts_batch: dict[str, FrozenPart] = {}
+        cloud_parts_batch: dict[str, FrozenPart] = {}
         dedup_batch_size = context.config["deduplication_batch_size"]
         for data_path, disk in table.paths_with_disks:
             for fpart in context.ch_ctl.scan_frozen_parts(
@@ -574,14 +728,22 @@ class TableBackup(BackupManager):
                 disk,
                 data_path,
                 backup_name,
+                backup_disks is not None,
             ):
                 logging.debug("Working on {}", fpart)
                 if disk.type == "s3":
-                    context.backup_meta.add_part(
-                        PartMetadata.from_frozen_part(
-                            fpart, context.backup_meta.encrypted
+                    if disk.cache_path or backup_disks is None:
+                        context.backup_meta.add_part(
+                            PartMetadata.from_frozen_part(
+                                fpart, context.backup_meta.encrypted
+                            )
                         )
-                    )
+                        continue
+
+                    context.backup_meta.cloud_storage.add_disk(disk.name)
+                    cloud_parts_batch[fpart.name] = fpart
+                    if len(cloud_parts_batch) >= dedup_batch_size:
+                        deduplicate_cloud_parts_in_batch(context, cloud_parts_batch)
                     continue
 
                 frozen_parts_batch[fpart.name] = fpart
@@ -597,6 +759,8 @@ class TableBackup(BackupManager):
                 upload_observer,
                 frozen_parts_batch,
             )
+        if cloud_parts_batch:
+            deduplicate_cloud_parts_in_batch(context, cloud_parts_batch)
 
         context.backup_layout.wait()
 

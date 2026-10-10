@@ -22,7 +22,11 @@ from urllib.parse import quote
 from nacl.exceptions import CryptoError
 
 from ch_backup import logging
-from ch_backup.backup.metadata import BackupMetadata, PartMetadata
+from ch_backup.backup.metadata import (
+    BackupMetadata,
+    PartMetadata,
+    sanitize_backup_name,
+)
 from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.calculators import calc_encrypted_size, calc_tarball_size
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
@@ -31,13 +35,19 @@ from ch_backup.encryption import get_encryption
 from ch_backup.exceptions import StorageError
 from ch_backup.storage import StorageLoader
 from ch_backup.storage.engine.s3 import S3RetryingError
-from ch_backup.util import dir_is_empty, escape_metadata_file_name
+from ch_backup.util import (
+    CLOUD_STORAGE_EXCLUDE_FILE_NAMES,
+    dir_is_empty,
+    escape_metadata_file_name,
+)
 
 BACKUP_META_FNAME = "backup_struct.json"
 BACKUP_LIGHT_META_FNAME = "backup_light_struct.json"
 ACCESS_CONTROL_FNAME = "access_control.tar"
 DATABASES_FNAME = "databases.tar"
 COMPRESSED_EXTENSION = ".gz"
+CLOUD_STORAGE_METADATA_DIR = "disks"
+CLOUD_STORAGE_DATA_DIR = "cloud_storage"
 
 
 # pylint: disable=too-many-public-methods
@@ -250,16 +260,31 @@ class BackupLayout:
             msg = f"Failed to create async upload of {remote_path}"
             raise StorageError(msg) from e
 
+    def has_frozen_cloud_storage_data(
+        self, backup_meta: BackupMetadata, disk: Disk, table: Table
+    ) -> bool:
+        """
+        Return True if a cloud storage disk holds shadow data of a table.
+        """
+        assert table.path_on_disk, f"Table {table} doesn't store data on disk"
+
+        shadow_path = _table_shadow_path(
+            disk.path, backup_meta.get_sanitized_name(), table.path_on_disk
+        )
+        return not dir_is_empty(shadow_path, CLOUD_STORAGE_EXCLUDE_FILE_NAMES)
+
     def upload_cloud_storage_metadata(
         self,
         backup_meta: BackupMetadata,
         disk: Disk,
         table: Table,
-        delete_after_upload: bool = False,
-    ) -> bool:
+        source_disk: Disk | None = None,
+    ) -> None:
         """
-        Upload specified disk metadata files from given directory path as a tarball.
-        Returns: whether backed up disk had data.
+        Upload disk metadata files of a table as a tarball.
+
+        Metadata is read from source_disk when data is copied into the backup:
+        ClickHouse writes metadata of the copies to a temporary disk.
         """
         assert table.path_on_disk, f"Table {table} doesn't store data on disk"
 
@@ -272,10 +297,9 @@ class BackupLayout:
             disk.name,
             compression,
         )
-        shadow_path = _table_shadow_path(disk.path, backup_name, table.path_on_disk)
-        exclude_file_names = ["frozen_metadata.txt"]
-        if dir_is_empty(shadow_path, exclude_file_names):
-            return False
+        shadow_path = _table_shadow_path(
+            (source_disk or disk).path, backup_name, table.path_on_disk
+        )
 
         logging.debug(f'Uploading "{shadow_path}" content to "{remote_path}"')
 
@@ -284,16 +308,15 @@ class BackupLayout:
                 dir_path=shadow_path,
                 remote_path=remote_path,
                 tar_base_dir=table.path_on_disk,
-                exclude_file_names=exclude_file_names,
+                exclude_file_names=CLOUD_STORAGE_EXCLUDE_FILE_NAMES,
                 is_async=True,
                 encryption=backup_meta.cloud_storage.encrypted,
-                delete=delete_after_upload,
+                delete=False,
                 compression=compression,
             )
         except Exception as e:
             msg = f'Failed to upload "{shadow_path}" content to "{remote_path}"'
             raise StorageError(msg) from e
-        return True
 
     def upload_named_collections_ddl_from_file(
         self, local_path: str, backup_name: str, nc_name: str
@@ -743,7 +766,9 @@ class BackupLayout:
         if self._storage_loader.path_exists(old_style_remote_path):
             return [old_style_remote_path]
 
-        disk_path = os.path.join(backup_path, "disks", source_disk_name)
+        disk_path = os.path.join(
+            backup_path, CLOUD_STORAGE_METADATA_DIR, source_disk_name
+        )
         existing_paths = self._storage_loader.list_dir(
             disk_path, recursive=True, absolute=True
         )
@@ -786,6 +811,20 @@ class BackupLayout:
             path = os.path.join(disk.path, "shadow", backup_name)
             os.makedirs(path, exist_ok=True)
             yield path
+
+    def has_cloud_storage_metadata(
+        self, backup_name: str, database: str, table: str, disk_name: str
+    ) -> bool:
+        """
+        Check that disk metadata of a table is stored in a backup.
+        """
+        backup_path = self.get_cloud_storage_path(backup_name)
+        return any(
+            self._storage_loader.path_exists(
+                _disk_metadata_path(backup_path, database, table, disk_name, compressed)
+            )
+            for compressed in (True, False)
+        )
 
     def cloud_storage_metadata_exists(
         self, backup_meta: BackupMetadata, disk: Disk
@@ -858,12 +897,45 @@ class BackupLayout:
         payload_files = [
             path for path in deleting_files if path.lstrip("/") not in metadata_paths
         ]
+        if self.get_cloud_storage_path(backup_name) != backup_path:
+            payload_files += self._list_cloud_storage_files(backup_name)
         if payload_files:
             self._delete_files(payload_files)
         self.wait()
         unfreeze()
         self._storage_loader.delete_files([full_metadata], is_async=False)
         self._storage_loader.delete_files([light_metadata], is_async=False)
+
+    def delete_cloud_storage_data(self, backup_name: str) -> None:
+        """
+        Delete cloud storage metadata and copied data of a backup.
+
+        Data of a whole backup is deleted at once, so the caller must be sure
+        that no other backup reuses parts of it.
+        """
+        logging.debug("Deleting cloud storage data of backup {}", backup_name)
+
+        self._delete_files(self._list_cloud_storage_files(backup_name))
+
+    def _list_cloud_storage_files(self, backup_name: str) -> list[str]:
+        """
+        List cloud storage metadata and copied data of a backup.
+
+        Only the two directories are listed, never the whole path: it is formed
+        from the sanitized backup name and may belong to another backup whose
+        name differs only in the characters that get sanitized.
+        """
+        cloud_storage_path = self.get_cloud_storage_path(backup_name)
+
+        deleting_files: list[str] = []
+        for directory in (
+            os.path.join(cloud_storage_path, CLOUD_STORAGE_METADATA_DIR),
+            self.get_cloud_storage_data_path(backup_name),
+        ):
+            deleting_files += self._storage_loader.list_dir(
+                directory, recursive=True, absolute=True
+            )
+        return deleting_files
 
     def delete_data_parts(
         self, backup_meta: BackupMetadata, parts: Sequence[PartMetadata]
@@ -914,6 +986,26 @@ class BackupLayout:
         Get backup path by backup name.
         """
         return os.path.join(self._config["path_root"], backup_name)
+
+    def get_cloud_storage_path(self, backup_name: str) -> str:
+        """
+        Get path of the backup directory with cloud storage metadata and data.
+
+        ClickHouse writes cloud storage data under the sanitized backup name,
+        so the whole directory is addressed by it.
+        """
+        return self.get_backup_path(sanitize_backup_name(backup_name))
+
+    def get_cloud_storage_data_path(
+        self, backup_name: str, disk_name: str | None = None
+    ) -> str:
+        """
+        Get path of cloud storage data copied into a backup.
+        """
+        path = os.path.join(
+            self.get_cloud_storage_path(backup_name), CLOUD_STORAGE_DATA_DIR
+        )
+        return os.path.join(path, disk_name) if disk_name else path
 
     def _delete_files(self, remote_paths: Sequence[str]) -> None:
         """
@@ -1050,12 +1142,21 @@ def _disk_metadata_path(
         assert table_name and db_name
         return os.path.join(
             backup_path,
-            "disks",
+            CLOUD_STORAGE_METADATA_DIR,
             disk_name,
             _quote(db_name),
             f"{_quote(table_name)}{extension}",
         )
-    return os.path.join(backup_path, "disks", f"{disk_name}{extension}")
+    return os.path.join(
+        backup_path, CLOUD_STORAGE_METADATA_DIR, f"{disk_name}{extension}"
+    )
+
+
+def table_shadow_relpath(backup_name: str, table_path_on_disk: str) -> str:
+    """
+    Returns path to frozen table data relative to the root of a disk.
+    """
+    return os.path.join("shadow", backup_name, table_path_on_disk)
 
 
 def _table_shadow_path(
@@ -1064,7 +1165,9 @@ def _table_shadow_path(
     """
     Returns path to frozen table data on given disk.
     """
-    return os.path.join(disk_path, "shadow", backup_name, table_path_on_disk)
+    return os.path.join(
+        disk_path, table_shadow_relpath(backup_name, table_path_on_disk)
+    )
 
 
 def _quote(value: str) -> str:

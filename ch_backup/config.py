@@ -131,8 +131,11 @@ DEFAULT_CONFIG = {
     },
     # Same structure as 'storage' section, but for cloud storage
     "cloud_storage": {
+        # Encryption and compression are applied to cloud storage metadata only.
+        # Data copied by "copy_data" is stored as ClickHouse wrote it.
         "encryption": True,
         "compression": True,
+        "copy_data": False,
     },
     "compression": {
         "type": "gzip",
@@ -166,6 +169,8 @@ DEFAULT_CONFIG = {
         "workers": 4,
         # The number of processes for parts restoring from S3 disks.
         "cloud_storage_restore_workers": 4,
+        # The number of threads for copying data of S3 disks into the backup.
+        "cloud_storage_backup_workers": 4,
         # The number of threads for parallel freeze of tables
         "freeze_threads": 4,
         # To execute freeze efficiently, we should parallelize freeze operations. We have two options where we can parallelize:

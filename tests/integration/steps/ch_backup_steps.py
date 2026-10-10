@@ -3,6 +3,7 @@ Steps related to ch-backup command-line tool.
 """
 
 import json
+import re
 
 from behave import given, then, when
 from hamcrest import (
@@ -124,11 +125,13 @@ def step_restore_backup(context, backup_id, node):
 @when('we delete {node:w} clickhouse backup "{backup_id}"')
 def step_delete_backup(context, node, backup_id):
     options = get_step_data(context)
-    result = BackupManager(context, node).delete(backup_id, **options)
+    ch_backup = BackupManager(context, node)
+    deleted_name = ch_backup.normalize_id(backup_id)
+    result = ch_backup.delete(backup_id, **options)
     assert_that(
         result,
         any_of(
-            matches_regexp("^(([0-9]{8}T[0-9]{6}|[0-9a-f-]{36})\\s*)*$"),
+            matches_regexp(f"^({re.escape(deleted_name)}\\s*)*$"),
             contains_string("Backup was not deleted"),
             contains_string("Backup was partially deleted"),
         ),
