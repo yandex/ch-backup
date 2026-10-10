@@ -1143,3 +1143,235 @@ Feature: Backup replicated merge tree table
     """
     10
     """
+
+  @require_version_23.3
+  Scenario: Restore replica with parts from another backup
+    Given we have enabled shared zookeeper for clickhouse01
+    And we have enabled shared zookeeper for clickhouse02
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (n UInt32)
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard01/test_db.parts_from_backup_01', '{replica}')
+    ORDER BY n;
+    SYSTEM STOP MERGES test_db.table_01;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10, 10;
+    """
+    And we have created clickhouse01 clickhouse backup
+    And we have executed queries on clickhouse01
+    """
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 20, 10;
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    schema_only: True
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    schema_only: True
+    parts_from_backup: 1
+    """
+    And we execute queries on clickhouse02
+    """
+    SYSTEM SYNC REPLICA test_db.table_01;
+    SYSTEM FLUSH LOGS
+    """
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+    When we execute query on clickhouse02
+    """
+    SELECT count(), uniqExact(n) FROM test_db.table_01 FORMAT CSV
+    """
+    Then we get response
+    """
+    30,30
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT groupArray(part_name) FROM (
+        SELECT part_name FROM system.part_log
+        WHERE database = 'test_db' AND table = 'table_01' AND event_type = 'NewPart'
+        ORDER BY part_name
+    )
+    """
+    Then we get response
+    """
+    ['all_0_0_0','all_1_1_0']
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT groupArray(part_name) FROM (
+        SELECT part_name FROM system.part_log
+        WHERE database = 'test_db' AND table = 'table_01' AND event_type = 'DownloadPart'
+        ORDER BY part_name
+    )
+    """
+    Then we get response
+    """
+    ['all_2_2_0']
+    """
+
+  @require_version_23.3
+  Scenario: Restore replica with parts from another backup after merge
+    Given we have enabled shared zookeeper for clickhouse01
+    And we have enabled shared zookeeper for clickhouse02
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (n UInt32)
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard01/test_db.parts_from_backup_02', '{replica}')
+    ORDER BY n;
+    SYSTEM STOP MERGES test_db.table_01;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10, 10;
+    """
+    And we have created clickhouse01 clickhouse backup
+    ## The source parts of the merge stay in ZooKeeper until old_parts_lifetime passes.
+    ## table_02 is not in the backup with parts.
+    And we have executed queries on clickhouse01
+    """
+    SYSTEM START MERGES test_db.table_01;
+    OPTIMIZE TABLE test_db.table_01 FINAL;
+    CREATE TABLE test_db.table_02 (n UInt32)
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard01/test_db.parts_from_backup_02_2', '{replica}')
+    ORDER BY n;
+    INSERT INTO test_db.table_02 SELECT number FROM system.numbers LIMIT 5;
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    schema_only: True
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    schema_only: True
+    parts_from_backup: 1
+    """
+    And we execute queries on clickhouse02
+    """
+    SYSTEM SYNC REPLICA test_db.table_01;
+    SYSTEM SYNC REPLICA test_db.table_02;
+    SYSTEM FLUSH LOGS
+    """
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM system.detached_parts WHERE database = 'test_db'
+    """
+    Then we get response
+    """
+    0
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT groupArray(part_name) FROM (
+        SELECT part_name FROM system.part_log
+        WHERE database = 'test_db' AND event_type = 'DownloadPart'
+        ORDER BY table, part_name
+    )
+    """
+    Then we get response
+    """
+    ['all_0_1_1','all_0_0_0']
+    """
+
+  @require_version_23.3
+  Scenario: Restore replica with parts from another backup that have other data
+    Given we have enabled shared zookeeper for clickhouse01
+    And we have enabled shared zookeeper for clickhouse02
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (n UInt32)
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard01/test_db.parts_from_backup_03', '{replica}')
+    ORDER BY n;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10;
+    """
+    And we have created clickhouse01 clickhouse backup
+    ## Dropping the last replica removes the table from ZooKeeper, so block numbers
+    ## start over and the new part gets the same name with other data.
+    And we have executed queries on clickhouse01
+    """
+    DROP TABLE test_db.table_01 SYNC;
+    CREATE TABLE test_db.table_01 (n UInt32)
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard01/test_db.parts_from_backup_03', '{replica}')
+    ORDER BY n;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 100, 10;
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    schema_only: True
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    schema_only: True
+    parts_from_backup: 1
+    """
+    And we execute queries on clickhouse02
+    """
+    SYSTEM SYNC REPLICA test_db.table_01;
+    SYSTEM FLUSH LOGS
+    """
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+    When we execute query on clickhouse02
+    """
+    SELECT min(n), count() FROM test_db.table_01 FORMAT CSV
+    """
+    Then we get response
+    """
+    100,10
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT groupArray(part_name) FROM (
+        SELECT part_name FROM system.part_log
+        WHERE database = 'test_db' AND table = 'table_01' AND event_type = 'DownloadPart'
+    )
+    """
+    Then we get response
+    """
+    ['all_0_0_0']
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT groupArray(name) FROM system.detached_parts WHERE database = 'test_db'
+    """
+    Then we get response
+    """
+    ['all_0_0_0']
+    """
+
+  Scenario: Restore with parts from another backup rejects wrong arguments
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (n UInt32) ENGINE = MergeTree ORDER BY n;
+    """
+    And we have created clickhouse01 clickhouse backup
+    When we try to execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore LAST --parts-from-backup LAST
+    """
+    Then we get response contains
+    """
+    Parts from another backup work only for restore without data
+    """
+    When we try to execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore LAST --schema-only --parts-from-backup missing
+    """
+    Then we get response contains
+    """
+    No backups with name "missing" were found.
+    """
+    Given we have created clickhouse01 clickhouse backup
+    """
+    schema_only: True
+    """
+    When we try to execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore LAST --schema-only --parts-from-backup LAST
+    """
+    Then we get response contains
+    """
+    is schema-only and has no data parts
+    """

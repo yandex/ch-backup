@@ -1522,6 +1522,7 @@ class TableBackup(BackupManager):
                 table.create_statement = to_attach_query(table.create_statement)
                 context.ch_ctl.create_table(table)
                 if table.is_replicated():
+                    TableBackup._download_parts_of_other_replicas(context, table)
                     return context.ch_ctl.restore_replica(table)
             else:
                 logging.debug(
@@ -1540,3 +1541,61 @@ class TableBackup(BackupManager):
             raise ClickhouseBackupError(
                 f"Failed to restore table: {table.database}.{table.name}"
             )
+
+    @staticmethod
+    def _download_parts_of_other_replicas(context: BackupContext, table: Table) -> None:
+        """
+        Download to detached/ the backup parts that every other replica has as active.
+
+        SYSTEM RESTORE REPLICA queues ATTACH_PART instead of GET_PART for the parts of
+        the source replica, and ClickHouse takes a detached part with the same checksum
+        instead of fetching it. A part that does not match stays in detached/. A part
+        that failed to download is skipped by ClickHouse as broken and fetched instead.
+        """
+        backup_meta = context.parts_backup_meta
+        if not backup_meta:
+            return
+        try:
+            table_meta = backup_meta.get_table(table.database, table.name)
+        except KeyError:
+            return
+
+        ch_table: Table = context.ch_ctl.get_table(table.database, table.name)  # type: ignore
+        local_disks = {
+            disk.name for _, disk in ch_table.paths_with_disks if disk.type == "local"
+        }
+        replica_parts = context.ch_ctl.get_parts_of_other_replicas(table)
+        parts = [
+            part
+            for part in table_meta.get_parts()
+            if part.name in replica_parts and part.disk_name in local_disks
+        ]
+        if not parts:
+            return
+        logging.info(
+            'Downloading {} parts of "{}"."{}" from backup {}',
+            len(parts),
+            table.database,
+            table.name,
+            backup_meta.name,
+        )
+        for part in parts:
+            try:
+                context.backup_layout.download_data_part(
+                    backup_meta,
+                    part,
+                    context.ch_ctl.get_detached_part_path(
+                        ch_table, part.disk_name, part.name
+                    ),
+                    callback=lambda _: None,
+                )
+            except Exception:
+                logging.warning(
+                    'Failed to download part {} of "{}"."{}", it is left to replicas',
+                    part.name,
+                    table.database,
+                    table.name,
+                    exc_info=True,
+                )
+        context.backup_layout.wait(keep_going=True)
+        context.ch_ctl.chown_detached_table_parts(ch_table, context.restore_context)

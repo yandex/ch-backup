@@ -337,6 +337,7 @@ class BackupManager:
         force_non_replicated: bool = False,
         clean_zookeeper_mode: str = None,
         replica_name: str = None,
+        parts_from_backup: BackupId = None,
         cloud_storage_source_bucket: str = None,
         cloud_storage_source_path: str = None,
         access: bool = None,
@@ -364,6 +365,10 @@ class BackupManager:
             options.append(f"--clean-zookeeper-mode {clean_zookeeper_mode}")
         if replica_name:
             options.append(f"--replica-name {replica_name}")
+        if parts_from_backup is not None:
+            options.append(
+                f"--parts-from-backup {self.normalize_id(parts_from_backup)}"
+            )
         if cloud_storage_source_bucket:
             options.append(
                 f"--cloud-storage-source-bucket {cloud_storage_source_bucket}"
