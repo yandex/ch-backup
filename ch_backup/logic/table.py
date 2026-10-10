@@ -1580,13 +1580,22 @@ class TableBackup(BackupManager):
             backup_meta.name,
         )
         for part in parts:
-            context.backup_layout.download_data_part(
-                backup_meta,
-                part,
-                context.ch_ctl.get_detached_part_path(
-                    ch_table, part.disk_name, part.name
-                ),
-                callback=lambda _: None,
-            )
+            try:
+                context.backup_layout.download_data_part(
+                    backup_meta,
+                    part,
+                    context.ch_ctl.get_detached_part_path(
+                        ch_table, part.disk_name, part.name
+                    ),
+                    callback=lambda _: None,
+                )
+            except Exception:
+                logging.warning(
+                    'Failed to download part {} of "{}"."{}", it is left to replicas',
+                    part.name,
+                    table.database,
+                    table.name,
+                    exc_info=True,
+                )
         context.backup_layout.wait(keep_going=True)
         context.ch_ctl.chown_detached_table_parts(ch_table, context.restore_context)

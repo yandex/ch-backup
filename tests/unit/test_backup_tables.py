@@ -15,7 +15,7 @@ from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseDisksException
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.config import DEFAULT_CONFIG
-from ch_backup.exceptions import ClickhouseBackupError
+from ch_backup.exceptions import ClickhouseBackupError, StorageError
 from ch_backup.logic.table import TableBackup, TableMetadataChangeTime
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 
@@ -1130,9 +1130,14 @@ class TestDownloadPartsOfOtherReplicas:
         return backup
 
     @classmethod
-    def _restore(cls, parts_backup: BackupMetadata | None) -> MagicMock:
+    def _restore(
+        cls,
+        parts_backup: BackupMetadata | None,
+        download_error: Exception | None = None,
+    ) -> MagicMock:
         """Helper: restore the table object and return the mock that saw all calls."""
         calls = MagicMock()
+        calls.backup_layout.download_data_part.side_effect = download_error
         context = BackupContext(DEFAULT_CONFIG)  # type: ignore[arg-type]
         context.ch_ctl = calls.ch_ctl
         context.backup_layout = calls.backup_layout
@@ -1174,6 +1179,15 @@ class TestDownloadPartsOfOtherReplicas:
         assert downloaded == ["all_1_1_0"]
         calls.backup_layout.wait.assert_called_once_with(keep_going=True)
         assert names.index("backup_layout.wait") < names.index("ch_ctl.restore_replica")
+
+    def test_failed_download_is_left_to_replicas(self) -> None:
+        """
+        An error raised before the download is queued must not fail the restore.
+        """
+        calls = self._restore(self._parts_backup(), download_error=StorageError("x"))
+
+        calls.backup_layout.wait.assert_called_once_with(keep_going=True)
+        calls.ch_ctl.restore_replica.assert_called_once()
 
     def test_nothing_is_downloaded_without_parts_backup(self) -> None:
         """

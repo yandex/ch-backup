@@ -289,6 +289,17 @@ class TestGetPartsOfOtherReplicas:
             }
         ) == {"all_0_0_0", "all_0_1_1", "bad"}
 
+    def test_zookeeper_path_is_quoted_as_string_literal(self) -> None:
+        """
+        A ZooKeeper path comes from the table DDL and may hold quotes and backslashes.
+        """
+        ch_ctl, client = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+        client.query.return_value = {"data": []}
+
+        ch_ctl._get_zookeeper_children("/zk/a\\b'c")  # pylint: disable=protected-access
+
+        assert "path = '/zk/a\\\\b\\'c'" in client.query.call_args.args[0]
+
     def test_no_parts_without_other_replicas(self) -> None:
         """
         A replica that would be the first one gets nothing, as ClickHouse would

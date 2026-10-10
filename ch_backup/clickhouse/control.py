@@ -1087,7 +1087,8 @@ class ClickhouseCTL:
         """
         Get names of the child nodes of a ZooKeeper path, empty if the path is missing.
         """
-        query_sql = GET_ZOOKEEPER_CHILDREN_SQL.format(path=escape(path))
+        literal = path.replace("\\", "\\\\").replace("'", "\\'")
+        query_sql = GET_ZOOKEEPER_CHILDREN_SQL.format(path=literal)
         return {row["name"] for row in self._ch_client.query(query_sql)["data"]}
 
     def drop_table_if_exists(self, table: Table) -> None:

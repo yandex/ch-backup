@@ -648,8 +648,6 @@ def restore_command(
         access, data, schema, udf, nc, workload, schema_only
     )
     if parts_from_backup:
-        if sources.data:
-            ctx.fail("--parts-from-backup works only for restore without data.")
         parts_from_backup = _validate_and_resolve_name(
             ctx, ch_backup, parts_from_backup, BackupState.CREATED
         )

@@ -77,24 +77,48 @@ def test_restore_of_copied_data_does_not_require_source_bucket():
     assert restore_mock.call_args.kwargs["cloud_storage_source_bucket"] is None
 
 
-@pytest.mark.parametrize("schema_only", [True, False])
-def test_restore_rejects_schema_only_backup_with_parts(schema_only: bool) -> None:
+@pytest.mark.parametrize(
+    "parts_backup_name,parts_schema_only,schema_only,error",
+    [
+        ("parts", True, True, "schema-only"),
+        ("parts", False, False, "without data"),
+        ("parts", False, True, None),
+        (None, False, True, None),
+    ],
+    ids=[
+        "schema-only parts backup",
+        "restore with data",
+        "parts backup with data",
+        "no parts backup",
+    ],
+)
+def test_restore_checks_parts_backup(
+    parts_backup_name: str | None,
+    parts_schema_only: bool,
+    schema_only: bool,
+    error: str | None,
+) -> None:
     """
     A schema-only backup has no parts, so the restore would fetch everything from
-    replicas without telling. LAST points to it right after the schema backup.
+    replicas without telling; LAST points to it right after the schema backup. A
+    restore with data would attach the parts of the main backup on top. A parts
+    backup of an earlier call must not leak into the next one.
     """
     backup = ClickhouseBackup(DEFAULT_CONFIG)  # type: ignore[arg-type]
-    backup.__dict__["_context"] = MagicMock()
+    context = MagicMock()
+    backup.__dict__["_context"] = context
     backup_meta = MagicMock()
-    backup_meta.schema_only = schema_only
+    backup_meta.schema_only = parts_schema_only
     backup_meta.get_databases.return_value = []
-    sources = BackupSources.for_restore(False, False, False, False, False, False, True)
+    sources = BackupSources.for_restore(
+        False, False, False, False, False, False, schema_only
+    )
 
-    error: AbstractContextManager = nullcontext()
-    if schema_only:
-        error = pytest.raises(ClickhouseBackupError, match="schema-only")
+    expected_error: AbstractContextManager = nullcontext()
+    if error:
+        expected_error = pytest.raises(ClickhouseBackupError, match=error)
     with (
-        error,
+        expected_error,
         patch.object(ClickhouseBackup, "_get_backup", return_value=backup_meta),
         patch.object(ClickhouseBackup, "_restore") as restore_mock,
     ):
@@ -103,10 +127,12 @@ def test_restore_rejects_schema_only_backup_with_parts(schema_only: bool) -> Non
             backup_name="schema",
             databases=[],
             exclude_databases=[],
-            parts_backup_name="parts",
+            parts_backup_name=parts_backup_name,
         )
 
-    assert restore_mock.called is not schema_only
+    assert restore_mock.called is not bool(error)
+    if not error:
+        assert context.parts_backup_meta is (backup_meta if parts_backup_name else None)
 
 
 def _delete_backup_with_cloud_storage(referenced_parts: Sequence[str]) -> MagicMock:

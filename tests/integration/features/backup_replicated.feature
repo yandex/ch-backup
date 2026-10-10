@@ -1353,7 +1353,7 @@ Feature: Backup replicated merge tree table
     """
     Then we get response contains
     """
-    --parts-from-backup works only for restore without data.
+    Parts from another backup work only for restore without data
     """
     When we try to execute command on clickhouse01
     """
