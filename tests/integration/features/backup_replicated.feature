@@ -1363,3 +1363,15 @@ Feature: Backup replicated merge tree table
     """
     No backups with name "missing" were found.
     """
+    Given we have created clickhouse01 clickhouse backup
+    """
+    schema_only: True
+    """
+    When we try to execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore LAST --schema-only --parts-from-backup LAST
+    """
+    Then we get response contains
+    """
+    is schema-only and has no data parts
+    """

@@ -3,6 +3,7 @@ ClickhouseBackup unit tests.
 """
 
 from collections import defaultdict
+from contextlib import AbstractContextManager, nullcontext
 from typing import Sequence
 from unittest.mock import MagicMock, Mock, patch
 
@@ -74,6 +75,38 @@ def test_restore_of_copied_data_does_not_require_source_bucket():
 
     restore_mock.assert_called_once()
     assert restore_mock.call_args.kwargs["cloud_storage_source_bucket"] is None
+
+
+@pytest.mark.parametrize("schema_only", [True, False])
+def test_restore_rejects_schema_only_backup_with_parts(schema_only: bool) -> None:
+    """
+    A schema-only backup has no parts, so the restore would fetch everything from
+    replicas without telling. LAST points to it right after the schema backup.
+    """
+    backup = ClickhouseBackup(DEFAULT_CONFIG)  # type: ignore[arg-type]
+    backup.__dict__["_context"] = MagicMock()
+    backup_meta = MagicMock()
+    backup_meta.schema_only = schema_only
+    backup_meta.get_databases.return_value = []
+    sources = BackupSources.for_restore(False, False, False, False, False, False, True)
+
+    error: AbstractContextManager = nullcontext()
+    if schema_only:
+        error = pytest.raises(ClickhouseBackupError, match="schema-only")
+    with (
+        error,
+        patch.object(ClickhouseBackup, "_get_backup", return_value=backup_meta),
+        patch.object(ClickhouseBackup, "_restore") as restore_mock,
+    ):
+        backup.restore(
+            sources=sources,
+            backup_name="schema",
+            databases=[],
+            exclude_databases=[],
+            parts_backup_name="parts",
+        )
+
+    assert restore_mock.called is not schema_only
 
 
 def _delete_backup_with_cloud_storage(referenced_parts: Sequence[str]) -> MagicMock:

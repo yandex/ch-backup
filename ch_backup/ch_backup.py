@@ -273,6 +273,10 @@ class ClickhouseBackup:
         self._context.backup_meta = self._get_backup(backup_name)
         if parts_backup_name:
             self._context.parts_backup_meta = self._get_backup(parts_backup_name)
+            if self._context.parts_backup_meta.schema_only:
+                raise ClickhouseBackupError(
+                    f"Backup {parts_backup_name} is schema-only and has no data parts"
+                )
 
         if (
             cloud_storage_source_bucket is None
