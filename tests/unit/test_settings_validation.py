@@ -13,6 +13,7 @@ def _ctl_config(settings=None):
         "freeze_timeout": 10,
         "unfreeze_timeout": 10,
         "restore_replica_timeout": 10,
+        "refreshable_views_stop_timeout": 10,
         "drop_replica_timeout": 10,
     }
     if settings is not None:

@@ -35,6 +35,7 @@ DEFAULT_CONFIG = {
         "freeze_timeout": _as_seconds("45 min"),
         "unfreeze_timeout": _as_seconds("1 hour"),
         "restore_replica_timeout": _as_seconds("30 min"),
+        "refreshable_views_stop_timeout": _as_seconds("10 min"),
         "sync_database_replica_timeout": _as_seconds("30 min"),
         "sync_database_replica_poll_interval": 10,
         "sync_database_replica_stall_threshold": 6,
