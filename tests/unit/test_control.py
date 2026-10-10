@@ -253,6 +253,42 @@ class TestGetPartsOfOtherReplicas:
             }
         ) == {"all_2_2_0", "all_3_3_0"}
 
+    def test_covered_parts_are_dropped_before_intersection(self) -> None:
+        """
+        ZooKeeper keeps the source parts of a merge or mutation for a while, and the
+        clone takes only the active parts of the source replica.
+        """
+        assert self._parts(
+            {
+                "/zk/t1/replicas": ["new", "r1", "r2"],
+                "/zk/t1/replicas/r1/parts": [
+                    "1_0_9_1",
+                    "all_0_0_0",
+                    "all_1_1_0",
+                    "all_0_1_1",
+                    "all_2_2_0",
+                    "all_2_2_0_3",
+                ],
+                "/zk/t1/replicas/r2/parts": [
+                    "1_0_9_1",
+                    "all_0_0_0",
+                    "all_1_1_0",
+                    "all_2_2_0_3",
+                ],
+            }
+        ) == {"1_0_9_1", "all_2_2_0_3"}
+
+    def test_parts_are_kept_if_a_name_does_not_parse(self) -> None:
+        """
+        The filter only saves downloads, so it must not fail the restore.
+        """
+        assert self._parts(
+            {
+                "/zk/t1/replicas": ["new", "r1"],
+                "/zk/t1/replicas/r1/parts": ["all_0_0_0", "all_0_1_1", "bad"],
+            }
+        ) == {"all_0_0_0", "all_0_1_1", "bad"}
+
     def test_no_parts_without_other_replicas(self) -> None:
         """
         A replica that would be the first one gets nothing, as ClickHouse would

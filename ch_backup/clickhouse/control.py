@@ -14,7 +14,7 @@ from tarfile import BLOCKSIZE  # type: ignore
 from typing import Any, Iterable, Sequence
 
 from ch_backup import logging
-from ch_backup.backup.metadata import TableMetadata
+from ch_backup.backup.metadata import TableMetadata, split_part_name
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.calculators import calc_aligned_files_size
 from ch_backup.clickhouse.client import ClickhouseClient
@@ -1068,7 +1068,7 @@ class ClickhouseCTL:
 
     def get_parts_of_other_replicas(self, table: Table) -> set[str]:
         """
-        Get names of the parts that every other replica of the table has in ZooKeeper.
+        Get names of the active parts that every other replica of the table has in ZooKeeper.
         """
         replica = self.get_replicas(table.database, [table.name])[0]
         replicas_path = os.path.join(replica["zookeeper_path"], "replicas")
@@ -1076,7 +1076,9 @@ class ClickhouseCTL:
             replica["replica_name"]
         }
         parts = [
-            self._get_zookeeper_children(os.path.join(replicas_path, name, "parts"))
+            _active_parts(
+                self._get_zookeeper_children(os.path.join(replicas_path, name, "parts"))
+            )
             for name in other_replicas
         ]
         return set.intersection(*parts) if parts else set()
@@ -1687,6 +1689,41 @@ def _read_objects(metadata_path: str) -> list[tuple[str, int]]:
                 f"Failed to read objects of {metadata_path},"
                 f" metadata version {version}"
             ) from e
+
+
+def _active_parts(names: set[str]) -> set[str]:
+    """
+    Drop the parts covered by another part of the set.
+
+    ClickHouse keeps the source parts of a merge or mutation in ZooKeeper until they are
+    removed from disk, which takes old_parts_lifetime. A set with a name that does not
+    parse is kept as is.
+    """
+    try:
+        parts = sorted(
+            ((name, split_part_name(name)) for name in names),
+            key=lambda item: (
+                item[1].partition_id,
+                item[1].min_block_num,
+                -item[1].max_block_num,
+                -item[1].level,
+                -item[1].mutation,
+            ),
+        )
+    except ValueError:
+        return names
+    active: set[str] = set()
+    covering = None
+    for name, part in parts:
+        if (
+            covering
+            and covering.partition_id == part.partition_id
+            and covering.max_block_num >= part.max_block_num
+        ):
+            continue
+        active.add(name)
+        covering = part
+    return active
 
 
 def _format_string_array(value: Sequence[str]) -> str:

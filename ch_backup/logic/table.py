@@ -1545,7 +1545,7 @@ class TableBackup(BackupManager):
     @staticmethod
     def _download_parts_of_other_replicas(context: BackupContext, table: Table) -> None:
         """
-        Download to detached/ the table parts from the backup that every other replica has.
+        Download to detached/ the backup parts that every other replica has as active.
 
         SYSTEM RESTORE REPLICA queues ATTACH_PART instead of GET_PART for the parts of
         the source replica, and ClickHouse takes a detached part with the same checksum
