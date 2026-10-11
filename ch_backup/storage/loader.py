@@ -7,6 +7,7 @@ from typing import BinaryIO, Callable, Sequence
 
 from ch_backup.storage.async_pipeline.pipeline_executor import PipelineExecutor
 from ch_backup.storage.engine import get_storage_engine
+from ch_backup.storage.object_copy import CopyEntry
 
 
 class StorageLoader:
@@ -238,6 +239,12 @@ class StorageLoader:
         self._ploader.delete_files(
             remote_paths, is_async=is_async, encryption=encryption
         )
+
+    def copy_object(self, entry: CopyEntry, is_async: bool = False) -> None:
+        """
+        Copy object from one storage to another as is.
+        """
+        self._ploader.copy_object(entry, is_async=is_async)
 
     def wait(self, keep_going: bool = False) -> None:
         """

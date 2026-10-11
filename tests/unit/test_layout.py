@@ -57,7 +57,7 @@ class TestCloudStorageMetadataRemotePaths:
             f"{backup_path}/disks/{source_disk_name}/db2/table4.tar",
         ]
 
-        remote_paths = layout._get_cloud_storage_metadata_remote_paths(
+        remote_paths = layout.get_cloud_storage_metadata_remote_paths(
             backup_name,
             source_disk_name,
             compression=False,
