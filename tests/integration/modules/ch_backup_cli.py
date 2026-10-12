@@ -495,6 +495,15 @@ class BackupManager:
             data, os.path.join(backup.get_backup_path(self._path_root), path)
         )
 
+    def corrupt_backup_file(self, backup_id: BackupId, path: str) -> None:
+        """
+        Replace data of particular file in backup with zeros of the same size (useful for fault injection).
+        """
+        backup = self.get_backup(backup_id)
+        remote_path = os.path.join(backup.get_backup_path(self._path_root), path)
+        size = self._s3_client.get_object_size(remote_path)
+        self._s3_client.upload_data(b"\0" * size, remote_path)
+
     def rewrite_part_links_to_legacy_format(self, backup_id: BackupId) -> None:
         """
         Rewrite all ``link`` fields in backup part metadata from the new
