@@ -154,7 +154,9 @@ def test_access_restore_fails_without_progress() -> None:
     context = mock.MagicMock()
     context.ch_ctl.restore_access_entity.side_effect = ClickhouseError("boom")
 
-    with pytest.raises(ClickhouseBackupError, match="Cannot restore 2 access"):
+    with pytest.raises(
+        ClickhouseBackupError, match="2 access statements of the replica failed"
+    ):
         access.AccessBackup()._restore_statements(  # pylint: disable=protected-access
             context, ["CREATE ROLE r1", "CREATE USER u1"]
         )

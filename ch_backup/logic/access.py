@@ -122,10 +122,8 @@ class AccessBackup(BackupManager):
         self, context: BackupContext, statements: list[str]
     ) -> None:
         """
-        Replace access entities of local storages with ones created by the statements.
-
-        Users may refer to each other in any direction, so the statements that fail are run
-        again while each pass runs at least one of them.
+        Replace local access entities with ones of the statements. Failed statements are
+        run again while some succeed, as users may refer to each other.
         """
         if not statements:
             return
@@ -142,7 +140,7 @@ class AccessBackup(BackupManager):
                     failed.append(statement)
             if len(failed) == len(pending):
                 raise ClickhouseBackupError(
-                    f"Cannot restore {len(failed)} access statements"
+                    f"{len(failed)} access statements of the replica failed on this host"
                 ) from error
             pending = failed
 

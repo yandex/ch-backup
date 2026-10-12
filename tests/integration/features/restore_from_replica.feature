@@ -140,7 +140,7 @@ Feature: Restore schema from a live replica
     """
     Then we get response contains
     """
-    is this replica itself
+    is this host itself
     """
     When we try to execute command on clickhouse02
     """
@@ -148,7 +148,7 @@ Feature: Restore schema from a live replica
     """
     Then we get response contains
     """
-    Replica name clickhouse01 to remove is the one of clickhouse01
+    Replica clickhouse01 to remove from ZooKeeper is the source clickhouse01
     """
     When we try to execute command on clickhouse02
     """
@@ -156,7 +156,7 @@ Feature: Restore schema from a live replica
     """
     Then we get response contains
     """
-    Create statement of test_db.table_01 on clickhouse01 has replica name 'clickhouse01' without the {replica} macro
+    test_db.table_01 on clickhouse01 has replica name 'clickhouse01' instead of the {replica} macro
     """
     When we execute query on clickhouse01
     """
@@ -180,7 +180,7 @@ Feature: Restore schema from a live replica
     """
     Then we get response contains
     """
-    Create statement of test_db.s3_table on clickhouse01 has hidden secrets
+    Secrets of test_db.s3_table on clickhouse01 are hidden
     """
     When we execute query on clickhouse02
     """
@@ -274,7 +274,7 @@ Feature: Restore schema from a live replica
     """
     Then we get response contains
     """
-    Named collections test_nc are missing on this host and can be restored from a replica only on ClickHouse 25.5 or newer
+    Named collections test_nc are missing on this host, and restoring them needs ClickHouse 25.5 or newer
     """
     When we execute command on clickhouse02
     """

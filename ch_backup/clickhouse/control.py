@@ -499,48 +499,27 @@ GET_NAMED_COLLECTIONS_QUERY_SQL = strip_query(
 )
 
 GET_SQL_NAMED_COLLECTIONS_CREATE_QUERY_SQL = strip_query(
-    """
-    SELECT name, create_query FROM system.named_collections
-    WHERE source = 'SQL'
-    FORMAT JSON
-"""
+    "SELECT name, create_query FROM system.named_collections WHERE source = 'SQL' FORMAT JSON"
 )
-
 GET_ACCESS_STORAGE_TYPES_SQL = strip_query(
-    """
-    SELECT DISTINCT type FROM system.user_directories
-    FORMAT JSON
-"""
+    "SELECT DISTINCT type FROM system.user_directories FORMAT JSON"
 )
-
 GET_LOCAL_ACCESS_ENTITIES_SQL = strip_query(
     """
-    SELECT {columns}
-    FROM system.{table}
+    SELECT {columns} FROM system.{table}
     WHERE storage IN (SELECT name FROM system.user_directories WHERE type = 'local_directory')
     FORMAT JSON
 """
 )
-
-SHOW_CREATE_ACCESS_ENTITY_SQL = strip_query(
-    """
-    SHOW CREATE {type} {name}
-    FORMAT TSVRaw
-"""
-)
-
-SHOW_GRANTS_SQL = strip_query(
-    """
-    SHOW GRANTS FOR {name}
-    FORMAT TSVRaw
-"""
-)
-
-DROP_ACCESS_ENTITY_SQL = strip_query(
-    """
-    DROP {type} IF EXISTS {name}
-"""
-)
+SHOW_CREATE_ACCESS_ENTITY_SQL = strip_query("SHOW CREATE {type} {name} FORMAT TSVRaw")
+SHOW_GRANTS_SQL = strip_query("SHOW GRANTS FOR {name} FORMAT TSVRaw")
+DROP_ACCESS_ENTITY_SQL = strip_query("DROP {type} IF EXISTS {name}")
+ACCESS_ENTITY_TABLES = {
+    "ROLE": "roles",
+    "SETTINGS PROFILE": "settings_profiles",
+    "USER": "users",
+    "QUOTA": "quotas",
+}
 
 GET_WORKLOAD_ENTITIES_QUERY_SQL = strip_query(
     f"""
@@ -1070,94 +1049,79 @@ class ClickhouseCTL:
 
     def restore_access_entity(self, statement: str) -> None:
         """
-        Run a statement that creates an access entity or grants privileges, without retries.
+        Run an access statement without retries.
         """
         self._ch_client.query(statement, sensitive=True, should_retry=False)
 
     def get_local_access_statements(self) -> list[str]:
         """
-        Return statements that recreate access entities of local storages on another host.
-
-        Roles and users may refer to settings profiles and profiles to roles and users, so
-        roles and profiles are created bare first and altered to their definitions after
-        users. Quotas, row policies and grants of roles and users come last.
+        Return statements recreating local access entities. Roles and profiles refer to each
+        other and to users, so they are created bare and altered after users. Grants go last.
         """
         entities = self._get_local_access_entities()
-        statements = [
-            f"CREATE {keyword} {name}"
-            for keyword in ("ROLE", "SETTINGS PROFILE")
-            for name in entities[keyword]
-        ]
+        mutual = [(t, n) for t in ("ROLE", "SETTINGS PROFILE") for n in entities[t]]
+        statements = [f"CREATE {t} {n}" for t, n in mutual]
         statements += [
             self._show_create_access_entity("USER", n) for n in entities["USER"]
         ]
         statements += [
-            re.sub("^CREATE", "ALTER", self._show_create_access_entity(keyword, name))
-            for keyword in ("ROLE", "SETTINGS PROFILE")
-            for name in entities[keyword]
+            re.sub("^CREATE", "ALTER", self._show_create_access_entity(t, n))
+            for t, n in mutual
         ]
         statements += [
-            self._show_create_access_entity(keyword, name)
-            for keyword in ("QUOTA", "ROW POLICY")
-            for name in entities[keyword]
+            self._show_create_access_entity(t, n)
+            for t in ("QUOTA", "ROW POLICY")
+            for n in entities[t]
         ]
         for name in entities["ROLE"] + entities["USER"]:
-            statements += self._ch_client.query(
-                SHOW_GRANTS_SQL.format(name=name)
-            ).splitlines()
+            grants = self._ch_client.query(SHOW_GRANTS_SQL.format(name=name))
+            statements += grants.splitlines()
         return statements
 
     def drop_local_access_entities(self) -> None:
         """
-        Drop access entities of local storages.
+        Drop local access entities.
         """
-        for keyword, names in self._get_local_access_entities().items():
+        for entity_type, names in self._get_local_access_entities().items():
             for name in names:
                 self._ch_client.query(
-                    DROP_ACCESS_ENTITY_SQL.format(type=keyword, name=name)
+                    DROP_ACCESS_ENTITY_SQL.format(type=entity_type, name=name)
                 )
 
     def get_access_storage_types(self) -> set[str]:
         """
-        Return types of access storages, such as users_xml, local_directory or replicated.
+        Return types of access storages.
         """
         resp = self._ch_client.query(GET_ACCESS_STORAGE_TYPES_SQL)
         return {row["type"] for row in resp["data"]}
 
     def _get_local_access_entities(self) -> dict[str, list[str]]:
         """
-        Return quoted names of access entities of local storages by entity type.
+        Return quoted names of local access entities by type.
         """
-        entities: dict[str, list[str]] = {}
-        for keyword, table in (
-            ("ROLE", "roles"),
-            ("SETTINGS PROFILE", "settings_profiles"),
-            ("USER", "users"),
-            ("QUOTA", "quotas"),
-        ):
+        entities = {}
+        for entity_type, table in ACCESS_ENTITY_TABLES.items():
             query_sql = GET_LOCAL_ACCESS_ENTITIES_SQL.format(
                 columns="name", table=table
             )
-            entities[keyword] = [
-                _quote_or_any(row["name"])
-                for row in self._ch_client.query(query_sql)["data"]
-            ]
+            rows = self._ch_client.query(query_sql)["data"]
+            entities[entity_type] = [_quote_or_any(row["name"]) for row in rows]
         query_sql = GET_LOCAL_ACCESS_ENTITIES_SQL.format(
             columns="short_name, database, table", table="row_policies"
         )
         entities["ROW POLICY"] = [
-            f"{_quote_or_any(row['short_name'])} ON {_quote_or_any(row['database'])}.{_quote_or_any(row['table'])}"
+            f"{_quote_or_any(row['short_name'])} ON "
+            f"{_quote_or_any(row['database'])}.{_quote_or_any(row['table'])}"
             for row in self._ch_client.query(query_sql)["data"]
         ]
         return entities
 
-    def _show_create_access_entity(self, keyword: str, name: str) -> str:
+    def _show_create_access_entity(self, entity_type: str, name: str) -> str:
         """
         Return the create statement of an access entity.
         """
-        return self._ch_client.query(
-            SHOW_CREATE_ACCESS_ENTITY_SQL.format(type=keyword, name=name)
-        )
+        query_sql = SHOW_CREATE_ACCESS_ENTITY_SQL.format(type=entity_type, name=name)
+        return self._ch_client.query(query_sql)
 
     def restore_workload_entity(self, entity_statement):
         """
@@ -1492,8 +1456,7 @@ class ClickhouseCTL:
 
     def get_named_collections_create_queries(self) -> dict[str, str]:
         """
-        Return create statements of named collections created by SQL.
-        ClickHouse shows them since 25.5.
+        Return create statements of named collections created by SQL, shown since 25.5.
         """
         resp = self._ch_client.query(GET_SQL_NAMED_COLLECTIONS_CREATE_QUERY_SQL)
         return {row["name"]: row["create_query"] for row in resp["data"]}
@@ -1801,8 +1764,7 @@ def _read_objects(metadata_path: str) -> list[tuple[str, int]]:
 
 def _quote_or_any(name: str) -> str:
     """
-    Quote an identifier, or return * for an empty one: a row policy on all tables of a
-    database has no table.
+    Quote an identifier, or return * for an empty one, as a row policy table can be.
     """
     return f"`{escape(name)}`" if name else "*"
 

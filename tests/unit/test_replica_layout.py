@@ -130,12 +130,17 @@ def test_schema_is_read_from_the_replica() -> None:
     [
         (_ctl("23.3.1.1"), {}, {}, "23.8 or newer"),
         (None, {"version": "23.3.1.1"}, {}, "23.8 or newer"),
-        (None, {"version": "25.3.1.1"}, {}, "differs"),
-        (_ctl(macros=MACROS), {}, {}, "this replica itself"),
-        (None, {"macros": {"replica": "host1", "shard": "shard2"}}, {}, "same shard"),
-        (None, {"macros": {"shard": "shard1"}}, {}, "replica macro is not set"),
-        (None, {}, {"zookeeper_hosts": ""}, "needs ZooKeeper"),
-        (None, {}, {"replica_name": "host1"}, "is the one of replica1"),
+        (None, {"version": "25.3.1.1"}, {}, "differ: the schema"),
+        (_ctl(macros=MACROS), {}, {}, "is this host itself"),
+        (
+            None,
+            {"macros": {"replica": "host1", "shard": "shard2"}},
+            {},
+            "not a replica of this shard",
+        ),
+        (None, {"macros": {"shard": "shard1"}}, {}, "replica macro must be set"),
+        (None, {}, {"zookeeper_hosts": ""}, "ZooKeeper is not configured"),
+        (None, {}, {"replica_name": "host1"}, "is the source replica1"),
     ],
     ids=[
         "old local version",
@@ -181,12 +186,12 @@ def test_other_patch_version_is_accepted() -> None:
                 "mysql_db": DATABASES["mysql_db"].replace("'p'", "'[HIDDEN]'"),
             },
             TABLE,
-            "mysql_db on replica1 has hidden secrets",
+            "Secrets of mysql_db on replica1 are hidden",
         ),
         (
             None,
             TABLE.replace("ORDER BY n", "ORDER BY n COMMENT 'mongodb://u:[HIDDEN]@h'"),
-            "db1.t1 on replica1 has hidden secrets",
+            "Secrets of db1.t1 on replica1 are hidden",
         ),
         (
             None,
@@ -275,11 +280,11 @@ def test_only_requested_objects_are_read() -> None:
     [
         (
             "CREATE USER u2 IDENTIFIED WITH sha256_password",
-            "CREATE USER u2 on replica1 has hidden secrets",
+            "Passwords of users on replica1 are hidden",
         ),
         (
             "CREATE USER u2 IDENTIFIED WITH sha256_hash BY '[HIDDEN]'",
-            "CREATE USER u2 on replica1 has hidden secrets",
+            "Secrets of access entities on replica1 are hidden",
         ),
     ],
     ids=["password type without hash", "masked hash"],
