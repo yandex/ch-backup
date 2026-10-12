@@ -15,6 +15,7 @@ from ch_backup.backup.copy_report import BackupCopyResult
 from ch_backup.backup.metadata import BackupMetadata, BackupState
 from ch_backup.backup.sources import BackupSources
 from ch_backup.exceptions import StorageError, TerminatingSignal
+from tests.unit.test_backup_copy import CopyTestContext, _backup
 from tests.unit.utils import parametrize
 
 
@@ -103,6 +104,34 @@ def test_copy_reports_configuration_failure(tmp_path: Path) -> None:
     assert result.exit_code == 1
     assert json.loads(path.read_text())["error"] == "ValueError: invalid config"
     backup.copy.assert_not_called()
+
+
+@pytest.mark.parametrize("state", [None, BackupState.FAILED])
+@pytest.mark.parametrize("keep_going", [False, True])
+def test_copy_named_validation_failure_has_report_row(
+    tmp_path: Path, state: BackupState | None, keep_going: bool
+) -> None:
+    ctx = CopyTestContext([_backup("requested", state=state)] if state else [])
+    backup = MagicMock()
+
+    def copy(_target, names, *, keep_going, report):
+        return ctx.copy(names, keep_going=keep_going, report=report)
+
+    backup.copy.side_effect = copy
+    group = Group()
+    group.add_command(cli.copy_command)
+    path = tmp_path / "report.json"
+    args = ["copy", "requested", "--report-path", str(path)]
+    if keep_going:
+        args.append("--keep-going")
+    result = CliRunner().invoke(group, args, obj={"backup": backup})
+    assert result.exit_code == 1
+    report = json.loads(path.read_text())
+    assert [(b["name"], b["status"]) for b in report["backups"]] == [
+        ("requested", "failed"),
+    ]
+    assert report["backups"][0]["errors"][0]["stage"] == "selection"
+    backup.list.assert_not_called()
 
 
 @parametrize(

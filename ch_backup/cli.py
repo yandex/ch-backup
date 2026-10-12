@@ -858,9 +858,11 @@ def copy_command(
 
         backup_names = None
         if name:
-            backup_names = [
-                _validate_and_resolve_name(ctx, ch_backup, name, BackupState.CREATED)
-            ]
+            if name == "LAST":
+                name = _validate_and_resolve_name(
+                    ctx, ch_backup, name, BackupState.CREATED
+                )
+            backup_names = [name]
 
         copy_config: dict = {"cloud_storage": {"source": {}, "target": {}}}
         if server_side_copy is not None:

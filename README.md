@@ -134,7 +134,10 @@ How it works:
   also saves a JSON report (schema version 1) once the command finishes, including failures
   and handled termination signals. Any failure gives a nonzero exit code.
 - `--keep-going` continues copying independent objects and subsequent backups after errors.
-  Each backup's complete plan is validated before any writes; a planning failure skips that backup.
+  Local planning errors are collected per part or metadata file; available independent objects
+  are still copied and the incomplete backup remains failed. Each plan's destinations are validated
+  before any writes. Unreadable target backups reserve their names and do not block independent
+  backups; unusable deduplication links are materialized from the source when possible.
   Shared configuration, listing, lock and executor failures still stop the run.
   Object counters include rewritten metadata tarballs and count only confirmed completions.
   `known_bytes_copied` sums source sizes of successfully copied objects, excluding rewritten

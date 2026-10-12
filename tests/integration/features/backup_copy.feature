@@ -332,6 +332,166 @@ Feature: Copy backups to another storage
     PY
     """
 
+  Scenario: Copy isolates corrupt target metadata
+    Given clickhouse on clickhouse01 has test schema
+    And clickhouse01 has test clickhouse data test1
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: first
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: broken
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: last
+    """
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy broken \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
+    """
+    And we put object in S3
+    """
+    bucket: ch-backup-copy
+    path: ch_backup/broken/backup_light_struct.json
+    data: invalid metadata
+    """
+    And we try to execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy --all --keep-going \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --report-path /tmp/copy-report.json
+    """
+    Then command exits with code 1
+    When we execute command on clickhouse01
+    """
+    python3 - <<'PY'
+    import json
+    with open('/tmp/copy-report.json') as f:
+        report = json.load(f)
+    assert {b['name']: b['status'] for b in report['backups']} == {
+        'first': 'copied', 'broken': 'failed', 'last': 'copied'}
+    broken = next(b for b in report['backups'] if b['name'] == 'broken')
+    assert broken['errors'][0]['stage'] == 'target_selection'
+    PY
+    """
+
+  Scenario: Copy reports a missing named backup
+    When we try to execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy missing --keep-going \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --report-path /tmp/copy-report.json
+    """
+    Then command exits with code 1
+    When we execute command on clickhouse01
+    """
+    python3 - <<'PY'
+    import json
+    with open('/tmp/copy-report.json') as f:
+        report = json.load(f)
+    assert [(b['name'], b['status']) for b in report['backups']] == [('missing', 'failed')]
+    assert report['backups'][0]['errors'][0]['stage'] == 'selection'
+    PY
+    """
+
+  Scenario: Copy materializes a dependency with corrupt target metadata
+    Given clickhouse on clickhouse01 has test schema
+    And clickhouse01 has test clickhouse data test1
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: base
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: next
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    storage:
+        credentials:
+            bucket: ch-backup-copy
+    """
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy base \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
+    """
+    And we put object in S3
+    """
+    bucket: ch-backup-copy
+    path: ch_backup/base/backup_struct.json
+    data: invalid metadata
+    """
+    And we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy next --keep-going \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
+    """
+    Then we get response contains
+    """
+    next: copied
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
+  Scenario: Copy collects missing dependencies and copies independent metadata
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.t (n UInt32) ENGINE = MergeTree PARTITION BY n ORDER BY n;
+    INSERT INTO test_db.t VALUES (1), (2);
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: base
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: next
+    """
+    When we execute command on clickhouse01
+    """
+    python3 - <<'PY'
+    from ch_backup.config import Config
+    from ch_backup.storage.engine import get_storage_engine
+    cfg = Config('/etc/yandex/ch-backup/ch-backup.conf')
+    storage = get_storage_engine(cfg['storage'])
+    paths = storage.list_dir('ch_backup/base/data', recursive=True, absolute=True)
+    assert len(paths) >= 2
+    storage.delete_files(paths)
+    PY
+    """
+    And we try to execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy next --keep-going \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --report-path /tmp/copy-report.json
+    """
+    Then command exits with code 1
+    When we execute command on clickhouse01
+    """
+    python3 - <<'PY'
+    import json
+    from ch_backup.backup.layout import BackupLayout
+    from ch_backup.backup.metadata import BackupState
+    from ch_backup.config import Config
+    with open('/tmp/copy-report.json') as f:
+        report = json.load(f)
+    backup = report['backups'][0]
+    assert backup['name'] == 'next' and backup['status'] == 'failed'
+    assert len(backup['errors']) == 2
+    assert all(e['stage'] == 'planning' for e in backup['errors'])
+    assert backup['objects_copied'] > 0
+    cfg = Config('/etc/yandex/ch-backup/ch-backup.conf')
+    cfg['storage']['credentials']['bucket'] = 'ch-backup-copy'
+    cfg['multiprocessing']['workers'] = 0
+    assert BackupLayout(cfg).get_backup('next', use_light_meta=True).state == BackupState.FAILED
+    PY
+    """
+
   @require_version_22.8
   Scenario: Copied backup with data on S3 disk doesn't depend on the source
     Given we have executed queries on clickhouse01
