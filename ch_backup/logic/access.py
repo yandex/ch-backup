@@ -125,8 +125,6 @@ class AccessBackup(BackupManager):
         Replace local access entities with ones of the statements. Failed statements are
         run again while some succeed, as users may refer to each other.
         """
-        if not statements:
-            return
         context.ch_ctl.drop_local_access_entities()
         pending = statements
         error: ClickhouseError | None = None

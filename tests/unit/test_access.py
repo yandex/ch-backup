@@ -126,6 +126,20 @@ def test_access_from_replica_is_restored_from_statements() -> None:
     rmtree.assert_not_called()
 
 
+def test_access_of_this_host_is_dropped_if_the_replica_has_none() -> None:
+    """
+    This host must end up with the same local access entities as the replica.
+    """
+    context = mock.MagicMock()
+    context.backup_layout = mock.MagicMock(spec=ReplicaLayout)
+    context.backup_layout.get_access_statements.return_value = []
+
+    access.AccessBackup().restore(context, reload_users=True)
+
+    context.ch_ctl.drop_local_access_entities.assert_called_once_with()
+    context.ch_ctl.restore_access_entity.assert_not_called()
+
+
 def test_access_statements_are_run_again_until_dependencies_exist() -> None:
     """
     A user who may grant to another user fails until that user exists.
