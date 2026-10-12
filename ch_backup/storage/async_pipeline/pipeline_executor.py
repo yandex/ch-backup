@@ -12,6 +12,7 @@ from typing import (
     Sequence,
 )
 
+from ch_backup.exceptions import TerminatingSignal
 from ch_backup.profile import profile
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
     ProcessExecPool,
@@ -73,7 +74,7 @@ class PipelineExecutor:
         encryption: bool,
         compression: bool,
         callback: Callable | None = None,
-        on_error: Callable[[Exception], None] | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         """
         Upload given data as tarball with specified file names.
@@ -280,7 +281,7 @@ class PipelineExecutor:
         entry: CopyEntry,
         is_async: bool,
         callback: Callable | None = None,
-        on_error: Callable[[Exception], None] | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         """
         Copy object from one storage to another.
@@ -307,7 +308,7 @@ class PipelineExecutor:
         pipeline: Callable,
         is_async: bool,
         callback: Callable | None = None,
-        on_error: Callable[[Exception], None] | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> Any:
         """
         Run pipeline inplace or schedule for exec in process pool
@@ -322,7 +323,7 @@ class PipelineExecutor:
                     on_error=on_error,
                 )
             result = pipeline()
-        except Exception as e:
+        except (Exception, TerminatingSignal) as e:
             if on_error:
                 on_error(e)
             raise

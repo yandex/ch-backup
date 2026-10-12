@@ -18,7 +18,7 @@ from multiprocessing import get_context
 from typing import Any, Callable, Iterable
 
 from ch_backup import logging
-from ch_backup.exceptions import is_broken_executor
+from ch_backup.exceptions import TerminatingSignal, is_broken_executor
 from ch_backup.util import exhaust_iterator
 
 TIMEOUT_WORKER_TERMINATING_SEC = 5.0
@@ -34,7 +34,7 @@ class Job:
 
     id_: str
     callback: Callable | None
-    on_error: Callable[[Exception], None] | None = None
+    on_error: Callable[[BaseException], None] | None = None
 
 
 class ExecPool:
@@ -63,7 +63,7 @@ class ExecPool:
         func: Callable,
         *args: Any,
         callback: Callable | None = None,
-        on_error: Callable[[Exception], None] | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -98,7 +98,7 @@ class ExecPool:
 
             try:
                 result = future.result()
-            except Exception as e:
+            except (Exception, TerminatingSignal) as e:
                 if job.on_error:
                     job.on_error(e)
                 if keep_going and not is_broken_executor(e):

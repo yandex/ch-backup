@@ -1,9 +1,9 @@
 """Results of a backup copy run, collected in the parent process."""
 
 import json
+import os
 import sys
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
 from typing import Literal
 
 from ch_backup.exceptions import ClickhouseBackupError
@@ -80,9 +80,15 @@ def print_copy_report(report: CopyReport, report_path: str | None) -> None:
         print(report.error, file=sys.stderr, flush=True)
     if report_path:
         try:
-            Path(report_path).write_text(
-                json.dumps(asdict(report), indent=2) + "\n", encoding="utf-8"
+            # O_NOFOLLOW prevents writing through a symlink planted at the
+            # report path, which could otherwise overwrite an arbitrary file.
+            fd = os.open(
+                report_path,
+                os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+                0o644,
             )
+            with os.fdopen(fd, "w", encoding="utf-8") as report_file:
+                report_file.write(json.dumps(asdict(report), indent=2) + "\n")
         except Exception as e:
             message = f"Failed to save copy report to {report_path}: {e}"
             print(message, file=sys.stderr, flush=True)

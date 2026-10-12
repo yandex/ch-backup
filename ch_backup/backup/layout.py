@@ -869,7 +869,7 @@ class BackupLayout:
         remote_path: str,
         files: list[tuple[str, bytes]],
         callback: Callable | None = None,
-        on_error: Callable[[Exception], None] | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         """
         Upload files with cloud storage metadata as a tarball.
@@ -1038,7 +1038,7 @@ class BackupLayout:
         *,
         keep_going: bool = False,
         callback: Callable[[CopyEntry], None] | None = None,
-        on_error: Callable[[CopyEntry, Exception], None] | None = None,
+        on_error: Callable[[CopyEntry, BaseException], None] | None = None,
     ) -> None:
         """
         Copy objects from one storage to another as is.

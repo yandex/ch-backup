@@ -51,7 +51,7 @@ class StorageLoader:
         encryption: bool = False,
         compression: bool = False,
         callback: Callable | None = None,
-        on_error: Callable[[Exception], None] | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> str:
         """
         Upload data as tarball with specified file names.
@@ -249,7 +249,7 @@ class StorageLoader:
         entry: CopyEntry,
         is_async: bool = False,
         callback: Callable | None = None,
-        on_error: Callable[[Exception], None] | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         """
         Copy object from one storage to another as is.
