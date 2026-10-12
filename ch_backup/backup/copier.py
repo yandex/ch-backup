@@ -513,14 +513,16 @@ class BackupCopier:
             with self._planning_step(
                 result, f"{part.link}/{part.database}/{part.table}/{part.name}"
             ):
-                self._plan_linked_part(backup, target_meta, plan, part)
+                self._plan_linked_part(backup, target_meta, plan, part, result)
 
+    # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     def _plan_linked_part(
         self,
         backup: BackupMetadata,
         target_meta: BackupMetadata,
         plan: _CopyPlan,
         part: PartMetadata,
+        result: BackupCopyResult,
     ) -> None:
         """Materialize one local part when its target link is unusable."""
         if self._is_link_valid_in_target(part):
@@ -529,13 +531,23 @@ class BackupCopier:
         target_backup_path = self._target_layout.get_backup_path(backup.name)
         source_files = self._get_source_backup_files(part.link)
         file_names = get_data_part_file_names(part)
-        for part_dir in get_data_part_relative_dirs(part):
+        part_dirs = get_data_part_relative_dirs(part)
+        for part_dir in part_dirs:
             if all(os.path.join(part_dir, f) in source_files for f in file_names):
                 break
         else:
-            raise ClickhouseBackupError(
-                f'Data of part "{part.name}" of table "{part.database}"."{part.table}" '
-                f'deduplicated with backup "{part.link}" is not found in source storage'
+            if not self._keep_going:
+                raise ClickhouseBackupError(
+                    f'Data of part "{part.name}" of table "{part.database}"."{part.table}" '
+                    f'deduplicated with backup "{part.link}" is not found in source storage'
+                )
+            # Prefer a complete directory above; otherwise salvage one partial
+            # directory without mixing escaped and legacy representations.
+            part_dir = max(
+                part_dirs,
+                key=lambda path: sum(
+                    os.path.join(path, f) in source_files for f in file_names
+                ),
             )
 
         logging.debug(
@@ -546,21 +558,36 @@ class BackupCopier:
             part.link,
         )
         src_dir = os.path.join(self._layout.get_backup_path(part.link), part_dir)
-        dst_dir = os.path.join(target_backup_path, os.path.dirname(part_dir), part.name)
+        # Always use the escaped target path, even for legacy source layouts.
+        # A retry must overwrite partial files rather than leave a shadowing alias.
+        dst_dir = os.path.join(
+            target_backup_path, os.path.dirname(part_dirs[0]), part.name
+        )
+        _validate_relative_key(part.name)
+        error_count = len(result.errors)
         for file_name in file_names:
-            _validate_relative_key(file_name)
-            _validate_relative_key(part.name)
-            dst_file_name = f"{part.name}.tar" if part.tarball else file_name
-            plan.entries.append(
-                CopyEntry(
-                    self._storage,
-                    self._target_storage,
-                    os.path.join(src_dir, file_name),
-                    os.path.join(dst_dir, dst_file_name),
-                    source_files[os.path.join(part_dir, file_name)],
+            with self._planning_step(
+                result, os.path.join(part.link, part_dir, file_name)
+            ):
+                _validate_relative_key(file_name)
+                if os.path.join(part_dir, file_name) not in source_files:
+                    raise ClickhouseBackupError(
+                        f'File "{file_name}" of part "{part.name}" of table '
+                        f'"{part.database}"."{part.table}" deduplicated with backup '
+                        f'"{part.link}" is not found in source storage'
+                    )
+                dst_file_name = f"{part.name}.tar" if part.tarball else file_name
+                plan.entries.append(
+                    CopyEntry(
+                        self._storage,
+                        self._target_storage,
+                        os.path.join(src_dir, file_name),
+                        os.path.join(dst_dir, dst_file_name),
+                        source_files[os.path.join(part_dir, file_name)],
+                    )
                 )
-            )
-        target_meta.unlink_part(part)
+        if len(result.errors) == error_count:
+            target_meta.unlink_part(part)
 
     def _is_link_valid_in_target(self, part: PartMetadata) -> bool:
         """
@@ -745,6 +772,7 @@ class BackupCopier:
                                     self._target_storage,
                                     dst_prefix,
                                     entries,
+                                    copy_result,
                                 )
                                 files.append(("/".join(components), data))
                 for part in source_parts:
@@ -757,9 +785,9 @@ class BackupCopier:
                             target_meta.unlink_part(part)
         return files
 
-    @staticmethod
     # pylint: disable=too-many-arguments,too-many-positional-arguments
     def _plan_metadata_objects(
+        self,
         data: bytes,
         file_name: str,
         remote_path: str,
@@ -768,6 +796,7 @@ class BackupCopier:
         dst_storage: dict,
         dst_prefix: str,
         entries: dict[str, CopyEntry],
+        result: BackupCopyResult,
         *,
         src_path_override: str | None = None,
     ) -> bytes:
@@ -777,19 +806,24 @@ class BackupCopier:
         metadata = _parse_metadata_file(data, file_name, remote_path)
         dst_keys = []
         for obj in metadata.objects:
-            entry = _cloud_storage_copy_entry(
-                src_storage,
-                src_prefix,
-                dst_storage,
-                dst_prefix,
-                obj,
-                metadata.full_object_keys,
-                src_path_override=src_path_override,
-            )
-            _add_cloud_storage_copy_entry(entries, entry)
-            dst_keys.append(entry.dst_path)
+            with self._planning_step(result, f"{remote_path}:{file_name}:{obj.key}"):
+                entry = _cloud_storage_copy_entry(
+                    src_storage,
+                    src_prefix,
+                    dst_storage,
+                    dst_prefix,
+                    obj,
+                    metadata.full_object_keys,
+                    src_path_override=src_path_override,
+                )
+                _add_cloud_storage_copy_entry(entries, entry)
+                dst_keys.append(entry.dst_path)
+        # An incomplete file must not be rewritten with a shortened object list.
+        # Collected planning errors keep the backup FAILED until a successful retry.
         return (
-            replace_object_keys(data, dst_keys) if metadata.full_object_keys else data
+            replace_object_keys(data, dst_keys)
+            if metadata.full_object_keys and len(dst_keys) == len(metadata.objects)
+            else data
         )
 
     # pylint: disable=too-many-locals
@@ -841,6 +875,7 @@ class BackupCopier:
                                     target_storage,
                                     dst_prefix,
                                     entries,
+                                    result,
                                     src_path_override=src_path_override,
                                 )
                                 if rewritten_data != data:

@@ -493,6 +493,119 @@ Feature: Copy backups to another storage
     """
 
   @require_version_22.8
+  Scenario: Copy keeps going within a metadata file and completes on retry
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.t (n UInt32) ENGINE = MergeTree ORDER BY n
+        SETTINGS storage_policy = 's3';
+    INSERT INTO test_db.t VALUES (1), (2);
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: cloud
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    storage:
+        credentials:
+            bucket: ch-backup-copy
+    """
+    When we execute command on clickhouse01
+    """
+    python3 - <<'PY'
+    import base64
+    import copy
+    import json
+    from ch_backup.backup.layout import BackupLayout
+    from ch_backup.clickhouse.object_storage_metadata import parse_object_storage_metadata
+    from ch_backup.config import Config
+    from ch_backup.storage.engine import get_storage_engine
+    cfg = Config('/etc/yandex/ch-backup/ch-backup.conf')
+    cfg['multiprocessing']['workers'] = 0
+    layout = BackupLayout(cfg)
+    backup = layout.get_backup('cloud')
+    path = layout.get_cloud_storage_metadata_remote_paths(
+        'cloud', 's3', backup.cloud_storage.compressed, 'all')[0]
+    files = layout.get_cloud_storage_metadata_files(backup, path)
+    with open('/tmp/copy-original-metadata.json', 'w') as f:
+        json.dump([path, [(name, base64.b64encode(data).decode()) for name, data in files]], f)
+    for index, (name, data) in enumerate(files):
+        if name.endswith('frozen_metadata.txt'):
+            continue
+        metadata = parse_object_storage_metadata(data)
+        lines = data.decode().split('\n')
+        count, size = map(int, lines[1].split('\t'))
+        key = 'data/keepgoing-probe' if metadata.full_object_keys else 'keepgoing-probe'
+        lines[1] = f'{count + 3}\t{size + 5}'
+        lines[2:2] = ['1\t../invalid1', f'3\t{key}', '1\t../invalid2']
+        files[index] = (name, '\n'.join(lines).encode())
+        break
+    else:
+        raise AssertionError('No object metadata found')
+    storage_config = copy.deepcopy(cfg['storage'])
+    storage_config['credentials']['bucket'] = 'cloud-storage-01'
+    get_storage_engine(storage_config).upload_data(b'abc', 'data/keepgoing-probe')
+    layout.upload_cloud_storage_metadata_files(backup, path, files)
+    layout.wait()
+    PY
+    """
+    And we try to execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy cloud --keep-going \
+        --no-server-side-copy \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-cloud-storage-bucket cloud-storage-02 \
+        --report-path /tmp/copy-report.json
+    """
+    Then command exits with code 1
+    When we execute command on clickhouse01
+    """
+    python3 - <<'PY'
+    import base64
+    import copy
+    import json
+    from ch_backup.backup.layout import BackupLayout
+    from ch_backup.backup.metadata import BackupState
+    from ch_backup.config import Config
+    from ch_backup.storage.engine import get_storage_engine
+    cfg = Config('/etc/yandex/ch-backup/ch-backup.conf')
+    cfg['multiprocessing']['workers'] = 0
+    with open('/tmp/copy-report.json') as f:
+        result = json.load(f)['backups'][0]
+    assert result['status'] == 'failed'
+    assert len(result['errors']) == 2
+    assert all(e['stage'] == 'planning' for e in result['errors'])
+    assert all(f'../invalid{i}' in result['errors'][i - 1]['source'] for i in (1, 2))
+    storage_config = copy.deepcopy(cfg['storage'])
+    storage_config['credentials']['bucket'] = 'cloud-storage-02'
+    assert get_storage_engine(storage_config).download_data('cloud/keepgoing-probe') == b'abc'
+    target_cfg = cfg.derive()
+    target_cfg['storage']['credentials']['bucket'] = 'ch-backup-copy'
+    assert BackupLayout(target_cfg).get_backup('cloud').state == BackupState.FAILED
+    layout = BackupLayout(cfg)
+    with open('/tmp/copy-original-metadata.json') as f:
+        path, files = json.load(f)
+    layout.upload_cloud_storage_metadata_files(layout.get_backup('cloud'), path,
+        [(name, base64.b64decode(data)) for name, data in files])
+    layout.wait()
+    PY
+    """
+    And we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy cloud --keep-going \
+        --no-server-side-copy \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-cloud-storage-bucket cloud-storage-02
+    """
+    Then we get response contains
+    """
+    cloud: copied
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
+  @require_version_22.8
   Scenario: Copied backup with data on S3 disk doesn't depend on the source
     Given we have executed queries on clickhouse01
     """

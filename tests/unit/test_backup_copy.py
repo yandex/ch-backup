@@ -604,15 +604,17 @@ def test_same_bucket_different_path_root() -> None:
 
 
 @pytest.mark.parametrize(
-    ["database", "stored_database"],
+    ["database", "stored_database", "target_database"],
     [
-        pytest.param("db1", "db1", id="escaped path"),
-        pytest.param("my-db", "my-db", id="legacy unescaped path"),
-        pytest.param("my-db", "my%2Ddb", id="escaped path with special chars"),
+        pytest.param("db1", "db1", "db1", id="escaped path"),
+        pytest.param("my-db", "my-db", "my%2Ddb", id="legacy unescaped path"),
+        pytest.param(
+            "my-db", "my%2Ddb", "my%2Ddb", id="escaped path with special chars"
+        ),
     ],
 )
 def test_linked_parts_are_copied_into_backup(
-    database: str, stored_database: str
+    database: str, stored_database: str, target_database: str
 ) -> None:
     b1 = _backup("b1", database=database, parts={"all_1_1_0": _part()})
     b2 = _backup(
@@ -628,6 +630,7 @@ def test_linked_parts_are_copied_into_backup(
     ctx = CopyTestContext([b1, b2])
     ctx.target_config["copy"]["server_side_copy"] = False
     data_dir = f"data/{stored_database}/t1"
+    target_data_dir = f"data/{target_database}/t1"
     _with_files(
         ctx,
         "b1",
@@ -648,12 +651,12 @@ def test_linked_parts_are_copied_into_backup(
         ),
         (
             f"ch_backup/b1/{data_dir}/all_1_1_0/all_1_1_0.tar",
-            f"ch_backup_copy/b2/{data_dir}/all_1_1_0/all_1_1_0.tar",
+            f"ch_backup_copy/b2/{target_data_dir}/all_1_1_0/all_1_1_0.tar",
             101,
         ),
         (
             f"ch_backup/b1/{data_dir}/all_2_2_0/all_2_2_0.tar",
-            f"ch_backup_copy/b2/{data_dir}/all_2_2_0_3/all_2_2_0_3.tar",
+            f"ch_backup_copy/b2/{target_data_dir}/all_2_2_0_3/all_2_2_0_3.tar",
             102,
         ),
     }
@@ -725,6 +728,92 @@ def test_missing_linked_part() -> None:
     with pytest.raises(ClickhouseBackupError, match="is not found in source storage"):
         ctx.copy(["b2"])
     assert not ctx.target_layout.uploaded
+
+
+@pytest.mark.parametrize("stored_database", ["my-db", "my%2Ddb"])
+@pytest.mark.parametrize("keep_going", [False, True])
+def test_copy_partial_linked_part_files_and_retry(
+    stored_database: str, keep_going: bool
+) -> None:
+    part = {
+        **_part(link="owner", link_part_name="all_1_1_0"),
+        "tarball": False,
+        "files": ["checksums.txt", "data.bin", "columns.txt"],
+    }
+    ctx = CopyTestContext(
+        [_backup("child", database="my-db", parts={"all_1_1_0_2": part})]
+    )
+    ctx.target_config["copy"]["server_side_copy"] = False
+    part_dir = f"data/{stored_database}/t1/all_1_1_0"
+    _with_files(ctx, "owner", {f"{part_dir}/data.bin": 100})
+    report = CopyReport()
+
+    with pytest.raises(ClickhouseBackupError):
+        ctx.copy(keep_going=keep_going, report=report)
+    if keep_going:
+        result = report.backups[0]
+        assert (result.objects_total, result.objects_copied) == (1, 1)
+        assert result.known_bytes_copied == 100
+        assert [e["source"] for e in result.errors] == [
+            f"owner/{part_dir}/checksums.txt",
+            f"owner/{part_dir}/columns.txt",
+        ]
+        assert ctx.copied_paths() == {
+            f"ch_backup/owner/{part_dir}/data.bin": (
+                "ch_backup_copy/child/data/my%2Ddb/t1/all_1_1_0_2/data.bin"
+            )
+        }
+        failed = ctx.target_layout.backups["child"]
+        assert failed.state == BackupState.FAILED
+        assert failed.get_parts()[0].link == "owner"
+    else:
+        assert not ctx.target_layout.uploaded
+        assert not ctx.target_layout.copied
+        assert len(report.backups[0].errors) == 1
+
+    # Repair the other source layout: the retry must reuse the same target path
+    # so a partial escaped directory cannot shadow a complete legacy directory.
+    retry_database = "my-db" if stored_database == "my%2Ddb" else "my%2Ddb"
+    retry_part_dir = f"data/{retry_database}/t1/all_1_1_0"
+    _with_files(
+        ctx,
+        "owner",
+        {
+            f"{retry_part_dir}/data.bin": 100,
+            f"{retry_part_dir}/checksums.txt": 1,
+            f"{retry_part_dir}/columns.txt": 2,
+        },
+    )
+    assert ctx.copy(keep_going=keep_going, report=report) == (["child"], [])
+    target = ctx.target_layout.backups["child"]
+    assert target.state == BackupState.CREATED
+    assert target.get_parts()[0].link is None
+    assert target.get_parts()[0].link_part_name is None
+    assert report.backups[0].objects_copied == 3
+    assert report.backups[0].known_bytes_copied == 103
+    assert not report.backups[0].errors
+    assert all("/my%2Ddb/" in path for path in ctx.copied_paths().values())
+
+
+def test_copy_linked_part_prefers_complete_legacy_directory() -> None:
+    part = {**_part(link="owner"), "tarball": False}
+    ctx = CopyTestContext(
+        [_backup("child", database="my-db", parts={"all_1_1_0": part})]
+    )
+    ctx.target_config["copy"]["server_side_copy"] = False
+    _with_files(
+        ctx,
+        "owner",
+        {
+            "data/my%2Ddb/t1/all_1_1_0/data.bin": 99,
+            "data/my-db/t1/all_1_1_0/data.bin": 100,
+            "data/my-db/t1/all_1_1_0/checksums.txt": 1,
+        },
+    )
+    assert ctx.copy(keep_going=True) == (["child"], [])
+    assert len(ctx.target_layout.copied) == 2
+    assert all("/my-db/" in path for path in ctx.copied_paths())
+    assert all("/my%2Ddb/" in path for path in ctx.copied_paths().values())
 
 
 def _object_storage_metadata(*objects: tuple[str, int], version: int = 3) -> bytes:
@@ -1875,6 +1964,62 @@ def test_cloud_planning_continues_after_corrupt_metadata_files(
     assert result.known_bytes_copied >= 100
     assert any(e.dst_path.endswith("xyz/good") for e in ctx.target_layout.copied)
     assert ctx.target_layout.backups["b1"].state == BackupState.FAILED
+
+
+@pytest.mark.parametrize("full_cloud", [False, True])
+@pytest.mark.parametrize("version", [3, 5])
+@pytest.mark.parametrize("keep_going", [False, True])
+def test_cloud_planning_continues_within_metadata_file_and_retries(
+    full_cloud: bool, version: int, keep_going: bool
+) -> None:
+    ctx = _cloud_storage_context()
+    backup = _backup(
+        "b1",
+        parts={"all_1_1_0": {**_part(), "disk_name": "s3"}},
+        cloud_storage_disks=["s3"],
+    )
+    backup.cloud_storage.data_copied = full_cloud
+    ctx.layout.backups["b1"] = backup
+    src_prefix = "ch_backup/b1/cloud_storage/s3" if full_cloud else "data"
+    key = f"{src_prefix}/xyz/good" if version == 5 else "xyz/good"
+    tarball = "ch_backup/b1/disks/s3/db1/t1.tar.gz"
+    file_name = "all_1_1_0/data.bin"
+    data = _object_storage_metadata(
+        ("../invalid1", 1), (key, 100), ("../invalid2", 2), version=version
+    )
+    ctx.layout.cloud_storage_files[tarball] = [(file_name, data)]
+    report = CopyReport()
+
+    with pytest.raises(ClickhouseBackupError):
+        ctx.copy(keep_going=keep_going, report=report)
+    if keep_going:
+        result = report.backups[0]
+        assert len(result.errors) == 2
+        assert [e["source"] for e in result.errors] == [
+            f"{tarball}:{file_name}:../invalid1",
+            f"{tarball}:{file_name}:../invalid2",
+        ]
+        assert result.known_bytes_copied >= 100
+        assert f"{src_prefix}/xyz/good" in ctx.copied_paths()
+        assert ctx.target_layout.backups["b1"].state == BackupState.FAILED
+        assert not any(s == BackupState.CREATED for _, s in ctx.target_layout.uploaded)
+        if full_cloud:
+            # Incomplete V5 metadata must not be rewritten with a shortened list.
+            assert ctx.target_layout.cloud_storage_files[
+                "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
+            ] == [(file_name, data)]
+    else:
+        assert not ctx.target_layout.uploaded
+        assert not ctx.target_layout.copied
+        assert len(report.backups[0].errors) == 1
+
+    ctx.layout.cloud_storage_files[tarball] = [
+        (file_name, _object_storage_metadata((key, 100), version=version))
+    ]
+    assert ctx.copy(keep_going=keep_going, report=report) == (["b1"], [])
+    assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
+    assert not report.backups[0].errors
+    assert report.backups[0].objects_total == report.backups[0].objects_copied
 
 
 def test_copy_materializes_links_after_owner_copy_fails() -> None:
