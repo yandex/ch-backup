@@ -140,6 +140,9 @@ def _create_backup_next_to(existing_name: str, name: str) -> None:
     existing = MagicMock()
     existing.name = existing_name
     backup.__dict__["_context"].backup_layout.get_backups.return_value = [existing]
+    backup.__dict__["_context"].backup_layout.get_backup_names.return_value = [
+        existing_name
+    ]
 
     backup.backup(BackupSources(), name=name)
 
