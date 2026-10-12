@@ -3,6 +3,8 @@
 Command-line interface.
 """
 
+# pylint: disable=too-many-lines
+
 import json
 import os
 import signal
@@ -688,6 +690,28 @@ def restore_command(
         restore_tables_in_replicated_database=restore_tables_in_replicated_database,
         partial_restore_filter=matcher,
     )
+
+
+@command(name="restore-from-replica")  # type: ignore
+@option(
+    "--source-host",
+    type=str,
+    required=True,
+    help="Live replica of the same shard to take the schema from.",
+)
+@option(
+    "--replica-name",
+    type=str,
+    help=f'Replica name to be removed from zookeeper. Default - {style("hostname", fg=Color.bright_green)}.',
+)
+def restore_from_replica_command(
+    _ctx: Context,
+    ch_backup: ClickhouseBackup,
+    source_host: str,
+    replica_name: str | None = None,
+) -> None:
+    """Restore schema from a live replica of the shard instead of a backup."""
+    ch_backup.restore_from_replica(source_host, replica_name)
 
 
 @command(name="restore-access-control")  # type: ignore

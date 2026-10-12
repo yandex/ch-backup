@@ -31,3 +31,4 @@ features/backup_replicated_database.feature
 features/workload_entities.feature
 features/cloud_storage_full_backup.feature
 features/unique_key.feature
+features/restore_from_replica.feature
