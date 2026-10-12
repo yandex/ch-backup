@@ -108,12 +108,17 @@ class ClickhouseBackup:
         """
         return self._get_backup(backup_name)
 
-    def list(self, state: BackupState = None) -> Sequence[BackupMetadata]:
+    def list(
+        self, state: BackupState = None, *, unreadable: dict[str, str] | None = None
+    ) -> Sequence[BackupMetadata]:
         """
         Get list of existing backups sorted by start timestamp.
+        If unreadable is provided, collect per-backup read errors there.
         """
         backups = []
-        for backup in self._context.backup_layout.get_backups(use_light_meta=True):
+        for backup in self._context.backup_layout.get_backups(
+            use_light_meta=True, unreadable=unreadable
+        ):
             if state and backup.state != state:
                 continue
             backups.append(backup)
