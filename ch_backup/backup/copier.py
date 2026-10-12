@@ -2,14 +2,18 @@
 Copying of backups from one storage to another.
 """
 
+# pylint: disable=too-many-lines
+
 import copy
 import os
 import re
+from functools import partial
 from itertools import chain
 from typing import Sequence
 from urllib.parse import quote, urlparse
 
 from ch_backup import logging
+from ch_backup.backup.copy_report import BackupCopyResult, CopyReport
 from ch_backup.backup.layout import (
     BACKUP_LIGHT_META_FNAME,
     BACKUP_META_FNAME,
@@ -37,6 +41,7 @@ from ch_backup.exceptions import (
     ClickhouseBackupError,
     ConfigurationError,
     TerminatingSignal,
+    is_broken_executor,
 )
 from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
@@ -99,33 +104,71 @@ class BackupCopier:
         self._source_backup_files: dict[str, dict[str, int]] = {}
         # Availability of server-side copy for bucket pairs with particular credentials.
         self._server_side_copy: dict[tuple, bool] = {}
+        self._keep_going = False
+        self._report = CopyReport()
 
     def copy(
-        self, backup_names: Sequence[str] | None = None
+        self,
+        backup_names: Sequence[str] | None = None,
+        *,
+        keep_going: bool = False,
+        report: CopyReport | None = None,
     ) -> tuple[list[str], list[str]]:
         """
         Copy specified backups or all backups in the state "created" if names are not specified.
 
         Return names of copied backups and names of backups skipped as already copied.
+        With keep_going, attempt every viable backup before raising an aggregate error.
         """
-        self._validate_configs()
+        self._keep_going = keep_going
+        self._report = report if report is not None else CopyReport()
+        self._report.error = None
+        self._report.backups.clear()
+        try:
+            self._validate_configs()
+            backups = self._select_backups(backup_names)
+            results = {result.name: result for result in self._report.backups}
+            self._validate_backup_names(backups, results)
 
-        backups = self._select_backups(backup_names)
-        self._validate_backup_names(backups)
-        if any(backup.cloud_storage.requires_source_bucket for backup in backups):
-            # Fail before copying anything if the target for cloud storage data is not configured.
-            self._get_target_cloud_storage()
+            copied, skipped = [], []
+            for backup in backups:
+                result = results[backup.name]
+                if result.status == "failed":
+                    continue
+                try:
+                    if self._copy_backup(backup.name, result):
+                        result.status = "copied"
+                        copied.append(backup.name)
+                    else:
+                        result.status = "skipped"
+                        skipped.append(backup.name)
+                except (Exception, TerminatingSignal) as e:
+                    if not result.errors:
+                        result.add_error(e, "planning")
+                    if (
+                        not keep_going
+                        or not isinstance(e, Exception)
+                        or is_broken_executor(e)
+                    ):
+                        raise
 
-        copied, skipped = [], []
-        for backup in backups:
-            if self._copy_backup(backup.name):
-                copied.append(backup.name)
-            else:
-                skipped.append(backup.name)
+            failed = [
+                result.name
+                for result in self._report.backups
+                if result.status == "failed"
+            ]
+            if failed:
+                raise ClickhouseBackupError(
+                    f"Copy failed for {len(failed)} backup(s): {', '.join(failed)}"
+                )
+            return copied, skipped
+        except BaseException as e:
+            self._report.error = f"{type(e).__name__}: {e}"
+            raise
 
-        return copied, skipped
-
-    def _validate_backup_names(self, backups: Sequence[BackupMetadata]) -> None:
+    def _validate_backup_names(
+        self, backups: Sequence[BackupMetadata], results: dict[str, BackupCopyResult]
+    ) -> None:
         """
         Preserve the shared cloud-storage namespace check used when creating backups.
         """
@@ -134,15 +177,22 @@ class BackupCopier:
             for backup in self._target_layout.get_backups(use_light_meta=True)
         }
         for backup in backups:
-            _validate_relative_key(backup.name)
-            for disk_name in backup.cloud_storage.disks:
-                _validate_relative_key(disk_name)
-            existing = names.setdefault(backup.get_sanitized_name(), backup.name)
-            if existing != backup.name:
-                raise ClickhouseBackupError(
-                    f"Backup with name {backup.name} conflicts with backup {existing} "
-                    "in target storage: their sanitized names are equal"
-                )
+            try:
+                _validate_relative_key(backup.name)
+                for disk_name in backup.cloud_storage.disks:
+                    _validate_relative_key(disk_name)
+                existing = names.setdefault(backup.get_sanitized_name(), backup.name)
+                if existing != backup.name:
+                    raise ClickhouseBackupError(
+                        f"Backup with name {backup.name} conflicts with backup {existing} "
+                        "in target storage: their sanitized names are equal"
+                    )
+                if backup.cloud_storage.requires_source_bucket:
+                    self._get_target_cloud_storage()
+            except Exception as e:
+                results[backup.name].add_error(e, "validation")
+                if not self._keep_going or is_broken_executor(e):
+                    raise
 
     def _validate_configs(self) -> None:
         if storage_id(self._storage) == storage_id(self._target_storage) and _key(
@@ -166,26 +216,44 @@ class BackupCopier:
     def _select_backups(
         self, backup_names: Sequence[str] | None
     ) -> list[BackupMetadata]:
-        if backup_names is None:
-            backups = [
-                backup
-                for backup in self._layout.get_backups(use_light_meta=True)
-                if backup.state == BackupState.CREATED
-            ]
-        else:
-            backups = []
-            for name in dict.fromkeys(backup_names):
+        backups = []
+        names = (
+            sorted(self._layout.get_backup_names())
+            if backup_names is None
+            else backup_names
+        )
+        results = {name: BackupCopyResult(name) for name in dict.fromkeys(names)}
+        self._report.backups.extend(results.values())
+        for name, result in results.items():
+            try:
                 backup = self._layout.get_backup(name, use_light_meta=True)
+                if backup_names is None and (
+                    not backup or backup.state != BackupState.CREATED
+                ):
+                    self._report.backups.remove(result)
+                    continue
                 if not backup:
                     raise BackupNotFound(name)
                 _check_backup_state(backup)
+                if backup.name != name:
+                    raise ClickhouseBackupError(
+                        f'Backup metadata name does not match "{name}"'
+                    )
                 backups.append(backup)
+            except Exception as e:
+                result.add_error(e, "selection")
+                if not self._keep_going or is_broken_executor(e):
+                    raise
 
         # Older backups are copied first, so deduplicated data parts of newer backups
         # can be linked to the copies of older ones.
-        return sorted(backups, key=lambda backup: backup.start_time)
+        backups.sort(key=lambda backup: backup.start_time)
+        self._report.backups[:] = [results[backup.name] for backup in backups] + [
+            result for result in self._report.backups if result.status == "failed"
+        ]
+        return backups
 
-    def _copy_backup(self, backup_name: str) -> bool:
+    def _copy_backup(self, backup_name: str, result: BackupCopyResult) -> bool:
         """
         Copy backup. Return False if the backup is already present in the target storage.
         """
@@ -234,21 +302,55 @@ class BackupCopier:
             self._plan_cloud_storage_objects(backup, target_meta, plan)
         self._validate_destinations(backup, plan)
 
-        self._target_layout.upload_backup_metadata(target_meta)
-        try:
-            self._copy_objects(backup, plan)
-            target_meta.state = BackupState.CREATED
-        except (Exception, TerminatingSignal) as e:
-            logging.critical("Copying of backup {} failed", backup_name, exc_info=True)
-            target_meta.state = BackupState.FAILED
-            target_meta.exception = f"{type(e).__name__}: {e}"
-            raise
-        finally:
-            self._target_layout.upload_backup_metadata(target_meta)
-            self._target_backups.pop(backup_name, None)
-
+        rewritten_paths = {
+            _key(path) for path, _ in plan.rewritten_cloud_storage_metadata
+        }
+        plan.entries = [
+            entry
+            for entry in plan.entries
+            if storage_id(entry.dst_storage) != storage_id(self._target_storage)
+            or _key(entry.dst_path) not in rewritten_paths
+        ]
+        result.objects_total = len(plan.entries) + len(
+            plan.rewritten_cloud_storage_metadata
+        )
+        self._transfer_backup(backup, target_meta, plan, result)
         logging.info("Backup {} is copied", backup_name)
         return True
+
+    def _transfer_backup(
+        self,
+        backup: BackupMetadata,
+        target_meta: BackupMetadata,
+        plan: _CopyPlan,
+        result: BackupCopyResult,
+    ) -> None:
+        """Publish CREATED only after transfer succeeds, preserving failures during cleanup."""
+        stage = "metadata"
+        try:
+            self._target_layout.upload_backup_metadata(target_meta)
+            stage = "copy"
+            self._copy_objects(backup, plan, result)
+            stage = "metadata"
+            target_meta.state = BackupState.CREATED
+            self._target_layout.upload_backup_metadata(target_meta)
+        except (Exception, TerminatingSignal) as e:
+            logging.critical("Copying of backup {} failed", backup.name, exc_info=True)
+            if stage == "metadata" or not result.errors:
+                result.add_error(e, stage)
+            target_meta.state = BackupState.FAILED
+            target_meta.exception = result.errors[0]["message"]
+            try:
+                self._target_layout.upload_backup_metadata(target_meta)
+            except (Exception, TerminatingSignal) as metadata_error:
+                result.add_error(metadata_error, "metadata")
+                if not isinstance(metadata_error, Exception):
+                    raise
+                if is_broken_executor(metadata_error):
+                    raise e from metadata_error
+            raise
+        finally:
+            self._target_backups.pop(backup.name, None)
 
     def _validate_destinations(self, backup: BackupMetadata, plan: _CopyPlan) -> None:
         """Check the entire plan before publishing metadata or copying any objects."""
@@ -765,19 +867,12 @@ class BackupCopier:
             return access_key_id, secret_access_key
         return None
 
-    def _copy_objects(self, backup: BackupMetadata, plan: _CopyPlan) -> None:
-        rewritten_paths = {
-            _key(path) for path, _ in plan.rewritten_cloud_storage_metadata
-        }
-        entries = [
-            entry
-            for entry in plan.entries
-            if storage_id(entry.dst_storage) != storage_id(self._target_storage)
-            or _key(entry.dst_path) not in rewritten_paths
-        ]
+    def _copy_objects(
+        self, backup: BackupMetadata, plan: _CopyPlan, result: BackupCopyResult
+    ) -> None:
         # A matching size does not prove that an existing object belongs to this copy.
         # Recopy every object when retrying an unfinished backup.
-        entries = self._resolve_copy_mode(entries)
+        entries = self._resolve_copy_mode(plan.entries, result)
 
         logging.info(
             "Copying {} objects ({} bytes)",
@@ -785,22 +880,59 @@ class BackupCopier:
             sum(entry.size for entry in entries),
         )
         try:
-            self._target_layout.copy_objects(entries)
+            self._target_layout.copy_objects(
+                entries,
+                keep_going=self._keep_going,
+                callback=lambda entry: result.completed(entry.size),
+                on_error=lambda entry, error: result.add_error(
+                    error,
+                    "copy",
+                    source=entry.src_path,
+                    target=entry.dst_path,
+                    object_failed=True,
+                ),
+            )
             for remote_path, files in plan.rewritten_cloud_storage_metadata:
-                self._target_layout.upload_cloud_storage_metadata_files(
-                    backup, remote_path, files
-                )
-        except (Exception, TerminatingSignal):
+                try:
+                    self._target_layout.upload_cloud_storage_metadata_files(
+                        backup,
+                        remote_path,
+                        files,
+                        callback=result.completed,
+                        on_error=partial(
+                            result.add_error,
+                            stage="copy_metadata",
+                            target=remote_path,
+                            object_failed=True,
+                        ),
+                    )
+                except Exception as e:
+                    if not self._keep_going or is_broken_executor(e):
+                        raise
+        except (Exception, TerminatingSignal) as e:
             # Submission can fail after other uploads have already started. Wait before
             # publishing FAILED and releasing the locks, preserving the original error.
+            if not result.errors:
+                result.add_error(e, "copy")
             try:
                 self._target_layout.wait(keep_going=True)
-            except (Exception, TerminatingSignal):
+            except (Exception, TerminatingSignal) as drain_error:
+                result.add_error(drain_error, "wait")
                 logging.exception("Failed to drain pending copy operations")
+                if not isinstance(drain_error, Exception):
+                    raise
+                if is_broken_executor(drain_error):
+                    raise e from drain_error
             raise
-        self._target_layout.wait()
+        self._target_layout.wait(keep_going=self._keep_going)
+        if result.errors:
+            raise ClickhouseBackupError(
+                f"Failed to copy {result.objects_failed} object(s) of backup {backup.name}"
+            )
 
-    def _resolve_copy_mode(self, entries: list[CopyEntry]) -> list[CopyEntry]:
+    def _resolve_copy_mode(
+        self, entries: list[CopyEntry], copy_result: BackupCopyResult | None = None
+    ) -> list[CopyEntry]:
         """
         Mark objects that can be copied on the server side.
 
@@ -822,13 +954,23 @@ class BackupCopier:
                 _storage_cache_key(entry.dst_storage),
             )
             if cache_key not in self._server_side_copy:
-                available = self._engine(entry.dst_storage).try_copy_object(
-                    entry.src_storage["credentials"]["bucket"],
-                    entry.src_path,
-                    entry.dst_path,
-                )
+                try:
+                    available = self._engine(entry.dst_storage).try_copy_object(
+                        entry.src_storage["credentials"]["bucket"],
+                        entry.src_path,
+                        entry.dst_path,
+                    )
+                except Exception as e:
+                    if not self._keep_going or is_broken_executor(e):
+                        raise
+                    logging.warning(
+                        "Server-side copy probe failed, using streamed copy: {}", e
+                    )
+                    available = False
                 self._server_side_copy[cache_key] = available
                 if available:
+                    if copy_result is not None:
+                        copy_result.completed(entry.size)
                     logging.info(
                         "Objects are copied on the server side from {} to {}",
                         *pair,

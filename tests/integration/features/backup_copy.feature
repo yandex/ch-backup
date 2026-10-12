@@ -170,6 +170,168 @@ Feature: Copy backups to another storage
     already exists in target storage and it is not a copy of the source backup
     """
 
+  Scenario: Copy keeps going after a conflicting backup and saves a failure report
+    Given clickhouse on clickhouse01 has test schema
+    And clickhouse01 has test clickhouse data test1
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: first
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: conflicting
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: last
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    storage:
+        credentials:
+            bucket: ch-backup-copy
+    """
+    And we have created clickhouse02 clickhouse backup
+    """
+    name: conflicting
+    """
+    When we try to execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy --all --keep-going \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --report-path /tmp/copy-report.json
+    """
+    Then command exits with code 1
+    And we get response contains
+    """
+    first: copied
+    """
+    And we get response contains
+    """
+    conflicting: failed
+    """
+    And we get response contains
+    """
+    last: copied
+    """
+    When we execute command on clickhouse01
+    """
+    python3 - <<'PY'
+    import json
+    with open('/tmp/copy-report.json') as f:
+        report = json.load(f)
+    assert report['schema_version'] == 1
+    assert report['error']
+    assert {b['name']: b['status'] for b in report['backups']} == {
+        'first': 'copied', 'conflicting': 'failed', 'last': 'copied'}
+    for backup in report['backups']:
+        if backup['status'] == 'copied':
+            assert backup['objects_total'] == backup['objects_copied']
+            assert backup['objects_failed'] == 0
+    PY
+    """
+
+  Scenario: Copy keeps going after corrupt source metadata
+    Given clickhouse on clickhouse01 has test schema
+    And clickhouse01 has test clickhouse data test1
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: first
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: broken
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: last
+    """
+    When we put object in S3
+    """
+    bucket: ch-backup
+    path: ch_backup/broken/backup_light_struct.json
+    data: invalid metadata
+    """
+    And we try to execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy --all --keep-going \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --report-path /tmp/copy-report.json
+    """
+    Then command exits with code 1
+    When we execute command on clickhouse01
+    """
+    python3 - <<'PY'
+    import json
+    with open('/tmp/copy-report.json') as f:
+        report = json.load(f)
+    assert {b['name']: b['status'] for b in report['backups']} == {
+        'first': 'copied', 'broken': 'failed', 'last': 'copied'}
+    broken = next(b for b in report['backups'] if b['name'] == 'broken')
+    assert broken['objects_total'] is None
+    assert broken['errors'][0]['stage'] == 'selection'
+    PY
+    """
+
+  @require_version_22.8
+  Scenario: Copy keeps going after object failures and leaves the incomplete backup failed
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.remote_data (n UInt32) ENGINE = MergeTree ORDER BY n
+        SETTINGS storage_policy = 's3';
+    CREATE TABLE test_db.local_data (n UInt32) ENGINE = MergeTree ORDER BY n;
+    INSERT INTO test_db.remote_data VALUES (1), (2);
+    INSERT INTO test_db.local_data VALUES (3), (4);
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: a_cloud
+    tables:
+      - test_db.remote_data
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: b_local
+    tables:
+      - test_db.local_data
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    storage:
+        credentials:
+            bucket: ch-backup-copy
+    """
+    When we delete all objects in s3 bucket cloud-storage-01
+    And we try to execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy --all --keep-going \
+        --no-server-side-copy \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-cloud-storage-bucket cloud-storage-02 \
+        --report-path /tmp/copy-report.json
+    """
+    Then command exits with code 1
+    And we got the following backups on clickhouse02
+      | num | state   | data_count | link_count |
+      | 0   | created | 1          | 0          |
+      | 1   | failed  | 1          | 0          |
+    When we execute command on clickhouse01
+    """
+    python3 - <<'PY'
+    import json
+    with open('/tmp/copy-report.json') as f:
+        report = json.load(f)
+    assert {b['name']: b['status'] for b in report['backups']} == {
+        'a_cloud': 'failed', 'b_local': 'copied'}
+    cloud = next(b for b in report['backups'] if b['name'] == 'a_cloud')
+    assert cloud['objects_failed'] > 0
+    assert cloud['objects_copied'] > 0
+    assert cloud['objects_total'] == cloud['objects_copied'] + cloud['objects_failed']
+    assert all(e['stage'] == 'copy' and e['source'] for e in cloud['errors'])
+    PY
+    """
+
   @require_version_22.8
   Scenario: Copied backup with data on S3 disk doesn't depend on the source
     Given we have executed queries on clickhouse01

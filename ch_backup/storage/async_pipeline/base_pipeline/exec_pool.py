@@ -18,6 +18,7 @@ from multiprocessing import get_context
 from typing import Any, Callable, Iterable
 
 from ch_backup import logging
+from ch_backup.exceptions import is_broken_executor
 from ch_backup.util import exhaust_iterator
 
 TIMEOUT_WORKER_TERMINATING_SEC = 5.0
@@ -33,6 +34,7 @@ class Job:
 
     id_: str
     callback: Callable | None
+    on_error: Callable[[Exception], None] | None = None
 
 
 class ExecPool:
@@ -61,6 +63,7 @@ class ExecPool:
         func: Callable,
         *args: Any,
         callback: Callable | None = None,
+        on_error: Callable[[Exception], None] | None = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -70,7 +73,7 @@ class ExecPool:
             raise RuntimeError("Duplicate")
 
         future = self._pool.submit(func, *args, **kwargs)
-        self._future_to_job[future] = Job(job_id, callback)
+        self._future_to_job[future] = Job(job_id, callback, on_error)
 
     @staticmethod
     def _start():
@@ -90,13 +93,15 @@ class ExecPool:
             keep_going - skip exceptions raised by futures instead of propagating it.
         """
         for future in as_completed(self._future_to_job, timeout):
-            job = self._future_to_job[future]
+            job = self._future_to_job.pop(future)
             logging.debug("Future {} completed", job.id_)
 
             try:
                 result = future.result()
-            except Exception:
-                if keep_going:
+            except Exception as e:
+                if job.on_error:
+                    job.on_error(e)
+                if keep_going and not is_broken_executor(e):
                     logging.warning(
                         'Job "{}" generated an exception, skipping due to keep_going flag',
                         job.id_,
@@ -112,8 +117,6 @@ class ExecPool:
                 job.callback()
 
             yield result
-
-        self._future_to_job = {}
 
     def wait_all(self, keep_going: bool = False, timeout: float | None = None) -> None:
         """

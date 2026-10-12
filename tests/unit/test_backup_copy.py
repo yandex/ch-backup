@@ -6,15 +6,22 @@ Unit tests for copying of backups between storages.
 
 import copy
 import os
+from concurrent.futures import BrokenExecutor
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from ch_backup.backup.copier import BackupCopier
+from ch_backup.backup.copy_report import CopyReport, print_copy_report
 from ch_backup.backup.metadata import BackupMetadata, BackupState
 from ch_backup.config import DEFAULT_CONFIG
-from ch_backup.exceptions import ClickhouseBackupError, ConfigurationError
+from ch_backup.exceptions import (
+    ClickhouseBackupError,
+    ConfigurationError,
+    StorageError,
+    TerminatingSignal,
+)
 from ch_backup.storage.object_copy import CopyEntry, storage_id
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S %z"
@@ -73,6 +80,11 @@ class FakeLayout:
         self.copied: list[CopyEntry] = []
         self.cloud_storage_files: dict[str, list[tuple[str, bytes]]] = {}
         self.copy_error: Exception | None = None
+        self.object_errors: dict[str, Exception] = {}
+        self.metadata_errors: dict[str, Exception] = {}
+
+    def get_backup_names(self):
+        return list(self.backups)
 
     def get_backup_path(self, backup_name: str) -> str:
         return os.path.join(self.path_root, backup_name)
@@ -100,10 +112,18 @@ class FakeLayout:
         self.uploaded.append((backup.name, backup.state))
         self.backups[backup.name] = copy.deepcopy(backup)
 
-    def copy_objects(self, entries):
-        if self.copy_error:
-            raise self.copy_error
-        self.copied.extend(entries)
+    def copy_objects(self, entries, *, keep_going=False, callback=None, on_error=None):
+        for entry in entries:
+            error = self.copy_error or self.object_errors.get(entry.src_path)
+            if error:
+                if on_error:
+                    on_error(entry, error)
+                if not keep_going:
+                    raise error
+            else:
+                self.copied.append(entry)
+                if callback:
+                    callback(entry)
 
     def wait(self, keep_going=False):
         pass
@@ -117,8 +137,17 @@ class FakeLayout:
     def get_cloud_storage_metadata_files(self, backup_meta, remote_path):
         return list(self.cloud_storage_files[remote_path])
 
-    def upload_cloud_storage_metadata_files(self, backup_meta, remote_path, files):
+    def upload_cloud_storage_metadata_files(
+        self, backup_meta, remote_path, files, callback=None, on_error=None
+    ):
+        error = self.metadata_errors.get(remote_path)
+        if error:
+            if on_error:
+                on_error(error)
+            raise error
         self.cloud_storage_files[remote_path] = files
+        if callback:
+            callback()
 
 
 def _config(bucket: str, path_root: str) -> dict:
@@ -226,13 +255,17 @@ class CopyTestContext:
         return self.store.bucket(self.target_config["storage"]["credentials"]["bucket"])
 
     def copy(
-        self, backup_names: list[str] | None = None
+        self,
+        backup_names: list[str] | None = None,
+        *,
+        keep_going: bool = False,
+        report: CopyReport | None = None,
     ) -> tuple[list[str], list[str]]:
         copier = self.make_copier()
         with patch(
             "ch_backup.backup.copier.get_storage_engine", side_effect=self.store.engine
         ):
-            return copier.copy(backup_names)
+            return copier.copy(backup_names, keep_going=keep_going, report=report)
 
     def make_copier(self) -> BackupCopier:
         return BackupCopier(
@@ -1439,3 +1472,463 @@ def test_copy_rejects_conflicting_sanitized_names(already_in_target: bool) -> No
 
     assert not ctx.target_layout.uploaded
     assert not ctx.target_layout.copied
+
+
+@pytest.mark.parametrize("keep_going", [False, True])
+def test_copy_reports_partial_results_and_continues(keep_going: bool) -> None:
+    ctx = CopyTestContext(
+        [
+            _backup(f"b{i}", start_time=f"2026-01-0{i} 00:00:00 +0000")
+            for i in range(1, 4)
+        ]
+    )
+    ctx.target_config["copy"]["server_side_copy"] = False
+    for name in ("b1", "b2", "b3"):
+        _with_files(ctx, name, {"metadata/a.tar": 1, "metadata/b.tar": 2})
+    ctx.target_layout.object_errors["ch_backup/b2/metadata/a.tar"] = RuntimeError(
+        "object unavailable"
+    )
+    report = CopyReport()
+
+    with pytest.raises(ClickhouseBackupError if keep_going else RuntimeError):
+        ctx.copy(keep_going=keep_going, report=report)
+
+    assert [r.status for r in report.backups] == [
+        "copied",
+        "failed",
+        "copied" if keep_going else "not_processed",
+    ]
+    first, failed, last = report.backups
+    assert (first.objects_total, first.objects_copied, first.known_bytes_copied) == (
+        2,
+        2,
+        3,
+    )
+    assert (failed.objects_total, failed.objects_copied, failed.objects_failed) == (
+        2,
+        int(keep_going),
+        1,
+    )
+    assert failed.known_bytes_copied == (2 if keep_going else 0)
+    assert failed.errors == [
+        {
+            "stage": "copy",
+            "message": "RuntimeError: object unavailable",
+            "source": "ch_backup/b2/metadata/a.tar",
+            "target": "ch_backup_copy/b2/metadata/a.tar",
+        }
+    ]
+    assert ctx.target_layout.backups["b2"].state == BackupState.FAILED
+    assert last.objects_total == (2 if keep_going else None)
+    assert report.error
+
+    ctx.target_layout.object_errors.clear()
+    assert ctx.copy(keep_going=True, report=report) == (
+        ["b2"] if keep_going else ["b2", "b3"],
+        ["b1", "b3"] if keep_going else ["b1"],
+    )
+    assert report.error is None
+    assert ctx.target_layout.backups["b2"].state == BackupState.CREATED
+
+
+def test_copy_keep_going_skips_corrupt_source_metadata() -> None:
+    ctx = CopyTestContext([_backup("b1"), _backup("broken"), _backup("b3")])
+    report = CopyReport()
+    original = ctx.layout.get_backup
+
+    def read(name, use_light_meta=False):
+        if name == "broken" and use_light_meta:
+            raise StorageError("invalid metadata")
+        return original(name, use_light_meta)
+
+    with patch.object(ctx.layout, "get_backup", side_effect=read):
+        with pytest.raises(ClickhouseBackupError, match="broken"):
+            ctx.copy(keep_going=True, report=report)
+    assert [(r.name, r.status) for r in report.backups] == [
+        ("b1", "copied"),
+        ("b3", "copied"),
+        ("broken", "failed"),
+    ]
+    assert report.backups[-1].errors[0]["stage"] == "selection"
+    assert report.backups[-1].objects_total is None
+    assert "broken" not in ctx.target_layout.backups
+
+
+@pytest.mark.parametrize("explicit_names", [False, True])
+@pytest.mark.parametrize("keep_going", [False, True])
+def test_selection_failure_preserves_unprocessed_candidates(
+    explicit_names: bool, keep_going: bool, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names = ["a_good", "b_broken", "c_good"]
+    ctx = CopyTestContext([_backup(name) for name in names])
+    report = CopyReport()
+    failure = StorageError("invalid metadata")
+    original = ctx.layout.get_backup
+
+    def read(name, use_light_meta=False):
+        if name == "b_broken" and use_light_meta:
+            raise failure
+        return original(name, use_light_meta)
+
+    requested = names + ["a_good"] if explicit_names else None
+    with patch.object(ctx.layout, "get_backup", side_effect=read):
+        with pytest.raises(
+            ClickhouseBackupError if keep_going else StorageError
+        ) as raised:
+            ctx.copy(requested, keep_going=keep_going, report=report)
+
+    assert len(report.backups) == 3
+    assert {r.name: r.status for r in report.backups} == {
+        "a_good": "copied" if keep_going else "not_processed",
+        "b_broken": "failed",
+        "c_good": "copied" if keep_going else "not_processed",
+    }
+    broken = next(r for r in report.backups if r.name == "b_broken")
+    assert broken.errors == [
+        {"stage": "selection", "message": "StorageError: invalid metadata"}
+    ]
+    if not keep_going:
+        assert raised.value is failure
+        assert not ctx.target_layout.uploaded
+        assert not ctx.target_layout.copied
+        assert all(r.objects_total is None for r in report.backups)
+    print_copy_report(report, None)
+    assert f"not_processed: {0 if keep_going else 2}" in capsys.readouterr().out
+
+
+def test_selection_excludes_known_ineligible_candidates_from_report() -> None:
+    ctx = CopyTestContext(
+        [
+            _backup("failed", state=BackupState.FAILED),
+            _backup("healthy"),
+            _backup("missing"),
+        ]
+    )
+    report = CopyReport()
+    original = ctx.layout.get_backup
+
+    def read(name, use_light_meta=False):
+        return None if name == "missing" else original(name, use_light_meta)
+
+    with patch.object(ctx.layout, "get_backup", side_effect=read):
+        assert ctx.copy(report=report) == (["healthy"], [])
+    assert [(r.name, r.status) for r in report.backups] == [("healthy", "copied")]
+
+
+@pytest.mark.parametrize("explicit_names", [False, True])
+def test_selection_rejects_mismatched_metadata_names(explicit_names: bool) -> None:
+    ctx = CopyTestContext([_backup("b1"), _backup("b2")])
+    report = CopyReport()
+    original = ctx.layout.get_backup
+
+    def read(name, use_light_meta=False):
+        return _backup("different") if name == "b1" else original(name, use_light_meta)
+
+    with patch.object(ctx.layout, "get_backup", side_effect=read):
+        with pytest.raises(ClickhouseBackupError, match='name does not match "b1"'):
+            ctx.copy(["b1", "b2"] if explicit_names else None, report=report)
+    assert [(r.name, r.status) for r in report.backups] == [
+        ("b1", "failed"),
+        ("b2", "not_processed"),
+    ]
+    assert not ctx.target_layout.uploaded
+
+
+@pytest.mark.parametrize("target_inventory", [False, True])
+def test_copy_inventory_errors_stop_keep_going(target_inventory: bool) -> None:
+    ctx = CopyTestContext([_backup("b1")])
+    report = CopyReport()
+    layout = ctx.target_layout if target_inventory else ctx.layout
+    method = "get_backups" if target_inventory else "get_backup_names"
+    with patch.object(layout, method, side_effect=StorageError("listing failed")):
+        with pytest.raises(StorageError, match="listing failed"):
+            ctx.copy(keep_going=True, report=report)
+    assert not ctx.target_layout.uploaded
+    assert report.error == "StorageError: listing failed"
+
+
+@pytest.mark.parametrize("already_in_target", [False, True])
+def test_copy_keep_going_isolates_name_conflicts(already_in_target: bool) -> None:
+    backup = _backup("backup-1")
+    conflict = _backup("backup_1")
+    ctx = CopyTestContext(
+        (
+            [backup, _backup("b3")]
+            if already_in_target
+            else [backup, conflict, _backup("b3")]
+        ),
+        [conflict] if already_in_target else [],
+    )
+    report = CopyReport()
+    with pytest.raises(ClickhouseBackupError):
+        ctx.copy(keep_going=True, report=report)
+    expected = (
+        {"backup-1": "failed", "b3": "copied"}
+        if already_in_target
+        else {"backup-1": "copied", "backup_1": "failed", "b3": "copied"}
+    )
+    assert {r.name: r.status for r in report.backups} == expected
+    assert (
+        "their sanitized names are equal"
+        in next(r for r in report.backups if r.status == "failed").errors[0]["message"]
+    )
+
+
+@pytest.mark.parametrize("keep_going", [False, True])
+def test_missing_cloud_target_does_not_block_local_backups(keep_going: bool) -> None:
+    ctx = CopyTestContext(
+        [_backup("b1"), _backup("cloud", cloud_storage_disks=["s3"]), _backup("b3")]
+    )
+    report = CopyReport()
+    with pytest.raises(ClickhouseBackupError):
+        ctx.copy(keep_going=keep_going, report=report)
+    assert {r.name: r.status for r in report.backups} == {
+        "b1": "copied" if keep_going else "not_processed",
+        "cloud": "failed",
+        "b3": "copied" if keep_going else "not_processed",
+    }
+    assert "cloud" not in ctx.target_layout.backups
+    if not keep_going:
+        assert not ctx.target_layout.uploaded
+
+
+def test_copy_planning_failure_writes_nothing_for_failed_backup() -> None:
+    ctx = CopyTestContext(
+        [
+            _backup("broken", parts={"all_1_1_0": _part(link="missing")}),
+            _backup("healthy"),
+        ]
+    )
+    _with_files(ctx, "broken", {"metadata/a.tar": 1})
+    report = CopyReport()
+    with pytest.raises(ClickhouseBackupError):
+        ctx.copy(keep_going=True, report=report)
+    assert "broken" not in ctx.target_layout.backups
+    assert all(
+        e.src_path != "ch_backup/broken/metadata/a.tar"
+        for e in ctx.target_layout.copied
+    )
+    assert [(r.status, r.objects_total) for r in report.backups] == [
+        ("failed", None),
+        ("copied", 0),
+    ]
+
+
+def test_copy_materializes_links_after_owner_copy_fails() -> None:
+    owner = _backup("b1", parts={"all_1_1_0": _part()})
+    linked = _backup(
+        "b2",
+        start_time="2026-01-02 00:00:00 +0000",
+        parts={"all_1_1_0": _part(link="b1")},
+    )
+    ctx = CopyTestContext([owner, linked])
+    ctx.target_config["copy"]["server_side_copy"] = False
+    _with_files(
+        ctx, "b1", {"metadata/a.tar": 1, "data/db1/t1/all_1_1_0/all_1_1_0.tar": 100}
+    )
+    ctx.target_layout.object_errors["ch_backup/b1/metadata/a.tar"] = RuntimeError(
+        "cannot copy metadata"
+    )
+    with pytest.raises(ClickhouseBackupError):
+        ctx.copy(keep_going=True)
+    target = ctx.target_layout.backups["b2"]
+    assert target.state == BackupState.CREATED
+    assert target.get_parts()[0].link is None
+    assert any(
+        e.dst_path == "ch_backup_copy/b2/data/db1/t1/all_1_1_0/all_1_1_0.tar"
+        for e in ctx.target_layout.copied
+    )
+
+
+@pytest.mark.parametrize("keep_going", [False, True])
+def test_copy_probe_failure_can_fall_back_to_streaming(keep_going: bool) -> None:
+    ctx = CopyTestContext([_backup("b1")])
+    _with_files(ctx, "b1", {"metadata/a.tar": 1, "metadata/b.tar": 2})
+    report = CopyReport()
+    with patch.object(
+        FakeEngine, "try_copy_object", side_effect=RuntimeError("probe failed")
+    ):
+        if keep_going:
+            assert ctx.copy(keep_going=True, report=report) == (["b1"], [])
+            assert not report.backups[0].errors
+            assert report.backups[0].objects_copied == 2
+            assert all(not e.server_side for e in ctx.target_layout.copied)
+        else:
+            with pytest.raises(RuntimeError, match="probe failed"):
+                ctx.copy(report=report)
+
+
+def test_copy_counts_server_side_probe_once() -> None:
+    ctx = CopyTestContext([_backup("b1")])
+    _with_files(ctx, "b1", {"metadata/a.tar": 1, "metadata/b.tar": 2})
+    report = CopyReport()
+    ctx.copy(report=report)
+    result = report.backups[0]
+    assert (result.objects_total, result.objects_copied, result.known_bytes_copied) == (
+        2,
+        2,
+        3,
+    )
+    assert len(ctx.store.probes) == 1
+    assert len(ctx.target_layout.copied) == 1
+
+
+@pytest.mark.parametrize("metadata_failure", [False, True])
+def test_copy_counts_rewritten_metadata(metadata_failure: bool) -> None:
+    ctx = _cloud_storage_context()
+    src_path = "ch_backup/b1/disks/s3/db1/t1.tar.gz"
+    dst_path = "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
+    ctx.layout.cloud_storage_files[src_path] = [
+        ("part/data.bin", _object_storage_metadata(("data/xyz/aaa", 1000), version=5))
+    ]
+    if metadata_failure:
+        ctx.target_layout.metadata_errors[dst_path] = RuntimeError(
+            "metadata upload failed"
+        )
+    report = CopyReport()
+    if metadata_failure:
+        with pytest.raises(ClickhouseBackupError):
+            ctx.copy(keep_going=True, report=report)
+        assert ctx.target_layout.backups["b1"].state == BackupState.FAILED
+    else:
+        ctx.copy(keep_going=True, report=report)
+    result = report.backups[0]
+    assert (
+        result.objects_total,
+        result.objects_copied,
+        result.objects_failed,
+        result.known_bytes_copied,
+    ) == (2, 1 if metadata_failure else 2, int(metadata_failure), 1000)
+    if metadata_failure:
+        assert result.errors[0]["target"] == dst_path
+
+
+def test_failed_metadata_save_preserves_copy_error_and_clears_cache() -> None:
+    ctx = CopyTestContext([_backup("b1")])
+    ctx.target_config["copy"]["server_side_copy"] = False
+    _with_files(ctx, "b1", {"metadata/a.tar": 1})
+    ctx.target_layout.copy_error = RuntimeError("primary copy error")
+    report = CopyReport()
+    copier = ctx.make_copier()
+    original = ctx.target_layout.upload_backup_metadata
+
+    def upload(backup):
+        if backup.state == BackupState.FAILED:
+            raise StorageError("failed to save FAILED")
+        original(backup)
+
+    with patch(
+        "ch_backup.backup.copier.get_storage_engine", side_effect=ctx.store.engine
+    ):
+        with patch.object(
+            ctx.target_layout, "upload_backup_metadata", side_effect=upload
+        ):
+            with pytest.raises(RuntimeError, match="primary copy error"):
+                copier.copy(report=report)
+    assert [e["message"] for e in report.backups[0].errors] == [
+        "RuntimeError: primary copy error",
+        "StorageError: failed to save FAILED",
+    ]
+    assert "b1" not in copier._target_backups  # pylint: disable=protected-access
+
+
+def test_copy_signal_marks_current_backup_and_stops_keep_going() -> None:
+    ctx = CopyTestContext([_backup("b1"), _backup("b2")])
+    ctx.target_config["copy"]["server_side_copy"] = False
+    report = CopyReport()
+    with patch.object(
+        ctx.target_layout, "copy_objects", side_effect=TerminatingSignal("interrupted")
+    ):
+        with pytest.raises(TerminatingSignal):
+            ctx.copy(keep_going=True, report=report)
+    assert [r.status for r in report.backups] == ["failed", "not_processed"]
+    assert ctx.target_layout.backups["b1"].state == BackupState.FAILED
+    assert report.error == "TerminatingSignal: interrupted"
+
+
+def test_copy_broken_executor_stops_keep_going() -> None:
+    ctx = CopyTestContext([_backup("b1"), _backup("b2")])
+    report = CopyReport()
+    failure = StorageError("wrapped executor failure")
+    failure.__cause__ = BrokenExecutor("workers unavailable")
+    with patch.object(ctx.target_layout, "wait", side_effect=failure):
+        with pytest.raises(StorageError, match="wrapped executor failure"):
+            ctx.copy(keep_going=True, report=report)
+    assert [r.status for r in report.backups] == ["failed", "not_processed"]
+    assert ctx.target_layout.backups["b1"].state == BackupState.FAILED
+
+
+def test_copy_broken_executor_during_drain_preserves_primary_error() -> None:
+    ctx = CopyTestContext([_backup("b1"), _backup("b2")])
+    report = CopyReport()
+    failure = RuntimeError("submission failed")
+    drain_error = StorageError("drain failed")
+    drain_error.__cause__ = BrokenExecutor("workers unavailable")
+    with patch.object(ctx.target_layout, "copy_objects", side_effect=failure):
+        with patch.object(ctx.target_layout, "wait", side_effect=drain_error):
+            with pytest.raises(RuntimeError, match="submission failed") as raised:
+                ctx.copy(keep_going=True, report=report)
+    assert raised.value is failure
+    assert [r.status for r in report.backups] == ["failed", "not_processed"]
+    assert [e["message"] for e in report.backups[0].errors] == [
+        "RuntimeError: submission failed",
+        "StorageError: drain failed",
+    ]
+
+
+@pytest.mark.parametrize("failed_state", [BackupState.CREATING, BackupState.CREATED])
+def test_copy_metadata_publication_failure_is_reported(
+    failed_state: BackupState,
+) -> None:
+    ctx = CopyTestContext([_backup("b1")])
+    _with_files(ctx, "b1", {"metadata/a.tar": 1})
+    report = CopyReport()
+    original = ctx.target_layout.upload_backup_metadata
+
+    def upload(backup):
+        if backup.state == failed_state:
+            raise StorageError("publication failed")
+        original(backup)
+
+    with patch.object(ctx.target_layout, "upload_backup_metadata", side_effect=upload):
+        with pytest.raises(StorageError, match="publication failed"):
+            ctx.copy(report=report)
+    result = report.backups[0]
+    assert result.status == "failed"
+    assert result.objects_total == 1
+    assert result.objects_copied == int(failed_state == BackupState.CREATED)
+    assert result.errors[0]["stage"] == "metadata"
+    assert ctx.target_layout.backups["b1"].state == BackupState.FAILED
+    if failed_state == BackupState.CREATING:
+        assert not ctx.target_layout.copied
+        assert not ctx.store.probes
+
+
+def test_copy_continues_other_rewritten_metadata_uploads() -> None:
+    ctx = _cloud_storage_context()
+    for table, key in (("t1", "aaa"), ("t2", "bbb")):
+        src_path = f"ch_backup/b1/disks/s3/db1/{table}.tar.gz"
+        _with_files(ctx, "b1", {f"disks/s3/db1/{table}.tar.gz": 50})
+        ctx.layout.cloud_storage_files[src_path] = [
+            (
+                "part/data.bin",
+                _object_storage_metadata((f"data/xyz/{key}", 1000), version=5),
+            )
+        ]
+    ctx.target_layout.metadata_errors["ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"] = (
+        RuntimeError("one archive failed")
+    )
+    report = CopyReport()
+    with pytest.raises(ClickhouseBackupError):
+        ctx.copy(keep_going=True, report=report)
+    assert (
+        "ch_backup_copy/b1/disks/s3/db1/t2.tar.gz"
+        in ctx.target_layout.cloud_storage_files
+    )
+    result = report.backups[0]
+    assert (result.objects_total, result.objects_copied, result.objects_failed) == (
+        4,
+        3,
+        1,
+    )
+    assert result.known_bytes_copied == 2000

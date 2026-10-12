@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from kazoo.exceptions import LockTimeout
 
+from ch_backup.backup.copy_report import BackupCopyResult, CopyReport
 from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.config import Config
 from ch_backup.logic.lock_manager import LockManager, storage_locks
@@ -154,7 +155,9 @@ def test_copy_holds_source_and_target_locks_until_copier_returns(failed):
         finally:
             events.append("exit")
 
-    def do_copy(names):
+    def do_copy(names, *, keep_going=False, report=None):
+        assert not keep_going
+        assert report is None
         assert names == ["b1"]
         assert events == ["enter"]
         events.append("copy")
@@ -172,3 +175,25 @@ def test_copy_holds_source_and_target_locks_until_copier_returns(failed):
                 else:
                     assert backup.copy(target, ["b1"]) == (["b1"], [])
     assert events == ["enter", "copy", "exit"]
+
+
+@pytest.mark.parametrize("failed_stage", ["setup", "lock"])
+def test_copy_reports_errors_before_copier_runs(failed_stage):
+    source, target = _config("/source"), _config("/target")
+    backup = ClickhouseBackup(source)
+    backup.__dict__["_context"] = MagicMock()
+    report = CopyReport(backups=[BackupCopyResult("previous", status="copied")])
+    failure = RuntimeError(f"{failed_stage} failed")
+    with patch("ch_backup.ch_backup.BackupLayout") as layout:
+        with patch("ch_backup.ch_backup.storage_locks") as locks:
+            with patch("ch_backup.ch_backup.BackupCopier") as copier:
+                if failed_stage == "setup":
+                    layout.side_effect = failure
+                else:
+                    locks.side_effect = failure
+                with pytest.raises(RuntimeError) as raised:
+                    backup.copy(target, ["b1"], keep_going=True, report=report)
+                copier.return_value.copy.assert_not_called()
+    assert raised.value is failure
+    assert report.error == f"RuntimeError: {failed_stage} failed"
+    assert not report.backups

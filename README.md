@@ -112,6 +112,10 @@ ch-backup copy LAST --target-config-parameter storage.credentials.bucket '"backu
 
 # Copy all backups to another S3 service.
 ch-backup copy --all --target-config /etc/yandex/ch-backup/dr.conf
+
+# Continue after errors and save confirmed results, including on failure.
+ch-backup copy --all --keep-going --target-config /etc/yandex/ch-backup/dr.conf \
+    --report-path /tmp/ch-backup-copy-report.json
 ```
 
 ```yaml
@@ -126,6 +130,16 @@ storage:
 
 How it works:
 
+- A final text report lists copied, skipped, failed and unprocessed backups. `--report-path`
+  also saves a JSON report (schema version 1) once the command finishes, including failures
+  and handled termination signals. Any failure gives a nonzero exit code.
+- `--keep-going` continues copying independent objects and subsequent backups after errors.
+  Each backup's complete plan is validated before any writes; a planning failure skips that backup.
+  Shared configuration, listing, lock and executor failures still stop the run.
+  Object counters include rewritten metadata tarballs and count only confirmed completions.
+  `known_bytes_copied` sums source sizes of successfully copied objects, excluding rewritten
+  tarballs whose final stored sizes are not known. Operations without a confirmed result are
+  not counted as successes. Storage credentials are not included in the report.
 - Backup data is copied as is, without decryption. Therefore, encryption settings (`encryption.type`,
   `encryption.key`, `encryption.chunk_size`) and `compression.type` must be the same for both storages.
 - If both buckets belong to the same S3 service and are accessible with the same credentials, objects

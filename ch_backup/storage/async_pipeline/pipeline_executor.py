@@ -72,6 +72,8 @@ class PipelineExecutor:
         is_async: bool,
         encryption: bool,
         compression: bool,
+        callback: Callable | None = None,
+        on_error: Callable[[Exception], None] | None = None,
     ) -> None:
         """
         Upload given data as tarball with specified file names.
@@ -87,7 +89,7 @@ class PipelineExecutor:
             encryption,
             compression,
         )
-        self._exec_pipeline(job_id, pipeline, is_async)
+        self._exec_pipeline(job_id, pipeline, is_async, callback, on_error)
 
     # pylint: disable=too-many-positional-arguments
     def upload_file(
@@ -273,14 +275,20 @@ class PipelineExecutor:
         pipeline = partial(delete_multiple_storage_pipeline, self._config, remote_paths)
         self._exec_pipeline(job_id, pipeline, is_async)
 
-    def copy_object(self, entry: CopyEntry, is_async: bool) -> None:
+    def copy_object(
+        self,
+        entry: CopyEntry,
+        is_async: bool,
+        callback: Callable | None = None,
+        on_error: Callable[[Exception], None] | None = None,
+    ) -> None:
         """
         Copy object from one storage to another.
         """
         job_id = self._make_job_id(current_func_name(), entry.src_path, entry.dst_path)
 
         pipeline = partial(copy_object_pipeline, self._config, entry)
-        self._exec_pipeline(job_id, pipeline, is_async)
+        self._exec_pipeline(job_id, pipeline, is_async, callback, on_error)
 
     def wait(self, keep_going: bool = False) -> None:
         """
@@ -299,17 +307,25 @@ class PipelineExecutor:
         pipeline: Callable,
         is_async: bool,
         callback: Callable | None = None,
+        on_error: Callable[[Exception], None] | None = None,
     ) -> Any:
         """
         Run pipeline inplace or schedule for exec in process pool
         """
 
-        if is_async and self._exec_pool:
-            return self._exec_pool.submit(
-                job_id, profile(10, 60)(pipeline), callback=callback
-            )
-
-        result = pipeline()
+        try:
+            if is_async and self._exec_pool:
+                return self._exec_pool.submit(
+                    job_id,
+                    profile(10, 60)(pipeline),
+                    callback=callback,
+                    on_error=on_error,
+                )
+            result = pipeline()
+        except Exception as e:
+            if on_error:
+                on_error(e)
+            raise
         if callback:
             callback()
         return result

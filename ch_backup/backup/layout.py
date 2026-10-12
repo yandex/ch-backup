@@ -32,7 +32,7 @@ from ch_backup.calculators import calc_encrypted_size, calc_tarball_size
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.config import Config
 from ch_backup.encryption import get_encryption
-from ch_backup.exceptions import StorageError
+from ch_backup.exceptions import StorageError, is_broken_executor
 from ch_backup.storage import StorageLoader
 from ch_backup.storage.engine.s3 import S3RetryingError
 from ch_backup.storage.object_copy import CopyEntry
@@ -851,6 +851,8 @@ class BackupLayout:
         backup_meta: BackupMetadata,
         remote_path: str,
         files: list[tuple[str, bytes]],
+        callback: Callable | None = None,
+        on_error: Callable[[Exception], None] | None = None,
     ) -> None:
         """
         Upload files with cloud storage metadata as a tarball.
@@ -863,6 +865,8 @@ class BackupLayout:
                 is_async=True,
                 encryption=backup_meta.cloud_storage.encrypted,
                 compression=backup_meta.cloud_storage.compressed,
+                callback=callback,
+                on_error=on_error,
             )
         except Exception as e:
             msg = f'Failed to create async upload of "{remote_path}"'
@@ -1011,14 +1015,28 @@ class BackupLayout:
         )
         return [os.path.join(part_path, f) for f in get_data_part_file_names(part)]
 
-    def copy_objects(self, entries: Sequence[CopyEntry]) -> None:
+    def copy_objects(
+        self,
+        entries: Sequence[CopyEntry],
+        *,
+        keep_going: bool = False,
+        callback: Callable[[CopyEntry], None] | None = None,
+        on_error: Callable[[CopyEntry, Exception], None] | None = None,
+    ) -> None:
         """
         Copy objects from one storage to another as is.
         """
         for entry in entries:
             try:
-                self._storage_loader.copy_object(entry, is_async=True)
+                self._storage_loader.copy_object(
+                    entry,
+                    is_async=True,
+                    callback=partial(callback, entry) if callback else None,
+                    on_error=partial(on_error, entry) if on_error else None,
+                )
             except Exception as e:
+                if keep_going and not is_broken_executor(e):
+                    continue
                 msg = f"Failed to create async copy of {entry.src_path} to {entry.dst_path}"
                 raise StorageError(msg) from e
 
