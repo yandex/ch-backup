@@ -78,14 +78,7 @@ def test_restore_of_copied_data_does_not_require_source_bucket():
     assert restore_mock.call_args.kwargs["cloud_storage_source_bucket"] is None
 
 
-SOURCES = BackupSources(
-    access=True,
-    data=False,
-    schema=True,
-    udf=False,
-    named_collections=True,
-    workload_entities=False,
-)
+SOURCES = BackupSources.for_restore(access=True, schema=True, named_collections=True)
 
 
 def test_restore_from_replica_reads_schema_with_uuids_and_secrets() -> None:

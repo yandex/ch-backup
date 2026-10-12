@@ -723,20 +723,17 @@ def restore_from_replica_command(
     nc: bool = False,
 ) -> None:
     """Restore from a live replica of the shard instead of a backup. All without options."""
-    if not any([schema, access, udf, nc]):
-        schema = access = udf = nc = True
-    ch_backup.restore_from_replica(
-        source_host,
-        BackupSources(
+    sources = BackupSources(data=False, workload_entities=False)
+    if any([schema, access, udf, nc]):
+        sources = BackupSources(
             access=access,
             data=False,
             schema=schema,
             udf=udf,
             named_collections=nc,
             workload_entities=False,
-        ),
-        replica_name,
-    )
+        )
+    ch_backup.restore_from_replica(source_host, sources, replica_name)
 
 
 @command(name="restore-access-control")  # type: ignore

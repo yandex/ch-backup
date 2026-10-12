@@ -9,7 +9,6 @@ import pytest
 
 from ch_backup.backup.replica_layout import ReplicaLayout
 from ch_backup.backup.sources import BackupSources
-from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.control import _parse_version
 from ch_backup.clickhouse.models import Database, Table
 from ch_backup.config import DEFAULT_CONFIG
@@ -33,14 +32,7 @@ ACCESS = [
     "GRANT SELECT ON db1.* TO r1",
     "GRANT r1 TO u1",
 ]
-ALL = BackupSources(
-    access=True,
-    data=False,
-    schema=True,
-    udf=True,
-    named_collections=True,
-    workload_entities=False,
-)
+ALL = BackupSources(data=False, workload_entities=False)
 
 
 def _ctl(version: str = "25.8.1.1", macros: dict | None = None) -> MagicMock:
@@ -51,6 +43,18 @@ def _ctl(version: str = "25.8.1.1", macros: dict | None = None) -> MagicMock:
         version
     ) >= _parse_version(other)
     ctl.get_macros.side_effect = lambda: dict(macros or MACROS)
+    return ctl
+
+
+def _local(version: str = "25.8.1.1", **returns: object) -> MagicMock:
+    """Helper: this host without functions, with a collection from the config and local
+    access storage, unless given other results of its control methods."""
+    ctl = _ctl(version, macros={"replica": "host2", "shard": "shard1"})
+    ctl.get_named_collections_query.return_value = ["nc_config"]
+    ctl.get_udf_query.return_value = {}
+    ctl.get_access_storage_types.return_value = {"users_xml", "local_directory"}
+    for method, value in returns.items():
+        getattr(ctl, method).return_value = value
     return ctl
 
 
@@ -71,10 +75,7 @@ def _source(
     ]
     ctl.get_udf_query.return_value = {"f1": UDF}
     ctl.get_named_collections_query.return_value = ["nc1", "nc_config"]
-    ctl.get_named_collections_create_queries.return_value = {
-        "nc1": NAMED_COLLECTION,
-        "nc_config": "CREATE NAMED COLLECTION nc_config AS host = 'h'",
-    }
+    ctl.get_named_collections_create_queries.return_value = {"nc1": NAMED_COLLECTION}
     ctl.get_local_access_statements.return_value = list(ACCESS)
     return ctl
 
@@ -93,12 +94,9 @@ def _layout(
         patch("ch_backup.backup.layout.StorageLoader"),
         patch("ch_backup.backup.layout.get_encryption"),
     ):
-        if local is None:
-            local = _ctl(macros={"replica": "host2", "shard": "shard1"})
-            local.get_named_collections_query.return_value = ["nc_config"]
         layout = ReplicaLayout(
             config,  # type: ignore[arg-type]
-            local,
+            local or _local(),
             source,
             sources,
             replica_name,
@@ -224,9 +222,9 @@ def test_unusable_statement_fails_the_restore(
 
 def test_functions_named_collections_and_access_are_read_from_the_replica() -> None:
     """
-    Only named collections this host lacks are taken, so ones from the server config or
-    shared through ZooKeeper are left alone. Entities are created with OR REPLACE to allow
-    running the restore again.
+    Functions and named collections are taken only if this host lacks them, so ones from
+    the server config or shared through ZooKeeper are left alone. Access entities of this
+    host are replaced with ones of the replica.
     """
     layout = _layout(_source())
 
@@ -238,16 +236,22 @@ def test_functions_named_collections_and_access_are_read_from_the_replica() -> N
     assert (
         layout.get_named_collection_create_statement(backup, "nc1") == NAMED_COLLECTION
     )
-    local_ctl = MagicMock()
-    layout.restore_access(local_ctl, replicated_access=False)
-    assert [
-        call.args[0] for call in local_ctl.restore_access_entity.call_args_list
-    ] == [
-        "CREATE ROLE OR REPLACE r1",
-        "CREATE USER OR REPLACE u1 IDENTIFIED WITH sha256_hash BY 'abc' SALT 'def' DEFAULT ROLE r1",
-        "GRANT SELECT ON db1.* TO r1",
-        "GRANT r1 TO u1",
-    ]
+    assert layout.get_access_statements() == ACCESS
+
+
+def test_existing_function_is_not_replaced() -> None:
+    """
+    A function stored in ZooKeeper is shared by all replicas and must not be dropped.
+    """
+    local = _local(
+        get_udf_query={"f1": "CREATE FUNCTION f1 AS x -> x + 2"},
+        get_named_collections_query=["nc1", "nc_config"],
+    )
+
+    backup = _layout(_source(), local).get_backup("replica1")
+
+    assert not backup.get_udf()
+    assert not backup.get_named_collections()
 
 
 def test_only_requested_objects_are_read() -> None:
@@ -255,14 +259,7 @@ def test_only_requested_objects_are_read() -> None:
     A partial restore must not fail on objects it does not restore.
     """
     source = _source()
-    sources = BackupSources(
-        access=False,
-        data=False,
-        schema=False,
-        udf=True,
-        named_collections=False,
-        workload_entities=False,
-    )
+    sources = BackupSources.for_restore(udf=True)
 
     backup = _layout(source, sources=sources).get_backup("replica1")
 
@@ -301,70 +298,42 @@ def test_user_with_hidden_password_fails_the_restore(
         _layout(source).get_backup("replica1")
 
 
+@pytest.mark.parametrize(
+    "storages",
+    [
+        {"users_xml", "replicated"},
+        {"users_xml", "local_directory", "replicated"},
+        {"users_xml", "memory"},
+        {"users_xml"},
+    ],
+    ids=["replicated", "local and replicated", "memory", "no local"],
+)
+def test_access_is_restored_only_into_local_storage(storages: set[str]) -> None:
+    """
+    Entities created here in replicated storage would be shared with other replicas, and
+    ones in memory would be lost on restart.
+    """
+    local = _local(get_access_storage_types=storages)
+
+    with pytest.raises(ClickhouseBackupError, match="only into local storage"):
+        _layout(_source(), local).get_backup("replica1")
+
+
 def test_named_collections_need_a_version_that_shows_them() -> None:
     """
     Before 25.5 ClickHouse does not show create statements of named collections.
     """
-    local = _ctl("25.3.1.1", macros={"replica": "host2", "shard": "shard1"})
-    local.get_named_collections_query.return_value = []
+    local = _local("25.3.1.1", get_named_collections_query=[])
 
-    with pytest.raises(ClickhouseBackupError, match="nc1, nc_config can be restored"):
+    with pytest.raises(ClickhouseBackupError, match="nc1, nc_config are missing"):
         _layout(_source(version="25.3.1.1"), local).get_backup("replica1")
 
 
-def test_access_statements_are_run_again_until_dependencies_exist() -> None:
+def test_named_collection_from_server_config_is_not_created_by_sql() -> None:
     """
-    A settings profile applied to a user fails until the user exists.
+    It would clash with the collection once the server config of this host gets it.
     """
-    source = _source()
-    source.get_local_access_statements.return_value = [
-        "CREATE SETTINGS PROFILE p1 TO u1",
-        "CREATE USER u1 SETTINGS PROFILE p1",
-    ]
-    layout = _layout(source)
-    layout.get_backup("replica1")
-    created: list[str] = []
+    local = _local(get_named_collections_query=[])
 
-    def run(statement: str) -> None:
-        """Fail the profile until the user exists."""
-        if "PROFILE OR REPLACE p1" in statement and not created:
-            raise ClickhouseError("There is no user u1")
-        created.append(statement)
-
-    local_ctl = MagicMock()
-    local_ctl.restore_access_entity.side_effect = run
-    layout.restore_access(local_ctl, replicated_access=False)
-
-    assert created == [
-        "CREATE USER OR REPLACE u1 SETTINGS PROFILE p1",
-        "CREATE SETTINGS PROFILE OR REPLACE p1 TO u1",
-    ]
-
-
-def test_access_restore_fails_without_progress() -> None:
-    """
-    Statements that keep failing must stop the restore instead of looping.
-    """
-    layout = _layout(_source())
-    layout.get_backup("replica1")
-    local_ctl = MagicMock()
-    local_ctl.restore_access_entity.side_effect = ClickhouseError("boom")
-
-    with pytest.raises(ClickhouseBackupError, match="Cannot restore 4 access"):
-        layout.restore_access(local_ctl, replicated_access=False)
-
-
-def test_local_access_is_not_restored_into_zookeeper() -> None:
-    """
-    Entities created here would land in the storage shared by all replicas.
-    """
-    layout = _layout(_source())
-    layout.get_backup("replica1")
-    local_ctl = MagicMock()
-
-    with pytest.raises(
-        ClickhouseBackupError, match="keeps access entities in ZooKeeper"
-    ):
-        layout.restore_access(local_ctl, replicated_access=True)
-
-    local_ctl.restore_access_entity.assert_not_called()
+    with pytest.raises(ClickhouseBackupError, match="nc_config comes from the server"):
+        _layout(_source(), local).get_backup("replica1")

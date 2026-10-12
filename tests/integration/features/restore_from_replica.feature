@@ -230,6 +230,21 @@ Feature: Restore schema from a live replica
     """
     4,2
     """
+    ## A second run replaces the access entities and keeps references between them.
+    When we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore-from-replica --source-host clickhouse01 --access
+    """
+    Then clickhouse02 has same access control objects as clickhouse01
+    When we execute command on clickhouse02
+    """
+    clickhouse-client --user test_user --password test_password \
+        --query "SELECT count(), test_udf(1) FROM test_db.table_01 FORMAT CSV"
+    """
+    Then we get response
+    """
+    4,2
+    """
 
   @require_version_25.5
   Scenario: Restore named collections from a live replica
@@ -259,7 +274,7 @@ Feature: Restore schema from a live replica
     """
     Then we get response contains
     """
-    Named collections test_nc can be restored from a replica only on ClickHouse 25.5 or newer
+    Named collections test_nc are missing on this host and can be restored from a replica only on ClickHouse 25.5 or newer
     """
     When we execute command on clickhouse02
     """

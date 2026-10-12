@@ -8,7 +8,6 @@ from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, TableMetadata
 from ch_backup.backup.sources import BackupSources
-from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.config import Config
 from ch_backup.exceptions import ClickhouseBackupError
@@ -29,9 +28,10 @@ REPLICA_ARGUMENT_RE = re.compile(
 HIDDEN_PASSWORD_RE = re.compile(
     r"\b(?:plaintext|sha256|double_sha1|bcrypt|scram_sha256)_password\b(?!\s+BY\b)"
 )
-CREATE_ACCESS_ENTITY_RE = re.compile(
-    r"^(CREATE (?:USER|ROLE|SETTINGS PROFILE|QUOTA|ROW POLICY)) (\S+)"
+ACCESS_ENTITY_RE = re.compile(
+    r"^(?:CREATE|ALTER) (?:USER|ROLE|SETTINGS PROFILE|QUOTA|ROW POLICY) \S+"
 )
+ALLOWED_ACCESS_STORAGE_TYPES = {"users_xml", "ldap", "local_directory"}
 
 
 class ReplicaLayout(BackupLayout):
@@ -40,12 +40,13 @@ class ReplicaLayout(BackupLayout):
     from a live replica of the shard instead of a backup.
 
     Restore reads them only through get_backup, the get_*_create_statement(s) methods and
-    restore_access. get_backup reads and checks everything requested, so a wrong source or
+    get_access_statements. get_backup reads and checks everything requested, so a wrong source or
     an unusable statement fails before the restore changes the host.
 
     Tables of Replicated databases are left out: ClickHouse creates them from ZooKeeper.
-    Named collections are taken only if this host does not have them, and access entities
-    only from local storages, so objects shared through ZooKeeper are not touched.
+    Functions and named collections are taken only if this host does not have them, and
+    access entities only from local storages, so objects shared through ZooKeeper or coming
+    from the server config are not touched.
     The source is queried with SOURCE_SETTINGS, so create statements come with UUIDs, which
     ZooKeeper paths may depend on, and with secrets, if the source enables
     display_secrets_in_show_and_select and grants displaySecretsInShowAndSelect.
@@ -140,34 +141,11 @@ class ReplicaLayout(BackupLayout):
         """
         return self._named_collection_statements[filename]
 
-    def restore_access(self, ch_ctl: ClickhouseCTL, replicated_access: bool) -> None:
+    def get_access_statements(self) -> list[str]:
         """
-        Create the access entities of the replica on this host.
-
-        Entities refer to each other in any direction, for example a settings profile
-        applied to a user who refers to the profile. So the statements that fail are run
-        again while each pass runs at least one of them.
+        Return checked statements that recreate access entities of the replica.
         """
-        if self._access_statements and replicated_access:
-            raise ClickhouseBackupError(
-                "This host keeps access entities in ZooKeeper, so local access entities "
-                "of the replica cannot be restored"
-            )
-        pending = self._access_statements
-        error: ClickhouseError | None = None
-        while pending:
-            failed = []
-            for statement in pending:
-                try:
-                    ch_ctl.restore_access_entity(statement)
-                except ClickhouseError as e:
-                    error = e
-                    failed.append(statement)
-            if len(failed) == len(pending):
-                raise ClickhouseBackupError(
-                    f"Cannot restore {len(failed)} access statements from the replica"
-                ) from error
-            pending = failed
+        return self._access_statements
 
     def _read_schema(self, source_host: str, backup: BackupMetadata) -> None:
         """
@@ -198,9 +176,12 @@ class ReplicaLayout(BackupLayout):
 
     def _read_udf(self, source_host: str, backup: BackupMetadata) -> None:
         """
-        Read user defined functions of the replica.
+        Read user defined functions of the replica that this host does not have.
         """
+        local = self._local_ctl.get_udf_query()
         for name, statement in self._source_ctl.get_udf_query().items():
+            if name in local:
+                continue
             self._udf_statements[name] = self._check_statement(
                 source_host, f"function {name}", statement
             )
@@ -208,10 +189,10 @@ class ReplicaLayout(BackupLayout):
 
     def _read_named_collections(self, source_host: str, backup: BackupMetadata) -> None:
         """
-        Read named collections of the replica that this host does not have.
+        Read named collections of the replica created by SQL that this host does not have.
 
-        Collections from the server config and ones shared through ZooKeeper are already
-        here. ClickHouse shows create statements of collections only since 25.5.
+        ClickHouse shows create statements of collections and their source only since 25.5.
+        A missing collection from the server config of the replica cannot be created here.
         """
         missing = sorted(
             set(self._source_ctl.get_named_collections_query())
@@ -221,12 +202,17 @@ class ReplicaLayout(BackupLayout):
             return
         if not self._source_ctl.ch_version_ge(NAMED_COLLECTIONS_MIN_CLICKHOUSE_VERSION):
             raise ClickhouseBackupError(
-                f"Named collections {', '.join(missing)} can be restored from a replica only "
-                f"on ClickHouse {NAMED_COLLECTIONS_MIN_CLICKHOUSE_VERSION} or newer. "
-                "Restore without them with --schema --access --udf"
+                f"Named collections {', '.join(missing)} are missing on this host and can be "
+                f"restored from a replica only on ClickHouse {NAMED_COLLECTIONS_MIN_CLICKHOUSE_VERSION} "
+                "or newer. Restore without them with --schema --access --udf"
             )
         statements = self._source_ctl.get_named_collections_create_queries()
         for name in missing:
+            if name not in statements:
+                raise ClickhouseBackupError(
+                    f"Named collection {name} comes from the server config of {source_host} "
+                    "and is missing in the server config of this host"
+                )
             self._named_collection_statements[name] = self._check_statement(
                 source_host, f"named collection {name}", statements[name]
             )
@@ -236,21 +222,33 @@ class ReplicaLayout(BackupLayout):
         """
         Read access entities of local storages of the replica and their grants.
 
+        This host must keep access entities only in local storages: ones created here in
+        replicated or memory storage would be shared with other replicas or lost on restart.
         Without secrets shown ClickHouse prints the type of a password but not its hash, so
-        such a user would be created without the password. Statements create entities with
-        OR REPLACE to allow running the restore again after a failure.
+        such a user would be created without the password.
         """
-        for statement in self._source_ctl.get_local_access_statements():
-            entity = CREATE_ACCESS_ENTITY_RE.match(statement)
-            name = entity.group(0) if entity else "a grant"
-            if MASKED_VALUE in statement or HIDDEN_PASSWORD_RE.search(statement):
-                raise ClickhouseBackupError(
-                    f"{name} on {source_host} has hidden secrets: enable "
-                    "display_secrets_in_show_and_select and grant displaySecretsInShowAndSelect there"
-                )
-            self._access_statements.append(
-                CREATE_ACCESS_ENTITY_RE.sub(r"\1 OR REPLACE \2", statement)
+        statements = self._source_ctl.get_local_access_statements()
+        if not statements:
+            return
+        storages = self._local_ctl.get_access_storage_types()
+        if (
+            "local_directory" not in storages
+            or not storages <= ALLOWED_ACCESS_STORAGE_TYPES
+        ):
+            raise ClickhouseBackupError(
+                f"Access entities of {source_host} can be restored only into local storage, "
+                f"this host has {', '.join(sorted(storages))}. Restore without them with "
+                "--schema --udf --nc"
             )
+        for statement in statements:
+            if MASKED_VALUE in statement or HIDDEN_PASSWORD_RE.search(statement):
+                entity = ACCESS_ENTITY_RE.match(statement)
+                raise ClickhouseBackupError(
+                    f"{entity.group(0) if entity else 'A grant'} on {source_host} has hidden "
+                    "secrets: enable display_secrets_in_show_and_select and grant "
+                    "displaySecretsInShowAndSelect there"
+                )
+        self._access_statements = statements
 
     def _check_source(self, source_host: str) -> None:
         """
