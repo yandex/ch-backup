@@ -213,6 +213,11 @@ def command(*args, **kwargs):
 )
 @option("-v", "--verbose", is_flag=True, default=False, help="Verbose output.")
 @option(
+    "--include-unreadable",
+    is_flag=True,
+    help="Include unreadable metadata in verbose listings; exit with code 2 if any is unreadable.",
+)
+@option(
     "--format",
     "format_",
     type=Choice(["table", "json"]),
@@ -224,12 +229,20 @@ def list_command(
     ch_backup: ClickhouseBackup,
     verbose: bool,
     all_: bool,
+    include_unreadable: bool,
     format_: str,
 ) -> None:
     """List existing backups."""
+    if include_unreadable and not verbose:
+        _ctx.fail("--include-unreadable requires --verbose")
     state = None if all_ else BackupState.CREATED
 
-    backups = ch_backup.list(state)
+    unreadable: dict[str, str] = {}
+    backups = (
+        ch_backup.list(state, unreadable=unreadable)
+        if include_unreadable
+        else ch_backup.list(state)
+    )
 
     if not verbose:
         print("\n".join([b.name for b in backups]))
@@ -256,6 +269,18 @@ def list_command(
             record["labels"] = "\n".join(
                 f"{name}: {value}" for name, value in backup.labels.items()
             )
+        if include_unreadable:
+            record["metadata_error"] = None
+        records.append(record)
+
+    for name, error in sorted(unreadable.items()):
+        record = dict.fromkeys(
+            ("start_time", "end_time", "size", "real_size", "ch_version", "labels")
+        )
+        record = {"name": name, "state": "unknown", **record}
+        if format_ == "json":
+            record.update(cloud_disks=None, exception=None)
+        record["metadata_error"] = error
         records.append(record)
 
     if format_ == "json":
@@ -263,6 +288,9 @@ def list_command(
         print()
     else:
         print(tabulate(records, headers="keys"))
+    if unreadable:
+        print(f"Unreadable metadata: {len(unreadable)}", file=sys.stderr, flush=True)
+        _ctx.exit(2)
 
 
 @command(name="show")  # type: ignore

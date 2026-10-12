@@ -3,7 +3,7 @@ ClickhouseBackup unit tests.
 """
 
 from collections import defaultdict
-from typing import Sequence
+from typing import Sequence, cast
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -140,6 +140,9 @@ def _create_backup_next_to(existing_name: str, name: str) -> None:
     existing = MagicMock()
     existing.name = existing_name
     backup.__dict__["_context"].backup_layout.get_backups.return_value = [existing]
+    backup.__dict__["_context"].backup_layout.get_backup_names.return_value = [
+        existing_name
+    ]
 
     backup.backup(BackupSources(), name=name)
 
@@ -163,6 +166,33 @@ def test_backup_rejects_a_name_taken_by_its_sanitized_form():
         _create_backup_next_to("test_backup", "test-backup")
 
     assert "conflicts with existing backup test_backup" in str(exc.value)
+
+
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("deduplicate_parts", [False, True])
+def test_backup_with_unreadable_old_metadata(force, deduplicate_parts):
+    """Only a forced independent backup can proceed without old metadata."""
+    backup = ClickhouseBackup(DEFAULT_CONFIG)  # type: ignore[arg-type]
+    context = MagicMock()
+    backup.__dict__["_context"] = context
+    context.config = {
+        **cast(dict, DEFAULT_CONFIG["backup"]),
+        "deduplicate_parts": deduplicate_parts,
+    }
+    context.ch_ctl.get_databases.return_value = []
+    context.backup_layout.get_backup_names.return_value = ["broken"]
+    context.backup_layout.get_backups.side_effect = StorageError("Unreadable light")
+    sources = BackupSources(False, False, False, False, False, False)
+
+    if force and not deduplicate_parts:
+        assert backup.backup(sources, name="new", force=force) == ("new", None)
+        context.backup_layout.get_backups.assert_not_called()
+        context.backup_layout.get_backup_names.assert_called_once_with()
+        assert context.backup_meta.state == BackupState.CREATED
+    else:
+        with pytest.raises(StorageError, match="Unreadable light"):
+            backup.backup(sources, name="new", force=force)
+        context.backup_layout.upload_backup_metadata.assert_not_called()
 
 
 def _backup_with_context(
