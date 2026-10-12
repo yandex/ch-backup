@@ -697,21 +697,46 @@ def restore_command(
     "--source-host",
     type=str,
     required=True,
-    help="Live replica of the same shard to take the schema from.",
+    help="Live replica of the same shard to restore from.",
 )
 @option(
     "--replica-name",
     type=str,
     help=f'Replica name to be removed from zookeeper. Default - {style("hostname", fg=Color.bright_green)}.',
 )
+@option_group(
+    "Partial restore",
+    option("--schema", is_flag=True, help="Restore databases and tables schemas."),
+    option("--access", is_flag=True, help="Restore access control entities."),
+    option("--udf", is_flag=True, help="Restore user defined functions."),
+    option("--nc", is_flag=True, help="Restore named collections."),
+)
+# pylint: disable=too-many-positional-arguments
 def restore_from_replica_command(
     _ctx: Context,
     ch_backup: ClickhouseBackup,
     source_host: str,
     replica_name: str | None = None,
+    schema: bool = False,
+    access: bool = False,
+    udf: bool = False,
+    nc: bool = False,
 ) -> None:
-    """Restore schema from a live replica of the shard instead of a backup."""
-    ch_backup.restore_from_replica(source_host, replica_name)
+    """Restore from a live replica of the shard instead of a backup. All without options."""
+    if not any([schema, access, udf, nc]):
+        schema = access = udf = nc = True
+    ch_backup.restore_from_replica(
+        source_host,
+        BackupSources(
+            access=access,
+            data=False,
+            schema=schema,
+            udf=udf,
+            named_collections=nc,
+            workload_entities=False,
+        ),
+        replica_name,
+    )
 
 
 @command(name="restore-access-control")  # type: ignore

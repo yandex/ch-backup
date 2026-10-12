@@ -37,9 +37,12 @@ Feature: Restore schema from a live replica
     CREATE TABLE repl_db.table_01 (n UInt32) ENGINE = ReplicatedMergeTree ORDER BY n;
     INSERT INTO repl_db.table_01 SELECT number FROM system.numbers LIMIT 5;
     """
+    ## S3 is unreachable: the restore must not need it.
     When we execute command on clickhouse02
     """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore-from-replica --source-host clickhouse01
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf \
+        --config-parameter storage.credentials.endpoint_url '"http://127.0.0.1:1"' \
+        restore-from-replica --source-host clickhouse01
     """
     And we execute queries on clickhouse02
     """
@@ -187,6 +190,82 @@ Feature: Restore schema from a live replica
     """
     0
     """
+
+  @require_version_23.8
+  Scenario: Restore access entities and functions from a live replica
+    Given we replace config file display_secrets.xml in favor of display_secrets.xml on clickhouse01 with restart
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (n UInt32)
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/test_db.table_01_access', '{replica}')
+    ORDER BY n;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10;
+    CREATE ROLE test_role;
+    CREATE SETTINGS PROFILE test_profile SETTINGS max_threads = 2 TO test_role;
+    CREATE USER test_user IDENTIFIED WITH sha256_password BY 'test_password'
+    SETTINGS PROFILE 'test_profile';
+    GRANT test_role TO test_user;
+    ALTER USER test_user DEFAULT ROLE test_role;
+    GRANT SELECT ON test_db.* TO test_role;
+    CREATE QUOTA test_quota FOR INTERVAL 1 hour MAX queries = 100 TO test_user;
+    CREATE ROW POLICY test_policy ON test_db.table_01 USING n > 5 TO test_user;
+    CREATE FUNCTION test_udf AS x -> x + 1;
+    """
+    When we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore-from-replica --source-host clickhouse01
+    """
+    And we execute queries on clickhouse02
+    """
+    SYSTEM SYNC REPLICA test_db.table_01
+    """
+    Then clickhouse02 has same access control objects as clickhouse01
+    When we execute command on clickhouse02
+    """
+    clickhouse-client --user test_user --password test_password \
+        --query "SELECT count(), test_udf(1) FROM test_db.table_01 FORMAT CSV"
+    """
+    Then we get response
+    """
+    4,2
+    """
+
+  @require_version_25.5
+  Scenario: Restore named collections from a live replica
+    Given we replace config file display_secrets.xml in favor of display_secrets.xml on clickhouse01 with restart
+    And we have executed queries on clickhouse01
+    """
+    CREATE NAMED COLLECTION test_nc AS host = 'h', port = 3306, password = 'secret';
+    """
+    When we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore-from-replica --source-host clickhouse01 --nc
+    """
+    Then clickhouse02 has same named collections as clickhouse01
+
+  @require_version_23.8
+  @require_version_less_than_25.5
+  Scenario: Named collections from a replica need a supported ClickHouse version
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (n UInt32) ENGINE = MergeTree ORDER BY n;
+    CREATE NAMED COLLECTION test_nc AS host = 'h';
+    """
+    When we try to execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore-from-replica --source-host clickhouse01
+    """
+    Then we get response contains
+    """
+    Named collections test_nc can be restored from a replica only on ClickHouse 25.5 or newer
+    """
+    When we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore-from-replica --source-host clickhouse01 --schema --access --udf
+    """
+    Then clickhouse02 has same schema as clickhouse01
 
   @require_version_less_than_23.8
   Scenario: Restore from a replica needs a supported ClickHouse version

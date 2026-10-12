@@ -12,6 +12,7 @@ from kazoo.exceptions import NoNodeError
 
 from ch_backup import logging
 from ch_backup.backup.metadata import BackupStorageFormat
+from ch_backup.backup.replica_layout import ReplicaLayout
 from ch_backup.backup_context import BackupContext
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.util import (
@@ -73,6 +74,12 @@ class AccessBackup(BackupManager):
         """
         Restore access rights
         """
+        if isinstance(context.backup_layout, ReplicaLayout):
+            context.backup_layout.restore_access(
+                context.ch_ctl, self._has_replicated_access(context)
+            )
+            return
+
         access_control = context.backup_meta.access_control
         acl_ids, acl_meta = access_control.acl_ids, access_control.acl_meta
 

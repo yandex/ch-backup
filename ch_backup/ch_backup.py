@@ -389,10 +389,13 @@ class ClickhouseBackup:
             )
 
     def restore_from_replica(
-        self, source_host: str, replica_name: str | None = None
+        self,
+        source_host: str,
+        sources: BackupSources,
+        replica_name: str | None = None,
     ) -> None:
         """
-        Restore the schema from a live replica of the shard instead of a backup.
+        Restore from a live replica of the shard instead of a backup.
         """
         source_ctl = ClickhouseCTL(
             {
@@ -404,10 +407,14 @@ class ClickhouseBackup:
             self._context.config,
         )
         self._context.backup_layout = ReplicaLayout(
-            self._context.config_root, self._context.ch_ctl, source_ctl, replica_name
+            self._context.config_root,
+            self._context.ch_ctl,
+            source_ctl,
+            sources,
+            replica_name,
         )
         self.restore(
-            sources=BackupSources.for_restore(schema=True),
+            sources=sources,
             backup_name=source_host,
             databases=[],
             exclude_databases=[],

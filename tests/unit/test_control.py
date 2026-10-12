@@ -217,3 +217,47 @@ class TestCreateTable:
         ch_ctl.create_table(self._table(statement))
 
         client.query.assert_called_once_with(statement, settings=settings)
+
+
+class TestGetLocalAccessStatements:
+    """
+    Tests for reading access entities of local storages of a replica.
+    """
+
+    def test_entities_are_returned_in_creation_order_with_grants(self) -> None:
+        """
+        Roles and profiles that users refer to come first, grants come last.
+        """
+        ch_ctl, client = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+        names = {
+            "system.roles": ["r`1"],
+            "system.settings_profiles": ["p1"],
+            "system.users": ["u1"],
+            "system.quotas": [],
+        }
+
+        def query(sql: str) -> dict | str:
+            """Answer the access queries of a replica with one entity of each type."""
+            for table, entities in names.items():
+                if f"FROM {table}" in sql:
+                    return {"data": [{"name": name} for name in entities]}
+            if "FROM system.row_policies" in sql:
+                return {
+                    "data": [{"short_name": "rp1", "database": "db1", "table": "t1"}]
+                }
+            if sql.startswith("SHOW GRANTS"):
+                return (
+                    "GRANT SELECT ON db1.* TO x\nGRANT r1 TO x" if "u1" in sql else ""
+                )
+            return sql.split(" FORMAT")[0].replace("SHOW CREATE", "CREATE")
+
+        client.query.side_effect = query
+
+        assert ch_ctl.get_local_access_statements() == [
+            "CREATE ROLE `r\\`1`",
+            "CREATE SETTINGS PROFILE `p1`",
+            "CREATE USER `u1`",
+            "CREATE ROW POLICY `rp1` ON `db1`.`t1`",
+            "GRANT SELECT ON db1.* TO x",
+            "GRANT r1 TO x",
+        ]

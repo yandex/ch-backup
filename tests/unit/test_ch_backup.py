@@ -78,6 +78,16 @@ def test_restore_of_copied_data_does_not_require_source_bucket():
     assert restore_mock.call_args.kwargs["cloud_storage_source_bucket"] is None
 
 
+SOURCES = BackupSources(
+    access=True,
+    data=False,
+    schema=True,
+    udf=False,
+    named_collections=True,
+    workload_entities=False,
+)
+
+
 def test_restore_from_replica_reads_schema_with_uuids_and_secrets() -> None:
     """
     Without UUIDs an inner table of a view would get a new one, and without secrets the
@@ -93,7 +103,7 @@ def test_restore_from_replica_reads_schema_with_uuids_and_secrets() -> None:
         patch("ch_backup.ch_backup.ReplicaLayout") as layout_cls,
         patch.object(ClickhouseBackup, "restore") as restore_mock,
     ):
-        backup.restore_from_replica("replica1", "old_replica")
+        backup.restore_from_replica("replica1", SOURCES, "old_replica")
 
     assert ctl_cls.call_args.args[0] == {
         "host": "replica1",
@@ -103,11 +113,15 @@ def test_restore_from_replica_reads_schema_with_uuids_and_secrets() -> None:
         },
     }
     layout_cls.assert_called_once_with(
-        context.config_root, context.ch_ctl, ctl_cls.return_value, "old_replica"
+        context.config_root,
+        context.ch_ctl,
+        ctl_cls.return_value,
+        SOURCES,
+        "old_replica",
     )
     assert context.backup_layout is layout_cls.return_value
     kwargs = restore_mock.call_args.kwargs
-    assert kwargs["sources"] == BackupSources.for_restore(schema=True)
+    assert kwargs["sources"] == SOURCES
     assert kwargs["backup_name"] == "replica1"
     assert kwargs["replica_name"] == "old_replica"
     assert kwargs["clean_zookeeper_mode"] == CleanZooKeeperMode.REPLICA_ONLY

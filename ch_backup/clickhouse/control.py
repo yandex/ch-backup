@@ -498,6 +498,45 @@ GET_NAMED_COLLECTIONS_QUERY_SQL = strip_query(
 """
 )
 
+GET_NAMED_COLLECTIONS_CREATE_QUERY_SQL = strip_query(
+    """
+    SELECT name, create_query FROM system.named_collections
+    FORMAT JSON
+"""
+)
+
+GET_LOCAL_ACCESS_ENTITIES_SQL = strip_query(
+    """
+    SELECT name
+    FROM system.{type}
+    WHERE storage IN ('disk', 'local directory', 'local_directory')
+    FORMAT JSON
+"""
+)
+
+GET_LOCAL_ROW_POLICIES_SQL = strip_query(
+    """
+    SELECT short_name, database, table
+    FROM system.row_policies
+    WHERE storage IN ('disk', 'local directory', 'local_directory')
+    FORMAT JSON
+"""
+)
+
+SHOW_CREATE_ACCESS_ENTITY_SQL = strip_query(
+    """
+    SHOW CREATE {type} {name}
+    FORMAT TSVRaw
+"""
+)
+
+SHOW_GRANTS_SQL = strip_query(
+    """
+    SHOW GRANTS FOR `{name}`
+    FORMAT TSVRaw
+"""
+)
+
 GET_WORKLOAD_ENTITIES_QUERY_SQL = strip_query(
     f"""
     SELECT name, type FROM (
@@ -1023,6 +1062,59 @@ class ClickhouseCTL:
         Restore named collection.
         """
         self._ch_client.query(nc_statement, sensitive=True)
+
+    def restore_access_entity(self, statement: str) -> None:
+        """
+        Run a statement that creates an access entity or grants privileges, without retries.
+        """
+        self._ch_client.query(statement, sensitive=True, should_retry=False)
+
+    def get_local_access_statements(self) -> list[str]:
+        """
+        Return statements that recreate access entities of local storages: roles, settings
+        profiles, users, quotas and row policies, then grants of roles and users.
+        """
+        names: dict[str, list[str]] = {}
+        statements: list[str] = []
+        for table, keyword in (
+            ("roles", "ROLE"),
+            ("settings_profiles", "SETTINGS PROFILE"),
+            ("users", "USER"),
+            ("quotas", "QUOTA"),
+        ):
+            query_sql = GET_LOCAL_ACCESS_ENTITIES_SQL.format(type=table)
+            names[table] = [
+                row["name"] for row in self._ch_client.query(query_sql)["data"]
+            ]
+            statements += [
+                self._show_create_access_entity(keyword, f"`{escape(name)}`")
+                for name in names[table]
+            ]
+        for row in self._ch_client.query(GET_LOCAL_ROW_POLICIES_SQL)["data"]:
+            policy = (
+                f"`{escape(row['short_name'])}` ON "
+                f"`{escape(row['database'])}`.`{escape(row['table'])}`"
+            )
+            statements.append(self._show_create_access_entity("ROW POLICY", policy))
+        for name in names["roles"] + names["users"]:
+            grants = self._ch_client.query(SHOW_GRANTS_SQL.format(name=escape(name)))
+            statements += grants.splitlines()
+        return statements
+
+    def _show_create_access_entity(self, keyword: str, name: str) -> str:
+        """
+        Return the create statement of an access entity.
+        """
+        return self._ch_client.query(
+            SHOW_CREATE_ACCESS_ENTITY_SQL.format(type=keyword, name=name)
+        )
+
+    def get_named_collections_create_queries(self) -> dict[str, str]:
+        """
+        Return create statements of named collections. ClickHouse shows them since 25.5.
+        """
+        resp = self._ch_client.query(GET_NAMED_COLLECTIONS_CREATE_QUERY_SQL)
+        return {row["name"]: row["create_query"] for row in resp["data"]}
 
     def restore_workload_entity(self, entity_statement):
         """
