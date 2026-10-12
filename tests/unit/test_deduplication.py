@@ -4,7 +4,7 @@ Deduplication unit tests.
 
 from unittest.mock import MagicMock, Mock
 
-from ch_backup.backup.deduplication import _populate_dedup_info
+from ch_backup.backup.deduplication import PartDedupInfo, _populate_dedup_info
 from ch_backup.backup.metadata import BackupState, PartMetadata
 from ch_backup.clickhouse.models import Database
 
@@ -82,3 +82,52 @@ def test_local_part_of_a_backup_with_cloud_storage_is_a_candidate():
     insert = _collected_dedup_info(data_copied=False, disk_name="default")
 
     insert.assert_called_once()
+
+
+def test_linked_part_is_collected_unverified():
+    """
+    Data of a linked part may have been lost since the backup holding the link
+    was checked, so it has to be checked again before it is reused.
+    """
+    linked_part = PartMetadata(
+        database="db1",
+        table="table1",
+        name="all_1_1_0",
+        checksum="checksum",
+        size=1024,
+        files=["checksums.txt"],
+        tarball=True,
+        disk_name="default",
+        link="20181015T210300",
+    )
+    backup = _make_backup(data_copied=False, parts=[linked_part])
+    source_backup = _make_backup(data_copied=False, parts=[])
+    source_backup.name = "20181015T210300"
+
+    context = Mock()
+    context.config = {"deduplication_batch_size": 500}
+    context.backup_meta.hostname = backup.hostname
+    context.backup_layout.reload_backup.side_effect = lambda b, **_: b
+
+    _populate_dedup_info(
+        context,
+        [backup, source_backup],
+        [Database("db1", "Atomic", "/var/lib/clickhouse/metadata/db1.sql", None, None)],
+    )
+
+    expected = PartDedupInfo(
+        database="db1",
+        table="table1",
+        name="all_1_1_0",
+        backup_name="20181015T210300",
+        checksum="checksum",
+        size=1024,
+        files=["checksums.txt"],
+        tarball=True,
+        disk_name="default",
+        verified=False,
+        encrypted=linked_part.encrypted,
+    )
+    context.ch_ctl.insert_deduplication_info.assert_called_once_with(
+        [expected.to_sql()]
+    )

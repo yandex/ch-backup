@@ -206,12 +206,10 @@ def _populate_dedup_info(
                         continue
 
                     if part.link:
-                        verified = True
                         backup_name = part.link
                         if backup_name not in dedup_backup_names:
                             continue
                     else:
-                        verified = False
                         backup_name = backup.name
 
                     part_dedup = PartDedupInfo(
@@ -224,7 +222,7 @@ def _populate_dedup_info(
                         files=part.files,
                         tarball=part.tarball,
                         disk_name=part.disk_name,
-                        verified=verified,
+                        verified=False,
                         encrypted=part.encrypted,
                         # Propagate link_part_name so that downstream deduplication
                         # knows the actual storage name in the source backup.
