@@ -697,12 +697,13 @@ def restore_command(
     "--source-host",
     type=str,
     required=True,
-    help="Live replica of the same shard to restore from.",
+    help="Live replica of the same shard to restore from. It is connected with the "
+    "credentials and TLS settings of this host.",
 )
 @option(
     "--replica-name",
     type=str,
-    help=f'Replica name to be removed from zookeeper. Default - {style("hostname", fg=Color.bright_green)}.',
+    help=f'Replica name to be removed from zookeeper. Default - {style("{replica}", fg=Color.bright_green)} macro.',
 )
 @option_group(
     "Partial restore",
