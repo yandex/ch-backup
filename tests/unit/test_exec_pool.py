@@ -9,7 +9,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from ch_backup import logging
-from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
+from ch_backup.exceptions import TerminatingSignal
+from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
+    ProcessExecPool,
+    ThreadExecPool,
+)
 from ch_backup.storage.async_pipeline.pipeline_executor import PipelineExecutor
 
 
@@ -21,7 +25,7 @@ def test_pipeline_callbacks_collect_errors_and_allow_next_batch(
     monkeypatch.setattr(logging.logger._core, "handlers", {})  # type: ignore[attr-defined]
     executor = PipelineExecutor({"multiprocessing": {"workers": workers}})
     completed = []
-    errors: list[Exception] = []
+    errors: list[BaseException] = []
     try:
         if workers:
             executor._exec_pipeline(
@@ -53,14 +57,14 @@ def test_submission_error_is_reported_once() -> None:
     executor._exec_pool = MagicMock()
     failure = BrokenExecutor("cannot submit")
     executor._exec_pool.submit.side_effect = failure
-    errors: list[Exception] = []
+    errors: list[BaseException] = []
     with pytest.raises(BrokenExecutor):
         executor._exec_pipeline("bad", int, True, on_error=errors.append)
     assert errors == [failure]
 
 
 def test_draining_pool_does_not_repeat_consumed_callbacks() -> None:
-    errors: list[Exception] = []
+    errors: list[BaseException] = []
     completed = []
     with ThreadExecPool(1) as pool:
         pool.submit("bad", partial(int, "invalid"), on_error=errors.append)
@@ -73,7 +77,7 @@ def test_draining_pool_does_not_repeat_consumed_callbacks() -> None:
 
 
 def test_broken_executor_is_fatal_even_when_wrapped() -> None:
-    errors: list[Exception] = []
+    errors: list[BaseException] = []
 
     def broken():
         try:
@@ -86,3 +90,32 @@ def test_broken_executor_is_fatal_even_when_wrapped() -> None:
         with pytest.raises(RuntimeError, match="wrapped failure"):
             pool.wait_all(keep_going=True)
     assert len(errors) == 1
+
+
+def _raise_terminating_signal() -> None:
+    raise TerminatingSignal("worker interrupted")
+
+
+@pytest.mark.parametrize("pool_type", [ThreadExecPool, ProcessExecPool])
+@pytest.mark.parametrize("keep_going", [False, True])
+def test_terminating_signal_is_reported_and_always_propagated(
+    pool_type: type[ThreadExecPool] | type[ProcessExecPool],
+    keep_going: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Pytest's captured stderr cannot be pickled for spawned workers.
+    monkeypatch.setattr(logging.logger._core, "handlers", {})  # type: ignore[attr-defined]
+    errors: list[BaseException] = []
+    completed = MagicMock()
+    with pool_type(1) as pool:
+        pool.submit(
+            "interrupted",
+            _raise_terminating_signal,
+            callback=completed,
+            on_error=errors.append,
+        )
+        with pytest.raises(TerminatingSignal, match="worker interrupted"):
+            pool.wait_all(keep_going=keep_going)
+    assert len(errors) == 1
+    assert isinstance(errors[0], TerminatingSignal)
+    completed.assert_not_called()

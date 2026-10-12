@@ -101,7 +101,11 @@ class ExecPool:
             except (Exception, TerminatingSignal) as e:
                 if job.on_error:
                     job.on_error(e)
-                if keep_going and not is_broken_executor(e):
+                if (
+                    keep_going
+                    and isinstance(e, Exception)
+                    and not is_broken_executor(e)
+                ):
                     logging.warning(
                         'Job "{}" generated an exception, skipping due to keep_going flag',
                         job.id_,

@@ -3,6 +3,8 @@
 Command-line interface.
 """
 
+# pylint: disable=too-many-lines
+
 import json
 import os
 import signal
