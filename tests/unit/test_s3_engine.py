@@ -2,7 +2,7 @@
 Unit tests for S3StorageEngine retries.
 """
 
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 from botocore.exceptions import ClientError
@@ -22,7 +22,7 @@ def _engine(**storage: float) -> S3StorageEngine:
 @pytest.mark.parametrize("max_attempts", [1, 3])
 def test_retry_max_attempts_from_config(max_attempts: int) -> None:
     """S3 operations are retried with the attempt and pause limits from the config."""
-    engine = _engine(retry_max_attempts=max_attempts, retry_max_interval=7)
+    engine = _engine(retry_max_attempts=max_attempts, retry_max_interval=1.5)
     client = Mock()
     client.download_fileobj.side_effect = ClientError(
         {"Error": {"Code": "InternalError"}}, "GetObject"
@@ -33,12 +33,18 @@ def test_retry_max_attempts_from_config(max_attempts: int) -> None:
     sleep = Mock()
     getattr(engine, "_retry").sleep_function = sleep
 
-    with pytest.raises(S3RetryingError):
+    with (
+        patch(
+            "ch_backup.storage.engine.s3.s3_retry.uniform",
+            side_effect=lambda _low, high: high,
+        ),
+        pytest.raises(S3RetryingError),
+    ):
         engine.download_data("path")
 
     assert client.download_fileobj.call_count == max_attempts
     assert sleep.call_count == max_attempts - 1
-    assert getattr(engine, "_retry").max_interval == 7
+    assert all(call.args[0] <= 1.5 for call in sleep.call_args_list)
 
 
 @pytest.mark.parametrize(
