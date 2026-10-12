@@ -35,6 +35,7 @@ from ch_backup.encryption import get_encryption
 from ch_backup.exceptions import StorageError
 from ch_backup.storage import StorageLoader
 from ch_backup.storage.engine.s3 import S3RetryingError
+from ch_backup.storage.object_copy import CopyEntry
 from ch_backup.util import (
     CLOUD_STORAGE_EXCLUDE_FILE_NAMES,
     dir_is_empty,
@@ -751,13 +752,16 @@ class BackupLayout:
             )
             return False
 
-    def _get_cloud_storage_metadata_remote_paths(
+    def get_cloud_storage_metadata_remote_paths(
         self,
         backup_name: str,
         source_disk_name: str,
         compression: bool,
         desired_tables: Sequence[TableMetadata] | Literal["all"],
     ) -> Sequence[str]:
+        """
+        Return remote paths of tarballs with cloud storage metadata of the specified disk.
+        """
         backup_path = self.get_backup_path(backup_name)
         # Check if metadata is stored as 'disks/s3.tar.gz' for backwards compatibility
         old_style_remote_path = _disk_metadata_path(
@@ -826,6 +830,44 @@ class BackupLayout:
             for compressed in (True, False)
         )
 
+    def get_cloud_storage_metadata_files(
+        self, backup_meta: BackupMetadata, remote_path: str
+    ) -> list[tuple[str, bytes]]:
+        """
+        Download tarball with cloud storage metadata and return its files as (file_name, data) pairs.
+        """
+        try:
+            return self._storage_loader.download_data_tarball(
+                remote_path,
+                encryption=backup_meta.cloud_storage.encrypted,
+                compression=backup_meta.cloud_storage.compressed,
+            )
+        except Exception as e:
+            msg = f'Failed to download tarball file "{remote_path}"'
+            raise StorageError(msg) from e
+
+    def upload_cloud_storage_metadata_files(
+        self,
+        backup_meta: BackupMetadata,
+        remote_path: str,
+        files: list[tuple[str, bytes]],
+    ) -> None:
+        """
+        Upload files with cloud storage metadata as a tarball.
+        """
+        try:
+            self._storage_loader.upload_data_tarball(
+                file_names=[file_name for file_name, _ in files],
+                data_list=[data for _, data in files],
+                remote_path=remote_path,
+                is_async=True,
+                encryption=backup_meta.cloud_storage.encrypted,
+                compression=backup_meta.cloud_storage.compressed,
+            )
+        except Exception as e:
+            msg = f'Failed to create async upload of "{remote_path}"'
+            raise StorageError(msg) from e
+
     def cloud_storage_metadata_exists(
         self, backup_meta: BackupMetadata, disk: Disk
     ) -> bool:
@@ -852,7 +894,7 @@ class BackupLayout:
         backup_name = backup_meta.get_sanitized_name()
         compression = backup_meta.cloud_storage.compressed
         encryption = backup_meta.cloud_storage.encrypted
-        metadata_remote_paths = self._get_cloud_storage_metadata_remote_paths(
+        metadata_remote_paths = self.get_cloud_storage_metadata_remote_paths(
             backup_name,
             source_disk_name,
             compression,
@@ -948,25 +990,37 @@ class BackupLayout:
 
         deleting_files: list[str] = []
         for part in parts:
-            # part.link is the source backup name for deduplicated parts (or None).
-            source_backup_name = part.link or backup_meta.name
-            source_part_name = part.deduplicated_part_name
-            part_path = self._get_escaped_if_exists(
-                _part_path,
-                self.get_backup_path(source_backup_name),
-                part.database,
-                part.table,
-                source_part_name,
-            )
-            logging.debug("Deleting data part {}", part_path)
-            if part.tarball:
-                deleting_files.append(
-                    os.path.join(part_path, f"{source_part_name}.tar")
-                )
-            else:
-                deleting_files.extend(os.path.join(part_path, f) for f in part.files)
+            part_files = self.get_data_part_files(backup_meta.name, part)
+            logging.debug("Deleting data part {}", part.name)
+            deleting_files.extend(part_files)
 
         self._delete_files(deleting_files)
+
+    def get_data_part_files(self, backup_name: str, part: PartMetadata) -> list[str]:
+        """
+        Return remote paths of data part files.
+        """
+        # part.link is the source backup name for deduplicated parts (or None).
+        source_backup_name = part.link or backup_name
+        part_path = self._get_escaped_if_exists(
+            _part_path,
+            self.get_backup_path(source_backup_name),
+            part.database,
+            part.table,
+            part.deduplicated_part_name,
+        )
+        return [os.path.join(part_path, f) for f in get_data_part_file_names(part)]
+
+    def copy_objects(self, entries: Sequence[CopyEntry]) -> None:
+        """
+        Copy objects from one storage to another as is.
+        """
+        for entry in entries:
+            try:
+                self._storage_loader.copy_object(entry, is_async=True)
+            except Exception as e:
+                msg = f"Failed to create async copy of {entry.src_path} to {entry.dst_path}"
+                raise StorageError(msg) from e
 
     def wait(self, keep_going: bool = False) -> None:
         """
@@ -1046,6 +1100,32 @@ class BackupLayout:
         if self._storage_loader.path_exists(path, is_dir=True):
             return path
         return path_function(*args, escape_names=False, **kwargs)
+
+
+def get_data_part_relative_dirs(part: PartMetadata) -> list[str]:
+    """
+    Return possible paths of the directory with data part files relative to the backup directory.
+    Escaped path goes first, unescaped path is used by backups made by older versions.
+    """
+    return [
+        _part_path(
+            "",
+            part.database,
+            part.table,
+            part.deduplicated_part_name,
+            escape_names=escape_names,
+        )
+        for escape_names in (True, False)
+    ]
+
+
+def get_data_part_file_names(part: PartMetadata) -> list[str]:
+    """
+    Return names of data part files stored in the data part directory.
+    """
+    if part.tarball:
+        return [f"{part.deduplicated_part_name}.tar"]
+    return list(part.files)
 
 
 def _access_control_data_path(backup_path: str, file_name: str) -> str:

@@ -4,6 +4,7 @@ Cli unit tests.
 
 from unittest.mock import MagicMock
 
+import pytest
 from click import Context
 
 from ch_backup import cli
@@ -173,3 +174,24 @@ def test_backup_command_copy_cloud_storage_data_is_not_a_backup_source():
     assert sources == BackupSources.for_backup(
         False, False, False, False, False, False, False
     )
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    ["https://copied.example:443", "http://copied.example:9000", "copied.example:8443"],
+)
+def test_restore_command_passes_source_endpoint(endpoint: str) -> None:
+    backup = MagicMock()
+    backup.list.return_value = [MagicMock()]
+    backup.list.return_value[0].name = "backup1"
+    parent = Context(cli.cli)
+    parent.obj = {"backup": backup}
+    with cli.restore_command.make_context(
+        "restore",
+        ["backup1", "--cloud-storage-source-endpoint", endpoint],
+        parent=parent,
+    ) as ctx:
+        cli.restore_command.invoke(ctx)
+
+    backup.restore.assert_called_once()
+    assert backup.restore.call_args.kwargs["cloud_storage_source_endpoint"] == endpoint

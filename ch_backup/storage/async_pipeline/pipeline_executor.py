@@ -17,6 +17,7 @@ from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
     ProcessExecPool,
 )
 from ch_backup.storage.async_pipeline.pipelines import (
+    copy_object_pipeline,
     delete_multiple_storage_pipeline,
     download_data_pipeline,
     download_data_tarball_pipeline,
@@ -29,6 +30,7 @@ from ch_backup.storage.async_pipeline.pipelines import (
     upload_files_tarball_scan_pipeline,
 )
 from ch_backup.storage.async_pipeline.suppress_exceptions import suppress_exceptions
+from ch_backup.storage.object_copy import CopyEntry
 from ch_backup.util import current_func_name
 
 
@@ -269,6 +271,15 @@ class PipelineExecutor:
         job_id = self._make_job_id("delete_files", remote_paths)
 
         pipeline = partial(delete_multiple_storage_pipeline, self._config, remote_paths)
+        self._exec_pipeline(job_id, pipeline, is_async)
+
+    def copy_object(self, entry: CopyEntry, is_async: bool) -> None:
+        """
+        Copy object from one storage to another.
+        """
+        job_id = self._make_job_id(current_func_name(), entry.src_path, entry.dst_path)
+
+        pipeline = partial(copy_object_pipeline, self._config, entry)
         self._exec_pipeline(job_id, pipeline, is_async)
 
     def wait(self, keep_going: bool = False) -> None:

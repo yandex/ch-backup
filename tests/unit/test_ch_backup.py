@@ -11,6 +11,7 @@ import requests
 
 from ch_backup.backup.deduplication import DedupReferences
 from ch_backup.backup.metadata import (
+    BackupMetadata,
     BackupState,
     CloudStorageMetadata,
     PartMetadata,
@@ -19,6 +20,7 @@ from ch_backup.backup.metadata import (
 from ch_backup.backup.sources import BackupSources
 from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.clickhouse.client import ClickhouseError
+from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
 from ch_backup.clickhouse.models import Database
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import (
@@ -341,6 +343,8 @@ def test_referenced_delete_persists_partial_state() -> None:
     full_metadata.exception = "Previous deletion failed"
     full_metadata.get_databases.return_value = []
     full_metadata.cloud_storage.enabled = False
+    full_metadata.cloud_storage.source = None
+    full_metadata.copied_from = None
     context.backup_layout.get_backup.return_value = full_metadata
 
     result = backup._delete(  # pylint: disable=protected-access
@@ -351,3 +355,161 @@ def test_referenced_delete_persists_partial_state() -> None:
     assert full_metadata.state == BackupState.PARTIALLY_DELETED
     assert full_metadata.exception is None
     assert context.backup_layout.upload_backup_metadata.call_count == 2
+
+
+def _backup_metadata(
+    copied_from: dict | None = None, cloud_storage_source: dict | None = None
+) -> BackupMetadata:
+    meta = BackupMetadata(
+        name="backup1",
+        version="1.0.0",
+        ch_version="25.3.1.1",
+        time_format="%Y-%m-%d %H:%M:%S %z",
+        hostname="host1",
+    )
+    meta.copied_from = copied_from
+    meta.cloud_storage.add_disk("s3")
+    meta.cloud_storage.source = cloud_storage_source
+    return meta
+
+
+@pytest.mark.parametrize(
+    ["copied_from", "unfreeze_expected"],
+    [
+        pytest.param(None, True, id="regular backup"),
+        pytest.param(
+            {"endpoint_url": "https://s3", "bucket": "b", "path_root": "ch_backup"},
+            False,
+            id="copied backup",
+        ),
+    ],
+)
+def test_delete_unfreezes_only_own_backups(
+    copied_from: dict | None, unfreeze_expected: bool
+) -> None:
+    meta = _backup_metadata(copied_from=copied_from)
+    context = MagicMock()
+    context.backup_layout.get_backup.return_value = meta
+    context.backup_layout.delete_backup.side_effect = lambda name, unfreeze: unfreeze()
+    backup = ClickhouseBackup.__new__(ClickhouseBackup)
+    backup.__dict__["_context"] = context
+
+    assert backup._delete(meta, {}) == (  # pylint: disable=protected-access
+        "backup1",
+        None,
+    )
+
+    context.backup_layout.delete_backup.assert_called_once()
+    assert context.backup_layout.delete_backup.call_args.args[0] == "backup1"
+    if unfreeze_expected:
+        context.ch_ctl.system_unfreeze.assert_called_once_with("backup1")
+    else:
+        context.ch_ctl.system_unfreeze.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ["cli_options", "expected"],
+    [
+        pytest.param(
+            {},
+            {
+                "cloud_storage_source_bucket": "disk-copy",
+                "cloud_storage_source_path": "copies/backup1",
+                "cloud_storage_source_endpoint": "http://s3.test:9000",
+            },
+            id="location from metadata",
+        ),
+        pytest.param(
+            {
+                "cloud_storage_source_bucket": "cloud-storage",
+                "cloud_storage_source_path": "data",
+            },
+            {
+                "cloud_storage_source_bucket": "cloud-storage",
+                "cloud_storage_source_path": "data",
+                "cloud_storage_source_endpoint": None,
+            },
+            id="explicit location",
+        ),
+    ],
+)
+# pylint: disable=protected-access
+def test_restore_cloud_storage_location(cli_options: dict, expected: dict) -> None:
+    meta = _backup_metadata(
+        cloud_storage_source={
+            "endpoint_url": "http://s3.test:9000",
+            "bucket": "disk-copy",
+            "path": "copies/backup1",
+        }
+    )
+    context = MagicMock()
+    context.config = {"force_non_replicated": False}
+    context.backup_layout.get_backup.return_value = meta
+    backup = ClickhouseBackup.__new__(ClickhouseBackup)
+    backup.__dict__["_context"] = context
+    backup._check_zookeeper_for_restore = Mock()  # type: ignore[method-assign]
+    backup._restore = Mock()  # type: ignore[method-assign]
+
+    backup.restore(BackupSources(), "backup1", [], [], **cli_options)
+
+    restore_kwargs = (
+        backup._restore.call_args.kwargs
+    )  # pylint: disable=protected-access
+    assert {key: restore_kwargs[key] for key in expected} == expected
+
+
+@pytest.mark.parametrize(
+    "original_scheme,stored_scheme", [("http", "https"), ("https", "http")]
+)
+@pytest.mark.parametrize(
+    "override",
+    [
+        None,
+        "https://explicit.example:443",
+        "http://explicit.example:9000",
+        "explicit.example:8443",
+    ],
+)
+# pylint: disable=protected-access
+def test_restore_keeps_stored_endpoint_scheme(
+    original_scheme: str, stored_scheme: str, override: str | None
+) -> None:
+    meta = _backup_metadata(
+        cloud_storage_source={
+            "endpoint_url": f"{stored_scheme}://copied.example:8443",
+            "bucket": "copied-disk",
+            "path": "copies/backup1",
+        }
+    )
+    context = MagicMock()
+    context.config = {"force_non_replicated": False}
+    context.backup_layout.get_backup.return_value = meta
+    backup = ClickhouseBackup.__new__(ClickhouseBackup)
+    backup.__dict__["_context"] = context
+    with (
+        patch.object(backup, "_check_zookeeper_for_restore"),
+        patch.object(backup, "_restore") as restore,
+    ):
+        backup.restore(
+            BackupSources(), "backup1", [], [], cloud_storage_source_endpoint=override
+        )
+    options = restore.call_args.kwargs
+    disks = ClickHouseTemporaryDisks(
+        MagicMock(),
+        MagicMock(),
+        DEFAULT_CONFIG,  # type: ignore[arg-type]
+        meta,
+        options["cloud_storage_source_bucket"],
+        options["cloud_storage_source_path"],
+        options["cloud_storage_source_endpoint"],
+        MagicMock(),
+    )
+    disks._disks = {
+        "s3": {"endpoint": f"{original_scheme}://original.example/original/data/"}
+    }
+    expected = override or f"{stored_scheme}://copied.example:8443"
+    if "://" not in expected:
+        expected = f"{original_scheme}://{expected}"
+    assert disks._source_disk_config(meta, "s3")["endpoint"] == (
+        f"{expected}/copied-disk/copies/backup1/"
+    )

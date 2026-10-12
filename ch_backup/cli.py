@@ -521,7 +521,10 @@ def backup_command(
         help="Source path to restore cloud storage data.",
     ),
     option(
-        "--cloud-storage-source-endpoint", type=str, help="Endpoint for source bucket."
+        "--cloud-storage-source-endpoint",
+        type=str,
+        help="Endpoint for source bucket: HTTP(S) URL or host[:port]. "
+        "Without a scheme, uses the original disk's scheme.",
     ),
     option(
         "--skip-cloud-storage",
@@ -724,6 +727,119 @@ def delete_command(
 
     if deleted_backup_name:
         print(deleted_backup_name)
+
+
+@command(name="copy")  # type: ignore
+@argument("name", metavar="[BACKUP]", required=False)
+@option_group(
+    "General",
+    option(
+        "-a",
+        "--all",
+        "all_",
+        is_flag=True,
+        default=False,
+        help='Copy all backups in the state "created". Older backups are copied first.',
+    ),
+)
+@option_group(
+    "Target storage options",
+    option(
+        "--target-config",
+        type=Path(exists=True),
+        help="Configuration file with settings of the target storage. "
+        "It's merged on top of the main configuration, so it's enough to specify only "
+        'differing settings (e.g. "storage.credentials" and "backup.path_root").',
+    ),
+    option(
+        "--target-config-parameter",
+        "target_config_parameters",
+        multiple=True,
+        type=(str, JsonParamType()),
+        metavar="PATH VALUE",
+        help="Paths and values to override target configuration values. "
+        "The same as --config-parameter, but for the target configuration.",
+    ),
+    option(
+        "--server-side-copy/--no-server-side-copy",
+        default=None,
+        help="Copy objects on the server side if source and target buckets belong to the same "
+        "S3 service and are accessible with the same credentials. Enabled by default.",
+    ),
+)
+@option_group(
+    "Cloud storage options",
+    option(
+        "--target-cloud-storage-bucket",
+        type=str,
+        help="Bucket to copy data of object storage disks to.",
+    ),
+    option(
+        "--target-cloud-storage-path",
+        type=str,
+        help="Path in the bucket to copy data of object storage disks to. "
+        'Data of the backup is put under "<path>/<backup name>/".',
+    ),
+    option(
+        "--cloud-storage-source-bucket",
+        type=str,
+        help="Bucket with data of object storage disks. By default, it's taken from ClickHouse configuration.",
+    ),
+    option(
+        "--cloud-storage-source-path",
+        type=str,
+        help="Path in the bucket with data of object storage disks. "
+        "By default, it's taken from ClickHouse configuration.",
+    ),
+)
+# pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+def copy_command(
+    ctx: Context,
+    ch_backup: ClickhouseBackup,
+    name: str | None,
+    all_: bool,
+    target_config: str | None,
+    target_config_parameters: Iterable[tuple[str, dict]],
+    server_side_copy: bool | None,
+    target_cloud_storage_bucket: str | None,
+    target_cloud_storage_path: str | None,
+    cloud_storage_source_bucket: str | None,
+    cloud_storage_source_path: str | None,
+) -> None:
+    """Copy backup to another storage (another S3 bucket, endpoint or path)."""
+    if bool(name) == all_:
+        ctx.fail("Either BACKUP or --all must be specified.")
+
+    backup_names = None
+    if name:
+        backup_names = [
+            _validate_and_resolve_name(ctx, ch_backup, name, BackupState.CREATED)
+        ]
+
+    copy_config: dict = {"cloud_storage": {"source": {}, "target": {}}}
+    if server_side_copy is not None:
+        copy_config["server_side_copy"] = server_side_copy
+    for section, key, value in (
+        ("target", "bucket", target_cloud_storage_bucket),
+        ("target", "path", target_cloud_storage_path),
+        ("source", "bucket", cloud_storage_source_bucket),
+        ("source", "path", cloud_storage_source_path),
+    ):
+        if value is not None:
+            copy_config["cloud_storage"][section][key] = value
+
+    target_cfg = ch_backup.config.derive(
+        target_config,
+        _build_cli_cfg_from_config_parameters(target_config_parameters),
+    )
+    target_cfg.merge({"copy": copy_config})
+
+    copied, skipped = ch_backup.copy(target_cfg, backup_names)
+
+    for backup_name in copied:
+        print(f"{backup_name}: copied")
+    for backup_name in skipped:
+        print(f"{backup_name}: skipped, already present in target storage")
 
 
 @command(name="purge")

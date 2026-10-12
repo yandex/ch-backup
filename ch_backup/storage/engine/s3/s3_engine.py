@@ -151,6 +151,55 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
 
         return contents
 
+    def list_dir_with_sizes(self, remote_path: str) -> dict[str, int]:
+        """
+        Return sizes of all objects under the remote path (recursively) keyed by object key.
+        """
+        remote_path = remote_path.strip("/") + "/"
+        result = {}
+        paginator = self._s3_client.get_paginator("list_objects")
+        for page in paginator.paginate(Bucket=self._s3_bucket_name, Prefix=remote_path):
+            for file_key in page.get("Contents", []):
+                result[file_key["Key"]] = file_key["Size"]
+
+        return result
+
+    def copy_object(
+        self, source_bucket: str, source_path: str, remote_path: str
+    ) -> None:
+        """
+        Copy object from the bucket of the same S3 service on the server side.
+        """
+        self._copy_object(source_bucket, source_path, remote_path)
+
+    def try_copy_object(
+        self, source_bucket: str, source_path: str, remote_path: str
+    ) -> bool:
+        """
+        Try to copy object on the server side. Return False if S3 service rejected the request.
+        """
+        try:
+            self._copy_object(source_bucket, source_path, remote_path)
+            return True
+        except ClientError as e:
+            logging.warning(
+                "Server-side copy of '{}' from bucket '{}' failed: {}",
+                source_path,
+                source_bucket,
+                e,
+            )
+            return False
+
+    def _copy_object(
+        self, source_bucket: str, source_path: str, remote_path: str
+    ) -> None:
+        # Managed copy uses UploadPartCopy for large objects.
+        self._s3_client.copy(
+            CopySource={"Bucket": source_bucket, "Key": source_path.lstrip("/")},
+            Bucket=self._s3_bucket_name,
+            Key=remote_path.lstrip("/"),
+        )
+
     def path_exists(self, remote_path: str, is_dir: bool = False) -> bool:
         """
         Check if remote path exists.

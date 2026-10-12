@@ -12,11 +12,13 @@ from typing import Sequence
 import requests
 
 from ch_backup import logging
+from ch_backup.backup.copier import BackupCopier
 from ch_backup.backup.deduplication import (
     DedupReferences,
     collect_dedup_info,
     collect_dedup_references_for_batch_backup_deletion,
 )
+from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
@@ -38,6 +40,7 @@ from ch_backup.exceptions import (
 from ch_backup.logic.access import AccessBackup
 from ch_backup.logic.database import DatabaseBackup
 from ch_backup.logic.database_sync import SyncStatus, wait_sync_replicated_databases
+from ch_backup.logic.lock_manager import storage_locks
 from ch_backup.logic.named_collections import NamedCollectionsBackup
 from ch_backup.logic.partial_restore import PartialRestoreFilter
 from ch_backup.logic.table import TableBackup
@@ -271,6 +274,22 @@ class ClickhouseBackup:
         logging.info(f"Restore sources: {sources}")
         self._context.backup_meta = self._get_backup(backup_name)
 
+        cloud_storage_source = self._context.backup_meta.cloud_storage.source
+        if cloud_storage_source_bucket is None and cloud_storage_source:
+            # Cloud storage data was copied out of the source disk along with the backup.
+            cloud_storage_source_bucket = cloud_storage_source["bucket"]
+            cloud_storage_source_path = (
+                cloud_storage_source_path or cloud_storage_source["path"]
+            )
+            cloud_storage_source_endpoint = (
+                cloud_storage_source_endpoint or cloud_storage_source["endpoint_url"]
+            )
+            logging.info(
+                "Using cloud storage data location from backup metadata: bucket {}, path {}",
+                cloud_storage_source_bucket,
+                cloud_storage_source_path,
+            )
+
         if (
             cloud_storage_source_bucket is None
             and sources.data
@@ -460,6 +479,25 @@ class ClickhouseBackup:
 
         return result
 
+    def copy(
+        self, target_config: Config, backup_names: Sequence[str] | None = None
+    ) -> tuple[Sequence[str], Sequence[str]]:
+        """
+        Copy backups to the storage specified in the target config.
+        If backup names are not specified, all backups in the state "created" are copied.
+
+        Return names of copied backups and names of backups skipped as already copied.
+        """
+        copier = BackupCopier(
+            config=self._config,
+            target_config=target_config,
+            layout=self._context.backup_layout,
+            target_layout=BackupLayout(target_config),
+            ch_config=self._context.ch_config,
+        )
+        with storage_locks([self._config, target_config], operation="COPY"):
+            return copier.copy(backup_names)
+
     def purge(self) -> tuple[Sequence[str], str | None]:
         """
         Purge backups.
@@ -581,7 +619,7 @@ class ClickhouseBackup:
                 logging.info("Removing backup data entirely")
                 self._context.backup_layout.delete_backup(
                     backup.name,
-                    lambda: self._context.ch_ctl.system_unfreeze(backup.name),
+                    lambda: self._system_unfreeze(backup),
                 )
                 return backup.name, None
 
@@ -601,7 +639,7 @@ class ClickhouseBackup:
                 else:
                     self._context.backup_layout.delete_cloud_storage_data(backup.name)
             self._context.backup_layout.wait()
-            self._context.ch_ctl.system_unfreeze(backup.name)
+            self._system_unfreeze(backup)
             backup.state = BackupState.PARTIALLY_DELETED
             self._context.backup_layout.upload_backup_metadata(
                 backup, light_only=light_only
@@ -637,6 +675,23 @@ class ClickhouseBackup:
             for table in backup.get_tables()
             for part in table.get_parts()
         )
+
+    def _system_unfreeze(self, backup: BackupMetadata) -> None:
+        if backup.cloud_storage.source:
+            source = backup.cloud_storage.source
+            logging.warning(
+                "Cloud storage data of backup {} stored in bucket {} under {} is not deleted",
+                backup.name,
+                source["bucket"],
+                source["path"],
+            )
+
+        # Copied backups don't own frozen data, it belongs to the original backup.
+        if backup.copied_from:
+            logging.info("Skipping unfreeze for the copied backup {}", backup.name)
+            return
+
+        self._context.ch_ctl.system_unfreeze(backup.name)
 
     def _delete_data_parts(
         self,

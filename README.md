@@ -90,12 +90,79 @@ Options:
 
 Commands:
   backup   Perform backup.
+  copy     Copy backup to another storage (another S3 bucket, endpoint or path).
   delete   Delete particular backup.
   list     List existing backups.
   purge    Purge outdated backups.
   restore  Restore data from a particular backup.
   show     Show details for a particular backup.
 ```
+
+### Copying backups to another storage
+
+`ch-backup copy` copies a backup (or all backups with `--all`) to another S3 bucket,
+endpoint or `backup.path_root`. The main configuration describes the source storage. The
+target storage is described by the main configuration merged with a configuration file passed
+in `--target-config` and values passed in `--target-config-parameter`, so it's enough to
+specify only differing settings:
+
+```bash
+# Copy the last backup to another bucket of the same S3 service.
+ch-backup copy LAST --target-config-parameter storage.credentials.bucket '"backups-dr"'
+
+# Copy all backups to another S3 service.
+ch-backup copy --all --target-config /etc/yandex/ch-backup/dr.conf
+```
+
+```yaml
+# /etc/yandex/ch-backup/dr.conf
+storage:
+    credentials:
+        endpoint_url: https://s3.other.example
+        access_key_id: ...
+        secret_access_key: ...
+        bucket: backups-dr
+```
+
+How it works:
+
+- Backup data is copied as is, without decryption. Therefore, encryption settings (`encryption.type`,
+  `encryption.key`, `encryption.chunk_size`) and `compression.type` must be the same for both storages.
+- If both buckets belong to the same S3 service and are accessible with the same credentials, objects
+  are copied on the server side. Otherwise, data is streamed through ch-backup. Server-side copy can be
+  disabled with `--no-server-side-copy`.
+- The copy becomes valid (gets the state `created`) only after all its data is copied. If copying is
+  interrupted, the copy remains in the state `creating` or `failed`, and the next run of the command
+  retries copying all objects. Existing objects are overwritten even when their sizes match, since
+  size alone does not establish that their contents are correct. Completed backups are skipped.
+- Copy acquires the configured source and target locks through completion, including retries and
+  failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
+  and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.
+  Locking remains optional; the local file lock retains its shared semantics.
+- Deduplicated data parts of the backup are stored in older backups. If such a backup is already
+  present in the target storage, the deduplication link is kept. Otherwise, the data part is copied
+  into the copied backup. `--all` copies older backups first, so deduplication is kept in the target storage.
+- Full cloud-storage backups created with `--copy-cloud-storage-data` keep their data in the backup
+  bucket. Copying them moves that data into the target backup bucket, including linked parts when
+  their owning backup is absent there. No ClickHouse disk credentials or `--target-cloud-storage-bucket`
+  are needed; restore and deletion use the normal full-backup behavior.
+- Backups without `--copy-cloud-storage-data` reference objects in the bucket of the S3 disk. These
+  objects are copied to the bucket set with `--target-cloud-storage-bucket` under
+  `<--target-cloud-storage-path>/<backup name>/`, so the copy doesn't depend on the source cluster.
+  The location of the source objects is taken from ClickHouse configuration of the disk (so the command
+  should be run on a host of the source cluster), or it can be set with `--cloud-storage-source-bucket` and
+  `--cloud-storage-source-path`. Credentials can be overridden in the `copy.cloud_storage` config section.
+  Source endpoint, bucket and path overrides are applied independently: omitted fields retain the
+  values from stored source metadata or disk configuration. An explicitly empty source path selects
+  the bucket root.
+  For version-5 metadata containing full object keys, a source path override replaces the original
+  prefix from stored source metadata or disk configuration. Copy fails before writing if that prefix
+  is unknown or a key is outside it. Without a path override, full keys are read as stored.
+  Restore of the copy uses the copied objects by default; they must be accessible with credentials of the
+  object storage disk of the host where the backup is restored. Note that these objects are not removed
+  when the copy is deleted, and they're stored for each copied backup separately.
+  Restore preserves the HTTP/HTTPS scheme of the stored endpoint. Its `--cloud-storage-source-endpoint`
+  option accepts a full HTTP(S) URL or `host[:port]`; the latter uses the original disk's scheme.
 
 ## Testing
 
