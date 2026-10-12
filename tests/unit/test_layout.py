@@ -8,10 +8,12 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from ch_backup.backup.layout import BackupLayout
+from ch_backup.backup.metadata import BackupMetadata
 from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.clickhouse.models import Disk, Table
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import StorageError
+from ch_backup.storage.engine.s3 import S3RetryingError
 
 
 def make_layout() -> BackupLayout:
@@ -26,6 +28,47 @@ def make_layout() -> BackupLayout:
         layout = BackupLayout(config)  # type: ignore[arg-type]
     setattr(layout, "_storage_loader", MagicMock())
     return layout
+
+
+@pytest.mark.parametrize("operation", ["head", "get"])
+def test_list_collects_read_errors_only_when_requested(operation):
+    """A failed light read is visible while healthy and missing entries survive."""
+    layout = make_layout()
+    storage = getattr(layout, "_storage_loader")
+    storage.list_dir.return_value = ["broken", "missing", "good"]
+    good = BackupMetadata("good", "2", "26.6", "%Y-%m-%d")
+    error = S3RetryingError("\n\nInternalError\nTraceback details")
+
+    def path_exists(path):
+        if "/broken/" in path and operation == "head":
+            raise error
+        return "/missing/" not in path
+
+    def download_data(path, **_kwargs):
+        if "/broken/" in path:
+            raise error
+        return good.dump_json(light=True)
+
+    storage.path_exists.side_effect = path_exists
+    storage.download_data.side_effect = download_data
+    with pytest.raises((StorageError, S3RetryingError)):
+        layout.get_backups(use_light_meta=True)
+
+    unreadable: dict[str, str] = {}
+    assert [b.name for b in layout.get_backups(True, unreadable=unreadable)] == ["good"]
+    assert unreadable == {"broken": "S3RetryingError: InternalError"}
+
+
+def test_list_failure_is_not_treated_as_unreadable_metadata():
+    """Failure to discover backup names cannot produce a partial listing."""
+    layout = make_layout()
+    getattr(layout, "_storage_loader").list_dir.side_effect = S3RetryingError(
+        "LIST failed"
+    )
+    unreadable: dict[str, str] = {}
+    with pytest.raises(S3RetryingError, match="LIST failed"):
+        layout.get_backups(True, unreadable=unreadable)
+    assert not unreadable
 
 
 class TestCloudStorageMetadataRemotePaths:

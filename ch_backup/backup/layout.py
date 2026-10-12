@@ -473,9 +473,15 @@ class BackupLayout:
             )
         return self._load_metadata(path, False)
 
-    def get_backups(self, use_light_meta: bool = False) -> list[BackupMetadata]:
+    def get_backups(
+        self,
+        use_light_meta: bool = False,
+        *,
+        unreadable: dict[str, str] | None = None,
+    ) -> list[BackupMetadata]:
         """
         Return list of existing backups sorted by start_time in descent order.
+        If unreadable is provided, collect per-backup read errors there.
         """
         logging.debug(
             "Collecting {} of existing backups",
@@ -489,7 +495,18 @@ class BackupLayout:
                 "light metadata" if use_light_meta else "metadata",
                 name,
             )
-            backup = self.get_backup(name, use_light_meta)
+            try:
+                backup = self.get_backup(name, use_light_meta)
+            except (StorageError, S3RetryingError) as exc:
+                if unreadable is None:
+                    raise
+                error: BaseException = exc
+                while error.__cause__ is not None:
+                    error = error.__cause__
+                message = str(error).strip().split("\n", 1)[0]
+                unreadable[name] = f"{type(error).__name__}: {message}"
+                logging.exception("Failed to read metadata of backup {}", name)
+                continue
             if backup:
                 backups.append(backup)
 

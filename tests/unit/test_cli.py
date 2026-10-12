@@ -12,8 +12,9 @@ from click.testing import CliRunner
 
 from ch_backup import cli
 from ch_backup.backup.copy_report import BackupCopyResult
+from ch_backup.backup.metadata import BackupMetadata, BackupState
 from ch_backup.backup.sources import BackupSources
-from ch_backup.exceptions import TerminatingSignal
+from ch_backup.exceptions import StorageError, TerminatingSignal
 from tests.unit.utils import parametrize
 
 
@@ -287,3 +288,62 @@ def test_restore_command_passes_source_endpoint(endpoint: str) -> None:
 
     backup.restore.assert_called_once()
     assert backup.restore.call_args.kwargs["cloud_storage_source_endpoint"] == endpoint
+
+
+@pytest.mark.parametrize("format_", ["json", "table"])
+@pytest.mark.parametrize("include_unreadable", [False, True])
+def test_list_command_with_unreadable_metadata(format_, include_unreadable):
+    """Diagnostic output contains unknown entries and reports partial failure."""
+    backup = MagicMock()
+    good = BackupMetadata("good", "2", "26.6", "%Y-%m-%d")
+    good.state = BackupState.CREATED
+
+    def list_backups(state, *, unreadable=None):
+        assert state == BackupState.CREATED
+        if unreadable is None:
+            raise StorageError("Unreadable light")
+        unreadable["broken"] = "S3RetryingError: InternalError"
+        return [good]
+
+    backup.list.side_effect = list_backups
+    args = ["list", "-v", "--format", format_]
+    if include_unreadable:
+        args.append("--include-unreadable")
+    result = CliRunner(mix_stderr=False).invoke(
+        Group(commands=[cli.list_command]), args, obj={"backup": backup}
+    )
+    if not include_unreadable:
+        assert isinstance(result.exception, StorageError)
+        assert result.stdout == ""
+        return
+    assert result.exit_code == 2
+    assert "Unreadable metadata: 1" in result.stderr
+    if format_ == "json":
+        rows = json.loads(result.stdout)
+        assert [row["name"] for row in rows] == ["good", "broken"]
+        assert rows[0]["metadata_error"] is None
+        assert rows[1]["state"] == "unknown"
+        assert rows[1]["metadata_error"] == "S3RetryingError: InternalError"
+        assert all(
+            value is None
+            for key, value in rows[1].items()
+            if key not in ("name", "state", "metadata_error")
+        )
+    else:
+        assert all(
+            value in result.stdout
+            for value in ("good", "broken", "unknown", "InternalError")
+        )
+
+
+def test_list_command_requires_verbose_for_unreadable_entries():
+    """Reject the flag combination before reading storage."""
+    backup = MagicMock()
+    result = CliRunner().invoke(
+        Group(commands=[cli.list_command]),
+        ["list", "--include-unreadable"],
+        obj={"backup": backup},
+    )
+    assert result.exit_code == 2
+    assert "requires --verbose" in result.output
+    backup.list.assert_not_called()
