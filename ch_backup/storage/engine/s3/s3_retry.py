@@ -37,15 +37,25 @@ class S3RetryMeta(ABCMeta):
 
     def __new__(mcs, name, bases, attrs):  # pylint: disable=arguments-differ
         new_attrs = {}
-        retry_wrapper = retry(
-            max_attempts=30, max_interval=180, exception_types=S3RetryingError
-        )
         for attr_name, attr_value in attrs.items():
             if not attr_name.startswith("_") and isfunction(attr_value):
-                attr_value = retry_wrapper(mcs.s3_exception_wrapper(attr_value))
+                attr_value = mcs.retry_wrapper(mcs.s3_exception_wrapper(attr_value))
             new_attrs[attr_name] = attr_value
 
         return super().__new__(mcs, name, bases, new_attrs)
+
+    @classmethod
+    def retry_wrapper(mcs, func: Callable[..., RT]) -> Callable[..., RT]:
+        """
+        Retries the function with the retry limits of the engine it is called on.
+        """
+
+        @wraps(func)
+        def wrapper(self: "S3StorageEngine", *args: Any, **kwargs: Any) -> RT:
+            # pylint: disable=protected-access
+            return self._retry(func, self, *args, **kwargs)
+
+        return wrapper
 
     @classmethod
     def s3_exception_wrapper(mcs, func: Callable[..., RT]) -> Callable[..., RT]:

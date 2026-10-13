@@ -217,7 +217,7 @@ def command(*args, **kwargs):
 @option(
     "--include-unreadable",
     is_flag=True,
-    help="Include unreadable metadata in verbose listings; exit with code 2 if any is unreadable.",
+    help="Include unreadable metadata in verbose listings (-a -v shows it too); exit with code 2 if any is unreadable.",
 )
 @option(
     "--format",
@@ -240,11 +240,9 @@ def list_command(
     state = None if all_ else BackupState.CREATED
 
     unreadable: dict[str, str] = {}
-    backups = (
-        ch_backup.list(state, unreadable=unreadable)
-        if include_unreadable
-        else ch_backup.list(state)
-    )
+    backups = ch_backup.list(state, unreadable=unreadable)
+    if not (all_ or include_unreadable):
+        unreadable.clear()
 
     if not verbose:
         print("\n".join([b.name for b in backups]))
@@ -271,7 +269,7 @@ def list_command(
             record["labels"] = "\n".join(
                 f"{name}: {value}" for name, value in backup.labels.items()
             )
-        if include_unreadable:
+        if all_ or include_unreadable:
             record["metadata_error"] = None
         records.append(record)
 
@@ -290,7 +288,7 @@ def list_command(
         print()
     else:
         print(tabulate(records, headers="keys"))
-    if unreadable:
+    if unreadable and include_unreadable:
         print(f"Unreadable metadata: {len(unreadable)}", file=sys.stderr, flush=True)
         _ctx.exit(2)
 
@@ -967,14 +965,20 @@ def _validate_and_resolve_name(
     name: str,
     backup_state: BackupState = None,
 ) -> str:
-    backups = ch_backup.list(backup_state)
+    """Check that the backup exists; LAST is refused while any metadata is unreadable."""
+    unreadable: dict[str, str] = {}
+    backups = ch_backup.list(backup_state, unreadable=unreadable)
 
     if name == "LAST":
+        if unreadable:
+            ctx.fail(
+                f"Cannot resolve LAST, metadata is unreadable for: {', '.join(sorted(unreadable))}"
+            )
         if not backups:
             ctx.fail("There are no backups.")
         return backups[0].name
 
-    if name not in (b.name for b in backups):
+    if name not in unreadable and name not in (b.name for b in backups):
         ctx.fail(f'No backups with name "{name}" were found.')
 
     return name
