@@ -143,6 +143,71 @@ Feature: Copy backups to another storage
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
+  Scenario: Copy reuses a materialized part after its original owner fails
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db1;
+    CREATE TABLE test_db1.test_table1 (n Int32) ENGINE = MergeTree ORDER BY n;
+    INSERT INTO test_db1.test_table1 SELECT number FROM numbers(100);
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: a_owner
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: b_materialized
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: c_linked
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    storage:
+        credentials:
+            bucket: ch-backup-copy
+    """
+    When we try to execute command on clickhouse01
+    """
+    python3 - <<'PY'
+    from unittest.mock import patch
+    from ch_backup.backup.layout import BackupLayout
+    from ch_backup.backup.metadata import BackupState
+    from ch_backup.cli import cli
+    upload = BackupLayout.upload_backup_metadata
+    def fail_owner(layout, backup, *args, **kwargs):
+        if backup.name == 'a_owner' and backup.state == BackupState.CREATED:
+            raise RuntimeError('injected owner publication failure')
+        return upload(layout, backup, *args, **kwargs)
+    with patch.object(BackupLayout, 'upload_backup_metadata', fail_owner):
+        cli(['-c', '/etc/yandex/ch-backup/ch-backup.conf',
+             '--config-parameter', 'multiprocessing.workers', '0',
+             'copy', '--all', '--keep-going',
+             '--target-config-parameter', 'storage.credentials.bucket', '"ch-backup-copy"',
+             '--report-path', '/tmp/copy-report.json'])
+    PY
+    """
+    Then command exits with code 1
+    And we got the following backups on clickhouse02
+      | num | state   | data_count | link_count |
+      | 0   | created | 0          | 1          |
+      | 1   | created | 1          | 0          |
+      | 2   | failed  | 1          | 0          |
+    When we execute command on clickhouse02
+    """
+    python3 - <<'PY'
+    from ch_backup.backup.layout import BackupLayout
+    from ch_backup.config import Config
+    cfg = Config('/etc/yandex/ch-backup/ch-backup.conf')
+    cfg['multiprocessing']['workers'] = 0
+    part = BackupLayout(cfg).get_backup('c_linked').get_parts()[0]
+    assert part.link == 'b_materialized', part.link
+    PY
+    """
+    And we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
   Scenario: Copy fails if target storage contains another backup with the same name
     Given clickhouse on clickhouse01 has test schema
     And clickhouse01 has test clickhouse data test1

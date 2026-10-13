@@ -432,7 +432,7 @@ def test_copy_mode_cache_isolates_credentials(
         patch("ch_backup.backup.copier.logging") as logging,
     ):
         # pylint: disable-next=protected-access
-        copied = ctx.make_copier()._resolve_copy_mode(entries)
+        copied = list(ctx.make_copier()._resolve_copy_mode(entries))
 
     expected = {"copy/a/second": True, "copy/b/second": second_mode == "available"}
     if second_mode != "available":
@@ -2046,6 +2046,111 @@ def test_copy_materializes_links_after_owner_copy_fails() -> None:
         e.dst_path == "ch_backup_copy/b2/data/db1/t1/all_1_1_0/all_1_1_0.tar"
         for e in ctx.target_layout.copied
     )
+
+
+@pytest.mark.parametrize("cloud", [False, True])
+@pytest.mark.parametrize("renamed", [False, True])
+@pytest.mark.parametrize("materialized_backup_fails", [False, True])
+def test_copy_reuses_only_successfully_materialized_parts(
+    cloud: bool, renamed: bool, materialized_backup_fails: bool
+) -> None:
+    names = (
+        ["all_1_1_0", "all_1_1_0_2", "all_1_1_0_3"] if renamed else ["all_1_1_0"] * 3
+    )
+    backups = [
+        _backup(
+            name,
+            start_time=f"2026-01-0{index + 1} 00:00:00 +0000",
+            parts={
+                names[index]: {
+                    **_part(
+                        link="a" if index else None,
+                        link_part_name=names[0] if index else None,
+                    ),
+                    "disk_name": "s3" if cloud else "default",
+                }
+            },
+            cloud_storage_disks=["s3"] if cloud else [],
+        )
+        for index, name in enumerate(("a", "b", "c"))
+    ]
+    for backup in backups:
+        backup.cloud_storage.data_copied = cloud
+    ctx = CopyTestContext(backups)
+    ctx.target_config["copy"]["server_side_copy"] = False
+    part_path = (
+        "cloud_storage/s3/data" if cloud else f"data/db1/t1/{names[0]}/{names[0]}.tar"
+    )
+    _with_files(ctx, "a", {"metadata/a.tar": 1, part_path: 100})
+    if cloud:
+        ctx.layout.cloud_storage_files["ch_backup/a/disks/s3/db1/t1.tar.gz"] = [
+            (f"store/uuid/{names[0]}/data.bin", _object_storage_metadata(("data", 100)))
+        ]
+    ctx.target_layout.object_errors["ch_backup/a/metadata/a.tar"] = RuntimeError(
+        "owner failed"
+    )
+    upload = ctx.target_layout.upload_backup_metadata
+
+    def fail_publication(backup: BackupMetadata) -> None:
+        if (
+            materialized_backup_fails
+            and backup.name == "b"
+            and backup.state == BackupState.CREATED
+        ):
+            raise RuntimeError("publication failed")
+        upload(backup)
+
+    with patch.object(
+        ctx.target_layout, "upload_backup_metadata", side_effect=fail_publication
+    ):
+        with pytest.raises(ClickhouseBackupError):
+            ctx.copy(keep_going=True)
+    target = ctx.target_layout.backups["c"]
+    part = target.get_parts()[0]
+    assert target.state == BackupState.CREATED
+    assert part.link == (None if materialized_backup_fails else "b")
+    assert part.link_part_name == (
+        names[1] if renamed and not materialized_backup_fails else None
+    )
+    assert target.real_size == (100 if materialized_backup_fails else 0)
+    copied_to_c = [
+        e
+        for e in ctx.target_layout.copied
+        if e.dst_path.startswith("ch_backup_copy/c/")
+    ]
+    assert bool(copied_to_c) == materialized_backup_fails
+
+
+@pytest.mark.parametrize("different_checksum", [False, True])
+def test_copy_reuses_materialized_parts_from_skipped_backup(
+    different_checksum: bool,
+) -> None:
+    ctx = CopyTestContext(
+        [
+            _backup(
+                "b", parts={"all_1_1_0_2": _part(link="a", link_part_name="all_1_1_0")}
+            ),
+            _backup(
+                "c",
+                start_time="2026-01-02 00:00:00 +0000",
+                parts={
+                    "all_1_1_0_3": _part(
+                        link="a",
+                        link_part_name="all_1_1_0",
+                        checksum="other" if different_checksum else "checksum1",
+                    )
+                },
+            ),
+        ]
+    )
+    ctx.target_config["copy"]["server_side_copy"] = False
+    _with_files(ctx, "a", {"data/db1/t1/all_1_1_0/all_1_1_0.tar": 100})
+    assert ctx.copy(["b"]) == (["b"], [])
+    ctx.target_layout.copied.clear()
+    assert ctx.copy() == (["c"], ["b"])
+    part = ctx.target_layout.backups["c"].get_parts()[0]
+    assert part.link == (None if different_checksum else "b")
+    assert bool(ctx.target_layout.copied) == different_checksum
 
 
 @pytest.mark.parametrize("keep_going", [False, True])

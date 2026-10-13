@@ -3,10 +3,54 @@
 import json
 import os
 import sys
-from dataclasses import asdict, dataclass, field
-from typing import Literal
+from dataclasses import dataclass, field, fields
+from itertools import islice
+from tempfile import SpooledTemporaryFile
+from typing import Iterator, Literal, TextIO
 
 from ch_backup.exceptions import ClickhouseBackupError
+
+
+class CopyErrors:
+    """Append-only error details, spilling to disk above 64 KiB per backup."""
+
+    def __init__(self) -> None:
+        # The file lives as long as this report, including reads after copying raises.
+        # pylint: disable-next=consider-using-with
+        self._file = SpooledTemporaryFile(
+            max_size=64 * 1024, mode="w+t", encoding="utf-8"
+        )
+        self._count = 0
+
+    def append(self, detail: dict[str, str]) -> None:
+        """Save one error without retaining its exception or traceback."""
+        self._file.seek(0, os.SEEK_END)
+        self._file.write(json.dumps(detail) + "\n")
+        self._count += 1
+
+    def __len__(self) -> int:
+        return self._count
+
+    def __iter__(self) -> Iterator[dict[str, str]]:
+        # Each iterator has its own position; appends and other readers may seek.
+        position = 0
+        for _ in range(self._count):
+            self._file.seek(position)
+            line = self._file.readline()
+            position = self._file.tell()
+            yield json.loads(line)
+
+    def __getitem__(self, index: int) -> dict[str, str]:
+        if index < 0:
+            index += self._count
+        if not 0 <= index < self._count:
+            raise IndexError(index)
+        return next(islice(self, index, None))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, (CopyErrors, list)):
+            return NotImplemented
+        return len(self) == len(other) and all(a == b for a, b in zip(self, other))
 
 
 @dataclass
@@ -19,7 +63,7 @@ class BackupCopyResult:
     objects_copied: int = 0
     objects_failed: int = 0
     known_bytes_copied: int = 0
-    errors: list[dict[str, str]] = field(default_factory=list)
+    errors: CopyErrors = field(default_factory=CopyErrors)
 
     def completed(self, size: int = 0) -> None:
         """Record a completed copy or metadata upload."""
@@ -55,6 +99,27 @@ class CopyReport:
     backups: list[BackupCopyResult] = field(default_factory=list)
 
 
+def _write_report(report: CopyReport, report_file: TextIO) -> None:
+    """Stream the existing JSON schema without copying all error details into RAM."""
+    header = {"schema_version": report.schema_version, "error": report.error}
+    report_file.write(json.dumps(header)[:-1] + ', "backups": [')
+    for index, result in enumerate(report.backups):
+        if index:
+            report_file.write(",")
+        values = {
+            item.name: getattr(result, item.name)
+            for item in fields(result)
+            if item.name != "errors"
+        }
+        report_file.write("\n" + json.dumps(values)[:-1] + ', "errors": [')
+        for error_index, error in enumerate(result.errors):
+            if error_index:
+                report_file.write(",")
+            json.dump(error, report_file)
+        report_file.write("]}")
+    report_file.write("\n]}\n")
+
+
 def print_copy_report(report: CopyReport, report_path: str | None) -> None:
     """Print confirmed results and optionally save them without masking copy errors."""
     statuses = ("copied", "skipped", "failed", "not_processed")
@@ -88,7 +153,7 @@ def print_copy_report(report: CopyReport, report_path: str | None) -> None:
                 0o644,
             )
             with os.fdopen(fd, "w", encoding="utf-8") as report_file:
-                report_file.write(json.dumps(asdict(report), indent=2) + "\n")
+                _write_report(report, report_file)
         except Exception as e:
             message = f"Failed to save copy report to {report_path}: {e}"
             print(message, file=sys.stderr, flush=True)

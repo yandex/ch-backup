@@ -104,6 +104,8 @@ class BackupCopier:
         self._target_backups: dict[str, BackupMetadata | None] = {}
         # Files of backups in source storage used to resolve deduplication links.
         self._source_backup_files: dict[str, dict[str, int]] = {}
+        # Original part identity -> successfully materialized target owner and name.
+        self._materialized_parts: dict[tuple, tuple[str, str]] = {}
         # Availability of server-side copy for bucket pairs with particular credentials.
         self._server_side_copy: dict[tuple, bool] = {}
         self._keep_going = False
@@ -126,6 +128,7 @@ class BackupCopier:
         self._report = report if report is not None else CopyReport()
         self._report.error = None
         self._report.backups.clear()
+        self._materialized_parts.clear()
         try:
             self._validate_configs()
             backups = self._select_backups(backup_names)
@@ -291,6 +294,8 @@ class BackupCopier:
         """
         Copy backup. Return False if the backup is already present in the target storage.
         """
+        self._source_backup_files.clear()
+        self._target_backups.clear()
         backup = self._layout.get_backup(backup_name)
         if not backup:
             raise BackupNotFound(backup_name)
@@ -313,6 +318,10 @@ class BackupCopier:
                     f"Backup {backup_name} already exists in target storage and it is not a copy of the source backup"
                 )
             if target_backup.state == BackupState.CREATED:
+                if any(part.link for part in backup.get_parts()):
+                    existing = self._target_layout.get_backup(backup_name)
+                    if existing:
+                        self._remember_materialized_parts(backup, existing)
                 logging.info(
                     "Backup {} is already present in target storage, skipping it",
                     backup_name,
@@ -373,6 +382,7 @@ class BackupCopier:
             stage = "metadata"
             target_meta.state = BackupState.CREATED
             self._target_layout.upload_backup_metadata(target_meta)
+            self._remember_materialized_parts(backup, target_meta)
         except (Exception, TerminatingSignal) as e:
             logging.critical("Copying of backup {} failed", backup.name, exc_info=True)
             if stage == "metadata" or not result.errors:
@@ -525,7 +535,9 @@ class BackupCopier:
         result: BackupCopyResult,
     ) -> None:
         """Materialize one local part when its target link is unusable."""
-        if self._is_link_valid_in_target(part):
+        if self._is_link_valid_in_target(part) or self._reuse_materialized_part(
+            part, target_meta
+        ):
             return
         assert part.link
         target_backup_path = self._target_layout.get_backup_path(backup.name)
@@ -588,6 +600,59 @@ class BackupCopier:
                 )
         if len(result.errors) == error_count:
             target_meta.unlink_part(part)
+
+    @staticmethod
+    def _materialized_part_key(part: PartMetadata) -> tuple:
+        return (
+            part.link,
+            part.database,
+            part.table,
+            part.deduplicated_part_name,
+            part.checksum,
+            part.disk_name,
+            part.tarball,
+            part.encrypted,
+        )
+
+    def _remember_materialized_parts(
+        self, source: BackupMetadata, target: BackupMetadata
+    ) -> None:
+        """Only publish alternative owners after their complete backup is CREATED."""
+        if target.state != BackupState.CREATED:
+            return
+        for part in source.get_parts():
+            if not part.link:
+                continue
+            if part.disk_name in source.cloud_storage.disks and not (
+                source.cloud_storage.data_copied and target.cloud_storage.data_copied
+            ):
+                continue
+            stored = target.find_part(part.database, part.table, part.name)
+            if not stored or stored.link:
+                continue
+            if (
+                stored.checksum == part.checksum
+                and stored.disk_name == part.disk_name
+                and stored.tarball == part.tarball
+                and stored.encrypted == part.encrypted
+            ):
+                self._materialized_parts.setdefault(
+                    self._materialized_part_key(part), (target.name, stored.name)
+                )
+
+    def _reuse_materialized_part(
+        self, part: PartMetadata, target: BackupMetadata
+    ) -> bool:
+        owner = self._materialized_parts.get(self._materialized_part_key(part))
+        if owner is None:
+            return False
+        name, part_name = owner
+        raw_part = target.get_table(part.database, part.table).raw_metadata["parts"][
+            part.name
+        ]
+        raw_part["link"] = name
+        raw_part["link_part_name"] = part_name if part_name != part.name else None
+        return True
 
     def _is_link_valid_in_target(self, part: PartMetadata) -> bool:
         """
@@ -714,6 +779,8 @@ class BackupCopier:
                 target_owner = self._target_backups[part.link]
                 if target_owner and target_owner.cloud_storage.data_copied:
                     continue
+            if part.link and self._reuse_materialized_part(part, target_meta):
+                continue
             sources.setdefault(part.link or backup.name, []).append(part)
 
         files = []
@@ -1033,8 +1100,8 @@ class BackupCopier:
 
         logging.info(
             "Copying {} objects ({} bytes)",
-            len(entries),
-            sum(entry.size for entry in entries),
+            len(plan.entries),
+            sum(entry.size for entry in plan.entries),
         )
         try:
             self._target_layout.copy_objects(
@@ -1049,7 +1116,9 @@ class BackupCopier:
                     object_failed=True,
                 ),
             )
-            for remote_path, files in plan.rewritten_cloud_storage_metadata:
+            for index, (remote_path, files) in enumerate(
+                plan.rewritten_cloud_storage_metadata, 1
+            ):
                 try:
                     self._target_layout.upload_cloud_storage_metadata_files(
                         backup,
@@ -1066,6 +1135,8 @@ class BackupCopier:
                 except Exception as e:
                     if not self._keep_going or is_broken_executor(e):
                         raise
+                if index % 256 == 0:
+                    self._target_layout.wait(keep_going=self._keep_going)
         except (Exception, TerminatingSignal) as e:
             # Submission can fail after other uploads have already started. Wait before
             # publishing FAILED and releasing the locks, preserving the original error.
@@ -1090,7 +1161,7 @@ class BackupCopier:
 
     def _resolve_copy_mode(
         self, entries: list[CopyEntry], copy_result: BackupCopyResult | None = None
-    ) -> list[CopyEntry]:
+    ) -> Iterator[CopyEntry]:
         """
         Mark objects that can be copied on the server side.
 
@@ -1098,12 +1169,12 @@ class BackupCopier:
         of source and target buckets with the same credentials. Such objects are excluded from the result.
         """
         if not self._copy_config["server_side_copy"]:
-            return entries
+            yield from entries
+            return
 
-        result = []
         for entry in entries:
             if not server_side_copy_possible(entry.src_storage, entry.dst_storage):
-                result.append(entry._replace(server_side=False))
+                yield entry._replace(server_side=False)
                 continue
 
             pair = (storage_id(entry.src_storage), storage_id(entry.dst_storage))
@@ -1139,9 +1210,7 @@ class BackupCopier:
                     *pair,
                 )
 
-            result.append(entry._replace(server_side=self._server_side_copy[cache_key]))
-
-        return result
+            yield entry._replace(server_side=self._server_side_copy[cache_key])
 
     def _list(self, storage: dict, prefix: str) -> dict[str, int]:
         return self._engine(storage).list_dir_with_sizes(prefix)

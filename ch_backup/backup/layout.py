@@ -13,6 +13,7 @@ from typing import (
     Any,
     BinaryIO,
     Callable,
+    Iterable,
     Iterator,
     Literal,
     Sequence,
@@ -1034,7 +1035,7 @@ class BackupLayout:
 
     def copy_objects(
         self,
-        entries: Sequence[CopyEntry],
+        entries: Iterable[CopyEntry],
         *,
         keep_going: bool = False,
         callback: Callable[[CopyEntry], None] | None = None,
@@ -1043,7 +1044,8 @@ class BackupLayout:
         """
         Copy objects from one storage to another as is.
         """
-        for entry in entries:
+        index = 0
+        for index, entry in enumerate(entries, 1):
             try:
                 self._storage_loader.copy_object(
                     entry,
@@ -1052,10 +1054,15 @@ class BackupLayout:
                     on_error=partial(on_error, entry) if on_error else None,
                 )
             except Exception as e:
-                if keep_going and not is_broken_executor(e):
-                    continue
-                msg = f"Failed to create async copy of {entry.src_path} to {entry.dst_path}"
-                raise StorageError(msg) from e
+                if not keep_going or is_broken_executor(e):
+                    msg = f"Failed to create async copy of {entry.src_path} to {entry.dst_path}"
+                    raise StorageError(msg) from e
+            # Workers limit running copies, not queued futures and their callbacks.
+            # Drain regularly even if all jobs have already finished in the workers.
+            if index % 256 == 0:
+                self.wait(keep_going=keep_going)
+        if index % 256:
+            self.wait(keep_going=keep_going)
 
     def wait(self, keep_going: bool = False) -> None:
         """
