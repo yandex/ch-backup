@@ -450,12 +450,14 @@ Feature: Backup of tables with different engines and configurations
     And we got same clickhouse data at clickhouse01 clickhouse02
 
   @storage_proxy
-  Scenario: Create backup containing StorageProxy table
+  Scenario Outline: Backup and restore unreachable source with <loading> tables
     Given we have executed queries on clickhouse01
     """
-    CREATE DATABASE test_db;
-
-    CREATE TABLE test_db.table_01 (date Date, n Int32) AS url('http://127.0.0.1:12345/', CSV)
+    CREATE DATABASE test_db ENGINE = Atomic <settings>;
+    CREATE TABLE test_db.table_01 (date Date, n Int32) AS url('http://127.0.0.1:12345/', CSV);
+    CREATE TABLE test_db.table_02 (n Int32) ENGINE = MergeTree ORDER BY n;
+    DETACH DATABASE test_db;
+    ATTACH DATABASE test_db;
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
@@ -463,3 +465,12 @@ Feature: Backup of tables with different engines and configurations
       | 0   | created | 0          | 0          |
     When we restore clickhouse backup #0 to clickhouse02
     Then clickhouse02 has same schema as clickhouse01
+
+    Examples:
+      | loading | settings |
+      | eager   |          |
+
+    @require_version_26.2
+    Examples:
+      | loading | settings                      |
+      | lazy    | SETTINGS lazy_load_tables=1   |
