@@ -211,16 +211,18 @@ class BackupManager:
 
     def __init__(self, context: ContextT, node_name: str, timeout: int = 300) -> None:
         self._container = docker.get_container(context, node_name)
-        self._s3_client = s3.S3Client(context)
         self._config_path = CH_BACKUP_CONF_PATH
         protocol = context.ch_backup["protocol"]
         self._cmd_base = f"timeout {timeout} {CH_BACKUP_CLI_PATH} --protocol {protocol} --insecure  --config {self._config_path}"
-        # Read path_root from the ch-backup config on the container.
+        # Read path_root and bucket from the ch-backup config on the container.
         conf_output = self._container.exec_run(
             f"/bin/cat {self._config_path}", user="root"
         ).output.decode()
         conf = yaml.load(conf_output, yaml.SafeLoader)
         self._path_root: str = conf.get("backup", {}).get("path_root", "ch_backup/")
+        self._s3_client = s3.S3Client(
+            context, conf.get("storage", {}).get("credentials", {}).get("bucket")
+        )
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
     def backup(

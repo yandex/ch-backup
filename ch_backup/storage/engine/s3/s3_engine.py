@@ -11,14 +11,18 @@ import requests
 from botocore.exceptions import ClientError
 
 from ch_backup import logging
-from ch_backup.exceptions import StorageError
+from ch_backup.exceptions import ConfigurationError, StorageError
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
 from ch_backup.storage.engine.s3.s3_client_factory import (
     S3ClientCachedFactory,
     S3ClientFactory,
 )
 from ch_backup.storage.engine.s3.s3_multipart_uploader import S3MultipartUploader
-from ch_backup.storage.engine.s3.s3_retry import S3RetryMeta
+from ch_backup.storage.engine.s3.s3_retry import (
+    RetryExponential,
+    S3RetryingError,
+    S3RetryMeta,
+)
 from ch_backup.type_hints.boto3.s3 import S3Client
 
 
@@ -42,6 +46,17 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
             requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
 
         self._bulk_delete_enabled = config.get("bulk_delete_enabled", True)
+
+        max_attempts = config.get("retry_max_attempts", 30)
+        max_interval = config.get("retry_max_interval", 180)
+        if not isinstance(max_attempts, int) or max_attempts < 1 or max_interval < 0:
+            raise ConfigurationError(
+                "storage.retry_max_attempts must be an integer of at least 1 "
+                "and storage.retry_max_interval must not be negative"
+            )
+        self._retry = RetryExponential(
+            S3RetryingError, max_attempts=max_attempts, max_interval=max_interval
+        )
 
     @property
     def _s3_client(self) -> S3Client:
@@ -150,6 +165,55 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
                     contents.append(file_path)
 
         return contents
+
+    def list_dir_with_sizes(self, remote_path: str) -> dict[str, int]:
+        """
+        Return sizes of all objects under the remote path (recursively) keyed by object key.
+        """
+        remote_path = remote_path.strip("/") + "/"
+        result = {}
+        paginator = self._s3_client.get_paginator("list_objects")
+        for page in paginator.paginate(Bucket=self._s3_bucket_name, Prefix=remote_path):
+            for file_key in page.get("Contents", []):
+                result[file_key["Key"]] = file_key["Size"]
+
+        return result
+
+    def copy_object(
+        self, source_bucket: str, source_path: str, remote_path: str
+    ) -> None:
+        """
+        Copy object from the bucket of the same S3 service on the server side.
+        """
+        self._copy_object(source_bucket, source_path, remote_path)
+
+    def try_copy_object(
+        self, source_bucket: str, source_path: str, remote_path: str
+    ) -> bool:
+        """
+        Try to copy object on the server side. Return False if S3 service rejected the request.
+        """
+        try:
+            self._copy_object(source_bucket, source_path, remote_path)
+            return True
+        except ClientError as e:
+            logging.warning(
+                "Server-side copy of '{}' from bucket '{}' failed: {}",
+                source_path,
+                source_bucket,
+                e,
+            )
+            return False
+
+    def _copy_object(
+        self, source_bucket: str, source_path: str, remote_path: str
+    ) -> None:
+        # Managed copy uses UploadPartCopy for large objects.
+        self._s3_client.copy(
+            CopySource={"Bucket": source_bucket, "Key": source_path.lstrip("/")},
+            Bucket=self._s3_bucket_name,
+            Key=remote_path.lstrip("/"),
+        )
 
     def path_exists(self, remote_path: str, is_dir: bool = False) -> bool:
         """

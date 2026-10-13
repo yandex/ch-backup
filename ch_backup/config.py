@@ -76,6 +76,32 @@ DEFAULT_CONFIG = {
         "update_metadata_interval": _as_seconds("30 min"),
         "kill_old_freeze_queries": True,
     },
+    "copy": {
+        # Copy objects on the server side if source and target buckets belong to the same S3 service
+        # and are accessible with the same credentials.
+        "server_side_copy": True,
+        # Copying of data stored on object storage (S3) disks.
+        "cloud_storage": {
+            # Location of the source disk objects. If not set, it's taken from backup metadata
+            # (for backups that were already copied) or from ClickHouse disk configuration.
+            "source": {
+                "endpoint_url": None,
+                "bucket": None,
+                "path": None,
+                "access_key_id": None,
+                "secret_access_key": None,
+            },
+            # Location where disk objects are copied to. Objects of the backup are put
+            # under "<path>/<backup name>/". Endpoint and credentials default to ones of the target storage.
+            "target": {
+                "endpoint_url": None,
+                "bucket": None,
+                "path": "",
+                "access_key_id": None,
+                "secret_access_key": None,
+            },
+        },
+    },
     "restore": {
         "use_inplace_cloud_restore": False,
         # Max table name length. Actually it is just a result of the getMaxTableNameLengthForDatabase(<atomic_db>) ch function.
@@ -109,6 +135,10 @@ DEFAULT_CONFIG = {
         # chunk_size will be multiplied on a required number of times
         # to satisfy the limit.
         "max_chunk_count": 10000,
+        # Attempts per S3 operation before failing, 1 disables retries
+        "retry_max_attempts": 30,
+        # Upper bound of the randomized exponential pause between attempts, in seconds
+        "retry_max_interval": 180,
         # Enable bulk delete (DeleteObjects in S3 API)
         "bulk_delete_enabled": True,
         # How many files we can delete by bulk delete operation in one call
@@ -285,12 +315,29 @@ class Config:
         self._recursively_update(self._conf, update_dict=patch_dict)
         return self._conf
 
+    def derive(
+        self, config_file: str | None = None, patch: dict | None = None
+    ) -> "Config":
+        """
+        Return a copy of the config with applied changes from config file and the patch.
+        """
+        config = copy.deepcopy(self)
+        if config_file:
+            config.merge(self._load_config_file(config_file))
+        if patch:
+            config.merge(patch)
+        return config
+
     def _read_config(self, file_name):
+        custom_config = self._load_config_file(file_name)
+        if custom_config:
+            self._recursively_update(self._conf, custom_config)
+
+    @staticmethod
+    def _load_config_file(file_name: str) -> dict:
         with open(file_name, "r", encoding="utf-8") as fileobj:
             try:
-                custom_config = yaml.safe_load(fileobj)
-                if custom_config:
-                    self._recursively_update(self._conf, custom_config)
+                return yaml.safe_load(fileobj) or {}
             except yaml.YAMLError as e:
                 raise RuntimeError(f"Failed to load config file: {e}")
 
