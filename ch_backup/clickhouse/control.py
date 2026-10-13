@@ -1056,18 +1056,23 @@ class ClickhouseCTL:
     def get_local_access_statements(self) -> list[str]:
         """
         Return statements recreating local access entities. Roles and profiles refer to each
-        other and to users, so they are created bare and altered after users. Grants go last.
+        other and to users, so they are created bare and altered after users. ClickHouse
+        creates a user before it resolves GRANTEES and then fails on a grantee created later,
+        so users are created with IF NOT EXISTS to let the retry pass and are altered after
+        all are created. Grants go last.
         """
         entities = self._get_local_access_entities()
         mutual = [(t, n) for t in ("ROLE", "SETTINGS PROFILE") for n in entities[t]]
+        users = [self._show_create_access_entity("USER", n) for n in entities["USER"]]
         statements = [f"CREATE {t} {n}" for t, n in mutual]
         statements += [
-            self._show_create_access_entity("USER", n) for n in entities["USER"]
+            re.sub("^CREATE USER", "CREATE USER IF NOT EXISTS", s) for s in users
         ]
         statements += [
             re.sub("^CREATE", "ALTER", self._show_create_access_entity(t, n))
             for t, n in mutual
         ]
+        statements += [re.sub("^CREATE", "ALTER", s) for s in users]
         statements += [
             self._show_create_access_entity(t, n)
             for t in ("QUOTA", "ROW POLICY")

@@ -8,9 +8,12 @@ from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, TableMetadata
 from ch_backup.backup.sources import BackupSources
+from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.control import ClickhouseCTL
+from ch_backup.clickhouse.schema import rewrite_database_schema, rewrite_table_schema
 from ch_backup.config import Config
 from ch_backup.exceptions import ClickhouseBackupError
+from ch_backup.logic.named_collections import NamedCollectionsStorageConfig
 from ch_backup.version import get_version
 
 MIN_CLICKHOUSE_VERSION = "23.8"
@@ -39,8 +42,8 @@ class ReplicaLayout(BackupLayout):
 
     get_backup reads and checks everything requested before the restore changes the host.
     Objects shared through ZooKeeper or from the server config are left out: tables of
-    Replicated databases, functions and named collections this host has, access entities
-    of non-local storages.
+    Replicated databases, named collections from the server config of this host or shared
+    through ZooKeeper, access entities of non-local storages.
     """
 
     # pylint: disable=too-many-instance-attributes
@@ -55,6 +58,8 @@ class ReplicaLayout(BackupLayout):
     ) -> None:
         super().__init__(config)
         self._zookeeper_hosts = config["zookeeper"].get("hosts")
+        self._ch_ctl_conf = config["clickhouse"]
+        self._ch_config = ClickhouseConfig(config)
         self._local_ctl = local_ctl
         self._source_ctl = source_ctl
         self._sources = sources
@@ -139,11 +144,16 @@ class ReplicaLayout(BackupLayout):
     def _read_schema(self, backup: BackupMetadata) -> None:
         """
         Read databases and tables, skipping tables without metadata as a backup does.
+        Statements are checked as restore rewrites them with override_replica_name.
         """
+        override = self._config["override_replica_name"]
         for db in self._source_ctl.get_databases(self._config["exclude_dbs"]):
-            self._database_statements[db.name] = self._check(
-                db.name, self._source_ctl.get_database_schema(db.name)
+            statement = self._source_ctl.get_database_schema(db.name)
+            self._check(
+                db.name,
+                rewrite_database_schema(db, statement, override_replica_name=override),
             )
+            self._database_statements[db.name] = statement
             backup.add_database(db)
             if db.is_external_db_engine() or db.is_replicated_db_engine():
                 continue
@@ -151,18 +161,23 @@ class ReplicaLayout(BackupLayout):
                 if not table.metadata_path:
                     logging.warning(f"Skipping {db.name}.{table.name}: no metadata")
                     continue
-                self._table_statements[(db.name, table.name)] = self._check(
-                    f"{db.name}.{table.name}", table.create_statement
-                )
+                self._table_statements[(db.name, table.name)] = table.create_statement
+                rewrite_table_schema(table, override_replica_name=override)
+                self._check(f"{db.name}.{table.name}", table.create_statement)
                 backup.add_table(
                     TableMetadata(db.name, table.name, table.engine, table.uuid)
                 )
 
     def _read_udf(self, backup: BackupMetadata) -> None:
         """
-        Read functions this host lacks.
+        Read functions. Restore skips ones this host has the same and replaces others.
+        ClickHouse keeps them in ZooKeeper if user_defined_zookeeper_path is set, then they
+        are shared with the replica and only missing ones are read: restore would drop a
+        function that differs in format on all replicas.
         """
-        local = self._local_ctl.get_udf_query()
+        local = {}
+        if "user_defined_zookeeper_path" in self._ch_config.config:
+            local = self._local_ctl.get_udf_query()
         for name, statement in self._source_ctl.get_udf_query().items():
             if name not in local:
                 self._udf_statements[name] = self._check(name, statement)
@@ -170,22 +185,33 @@ class ReplicaLayout(BackupLayout):
 
     def _read_named_collections(self, backup: BackupMetadata) -> None:
         """
-        Read named collections this host lacks. Their create statements are shown since 25.5.
+        Read named collections, except ones from the server config of this host. Unless
+        they are in local storage, only missing ones are read: ones in ZooKeeper are shared
+        with the replica, and restore may find them different in format and drop them on
+        all replicas. Their create statements are shown since 25.5.
         """
+        local = self._local_ctl.get_named_collections_query()
         missing = sorted(
-            set(self._source_ctl.get_named_collections_query())
-            - set(self._local_ctl.get_named_collections_query())
+            set(self._source_ctl.get_named_collections_query()) - set(local)
         )
-        if not missing:
-            return
         if not self._source_ctl.ch_version_ge(NAMED_COLLECTIONS_MIN_CLICKHOUSE_VERSION):
+            if not missing:
+                return
             raise ClickhouseBackupError(
                 f"Named collections {', '.join(missing)} are missing on this host, and "
                 f"restoring them needs ClickHouse {NAMED_COLLECTIONS_MIN_CLICKHOUSE_VERSION} "
                 "or newer. Run with --schema --access --udf to skip them"
             )
         statements = self._source_ctl.get_named_collections_create_queries()
-        for name in missing:
+        names = missing
+        if NamedCollectionsStorageConfig.from_ch_config(
+            self._ch_ctl_conf, self._ch_config
+        ).is_local_storage():
+            from_config = set(local) - set(
+                self._local_ctl.get_named_collections_create_queries()
+            )
+            names = sorted(set(statements).union(missing) - from_config)
+        for name in names:
             if name not in statements:
                 raise ClickhouseBackupError(
                     f"Named collection {name} comes from the server config of {self._host} "
@@ -288,7 +314,8 @@ class ReplicaLayout(BackupLayout):
             replica = match.group("table") or match.group("db")
             if "{replica}" not in replica:
                 raise ClickhouseBackupError(
-                    f"{name} on {self._host} has replica name {replica} instead of the "
-                    f"{{replica}} macro, so this host would take over that replica"
+                    f"{name} gets replica name {replica} instead of the {{replica}} macro, "
+                    "so this host would take over that replica. Check its schema on "
+                    f"{self._host} and override_replica_name"
                 )
         return statement

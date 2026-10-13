@@ -140,25 +140,36 @@ def test_access_of_this_host_is_dropped_if_the_replica_has_none() -> None:
     context.ch_ctl.restore_access_entity.assert_not_called()
 
 
-def test_access_statements_are_run_again_until_dependencies_exist() -> None:
+def test_users_granting_to_each_other_are_restored() -> None:
     """
-    A user who may grant to another user fails until that user exists.
+    ClickHouse creates a user before it resolves GRANTEES and fails on a grantee that does
+    not exist yet, leaving the user with GRANTEES ANY until it is altered.
     """
     context = mock.MagicMock()
-    created: list[str] = []
+    grantees: dict[str, str] = {}
 
     def run(statement: str) -> None:
-        """Fail u1 until u2 exists."""
-        if "GRANTEES u2" in statement and not created:
-            raise ClickhouseError("There is no user u2")
-        created.append(statement)
+        """Create or alter a user as ClickHouse does."""
+        verb, name, _, grantee = statement.rsplit(" ", 3)
+        created = name not in grantees
+        grantees.setdefault(name, "ANY")
+        if grantee not in grantees:
+            raise ClickhouseError(f"There is no user {grantee}")
+        if created or verb == "ALTER USER":
+            grantees[name] = grantee
 
     context.ch_ctl.restore_access_entity.side_effect = run
     access.AccessBackup()._restore_statements(  # pylint: disable=protected-access
-        context, ["CREATE USER u1 GRANTEES u2", "CREATE USER u2"]
+        context,
+        [
+            "CREATE USER IF NOT EXISTS a GRANTEES z",
+            "CREATE USER IF NOT EXISTS z GRANTEES a",
+            "ALTER USER a GRANTEES z",
+            "ALTER USER z GRANTEES a",
+        ],
     )
 
-    assert created == ["CREATE USER u2", "CREATE USER u1 GRANTEES u2"]
+    assert grantees == {"a": "z", "z": "a"}
 
 
 def test_access_restore_fails_without_progress() -> None:

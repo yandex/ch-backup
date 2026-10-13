@@ -156,7 +156,7 @@ Feature: Restore schema from a live replica
     """
     Then we get response contains
     """
-    test_db.table_01 on clickhouse01 has replica name 'clickhouse01' instead of the {replica} macro
+    test_db.table_01 gets replica name 'clickhouse01' instead of the {replica} macro
     """
     When we execute query on clickhouse01
     """
@@ -210,6 +210,10 @@ Feature: Restore schema from a live replica
     GRANT SELECT ON test_db.* TO test_role;
     CREATE QUOTA test_quota FOR INTERVAL 1 hour MAX queries = 100 TO test_user;
     CREATE ROW POLICY test_policy ON test_db.table_01 USING n > 5 TO test_user;
+    CREATE USER a_user IDENTIFIED WITH no_password;
+    CREATE USER z_user IDENTIFIED WITH no_password;
+    ALTER USER a_user GRANTEES z_user;
+    ALTER USER z_user GRANTEES a_user;
     CREATE FUNCTION test_udf AS x -> x + 1;
     """
     When we execute command on clickhouse02

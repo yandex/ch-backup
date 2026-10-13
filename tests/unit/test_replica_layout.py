@@ -47,11 +47,11 @@ def _ctl(version: str = "25.8.1.1", macros: dict | None = None) -> MagicMock:
 
 
 def _local(version: str = "25.8.1.1", **returns: object) -> MagicMock:
-    """Helper: this host without functions, with a collection from the config and local
-    access storage, unless given other results of its control methods."""
+    """Helper: this host with a collection from the config and local access storage,
+    unless given other results of its control methods."""
     ctl = _ctl(version, macros={"replica": "host2", "shard": "shard1"})
     ctl.get_named_collections_query.return_value = ["nc_config"]
-    ctl.get_udf_query.return_value = {}
+    ctl.get_named_collections_create_queries.return_value = {}
     ctl.get_access_storage_types.return_value = {"users_xml", "local_directory"}
     for method, value in returns.items():
         getattr(ctl, method).return_value = value
@@ -83,13 +83,17 @@ def _source(
 def _layout(
     source: MagicMock,
     local: MagicMock | None = None,
+    *,
     replica_name: str | None = None,
     zookeeper_hosts: str = "zk:2181",
     sources: BackupSources = ALL,
+    override_replica_name: str | None = "{replica}",
+    ch_config: dict | None = None,
 ) -> ReplicaLayout:
     """Helper: a replica layout that fails on any access to the backup storage."""
     config: dict = copy.deepcopy(DEFAULT_CONFIG)
     config["zookeeper"]["hosts"] = zookeeper_hosts
+    config["backup"]["override_replica_name"] = override_replica_name
     with (
         patch("ch_backup.backup.layout.StorageLoader"),
         patch("ch_backup.backup.layout.get_encryption"),
@@ -102,6 +106,7 @@ def _layout(
             replica_name,
         )
     setattr(layout, "_storage_loader", None)
+    setattr(layout, "_ch_config", MagicMock(config=ch_config or {}))
     return layout
 
 
@@ -196,7 +201,7 @@ def test_other_patch_version_is_accepted() -> None:
         (
             None,
             TABLE.replace("'{replica}'", "'host1'"),
-            "db1.t1 on replica1 has replica name 'host1'",
+            "db1.t1 gets replica name 'host1'",
         ),
         (
             {
@@ -204,7 +209,7 @@ def test_other_patch_version_is_accepted() -> None:
                 "repl_db": DATABASES["repl_db"].replace("'{replica}'", "'host1'"),
             },
             TABLE,
-            "repl_db on replica1 has replica name 'host1'",
+            "repl_db gets replica name 'host1'",
         ),
     ],
     ids=[
@@ -219,17 +224,57 @@ def test_unusable_statement_fails_the_restore(
 ) -> None:
     """
     An object created from a masked statement would not work, and a literal replica
-    name would make this host take over the replica of the source in ZooKeeper.
+    name left by restore would make this host take over the replica of the source.
     """
     with pytest.raises(ClickhouseBackupError, match=error):
-        _layout(_source(databases, table)).get_backup("replica1")
+        _layout(_source(databases, table), override_replica_name=None).get_backup(
+            "replica1"
+        )
+
+
+@pytest.mark.parametrize(
+    "databases,table",
+    [
+        (None, TABLE.replace("'{replica}'", "'host1'")),
+        (
+            {
+                **DATABASES,
+                "repl_db": DATABASES["repl_db"].replace("'{replica}'", "'host1'"),
+            },
+            TABLE,
+        ),
+    ],
+    ids=["table", "database"],
+)
+def test_replica_literal_is_accepted_if_restore_replaces_it(
+    databases: dict | None, table: str
+) -> None:
+    """
+    Restore puts override_replica_name in place of the replica name, so the statement
+    is checked as rewritten and kept as is for restore to rewrite.
+    """
+    layout = _layout(_source(databases, table))
+
+    backup = layout.get_backup("replica1")
+
+    assert layout.get_table_create_statements(backup, "db1", ["t1"]) == [("t1", table)]
+    assert layout.get_database_create_statements(backup, ["repl_db"]) == [
+        ("repl_db", (databases or DATABASES)["repl_db"])
+    ]
+
+
+def test_literal_override_of_replica_name_fails_the_restore() -> None:
+    """
+    This host would take over the replica named in override_replica_name.
+    """
+    with pytest.raises(ClickhouseBackupError, match="'host1'.*override_replica_name"):
+        _layout(_source(), override_replica_name="host1").get_backup("replica1")
 
 
 def test_functions_named_collections_and_access_are_read_from_the_replica() -> None:
     """
-    Functions and named collections are taken only if this host lacks them, so ones from
-    the server config or shared through ZooKeeper are left alone. Access entities of this
-    host are replaced with ones of the replica.
+    Collections from the server config of the replica are left alone. Access entities of
+    this host are replaced with ones of the replica.
     """
     layout = _layout(_source())
 
@@ -244,19 +289,57 @@ def test_functions_named_collections_and_access_are_read_from_the_replica() -> N
     assert layout.get_access_statements() == ACCESS
 
 
-def test_existing_function_is_not_replaced() -> None:
+def test_existing_function_and_named_collection_are_read() -> None:
     """
-    A function stored in ZooKeeper is shared by all replicas and must not be dropped.
+    Restore skips ones this host has the same and replaces others, so a stale one does
+    not stay. A collection from the server config of this host is left alone.
     """
+    source = _source()
+    source.get_named_collections_create_queries.return_value = {
+        "nc1": NAMED_COLLECTION,
+        "nc_config": "CREATE NAMED COLLECTION nc_config AS host = 'h'",
+    }
     local = _local(
         get_udf_query={"f1": "CREATE FUNCTION f1 AS x -> x + 2"},
         get_named_collections_query=["nc1", "nc_config"],
+        get_named_collections_create_queries={"nc1": "CREATE NAMED COLLECTION nc1"},
     )
 
-    backup = _layout(_source(), local).get_backup("replica1")
+    backup = _layout(source, local).get_backup("replica1")
 
-    assert not backup.get_udf()
+    assert backup.get_udf() == ["f1"]
+    assert backup.get_named_collections() == ["nc1"]
+
+
+def test_named_collections_in_zookeeper_are_read_only_if_missing() -> None:
+    """
+    They are shared with the replica, and restore may find them different in format and
+    drop them on all replicas.
+    """
+    local = _local(get_named_collections_query=["nc1", "nc_config"])
+    ch_config = {"named_collections_storage": {"type": "zookeeper", "path": "/nc"}}
+
+    backup = _layout(_source(), local, ch_config=ch_config).get_backup("replica1")
+
     assert not backup.get_named_collections()
+
+
+def test_functions_in_zookeeper_are_read_only_if_missing() -> None:
+    """
+    They are shared with the replica, and restore would drop one that differs in format
+    on all replicas.
+    """
+    source = _source()
+    source.get_udf_query.return_value = {
+        "f1": UDF,
+        "f2": "CREATE FUNCTION f2 AS x -> x",
+    }
+    local = _local(get_udf_query={"f1": "CREATE FUNCTION f1 AS x -> x + 2"})
+    ch_config = {"user_defined_zookeeper_path": "/udf"}
+
+    backup = _layout(source, local, ch_config=ch_config).get_backup("replica1")
+
+    assert backup.get_udf() == ["f2"]
 
 
 def test_only_requested_objects_are_read() -> None:

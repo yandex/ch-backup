@@ -260,16 +260,18 @@ class TestGetLocalAccessStatements:
 
     def test_bare_roles_and_profiles_go_first_and_are_altered_after_users(self) -> None:
         """
-        Roles and users may refer to profiles and profiles to roles and users.
+        Roles and users may refer to profiles and profiles to roles and users, and users
+        may refer to each other through GRANTEES.
         """
         ch_ctl, _ = self._ctl()
 
         assert ch_ctl.get_local_access_statements() == [
             "CREATE ROLE `r\\`1`",
             "CREATE SETTINGS PROFILE `p1`",
-            "CREATE USER `u1` X",
+            "CREATE USER IF NOT EXISTS `u1` X",
             "ALTER ROLE `r\\`1` X",
             "ALTER SETTINGS PROFILE `p1` X",
+            "ALTER USER `u1` X",
             "CREATE ROW POLICY `rp1` ON `db1`.`t1` X",
             "CREATE ROW POLICY `rp2` ON `db1`.* X",
             "GRANT SELECT ON db1.* TO u1",
