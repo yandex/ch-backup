@@ -136,6 +136,10 @@ DEFAULT_CONFIG = {
         # chunk_size will be multiplied on a required number of times
         # to satisfy the limit.
         "max_chunk_count": 10000,
+        # Attempts per S3 operation before failing, 1 disables retries
+        "retry_max_attempts": 30,
+        # Upper bound of the randomized exponential pause between attempts, in seconds
+        "retry_max_interval": 180,
         # Enable bulk delete (DeleteObjects in S3 API)
         "bulk_delete_enabled": True,
         # How many files we can delete by bulk delete operation in one call

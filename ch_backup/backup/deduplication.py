@@ -410,7 +410,7 @@ def deduplicate_parts(
 def collect_dedup_references_for_batch_backup_deletion(
     layout: BackupLayout,
     retained_backups_light_meta: list[BackupMetadata],
-    deleting_backups_light_meta: list[BackupMetadata],
+    deleting_backup_names: set[str],
 ) -> dict[str, DedupReferences]:
     """
     Collect deduplication information for deleting multiple backups. It contains names of data parts that should
@@ -420,7 +420,6 @@ def collect_dedup_references_for_batch_backup_deletion(
         _create_empty_dedup_references
     )
 
-    deleting_backup_names = {b.name for b in deleting_backups_light_meta}
     for backup in retained_backups_light_meta:
         backup = layout.reload_backup(backup, use_light_meta=False)
         for db_name in backup.get_databases():
