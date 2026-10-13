@@ -13,6 +13,7 @@ import requests
 
 from ch_backup import logging
 from ch_backup.backup.copier import BackupCopier
+from ch_backup.backup.copy_report import CopyReport
 from ch_backup.backup.deduplication import (
     DedupReferences,
     collect_dedup_info,
@@ -35,6 +36,7 @@ from ch_backup.exceptions import (
     BackupNotFound,
     ClickhouseBackupError,
     InvalidBackupStruct,
+    StorageError,
     TerminatingSignal,
 )
 from ch_backup.logic.access import AccessBackup
@@ -108,12 +110,17 @@ class ClickhouseBackup:
         """
         return self._get_backup(backup_name)
 
-    def list(self, state: BackupState = None) -> Sequence[BackupMetadata]:
+    def list(
+        self, state: BackupState = None, *, unreadable: dict[str, str] | None = None
+    ) -> Sequence[BackupMetadata]:
         """
         Get list of existing backups sorted by start timestamp.
+        If unreadable is provided, collect per-backup read errors there.
         """
         backups = []
-        for backup in self._context.backup_layout.get_backups(use_light_meta=True):
+        for backup in self._context.backup_layout.get_backups(
+            use_light_meta=True, unreadable=unreadable
+        ):
             if state and backup.state != state:
                 continue
             backups.append(backup)
@@ -138,18 +145,20 @@ class ClickhouseBackup:
         # pylint: disable=too-many-branches
         # pylint: disable=too-many-locals
         # pylint: disable=too-many-statements
-        backups_with_light_meta = self._context.backup_layout.get_backups(
-            use_light_meta=True
+        backups_with_light_meta = (
+            self._context.backup_layout.get_backups(use_light_meta=True, unreadable={})
+            if not force or self._context.config.get("deduplicate_parts")
+            else []
         )
 
         sanitized_name = sanitize_backup_name(name)
-        for backup in backups_with_light_meta:
-            if name == backup.name:
+        for backup_name in self._context.backup_layout.get_backup_names():
+            if name == backup_name:
                 raise ClickhouseBackupError(f"Backup with name {name} already exists")
-            if sanitized_name == sanitize_backup_name(backup.name):
+            if sanitized_name == sanitize_backup_name(backup_name):
                 raise ClickhouseBackupError(
                     f"Backup with name {name} conflicts with existing backup "
-                    f"{backup.name}: names that differ only in '-' and '_' share "
+                    f"{backup_name}: names that differ only in '-' and '_' share "
                     "the same cloud storage path"
                 )
 
@@ -447,11 +456,10 @@ class ClickhouseBackup:
         found = False
         deleting_backups = []
         retained_backups = []
+        unreadable: dict[str, str] = {}
         with self._context.locker(operation="DELETE"):
             # Use light metadata in backups iteration to avoid high memory usage.
-            for i, backup in enumerate(
-                self._context.backup_layout.get_backups(use_light_meta=True)
-            ):
+            for i, backup in enumerate(self.list(unreadable=unreadable)):
                 if backup.name == backup_name:
                     deleting_backups.append(backup)
                     found = True
@@ -462,41 +470,70 @@ class ClickhouseBackup:
                 else:
                     retained_backups.append(backup)
 
-            if not found:
+            if blocking := set(unreadable) - {backup_name}:
+                raise StorageError(
+                    f"Failed to read metadata of backups: {', '.join(sorted(blocking))}"
+                )
+            if not found and backup_name not in unreadable:
                 raise BackupNotFound(backup_name)
 
             dedup_references = collect_dedup_references_for_batch_backup_deletion(
                 layout=self._context.backup_layout,
                 retained_backups_light_meta=retained_backups,
-                deleting_backups_light_meta=deleting_backups,
+                deleting_backup_names={
+                    backup_name,
+                    *(b.name for b in deleting_backups),
+                },
             )
+
+            if backup_name in unreadable and dedup_references[backup_name]:
+                raise ClickhouseBackupError(
+                    f"Backup {backup_name} has unreadable metadata and is referenced "
+                    "by other backups"
+                )
 
             result: tuple[str | None, str | None] = (None, None)
             for backup in deleting_backups:
                 deleted_name, msg = self._delete(backup, dedup_references[backup.name])
                 if backup_name == backup.name:
                     result = (deleted_name, msg)
+            if backup_name in unreadable:
+                result = self._delete_unreadable(backup_name)
 
         return result
 
     def copy(
-        self, target_config: Config, backup_names: Sequence[str] | None = None
+        self,
+        target_config: Config,
+        backup_names: Sequence[str] | None = None,
+        *,
+        keep_going: bool = False,
+        report: CopyReport | None = None,
     ) -> tuple[Sequence[str], Sequence[str]]:
         """
         Copy backups to the storage specified in the target config.
         If backup names are not specified, all backups in the state "created" are copied.
 
         Return names of copied backups and names of backups skipped as already copied.
+        The optional report also receives partial results when copying raises.
         """
-        copier = BackupCopier(
-            config=self._config,
-            target_config=target_config,
-            layout=self._context.backup_layout,
-            target_layout=BackupLayout(target_config),
-            ch_config=self._context.ch_config,
-        )
-        with storage_locks([self._config, target_config], operation="COPY"):
-            return copier.copy(backup_names)
+        if report is not None:
+            report.error = None
+            report.backups.clear()
+        try:
+            copier = BackupCopier(
+                config=self._config,
+                target_config=target_config,
+                layout=self._context.backup_layout,
+                target_layout=BackupLayout(target_config),
+                ch_config=self._context.ch_config,
+            )
+            with storage_locks([self._config, target_config], operation="COPY"):
+                return copier.copy(backup_names, keep_going=keep_going, report=report)
+        except BaseException as e:
+            if report is not None:
+                report.error = f"{type(e).__name__}: {e}"
+            raise
 
     def purge(self) -> tuple[Sequence[str], str | None]:
         """
@@ -546,7 +583,7 @@ class ClickhouseBackup:
             dedup_references = collect_dedup_references_for_batch_backup_deletion(
                 layout=self._context.backup_layout,
                 retained_backups_light_meta=retained_backups,
-                deleting_backups_light_meta=deleting_backups,
+                deleting_backup_names={b.name for b in deleting_backups},
             )
 
             for backup in deleting_backups:
@@ -595,13 +632,28 @@ class ClickhouseBackup:
     def _delete(
         self, backup_light_meta: BackupMetadata, dedup_references: DedupReferences
     ) -> tuple[str | None, str | None]:
+        """
+        Delete a backup, keeping the parts other backups link to.
+
+        Without readable full metadata the backup is deleted whole by its light
+        metadata, which is allowed only if nothing links to it.
+        """
         logging.info(
             "Deleting backup {}, state: {}",
             backup_light_meta.name,
             backup_light_meta.state,
         )
 
-        backup = self._context.backup_layout.get_backup(backup_light_meta.name)
+        try:
+            backup = self._context.backup_layout.get_backup(backup_light_meta.name)
+        except StorageError:
+            if dedup_references:
+                raise
+            logging.exception(
+                "Full metadata of backup {} is unreadable, deleting it by light metadata",
+                backup_light_meta.name,
+            )
+            backup = None
         if backup is None and dedup_references:
             raise InvalidBackupStruct(
                 f"Full metadata is missing for referenced backup {backup_light_meta.name}"
@@ -658,6 +710,23 @@ class ClickhouseBackup:
                 backup, light_only=light_only
             )
             raise
+
+    def _delete_unreadable(self, backup_name: str) -> tuple[str, str]:
+        """
+        Delete a backup with unreadable light metadata.
+
+        It goes last, after the backups deleted along with it, so a failed deletion
+        cannot leave a backup linking to it. Frozen data is kept: without metadata
+        it is unknown whether the backup is a copy sharing its name with a live
+        original on this host.
+        """
+        logging.warning("Deleting backup {} with unreadable metadata", backup_name)
+        self._context.backup_layout.delete_backup(backup_name, lambda: None)
+        return (
+            backup_name,
+            f"Frozen data of the backup was not unfrozen. If it is not a copy, run "
+            f"SYSTEM UNFREEZE WITH NAME '{backup_name}' on the hosts that created it.",
+        )
 
     @staticmethod
     def _cloud_storage_data_is_shared(
