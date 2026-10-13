@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from ch_backup.backup.layout import BackupLayout
-from ch_backup.backup.metadata import BackupMetadata
+from ch_backup.backup.metadata import BackupMetadata, PartMetadata
 from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.clickhouse.models import Disk, Table
 from ch_backup.config import DEFAULT_CONFIG
@@ -363,3 +363,97 @@ def test_prefix_delete_keeps_light_metadata_until_retry_succeeds() -> None:
         call(["backups/old/backup_struct.json"], is_async=False),
         call(["backups/old/backup_light_struct.json"], is_async=False),
     ]
+
+
+class TestTableDataFiles:
+    """Tests for checking data parts against one listing of a table."""
+
+    # pylint: disable=protected-access
+
+    def test_files_are_grouped_by_part(self):
+        """One listing of a table gives files of all its parts."""
+        layout = make_layout()
+        storage = layout._storage_loader = MagicMock()
+        storage.list_dir_with_sizes.return_value = {
+            "ch_backup/b1/data/db1/t1/all_1_1_0/all_1_1_0.tar": 10,
+            "ch_backup/b1/data/db1/t1/all_2_2_0/checksums.txt": 1,
+            "ch_backup/b1/data/db1/t1/all_2_2_0/p.proj/data.bin": 2,
+        }
+
+        assert layout.get_table_data_files("b1", "db1", "t1") == {
+            "all_1_1_0": {"all_1_1_0.tar": 10},
+            "all_2_2_0": {"checksums.txt": 1, "p.proj/data.bin": 2},
+        }
+        storage.list_dir_with_sizes.assert_called_once_with("ch_backup/b1/data/db1/t1")
+
+    def test_unescaped_names_are_listed_if_escaped_are_absent(self):
+        """Backups of older versions keep data under unescaped names."""
+        layout = make_layout()
+        storage = layout._storage_loader = MagicMock()
+        storage.list_dir_with_sizes.side_effect = [
+            {},
+            {"ch_backup/b1/data/db1/t-1/all_1_1_0/all_1_1_0.tar": 10},
+        ]
+
+        assert layout.get_table_data_files("b1", "db1", "t-1") == {
+            "all_1_1_0": {"all_1_1_0.tar": 10}
+        }
+        assert storage.list_dir_with_sizes.call_args_list == [
+            call("ch_backup/b1/data/db1/t%2D1"),
+            call("ch_backup/b1/data/db1/t-1"),
+        ]
+
+    def test_failed_listing_gives_no_files(self):
+        """Parts of a table that cannot be listed are uploaded again."""
+        layout = make_layout()
+        getattr(layout, "_storage_loader").list_dir_with_sizes.side_effect = (
+            S3RetryingError("LIST failed")
+        )
+
+        assert not layout.get_table_data_files("b1", "db1", "t1")
+
+    @pytest.mark.parametrize("size_delta, valid", [(0, True), (1, False)])
+    def test_tarball_size_is_checked(self, size_delta, valid):
+        """A tarball of another size is not the data of the part."""
+        layout = make_layout()
+        part = PartMetadata(
+            "db1", "t1", "all_1_1_0", "c", 1024, ["data.bin"], True, encrypted=False
+        )
+        size = layout._target_part_size(part, encrypted=False) + size_delta
+
+        assert layout.check_data_part_files(part, {"all_1_1_0.tar": size}) is valid
+
+    @pytest.mark.parametrize(
+        "files, valid",
+        [
+            ({"checksums.txt": 1, "data.bin": 2}, True),
+            ({"checksums.txt": 1}, False),
+            ({}, False),
+        ],
+    )
+    def test_part_files_are_checked(self, files, valid):
+        """A part with a missing file cannot be reused."""
+        layout = make_layout()
+        part = PartMetadata(
+            "db1", "t1", "all_1_1_0", "c", 3, ["checksums.txt", "data.bin"], False
+        )
+
+        assert layout.check_data_part_files(part, files) is valid
+
+    @pytest.mark.parametrize("size_delta, valid", [(0, True), (1, False)])
+    def test_uploaded_part_is_checked_by_its_tarball_size(self, size_delta, valid):
+        """Validation after upload applies the same check to one part directory."""
+        layout = make_layout()
+        storage = layout._storage_loader = MagicMock()
+        part = PartMetadata(
+            "db1", "t1", "all_1_1_0", "c", 1024, ["data.bin"], True, encrypted=False
+        )
+        storage.list_dir.return_value = ["all_1_1_0.tar"]
+        storage.get_file_size.return_value = (
+            layout._target_part_size(part, encrypted=False) + size_delta
+        )
+
+        assert layout.check_data_part("b1", part) is valid
+        storage.get_file_size.assert_called_once_with(
+            "ch_backup/b1/data/db1/t1/all_1_1_0/all_1_1_0.tar"
+        )

@@ -4,7 +4,13 @@ Deduplication unit tests.
 
 from unittest.mock import MagicMock, Mock
 
-from ch_backup.backup.deduplication import PartDedupInfo, _populate_dedup_info
+import pytest
+
+from ch_backup.backup.deduplication import (
+    PartDedupInfo,
+    _populate_dedup_info,
+    deduplicate_parts,
+)
 from ch_backup.backup.metadata import BackupState, PartMetadata
 from ch_backup.clickhouse.models import Database
 
@@ -44,7 +50,10 @@ def _collected_dedup_info(data_copied: bool, disk_name: str) -> Mock:
     backup = _make_backup(data_copied, [part])
 
     context = Mock()
-    context.config = {"deduplication_batch_size": 500}
+    context.config = {
+        "deduplication_batch_size": 500,
+        "deduplication_verify_links": True,
+    }
     context.backup_meta.hostname = backup.hostname
     context.backup_layout.reload_backup.return_value = backup
 
@@ -84,10 +93,12 @@ def test_local_part_of_a_backup_with_cloud_storage_is_a_candidate():
     insert.assert_called_once()
 
 
-def test_linked_part_is_collected_unverified():
+@pytest.mark.parametrize("verify_links", [True, False])
+def test_linked_part_is_collected_unverified(verify_links):
     """
     Data of a linked part may have been lost since the backup holding the link
-    was checked, so it has to be checked again before it is reused.
+    was checked, so it has to be checked again before it is reused, unless
+    the check is turned off.
     """
     linked_part = PartMetadata(
         database="db1",
@@ -105,7 +116,10 @@ def test_linked_part_is_collected_unverified():
     source_backup.name = "20181015T210300"
 
     context = Mock()
-    context.config = {"deduplication_batch_size": 500}
+    context.config = {
+        "deduplication_batch_size": 500,
+        "deduplication_verify_links": verify_links,
+    }
     context.backup_meta.hostname = backup.hostname
     context.backup_layout.reload_backup.side_effect = lambda b, **_: b
 
@@ -125,9 +139,57 @@ def test_linked_part_is_collected_unverified():
         files=["checksums.txt"],
         tarball=True,
         disk_name="default",
-        verified=False,
+        verified=not verify_links,
         encrypted=linked_part.encrypted,
     )
     context.ch_ctl.insert_deduplication_info.assert_called_once_with(
         [expected.to_sql()]
     )
+
+
+def _dedup_row(name: str) -> dict:
+    """Helper: a row of deduplication info matching a frozen part."""
+    return {
+        "name": name,
+        "backup_name": DEDUP_BACKUP_NAME,
+        "link_part_name": "",
+        "checksum": "checksum",
+        "size": 1024,
+        "files": ["checksums.txt"],
+        "tarball": True,
+        "disk_name": "default",
+        "verified": False,
+        "encrypted": False,
+    }
+
+
+def test_table_is_listed_once_for_all_batches():
+    """
+    Data of a table in a source backup is listed once and reused by the next
+    batches of the same table.
+    """
+    context = Mock()
+    context.ch_ctl.get_deduplication_info.side_effect = [
+        [_dedup_row("all_1_1_0")],
+        [_dedup_row("all_2_2_0")],
+    ]
+    layout = context.backup_layout
+    layout.get_table_data_files.return_value = {
+        "all_1_1_0": {"all_1_1_0.tar": 1},
+        "all_2_2_0": {"all_2_2_0.tar": 2},
+    }
+    layout.check_data_part_files.return_value = True
+    stored_files: dict = {}
+
+    deduplicated = [
+        deduplicate_parts(context, "db1", "table1", {}, stored_files) for _ in range(2)
+    ]
+
+    assert [list(parts) for parts in deduplicated] == [["all_1_1_0"], ["all_2_2_0"]]
+    layout.get_table_data_files.assert_called_once_with(
+        DEDUP_BACKUP_NAME, "db1", "table1"
+    )
+    assert [c.args[1] for c in layout.check_data_part_files.call_args_list] == [
+        {"all_1_1_0.tar": 1},
+        {"all_2_2_0.tar": 2},
+    ]

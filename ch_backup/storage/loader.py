@@ -273,3 +273,9 @@ class StorageLoader:
         Return actual size of the remote file in bytes.
         """
         return self._engine.get_object_size(remote_path)
+
+    def list_dir_with_sizes(self, remote_path: str) -> dict[str, int]:
+        """
+        Return sizes of all objects under the remote path (recursively) keyed by object key.
+        """
+        return self._engine.list_dir_with_sizes(remote_path)
