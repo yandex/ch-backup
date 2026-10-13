@@ -1042,6 +1042,11 @@ def check_command(
             "state": result.state,
             "status": "broken" if result.broken else "ok",
             "unverified": result.unverified,
+            "skipped_data": (
+                result.skipped_data
+                if format_ == "json"
+                else "\n".join(result.skipped_data)
+            ),
             "problems": (
                 result.problems if format_ == "json" else "\n".join(result.problems)
             ),

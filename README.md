@@ -133,6 +133,9 @@ ch-backup check --deep --workers 8 --tmp-dir /var/tmp --format json 20261010T000
 - For cloud storage disks, disk metadata of tables is downloaded and parsed. Data copied into the backup
   with `--copy-cloud-storage-data` is checked for presence and size of objects; objects in the bucket of
   the disk are not checked and are counted in `unverified`.
+- Tables whose data was left out of the backup with a reason recorded in its metadata, such as a unique
+  key, are listed in `skipped_data`: there is nothing to check in them, and restore brings back only
+  their schema. A backup made with `--schema-only` holds no data at all and is reported as intact.
 - Objects whose content can't be verified are counted in `unverified`. The command exits with code 2 if
   any backup in the state `created` or with unreadable state is broken; backups in other states, such as
   `failed`, are reported but don't affect the exit code.

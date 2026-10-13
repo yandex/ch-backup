@@ -27,6 +27,7 @@ from ch_backup.backup.metadata import (
     PartMetadata,
     TableMetadata,
 )
+from ch_backup.backup.metadata.table_metadata import DataSkippedReason
 from ch_backup.clickhouse.models import Database, FrozenPart
 from ch_backup.config import Config
 from ch_backup.exceptions import BackupNotFound
@@ -137,6 +138,8 @@ class Storage:
         links: dict[str, str] | None = None,
         encrypted: bool = True,
         state: BackupState = BackupState.CREATED,
+        *,
+        data_skipped_reason: str | None = None,
     ) -> BackupMetadata:
         """
         Create a backup of the table db.t with own parts and parts linked to other backups.
@@ -146,7 +149,7 @@ class Storage:
         )
         meta.state = state
         self._schemas(meta, ["t"])
-        meta.add_table(TableMetadata("db", "t", "MergeTree", None))
+        meta.add_table(TableMetadata("db", "t", "MergeTree", None, data_skipped_reason))
         for part_name in parts:
             meta.add_part(self._part(meta, part_name))
         for part_name, source in (links or {}).items():
@@ -615,6 +618,17 @@ def test_tables_of_external_databases_are_not_checked(storage: Storage) -> None:
     assert _broken(_check(storage, deep=False)) == set()
 
 
+def test_table_left_without_data_is_reported_with_the_reason(storage: Storage) -> None:
+    storage.backup("b1", parts=["all_1_1_0"])
+    storage.backup("b2", data_skipped_reason=DataSkippedReason.UNIQUE_KEY)
+
+    results = _check(storage, deep=False)
+
+    assert _broken(results) == set()
+    assert results["b1"].skipped_data == []
+    assert results["b2"].skipped_data == ['"db"."t": unique_key']
+
+
 def test_cloud_storage_data_linked_from_unchecked_backup(storage: Storage) -> None:
     storage.cloud_backup("c1", objects={"abc/obj1": 10})
     storage.cloud_backup("c2", link="c1")
@@ -657,8 +671,8 @@ def test_linked_cloud_storage_data_must_be_copied(
 def test_check_command(format_: str) -> None:
     backup = MagicMock()
     backup.check.return_value = [
-        BackupCheckResult("b1", "created", [], 1),
-        BackupCheckResult("b2", "created", ["part all_1_1_0: broken"], 0),
+        BackupCheckResult("b1", "created", [], 1, ['"db"."t": unique_key']),
+        BackupCheckResult("b2", "created", ["part all_1_1_0: broken"], 0, []),
     ]
 
     result = CliRunner(mix_stderr=False).invoke(
@@ -677,13 +691,19 @@ def test_check_command(format_: str) -> None:
             ("b1", "ok", 1),
             ("b2", "broken", 0),
         ]
+        assert rows[0]["skipped_data"] == ['"db"."t": unique_key']
         assert rows[1]["problems"] == ["part all_1_1_0: broken"]
     else:
         rows = [line.split() for line in result.stdout.splitlines()[2:]]
+        assert result.stdout.splitlines()[0].split()[4:] == [
+            "skipped_data",
+            "problems",
+        ]
         assert [row[:4] for row in rows] == [
             ["b1", "created", "ok", "1"],
             ["b2", "created", "broken", "0"],
         ]
+        assert rows[0][4:] == ['"db"."t":', "unique_key"]
         assert rows[1][4:] == ["part", "all_1_1_0:", "broken"]
 
 
@@ -711,7 +731,7 @@ def test_check_command_requires_backups_or_all() -> None:
 )
 def test_check_command_exit_code(state: str | None, exit_code: int) -> None:
     backup = MagicMock()
-    backup.check.return_value = [BackupCheckResult("b1", state, ["broken"], 0)]
+    backup.check.return_value = [BackupCheckResult("b1", state, ["broken"], 0, [])]
 
     result = CliRunner().invoke(
         Group(commands=[cli.check_command]), ["check", "--all"], obj={"backup": backup}

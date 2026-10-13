@@ -32,12 +32,15 @@ class BackupCheckResult(NamedTuple):
     Result of a backup check.
 
     Objects that are in place but whose content can't be verified are counted in `unverified`.
+    Tables whose data was left out of the backup with a recorded reason are listed
+    in `skipped_data`.
     """
 
     name: str
     state: str | None
     problems: list[str]
     unverified: int
+    skipped_data: list[str]
 
     @property
     def broken(self) -> bool:
@@ -357,10 +360,13 @@ class BackupChecker:
 
         results_by_name = []
         for name in names:
-            backup = self._metas.get(name) or self._light_metas.get(name)
+            meta = self._metas.get(name)
+            backup = meta or self._light_metas.get(name)
             state = backup.state.value if backup else None
             results_by_name.append(
-                BackupCheckResult(name, state, problems[name], unverified[name])
+                BackupCheckResult(
+                    name, state, problems[name], unverified[name], _skipped_data(meta)
+                )
             )
         return results_by_name
 
@@ -376,6 +382,19 @@ def _cloud_storage_dirs(names: set[str]) -> set[str]:
         for name in names
         if sanitize_backup_name(name) != name
     }
+
+
+def _skipped_data(backup: BackupMetadata | None) -> list[str]:
+    """
+    Return tables of a backup whose data was left out of it, with the reason.
+    """
+    if not backup:
+        return []
+    return [
+        f'"{table.database}"."{table.name}": {table.data_skipped_reason}'
+        for table in backup.get_tables()
+        if table.data_skipped_reason
+    ]
 
 
 def _missing(names: list[str], statements: list[tuple[str, str]]) -> list[str]:
