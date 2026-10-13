@@ -34,6 +34,7 @@ from tabulate import tabulate
 from ch_backup.exceptions import TerminatingSignal
 
 from . import logging
+from .backup.copy_report import CopyReport, print_copy_report
 from .backup.metadata import BackupState, TableMetadata
 from .backup.sources import BackupSources
 from .ch_backup import CleanZooKeeperMode, ClickhouseBackup
@@ -778,6 +779,17 @@ def delete_command(
         default=False,
         help='Copy all backups in the state "created". Older backups are copied first.',
     ),
+    option(
+        "--keep-going",
+        is_flag=True,
+        default=False,
+        help="Continue copying independent objects and backups after errors.",
+    ),
+    option(
+        "--report-path",
+        type=Path(dir_okay=False),
+        help="Save the final copy report as JSON, including on failure.",
+    ),
 )
 @option_group(
     "Target storage options",
@@ -842,41 +854,46 @@ def copy_command(
     target_cloud_storage_path: str | None,
     cloud_storage_source_bucket: str | None,
     cloud_storage_source_path: str | None,
+    keep_going: bool = False,
+    report_path: str | None = None,
 ) -> None:
     """Copy backup to another storage (another S3 bucket, endpoint or path)."""
-    if bool(name) == all_:
-        ctx.fail("Either BACKUP or --all must be specified.")
+    report = CopyReport()
+    try:
+        if bool(name) == all_:
+            ctx.fail("Either BACKUP or --all must be specified.")
 
-    backup_names = None
-    if name:
-        backup_names = [
-            _validate_and_resolve_name(ctx, ch_backup, name, BackupState.CREATED)
-        ]
+        backup_names = None
+        if name:
+            if name == "LAST":
+                name = _validate_and_resolve_name(
+                    ctx, ch_backup, name, BackupState.CREATED
+                )
+            backup_names = [name]
 
-    copy_config: dict = {"cloud_storage": {"source": {}, "target": {}}}
-    if server_side_copy is not None:
-        copy_config["server_side_copy"] = server_side_copy
-    for section, key, value in (
-        ("target", "bucket", target_cloud_storage_bucket),
-        ("target", "path", target_cloud_storage_path),
-        ("source", "bucket", cloud_storage_source_bucket),
-        ("source", "path", cloud_storage_source_path),
-    ):
-        if value is not None:
-            copy_config["cloud_storage"][section][key] = value
+        copy_config: dict = {"cloud_storage": {"source": {}, "target": {}}}
+        if server_side_copy is not None:
+            copy_config["server_side_copy"] = server_side_copy
+        for section, key, value in (
+            ("target", "bucket", target_cloud_storage_bucket),
+            ("target", "path", target_cloud_storage_path),
+            ("source", "bucket", cloud_storage_source_bucket),
+            ("source", "path", cloud_storage_source_path),
+        ):
+            if value is not None:
+                copy_config["cloud_storage"][section][key] = value
 
-    target_cfg = ch_backup.config.derive(
-        target_config,
-        _build_cli_cfg_from_config_parameters(target_config_parameters),
-    )
-    target_cfg.merge({"copy": copy_config})
-
-    copied, skipped = ch_backup.copy(target_cfg, backup_names)
-
-    for backup_name in copied:
-        print(f"{backup_name}: copied")
-    for backup_name in skipped:
-        print(f"{backup_name}: skipped, already present in target storage")
+        target_cfg = ch_backup.config.derive(
+            target_config,
+            _build_cli_cfg_from_config_parameters(target_config_parameters),
+        )
+        target_cfg.merge({"copy": copy_config})
+        ch_backup.copy(target_cfg, backup_names, keep_going=keep_going, report=report)
+    except BaseException as e:
+        report.error = f"{type(e).__name__}: {e}"
+        raise
+    finally:
+        print_copy_report(report, report_path)
 
 
 @command(name="purge")
