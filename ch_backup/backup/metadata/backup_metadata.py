@@ -41,6 +41,7 @@ class BackupState(Enum):
     FAILED = "failed"
 
 
+# pylint: disable=too-many-public-methods
 class BackupMetadata:
     """
     Backup metadata.
@@ -510,6 +511,20 @@ class BackupMetadata:
         raw_part["link"] = None
         raw_part["link_part_name"] = None
         self.real_size += part.size
+
+    def skip_table_data(self, db_name: str, table_name: str, reason: str) -> None:
+        """
+        Drop data parts of a table and record why its data was left out.
+
+        Parts collected before a failure go as well: restore of a part of the
+        table instead of the whole of it is not what the caller asked for.
+        Cloud storage disks left without parts go too, since restore creates a
+        temporary disk for every disk of the backup.
+        """
+        table = self.get_table(db_name, table_name)
+        self.remove_parts(table, table.get_parts())
+        self._databases[db_name]["tables"][table_name]["data_skipped_reason"] = reason
+        self.cloud_storage.retain_disks({part.disk_name for part in self.get_parts()})
 
     def remove_parts(self, table: TableMetadata, parts: list[PartMetadata]) -> None:
         """

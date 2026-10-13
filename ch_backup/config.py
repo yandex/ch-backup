@@ -57,6 +57,9 @@ DEFAULT_CONFIG = {
             "minutes": 0,
         },
         "time_format": "%Y-%m-%d %H:%M:%S.%f %z",
+        # Back up the schema of a table whose data cannot be collected, instead
+        # of failing the whole backup. Uploads of part data are not covered.
+        "keep_going": False,
         # Retain policy for the purge command that sets the maximum age of
         # backups to keep.
         "retain_time": {},

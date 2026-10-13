@@ -148,6 +148,18 @@ def test_backup_command_copy_cloud_storage_data_merges_config():
     )
 
 
+def test_backup_command_keep_going_merges_config():
+    """
+    The flag must be passed to the logic through the configuration, so that a
+    service can turn it on without changing how the command is called.
+    """
+    backup_mock = _invoke_backup_command(["--keep-going"])
+
+    backup_mock.config.merge.assert_called_once_with(  # pylint: disable=no-member
+        {"backup": {"keep_going": True}}
+    )
+
+
 def test_backup_command_without_copy_cloud_storage_data_keeps_config():
     """
     Without the flag the configuration must be left as it is.

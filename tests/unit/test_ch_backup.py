@@ -17,6 +17,7 @@ from ch_backup.backup.metadata import (
     PartMetadata,
     TableMetadata,
 )
+from ch_backup.backup.metadata.table_metadata import DataSkippedReason
 from ch_backup.backup.sources import BackupSources
 from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.clickhouse.client import ClickhouseError
@@ -697,3 +698,27 @@ def test_restore_keeps_stored_endpoint_scheme(
     assert disks._source_disk_config(meta, "s3")["endpoint"] == (
         f"{expected}/copied-disk/copies/backup1/"
     )
+
+
+def test_tables_left_without_data_are_reported() -> None:
+    """The caller must learn that the backup holds no data for some tables."""
+    backup, context = _backup_with_context()
+    context.backup_meta.get_tables.return_value = [
+        TableMetadata("db", "intact", "MergeTree", None),
+        TableMetadata(
+            "db", "broken", "MergeTree", None, DataSkippedReason.BACKUP_FAILED
+        ),
+    ]
+
+    message = backup._skipped_data_message()  # pylint: disable=protected-access
+
+    assert message is not None
+    assert "db.broken" in message
+    assert "db.intact" not in message
+
+
+def test_nothing_is_reported_when_all_data_is_backed_up() -> None:
+    """A complete backup must not print anything about skipped data."""
+    backup, _ = _backup_with_context()
+
+    assert backup._skipped_data_message() is None  # pylint: disable=protected-access

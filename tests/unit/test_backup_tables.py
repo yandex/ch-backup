@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, Mock, call, patch
 import pytest
 
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata, TableMetadata
+from ch_backup.backup.metadata.table_metadata import DataSkippedReason
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseDisksException
@@ -522,10 +523,11 @@ class TestBackupCloudStorageData:
 
     @staticmethod
     def _make_context(
-        has_frozen_data: bool = True,
+        has_frozen_data: bool = True, keep_going: bool = False
     ) -> tuple[BackupContext, MagicMock, MagicMock]:
         """Helper: build a context with mocked layout and backup metadata."""
         context = Mock(spec=BackupContext)
+        context.config = {"keep_going": keep_going}
         context.backup_layout = MagicMock()
         context.backup_layout.has_frozen_cloud_storage_data.return_value = (
             has_frozen_data
@@ -609,6 +611,26 @@ class TestBackupCloudStorageData:
 
         layout.upload_cloud_storage_metadata.assert_not_called()
         cloud_storage.add_disk.assert_not_called()
+
+    def test_failed_copy_leaves_the_table_without_data_when_keeping_going(self):
+        """
+        The metadata of a table whose copy failed is not uploaded, and the table
+        is reported on, since a worker thread must not touch backup metadata.
+        """
+        disk = Disk("s3", "/var/lib/clickhouse/disks/s3/", "s3")
+        backup_disks = MagicMock()
+        backup_disks.copy_table_data.side_effect = ClickHouseDisksException("failed")
+        context, layout, cloud_storage = self._make_context(keep_going=True)
+        table = self._make_table([disk])
+
+        self._backup_cloud_storage(context, table, backup_disks)
+
+        assert table.data_skipped_reason == DataSkippedReason.BACKUP_FAILED
+        layout.upload_cloud_storage_metadata.assert_not_called()
+        cloud_storage.add_disk.assert_not_called()
+        context.backup_meta.skip_table_data.assert_called_once_with(  # type: ignore[attr-defined]
+            table.database, table.name, DataSkippedReason.BACKUP_FAILED
+        )
 
     def test_local_disks_are_skipped(self):
         """
@@ -1088,3 +1110,145 @@ class TestUniqueKeyTables:
         context.ch_ctl.get_table.assert_called_once_with(  # type: ignore[attr-defined]
             self._DB, self._TABLE, short_query=True
         )
+
+
+class TestKeepGoing:
+    """
+    Tests that a table whose data cannot be read is backed up without data when
+    keeping going, instead of failing the whole backup.
+    """
+
+    _TABLE = "table1"
+    _STATEMENT = (
+        f"ATTACH TABLE db1.{_TABLE} UUID '{UUID}' (id UInt64) ENGINE = MergeTree"
+    )
+    _DISK = Disk("default", "/var/lib/clickhouse/", "Local")
+    _READ_ERROR = OSError("Input/output error")
+
+    @classmethod
+    def _table(cls) -> Table:
+        return Table(
+            "db1",
+            cls._TABLE,
+            "MergeTree",
+            [cls._DISK],
+            [f"/var/lib/clickhouse/data/db1/{cls._TABLE}"],
+            f"/var/lib/clickhouse/metadata/db1/{cls._TABLE}.sql",
+            "",
+            UUID,
+        )
+
+    @classmethod
+    def _part(cls, table_name: str, disk_name: str) -> PartMetadata:
+        return PartMetadata(
+            database="db1",
+            table=table_name,
+            name="all_1_1_0",
+            checksum="checksum",
+            size=1024,
+            files=["checksums.txt"],
+            tarball=True,
+            disk_name=disk_name,
+        )
+
+    @classmethod
+    def _backup(
+        cls, keep_going: bool, freeze_error: Exception | None = None
+    ) -> BackupContext:
+        """Helper: back up a table whose frozen data cannot be read."""
+        context = _make_backup_context()
+        context.config["keep_going"] = keep_going
+        context.ch_ctl.get_tables.return_value = [cls._table()]  # type: ignore[attr-defined]
+        context.ch_ctl.freeze_table.side_effect = freeze_error  # type: ignore[attr-defined]
+        context.ch_ctl.scan_frozen_parts.side_effect = cls._READ_ERROR  # type: ignore[attr-defined]
+
+        with (
+            patch.object(
+                TableBackup, "_get_change_time", return_value=_METADATA_UNCHANGED
+            ),
+            patch.object(
+                TableBackup,
+                "_load_create_statement_from_disk",
+                return_value=cls._STATEMENT,
+            ),
+        ):
+            TableBackup().backup(
+                context,
+                [DATABASE],
+                {"db1": [cls._TABLE]},
+                schema_only=False,
+                multiprocessing_config=DEFAULT_CONFIG["multiprocessing"],  # type: ignore[arg-type]
+            )
+
+        return context
+
+    def test_unreadable_data_fails_the_backup_by_default(self) -> None:
+        """A backup that silently loses data is worse than one that fails."""
+        with pytest.raises(OSError):
+            self._backup(keep_going=False)
+
+    def test_unreadable_data_leaves_the_table_without_data(self) -> None:
+        """The schema is backed up and the metadata says why there is no data."""
+        context = self._backup(keep_going=True)
+
+        table_meta = context.backup_meta.get_tables("db1")[0]
+        assert table_meta.data_skipped_reason == DataSkippedReason.BACKUP_FAILED
+        assert not table_meta.get_parts()
+        context.backup_layout.upload_create_statements.assert_called_once()  # type: ignore[attr-defined]
+
+    def test_failed_freeze_leaves_the_table_without_data(self) -> None:
+        """
+        A table that cannot be frozen keeps its schema in the backup, instead of
+        disappearing from it along with the failed job.
+        """
+        context = self._backup(keep_going=True, freeze_error=_FREEZE_ERROR)
+
+        table_meta = context.backup_meta.get_tables("db1")[0]
+        assert table_meta.data_skipped_reason == DataSkippedReason.BACKUP_FAILED
+        upload = context.backup_layout.upload_create_statements
+        assert upload.call_args.args[2] == [  # type: ignore[attr-defined]
+            (self._TABLE, self._STATEMENT)
+        ]
+
+    def test_parts_collected_before_the_failure_are_dropped(self) -> None:
+        """
+        Restoring a part of the table instead of the whole of it is not what the
+        caller asked for.
+        """
+        context = _make_backup_context()
+        context.backup_meta.add_table(
+            TableMetadata("db1", self._TABLE, "MergeTree", UUID)
+        )
+        context.backup_meta.add_part(self._part(self._TABLE, self._DISK.name))
+
+        context.backup_meta.skip_table_data(
+            "db1", self._TABLE, DataSkippedReason.BACKUP_FAILED
+        )
+
+        table_meta = context.backup_meta.get_tables("db1")[0]
+        assert table_meta.data_skipped_reason == DataSkippedReason.BACKUP_FAILED
+        assert not table_meta.get_parts()
+
+    def test_cloud_disk_is_dropped_when_no_part_is_left_on_it(self) -> None:
+        """
+        Restore creates a temporary disk for every disk of the backup, so the
+        backup must not claim a disk it holds no data on.
+        """
+        context = _make_backup_context()
+        for table_name in (self._TABLE, "table2"):
+            context.backup_meta.add_table(
+                TableMetadata("db1", table_name, "MergeTree", UUID)
+            )
+            context.backup_meta.add_part(self._part(table_name, "s3"))
+        context.backup_meta.cloud_storage.add_disk("s3")
+
+        context.backup_meta.skip_table_data(
+            "db1", self._TABLE, DataSkippedReason.BACKUP_FAILED
+        )
+        assert context.backup_meta.cloud_storage.disks == ["s3"]
+
+        context.backup_meta.skip_table_data(
+            "db1", "table2", DataSkippedReason.BACKUP_FAILED
+        )
+        assert context.backup_meta.cloud_storage.disks == []
+        assert context.backup_meta.size == 0

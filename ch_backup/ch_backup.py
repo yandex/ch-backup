@@ -25,6 +25,7 @@ from ch_backup.backup.metadata import (
     TableMetadata,
     sanitize_backup_name,
 )
+from ch_backup.backup.metadata.table_metadata import DataSkippedReason
 from ch_backup.backup.sources import BackupSources
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.client import ClickhouseError
@@ -255,7 +256,24 @@ class ClickhouseBackup:
                 if not self._context.config.get("keep_freezed_data_on_failure"):
                     self._context.ch_ctl.remove_freezed_data()
 
-        return self._context.backup_meta.name, None
+        return self._context.backup_meta.name, self._skipped_data_message()
+
+    def _skipped_data_message(self) -> str | None:
+        """
+        Report tables that were backed up without their data.
+        """
+        skipped = [
+            f"{table.database}.{table.name}"
+            for table in self._context.backup_meta.get_tables()
+            if table.data_skipped_reason == DataSkippedReason.BACKUP_FAILED
+        ]
+        if not skipped:
+            return None
+
+        return (
+            "Data of the following tables could not be read and was left out of"
+            f" the backup: {', '.join(skipped)}."
+        )
 
     # pylint: disable=too-many-arguments,duplicate-code,too-many-positional-arguments,too-many-branches,too-many-locals
     def restore(

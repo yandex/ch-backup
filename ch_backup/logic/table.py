@@ -254,14 +254,12 @@ class TableBackup(BackupManager):
                                     not schema_only
                                     and not freezed_table.data_skipped_reason
                                 ):
-                                    self._backup_frozen_table_data(
+                                    self._backup_table_data(
                                         context,
                                         freezed_table,
                                         backup_name,
                                         backup_disks,
-                                    )
-                                    self._backup_cloud_storage_data(
-                                        context, copy_pool, freezed_table, backup_disks
+                                        copy_pool,
                                     )
 
                     self._upload_cloud_storage_metadata(context, copy_pool)
@@ -336,7 +334,10 @@ class TableBackup(BackupManager):
                         table.database,
                         table.name,
                     )
-                    raise
+                    if not context.config["keep_going"]:
+                        raise
+                    table.data_skipped_reason = DataSkippedReason.BACKUP_FAILED
+                    return table
 
                 return None
 
@@ -366,6 +367,36 @@ class TableBackup(BackupManager):
                 str(e),
             )
             return None
+
+    def _backup_table_data(
+        self,
+        context: BackupContext,
+        table: Table,
+        backup_name: str,
+        backup_disks: ClickHouseBackupDisks | None,
+        copy_pool: ThreadExecPool,
+    ) -> None:
+        """
+        Backup data of a table, scheduling the copy of its cloud storage data.
+
+        Only what is collected here is covered by keep_going. Uploads of part
+        data are awaited after the tables of the database are done, and a failed
+        one fails the backup: it is not known there what to leave out of it.
+        """
+        try:
+            self._backup_frozen_table_data(context, table, backup_name, backup_disks)
+            self._backup_cloud_storage_data(context, copy_pool, table, backup_disks)
+        except Exception:
+            if not context.config["keep_going"]:
+                raise
+            logging.exception(
+                'Backing up data of table "{}"."{}" failed, backing up its schema only',
+                table.database,
+                table.name,
+            )
+            context.backup_meta.skip_table_data(
+                table.database, table.name, DataSkippedReason.BACKUP_FAILED
+            )
 
     @staticmethod
     def _backup_cloud_storage_data(
@@ -416,19 +447,33 @@ class TableBackup(BackupManager):
         Copy data of a table on a cloud storage disk into the backup.
 
         The result is checked explicitly, since clickhouse-disks reports its
-        errors with a zero exit code.
+        errors with a zero exit code. A failure is reported on the table, as
+        the backup metadata is not meant to be used from several threads.
         """
         if not backup_disks:
             return table, disk, None
 
-        source_disk = backup_disks.copy_table_data(disk.name, table)
-        if not context.backup_layout.has_frozen_cloud_storage_data(
-            context.backup_meta, source_disk, table
-        ):
-            raise ClickhouseBackupError(
-                f'Copying data of disk "{disk.name}" of table '
-                f"`{table.database}`.`{table.name}` produced no metadata"
+        try:
+            source_disk = backup_disks.copy_table_data(disk.name, table)
+            if not context.backup_layout.has_frozen_cloud_storage_data(
+                context.backup_meta, source_disk, table
+            ):
+                raise ClickhouseBackupError(
+                    f'Copying data of disk "{disk.name}" of table '
+                    f"`{table.database}`.`{table.name}` produced no metadata"
+                )
+        except Exception:
+            if not context.config["keep_going"]:
+                raise
+            logging.exception(
+                'Copying data of disk "{}" of table "{}"."{}" failed, backing up'
+                " its schema only",
+                disk.name,
+                table.database,
+                table.name,
             )
+            table.data_skipped_reason = DataSkippedReason.BACKUP_FAILED
+            return table, disk, None
 
         return table, disk, source_disk
 
@@ -443,6 +488,12 @@ class TableBackup(BackupManager):
         backup metadata are not meant to be used from several threads.
         """
         for table, disk, source_disk in pool.as_completed(keep_going=False):
+            if table.data_skipped_reason == DataSkippedReason.BACKUP_FAILED:
+                context.backup_meta.skip_table_data(
+                    table.database, table.name, DataSkippedReason.BACKUP_FAILED
+                )
+                continue
+
             context.backup_layout.upload_cloud_storage_metadata(
                 context.backup_meta, disk, table, source_disk=source_disk
             )
