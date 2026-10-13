@@ -3,6 +3,7 @@ Cli unit tests.
 """
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,10 +11,127 @@ from click import Command, Context, Group
 from click.testing import CliRunner, Result
 
 from ch_backup import cli
+from ch_backup.backup.copy_report import BackupCopyResult
 from ch_backup.backup.metadata import BackupMetadata, BackupState
 from ch_backup.backup.sources import BackupSources
-from ch_backup.exceptions import StorageError
+from ch_backup.exceptions import StorageError, TerminatingSignal
+from tests.unit.test_backup_copy import CopyTestContext, _backup
 from tests.unit.utils import parametrize
+
+
+@pytest.mark.parametrize(
+    "failure", [None, RuntimeError("copy failed"), TerminatingSignal("interrupted")]
+)
+def test_copy_command_writes_report_on_success_error_and_signal(
+    tmp_path: Path, failure: BaseException | None
+) -> None:
+    backup = MagicMock()
+    report_path = tmp_path / "report.json"
+
+    def copy(_target, _names, *, keep_going, report):
+        assert keep_going
+        report.backups.append(
+            BackupCopyResult(
+                "b1",
+                status="copied",
+                objects_total=1,
+                objects_copied=1,
+                known_bytes_copied=42,
+            )
+        )
+        if failure:
+            report.backups.append(BackupCopyResult("b2", status="failed"))
+            report.backups.append(BackupCopyResult("b3"))
+            raise failure
+        return ["b1"], []
+
+    backup.copy.side_effect = copy
+    group = Group()
+    group.add_command(cli.copy_command)
+    runner = CliRunner()
+    args = ["copy", "--all", "--keep-going", "--report-path", str(report_path)]
+    if isinstance(failure, TerminatingSignal):
+        with pytest.raises(TerminatingSignal):
+            runner.invoke(group, args, obj={"backup": backup})
+    else:
+        result = runner.invoke(group, args, obj={"backup": backup})
+        assert result.exit_code == (1 if failure else 0)
+        assert "b1: copied" in result.output
+        assert "Copy summary:" in result.output
+        if failure:
+            assert result.exception is failure
+            assert "b3: not_processed" in result.output
+    report = json.loads(report_path.read_text())
+    assert report["schema_version"] == 1
+    assert report["error"] == (
+        f"{type(failure).__name__}: {failure}" if failure else None
+    )
+    assert report["backups"][0]["known_bytes_copied"] == 42
+    assert "secret_access_key" not in report_path.read_text()
+
+
+@pytest.mark.parametrize("copy_failed", [False, True])
+def test_copy_report_write_failure_preserves_original_exception(
+    tmp_path: Path, copy_failed: bool
+) -> None:
+    backup = MagicMock()
+    failure = RuntimeError("primary error")
+    if copy_failed:
+        backup.copy.side_effect = failure
+    group = Group()
+    group.add_command(cli.copy_command)
+    result = CliRunner().invoke(
+        group,
+        ["copy", "--all", "--report-path", str(tmp_path / "missing" / "report.json")],
+        obj={"backup": backup},
+    )
+    assert result.exit_code == 1
+    assert "Failed to save copy report" in result.output
+    if copy_failed:
+        assert result.exception is failure
+
+
+def test_copy_reports_configuration_failure(tmp_path: Path) -> None:
+    backup = MagicMock()
+    # pylint: disable-next=no-member
+    backup.config.derive.side_effect = ValueError("invalid config")
+    group = Group()
+    group.add_command(cli.copy_command)
+    path = tmp_path / "report.json"
+    result = CliRunner().invoke(
+        group, ["copy", "--all", "--report-path", str(path)], obj={"backup": backup}
+    )
+    assert result.exit_code == 1
+    assert json.loads(path.read_text())["error"] == "ValueError: invalid config"
+    backup.copy.assert_not_called()
+
+
+@pytest.mark.parametrize("state", [None, BackupState.FAILED])
+@pytest.mark.parametrize("keep_going", [False, True])
+def test_copy_named_validation_failure_has_report_row(
+    tmp_path: Path, state: BackupState | None, keep_going: bool
+) -> None:
+    ctx = CopyTestContext([_backup("requested", state=state)] if state else [])
+    backup = MagicMock()
+
+    def copy(_target, names, *, keep_going, report):
+        return ctx.copy(names, keep_going=keep_going, report=report)
+
+    backup.copy.side_effect = copy
+    group = Group()
+    group.add_command(cli.copy_command)
+    path = tmp_path / "report.json"
+    args = ["copy", "requested", "--report-path", str(path)]
+    if keep_going:
+        args.append("--keep-going")
+    result = CliRunner().invoke(group, args, obj={"backup": backup})
+    assert result.exit_code == 1
+    report = json.loads(path.read_text())
+    assert [(b["name"], b["status"]) for b in report["backups"]] == [
+        ("requested", "failed"),
+    ]
+    assert report["backups"][0]["errors"][0]["stage"] == "selection"
+    backup.list.assert_not_called()
 
 
 @parametrize(

@@ -50,6 +50,8 @@ class StorageLoader:
         is_async: bool = False,
         encryption: bool = False,
         compression: bool = False,
+        callback: Callable | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> str:
         """
         Upload data as tarball with specified file names.
@@ -63,6 +65,8 @@ class StorageLoader:
             is_async=is_async,
             encryption=encryption,
             compression=compression,
+            callback=callback,
+            on_error=on_error,
         )
         return remote_path
 
@@ -240,11 +244,19 @@ class StorageLoader:
             remote_paths, is_async=is_async, encryption=encryption
         )
 
-    def copy_object(self, entry: CopyEntry, is_async: bool = False) -> None:
+    def copy_object(
+        self,
+        entry: CopyEntry,
+        is_async: bool = False,
+        callback: Callable | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
+    ) -> None:
         """
         Copy object from one storage to another as is.
         """
-        self._ploader.copy_object(entry, is_async=is_async)
+        self._ploader.copy_object(
+            entry, is_async=is_async, callback=callback, on_error=on_error
+        )
 
     def wait(self, keep_going: bool = False) -> None:
         """
