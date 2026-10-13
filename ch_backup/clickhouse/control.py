@@ -124,9 +124,9 @@ GET_TABLES_SQL_23_8 = strip_query(
 """
 )
 
-# Lazy tables report TableProxy instead of their declared engine.
-# Keep ordinary short discovery narrow; only lazy rows need engine_full.
-# Restrict the lazy branch by database name before table enumeration to avoid loading external engine definitions
+# Partition by database type: a table's reported engine changes when it loads.
+# Only Atomic/Ordinary support lazy_load_tables. Keep other databases' projection
+# narrow to avoid additional external metadata work.
 GET_TABLES_SHORT_SQL = strip_query(
     """
     SELECT
@@ -138,7 +138,10 @@ GET_TABLES_SHORT_SQL = strip_query(
     FROM system.tables
     WHERE ({db_condition})
       AND ({tables_condition})
-      AND engine != 'TableProxy'
+      AND database NOT IN (
+          SELECT name FROM system.databases
+          WHERE engine IN ('Atomic', 'Ordinary')
+      )
 
     UNION ALL
 
@@ -147,7 +150,7 @@ GET_TABLES_SHORT_SQL = strip_query(
         database,
         name,
         uuid,
-        if(empty(declared_engine), t.engine, declared_engine) AS engine,
+        if(t.engine = 'TableProxy' AND notEmpty(declared_engine), declared_engine, t.engine) AS engine,
         create_table_query
     FROM system.tables AS t
     WHERE ({db_condition})
@@ -156,7 +159,6 @@ GET_TABLES_SHORT_SQL = strip_query(
           SELECT name FROM system.databases
           WHERE engine IN ('Atomic', 'Ordinary')
       )
-      AND t.engine = 'TableProxy'
     ORDER BY metadata_modification_time
     FORMAT JSON
 """

@@ -161,6 +161,12 @@ def step_get_response(context):
     assert_that(context.response, equal_to(context.text))
 
 
+@when("we discover short tables on {node:w} while {database:w}.{table:w} loads")
+def step_discover_short_tables_during_load(context, node, database, table):
+    rows = ClickhouseClient(context, node).get_short_tables_during_load(database, table)
+    context.response = "\n".join(f"{row['name']}: {row['engine']}" for row in rows)
+
+
 @then("we get response contains")
 def step_get_response_contains(context):
     assert_that(context.response, contains_string(context.text))
