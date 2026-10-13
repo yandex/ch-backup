@@ -729,6 +729,7 @@ class TableBackup(BackupManager):
                 data_path,
                 backup_name,
                 backup_disks is not None,
+                context.config["fail_on_unparsable_part_metadata"],
             ):
                 logging.debug("Working on {}", fpart)
                 if disk.type == "s3":

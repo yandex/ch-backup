@@ -11,6 +11,7 @@ from ch_backup.clickhouse.control import (
     _parse_version,
 )
 from ch_backup.clickhouse.models import Disk, Table
+from ch_backup.exceptions import ClickhouseBackupError
 from tests.unit.utils import parametrize
 
 
@@ -142,6 +143,16 @@ def test_cloud_part_of_unknown_metadata_format_is_described_by_its_files(tmp_pat
 
     assert checksum == md5((path / "checksums.txt").read_bytes()).hexdigest()
     assert size == BLOCKSIZE
+
+
+def test_cloud_part_of_unknown_metadata_format_fails_when_asked(tmp_path):
+    """The fallback is a default, not the only option."""
+    path = tmp_path / "part"
+    path.mkdir()
+    (path / "checksums.txt").write_text("6\nabc/defg\n", encoding="utf-8")
+
+    with pytest.raises(ClickhouseBackupError):
+        _get_cloud_part_checksum_and_size(str(path), ["checksums.txt"], True)
 
 
 def test_cloud_part_with_metadata_broken_beyond_text_is_described_by_its_files(
