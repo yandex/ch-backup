@@ -7,8 +7,8 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from click import Context, Group
-from click.testing import CliRunner
+from click import Command, Context, Group
+from click.testing import CliRunner, Result
 
 from ch_backup import cli
 from ch_backup.backup.copy_report import BackupCopyResult
@@ -319,34 +319,47 @@ def test_restore_command_passes_source_endpoint(endpoint: str) -> None:
     assert backup.restore.call_args.kwargs["cloud_storage_source_endpoint"] == endpoint
 
 
-@pytest.mark.parametrize("format_", ["json", "table"])
-@pytest.mark.parametrize("include_unreadable", [False, True])
-def test_list_command_with_unreadable_metadata(format_, include_unreadable):
-    """Diagnostic output contains unknown entries and reports partial failure."""
+def _invoke(command: Command, args: list[str], backup: MagicMock) -> Result:
+    """Invoke a CLI command with a mocked ClickhouseBackup."""
+    return CliRunner(mix_stderr=False).invoke(
+        Group(commands=[command]), args, obj={"backup": backup}
+    )
+
+
+def _backup_list_with_unreadable() -> MagicMock:
+    """Mock ClickhouseBackup whose list reports "broken" as unreadable or raises if not asked to."""
     backup = MagicMock()
     good = BackupMetadata("good", "2", "26.6", "%Y-%m-%d")
     good.state = BackupState.CREATED
 
-    def list_backups(state, *, unreadable=None):
-        assert state == BackupState.CREATED
+    def list_backups(_state=None, *, unreadable=None):
+        """Return the readable backup and record "broken" as unreadable."""
         if unreadable is None:
             raise StorageError("Unreadable light")
         unreadable["broken"] = "S3RetryingError: InternalError"
         return [good]
 
     backup.list.side_effect = list_backups
-    args = ["list", "-v", "--format", format_]
-    if include_unreadable:
-        args.append("--include-unreadable")
-    result = CliRunner(mix_stderr=False).invoke(
-        Group(commands=[cli.list_command]), args, obj={"backup": backup}
-    )
-    if not include_unreadable:
-        assert isinstance(result.exception, StorageError)
-        assert result.stdout == ""
+    return backup
+
+
+@pytest.mark.parametrize("format_", ["json", "table"])
+@pytest.mark.parametrize(
+    "flags", [[], ["-a"], ["--include-unreadable"], ["-a", "--include-unreadable"]]
+)
+def test_list_command_with_unreadable_metadata(format_, flags):
+    """Unreadable backups are skipped by default and shown as unknown with -a."""
+    backup = _backup_list_with_unreadable()
+    args = ["list", "-v", "--format", format_, *flags]
+    result = _invoke(cli.list_command, args, backup)
+    if not flags:
+        assert result.exit_code == 0
+        assert "good" in result.stdout
+        assert "broken" not in result.stdout
         return
-    assert result.exit_code == 2
-    assert "Unreadable metadata: 1" in result.stderr
+    include_unreadable = "--include-unreadable" in flags
+    assert result.exit_code == (2 if include_unreadable else 0)
+    assert ("Unreadable metadata: 1" in result.stderr) == include_unreadable
     if format_ == "json":
         rows = json.loads(result.stdout)
         assert [row["name"] for row in rows] == ["good", "broken"]
@@ -376,3 +389,29 @@ def test_list_command_requires_verbose_for_unreadable_entries():
     assert result.exit_code == 2
     assert "requires --verbose" in result.output
     backup.list.assert_not_called()
+
+
+def test_restore_command_ignores_unreadable_other_backups():
+    """Unreadable metadata of another backup does not block restore."""
+    backup = _backup_list_with_unreadable()
+    result = _invoke(cli.restore_command, ["restore", "good"], backup)
+    assert result.exit_code == 0, result.output
+    assert backup.restore.call_args.kwargs["backup_name"] == "good"
+
+
+def test_last_is_not_resolved_with_unreadable_backups():
+    """LAST could silently point to an older backup than the unreadable one."""
+    backup = _backup_list_with_unreadable()
+    result = _invoke(cli.restore_command, ["restore", "LAST"], backup)
+    assert result.exit_code == 2
+    assert "Cannot resolve LAST" in result.stderr
+    backup.restore.assert_not_called()
+
+
+def test_delete_command_accepts_unreadable_backup():
+    """The backup with unreadable metadata itself can be passed to delete."""
+    backup = _backup_list_with_unreadable()
+    backup.delete.return_value = ("broken", None)
+    result = _invoke(cli.delete_command, ["delete", "broken"], backup)
+    assert result.exit_code == 0, result.output
+    backup.delete.assert_called_once_with("broken", False)
