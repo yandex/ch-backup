@@ -1625,16 +1625,35 @@ def _get_cloud_part_checksum_and_size(
 
     The size is that of the objects: what a copy of the part weighs in the
     backup, unlike its metadata.
+
+    Metadata that cannot be parsed leaves the part described by its files, as
+    it was before the keys were read: such a checksum changes on every freeze,
+    so the part is never deduplicated. An unreadable file is left to fail.
     """
     checksum = md5()  # nosec
     size = 0
-    for rel_path in sorted(rel_paths):
-        if rel_path in CLOUD_STORAGE_EXCLUDE_FILE_NAMES:
-            continue
-        checksum.update(rel_path.encode())
-        for object_key, object_size in _read_objects(os.path.join(part_path, rel_path)):
-            checksum.update(object_key.encode())
-            size += object_size
+    try:
+        for rel_path in sorted(rel_paths):
+            if rel_path in CLOUD_STORAGE_EXCLUDE_FILE_NAMES:
+                continue
+            checksum.update(rel_path.encode())
+            for object_key, object_size in _read_objects(
+                os.path.join(part_path, rel_path)
+            ):
+                checksum.update(object_key.encode())
+                size += object_size
+    except (ClickhouseBackupError, ValueError):
+        logging.warning(
+            "Failed to parse object storage metadata of part {}, describing it by"
+            " its metadata files",
+            part_path,
+            exc_info=True,
+        )
+        abs_paths = [Path(part_path) / rel_path for rel_path in rel_paths]
+        return (
+            _get_part_checksum(part_path),
+            calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE),
+        )
 
     return checksum.hexdigest(), size
 

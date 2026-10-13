@@ -1,3 +1,5 @@
+from hashlib import md5
+from tarfile import BLOCKSIZE
 from unittest import mock
 
 import pytest
@@ -9,7 +11,6 @@ from ch_backup.clickhouse.control import (
     _parse_version,
 )
 from ch_backup.clickhouse.models import Disk, Table
-from ch_backup.exceptions import ClickhouseBackupError
 from tests.unit.utils import parametrize
 
 
@@ -131,12 +132,43 @@ def test_cloud_part_size_is_the_size_of_its_objects(tmp_path):
     assert size == 3 * 370
 
 
-def test_cloud_part_checksum_fails_on_unknown_metadata_format(tmp_path):
+def test_cloud_part_of_unknown_metadata_format_is_described_by_its_files(tmp_path):
+    """Such a part must not fail the backup."""
     path = tmp_path / "part"
     path.mkdir()
     (path / "checksums.txt").write_text("6\nabc/defg\n", encoding="utf-8")
 
-    with pytest.raises(ClickhouseBackupError):
+    checksum, size = _get_cloud_part_checksum_and_size(str(path), ["checksums.txt"])
+
+    assert checksum == md5((path / "checksums.txt").read_bytes()).hexdigest()
+    assert size == BLOCKSIZE
+
+
+def test_cloud_part_with_metadata_broken_beyond_text_is_described_by_its_files(
+    tmp_path,
+):
+    """Invalid UTF-8 fails the read, not the parsing, and one broken file is enough."""
+    path = tmp_path / "part"
+    path.mkdir()
+    (path / "checksums.txt").write_bytes(b"\x80\x81")
+    (path / "count.txt").write_text(
+        "5\n1\t370\n370\tabc/defg\n0\n0\n", encoding="utf-8"
+    )
+
+    checksum, size = _get_cloud_part_checksum_and_size(
+        str(path), ["checksums.txt", "count.txt"]
+    )
+
+    assert checksum == md5((path / "checksums.txt").read_bytes()).hexdigest()
+    assert size == 2 * BLOCKSIZE
+
+
+def test_cloud_part_with_an_unreadable_metadata_file_fails(tmp_path):
+    """The fallback reads the same files, so hiding the error would only delay it."""
+    path = tmp_path / "part"
+    (path / "checksums.txt").mkdir(parents=True)
+
+    with pytest.raises(OSError):
         _get_cloud_part_checksum_and_size(str(path), ["checksums.txt"])
 
 
