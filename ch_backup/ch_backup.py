@@ -13,6 +13,7 @@ import requests
 
 from ch_backup import logging
 from ch_backup.backup.copier import BackupCopier
+from ch_backup.backup.copy_report import CopyReport
 from ch_backup.backup.deduplication import (
     DedupReferences,
     collect_dedup_info,
@@ -538,23 +539,37 @@ class ClickhouseBackup:
         return result
 
     def copy(
-        self, target_config: Config, backup_names: Sequence[str] | None = None
+        self,
+        target_config: Config,
+        backup_names: Sequence[str] | None = None,
+        *,
+        keep_going: bool = False,
+        report: CopyReport | None = None,
     ) -> tuple[Sequence[str], Sequence[str]]:
         """
         Copy backups to the storage specified in the target config.
         If backup names are not specified, all backups in the state "created" are copied.
 
         Return names of copied backups and names of backups skipped as already copied.
+        The optional report also receives partial results when copying raises.
         """
-        copier = BackupCopier(
-            config=self._config,
-            target_config=target_config,
-            layout=self._context.backup_layout,
-            target_layout=BackupLayout(target_config),
-            ch_config=self._context.ch_config,
-        )
-        with storage_locks([self._config, target_config], operation="COPY"):
-            return copier.copy(backup_names)
+        if report is not None:
+            report.error = None
+            report.backups.clear()
+        try:
+            copier = BackupCopier(
+                config=self._config,
+                target_config=target_config,
+                layout=self._context.backup_layout,
+                target_layout=BackupLayout(target_config),
+                ch_config=self._context.ch_config,
+            )
+            with storage_locks([self._config, target_config], operation="COPY"):
+                return copier.copy(backup_names, keep_going=keep_going, report=report)
+        except BaseException as e:
+            if report is not None:
+                report.error = f"{type(e).__name__}: {e}"
+            raise
 
     def purge(self) -> tuple[Sequence[str], str | None]:
         """
