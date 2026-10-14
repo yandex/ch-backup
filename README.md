@@ -100,9 +100,9 @@ Commands:
 
 ### Starting a new deduplication window
 
-By default, part deduplication uses backups started within the last
-`backup.deduplication_age_limit` (7 days). Set the optional
-`backup.deduplication_start_time` to start a new deduplication period:
+By default, deduplication reuses parts from backups made in the last 7 days
+(`backup.deduplication_age_limit`). Set `backup.deduplication_start_time` to reuse
+only backups started on or after a chosen date:
 
 ```yaml
 backup:
@@ -112,21 +112,13 @@ backup:
         days: 7
 ```
 
-The start time must be an ISO 8601 timestamp with a timezone (`Z` or an explicit
-offset, such as `+03:00`). Invalid values, timestamps without a timezone, and future
-start times are rejected at command startup, after configuration overrides are
-applied, and when configuration is reloaded. This validation also applies when
-deduplication is disabled, for schema-only backups, and for other commands.
-Omitting the setting or using `null` preserves the default behavior.
+Here, backups before October 14 are excluded. The window grows from one day on
+October 15 to three days on October 17. Once it reaches 7 days, it keeps using only
+the most recent 7 days.
 
-For each new backup, the lower bound is
-`max(deduplication_start_time, now - deduplication_age_limit)`, with `now` captured
-once. Backups whose `start_time` equals or exceeds this bound can supply parts for
-deduplication. Existing links to backups older than this bound are not reused.
-With the example above, the window grows from one day on October 15 to three days
-on October 17, then becomes a sliding 7-day window. Each deduplication run logs the
-effective lower bound and whether the age limit or configured start determined it.
-The window is not used when `deduplicate_parts` is false or the new backup is schema-only.
+Use the timestamp format shown above, with `Z` for UTC or an offset such as
+`+03:00`. The start time cannot be in the future. Omit the setting or use `null`
+to keep the default behavior.
 
 ### Copying backups to another storage
 
