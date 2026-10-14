@@ -1337,16 +1337,12 @@ class ClickhouseCTL:
             part = dir_entry.name
             part_path = dir_entry.path
             rel_paths = list_dir_files(part_path)
-            if disk.keeps_object_metadata:
-                checksum, objects_size = _get_cloud_part_checksum_and_size(
+            if copy_data and disk.keeps_object_metadata:
+                checksum, size = _get_cloud_part_checksum_and_size(
                     part_path, rel_paths, fail_on_unparsable_metadata
                 )
             else:
-                checksum, objects_size = _get_part_checksum(part_path), 0
-
-            if copy_data and disk.keeps_object_metadata:
-                size = objects_size
-            else:
+                checksum = _get_part_checksum(part_path)
                 abs_paths = [Path(part_path) / file for file in rel_paths]
                 size = calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE)
             logging.debug(
