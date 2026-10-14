@@ -13,7 +13,8 @@ Backup is performed for tables of MergeTree engine family only as these are
  the only tables that support consistent data snapshots without server shutdown.
 
 The tool also supports deduplication at part-level granularity. It's set up
- through configuration file and enabled by default.
+ through configuration file and enabled by default. You could also
+ set a start time to exclude earlier backups from deduplication.
 
 
 ## Installation
@@ -97,28 +98,6 @@ Commands:
   restore  Restore data from a particular backup.
   show     Show details for a particular backup.
 ```
-
-### Starting a new deduplication window
-
-By default, deduplication reuses parts from backups made in the last 7 days
-(`backup.deduplication_age_limit`). Set `backup.deduplication_start_time` to reuse
-only backups started on or after a chosen date:
-
-```yaml
-backup:
-    deduplicate_parts: true
-    deduplication_start_time: "2026-10-14T00:00:00Z"
-    deduplication_age_limit:
-        days: 7
-```
-
-Here, backups before October 14 are excluded. The window grows from one day on
-October 15 to three days on October 17. Once it reaches 7 days, it keeps using only
-the most recent 7 days.
-
-Use the timestamp format shown above, with `Z` for UTC or an offset such as
-`+03:00`. The start time cannot be in the future. Omit the setting or use `null`
-to keep the default behavior.
 
 ### Copying backups to another storage
 
