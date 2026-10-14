@@ -12,7 +12,10 @@ from kazoo.exceptions import NoNodeError
 
 from ch_backup import logging
 from ch_backup.backup.metadata import BackupStorageFormat
+from ch_backup.backup.replica_layout import ReplicaLayout
 from ch_backup.backup_context import BackupContext
+from ch_backup.clickhouse.client import ClickhouseError
+from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.util import (
     chown_dir_contents,
@@ -73,6 +76,12 @@ class AccessBackup(BackupManager):
         """
         Restore access rights
         """
+        if isinstance(context.backup_layout, ReplicaLayout):
+            self._restore_statements(
+                context, context.backup_layout.get_access_statements()
+            )
+            return
+
         access_control = context.backup_meta.access_control
         acl_ids, acl_meta = access_control.acl_ids, access_control.acl_meta
 
@@ -108,6 +117,30 @@ class AccessBackup(BackupManager):
 
         if reload_users and not has_replicated_access:
             context.ch_ctl.reload_users()
+
+    def _restore_statements(
+        self, context: BackupContext, statements: list[str]
+    ) -> None:
+        """
+        Replace local access entities with ones of the statements. Failed statements are
+        run again while some succeed, as users may refer to each other.
+        """
+        context.ch_ctl.drop_local_access_entities()
+        pending = statements
+        error: ClickhouseError | None = None
+        while pending:
+            failed = []
+            for statement in pending:
+                try:
+                    context.ch_ctl.restore_access_entity(statement)
+                except ClickhouseError as e:
+                    error = e
+                    failed.append(statement)
+            if len(failed) == len(pending):
+                raise ClickhouseBackupError(
+                    f"{len(failed)} access statements of the replica failed on this host"
+                ) from error
+            pending = failed
 
     def fix_admin_user(self, context: BackupContext, dry_run: bool = True) -> None:
         """

@@ -32,3 +32,4 @@ features/workload_entities.feature
 features/cloud_storage_full_backup.feature
 features/unique_key.feature
 features/backup_unreadable_metadata.feature
+features/restore_from_replica.feature
