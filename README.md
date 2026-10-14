@@ -98,6 +98,33 @@ Commands:
   show     Show details for a particular backup.
 ```
 
+### Starting a new deduplication window
+
+By default, part deduplication uses backups started within the last
+`backup.deduplication_age_limit` (7 days). Set the optional
+`backup.deduplication_start_time` to start a new deduplication period:
+
+```yaml
+backup:
+    deduplicate_parts: true
+    deduplication_start_time: "2026-10-14T00:00:00Z"
+    deduplication_age_limit:
+        days: 7
+```
+
+The start time must be an ISO 8601 timestamp with a timezone (`Z` or an explicit
+offset, such as `+03:00`). Invalid values and timestamps without a timezone are
+rejected. Omitting the setting or using `null` preserves the default behavior.
+
+For each new backup, the lower bound is
+`max(deduplication_start_time, now - deduplication_age_limit)`, with `now` captured
+once. Backups whose `start_time` equals or exceeds this bound can supply parts for
+deduplication. Existing links to backups older than this bound are not reused.
+With the example above, the window grows from one day on October 15 to three days
+on October 17, then becomes a sliding 7-day window. A future start time excludes
+existing backups until that time is reached. The setting has no effect when
+`deduplicate_parts` is false or the new backup is schema-only.
+
 ### Copying backups to another storage
 
 `ch-backup copy` copies a backup (or all backups with `--all`) to another S3 bucket,

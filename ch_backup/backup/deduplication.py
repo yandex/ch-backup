@@ -17,6 +17,7 @@ from ch_backup.backup.metadata import (
 )
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.models import Database, FrozenPart, Table
+from ch_backup.config import as_datetime
 from ch_backup.util import Slotted, utcnow
 
 
@@ -112,6 +113,9 @@ def collect_dedup_info(
         backup_age_limit = utcnow() - timedelta(
             **context.config["deduplication_age_limit"]
         )
+        start_time = as_datetime(context.config.get("deduplication_start_time"))
+        if start_time is not None:
+            backup_age_limit = max(backup_age_limit, start_time)
 
     # Determine backups that can be used for deduplication.
     dedup_backups = []

@@ -2,6 +2,7 @@
 Deduplication unit tests.
 """
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, Mock
 
 import pytest
@@ -9,12 +10,147 @@ import pytest
 from ch_backup.backup.deduplication import (
     PartDedupInfo,
     _populate_dedup_info,
+    collect_dedup_info,
     deduplicate_parts,
 )
-from ch_backup.backup.metadata import BackupState, PartMetadata
+from ch_backup.backup.metadata import (
+    BackupMetadata,
+    BackupState,
+    PartMetadata,
+    TableMetadata,
+)
 from ch_backup.clickhouse.models import Database
+from ch_backup.config import DEFAULT_CONFIG
 
 DEDUP_BACKUP_NAME = "20181016T210300"
+
+
+@pytest.fixture(name="window_backups")
+def fixture_window_backups():
+    database = Database("db1", "Atomic", "/metadata/db1.sql", None, None)
+    backups = []
+    for day in [4, 3, 2, 1, 0, -1, -6, -7]:
+        backup = BackupMetadata(
+            name=f"day-{day}",
+            version="1",
+            ch_version="25.1",
+            time_format=DEFAULT_CONFIG["backup"]["time_format"],
+            hostname="clickhouse01",
+        )
+        backup.start_time = datetime(2026, 10, 14, tzinfo=timezone.utc) + timedelta(
+            days=day
+        )
+        backup.add_database(database)
+        backup.add_table(TableMetadata("db1", "table1", "MergeTree", None))
+        backup.add_part(
+            PartMetadata(
+                database="db1",
+                table="table1",
+                name=f"all_{day + 8}_{day + 8}_0",
+                checksum="checksum",
+                size=1024,
+                files=["checksums.txt"],
+                tarball=True,
+                disk_name="default",
+            )
+        )
+        backups.append(backup)
+    return database, backups
+
+
+@pytest.fixture(name="window_context")
+def fixture_window_context():
+    context = Mock()
+    context.config = dict(DEFAULT_CONFIG["backup"])
+    context.backup_meta.schema_only = False
+    context.backup_meta.hostname = "clickhouse01"
+    context.backup_layout.reload_backup.side_effect = lambda backup, **_: backup
+    return context
+
+
+@pytest.mark.parametrize(
+    "now_day,start_time,expected",
+    [
+        pytest.param(15, None, [1, 0, -1, -6], id="unset"),
+        pytest.param(15, 14, [1, 0], id="one-day-window"),
+        pytest.param(17, 14, [3, 2, 1, 0], id="three-day-window"),
+        pytest.param(21, 14, [4, 3, 2, 1, 0], id="limit-reached"),
+        pytest.param(24, 14, [4, 3], id="sliding-window"),
+        pytest.param(15, 20, [], id="future-start"),
+    ],
+)
+def test_collect_dedup_info_window(
+    monkeypatch, window_context, window_backups, *, now_day, start_time, expected
+):
+    database, backups = window_backups
+    clock = Mock(return_value=datetime(2026, 10, now_day, tzinfo=timezone.utc))
+    monkeypatch.setattr("ch_backup.backup.deduplication.utcnow", clock)
+    backups = [backup for backup in backups if backup.start_time <= clock.return_value]
+    if start_time is not None:
+        window_context.config["deduplication_start_time"] = (
+            f"2026-10-{start_time:02d}T00:00:00Z"
+        )
+
+    collect_dedup_info(window_context, [database], backups)
+
+    rows = [
+        row
+        for call in window_context.ch_ctl.insert_deduplication_info.call_args_list
+        for row in call.args[0]
+    ]
+    assert [row.split(",")[3] for row in rows] == [f"'day-{day}'" for day in expected]
+    clock.assert_called_once_with()
+
+
+@pytest.mark.parametrize("microseconds,eligible", [(-1, False), (0, True), (1, True)])
+def test_collect_dedup_info_inclusive_start_boundary(
+    monkeypatch, window_context, window_backups, microseconds, eligible
+):
+    database, backups = window_backups
+    start_time = datetime(2026, 10, 14, tzinfo=timezone.utc)
+    window_context.config["deduplication_start_time"] = start_time
+    monkeypatch.setattr(
+        "ch_backup.backup.deduplication.utcnow",
+        lambda: datetime(2026, 10, 15, tzinfo=timezone.utc),
+    )
+    backup = backups[0]
+    backup.start_time = start_time + timedelta(microseconds=microseconds)
+
+    collect_dedup_info(window_context, [database], [backup])
+
+    assert (
+        bool(window_context.ch_ctl.insert_deduplication_info.call_args_list) is eligible
+    )
+
+
+def test_collect_dedup_info_excludes_links_to_before_start(
+    monkeypatch, window_context, window_backups
+):
+    database, backups = window_backups
+    window_context.config["deduplication_start_time"] = datetime(
+        2026, 10, 14, tzinfo=timezone.utc
+    )
+    monkeypatch.setattr(
+        "ch_backup.backup.deduplication.utcnow",
+        lambda: datetime(2026, 10, 19, tzinfo=timezone.utc),
+    )
+    table = backups[0].get_table("db1", "table1")
+    part = table.get_parts()[0]
+    table.raw_metadata["parts"][part.name]["link"] = "day--1"
+
+    collect_dedup_info(window_context, [database], backups)
+
+    rows = [
+        row
+        for call in window_context.ch_ctl.insert_deduplication_info.call_args_list
+        for row in call.args[0]
+    ]
+    assert [row.split(",")[3] for row in rows] == [
+        "'day-3'",
+        "'day-2'",
+        "'day-1'",
+        "'day-0'",
+    ]
 
 
 def _make_backup(data_copied: bool, parts: list[PartMetadata]) -> MagicMock:
