@@ -74,6 +74,15 @@ Feature: Workload entities (WORKLOADs and RESOURCEs) support
     """
     CREATE RESOURCE s3_write (WRITE DISK s3)
     """
+    When we execute query on clickhouse02
+    """
+    SELECT create_query = formatQuerySingleLine('CREATE WORKLOAD all SETTINGS max_bytes_per_second = 1024 FOR s3_write')
+    FROM system.workloads WHERE name = 'all';
+    """
+    Then we get response
+    """
+    1
+    """
 
   @require_version_24.11
   Scenario Outline: Restore existing workload hierarchy in <storage> storage
@@ -97,6 +106,11 @@ Feature: Workload entities (WORKLOADs and RESOURCEs) support
     """
     create resource `s3_read`
     ( READ DISK s3 );
+    """
+    And file "workload_entities/all.sql" in clickhouse01 backup #0 data set to
+    """
+    create workload all
+    settings max_bytes_per_second = 2048 for `s3_read`;
     """
     And ch-backup configuration on clickhouse02
     """
@@ -127,14 +141,35 @@ Feature: Workload entities (WORKLOADs and RESOURCEs) support
     """
     Then we get response
     """
-    CREATE WORKLOAD all SETTINGS max_bytes_per_second = 2048 FOR s3_read
+    CREATE WORKLOAD `all` SETTINGS max_bytes_per_second = 2048 FOR s3_read
     CREATE WORKLOAD extra IN user
-    CREATE WORKLOAD user IN all SETTINGS weight = 3
+    CREATE WORKLOAD user IN `all` SETTINGS weight = 3
     """
     Examples:
         | storage   | config |
         | local     | workload_entity_storage/no_storage.xml |
         | zookeeper | workload_entity_storage/zookeeper.xml |
+
+  @require_version_25.10
+  Scenario: Restore a SQL workload with a configuration-defined parent
+    Given we replace config file no_storage.xml in favor of workload_entity_storage/resources_and_workloads.xml on clickhouse01 with restart
+    And we replace config file no_storage.xml in favor of workload_entity_storage/resources_and_workloads.xml on clickhouse02 with restart
+    And we have executed queries on clickhouse01
+    """
+    CREATE WORKLOAD child IN xml_all SETTINGS weight = 2;
+    """
+    When we create clickhouse01 clickhouse backup
+    And we restore clickhouse backup #0 to clickhouse02
+    And we execute query on clickhouse02
+    """
+    SELECT create_query FROM system.workloads ORDER BY name;
+    """
+    Then we get response
+    """
+    CREATE WORKLOAD child IN xml_all SETTINGS weight = 2
+    CREATE WORKLOAD xml_all
+    CREATE WORKLOAD xml_production IN xml_all SETTINGS weight = 3
+    """
 
   @require_version_25.10
   Scenario: Restore skips identical configuration-defined entities
@@ -178,10 +213,6 @@ Feature: Workload entities (WORKLOADs and RESOURCEs) support
     And we get response contains
     """
     Cannot restore workload entity 'xml_production':
-    """
-    And we get response contains
-    """
-    read-only
     """
     When we execute query on clickhouse02
     """

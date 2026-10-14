@@ -105,9 +105,7 @@ class WorkloadEntitiesBackup(BackupManager):
             )
             return
 
-        workload_entities: list[tuple[str, WorkloadEntityType, str]] = (
-            context.ch_ctl.get_workload_entities_query()
-        )
+        workload_entities = context.ch_ctl.get_workload_entities()
 
         if len(workload_entities) == 0:
             return
@@ -137,7 +135,7 @@ class WorkloadEntitiesBackup(BackupManager):
 
             chown_dir_contents(user, group, backup_tmp_path)
 
-            for entity_name, entity_type, _ in workload_entities:
+            for entity_name, (entity_type, _) in workload_entities.items():
                 local_path = os.path.join(
                     backup_tmp_path,
                     WorkloadEntity(
@@ -179,10 +177,7 @@ class WorkloadEntitiesBackup(BackupManager):
 
         logging.info("Restoring workload entities: {}", ", ".join(we_list))
 
-        we_on_clickhouse = {
-            name: (entity_type, statement)
-            for name, entity_type, statement in context.ch_ctl.get_workload_entities_query()
-        }
+        we_on_clickhouse = context.ch_ctl.get_workload_entities()
 
         resources_from_backup: list[WorkloadEntity] = []
         workloads_from_backup: list[WorkloadEntity] = []
@@ -200,7 +195,12 @@ class WorkloadEntitiesBackup(BackupManager):
                 workloads_from_backup.append(entity)
 
         sorted_workloads = self.topologically_sort_workload_entities(
-            workloads_from_backup
+            workloads_from_backup,
+            {
+                name
+                for name, (entity_type, _) in we_on_clickhouse.items()
+                if entity_type == WorkloadEntityType.WORKLOAD
+            },
         )
 
         for entity in [*resources_from_backup, *sorted_workloads]:
@@ -252,19 +252,25 @@ class WorkloadEntitiesBackup(BackupManager):
                 "replacing",
                 entity.name,
             )
-            statement = re.sub(
-                r"^\s*CREATE\b",
-                "CREATE OR REPLACE",
-                statement,
-                count=1,
-                flags=re.IGNORECASE,
-            )
 
-        context.ch_ctl.restore_workload_entity(statement)
+        context.ch_ctl.restore_workload_entity(
+            WorkloadEntitiesBackup._rewrite_workload_entity_schema(statement)
+        )
+
+    @staticmethod
+    def _rewrite_workload_entity_schema(statement: str) -> str:
+        return re.sub(
+            r"^\s*CREATE\b",
+            "CREATE OR REPLACE",
+            statement,
+            count=1,
+            flags=re.IGNORECASE,
+        )
 
     @staticmethod
     def topologically_sort_workload_entities(
         workload_entities: list[WorkloadEntity],
+        live_workload_names: set[str],
     ) -> list[WorkloadEntity]:
         """
         Sort WORKLOAD entities create them in the right order.
@@ -279,12 +285,12 @@ class WorkloadEntitiesBackup(BackupManager):
             visited.add(entity.name)
 
             parent = entity.parent
-            if parent is not None:
-                if parent not in workload_map:
-                    raise RuntimeError(
-                        f"Parent {parent} for workload {entity.name} doesn't exist in backup"
-                    )
+            if parent is not None and parent in workload_map:
                 _walk_to_parents(workload_map[parent])
+            elif parent is not None and parent not in live_workload_names:
+                raise RuntimeError(
+                    f"Parent {parent} for workload {entity.name} is unavailable"
+                )
 
             result.append(entity)
 

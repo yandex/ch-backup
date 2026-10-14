@@ -255,18 +255,6 @@ DROP_NAMED_COLLECTION_SQL = strip_query(
 """
 )
 
-DROP_WORKLOAD_SQL = strip_query(
-    """
-    DROP WORKLOAD IF EXISTS `{entity_name}`
-"""
-)
-
-DROP_RESOURCE_SQL = strip_query(
-    """
-    DROP RESOURCE IF EXISTS `{entity_name}`
-"""
-)
-
 TRUNCATE_TABLE_IF_EXISTS_SQL = strip_query(
     """
     TRUNCATE TABLE IF EXISTS `{db_name}`.`{table_name}`
@@ -1201,18 +1189,6 @@ class ClickhouseCTL:
         """
         self._ch_client.query(DROP_NAMED_COLLECTION_SQL.format(nc_name=escape(nc_name)))
 
-    def drop_workload(self, entity_name: str) -> None:
-        """
-        Drop WORKLOAD entity.
-        """
-        self._ch_client.query(DROP_WORKLOAD_SQL.format(entity_name=escape(entity_name)))
-
-    def drop_resource(self, entity_name: str) -> None:
-        """
-        Drop RESOURCE entity.
-        """
-        self._ch_client.query(DROP_RESOURCE_SQL.format(entity_name=escape(entity_name)))
-
     def system_drop_replica(self, replica: str, zookeeper_path: str) -> None:
         """
         System drop replica query.
@@ -1467,15 +1443,15 @@ class ClickhouseCTL:
         resp = self._ch_client.query(GET_SQL_NAMED_COLLECTIONS_CREATE_QUERY_SQL)
         return {row["name"]: row["create_query"] for row in resp["data"]}
 
-    def get_workload_entities_query(self) -> list[tuple[str, WorkloadEntityType, str]]:
+    def get_workload_entities(self) -> dict[str, tuple[WorkloadEntityType, str]]:
         """
         Get workload entity names, types and live create queries from system tables.
         """
         resp = self._ch_client.query(GET_WORKLOAD_ENTITIES_QUERY_SQL)
-        return [
-            (row["name"], WorkloadEntityType(row["type"]), row["create_query"])
-            for row in resp["data"]
-        ]
+        return {
+            row["name"]: (WorkloadEntityType(row["type"]), row["create_query"])
+            for row in resp.get("data", [])
+        }
 
     def format_query(self, query: str) -> str:
         """
