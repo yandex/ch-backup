@@ -778,7 +778,7 @@ class TableBackup(BackupManager):
                 "Working on deduplication of {} frozen parts", len(frozen_parts)
             )
             deduplicated_parts = deduplicate_parts(
-                context, table.database, table.name, frozen_parts
+                context, table.database, table.name, frozen_parts, stored_files
             )
             logging.debug(
                 "{} out of {} parts are deduplicated",
@@ -826,6 +826,7 @@ class TableBackup(BackupManager):
                 table.database,
                 table.name,
                 frozen_parts,
+                stored_files,
                 cloud_storage=True,
             )
             deduplicated_parts = {
@@ -868,6 +869,7 @@ class TableBackup(BackupManager):
         logging.debug('Uploading table data for "{}"."{}"', table.database, table.name)
 
         upload_observer = UploadPartObserver(context)
+        stored_files: dict[tuple[str, str, str], dict[str, dict[str, int]]] = {}
         skip_failed_part = (
             partial(TableBackup._skip_failed_part, context, table)
             if context.config["keep_going"]
@@ -894,6 +896,7 @@ class TableBackup(BackupManager):
                 data_path,
                 backup_name,
                 backup_disks is not None,
+                context.config["fail_on_unparsable_part_metadata"],
                 on_error=skip_failed_part if disk.type == "local" else None,
             ):
                 logging.debug("Working on {}", fpart)

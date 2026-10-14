@@ -19,7 +19,7 @@ from ch_backup.backup.metadata import (
     TableMetadata,
 )
 from ch_backup.backup.sources import BackupSources
-from ch_backup.ch_backup import ClickhouseBackup
+from ch_backup.ch_backup import CleanZooKeeperMode, ClickhouseBackup
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
 from ch_backup.clickhouse.models import Database
@@ -79,6 +79,48 @@ def test_restore_of_copied_data_does_not_require_source_bucket():
 
     restore_mock.assert_called_once()
     assert restore_mock.call_args.kwargs["cloud_storage_source_bucket"] is None
+
+
+SOURCES = BackupSources.for_restore(access=True, schema=True, named_collections=True)
+
+
+def test_restore_from_replica_reads_schema_with_uuids_and_secrets() -> None:
+    """
+    Without UUIDs an inner table of a view would get a new one, and without secrets the
+    statements cannot be used, so the source is queried with both settings.
+    """
+    backup = ClickhouseBackup(DEFAULT_CONFIG)  # type: ignore[arg-type]
+    context = MagicMock()
+    context.ch_ctl_conf = {"host": "local", "settings": None}
+    backup.__dict__["_context"] = context
+
+    with (
+        patch("ch_backup.ch_backup.ClickhouseCTL") as ctl_cls,
+        patch("ch_backup.ch_backup.ReplicaLayout") as layout_cls,
+        patch.object(ClickhouseBackup, "restore") as restore_mock,
+    ):
+        backup.restore_from_replica("replica1", SOURCES, "old_replica")
+
+    assert ctl_cls.call_args.args[0] == {
+        "host": "replica1",
+        "settings": {
+            "format_display_secrets_in_show_and_select": 1,
+            "show_table_uuid_in_table_create_query_if_not_nil": 1,
+        },
+    }
+    layout_cls.assert_called_once_with(
+        context.config_root,
+        context.ch_ctl,
+        ctl_cls.return_value,
+        SOURCES,
+        "old_replica",
+    )
+    assert context.backup_layout is layout_cls.return_value
+    kwargs = restore_mock.call_args.kwargs
+    assert kwargs["sources"] == SOURCES
+    assert kwargs["backup_name"] == "replica1"
+    assert kwargs["replica_name"] == "old_replica"
+    assert kwargs["clean_zookeeper_mode"] == CleanZooKeeperMode.REPLICA_ONLY
 
 
 def _delete_backup_with_cloud_storage(referenced_parts: Sequence[str]) -> MagicMock:

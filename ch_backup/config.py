@@ -53,6 +53,7 @@ DEFAULT_CONFIG = {
             "days": 7,
         },
         "deduplication_batch_size": 500,
+        "deduplication_verify_links": True,
         "min_interval": {
             "minutes": 0,
         },
@@ -77,6 +78,7 @@ DEFAULT_CONFIG = {
         "restore_context_sync_threshold_ops": 100,
         "validate_part_after_upload": False,
         "restore_fail_on_attach_error": False,
+        "fail_on_unparsable_part_metadata": False,
         "update_metadata_interval": _as_seconds("30 min"),
         "kill_old_freeze_queries": True,
     },
