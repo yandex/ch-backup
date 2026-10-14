@@ -266,6 +266,15 @@ class ClickhouseClient:
         ncs = self._query("GET", query=NAMED_COLLECTIONS_QUERY)
         return {nc["name"]: nc["collection"] for nc in ncs.get("data", [])}
 
+    def get_all_http_handlers(self) -> dict[str, str]:
+        """Read full handler definitions, including credentials for comparison."""
+        response = self._query(
+            "GET",
+            "SELECT name, create_query FROM system.handlers "
+            "SETTINGS format_display_secrets_in_show_and_select = 1 FORMAT JSON",
+        )
+        return {row["name"]: row["create_query"] for row in response["data"]}
+
     def drop_all_access_objects(self) -> None:
         """
         Drop all access entities.

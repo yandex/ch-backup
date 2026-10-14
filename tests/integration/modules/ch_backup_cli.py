@@ -239,6 +239,7 @@ class BackupManager:
         udf: bool = None,
         nc: bool = None,
         copy_cloud_storage_data: bool = False,
+        http_handlers: bool = False,
     ) -> str:
         """
         Execute backup command.
@@ -266,6 +267,8 @@ class BackupManager:
             options.append("--udf")
         if nc:
             options.append("--nc")
+        if http_handlers:
+            options.append("--http-handlers")
         return self._exec(f'backup {" ".join(options)}').strip()
 
     def delete(
@@ -350,6 +353,7 @@ class BackupManager:
         restore_tables_in_replicated_database: bool = False,
         table_included_patterns: str = None,
         table_excluded_patterns: str = None,
+        http_handlers: bool = False,
     ) -> str:
         """
         Restore backup entry.
@@ -382,6 +386,8 @@ class BackupManager:
             options.append("--udf")
         if nc:
             options.append("--nc")
+        if http_handlers:
+            options.append("--http-handlers")
         if keep_going:
             options.append("--keep-going")
         if restore_tables_in_replicated_database:

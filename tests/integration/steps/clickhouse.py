@@ -249,6 +249,13 @@ def step_wait_for_named_collection(context, collection_name, node):
     assert collection_name in named_collections
 
 
+@then("{node1:w} has same HTTP handlers as {node2:w}")
+def step_has_same_http_handlers(context, node1, node2):
+    first = ClickhouseClient(context, node1).get_all_http_handlers()
+    second = ClickhouseClient(context, node2).get_all_http_handlers()
+    assert_that(first, equal_to(second))
+
+
 @then("on {node:w} tables are empty")
 def step_check_tables_are_empty(context, node):
     ch_client = ClickhouseClient(context, node)

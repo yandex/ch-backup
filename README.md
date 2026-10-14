@@ -15,6 +15,26 @@ Backup is performed for tables of MergeTree engine family only as these are
 The tool also supports deduplication at part-level granularity. It's set up
  through configuration file and enabled by default.
 
+SQL-defined HTTP handlers are backed up and restored on ClickHouse 26.8 and newer,
+whether stored locally or in Keeper. Full backups include them; use
+`ch-backup backup --http-handlers` or `ch-backup restore BACKUP --http-handlers`
+to select only handlers. Configuration-defined HTTP handlers are not included.
+Handler definitions are stored as SQL with the same metadata encryption settings
+as other schemas. Old backups without handlers remain supported.
+
+The ClickHouse user needs `SHOW HANDLERS` and `SELECT` on `system.handlers`.
+To preserve embedded credentials, enable the server setting
+`display_secrets_in_show_and_select` and grant `displaySecretsInShowAndSelect`.
+ch-backup enables `format_display_secrets_in_show_and_select` for the export.
+Definitions containing `[HIDDEN]` are accepted only after verifying the
+secret-display grant and server setting; this check also needs `SELECT` on
+`system.server_settings`. If these controls are disabled, export fails instead
+of saving masked credentials.
+Restore needs `CREATE HANDLER` and, when replacing changed definitions,
+`DROP HANDLER`. Identical handlers are skipped; changed handlers are dropped and
+re-created. Handlers absent from the backup are left in place, so overlapping URLs
+can cause ClickHouse to reject a restored handler. Restore is not atomic.
+
 
 ## Installation
 

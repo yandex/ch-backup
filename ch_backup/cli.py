@@ -390,6 +390,11 @@ def show_command(
     ),
     option("--nc", is_flag=True, help="Perform partial backup of named collections."),
     option(
+        "--http-handlers",
+        is_flag=True,
+        help="Perform partial backup of SQL-defined HTTP handlers.",
+    ),
+    option(
         "--workload", is_flag=True, help="Perform partial backup of workload entities."
     ),
 )
@@ -445,6 +450,7 @@ def show_command(
 @constraint(mutually_exclusive, ["schema_only", "udf"])
 @constraint(mutually_exclusive, ["schema_only", "nc"])
 @constraint(mutually_exclusive, ["schema_only", "workload"])
+@constraint(mutually_exclusive, ["schema_only", "http_handlers"])
 @constraint(mutually_exclusive, ["data", "schema"])
 # pylint: disable=too-many-positional-arguments
 def backup_command(
@@ -464,6 +470,7 @@ def backup_command(
     nc: bool,
     workload: bool,
     copy_cloud_storage_data: bool,
+    http_handlers: bool,
 ) -> None:
     """Perform backup."""
     # pylint: disable=too-many-arguments,too-many-locals
@@ -483,7 +490,14 @@ def backup_command(
         labels[key] = value
 
     sources = BackupSources.for_backup(
-        access, data, schema, udf, nc, workload, schema_only
+        access,
+        data,
+        schema,
+        udf,
+        nc,
+        workload,
+        schema_only,
+        http_handlers=http_handlers,
     )
     name, msg = ch_backup.backup(
         sources, name, db_names=databases, tables=tables, force=force, labels=labels
@@ -607,6 +621,11 @@ def backup_command(
     ),
     option("--nc", is_flag=True, help="Perform partial restore of named collections."),
     option(
+        "--http-handlers",
+        is_flag=True,
+        help="Perform partial restore of SQL-defined HTTP handlers.",
+    ),
+    option(
         "--workload", is_flag=True, help="Perform partial restore of workload entities."
     ),
 )
@@ -627,6 +646,7 @@ def backup_command(
 @constraint(mutually_exclusive, ["schema_only", "udf"])
 @constraint(mutually_exclusive, ["schema_only", "nc"])
 @constraint(mutually_exclusive, ["schema_only", "workload"])
+@constraint(mutually_exclusive, ["schema_only", "http_handlers"])
 @constraint(mutually_exclusive, ["data", "schema"])
 # pylint: disable=too-many-positional-arguments
 def restore_command(
@@ -654,6 +674,7 @@ def restore_command(
     table_excluded_patterns: list[str] | None = None,
     nc: bool = False,
     workload: bool = False,
+    http_handlers: bool = False,
 ) -> None:
     """Restore data from a particular backup."""
     # pylint: disable=too-many-arguments,too-many-locals
@@ -670,7 +691,14 @@ def restore_command(
         matcher = PartialRestoreFilter(inverted=True, patterns=table_excluded_patterns)
 
     sources = BackupSources.for_restore(
-        access, data, schema, udf, nc, workload, schema_only
+        access,
+        data,
+        schema,
+        udf,
+        nc,
+        workload,
+        schema_only,
+        http_handlers=http_handlers,
     )
     ch_backup.restore(
         sources=sources,
@@ -723,7 +751,7 @@ def restore_from_replica_command(
     nc: bool = False,
 ) -> None:
     """Restore from a live replica of the shard instead of a backup. All without options."""
-    sources = BackupSources(data=False, workload_entities=False)
+    sources = BackupSources(data=False, workload_entities=False, http_handlers=False)
     if any([schema, access, udf, nc]):
         sources = BackupSources(
             access=access,
@@ -732,6 +760,7 @@ def restore_from_replica_command(
             udf=udf,
             named_collections=nc,
             workload_entities=False,
+            http_handlers=False,
         )
     ch_backup.restore_from_replica(source_host, sources, replica_name)
 
