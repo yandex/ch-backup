@@ -53,6 +53,7 @@ DEFAULT_CONFIG = {
             "days": 7,
         },
         "deduplication_batch_size": 500,
+        "deduplication_verify_links": True,
         "min_interval": {
             "minutes": 0,
         },
