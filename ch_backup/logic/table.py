@@ -17,7 +17,7 @@ from typing import Iterable, Sequence
 
 from ch_backup import logging
 from ch_backup.backup.deduplication import deduplicate_parts
-from ch_backup.backup.metadata import PartMetadata, TableMetadata
+from ch_backup.backup.metadata import DetachedPartMetadata, PartMetadata, TableMetadata
 from ch_backup.backup.metadata.table_metadata import DataSkippedReason
 from ch_backup.backup.restore_context import PartState
 from ch_backup.backup_context import BackupContext
@@ -57,7 +57,7 @@ class TableBackup(BackupManager):
     Table backup class
     """
 
-    # pylint: disable=too-many-positional-arguments
+    # pylint: disable=too-many-positional-arguments,too-many-arguments
     def backup(
         self,
         context: BackupContext,
@@ -65,6 +65,9 @@ class TableBackup(BackupManager):
         db_tables: dict[str, list],
         schema_only: bool,
         multiprocessing_config: dict,
+        include_detached_parts: bool = False,
+        detached_parts_disks: Sequence[str] = None,
+        detached_parts_reasons: Sequence[str] = None,
     ) -> None:
         """
         Backup tables metadata, MergeTree data and Cloud storage metadata.
@@ -142,6 +145,9 @@ class TableBackup(BackupManager):
                     multiprocessing_config,
                     change_times,
                     backup_disks,
+                    include_detached_parts,
+                    detached_parts_disks,
+                    detached_parts_reasons,
                 )
         if data_copied:
             context.ch_ctl.system_unfreeze(backup_name)
@@ -186,6 +192,9 @@ class TableBackup(BackupManager):
         multiprocessing_config: dict,
         change_times: dict[Table, TableMetadataChangeTime],
         backup_disks: ClickHouseBackupDisks | None,
+        include_detached_parts: bool,
+        detached_parts_disks: Sequence[str] = None,
+        detached_parts_reasons: Sequence[str] = None,
     ) -> None:
         """
         Backup single database tables.
@@ -262,6 +271,13 @@ class TableBackup(BackupManager):
                                     )
                                     self._backup_cloud_storage_data(
                                         context, copy_pool, freezed_table, backup_disks
+                                    )
+                                if include_detached_parts and not schema_only:
+                                    self._backup_detached_table_data(
+                                        context,
+                                        freezed_table,
+                                        detached_parts_disks,
+                                        detached_parts_reasons,
                                     )
 
                     self._upload_cloud_storage_metadata(context, copy_pool)
@@ -771,6 +787,59 @@ class TableBackup(BackupManager):
 
         context.ch_ctl.remove_freezed_data(backup_name, table)
 
+    def _backup_detached_table_data(
+        self,
+        context: BackupContext,
+        table: Table,
+        disk_names: Sequence[str] = None,
+        reasons: Sequence[str] = None,
+    ) -> None:
+        """Back up matching detached parts while preserving directory names."""
+        if not table.is_merge_tree():
+            return
+
+        disk_filter = set(disk_names or [])
+        reason_filter = set(reasons or [])
+        uploaded_parts: list[DetachedPartMetadata] = []
+        warned_metadata_only = False
+
+        def observe_uploaded_part(part: DetachedPartMetadata) -> None:
+            uploaded_parts.append(part)
+            context.backup_meta.add_detached_part(part)
+
+        for detached_part in context.ch_ctl.scan_detached_parts(
+            table, disk_names=disk_names, reasons=reasons
+        ):
+            if disk_filter and detached_part.disk_name not in disk_filter:
+                continue
+            if reason_filter and detached_part.reason not in reason_filter:
+                continue
+
+            part_meta = DetachedPartMetadata.from_detached_part(
+                detached_part, context.backup_meta.encrypted
+            )
+            if (
+                detached_part.object_storage
+                and context.backup_meta.cloud_storage.data_copied
+                and not warned_metadata_only
+            ):
+                logging.warning(
+                    "Detached parts of {}.{} on object storage are metadata-only: "
+                    "--copy-cloud-storage-data does not copy their referenced "
+                    "objects; only local metadata files will be backed up",
+                    detached_part.database,
+                    detached_part.table,
+                )
+                warned_metadata_only = True
+            context.backup_layout.upload_detached_part(
+                context.backup_meta,
+                detached_part,
+                partial(observe_uploaded_part, part_meta),
+            )
+
+        context.backup_layout.wait()
+        self._validate_uploaded_detached_parts(context, uploaded_parts)
+
     @staticmethod
     def _validate_uploaded_parts(context: BackupContext, uploaded_parts: list) -> None:
         if context.config["validate_part_after_upload"]:
@@ -791,6 +860,30 @@ class TableBackup(BackupManager):
                 raise RuntimeError(
                     f'Uploaded parts are broken, {", ".join(map(lambda p: p.name, invalid_parts))}'
                 )
+
+    @staticmethod
+    def _validate_uploaded_detached_parts(
+        context: BackupContext, uploaded_parts: list[DetachedPartMetadata]
+    ) -> None:
+        if not context.config["validate_part_after_upload"]:
+            return
+
+        invalid_parts = [
+            part
+            for part in uploaded_parts
+            if not context.backup_layout.check_detached_part(
+                context.backup_meta.name, part
+            )
+        ]
+        if invalid_parts:
+            for part in invalid_parts:
+                logging.error(
+                    f"Uploaded detached part is broken, {part.database}.{part.table} on {part.disk_name}: {part.name}"
+                )
+            raise RuntimeError(
+                "Uploaded detached parts are broken, "
+                + ", ".join(part.name for part in invalid_parts)
+            )
 
     @staticmethod
     def _get_change_time(file_name: str) -> TableMetadataChangeTime | None:

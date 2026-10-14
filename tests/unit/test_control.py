@@ -1,4 +1,5 @@
 from hashlib import md5
+from pathlib import Path
 from tarfile import BLOCKSIZE
 from unittest import mock
 
@@ -357,3 +358,89 @@ def test_only_named_collections_created_by_sql_are_read() -> None:
 
     assert ch_ctl.get_named_collections_create_queries() == {"nc1": "CREATE ..."}
     assert "WHERE source = 'SQL'" in client.query.call_args.args[0]
+
+
+def test_scan_detached_parts_reads_reason_from_directory_name(
+    tmp_path: Path,
+) -> None:
+    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    disk = Disk("default", str(tmp_path), "Local")
+    ch_ctl._disks = {disk.name: disk}  # pylint: disable=protected-access
+    table_path = tmp_path / "store" / "table"
+    detached_path = table_path / "detached"
+    normal_part = detached_path / "all_1_1_0"
+    broken_part = detached_path / "broken-on-start_all_2_2_0"
+    normal_part.mkdir(parents=True)
+    broken_part.mkdir()
+    (normal_part / "data.bin").write_bytes(b"data")
+    (broken_part / "data.bin").write_bytes(b"broken")
+    table = Table(
+        "db1",
+        "table1",
+        "MergeTree",
+        [disk],
+        [str(table_path)],
+        "",
+        "",
+        None,
+    )
+
+    parts = list(
+        ch_ctl.scan_detached_parts(table, disk_names=["default"], reasons=[""])
+    )
+
+    assert len(parts) == 1
+    assert parts[0].name == "all_1_1_0"
+    assert parts[0].reason == ""
+    assert parts[0].disk_name == "default"
+    assert parts[0].checksum == ""
+
+    broken_parts = list(
+        ch_ctl.scan_detached_parts(
+            table, disk_names=["default"], reasons=["broken-on-start"]
+        )
+    )
+    assert [(part.name, part.reason) for part in broken_parts] == [
+        ("broken-on-start_all_2_2_0", "broken-on-start")
+    ]
+
+
+def test_scan_detached_parts_uses_selected_backing_disk_directory(
+    tmp_path: Path,
+) -> None:
+    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    storage_disk = Disk("object_storage", str(tmp_path), "ObjectStorage", "S3")
+    cache_disk = Disk(
+        "object_storage_cache",
+        str(tmp_path),
+        "ObjectStorage",
+        "S3",
+        cache_path=str(tmp_path / "cache"),
+    )
+    ch_ctl._disks = {  # pylint: disable=protected-access
+        storage_disk.name: storage_disk,
+        cache_disk.name: cache_disk,
+    }
+    table_path = tmp_path / "store" / "table"
+    part_path = table_path / "detached" / "all_1_1_0"
+    expected_checksum = _make_cloud_part(
+        part_path, {"checksums.txt": ["store/object-key"]}
+    )
+    table = Table(
+        "db1",
+        "table1",
+        "MergeTree",
+        [cache_disk],
+        [str(table_path)],
+        "",
+        "",
+        None,
+    )
+
+    part = next(iter(ch_ctl.scan_detached_parts(table, disk_names=["object_storage"])))
+
+    assert part.disk_name == "object_storage"
+    assert part.object_storage is True
+    assert part.path == str(part_path)
+    assert part.checksum == expected_checksum
+    assert part.size == BLOCKSIZE

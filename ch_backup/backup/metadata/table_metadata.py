@@ -6,6 +6,7 @@ from enum import Enum
 from types import SimpleNamespace
 from typing import NamedTuple
 
+from ch_backup.backup.metadata.detached_part_metadata import DetachedPartMetadata
 from ch_backup.backup.metadata.part_metadata import PartMetadata
 
 
@@ -141,6 +142,43 @@ class TableMetadata(SimpleNamespace):
             "encrypted": part.encrypted,
         }
 
+    def get_detached_parts(self) -> list[DetachedPartMetadata]:
+        """Return detached parts sorted by disk and original directory name."""
+        result = []
+        for disk_name, disk_parts in self.raw_metadata.get(
+            "detached_parts", {}
+        ).items():
+            for part_name, raw_metadata in disk_parts.items():
+                result.append(
+                    DetachedPartMetadata.load(
+                        self.database,
+                        self.name,
+                        disk_name,
+                        part_name,
+                        raw_metadata,
+                    )
+                )
+        return sorted(result, key=lambda part: (part.disk_name, part.name))
+
+    def add_detached_part(self, part: DetachedPartMetadata) -> None:
+        """Add a detached part without mixing it with attachable table parts."""
+        assert part.database == self.database
+        assert part.table == self.name
+
+        disk_parts = self.raw_metadata.setdefault("detached_parts", {}).setdefault(
+            part.disk_name, {}
+        )
+        assert part.name not in disk_parts
+        disk_parts[part.name] = {
+            "reason": part.reason,
+            "checksum": part.checksum,
+            "bytes": part.size,
+            "files": part.files,
+            "tarball": part.tarball,
+            "encrypted": part.encrypted,
+            "object_storage": part.object_storage,
+        }
+
     @classmethod
     def load(cls, database: str, name: str, raw_metadata: dict) -> "TableMetadata":
         """
@@ -154,4 +192,6 @@ class TableMetadata(SimpleNamespace):
             raw_metadata.get("data_skipped_reason", None),
         )
         table.raw_metadata["parts"] = raw_metadata["parts"]
+        if "detached_parts" in raw_metadata:
+            table.raw_metadata["detached_parts"] = raw_metadata["detached_parts"]
         return table

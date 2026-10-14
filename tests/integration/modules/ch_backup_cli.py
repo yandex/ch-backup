@@ -4,6 +4,7 @@ Interface to ch-backup command-line tool.
 
 import json
 import os
+import shlex
 from copy import copy
 from typing import Sequence
 from urllib.parse import quote
@@ -67,6 +68,9 @@ class Backup:
                 for part_obj in table_obj["parts"].values():
                     if not part_obj["link"]:
                         count += 1
+                count += sum(
+                    len(parts) for parts in table_obj.get("detached_parts", {}).values()
+                )
         return count
 
     @property
@@ -200,6 +204,19 @@ class Backup:
                         file_paths.update(
                             os.path.join(part_path, f) for f in part_obj["files"]
                         )
+                for disk_name, detached_parts in table_obj.get(
+                    "detached_parts", {}
+                ).items():
+                    for part_name in detached_parts:
+                        part_path = os.path.join(
+                            backup_path,
+                            "detached",
+                            _quote(db_name),
+                            _quote(table_name),
+                            _quote(disk_name),
+                            _quote(part_name),
+                        )
+                        file_paths.add(os.path.join(part_path, f"{part_name}.tar"))
 
         return tuple(file_paths)
 
@@ -224,7 +241,7 @@ class BackupManager:
             context, conf.get("storage", {}).get("credentials", {}).get("bucket")
         )
 
-    # pylint: disable=too-many-arguments,too-many-positional-arguments
+    # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     def backup(
         self,
         name: str = "{uuid}",
@@ -239,6 +256,9 @@ class BackupManager:
         udf: bool = None,
         nc: bool = None,
         copy_cloud_storage_data: bool = False,
+        detached_parts: bool = False,
+        detached_parts_disks: Sequence[str] = None,
+        detached_parts_reasons: Sequence[str] = None,
     ) -> str:
         """
         Execute backup command.
@@ -266,6 +286,14 @@ class BackupManager:
             options.append("--udf")
         if nc:
             options.append("--nc")
+        if detached_parts:
+            options.append("--detached-parts")
+        if detached_parts_disks is not None:
+            disks = shlex.quote(",".join(detached_parts_disks))
+            options.append(f"--detached-parts-disks {disks}")
+        if detached_parts_reasons is not None:
+            reasons = shlex.quote(",".join(detached_parts_reasons))
+            options.append(f"--detached-parts-reasons {reasons}")
         return self._exec(f'backup {" ".join(options)}').strip()
 
     def delete(

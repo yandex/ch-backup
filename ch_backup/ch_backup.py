@@ -138,6 +138,9 @@ class ClickhouseBackup:
         tables: Sequence[str] = None,
         force: bool = False,
         labels: dict = None,
+        include_detached_parts: bool = False,
+        detached_parts_disks: Sequence[str] = None,
+        detached_parts_reasons: Sequence[str] = None,
     ) -> tuple[str, str | None]:
         """
         Perform backup.
@@ -166,6 +169,14 @@ class ClickhouseBackup:
 
         logging.info(f"Backup sources: {sources}")
         assert not (db_names and tables)
+
+        if detached_parts_disks is None:
+            detached_parts_disks = ["object_storage"]
+
+        if isinstance(detached_parts_disks, str):
+            detached_parts_disks = [detached_parts_disks]
+        if isinstance(detached_parts_reasons, str):
+            detached_parts_reasons = [detached_parts_reasons]
 
         backup_labels: dict = copy(self._context.config.get("labels"))  # type: ignore
         if labels:
@@ -239,6 +250,9 @@ class ClickhouseBackup:
                         db_tables,
                         schema_only=sources.schema_only,
                         multiprocessing_config=self._config["multiprocessing"],
+                        include_detached_parts=include_detached_parts,
+                        detached_parts_disks=detached_parts_disks,
+                        detached_parts_reasons=detached_parts_reasons,
                     )
 
                 # Upload operations are async. Should wait until they are all finished.
@@ -718,6 +732,7 @@ class ClickhouseBackup:
                     self._delete_data_parts(
                         backup, table, db_dedup_references[table.name]
                     )
+                    self._delete_detached_parts(backup, table)
 
             if backup.cloud_storage.enabled:
                 if self._cloud_storage_data_is_shared(backup, dedup_references):
@@ -808,6 +823,13 @@ class ClickhouseBackup:
         own_parts = [part for part in parts if not part.link]
         self._context.backup_layout.delete_data_parts(backup, own_parts)
         backup.remove_parts(table, parts)
+
+    def _delete_detached_parts(
+        self, backup: BackupMetadata, table: TableMetadata
+    ) -> None:
+        parts = table.get_detached_parts()
+        self._context.backup_layout.delete_detached_parts(backup, parts)
+        backup.remove_detached_parts(table, parts)
 
     # pylint: disable=too-many-positional-arguments
     def _restore(

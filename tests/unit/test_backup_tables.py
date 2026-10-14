@@ -13,7 +13,7 @@ from ch_backup.backup.metadata import BackupMetadata, PartMetadata, TableMetadat
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseDisksException
-from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
+from ch_backup.clickhouse.models import Database, DetachedPart, Disk, FrozenPart, Table
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.logic.table import TableBackup, TableMetadataChangeTime
@@ -294,6 +294,7 @@ def test_backup_table_skipping_if_metadata_updated_during_backup(
         )
     else:
         clickhouse_ctl_mock.does_table_exist.assert_not_called()
+    clickhouse_ctl_mock.scan_detached_parts.assert_not_called()
 
 
 class TestValidateUploadedParts:
@@ -1088,3 +1089,144 @@ class TestUniqueKeyTables:
         context.ch_ctl.get_table.assert_called_once_with(  # type: ignore[attr-defined]
             self._DB, self._TABLE, short_query=True
         )
+
+
+class TestDetachedPartsBackup:
+    """Detached parts are filtered and stored separately."""
+
+    @staticmethod
+    def _backup_meta() -> BackupMetadata:
+        backup = BackupMetadata(
+            name="backup",
+            version="1",
+            ch_version="25.1",
+            time_format="%Y-%m-%d %H:%M:%S %z",
+        )
+        backup.add_database(Database("db", "Atomic", None, None, None))
+        backup.add_table(TableMetadata("db", "table", "MergeTree", None))
+        return backup
+
+    @staticmethod
+    def _table() -> Table:
+        return Table("db", "table", "MergeTree", [], [], "", "", None)
+
+    @staticmethod
+    def _detached(
+        name: str, disk: str, reason: str, object_storage: bool = False
+    ) -> DetachedPart:
+        return DetachedPart(
+            database="db",
+            table="table",
+            name=name,
+            reason=reason,
+            disk_name=disk,
+            path=f"/data/{disk}/detached/{name}",
+            checksum="checksum",
+            size=1024,
+            files=["checksums.txt", "data.bin"],
+            object_storage=object_storage,
+        )
+
+    @staticmethod
+    def _backup_context(parts: list[DetachedPart]) -> MagicMock:
+        context = MagicMock()
+        context.backup_meta = TestDetachedPartsBackup._backup_meta()
+        context.config = {
+            "update_metadata_interval": 1800,
+            "validate_part_after_upload": False,
+        }
+        context.ch_ctl.scan_detached_parts.return_value = parts
+
+        def complete_upload(_backup, _part, callback):
+            callback()
+
+        context.backup_layout.upload_detached_part.side_effect = complete_upload
+        return context
+
+    def test_filters_disk_and_empty_reason(self) -> None:
+        selected = self._detached("all_1_1_0", "default", "")
+        context = self._backup_context(
+            [
+                selected,
+                self._detached("broken_all_2_2_0", "default", "broken"),
+                self._detached("all_3_3_0", "cold", ""),
+            ]
+        )
+
+        TableBackup()._backup_detached_table_data(  # pylint: disable=protected-access
+            context,
+            self._table(),
+            disk_names=["default"],
+            reasons=[""],
+        )
+
+        context.backup_layout.upload_detached_part.assert_called_once()
+        backed_up = context.backup_meta.get_detached_parts()
+        assert [(part.disk_name, part.reason, part.name) for part in backed_up] == [
+            ("default", "", "all_1_1_0")
+        ]
+
+    def test_no_filters_selects_every_detached_part(self) -> None:
+        parts = [
+            self._detached("all_1_1_0", "default", ""),
+            self._detached("broken_all_2_2_0", "cold", "broken"),
+        ]
+        context = self._backup_context(parts)
+
+        TableBackup()._backup_detached_table_data(  # pylint: disable=protected-access
+            context, self._table()
+        )
+
+        assert len(context.backup_meta.get_detached_parts()) == 2
+
+    def test_object_storage_kind_is_recorded_on_detached_part(self) -> None:
+        context = self._backup_context(
+            [self._detached("all_1_1_0", "object_storage", "", True)]
+        )
+        disk = Disk("object_storage", "/object_storage", "ObjectStorage", "S3")
+        table = Table(
+            "db",
+            "table",
+            "MergeTree",
+            [disk],
+            ["/object_storage/store/table"],
+            "",
+            "",
+            None,
+        )
+
+        TableBackup()._backup_detached_table_data(  # pylint: disable=protected-access
+            context, table
+        )
+
+        [part] = context.backup_meta.get_detached_parts()
+        assert part.object_storage is True
+        assert context.backup_meta.cloud_storage.disks == []
+
+    @patch("ch_backup.logic.table.logging.warning")
+    def test_full_cloud_storage_backup_warns_and_keeps_detached_metadata(
+        self, warning: MagicMock
+    ) -> None:
+        context = self._backup_context(
+            [self._detached("all_1_1_0", "object_storage", "", True)]
+        )
+        context.backup_meta.cloud_storage.data_copied = True
+        disk = Disk("object_storage", "/object_storage", "ObjectStorage", "S3")
+        table = Table(
+            "db",
+            "table",
+            "MergeTree",
+            [disk],
+            ["/object_storage/store/table"],
+            "",
+            "",
+            None,
+        )
+
+        TableBackup()._backup_detached_table_data(  # pylint: disable=protected-access
+            context, table
+        )
+
+        context.backup_layout.upload_detached_part.assert_called_once()
+        assert len(context.backup_meta.get_detached_parts()) == 1
+        assert "only local metadata files" in warning.call_args.args[0]

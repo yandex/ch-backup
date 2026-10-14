@@ -15,11 +15,13 @@ from typing import Any, Iterable, Sequence
 
 from ch_backup import logging
 from ch_backup.backup.metadata import TableMetadata
+from ch_backup.backup.metadata.table_metadata import split_part_name
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.calculators import calc_aligned_files_size
 from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.clickhouse.models import (
     Database,
+    DetachedPart,
     Disk,
     FrozenPart,
     Table,
@@ -1270,6 +1272,94 @@ class ClickhouseCTL:
         """
         return os.path.join(self._get_table_detached_path(table, disk_name), part_name)
 
+    def scan_detached_parts(
+        self,
+        table: Table,
+        disk_names: Sequence[str] = None,
+        reasons: Sequence[str] = None,
+    ) -> Iterable[DetachedPart]:
+        """Yield detached parts found in the selected disks' directories.
+
+        The filesystem is the source of truth. ClickHouse encodes a non-empty
+        detach reason as the prefix before the first underscore; a directory
+        whose whole name is a valid MergeTree part has an empty reason.
+        """
+        reason_filter = set(reasons or [])
+
+        selected: list[tuple[str, Disk, str]] = []
+        if disk_names:
+            for disk_name in dict.fromkeys(disk_names):
+                disk = self._disks.get(disk_name)
+                if disk is None:
+                    raise RuntimeError(f"Disk not found: {disk_name}")
+                selected.extend(
+                    (disk_name, disk, data_path)
+                    for data_path, table_disk in table.paths_with_disks
+                    if table_disk.path == disk.path
+                )
+        else:
+            selected.extend(
+                (disk.name, disk, data_path)
+                for data_path, disk in table.paths_with_disks
+            )
+
+        scanned_paths: set[str] = set()
+        for disk_name, disk, data_path in selected:
+            detached_path = os.path.join(data_path, "detached")
+            if detached_path in scanned_paths or not os.path.isdir(detached_path):
+                continue
+            scanned_paths.add(detached_path)
+
+            try:
+                entries = sorted(
+                    os.scandir(detached_path), key=lambda entry: entry.name
+                )
+            except FileNotFoundError:
+                continue
+
+            for entry in entries:
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+
+                    try:
+                        split_part_name(entry.name)
+                        reason = ""
+                    except ValueError:
+                        reason = entry.name.partition("_")[0]
+                    if reason_filter and reason not in reason_filter:
+                        continue
+
+                    part_path = entry.path
+                    rel_paths = list_dir_files(part_path)
+                    checksum = _get_detached_part_checksum(part_path, rel_paths, disk)
+
+                    # Detached object-storage parts contain local metadata files.
+                    # Those files are what the backup archives, so their aligned
+                    # size (not the size of referenced bucket objects) is recorded.
+                    size = calc_aligned_files_size(
+                        [Path(part_path) / file for file in rel_paths],
+                        alignment=BLOCKSIZE,
+                    )
+
+                    yield DetachedPart(
+                        database=table.database,
+                        table=table.name,
+                        name=entry.name,
+                        reason=reason,
+                        disk_name=disk_name,
+                        path=part_path,
+                        checksum=checksum,
+                        size=size,
+                        files=rel_paths,
+                        object_storage=disk.type == "s3",
+                    )
+                except FileNotFoundError:
+                    logging.warning(
+                        'Detached part directory disappeared while scanning: "{}"',
+                        entry.path,
+                    )
+
     def get_version(self) -> str:
         """
         Get ClickHouse version.
@@ -1722,6 +1812,21 @@ def _get_part_checksum(part_path: str) -> str:
     """
     with open(os.path.join(part_path, "checksums.txt"), "rb") as f:
         return md5(f.read()).hexdigest()  # nosec
+
+
+def _get_detached_part_checksum(
+    part_path: str, rel_paths: Sequence[str], disk: Disk
+) -> str:
+    """Calculate a detached part checksum according to its disk format."""
+    try:
+        if disk.keeps_object_metadata:
+            checksum, _ = _get_cloud_part_checksum_and_size(part_path, rel_paths)
+            return checksum
+        return _get_part_checksum(part_path)
+    except OSError:
+        # Broken detached parts are precisely one of the things this feature must
+        # preserve, and they may have no checksums.txt.
+        return ""
 
 
 def _get_cloud_part_checksum_and_size(

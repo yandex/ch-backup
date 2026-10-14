@@ -362,3 +362,46 @@ class FrozenPart(Slotted):
         self.checksum = checksum
         self.size = size
         self.files = files
+
+
+class DetachedPart(Slotted):
+    """A detached data part scanned from a table's detached directory."""
+
+    __slots__ = (
+        "database",
+        "table",
+        "name",
+        "reason",
+        "disk_name",
+        "object_storage",
+        "path",
+        "checksum",
+        "size",
+        "files",
+    )
+
+    # pylint: disable=too-many-positional-arguments
+    def __init__(
+        self,
+        database: str,
+        table: str,
+        name: str,
+        reason: str | None,
+        disk_name: str,
+        path: str,
+        checksum: str,
+        size: int,
+        files: list[str],
+        object_storage: bool = False,
+    ) -> None:
+        super().__init__()
+        self.database = database
+        self.table = table
+        self.name = name
+        self.reason = reason
+        self.disk_name = disk_name
+        self.object_storage = object_storage
+        self.path = path
+        self.checksum = checksum
+        self.size = size
+        self.files = files
