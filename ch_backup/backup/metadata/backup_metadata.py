@@ -14,7 +14,7 @@ from ch_backup.backup.metadata.access_control_metadata import AccessControlMetad
 from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageMetadata
 from ch_backup.backup.metadata.common import BackupStorageFormat
 from ch_backup.backup.metadata.part_metadata import PartMetadata
-from ch_backup.backup.metadata.table_metadata import TableMetadata
+from ch_backup.backup.metadata.table_metadata import DataSkippedReason, TableMetadata
 from ch_backup.clickhouse.models import Database
 from ch_backup.exceptions import InvalidBackupStruct, UnknownBackupStateError
 from ch_backup.util import now
@@ -85,6 +85,7 @@ class BackupMetadata:
         self.cloud_storage: CloudStorageMetadata = CloudStorageMetadata()
         # Location of the storage the backup was copied from (for backups created by "copy" command).
         self.copied_from: dict | None = None
+        self._skipped_data_counts = (0, 0)
 
         self._state = BackupState.CREATING
         self._exception: str | None = None
@@ -159,6 +160,11 @@ class BackupMetadata:
         meta: dict[str, Any] = {}
         if self.copied_from:
             meta["copied_from"] = self.copied_from
+        data_skipped_tables, incomplete_tables = self.count_skipped_data_tables()
+        if data_skipped_tables:
+            meta["data_skipped_tables"] = data_skipped_tables
+        if incomplete_tables:
+            meta["incomplete_tables"] = incomplete_tables
 
         return {
             "databases": databases,
@@ -334,6 +340,10 @@ class BackupMetadata:
             backup.schema_only = meta.get("schema_only", False)
             backup.encrypted = meta.get("encrypted", True)
             backup.copied_from = meta.get("copied_from")
+            backup._skipped_data_counts = (
+                meta.get("data_skipped_tables", 0),
+                meta.get("incomplete_tables", 0),
+            )
             # TODO remove after a several weeks/months, when backups rotated
             # OR NOT TODO, because of backward compatibility
             backup._user_defined_functions = data.get(
@@ -516,8 +526,8 @@ class BackupMetadata:
         """
         Drop data parts of a table and record why its data was left out.
 
-        Parts collected before a failure go as well: restore of a part of the
-        table instead of the whole of it is not what the caller asked for.
+        Parts collected before a failure go as well: after a failure that is not
+        put down to a part it is not known which of the parts are left out.
         Cloud storage disks left without parts go too, since restore creates a
         temporary disk for every disk of the backup.
         """
@@ -525,6 +535,42 @@ class BackupMetadata:
         self.remove_parts(table, table.get_parts())
         self._databases[db_name]["tables"][table_name]["data_skipped_reason"] = reason
         self.cloud_storage.retain_disks({part.disk_name for part in self.get_parts()})
+
+    def skip_part(self, db_name: str, table_name: str, part_name: str) -> None:
+        """
+        Record a data part of a table that was left out of the backup.
+        """
+        raw_table = self._databases[db_name]["tables"][table_name]
+        raw_table.setdefault("skipped_parts", []).append(part_name)
+
+    def get_skipped_data_tables(self) -> tuple[list[str], list[str]]:
+        """
+        Return names of tables left without data after a failure to back it up,
+        and of tables left without some of their parts.
+        """
+        data_skipped_tables, incomplete_tables = [], []
+        for db_name, db in self._databases.items():
+            for table_name, raw_table in db["tables"].items():
+                name = f"{db_name}.{table_name}"
+                if (
+                    raw_table.get("data_skipped_reason")
+                    == DataSkippedReason.BACKUP_FAILED
+                ):
+                    data_skipped_tables.append(name)
+                elif raw_table.get("skipped_parts"):
+                    incomplete_tables.append(name)
+        return data_skipped_tables, incomplete_tables
+
+    def count_skipped_data_tables(self) -> tuple[int, int]:
+        """
+        Return numbers of tables left without data and without some parts.
+
+        Light metadata holds no tables, so the numbers loaded with it are used.
+        """
+        if not self._databases:
+            return self._skipped_data_counts
+        data_skipped_tables, incomplete_tables = self.get_skipped_data_tables()
+        return len(data_skipped_tables), len(incomplete_tables)
 
     def remove_parts(self, table: TableMetadata, parts: list[PartMetadata]) -> None:
         """

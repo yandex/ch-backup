@@ -30,7 +30,7 @@ from ch_backup.clickhouse.schema import (
     to_attach_query,
     to_create_query,
 )
-from ch_backup.exceptions import ClickhouseBackupError
+from ch_backup.exceptions import ClickhouseBackupError, is_broken_executor
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.logic.upload_part_observer import UploadPartObserver
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
@@ -333,6 +333,7 @@ class TableBackup(BackupManager):
                         'Cannot freeze table "{}"."{}"',
                         table.database,
                         table.name,
+                        exc_info=True,
                     )
                     if not context.config["keep_going"]:
                         raise
@@ -379,24 +380,111 @@ class TableBackup(BackupManager):
         """
         Backup data of a table, scheduling the copy of its cloud storage data.
 
-        Only what is collected here is covered by keep_going. Uploads of part
-        data are awaited after the tables of the database are done, and a failed
-        one fails the backup: it is not known there what to leave out of it.
+        With keep_going, a part on a local disk that cannot be read or uploaded is
+        left out of the backup, and any other failure leaves out the data of the
+        whole table. A broken upload pool fails the backup all the same, and so
+        do a failed check of uploaded parts and a failure to delete data left out
+        after it was stored.
         """
         try:
-            self._backup_frozen_table_data(context, table, backup_name, backup_disks)
-            self._backup_cloud_storage_data(context, copy_pool, table, backup_disks)
-        except Exception:
-            if not context.config["keep_going"]:
+            uploaded_parts = self._backup_frozen_table_data(
+                context, table, backup_name, backup_disks
+            )
+        except Exception as e:
+            if not context.config["keep_going"] or is_broken_executor(e):
                 raise
-            logging.exception(
-                'Backing up data of table "{}"."{}" failed, backing up its schema only',
-                table.database,
-                table.name,
+            self._skip_failed_table_data(context, table)
+            return
+
+        if uploaded_parts is not None:
+            context.backup_layout.wait(keep_going=context.config["keep_going"])
+            self._validate_uploaded_parts(context, uploaded_parts)
+            context.ch_ctl.remove_freezed_data(backup_name, table)
+
+        try:
+            self._backup_cloud_storage_data(context, copy_pool, table, backup_disks)
+        except Exception as e:
+            if not context.config["keep_going"] or is_broken_executor(e):
+                raise
+            self._skip_failed_table_data(context, table)
+
+    @staticmethod
+    def _skip_failed_table_data(context: BackupContext, table: Table) -> None:
+        """
+        Leave data of a table out of the backup after a failure to back it up.
+
+        Uploads of the table already started are awaited first, so that none of
+        its parts is added to the backup metadata afterwards.
+        """
+        logging.error(
+            'Backing up data of table "{}"."{}" failed, backing up its schema only',
+            table.database,
+            table.name,
+            exc_info=True,
+        )
+        context.backup_layout.wait(keep_going=True)
+        TableBackup._drop_table_data(context, table)
+
+    @staticmethod
+    def _drop_table_data(context: BackupContext, table: Table) -> None:
+        """
+        Drop data of a table from the backup, deleting the parts uploaded so far.
+
+        Once out of the metadata, those parts would not be found by deletion of
+        a backup whose other parts are reused by later backups. A table dropped
+        already is left as it is.
+        """
+        uploaded_disks = {
+            disk.name for _, disk in table.paths_with_disks if disk.type != "s3"
+        }
+        table_meta = context.backup_meta.get_table(table.database, table.name)
+        if table_meta.data_skipped_reason == DataSkippedReason.BACKUP_FAILED:
+            return
+        context.backup_layout.delete_data_parts(
+            context.backup_meta,
+            [
+                part
+                for part in table_meta.get_parts()
+                if part.disk_name in uploaded_disks and not part.link
+            ],
+            is_async=False,
+        )
+        table.data_skipped_reason = DataSkippedReason.BACKUP_FAILED
+        context.backup_meta.skip_table_data(
+            table.database, table.name, DataSkippedReason.BACKUP_FAILED
+        )
+
+    @staticmethod
+    def _skip_failed_part(
+        context: BackupContext,
+        table: Table,
+        part_name: str,
+        error: BaseException,
+        uploaded: PartMetadata | None = None,
+    ) -> bool:
+        """
+        Leave a data part that cannot be read or uploaded out of the backup.
+
+        It is called while the error is handled, so the traceback is logged. An
+        upload may fail after its data is stored, so that data is deleted. A
+        broken pool or a terminating signal fails the backup, so it is ignored.
+        Return True if the part is left out.
+        """
+        if not isinstance(error, Exception) or is_broken_executor(error):
+            return False
+        logging.error(
+            'Backing up part "{}" of table "{}"."{}" failed, leaving it out',
+            part_name,
+            table.database,
+            table.name,
+            exc_info=True,
+        )
+        if uploaded:
+            context.backup_layout.delete_data_parts(
+                context.backup_meta, [uploaded], is_async=False
             )
-            context.backup_meta.skip_table_data(
-                table.database, table.name, DataSkippedReason.BACKUP_FAILED
-            )
+        context.backup_meta.skip_part(table.database, table.name, part_name)
+        return True
 
     @staticmethod
     def _backup_cloud_storage_data(
@@ -465,12 +553,13 @@ class TableBackup(BackupManager):
         except Exception:
             if not context.config["keep_going"]:
                 raise
-            logging.exception(
+            logging.error(
                 'Copying data of disk "{}" of table "{}"."{}" failed, backing up'
                 " its schema only",
                 disk.name,
                 table.database,
                 table.name,
+                exc_info=True,
             )
             table.data_skipped_reason = DataSkippedReason.BACKUP_FAILED
             return table, disk, None
@@ -489,9 +578,7 @@ class TableBackup(BackupManager):
         """
         for table, disk, source_disk in pool.as_completed(keep_going=False):
             if table.data_skipped_reason == DataSkippedReason.BACKUP_FAILED:
-                context.backup_meta.skip_table_data(
-                    table.database, table.name, DataSkippedReason.BACKUP_FAILED
-                )
+                TableBackup._drop_table_data(context, table)
                 continue
 
             context.backup_layout.upload_cloud_storage_metadata(
@@ -666,15 +753,20 @@ class TableBackup(BackupManager):
         context.ch_ctl.remove_freezed_data(backup_name, table)
         return False
 
+    # pylint: disable=too-many-statements
     def _backup_frozen_table_data(
         self,
         context: BackupContext,
         table: Table,
         backup_name: str,
         backup_disks: ClickHouseBackupDisks | None,
-    ) -> None:
+    ) -> list[PartMetadata] | None:
         """
         Backup table with data opposed to schema only.
+
+        Return the list the uploaded parts are added to as the caller awaits
+        their uploads, or None for a table that keeps no data parts. Without
+        upload workers a failed upload raises at once, after its handler ran.
         """
 
         def deduplicate_parts_in_batch(
@@ -699,16 +791,23 @@ class TableBackup(BackupManager):
                     context.ch_ctl.remove_freezed_part(frozen_parts[part_name])
                     context.backup_meta.add_part(deduplicated_parts[part_name])
                 else:
-                    context.backup_layout.upload_data_part(
-                        context.backup_meta,
-                        frozen_parts[part_name],
-                        partial(
-                            upload_observer,
-                            PartMetadata.from_frozen_part(
-                                frozen_parts[part_name], context.backup_meta.encrypted
-                            ),
-                        ),
+                    part = PartMetadata.from_frozen_part(
+                        frozen_parts[part_name], context.backup_meta.encrypted
                     )
+                    try:
+                        context.backup_layout.upload_data_part(
+                            context.backup_meta,
+                            frozen_parts[part_name],
+                            partial(upload_observer, part),
+                            on_error=(
+                                partial(skip_failed_upload, part)
+                                if skip_failed_part
+                                else None
+                            ),
+                        )
+                    except Exception:
+                        if part_name not in left_out_parts:
+                            raise
             frozen_parts.clear()
 
         def deduplicate_cloud_parts_in_batch(
@@ -764,11 +863,26 @@ class TableBackup(BackupManager):
                 table.database,
                 table.name,
             )
-            return
+            return None
 
         logging.debug('Uploading table data for "{}"."{}"', table.database, table.name)
 
         upload_observer = UploadPartObserver(context)
+        skip_failed_part = (
+            partial(TableBackup._skip_failed_part, context, table)
+            if context.config["keep_going"]
+            else None
+        )
+        left_out_parts: set[str] = set()
+
+        def skip_failed_upload(part: PartMetadata, error: BaseException) -> None:
+            """
+            Leave out a part whose upload failed, noting that it is left out.
+            """
+            if TableBackup._skip_failed_part(
+                context, table, part.name, error, uploaded=part
+            ):
+                left_out_parts.add(part.name)
 
         frozen_parts_batch: dict[str, FrozenPart] = {}
         cloud_parts_batch: dict[str, FrozenPart] = {}
@@ -780,6 +894,7 @@ class TableBackup(BackupManager):
                 data_path,
                 backup_name,
                 backup_disks is not None,
+                on_error=skip_failed_part if disk.type == "local" else None,
             ):
                 logging.debug("Working on {}", fpart)
                 if disk.type == "s3":
@@ -813,11 +928,7 @@ class TableBackup(BackupManager):
         if cloud_parts_batch:
             deduplicate_cloud_parts_in_batch(context, cloud_parts_batch)
 
-        context.backup_layout.wait()
-
-        self._validate_uploaded_parts(context, upload_observer.uploaded_parts)
-
-        context.ch_ctl.remove_freezed_data(backup_name, table)
+        return upload_observer.uploaded_parts
 
     @staticmethod
     def _validate_uploaded_parts(context: BackupContext, uploaded_parts: list) -> None:

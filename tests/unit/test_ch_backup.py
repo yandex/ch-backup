@@ -3,6 +3,7 @@ ClickhouseBackup unit tests.
 """
 
 from collections import defaultdict
+from datetime import timedelta
 from typing import Callable, Sequence, cast
 from unittest.mock import MagicMock, Mock, patch
 
@@ -17,7 +18,6 @@ from ch_backup.backup.metadata import (
     PartMetadata,
     TableMetadata,
 )
-from ch_backup.backup.metadata.table_metadata import DataSkippedReason
 from ch_backup.backup.sources import BackupSources
 from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.clickhouse.client import ClickhouseError
@@ -29,6 +29,7 @@ from ch_backup.exceptions import (
     InvalidBackupStruct,
     StorageError,
 )
+from ch_backup.util import now
 
 
 def _restore_backup_with_cloud_storage(
@@ -43,6 +44,7 @@ def _restore_backup_with_cloud_storage(
         data_copied=data_copied, disks=["s3"]
     )
     backup_meta.get_databases.return_value = []
+    backup_meta.get_skipped_data_tables.return_value = ([], [])
 
     sources = BackupSources.for_restore(False, False, False, False, False, False, False)
     assert sources.data
@@ -345,6 +347,7 @@ def test_delete_failure_persists_failed_state(referenced: bool) -> None:
     full_metadata.name = "old"
     full_metadata.get_databases.return_value = []
     full_metadata.cloud_storage.enabled = False
+    full_metadata.count_skipped_data_tables.return_value = (0, 0)
     context.backup_layout.get_backup.return_value = (
         full_metadata if referenced else None
     )
@@ -382,6 +385,7 @@ def test_referenced_delete_persists_partial_state() -> None:
     full_metadata.exception = "Previous deletion failed"
     full_metadata.get_databases.return_value = []
     full_metadata.cloud_storage.enabled = False
+    full_metadata.count_skipped_data_tables.return_value = (0, 0)
     full_metadata.cloud_storage.source = None
     full_metadata.copied_from = None
     context.backup_layout.get_backup.return_value = full_metadata
@@ -404,6 +408,82 @@ def _readable_backup(name: str, link: str | None = None) -> Mock:
     meta.get_databases.return_value = ["db"]
     meta.get_tables.return_value = [Mock(get_parts=Mock(return_value=[part]))]
     return meta
+
+
+def _light_backup(name: str, age_days: int, incomplete: bool = False) -> Mock:
+    """Mock light metadata of a created backup started age_days ago."""
+    meta = Mock(state=BackupState.CREATED, start_time=now() - timedelta(days=age_days))
+    meta.name = name
+    meta.count_skipped_data_tables.return_value = (0, 1) if incomplete else (0, 0)
+    return meta
+
+
+def _purge(backups: list[Mock], retain_count: int, retain_time: dict) -> list[str]:
+    """Helper: purge backups listed newest first and return the deleted ones."""
+    backup, context = _backup_with_context()
+    context.locker = MagicMock()
+    context.config = {"retain_time": retain_time, "retain_count": retain_count}
+    context.backup_layout.get_backups.return_value = backups
+    with (
+        patch(
+            "ch_backup.ch_backup.collect_dedup_references_for_batch_backup_deletion",
+            return_value=defaultdict(dict),
+        ),
+        patch.object(
+            ClickhouseBackup,
+            "_delete",
+            side_effect=lambda meta, _refs: (meta.name, None),
+        ),
+    ):
+        deleted, _ = backup.purge()
+    return list(deleted)
+
+
+def test_newest_complete_backup_outlives_retain_count() -> None:
+    """The last copy of data the newer backups lack must survive purge."""
+    backups = [
+        _light_backup("incomplete", 0, incomplete=True),
+        _light_backup("complete", 1),
+        _light_backup("older", 2),
+    ]
+
+    assert _purge(backups, retain_count=1, retain_time={}) == ["older"]
+
+
+def test_newest_complete_backup_outlives_retain_time() -> None:
+    """Data the newer backups lack must survive purge by age as well."""
+    backups = [
+        _light_backup("incomplete", 0, incomplete=True),
+        _light_backup("complete", 5),
+        _light_backup("older", 6),
+    ]
+
+    assert _purge(backups, retain_count=0, retain_time={"days": 1}) == ["older"]
+
+
+def test_deleted_incomplete_backup_does_not_keep_a_complete_one() -> None:
+    """Only data the retained backups lack is a reason to keep more."""
+    backups = [
+        _light_backup("complete", 8),
+        _light_backup("incomplete", 9, incomplete=True),
+        _light_backup("older", 10),
+    ]
+
+    assert _purge(backups, retain_count=0, retain_time={"days": 7}) == [
+        "complete",
+        "incomplete",
+        "older",
+    ]
+
+
+def test_purge_by_age_keeps_nothing_old_without_incomplete_backups() -> None:
+    """Without incomplete backups purge by age is unchanged."""
+    backups = [_light_backup("complete", 5), _light_backup("older", 6)]
+
+    assert _purge(backups, retain_count=0, retain_time={"days": 1}) == [
+        "complete",
+        "older",
+    ]
 
 
 def test_delete_fails_on_unreadable_metadata_of_another_backup() -> None:
@@ -701,24 +781,20 @@ def test_restore_keeps_stored_endpoint_scheme(
 
 
 def test_tables_left_without_data_are_reported() -> None:
-    """The caller must learn that the backup holds no data for some tables."""
+    """The caller must learn that the backup holds incomplete data of tables."""
     backup, context = _backup_with_context()
-    context.backup_meta.get_tables.return_value = [
-        TableMetadata("db", "intact", "MergeTree", None),
-        TableMetadata(
-            "db", "broken", "MergeTree", None, DataSkippedReason.BACKUP_FAILED
-        ),
-    ]
+    context.backup_meta.count_skipped_data_tables.return_value = (1, 2)
 
     message = backup._skipped_data_message()  # pylint: disable=protected-access
 
     assert message is not None
-    assert "db.broken" in message
-    assert "db.intact" not in message
+    assert "1 tables without data" in message
+    assert "2 tables without some data parts" in message
 
 
 def test_nothing_is_reported_when_all_data_is_backed_up() -> None:
     """A complete backup must not print anything about skipped data."""
-    backup, _ = _backup_with_context()
+    backup, context = _backup_with_context()
+    context.backup_meta.count_skipped_data_tables.return_value = (0, 0)
 
     assert backup._skipped_data_message() is None  # pylint: disable=protected-access

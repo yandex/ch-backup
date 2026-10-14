@@ -57,8 +57,9 @@ DEFAULT_CONFIG = {
             "minutes": 0,
         },
         "time_format": "%Y-%m-%d %H:%M:%S.%f %z",
-        # Back up the schema of a table whose data cannot be collected, instead
-        # of failing the whole backup. Uploads of part data are not covered.
+        # Leave out a data part, or the data of a table, that cannot be backed
+        # up, instead of failing the whole backup. Such a backup is created, and
+        # list shows how many tables are left without data or some parts.
         "keep_going": False,
         # Retain policy for the purge command that sets the maximum age of
         # backups to keep.

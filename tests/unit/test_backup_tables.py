@@ -3,8 +3,10 @@
 import copy
 import os
 import threading
+from concurrent.futures.process import BrokenProcessPool
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
+from typing import Callable, Sequence
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
@@ -16,7 +18,7 @@ from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseDisksException
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.config import DEFAULT_CONFIG
-from ch_backup.exceptions import ClickhouseBackupError
+from ch_backup.exceptions import ClickhouseBackupError, StorageError, TerminatingSignal
 from ch_backup.logic.table import TableBackup, TableMetadataChangeTime
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 
@@ -319,10 +321,13 @@ class TestValidateUploadedParts:
         )
 
     def _make_context(
-        self, validate: bool, check_returns: bool
+        self, validate: bool, check_returns: bool, keep_going: bool = False
     ) -> tuple[BackupContext, MagicMock]:
         context = Mock(spec=BackupContext)
-        context.config = {"validate_part_after_upload": validate}
+        context.config = {
+            "validate_part_after_upload": validate,
+            "keep_going": keep_going,
+        }
         context.backup_meta = MagicMock()
         context.backup_meta.name = self._BACKUP_NAME
         check_data_part_mock = MagicMock(return_value=check_returns)
@@ -339,6 +344,21 @@ class TestValidateUploadedParts:
         TableBackup._validate_uploaded_parts(context, [part])
 
         check_mock.assert_not_called()
+
+    def test_broken_part_fails_the_backup_even_when_keeping_going(self):
+        """
+        A failed check may come from storage being unavailable, so a part that
+        may be intact is not deleted on it.
+        """
+        part = self._make_part("all_1_1_0")
+        context, _ = self._make_context(
+            validate=True, check_returns=False, keep_going=True
+        )
+
+        with pytest.raises(RuntimeError):
+            TableBackup._validate_uploaded_parts(context, [part])
+
+        context.backup_layout.delete_data_parts.assert_not_called()  # type: ignore[attr-defined]
 
     def test_validate_calls_check_with_backup_name(self):
         """check_data_part must receive the backup *name* (not a path)."""
@@ -631,6 +651,38 @@ class TestBackupCloudStorageData:
         context.backup_meta.skip_table_data.assert_called_once_with(  # type: ignore[attr-defined]
             table.database, table.name, DataSkippedReason.BACKUP_FAILED
         )
+        layout.delete_data_parts.assert_called_once()
+
+    def test_failed_scheduling_drops_copies_already_submitted(self):
+        """
+        A disk whose copy was submitted before scheduling failed on another disk
+        must not be claimed by the backup, which has no data of the table.
+        """
+        disk = Disk("s3", "/var/lib/clickhouse/disks/s3/", "s3")
+        broken_disk = Disk("s3_broken", "/var/lib/clickhouse/disks/s3_broken/", "s3")
+        context, layout, cloud_storage = self._make_context(keep_going=True)
+
+        def has_frozen_data(_meta, checked_disk, _table):
+            """Report frozen data on every disk, failing to read the broken one."""
+            if checked_disk is broken_disk:
+                raise OSError("Input/output error")
+            return True
+
+        layout.has_frozen_cloud_storage_data.side_effect = has_frozen_data
+        table = self._make_table([disk, broken_disk])
+
+        with (
+            ThreadExecPool(1) as pool,
+            patch.object(TableBackup, "_backup_frozen_table_data", return_value=None),
+        ):
+            TableBackup()._backup_table_data(
+                context, table, "backup1", MagicMock(), pool
+            )
+            TableBackup._upload_cloud_storage_metadata(context, pool)
+
+        assert table.data_skipped_reason == DataSkippedReason.BACKUP_FAILED
+        layout.upload_cloud_storage_metadata.assert_not_called()
+        cloud_storage.add_disk.assert_not_called()
 
     def test_local_disks_are_skipped(self):
         """
@@ -860,7 +912,7 @@ class TestCloudStorageDeduplication:
 
         Returns the backup disks and the deduplication call.
         """
-        context.ch_ctl.scan_frozen_parts.side_effect = lambda _table, disk, *_: [  # type: ignore[attr-defined]
+        context.ch_ctl.scan_frozen_parts.side_effect = lambda _table, disk, *_, **__: [  # type: ignore[attr-defined]
             part for part in frozen_parts if part.disk_name == disk.name
         ]
         backup_disks = Mock() if context.backup_meta.cloud_storage.data_copied else None
@@ -1112,10 +1164,39 @@ class TestUniqueKeyTables:
         )
 
 
+def _upload_part(fail: bool) -> None:
+    """Helper: stand for the upload of a data part, failing it if asked."""
+    if fail:
+        raise OSError("Input/output error")
+
+
+def _upload_parts_on_pool(
+    layout: MagicMock, pool: ThreadExecPool, failing: Sequence[str]
+) -> None:
+    """
+    Helper: run uploads of data parts on a pool awaited by wait() of the layout.
+
+    An upload of a part named in failing fails.
+    """
+
+    def upload(_meta, fpart, callback, on_error=None):
+        """Submit the upload of a part to the pool."""
+        pool.submit(
+            fpart.name,
+            _upload_part,
+            fpart.name in failing,
+            callback=callback,
+            on_error=on_error,
+        )
+
+    layout.upload_data_part.side_effect = upload
+    layout.wait.side_effect = pool.wait_all
+
+
 class TestKeepGoing:
     """
-    Tests that a table whose data cannot be read is backed up without data when
-    keeping going, instead of failing the whole backup.
+    Tests that a part or a table whose data cannot be backed up is left out of
+    the backup when keeping going, instead of failing the whole backup.
     """
 
     _TABLE = "table1"
@@ -1139,30 +1220,63 @@ class TestKeepGoing:
         )
 
     @classmethod
-    def _part(cls, table_name: str, disk_name: str) -> PartMetadata:
+    def _part(
+        cls,
+        table_name: str,
+        disk_name: str,
+        name: str = "all_1_1_0",
+        link: str | None = None,
+    ) -> PartMetadata:
+        """Helper: build metadata of a part of the given table and disk."""
         return PartMetadata(
             database="db1",
             table=table_name,
-            name="all_1_1_0",
+            name=name,
             checksum="checksum",
             size=1024,
             files=["checksums.txt"],
             tarball=True,
             disk_name=disk_name,
+            link=link,
+        )
+
+    @classmethod
+    def _frozen_part(cls, name: str) -> FrozenPart:
+        """Helper: build a frozen part of the table on the local disk."""
+        return FrozenPart(
+            "db1",
+            cls._TABLE,
+            name,
+            cls._DISK.name,
+            f"/var/lib/clickhouse/shadow/{BACKUP_NAME}/data/db1/{cls._TABLE}/{name}",
+            "checksum",
+            1024,
+            ["checksums.txt"],
         )
 
     @classmethod
     def _backup(
-        cls, keep_going: bool, freeze_error: Exception | None = None
+        cls,
+        keep_going: bool,
+        freeze_error: Exception | None = None,
+        scan: object = None,
+        failing_uploads: Sequence[str] = (),
+        upload: object = None,
     ) -> BackupContext:
-        """Helper: back up a table whose frozen data cannot be read."""
+        """
+        Helper: back up a table, by default one whose frozen data cannot be read.
+
+        Uploads run on a pool awaited by wait(), and those of failing_uploads
+        fail there, unless upload replaces the upload of a part.
+        """
         context = _make_backup_context()
         context.config["keep_going"] = keep_going
+        context.config["deduplication_batch_size"] = 1
         context.ch_ctl.get_tables.return_value = [cls._table()]  # type: ignore[attr-defined]
         context.ch_ctl.freeze_table.side_effect = freeze_error  # type: ignore[attr-defined]
-        context.ch_ctl.scan_frozen_parts.side_effect = cls._READ_ERROR  # type: ignore[attr-defined]
-
+        context.ch_ctl.scan_frozen_parts.side_effect = scan or cls._READ_ERROR  # type: ignore[attr-defined]
         with (
+            ThreadExecPool(1) as pool,
             patch.object(
                 TableBackup, "_get_change_time", return_value=_METADATA_UNCHANGED
             ),
@@ -1171,7 +1285,11 @@ class TestKeepGoing:
                 "_load_create_statement_from_disk",
                 return_value=cls._STATEMENT,
             ),
+            patch("ch_backup.logic.table.deduplicate_parts", return_value={}),
         ):
+            _upload_parts_on_pool(context.backup_layout, pool, failing_uploads)  # type: ignore[arg-type]
+            if upload:
+                context.backup_layout.upload_data_part.side_effect = upload  # type: ignore[attr-defined]
             TableBackup().backup(
                 context,
                 [DATABASE],
@@ -1210,10 +1328,259 @@ class TestKeepGoing:
             (self._TABLE, self._STATEMENT)
         ]
 
+    def test_part_that_fails_to_upload_is_left_out(self) -> None:
+        """The other parts of the table stay in the backup."""
+        context = self._backup(
+            keep_going=True,
+            scan=lambda *_, **__: [
+                self._frozen_part("all_1_1_0"),
+                self._frozen_part("all_2_2_0"),
+            ],
+            failing_uploads=["all_2_2_0"],
+        )
+
+        table_meta = context.backup_meta.get_tables("db1")[0]
+        assert table_meta.data_skipped_reason is None
+        assert [part.name for part in table_meta.get_parts()] == ["all_1_1_0"]
+        assert context.backup_meta.get_skipped_data_tables() == (
+            [],
+            [f"db1.{self._TABLE}"],
+        )
+        raw_table = context.backup_meta.dump()["databases"]["db1"]["tables"]
+        assert raw_table[self._TABLE]["skipped_parts"] == ["all_2_2_0"]
+        deleted = context.backup_layout.delete_data_parts.call_args  # type: ignore[attr-defined]
+        assert [part.name for part in deleted.args[1]] == ["all_2_2_0"]
+        assert deleted.kwargs == {"is_async": False}
+
+    def test_failed_deletion_of_a_skipped_part_fails_the_backup(self) -> None:
+        """Data left out must not be left in storage unnoticed."""
+        context = _make_backup_context()
+        context.backup_layout.delete_data_parts.side_effect = StorageError("denied")  # type: ignore[attr-defined]
+        part = PartMetadata.from_frozen_part(self._frozen_part("all_1_1_0"), True)
+
+        with pytest.raises(StorageError):
+            try:
+                raise OSError("Input/output error")
+            except OSError as e:
+                TableBackup._skip_failed_part(  # pylint: disable=protected-access
+                    context, self._table(), part.name, e, uploaded=part
+                )
+
+    @pytest.mark.parametrize(
+        "error",
+        [BrokenProcessPool("worker died"), TerminatingSignal()],
+        ids=["broken-pool", "terminating-signal"],
+    )
+    def test_fatal_errors_are_not_recorded_as_skipped_parts(
+        self, error: BaseException
+    ) -> None:
+        """The backup fails on them, so nothing is left out on purpose."""
+        context = _make_backup_context()
+        context.backup_meta.add_table(
+            TableMetadata("db1", self._TABLE, "MergeTree", UUID)
+        )
+
+        TableBackup._skip_failed_part(  # pylint: disable=protected-access
+            context, self._table(), "all_1_1_0", error
+        )
+
+        assert context.backup_meta.count_skipped_data_tables() == (0, 0)
+        context.backup_layout.delete_data_parts.assert_not_called()  # type: ignore[attr-defined]
+
+    @classmethod
+    def _two_parts(cls, *_: object, **__: object) -> list[FrozenPart]:
+        """Helper: scan two parts of the table."""
+        return [cls._frozen_part("all_1_1_0"), cls._frozen_part("all_2_2_0")]
+
+    @staticmethod
+    def _upload_failing_at_once(
+        error: Exception, call_handler: bool = True
+    ) -> Callable[..., None]:
+        """
+        Helper: make the upload of the broken part fail at once, as it does
+        without upload workers.
+        """
+
+        def upload(_meta, fpart, callback, on_error=None):
+            """Upload a part, failing on the broken one before returning."""
+            if fpart.name != "all_2_2_0":
+                callback()
+                return
+            try:
+                raise error
+            except Exception as e:
+                if on_error and call_handler:
+                    on_error(e)
+                raise StorageError("Failed to create async upload") from e
+
+        return upload
+
+    def test_failed_upload_without_workers_leaves_out_the_part_only(self) -> None:
+        """Without upload workers a failed upload raises at once."""
+        context = self._backup(
+            keep_going=True,
+            scan=self._two_parts,
+            upload=self._upload_failing_at_once(OSError("Input/output error")),
+        )
+
+        table_meta = context.backup_meta.get_tables("db1")[0]
+        assert table_meta.data_skipped_reason is None
+        assert [part.name for part in table_meta.get_parts()] == ["all_1_1_0"]
+
+    def test_broken_upload_pool_fails_the_backup_when_keeping_going(self) -> None:
+        """Every table after it would be left without data otherwise."""
+        with pytest.raises(StorageError):
+            self._backup(
+                keep_going=True,
+                scan=self._two_parts,
+                upload=self._upload_failing_at_once(BrokenProcessPool("died")),
+            )
+
+    def test_upload_error_not_taken_by_the_handler_is_not_ignored(self) -> None:
+        """
+        A part neither uploaded nor recorded as left out would make the backup
+        look complete without it.
+        """
+        context = self._backup(
+            keep_going=True,
+            scan=self._two_parts,
+            upload=self._upload_failing_at_once(
+                OSError("Input/output error"), call_handler=False
+            ),
+        )
+
+        table_meta = context.backup_meta.get_tables("db1")[0]
+        assert table_meta.data_skipped_reason == DataSkippedReason.BACKUP_FAILED
+
+    def test_dropped_table_data_is_deleted_from_every_uploaded_disk(self) -> None:
+        """
+        Parts of disks other than s3 go through upload, so all of them are
+        deleted; a deduplicated part belongs to another backup and is kept.
+        """
+        encrypted_disk = Disk(
+            "encrypted", "/var/lib/clickhouse/disks/enc/", "Encrypted"
+        )
+        s3_disk = Disk("s3", "/var/lib/clickhouse/disks/s3/", "s3")
+        table = Table(
+            "db1",
+            self._TABLE,
+            "MergeTree",
+            [encrypted_disk, s3_disk, self._DISK],
+            [
+                "/var/lib/clickhouse/disks/enc/store/abc/abcdef",
+                "/var/lib/clickhouse/disks/s3/store/abc/abcdef",
+                f"/var/lib/clickhouse/data/db1/{self._TABLE}",
+            ],
+            "",
+            "",
+            UUID,
+        )
+        context = _make_backup_context()
+        context.backup_meta.add_table(
+            TableMetadata("db1", self._TABLE, "MergeTree", UUID)
+        )
+        for name, disk_name, link in [
+            ("all_1_1_0", self._DISK.name, None),
+            ("all_2_2_0", encrypted_disk.name, None),
+            ("all_3_3_0", s3_disk.name, None),
+            ("all_4_4_0", self._DISK.name, "20181016T210300"),
+        ]:
+            context.backup_meta.add_part(self._part(self._TABLE, disk_name, name, link))
+
+        TableBackup._drop_table_data(context, table)  # pylint: disable=protected-access
+
+        deleted = context.backup_layout.delete_data_parts.call_args  # type: ignore[attr-defined]
+        assert sorted(part.name for part in deleted.args[1]) == [
+            "all_1_1_0",
+            "all_2_2_0",
+        ]
+        assert deleted.kwargs == {"is_async": False}
+        assert not context.backup_meta.get_tables("db1")[0].get_parts()
+
+    def test_failed_upload_fails_the_backup_by_default(self) -> None:
+        """Without keep_going a broken part is not silently left out."""
+        with pytest.raises(OSError):
+            self._backup(
+                keep_going=False,
+                scan=lambda *_, **__: [self._frozen_part("all_1_1_0")],
+                failing_uploads=["all_1_1_0"],
+            )
+
+    def test_uploads_are_awaited_before_the_table_is_skipped(self) -> None:
+        """
+        A part uploaded before the failure must not be added to the table after
+        it is skipped, and its uploaded data must not be left in storage.
+        """
+
+        def scan(*_, **__):
+            """Yield one part, then fail to read the rest of the table."""
+            yield self._frozen_part("all_1_1_0")
+            raise self._READ_ERROR
+
+        context = self._backup(keep_going=True, scan=scan)
+
+        table_meta = context.backup_meta.get_tables("db1")[0]
+        assert table_meta.data_skipped_reason == DataSkippedReason.BACKUP_FAILED
+        assert not table_meta.get_parts()
+        deleted = context.backup_layout.delete_data_parts.call_args.args[1]  # type: ignore[attr-defined]
+        assert [part.name for part in deleted] == ["all_1_1_0"]
+
+    def test_unreadable_parts_are_left_out_on_local_disks_only(self) -> None:
+        """Data of a cloud storage disk is copied whole, so it is not split."""
+        s3_disk = Disk("s3", "/var/lib/clickhouse/disks/s3/", "s3")
+        table = Table(
+            "db1",
+            self._TABLE,
+            "MergeTree",
+            [s3_disk, self._DISK],
+            [
+                f"/var/lib/clickhouse/data/db1/{self._TABLE}",
+                "/var/lib/clickhouse/disks/s3/store/abc/abcdef",
+            ],
+            "",
+            "",
+            UUID,
+        )
+        context = _make_backup_context()
+        context.config["keep_going"] = True
+        context.ch_ctl.scan_frozen_parts.return_value = []  # type: ignore[attr-defined]
+
+        TableBackup()._backup_frozen_table_data(  # pylint: disable=protected-access
+            context, table, BACKUP_NAME, None
+        )
+
+        handlers = {
+            scan.args[1].name: scan.kwargs["on_error"]
+            for scan in context.ch_ctl.scan_frozen_parts.call_args_list  # type: ignore[attr-defined]
+        }
+        assert handlers[self._DISK.name] is not None
+        assert handlers[s3_disk.name] is None
+
+    def test_skipped_data_counts_are_kept_in_light_metadata(self) -> None:
+        """Purge and list read light metadata only."""
+        context = _make_backup_context()
+        context.backup_meta.time_format = DEFAULT_CONFIG["backup"]["time_format"]  # type: ignore[index]
+        context.backup_meta.add_table(
+            TableMetadata("db1", self._TABLE, "MergeTree", UUID)
+        )
+        meta = context.backup_meta.dump(light=True)["meta"]
+        assert "data_skipped_tables" not in meta
+        assert "incomplete_tables" not in meta
+
+        context.backup_meta.skip_part("db1", self._TABLE, "all_1_1_0")
+        light = BackupMetadata.load_json(context.backup_meta.dump_json(light=True))
+        assert light.count_skipped_data_tables() == (0, 1)
+
+        context.backup_meta.skip_table_data(
+            "db1", self._TABLE, DataSkippedReason.BACKUP_FAILED
+        )
+        light = BackupMetadata.load_json(context.backup_meta.dump_json(light=True))
+        assert light.count_skipped_data_tables() == (1, 0)
+
     def test_parts_collected_before_the_failure_are_dropped(self) -> None:
         """
-        Restoring a part of the table instead of the whole of it is not what the
-        caller asked for.
+        After a failure that is not put down to a part it is not known which of
+        the parts are left out.
         """
         context = _make_backup_context()
         context.backup_meta.add_table(

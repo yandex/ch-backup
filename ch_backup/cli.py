@@ -251,6 +251,7 @@ def list_command(
 
     records = []
     for backup in backups:
+        data_skipped_tables, incomplete_tables = backup.count_skipped_data_tables()
         record: dict = OrderedDict(
             (
                 ("name", backup.name),
@@ -260,6 +261,8 @@ def list_command(
                 ("size", backup.size),
                 ("real_size", backup.real_size),
                 ("ch_version", backup.ch_version),
+                ("data_skipped_tables", data_skipped_tables),
+                ("incomplete_tables", incomplete_tables),
             )
         )
         if format_ == "json":
@@ -276,7 +279,16 @@ def list_command(
 
     for name, error in sorted(unreadable.items()):
         record = dict.fromkeys(
-            ("start_time", "end_time", "size", "real_size", "ch_version", "labels")
+            (
+                "start_time",
+                "end_time",
+                "size",
+                "real_size",
+                "ch_version",
+                "data_skipped_tables",
+                "incomplete_tables",
+                "labels",
+            )
         )
         record = {"name": name, "state": "unknown", **record}
         if format_ == "json":
@@ -441,8 +453,8 @@ def show_command(
     option(
         "--keep-going",
         is_flag=True,
-        help="Back up the schema of a table whose data cannot be collected, "
-        "instead of failing the whole backup. Overrides backup.keep_going.",
+        help="Leave out a data part, or the data of a table, that cannot be "
+        "backed up, instead of failing the whole backup. Overrides backup.keep_going.",
     ),
 )
 @constraint(mutually_exclusive, ["schema_only", "access"])

@@ -1,3 +1,5 @@
+from pathlib import Path
+from typing import Callable
 from unittest import mock
 
 import pytest
@@ -217,3 +219,46 @@ class TestCreateTable:
         ch_ctl.create_table(self._table(statement))
 
         client.query.assert_called_once_with(statement, settings=settings)
+
+
+class TestScanFrozenParts:
+    """
+    Tests for ClickhouseCTL.scan_frozen_parts.
+    """
+
+    _BACKUP_NAME = "backup1"
+
+    @classmethod
+    def _scan(
+        cls, root: Path, on_error: Callable[[str, Exception], None] | None = None
+    ) -> list[str]:
+        """Helper: scan a shadow directory with a readable and a broken part."""
+        disk = Disk("default", f"{root}/", "Local")
+        shadow = root / "shadow" / cls._BACKUP_NAME / "data" / "db1" / "table1"
+        (shadow / "all_1_1_0").mkdir(parents=True)
+        (shadow / "all_1_1_0" / "checksums.txt").write_bytes(b"checksums")
+        (shadow / "all_2_2_0").mkdir()
+        table = Table("db1", "table1", "MergeTree", [disk], [], "", "", None)
+
+        parts = ClickhouseCTL.scan_frozen_parts(
+            table,
+            disk,
+            str(root / "data" / "db1" / "table1"),
+            cls._BACKUP_NAME,
+            on_error=on_error,
+        )
+        return [part.name for part in parts]
+
+    def test_unreadable_part_fails_the_scan_by_default(self, tmp_path: Path) -> None:
+        """Without a handler a broken part is not silently left out."""
+        with pytest.raises(FileNotFoundError):
+            self._scan(tmp_path)
+
+    def test_unreadable_part_is_passed_to_the_handler(self, tmp_path: Path) -> None:
+        """With a handler the remaining parts are still scanned."""
+        errors: list[str] = []
+
+        names = self._scan(tmp_path, on_error=lambda name, _e: errors.append(name))
+
+        assert names == ["all_1_1_0"]
+        assert errors == ["all_2_2_0"]
