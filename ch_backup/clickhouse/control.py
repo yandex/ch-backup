@@ -1321,6 +1321,7 @@ class ClickhouseCTL:
         data_path: str,
         backup_name: str,
         copy_data: bool = False,
+        fail_on_unparsable_metadata: bool = False,
     ) -> Iterable[FrozenPart]:
         """
         Yield frozen parts from specific disk and path.
@@ -1338,7 +1339,7 @@ class ClickhouseCTL:
             rel_paths = list_dir_files(part_path)
             if disk.keeps_object_metadata:
                 checksum, objects_size = _get_cloud_part_checksum_and_size(
-                    part_path, rel_paths
+                    part_path, rel_paths, fail_on_unparsable_metadata
                 )
             else:
                 checksum, objects_size = _get_part_checksum(part_path), 0
@@ -1724,7 +1725,7 @@ def _get_part_checksum(part_path: str) -> str:
 
 
 def _get_cloud_part_checksum_and_size(
-    part_path: str, rel_paths: Sequence[str]
+    part_path: str, rel_paths: Sequence[str], fail_on_unparsable: bool = False
 ) -> tuple[str, int]:
     """
     Calculate checksum and size of a part stored on an object storage disk.
@@ -1736,16 +1737,38 @@ def _get_cloud_part_checksum_and_size(
 
     The size is that of the objects: what a copy of the part weighs in the
     backup, unlike its metadata.
+
+    Metadata that cannot be parsed leaves the part described by its files, as
+    it was before the keys were read: such a checksum changes on every freeze,
+    so the part is never deduplicated. With fail_on_unparsable such metadata
+    fails the backup instead. An unreadable file is left to fail.
     """
     checksum = md5()  # nosec
     size = 0
-    for rel_path in sorted(rel_paths):
-        if rel_path in CLOUD_STORAGE_EXCLUDE_FILE_NAMES:
-            continue
-        checksum.update(rel_path.encode())
-        for object_key, object_size in _read_objects(os.path.join(part_path, rel_path)):
-            checksum.update(object_key.encode())
-            size += object_size
+    try:
+        for rel_path in sorted(rel_paths):
+            if rel_path in CLOUD_STORAGE_EXCLUDE_FILE_NAMES:
+                continue
+            checksum.update(rel_path.encode())
+            for object_key, object_size in _read_objects(
+                os.path.join(part_path, rel_path)
+            ):
+                checksum.update(object_key.encode())
+                size += object_size
+    except (ClickhouseBackupError, ValueError):
+        if fail_on_unparsable:
+            raise
+        logging.warning(
+            "Failed to parse object storage metadata of part {}, describing it by"
+            " its metadata files",
+            part_path,
+            exc_info=True,
+        )
+        abs_paths = [Path(part_path) / rel_path for rel_path in rel_paths]
+        return (
+            _get_part_checksum(part_path),
+            calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE),
+        )
 
     return checksum.hexdigest(), size
 
