@@ -26,9 +26,11 @@ from ch_backup.backup.metadata import (
     TableMetadata,
     sanitize_backup_name,
 )
+from ch_backup.backup.replica_layout import SOURCE_SETTINGS, ReplicaLayout
 from ch_backup.backup.sources import BackupSources
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.client import ClickhouseError
+from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner, select_replica_drop
 from ch_backup.clickhouse.models import Database, Table
 from ch_backup.config import Config
@@ -387,6 +389,40 @@ class ClickhouseBackup:
                 keep_going=keep_going,
                 restore_tables_in_replicated_database=restore_tables_in_replicated_database,
             )
+
+    def restore_from_replica(
+        self,
+        source_host: str,
+        sources: BackupSources,
+        replica_name: str | None = None,
+    ) -> None:
+        """
+        Restore from a live replica of the shard instead of a backup.
+        """
+        source_ctl = ClickhouseCTL(
+            {
+                **self._context.ch_ctl_conf,
+                "host": source_host,
+                "settings": SOURCE_SETTINGS,
+            },
+            self._context.main_conf,
+            self._context.config,
+        )
+        self._context.backup_layout = ReplicaLayout(
+            self._context.config_root,
+            self._context.ch_ctl,
+            source_ctl,
+            sources,
+            replica_name,
+        )
+        self.restore(
+            sources=sources,
+            backup_name=source_host,
+            databases=[],
+            exclude_databases=[],
+            replica_name=replica_name,
+            clean_zookeeper_mode=CleanZooKeeperMode.REPLICA_ONLY,
+        )
 
     def _check_zookeeper_for_restore(
         self,

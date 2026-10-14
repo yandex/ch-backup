@@ -498,6 +498,29 @@ GET_NAMED_COLLECTIONS_QUERY_SQL = strip_query(
 """
 )
 
+GET_SQL_NAMED_COLLECTIONS_CREATE_QUERY_SQL = strip_query(
+    "SELECT name, create_query FROM system.named_collections WHERE source = 'SQL' FORMAT JSON"
+)
+GET_ACCESS_STORAGE_TYPES_SQL = strip_query(
+    "SELECT DISTINCT type FROM system.user_directories FORMAT JSON"
+)
+GET_LOCAL_ACCESS_ENTITIES_SQL = strip_query(
+    """
+    SELECT {columns} FROM system.{table}
+    WHERE storage IN (SELECT name FROM system.user_directories WHERE type = 'local_directory')
+    FORMAT JSON
+"""
+)
+SHOW_CREATE_ACCESS_ENTITY_SQL = strip_query("SHOW CREATE {type} {name} FORMAT TSVRaw")
+SHOW_GRANTS_SQL = strip_query("SHOW GRANTS FOR {name} FORMAT TSVRaw")
+DROP_ACCESS_ENTITY_SQL = strip_query("DROP {type} IF EXISTS {name}")
+ACCESS_ENTITY_TABLES = {
+    "ROLE": "roles",
+    "SETTINGS PROFILE": "settings_profiles",
+    "USER": "users",
+    "QUOTA": "quotas",
+}
+
 GET_WORKLOAD_ENTITIES_QUERY_SQL = strip_query(
     f"""
     SELECT name, type FROM (
@@ -1024,6 +1047,87 @@ class ClickhouseCTL:
         """
         self._ch_client.query(nc_statement, sensitive=True)
 
+    def restore_access_entity(self, statement: str) -> None:
+        """
+        Run an access statement without retries.
+        """
+        self._ch_client.query(statement, sensitive=True, should_retry=False)
+
+    def get_local_access_statements(self) -> list[str]:
+        """
+        Return statements recreating local access entities. Roles and profiles refer to each
+        other and to users, so they are created bare and altered after users. ClickHouse
+        creates a user before it resolves GRANTEES and then fails on a grantee created later,
+        so users are created with IF NOT EXISTS to let the retry pass and are altered after
+        all are created. Grants go last.
+        """
+        entities = self._get_local_access_entities()
+        mutual = [(t, n) for t in ("ROLE", "SETTINGS PROFILE") for n in entities[t]]
+        users = [self._show_create_access_entity("USER", n) for n in entities["USER"]]
+        statements = [f"CREATE {t} {n}" for t, n in mutual]
+        statements += [
+            re.sub("^CREATE USER", "CREATE USER IF NOT EXISTS", s) for s in users
+        ]
+        statements += [
+            re.sub("^CREATE", "ALTER", self._show_create_access_entity(t, n))
+            for t, n in mutual
+        ]
+        statements += [re.sub("^CREATE", "ALTER", s) for s in users]
+        statements += [
+            self._show_create_access_entity(t, n)
+            for t in ("QUOTA", "ROW POLICY")
+            for n in entities[t]
+        ]
+        for name in entities["ROLE"] + entities["USER"]:
+            grants = self._ch_client.query(SHOW_GRANTS_SQL.format(name=name))
+            statements += grants.splitlines()
+        return statements
+
+    def drop_local_access_entities(self) -> None:
+        """
+        Drop local access entities.
+        """
+        for entity_type, names in self._get_local_access_entities().items():
+            for name in names:
+                self._ch_client.query(
+                    DROP_ACCESS_ENTITY_SQL.format(type=entity_type, name=name)
+                )
+
+    def get_access_storage_types(self) -> set[str]:
+        """
+        Return types of access storages.
+        """
+        resp = self._ch_client.query(GET_ACCESS_STORAGE_TYPES_SQL)
+        return {row["type"] for row in resp["data"]}
+
+    def _get_local_access_entities(self) -> dict[str, list[str]]:
+        """
+        Return quoted names of local access entities by type.
+        """
+        entities = {}
+        for entity_type, table in ACCESS_ENTITY_TABLES.items():
+            query_sql = GET_LOCAL_ACCESS_ENTITIES_SQL.format(
+                columns="name", table=table
+            )
+            rows = self._ch_client.query(query_sql)["data"]
+            entities[entity_type] = [_quote_or_any(row["name"]) for row in rows]
+        query_sql = GET_LOCAL_ACCESS_ENTITIES_SQL.format(
+            columns="short_name, database, table", table="row_policies"
+        )
+        entities["ROW POLICY"] = [
+            f"{_quote_or_any(row['short_name'])} ON "
+            f"{_quote_or_any(row['database'])}.{_quote_or_any(row['table'])}"
+            for row in self._ch_client.query(query_sql)["data"]
+        ]
+        return entities
+
+    def _show_create_access_entity(self, entity_type: str, name: str) -> str:
+        """
+        Return the create statement of an access entity.
+        """
+        query_sql = SHOW_CREATE_ACCESS_ENTITY_SQL.format(type=entity_type, name=name)
+        return self._ch_client.query(query_sql)
+
     def restore_workload_entity(self, entity_statement):
         """
         Restore workload entity (WORKLOAD or RESOURCE).
@@ -1355,6 +1459,13 @@ class ClickhouseCTL:
         resp = self._ch_client.query(GET_NAMED_COLLECTIONS_QUERY_SQL)
         return [row["name"] for row in resp.get("data", [])]
 
+    def get_named_collections_create_queries(self) -> dict[str, str]:
+        """
+        Return create statements of named collections created by SQL, shown since 25.5.
+        """
+        resp = self._ch_client.query(GET_SQL_NAMED_COLLECTIONS_CREATE_QUERY_SQL)
+        return {row["name"]: row["create_query"] for row in resp["data"]}
+
     def get_workload_entities_query(self) -> list[tuple[str, WorkloadEntityType]]:
         """
         Get workload entities (WORKLOADs and RESOURCEs) from system tables.
@@ -1654,6 +1765,13 @@ def _read_objects(metadata_path: str) -> list[tuple[str, int]]:
                 f"Failed to read objects of {metadata_path},"
                 f" metadata version {version}"
             ) from e
+
+
+def _quote_or_any(name: str) -> str:
+    """
+    Quote an identifier, or return * for an empty one, as a row policy table can be.
+    """
+    return f"`{escape(name)}`" if name else "*"
 
 
 def _format_string_array(value: Sequence[str]) -> str:

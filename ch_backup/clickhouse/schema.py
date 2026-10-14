@@ -59,8 +59,10 @@ def rewrite_table_schema(
             create_statement,
         )
         if match:
-            table.create_statement = create_statement.replace(
-                match.group("replica"), f"'{override_replica_name}'"
+            start, end = match.span("replica")
+            table.create_statement = (
+                f"{create_statement[:start]}'{override_replica_name}'"
+                f"{create_statement[end:]}"
             )
 
     if add_uuid:
@@ -95,9 +97,8 @@ def rewrite_database_schema(
             r"Replicated\('[^']*'\s*,\s*'[^']*'\s*,\s*(?P<replica>'[^']*'\s*)\)", db_sql
         )
         if match:
-            db_sql = db_sql.replace(
-                match.group("replica"), f"'{override_replica_name}'"
-            )
+            start, end = match.span("replica")
+            db_sql = f"{db_sql[:start]}'{override_replica_name}'{db_sql[end:]}"
 
     return re.sub(
         r"CREATE\s+DATABASE\s+_\s", f"CREATE DATABASE `{escape(db.name)}` ", db_sql

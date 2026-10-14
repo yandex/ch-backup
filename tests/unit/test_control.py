@@ -217,3 +217,100 @@ class TestCreateTable:
         ch_ctl.create_table(self._table(statement))
 
         client.query.assert_called_once_with(statement, settings=settings)
+
+
+class TestGetLocalAccessStatements:
+    """
+    Tests for reading access entities of local storages of a replica.
+    """
+
+    @staticmethod
+    def _ctl() -> tuple[ClickhouseCTL, mock.Mock]:
+        """Helper: a control object over a replica with one entity of each type."""
+        ch_ctl, client = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+        names = {
+            "system.roles": ["r`1"],
+            "system.settings_profiles": ["p1"],
+            "system.users": ["u1"],
+            "system.quotas": [],
+        }
+
+        def query(sql: str) -> dict | str:
+            """Answer the access queries of a replica."""
+            for table, entities in names.items():
+                if f"FROM {table} " in sql:
+                    return {"data": [{"name": name} for name in entities]}
+            if "FROM system.row_policies" in sql:
+                return {
+                    "data": [
+                        {"short_name": "rp1", "database": "db1", "table": "t1"},
+                        {"short_name": "rp2", "database": "db1", "table": ""},
+                    ]
+                }
+            if sql.startswith("SHOW GRANTS"):
+                return (
+                    "GRANT SELECT ON db1.* TO u1\nGRANT r1 TO u1" if "u1" in sql else ""
+                )
+            if sql.startswith("SHOW CREATE"):
+                return sql.split(" FORMAT")[0].replace("SHOW CREATE", "CREATE") + " X"
+            return ""
+
+        client.query.side_effect = query
+        return ch_ctl, client
+
+    def test_bare_roles_and_profiles_go_first_and_are_altered_after_users(self) -> None:
+        """
+        Roles and users may refer to profiles and profiles to roles and users, and users
+        may refer to each other through GRANTEES.
+        """
+        ch_ctl, _ = self._ctl()
+
+        assert ch_ctl.get_local_access_statements() == [
+            "CREATE ROLE `r\\`1`",
+            "CREATE SETTINGS PROFILE `p1`",
+            "CREATE USER IF NOT EXISTS `u1` X",
+            "ALTER ROLE `r\\`1` X",
+            "ALTER SETTINGS PROFILE `p1` X",
+            "ALTER USER `u1` X",
+            "CREATE ROW POLICY `rp1` ON `db1`.`t1` X",
+            "CREATE ROW POLICY `rp2` ON `db1`.* X",
+            "GRANT SELECT ON db1.* TO u1",
+            "GRANT r1 TO u1",
+        ]
+
+    def test_only_local_storages_are_read_and_dropped(self) -> None:
+        """
+        Entities from users.xml or shared through ZooKeeper must stay as they are.
+        """
+        ch_ctl, client = self._ctl()
+
+        ch_ctl.drop_local_access_entities()
+
+        queries = [call.args[0] for call in client.query.call_args_list]
+        assert all(
+            "WHERE storage IN (SELECT name FROM system.user_directories "
+            "WHERE type = 'local_directory')" in sql
+            for sql in queries
+            if sql.startswith("SELECT")
+        )
+        assert [sql for sql in queries if sql.startswith("DROP")] == [
+            "DROP ROLE IF EXISTS `r\\`1`",
+            "DROP SETTINGS PROFILE IF EXISTS `p1`",
+            "DROP USER IF EXISTS `u1`",
+            "DROP ROW POLICY IF EXISTS `rp1` ON `db1`.`t1`",
+            "DROP ROW POLICY IF EXISTS `rp2` ON `db1`.*",
+        ]
+
+
+def test_only_named_collections_created_by_sql_are_read() -> None:
+    """
+    A collection from the server config created by SQL elsewhere would clash with the
+    config of that host.
+    """
+    ch_ctl, client = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    client.query.return_value = {
+        "data": [{"name": "nc1", "create_query": "CREATE ..."}]
+    }
+
+    assert ch_ctl.get_named_collections_create_queries() == {"nc1": "CREATE ..."}
+    assert "WHERE source = 'SQL'" in client.query.call_args.args[0]
