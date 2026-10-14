@@ -429,7 +429,7 @@ def test_scan_detached_parts_skips_inaccessible_detached_directory(
         ),
         mock.patch("ch_backup.clickhouse.control.logging.warning") as warning,
     ):
-        assert list(ch_ctl.scan_detached_parts(table, disk_names=["default"])) == []
+        assert not list(ch_ctl.scan_detached_parts(table, disk_names=["default"]))
 
     warning.assert_called_once()
     assert "not accessible" in warning.call_args.args[0]
@@ -461,7 +461,7 @@ def test_scan_detached_parts_skips_inaccessible_part_directory(
         ),
         mock.patch("ch_backup.clickhouse.control.logging.warning") as warning,
     ):
-        assert list(ch_ctl.scan_detached_parts(table, disk_names=["default"])) == []
+        assert not list(ch_ctl.scan_detached_parts(table, disk_names=["default"]))
 
     warning.assert_called_once()
     assert "not accessible" in warning.call_args.args[0]
