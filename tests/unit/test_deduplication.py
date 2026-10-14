@@ -184,6 +184,54 @@ def test_collect_dedup_info_excludes_links_to_before_start(
     ]
 
 
+def test_collect_dedup_info_completed_backup_links_and_early_exit(
+    monkeypatch, window_context, window_backups
+):
+    database, backups = window_backups
+    window_context.config["deduplication_start_time"] = datetime(
+        2026, 10, 14, tzinfo=timezone.utc
+    )
+    monkeypatch.setattr(
+        "ch_backup.backup.deduplication.utcnow",
+        lambda: datetime(2026, 10, 19, tzinfo=timezone.utc),
+    )
+    for backup in backups:
+        backup.state = BackupState.CREATED
+
+    newest = backups[0]
+    # Original sources lie exactly at the lower bound and one day before it.
+    for source in backups[4:6]:
+        part = source.get_table("db1", "table1").get_parts()[0]
+        newest.add_part(
+            PartMetadata(
+                database="db1",
+                table="table1",
+                name=part.name,
+                checksum=part.checksum,
+                size=part.size,
+                files=part.files,
+                tarball=part.tarball,
+                disk_name=part.disk_name,
+                link=source.name,
+            )
+        )
+
+    collect_dedup_info(window_context, [database], backups)
+
+    rows = [
+        row
+        for call in window_context.ch_ctl.insert_deduplication_info.call_args_list
+        for row in call.args[0]
+    ]
+    assert {(row.split(",")[2], row.split(",")[3]) for row in rows} == {
+        ("'all_12_12_0'", "'day-4'"),
+        ("'all_8_8_0'", "'day-0'"),
+    }
+    window_context.backup_layout.reload_backup.assert_called_once_with(
+        newest, use_light_meta=False
+    )
+
+
 def _make_backup(data_copied: bool, parts: list[PartMetadata]) -> MagicMock:
     """Helper: mock metadata of a backup to deduplicate against."""
     table = MagicMock()
