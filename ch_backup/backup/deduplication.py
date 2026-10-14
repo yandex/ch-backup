@@ -155,6 +155,7 @@ def _populate_dedup_info(
     # Used to check if part is already collected for deduplication
     dedup_info = _create_empty_dedup_references()
     dedup_batch_size = context.config["deduplication_batch_size"]
+    verify_links = context.config["deduplication_verify_links"]
 
     databases_to_handle = {db.name: _DatabaseToHandle(db.name) for db in databases}
     dedup_backup_names = {backup.name for backup in dedup_backups_with_light_meta}
@@ -197,13 +198,19 @@ def _populate_dedup_info(
                     if part.name in table_dedup_info:
                         continue
 
+                    # Data of such a part stays in the bucket of the source
+                    # installation, there is nothing in the backup to link to.
+                    if (
+                        part.disk_name in backup.cloud_storage.disks
+                        and not backup.cloud_storage.data_copied
+                    ):
+                        continue
+
                     if part.link:
-                        verified = True
                         backup_name = part.link
                         if backup_name not in dedup_backup_names:
                             continue
                     else:
-                        verified = False
                         backup_name = backup.name
 
                     part_dedup = PartDedupInfo(
@@ -216,7 +223,7 @@ def _populate_dedup_info(
                         files=part.files,
                         tarball=part.tarball,
                         disk_name=part.disk_name,
-                        verified=verified,
+                        verified=bool(part.link) and not verify_links,
                         encrypted=part.encrypted,
                         # Propagate link_part_name so that downstream deduplication
                         # knows the actual storage name in the source backup.
@@ -265,14 +272,55 @@ def _is_mutation_renamed(current_name: str, dedup_part_name: str) -> bool:
     )
 
 
+# pylint: disable=too-many-positional-arguments
+def _part_data_exists(
+    layout: BackupLayout,
+    backup_name: str,
+    part: PartMetadata,
+    cloud_storage: bool,
+    checked_tables: dict[tuple[str, str], bool],
+    stored_files: dict[tuple[str, str, str], dict[str, dict[str, int]]],
+) -> bool:
+    """
+    Check that data of a part is really present in the backup holding it.
+
+    Data of a table is listed once per backup and kept in stored_files, so
+    that parts of the next batches are checked without requests to storage.
+
+    Data of a cloud storage part is not stored as a part tarball, so what is
+    checked for it is the disk metadata of its table, which is the same for
+    every part of that table.
+    """
+    if not cloud_storage:
+        table_key = (backup_name, part.database, part.table)
+        if table_key not in stored_files:
+            stored_files[table_key] = layout.get_table_data_files(*table_key)
+        return layout.check_data_part_files(
+            part, stored_files[table_key].get(part.deduplicated_part_name, {})
+        )
+
+    key = (backup_name, part.disk_name)
+    if key not in checked_tables:
+        checked_tables[key] = layout.has_cloud_storage_metadata(
+            backup_name, part.database, part.table, part.disk_name
+        )
+    return checked_tables[key]
+
+
 def deduplicate_parts(
     context: BackupContext,
     database: str,
     table: str,
     frozen_parts: dict[str, FrozenPart],
+    stored_files: dict[tuple[str, str, str], dict[str, dict[str, int]]],
+    *,
+    cloud_storage: bool = False,
 ) -> dict[str, PartMetadata]:
     """
     Deduplicate part if it's possible.
+
+    stored_files keeps data of tables listed in source backups, it is shared
+    by all batches of a table.
     """
     layout = context.backup_layout
 
@@ -280,6 +328,7 @@ def deduplicate_parts(
         database, table, frozen_parts
     )
     deduplicated_parts: dict[str, PartMetadata] = {}
+    checked_tables: dict[tuple[str, str], bool] = {}
 
     logging.debug(
         "Deduplication lookup for {}.{}: {} frozen parts, {} matches found. First match: {}",
@@ -331,7 +380,14 @@ def deduplicate_parts(
         )
 
         if not existing_part["verified"]:
-            if not layout.check_data_part(existing_part["backup_name"], part):
+            if not _part_data_exists(
+                layout,
+                existing_part["backup_name"],
+                part,
+                cloud_storage,
+                checked_tables,
+                stored_files,
+            ):
                 logging.debug(
                     'Part "{}" found in backup "{}", but it\'s invalid, skipping',
                     part.name,
@@ -354,7 +410,7 @@ def deduplicate_parts(
 def collect_dedup_references_for_batch_backup_deletion(
     layout: BackupLayout,
     retained_backups_light_meta: list[BackupMetadata],
-    deleting_backups_light_meta: list[BackupMetadata],
+    deleting_backup_names: set[str],
 ) -> dict[str, DedupReferences]:
     """
     Collect deduplication information for deleting multiple backups. It contains names of data parts that should
@@ -364,7 +420,6 @@ def collect_dedup_references_for_batch_backup_deletion(
         _create_empty_dedup_references
     )
 
-    deleting_backup_names = {b.name for b in deleting_backups_light_meta}
     for backup in retained_backups_light_meta:
         backup = layout.reload_backup(backup, use_light_meta=False)
         for db_name in backup.get_databases():

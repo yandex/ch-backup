@@ -7,6 +7,7 @@ from typing import BinaryIO, Callable, Sequence
 
 from ch_backup.storage.async_pipeline.pipeline_executor import PipelineExecutor
 from ch_backup.storage.engine import get_storage_engine
+from ch_backup.storage.object_copy import CopyEntry
 
 
 class StorageLoader:
@@ -49,6 +50,8 @@ class StorageLoader:
         is_async: bool = False,
         encryption: bool = False,
         compression: bool = False,
+        callback: Callable | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> str:
         """
         Upload data as tarball with specified file names.
@@ -62,6 +65,8 @@ class StorageLoader:
             is_async=is_async,
             encryption=encryption,
             compression=compression,
+            callback=callback,
+            on_error=on_error,
         )
         return remote_path
 
@@ -239,6 +244,20 @@ class StorageLoader:
             remote_paths, is_async=is_async, encryption=encryption
         )
 
+    def copy_object(
+        self,
+        entry: CopyEntry,
+        is_async: bool = False,
+        callback: Callable | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
+    ) -> None:
+        """
+        Copy object from one storage to another as is.
+        """
+        self._ploader.copy_object(
+            entry, is_async=is_async, callback=callback, on_error=on_error
+        )
+
     def wait(self, keep_going: bool = False) -> None:
         """
         Wait for completion of async operations.
@@ -266,3 +285,9 @@ class StorageLoader:
         Return actual size of the remote file in bytes.
         """
         return self._engine.get_object_size(remote_path)
+
+    def list_dir_with_sizes(self, remote_path: str) -> dict[str, int]:
+        """
+        Return sizes of all objects under the remote path (recursively) keyed by object key.
+        """
+        return self._engine.list_dir_with_sizes(remote_path)

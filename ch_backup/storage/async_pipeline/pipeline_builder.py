@@ -211,12 +211,14 @@ class PipelineBuilder:
         return self
 
     def build_uploading_stage(
-        self, remote_path: str, source_size: int
+        self, remote_path: str, source_size: int, storage_config: dict | None = None
     ) -> "PipelineBuilder":
         """
         Build uploading stage.
+
+        Storage config can be overridden to upload data to a storage other than the configured one.
         """
-        stage_config = self._config[StorageUploadingStage.stype]
+        stage_config = storage_config or self._config[StorageUploadingStage.stype]
 
         max_chunk_count = stage_config["max_chunk_count"]
         buffer_size = stage_config["buffer_size"]
@@ -290,11 +292,15 @@ class PipelineBuilder:
         self.append(thread_map(DeleteFilesStage(stage_config, files)))
         return self
 
-    def build_download_storage_stage(self, remote_path: str) -> "PipelineBuilder":
+    def build_download_storage_stage(
+        self, remote_path: str, storage_config: dict | None = None
+    ) -> "PipelineBuilder":
         """
         Build downloading from storage stage.
+
+        Storage config can be overridden to download data from a storage other than the configured one.
         """
-        stage_config = self._config[DownloadStorageStage.stype]
+        stage_config = storage_config or self._config[DownloadStorageStage.stype]
         storage = get_storage_engine(stage_config)
         queue_size = stage_config["queue_size"]
 

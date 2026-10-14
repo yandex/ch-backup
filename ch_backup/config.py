@@ -53,6 +53,7 @@ DEFAULT_CONFIG = {
             "days": 7,
         },
         "deduplication_batch_size": 500,
+        "deduplication_verify_links": True,
         "min_interval": {
             "minutes": 0,
         },
@@ -73,8 +74,35 @@ DEFAULT_CONFIG = {
         "restore_context_sync_threshold_ops": 100,
         "validate_part_after_upload": False,
         "restore_fail_on_attach_error": False,
+        "fail_on_unparsable_part_metadata": False,
         "update_metadata_interval": _as_seconds("30 min"),
         "kill_old_freeze_queries": True,
+    },
+    "copy": {
+        # Copy objects on the server side if source and target buckets belong to the same S3 service
+        # and are accessible with the same credentials.
+        "server_side_copy": True,
+        # Copying of data stored on object storage (S3) disks.
+        "cloud_storage": {
+            # Location of the source disk objects. If not set, it's taken from backup metadata
+            # (for backups that were already copied) or from ClickHouse disk configuration.
+            "source": {
+                "endpoint_url": None,
+                "bucket": None,
+                "path": None,
+                "access_key_id": None,
+                "secret_access_key": None,
+            },
+            # Location where disk objects are copied to. Objects of the backup are put
+            # under "<path>/<backup name>/". Endpoint and credentials default to ones of the target storage.
+            "target": {
+                "endpoint_url": None,
+                "bucket": None,
+                "path": "",
+                "access_key_id": None,
+                "secret_access_key": None,
+            },
+        },
     },
     "restore": {
         "use_inplace_cloud_restore": False,
@@ -109,6 +137,10 @@ DEFAULT_CONFIG = {
         # chunk_size will be multiplied on a required number of times
         # to satisfy the limit.
         "max_chunk_count": 10000,
+        # Attempts per S3 operation before failing, 1 disables retries
+        "retry_max_attempts": 30,
+        # Upper bound of the randomized exponential pause between attempts, in seconds
+        "retry_max_interval": 180,
         # Enable bulk delete (DeleteObjects in S3 API)
         "bulk_delete_enabled": True,
         # How many files we can delete by bulk delete operation in one call
@@ -131,8 +163,11 @@ DEFAULT_CONFIG = {
     },
     # Same structure as 'storage' section, but for cloud storage
     "cloud_storage": {
+        # Encryption and compression are applied to cloud storage metadata only.
+        # Data copied by "copy_data" is stored as ClickHouse wrote it.
         "encryption": True,
         "compression": True,
+        "copy_data": False,
     },
     "compression": {
         "type": "gzip",
@@ -166,6 +201,8 @@ DEFAULT_CONFIG = {
         "workers": 4,
         # The number of processes for parts restoring from S3 disks.
         "cloud_storage_restore_workers": 4,
+        # The number of threads for copying data of S3 disks into the backup.
+        "cloud_storage_backup_workers": 4,
         # The number of threads for parallel freeze of tables
         "freeze_threads": 4,
         # To execute freeze efficiently, we should parallelize freeze operations. We have two options where we can parallelize:
@@ -280,12 +317,29 @@ class Config:
         self._recursively_update(self._conf, update_dict=patch_dict)
         return self._conf
 
+    def derive(
+        self, config_file: str | None = None, patch: dict | None = None
+    ) -> "Config":
+        """
+        Return a copy of the config with applied changes from config file and the patch.
+        """
+        config = copy.deepcopy(self)
+        if config_file:
+            config.merge(self._load_config_file(config_file))
+        if patch:
+            config.merge(patch)
+        return config
+
     def _read_config(self, file_name):
+        custom_config = self._load_config_file(file_name)
+        if custom_config:
+            self._recursively_update(self._conf, custom_config)
+
+    @staticmethod
+    def _load_config_file(file_name: str) -> dict:
         with open(file_name, "r", encoding="utf-8") as fileobj:
             try:
-                custom_config = yaml.safe_load(fileobj)
-                if custom_config:
-                    self._recursively_update(self._conf, custom_config)
+                return yaml.safe_load(fileobj) or {}
             except yaml.YAMLError as e:
                 raise RuntimeError(f"Failed to load config file: {e}")
 

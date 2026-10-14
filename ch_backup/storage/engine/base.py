@@ -128,3 +128,28 @@ class PipeLineCompatibleStorageEngine(StorageEngine):
         Return object size.
         """
         pass
+
+    @abstractmethod
+    def list_dir_with_sizes(self, remote_path: str) -> dict[str, int]:
+        """
+        Return sizes of all objects under the remote path (recursively) keyed by object key.
+        """
+        pass
+
+    @abstractmethod
+    def copy_object(
+        self, source_bucket: str, source_path: str, remote_path: str
+    ) -> None:
+        """
+        Copy object from another bucket of the same storage service on the server side.
+        """
+        pass
+
+    @abstractmethod
+    def try_copy_object(
+        self, source_bucket: str, source_path: str, remote_path: str
+    ) -> bool:
+        """
+        Try to copy object on the server side. Return False if the storage service rejected the request.
+        """
+        pass

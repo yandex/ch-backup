@@ -5,15 +5,51 @@ Lock manager logic
 import os
 import socket
 import sys
+from contextlib import ExitStack, contextmanager
 from fcntl import LOCK_SH, flock
 from types import TracebackType
-from typing import IO, Any
+from typing import IO, Any, Iterator, Sequence
 
 from kazoo.exceptions import LockTimeout
+from kazoo.hosts import collect_hosts
+from kazoo.protocol.paths import normpath
 from kazoo.recipe.lock import Lock
 
 from ch_backup import logging
+from ch_backup.config import Config
 from ch_backup.zookeeper.zookeeper import ZookeeperClient, ZookeeperCTL
+
+
+@contextmanager
+def storage_locks(configs: Sequence[Config], operation: str) -> Iterator[None]:
+    """Acquire each configured lock once, in a stable order across storage pairs.
+
+    These are the same advisory locks used by delete/purge. ZooKeeper lock identity
+    depends on the ensemble and path, not the storage credentials or caller identity.
+    File locks retain their existing shared semantics.
+    """
+    resources: dict[tuple, tuple[dict, dict | None]] = {}
+    for config in configs:
+        lock_conf, zk_conf = config["lock"], config["zookeeper"]
+        if lock_conf.get("flock"):
+            file_key = ("file", os.path.realpath(lock_conf["flock_path"]))
+            resources.setdefault(file_key, ({**lock_conf, "zk_flock": False}, None))
+        if lock_conf.get("zk_flock"):
+            if not zk_conf["hosts"]:
+                raise RuntimeError("ZK flock enabled, but zookeeper is not configured")
+            hosts, chroot = collect_hosts(zk_conf["hosts"])
+            path = normpath(
+                (chroot or "") + "/" + lock_conf["zk_flock_path"].lstrip("/")
+            )
+            zk_key = ("zk", tuple(sorted(hosts)), path)
+            resources.setdefault(zk_key, ({**lock_conf, "flock": False}, zk_conf))
+
+    with ExitStack() as stack:
+        for key in sorted(resources):
+            lock_conf, zk_conf = resources[key]
+            zk_ctl = ZookeeperCTL(zk_conf) if zk_conf else None
+            stack.enter_context(LockManager(lock_conf, zk_ctl)(operation=operation))
+        yield
 
 
 class LockManager:
@@ -73,8 +109,13 @@ class LockManager:
 
         if self._lock_conf.get("flock"):
             self._flock()
-        if self._distributed and self._lock_conf.get("zk_flock"):
-            self._zk_flock()
+        try:
+            if self._distributed and self._lock_conf.get("zk_flock"):
+                self._zk_flock()
+        except BaseException:
+            if self._lock_conf.get("flock"):
+                self._file.close()
+            raise
 
         return self
 
@@ -117,19 +158,23 @@ class LockManager:
 
         if self._zk_client:
             client = self._zk_client.__enter__()
-            if not client.exists(self._process_zk_lockfile_path):
-                client.create(self._process_zk_lockfile_path, makepath=True)
-            self._zk_lock = client.Lock(
-                self._process_zk_lockfile_path, identifier=self._lock_id
-            )
             try:
-                _ = self._zk_lock.acquire(blocking=True, timeout=self._lock_timeout)
-            except LockTimeout:
-                msg = "ZK lock was not acquired due to timeout error."
-                contenders = self._zk_lock.contenders()
-                if contenders:
-                    msg = f"{msg} Contenders are {', '.join(contenders)}."
-                self._logger.opt(exception=True).error(msg)
-                sys.exit(self._exitcode)
+                if not client.exists(self._process_zk_lockfile_path):
+                    client.create(self._process_zk_lockfile_path, makepath=True)
+                self._zk_lock = client.Lock(
+                    self._process_zk_lockfile_path, identifier=self._lock_id
+                )
+                try:
+                    _ = self._zk_lock.acquire(blocking=True, timeout=self._lock_timeout)
+                except LockTimeout:
+                    msg = "ZK lock was not acquired due to timeout error."
+                    contenders = self._zk_lock.contenders()
+                    if contenders:
+                        msg = f"{msg} Contenders are {', '.join(contenders)}."
+                    self._logger.opt(exception=True).error(msg)
+                    sys.exit(self._exitcode)
+            except BaseException:
+                self._zk_client.__exit__(None, None, None)
+                raise
         else:
             raise RuntimeError("ZK flock enabled, but zookeeper is not configured")

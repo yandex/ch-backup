@@ -58,6 +58,22 @@ class Disk(SimpleNamespace):
     def type(self, value: str) -> None:
         self._type = value
 
+    @property
+    def keeps_object_metadata(self) -> bool:
+        """
+        Tell whether local files of the disk describe objects in the bucket.
+
+        Only disks with local metadata keep such files. A plain disk derives
+        object keys from the paths and keeps no metadata at all, a cache disk
+        keeps the data itself. Versions before 24.3 report no metadata type,
+        and plain disks do not exist there.
+        """
+        return (
+            self.type == "s3"
+            and not self.cache_path
+            and (self._metadata_storage_type or "Local").lower() == "local"
+        )
+
 
 _QUOTED_TEXT_RE = re.compile(
     r"'(?:[^'\\]|\\.|'')*'|`(?:[^`\\]|\\.|``)*`|['`].*", re.DOTALL

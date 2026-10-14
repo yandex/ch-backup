@@ -211,16 +211,18 @@ class BackupManager:
 
     def __init__(self, context: ContextT, node_name: str, timeout: int = 300) -> None:
         self._container = docker.get_container(context, node_name)
-        self._s3_client = s3.S3Client(context)
         self._config_path = CH_BACKUP_CONF_PATH
         protocol = context.ch_backup["protocol"]
         self._cmd_base = f"timeout {timeout} {CH_BACKUP_CLI_PATH} --protocol {protocol} --insecure  --config {self._config_path}"
-        # Read path_root from the ch-backup config on the container.
+        # Read path_root and bucket from the ch-backup config on the container.
         conf_output = self._container.exec_run(
             f"/bin/cat {self._config_path}", user="root"
         ).output.decode()
         conf = yaml.load(conf_output, yaml.SafeLoader)
         self._path_root: str = conf.get("backup", {}).get("path_root", "ch_backup/")
+        self._s3_client = s3.S3Client(
+            context, conf.get("storage", {}).get("credentials", {}).get("bucket")
+        )
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
     def backup(
@@ -236,11 +238,14 @@ class BackupManager:
         schema: bool = None,
         udf: bool = None,
         nc: bool = None,
+        copy_cloud_storage_data: bool = False,
     ) -> str:
         """
         Execute backup command.
         """
         options = [f"--name {name}"]
+        if copy_cloud_storage_data:
+            options.append("--copy-cloud-storage-data")
         if force:
             options.append("--force")
         if databases:
@@ -269,7 +274,7 @@ class BackupManager:
         """
         Execute delete command.
         """
-        backup_id = self._normalize_id(backup_id)
+        backup_id = self.normalize_id(backup_id)
 
         options = []
         if purge_partial:
@@ -319,7 +324,7 @@ class BackupManager:
         """
         Get backup entry metadata.
         """
-        backup_id = self._normalize_id(backup_id)
+        backup_id = self.normalize_id(backup_id)
         output = self._exec(f"show {backup_id}")
         return Backup(json.loads(output))
 
@@ -349,7 +354,7 @@ class BackupManager:
         """
         Restore backup entry.
         """
-        backup_id = self._normalize_id(backup_id)
+        backup_id = self.normalize_id(backup_id)
         options = []
         if schema_only:
             options.append("--schema-only")
@@ -505,7 +510,7 @@ class BackupManager:
 
         return result.output.decode().strip()
 
-    def _normalize_id(self, backup_id: BackupId) -> str:
+    def normalize_id(self, backup_id: BackupId) -> str:
         if isinstance(backup_id, int):
             return self.get_backup_ids()[backup_id]
         return backup_id

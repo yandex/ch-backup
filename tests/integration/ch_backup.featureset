@@ -1,5 +1,6 @@
 features/access_control_backup.feature
 features/access_control_replicated_backup.feature
+features/backup_copy.feature
 features/backup_delete.feature
 features/backup_multiple_disks.feature
 features/backup_multiple_disks_replicated.feature
@@ -28,4 +29,7 @@ features/operations_without_ch.feature
 features/partially_encrypted_backups.feature
 features/backup_replicated_database.feature
 features/workload_entities.feature
+features/cloud_storage_full_backup.feature
 features/unique_key.feature
+features/backup_unreadable_metadata.feature
+features/restore_from_replica.feature

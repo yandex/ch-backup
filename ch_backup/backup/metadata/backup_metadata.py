@@ -20,6 +20,15 @@ from ch_backup.exceptions import InvalidBackupStruct, UnknownBackupStateError
 from ch_backup.util import now
 
 
+def sanitize_backup_name(name: str) -> str:
+    """
+    Return backup name usable as a directory name on ClickHouse side.
+
+    '-' character is replaced to '_' to avoid unnecessary escaping.
+    """
+    return name.replace("-", "_")
+
+
 class BackupState(Enum):
     """
     Backup states.
@@ -73,6 +82,8 @@ class BackupMetadata:
         self.schema_only = schema_only
         self.encrypted = encrypted
         self.cloud_storage: CloudStorageMetadata = CloudStorageMetadata()
+        # Location of the storage the backup was copied from (for backups created by "copy" command).
+        self.copied_from: dict | None = None
 
         self._state = BackupState.CREATING
         self._exception: str | None = None
@@ -144,6 +155,10 @@ class BackupMetadata:
             # format is no longer supported.
             databases = self._databases_with_legacy_part_links()
 
+        meta: dict[str, Any] = {}
+        if self.copied_from:
+            meta["copied_from"] = self.copied_from
+
         return {
             "databases": databases,
             "access_controls": self._access_control.dump() if not light else {},
@@ -152,6 +167,7 @@ class BackupMetadata:
             "workload_entities": self._workload_entities if not light else [],
             "cloud_storage": self.cloud_storage.dump(),
             "meta": {
+                **meta,
                 "name": self.name,
                 # DEPRECATED: kept for backward compatibility; see __init__.
                 "path": self.path,
@@ -316,6 +332,7 @@ class BackupMetadata:
             backup.version = meta["version"]
             backup.schema_only = meta.get("schema_only", False)
             backup.encrypted = meta.get("encrypted", True)
+            backup.copied_from = meta.get("copied_from")
             # TODO remove after a several weeks/months, when backups rotated
             # OR NOT TODO, because of backward compatibility
             backup._user_defined_functions = data.get(
@@ -480,6 +497,20 @@ class BackupMetadata:
         if not part.link:
             self.real_size += part.size
 
+    def unlink_part(self, part: PartMetadata) -> None:
+        """
+        Turn deduplicated data part into a regular one, i.e. stored within the backup itself.
+        """
+        raw_part = self._databases[part.database]["tables"][part.table]["parts"][
+            part.name
+        ]
+        if not raw_part.get("link"):
+            return
+
+        raw_part["link"] = None
+        raw_part["link_part_name"] = None
+        self.real_size += part.size
+
     def remove_parts(self, table: TableMetadata, parts: list[PartMetadata]) -> None:
         """
         Remove data parts from backup metadata.
@@ -515,9 +546,8 @@ class BackupMetadata:
     def get_sanitized_name(self) -> str:
         """
         ClickHouse will place shadow data under this directory.
-        '-' character is replaced to '_' to avoid unnecessary escaping on CH side.
         """
-        return self.name.replace("-", "_")
+        return sanitize_backup_name(self.name)
 
     def _format_time(self, value: datetime) -> str:
         return value.strftime(self.time_format)
