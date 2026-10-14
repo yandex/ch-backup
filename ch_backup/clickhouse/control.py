@@ -523,10 +523,10 @@ ACCESS_ENTITY_TABLES = {
 
 GET_WORKLOAD_ENTITIES_QUERY_SQL = strip_query(
     f"""
-    SELECT name, type FROM (
-        SELECT name, '{WorkloadEntityType.WORKLOAD.value}' AS type FROM system.workloads
+    SELECT name, type, create_query FROM (
+        SELECT name, '{WorkloadEntityType.WORKLOAD.value}' AS type, create_query FROM system.workloads
         UNION ALL
-        SELECT name, '{WorkloadEntityType.RESOURCE.value}' AS type FROM system.resources
+        SELECT name, '{WorkloadEntityType.RESOURCE.value}' AS type, create_query FROM system.resources
     )
     ORDER BY name
     FORMAT JSON
@@ -1467,15 +1467,26 @@ class ClickhouseCTL:
         resp = self._ch_client.query(GET_SQL_NAMED_COLLECTIONS_CREATE_QUERY_SQL)
         return {row["name"]: row["create_query"] for row in resp["data"]}
 
-    def get_workload_entities_query(self) -> list[tuple[str, WorkloadEntityType]]:
+    def get_workload_entities_query(self) -> list[tuple[str, WorkloadEntityType, str]]:
         """
-        Get workload entities (WORKLOADs and RESOURCEs) from system tables.
+        Get workload entity names, types and live create queries from system tables.
         """
         resp = self._ch_client.query(GET_WORKLOAD_ENTITIES_QUERY_SQL)
         return [
-            (row["name"], WorkloadEntityType(row["type"]))
-            for row in resp.get("data", [])
+            (row["name"], WorkloadEntityType(row["type"]), row["create_query"])
+            for row in resp["data"]
         ]
+
+    def format_query(self, query: str) -> str:
+        """
+        Canonicalize SQL using the server parser without changing literal values.
+        """
+        # Hex encoding preserves quotes, backslashes and whitespace in the input.
+        query_hex = query.encode("utf-8").hex()
+        resp = self._ch_client.query(
+            f"SELECT formatQuerySingleLine(unhex('{query_hex}')) AS query FORMAT JSON"
+        )
+        return resp["data"][0]["query"]
 
     def decrypt_aes_ctr(
         self, data_hex: str, key_hex: str, key_size: int, iv_hex: str

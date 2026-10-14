@@ -10,6 +10,7 @@ from enum import Enum
 
 from ch_backup import logging
 from ch_backup.backup_context import BackupContext
+from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.models import WorkloadEntityType
 from ch_backup.logic.backup_manager import BackupManager
@@ -104,7 +105,7 @@ class WorkloadEntitiesBackup(BackupManager):
             )
             return
 
-        workload_entities: list[tuple[str, WorkloadEntityType]] = (
+        workload_entities: list[tuple[str, WorkloadEntityType, str]] = (
             context.ch_ctl.get_workload_entities_query()
         )
 
@@ -136,7 +137,7 @@ class WorkloadEntitiesBackup(BackupManager):
 
             chown_dir_contents(user, group, backup_tmp_path)
 
-            for entity_name, entity_type in workload_entities:
+            for entity_name, entity_type, _ in workload_entities:
                 local_path = os.path.join(
                     backup_tmp_path,
                     WorkloadEntity(
@@ -178,7 +179,10 @@ class WorkloadEntitiesBackup(BackupManager):
 
         logging.info("Restoring workload entities: {}", ", ".join(we_list))
 
-        we_on_clickhouse = dict(context.ch_ctl.get_workload_entities_query())
+        we_on_clickhouse = {
+            name: (entity_type, statement)
+            for name, entity_type, statement in context.ch_ctl.get_workload_entities_query()
+        }
 
         resources_from_backup: list[WorkloadEntity] = []
         workloads_from_backup: list[WorkloadEntity] = []
@@ -200,7 +204,14 @@ class WorkloadEntitiesBackup(BackupManager):
         )
 
         for entity in [*resources_from_backup, *sorted_workloads]:
-            self._restore_entity_with_collision_check(context, entity, we_on_clickhouse)
+            try:
+                self._restore_entity_with_collision_check(
+                    context, entity, we_on_clickhouse
+                )
+            except ClickhouseError as error:
+                raise RuntimeError(
+                    f"Cannot restore workload entity '{entity.name}': {error}"
+                ) from error
 
         logging.info("All workload entities restored")
 
@@ -208,17 +219,18 @@ class WorkloadEntitiesBackup(BackupManager):
     def _restore_entity_with_collision_check(
         context: BackupContext,
         entity: "WorkloadEntity",
-        existing: dict,
+        existing: dict[str, tuple[WorkloadEntityType, str]],
     ) -> None:
         """
         Restore a single workload entity, handling collisions with existing entities on server.
 
         - If name collision with different type: raise RuntimeError.
         - If name collision with same type and same create statement: skip.
-        - If name collision with same type but different create statement: drop + warning + restore.
+        - If name collision with same type but different create statement: replace without dropping.
         """
+        statement = entity.create_statement
         if entity.name in existing:
-            existing_type = existing[entity.name]
+            existing_type, existing_statement = existing[entity.name]
             if existing_type != entity.type:
                 raise RuntimeError(
                     f"Cannot restore workload entity '{entity.name}': "
@@ -226,12 +238,9 @@ class WorkloadEntitiesBackup(BackupManager):
                     f"server has {existing_type.value!r})"
                 )
 
-            existing_statement = (
-                context.backup_layout.get_local_workload_entity_create_statement(
-                    entity.name
-                )
-            )
-            if existing_statement == entity.create_statement:
+            if context.ch_ctl.format_query(
+                existing_statement
+            ) == context.ch_ctl.format_query(statement):
                 logging.debug(
                     "Workload entity {} already exists with identical create statement, skipping",
                     entity.name,
@@ -240,12 +249,18 @@ class WorkloadEntitiesBackup(BackupManager):
 
             logging.warning(
                 "Workload entity {} already exists with a different create statement, "
-                "dropping and re-creating",
+                "replacing",
                 entity.name,
             )
-            WorkloadEntitiesBackup._drop_workload_entity(context, entity)
+            statement = re.sub(
+                r"^\s*CREATE\b",
+                "CREATE OR REPLACE",
+                statement,
+                count=1,
+                flags=re.IGNORECASE,
+            )
 
-        context.ch_ctl.restore_workload_entity(entity.create_statement)
+        context.ch_ctl.restore_workload_entity(statement)
 
     @staticmethod
     def topologically_sort_workload_entities(
@@ -277,16 +292,6 @@ class WorkloadEntitiesBackup(BackupManager):
             _walk_to_parents(workload)
 
         return result
-
-    @staticmethod
-    def _drop_workload_entity(context: BackupContext, entity: "WorkloadEntity") -> None:
-        """
-        Drop a workload entity using its type to choose the correct DROP statement.
-        """
-        if entity.type == WorkloadEntityType.WORKLOAD:
-            context.ch_ctl.drop_workload(entity.name)
-        elif entity.type == WorkloadEntityType.RESOURCE:
-            context.ch_ctl.drop_resource(entity.name)
 
     def _write_entities_from_zookeeper_node(
         self,
