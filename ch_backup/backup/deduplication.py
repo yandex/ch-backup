@@ -113,9 +113,16 @@ def collect_dedup_info(
         backup_age_limit = utcnow() - timedelta(
             **context.config["deduplication_age_limit"]
         )
+        bound_source = "age_limit"
         start_time = as_datetime(context.config.get("deduplication_start_time"))
-        if start_time is not None:
-            backup_age_limit = max(backup_age_limit, start_time)
+        if start_time is not None and start_time > backup_age_limit:
+            backup_age_limit = start_time
+            bound_source = "start_time"
+        logging.info(
+            "Deduplication window lower bound: {} (determined by {})",
+            backup_age_limit.isoformat(),
+            bound_source,
+        )
 
     # Determine backups that can be used for deduplication.
     dedup_backups = []

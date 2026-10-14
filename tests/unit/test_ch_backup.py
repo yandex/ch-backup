@@ -3,6 +3,7 @@ ClickhouseBackup unit tests.
 """
 
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Callable, Sequence, cast
 from unittest.mock import MagicMock, Mock, patch
 
@@ -22,12 +23,64 @@ from ch_backup.ch_backup import CleanZooKeeperMode, ClickhouseBackup
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
 from ch_backup.clickhouse.models import Database
-from ch_backup.config import DEFAULT_CONFIG
+from ch_backup.config import DEFAULT_CONFIG, Config
 from ch_backup.exceptions import (
     ClickhouseBackupError,
     InvalidBackupStruct,
     StorageError,
 )
+
+
+@pytest.fixture(name="startup_config")
+def fixture_startup_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "ch_backup.ch_backup.utcnow",
+        lambda: datetime(2026, 10, 14, tzinfo=timezone.utc),
+    )
+    path = tmp_path / "config.yaml"
+    path.write_text("", encoding="utf-8")
+    return Config(str(path))
+
+
+@pytest.mark.parametrize(
+    "start_time",
+    ["invalid", "2026-10-14T00:00:00", "2026-10-14T00:00:00.000001Z"],
+)
+def test_invalid_start_time_rejected_when_accepting_config(startup_config, start_time):
+    backup = ClickhouseBackup(startup_config)
+    original_context = getattr(backup, "_context")
+    invalid = startup_config.derive(
+        patch={
+            "backup": {
+                "deduplicate_parts": False,
+                "deduplication_start_time": start_time,
+            }
+        }
+    )
+
+    with pytest.raises(ValueError):
+        ClickhouseBackup(invalid)
+    with pytest.raises(ValueError):
+        backup.reload_config(invalid)
+
+    assert backup.config is startup_config
+    assert getattr(backup, "_context") is original_context
+
+    with patch("ch_backup.backup_context.BackupLayout") as layout:
+        with pytest.raises(ValueError):
+            backup.copy(invalid, ["backup"])
+        layout.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "start_time", [None, "2026-10-13T00:00:00Z", "2026-10-14T03:00:00+03:00"]
+)
+def test_start_time_at_or_before_now_accepted(startup_config, start_time):
+    config = startup_config.derive(
+        patch={"backup": {"deduplication_start_time": start_time}}
+    )
+
+    assert ClickhouseBackup(config).config is config
 
 
 def _restore_backup_with_cloud_storage(

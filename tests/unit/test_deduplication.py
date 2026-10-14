@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, Mock
 
 import pytest
+from loguru import logger
 
 from ch_backup.backup.deduplication import (
     PartDedupInfo,
@@ -76,7 +77,6 @@ def fixture_window_context():
         pytest.param(17, 14, [3, 2, 1, 0], id="three-day-window"),
         pytest.param(21, 14, [4, 3, 2, 1, 0], id="limit-reached"),
         pytest.param(24, 14, [4, 3], id="sliding-window"),
-        pytest.param(15, 20, [], id="future-start"),
     ],
 )
 def test_collect_dedup_info_window(
@@ -100,6 +100,37 @@ def test_collect_dedup_info_window(
     ]
     assert [row.split(",")[3] for row in rows] == [f"'day-{day}'" for day in expected]
     clock.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    "start_time,expected",
+    [
+        (None, "2026-10-08T00:00:00+00:00 (determined by age_limit)"),
+        ("2026-10-01T00:00:00Z", "2026-10-08T00:00:00+00:00 (determined by age_limit)"),
+        (
+            "2026-10-14T00:00:00Z",
+            "2026-10-14T00:00:00+00:00 (determined by start_time)",
+        ),
+    ],
+)
+def test_collect_dedup_info_logs_lower_bound(
+    monkeypatch, window_context, start_time, expected
+):
+    window_context.config["deduplication_start_time"] = start_time
+    monkeypatch.setattr(
+        "ch_backup.backup.deduplication.utcnow",
+        lambda: datetime(2026, 10, 15, tzinfo=timezone.utc),
+    )
+    messages: list[str] = []
+    sink = logger.add(messages.append, format="{message}", level="INFO")
+    try:
+        collect_dedup_info(window_context, [], [])
+    finally:
+        logger.remove(sink)
+
+    assert [message.strip() for message in messages] == [
+        f"Deduplication window lower bound: {expected}"
+    ]
 
 
 @pytest.mark.parametrize("microseconds,eligible", [(-1, False), (0, True), (1, True)])
