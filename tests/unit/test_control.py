@@ -405,6 +405,68 @@ def test_scan_detached_parts_reads_reason_from_directory_name(
     ]
 
 
+def test_scan_detached_parts_skips_inaccessible_detached_directory(
+    tmp_path: Path,
+) -> None:
+    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    disk = Disk("default", str(tmp_path), "Local")
+    ch_ctl._disks = {disk.name: disk}  # pylint: disable=protected-access
+    table = Table(
+        "db1",
+        "table1",
+        "MergeTree",
+        [disk],
+        [str(tmp_path / "store" / "table")],
+        "",
+        "",
+        None,
+    )
+
+    with (
+        mock.patch(
+            "ch_backup.clickhouse.control.os.scandir",
+            side_effect=PermissionError("permission denied"),
+        ),
+        mock.patch("ch_backup.clickhouse.control.logging.warning") as warning,
+    ):
+        assert list(ch_ctl.scan_detached_parts(table, disk_names=["default"])) == []
+
+    warning.assert_called_once()
+    assert "not accessible" in warning.call_args.args[0]
+
+
+def test_scan_detached_parts_skips_inaccessible_part_directory(
+    tmp_path: Path,
+) -> None:
+    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    disk = Disk("default", str(tmp_path), "Local")
+    ch_ctl._disks = {disk.name: disk}  # pylint: disable=protected-access
+    table_path = tmp_path / "store" / "table"
+    (table_path / "detached" / "all_1_1_0").mkdir(parents=True)
+    table = Table(
+        "db1",
+        "table1",
+        "MergeTree",
+        [disk],
+        [str(table_path)],
+        "",
+        "",
+        None,
+    )
+
+    with (
+        mock.patch(
+            "ch_backup.clickhouse.control.scan_dir_files",
+            side_effect=PermissionError("permission denied"),
+        ),
+        mock.patch("ch_backup.clickhouse.control.logging.warning") as warning,
+    ):
+        assert list(ch_ctl.scan_detached_parts(table, disk_names=["default"])) == []
+
+    warning.assert_called_once()
+    assert "not accessible" in warning.call_args.args[0]
+
+
 def test_scan_detached_parts_uses_selected_backing_disk_directory(
     tmp_path: Path,
 ) -> None:

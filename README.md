@@ -207,6 +207,13 @@ passed. Disk names select their actual table directories; the value reported
 by `system.detached_parts` is not used, so cache-disk naming differences
 between ClickHouse versions do not affect selection.
 
+Detached parts are scanned and uploaded on a best-effort basis without a
+point-in-time snapshot. A part created during the backup may be omitted; a part
+that disappears or becomes inaccessible during scanning or upload is skipped
+with a warning. Only successfully uploaded detached parts are added to backup
+metadata, and an individual detached-part failure does not fail the regular
+table backup. Executor failures and termination signals still abort the backup.
+
 Restore currently ignores detached-part metadata: it neither writes to the
 table's `detached` directory nor attaches the backed-up parts automatically.
 

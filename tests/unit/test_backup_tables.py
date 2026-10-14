@@ -1178,6 +1178,28 @@ class TestDetachedPartsBackup:
         )
 
         assert len(context.backup_meta.get_detached_parts()) == 2
+        context.backup_layout.wait.assert_called_once_with(keep_going=True)
+
+    def test_failed_upload_is_skipped_and_successful_part_is_recorded(self) -> None:
+        failed = self._detached("all_1_1_0", "default", "")
+        successful = self._detached("all_2_2_0", "default", "")
+        context = self._backup_context([failed, successful])
+
+        def upload(_backup, part, callback):
+            if part is failed:
+                raise PermissionError("permission denied")
+            callback()
+
+        context.backup_layout.upload_detached_part.side_effect = upload
+
+        TableBackup()._backup_detached_table_data(  # pylint: disable=protected-access
+            context, self._table()
+        )
+
+        assert [part.name for part in context.backup_meta.get_detached_parts()] == [
+            successful.name
+        ]
+        context.backup_layout.wait.assert_called_once_with(keep_going=True)
 
     def test_object_storage_kind_is_recorded_on_detached_part(self) -> None:
         context = self._backup_context(

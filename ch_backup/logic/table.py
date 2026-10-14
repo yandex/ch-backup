@@ -30,7 +30,7 @@ from ch_backup.clickhouse.schema import (
     to_attach_query,
     to_create_query,
 )
-from ch_backup.exceptions import ClickhouseBackupError
+from ch_backup.exceptions import ClickhouseBackupError, is_broken_executor
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.logic.upload_part_observer import UploadPartObserver
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
@@ -831,13 +831,29 @@ class TableBackup(BackupManager):
                     detached_part.table,
                 )
                 warned_metadata_only = True
-            context.backup_layout.upload_detached_part(
-                context.backup_meta,
-                detached_part,
-                partial(observe_uploaded_part, part_meta),
-            )
+            try:
+                context.backup_layout.upload_detached_part(
+                    context.backup_meta,
+                    detached_part,
+                    partial(observe_uploaded_part, part_meta),
+                )
+            except Exception as e:
+                if is_broken_executor(e):
+                    raise
+                logging.warning(
+                    "Failed to upload detached part {} of {}.{} from disk {}; "
+                    "skipping it because detached-parts backup is best effort: {}",
+                    detached_part.name,
+                    detached_part.database,
+                    detached_part.table,
+                    detached_part.disk_name,
+                    e,
+                )
 
-        context.backup_layout.wait()
+        # Detached parts are not frozen and may disappear while their uploads
+        # are still running. Keep the regular backup successful and retain
+        # metadata only for uploads whose callbacks completed.
+        context.backup_layout.wait(keep_going=True)
         self._validate_uploaded_detached_parts(context, uploaded_parts)
 
     @staticmethod

@@ -36,6 +36,7 @@ from ch_backup.util import (
     escape,
     list_dir_files,
     retry,
+    scan_dir_files,
     strip_query,
 )
 
@@ -1306,7 +1307,7 @@ class ClickhouseCTL:
         scanned_paths: set[str] = set()
         for disk_name, disk, data_path in selected:
             detached_path = os.path.join(data_path, "detached")
-            if detached_path in scanned_paths or not os.path.isdir(detached_path):
+            if detached_path in scanned_paths:
                 continue
             scanned_paths.add(detached_path)
 
@@ -1314,7 +1315,13 @@ class ClickhouseCTL:
                 entries = sorted(
                     os.scandir(detached_path), key=lambda entry: entry.name
                 )
-            except FileNotFoundError:
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except PermissionError:
+                logging.warning(
+                    'Detached directory is not accessible and will be skipped: "{}"',
+                    detached_path,
+                )
                 continue
 
             for entry in entries:
@@ -1331,7 +1338,7 @@ class ClickhouseCTL:
                         continue
 
                     part_path = entry.path
-                    rel_paths = list_dir_files(part_path)
+                    rel_paths = list(scan_dir_files(Path(part_path)))
                     checksum = _get_detached_part_checksum(part_path, rel_paths, disk)
 
                     # Detached object-storage parts contain local metadata files.
@@ -1357,6 +1364,11 @@ class ClickhouseCTL:
                 except FileNotFoundError:
                     logging.warning(
                         'Detached part directory disappeared while scanning: "{}"',
+                        entry.path,
+                    )
+                except PermissionError:
+                    logging.warning(
+                        'Detached part directory is not accessible and will be skipped: "{}"',
                         entry.path,
                     )
 
