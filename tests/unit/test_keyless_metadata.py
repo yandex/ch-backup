@@ -145,6 +145,7 @@ def test_read_legacy_metadata_preserves_encryption_defaults(encrypted, key):
     [
         (b"5\n1\t3\n3\tdata/key\n0\n0\n\n", False, True),
         (b"5\n0\t0\n0\n0\nINLINE_SECRET\n", False, False),
+        (b"5\n0\t0\n0\n0\n\nTRAILING_SECRET\n", False, False),
         (b"6\n0\t0\n0\n0\nUNKNOWN_CONTENT\n", False, False),
         (b"not metadata", False, False),
         (b"5\n0\t0\n0\n0\nINLINE_SECRET\n", True, True),
@@ -161,7 +162,7 @@ def test_rewritten_cloud_metadata_is_checked_before_upload(data, safe, encrypted
     else:
         with pytest.raises(StorageError, match="Cannot publish unencrypted") as error:
             layout.upload_cloud_storage_metadata_files(backup, "disks/table.tar", files)
-        assert "INLINE_SECRET" not in str(error.value)
+        assert "SECRET" not in str(error.value)
         get_loader(layout).upload_data_tarball.assert_not_called()
 
 

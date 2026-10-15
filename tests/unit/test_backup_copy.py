@@ -985,7 +985,7 @@ def test_cloud_source_overrides_are_independent(
         base["endpoint_url"] = "https://s3.mds.yandex.net"
     if stored_source:
         base = {
-            "endpoint_url": "http://previous:9000",
+            "endpoint_url": base["endpoint_url"],
             "bucket": "previous",
             "path": "previous/b1",
         }
@@ -1121,14 +1121,41 @@ def test_explicit_cloud_source_without_disk_configuration(version: int) -> None:
     )
 
 
-def test_cloud_storage_of_copied_backup() -> None:
+def test_copy_rejects_unconfigured_stored_endpoint_before_requests() -> None:
+    ctx = _cloud_storage_context()
+    ctx.target_config["copy"]["server_side_copy"] = True
+    # Bucket/path overrides must not authorize the endpoint from metadata.
+    ctx.target_config["copy"]["cloud_storage"]["source"].update(
+        bucket="source", path="data"
+    )
+    ctx.layout.backups["b1"].cloud_storage.source = {
+        "endpoint_url": "http://127.0.0.1:9000",
+        "bucket": "source",
+        "path": "data",
+    }
+
+    with pytest.raises(
+        ConfigurationError, match=r"copy\.cloud_storage\.source\.endpoint_url"
+    ):
+        ctx.copy(["b1"])
+
+    assert not ctx.store.probes
+    assert not ctx.target_layout.uploaded
+    assert not ctx.target_layout.copied
+
+
+@pytest.mark.parametrize("endpoint_override", [None, "http://other-s3:9000"])
+def test_cloud_storage_of_copied_backup(endpoint_override: str | None) -> None:
     ctx = _cloud_storage_context()
     ctx.ch_config.config = {}
     ctx.layout.backups["b1"].cloud_storage.source = {
-        "endpoint_url": "http://other-s3:9000",
+        "endpoint_url": (endpoint_override or ENDPOINT) + "/",
         "bucket": "copied-disk-data",
         "path": "prev/b1",
     }
+    ctx.target_config["copy"]["cloud_storage"]["source"][
+        "endpoint_url"
+    ] = endpoint_override
 
     ctx.copy(["b1"])
 
@@ -1141,8 +1168,8 @@ def test_cloud_storage_of_copied_backup() -> None:
         for e in ctx.target_layout.copied
         if e.dst_storage["credentials"]["bucket"] == "disk-copy"
     } == {
-        ("http://other-s3:9000", "copied-disk-data", "prev/b1/xyz/aaa"),
-        ("http://other-s3:9000", "copied-disk-data", "prev/b1/xyz/bbb"),
+        (endpoint_override or ENDPOINT, "copied-disk-data", "prev/b1/xyz/aaa"),
+        (endpoint_override or ENDPOINT, "copied-disk-data", "prev/b1/xyz/bbb"),
     }
 
 

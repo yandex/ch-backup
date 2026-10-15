@@ -115,6 +115,9 @@ def parse_object_storage_metadata(data: bytes) -> ObjectStorageMetadata:
         inline_data = ""
         if version >= VERSION_INLINE_DATA:
             inline_data = _unescape(lines[pos])
+            pos += 1
+        if any(lines[pos:]):
+            raise ObjectStorageMetadataError("Unexpected trailing content")
     except (IndexError, ValueError) as e:
         raise ObjectStorageMetadataError(
             f"Malformed object storage metadata: {e!r}"

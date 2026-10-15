@@ -206,7 +206,8 @@ How it works:
   `--cloud-storage-source-path`. Credentials can be overridden in the `copy.cloud_storage` config section.
   Disk metadata is unencrypted by default (`cloud_storage.encryption=false`); the saved flag
   continues to control reading of older encrypted archives. Before uploading an unencrypted
-  archive, ch-backup rejects malformed or unsupported disk metadata and nonempty inline file data.
+  archive, ch-backup rejects malformed or unsupported disk metadata, unexpected trailing content
+  and nonempty inline file data.
   Each file is limited to 1 MiB, checked and archived from the same bounded memory buffer.
   Larger disk metadata files also require `cloud_storage.encryption=true`.
   Such files require `cloud_storage.encryption=true`, and copying that backup requires a key.
@@ -218,6 +219,10 @@ How it works:
   Source endpoint, bucket and path overrides are applied independently: omitted fields retain the
   values from stored source metadata or disk configuration. An explicitly empty source path selects
   the bucket root.
+  A source endpoint from backup metadata must match the configured backup-storage or ClickHouse-disk
+  endpoint (ignoring trailing slashes). To copy from another endpoint, set
+  `copy.cloud_storage.source.endpoint_url` explicitly in the target configuration.
+  Otherwise, copy fails before making requests to the stored endpoint.
   For version-5 metadata containing full object keys, a source path override replaces the original
   prefix from stored source metadata or disk configuration. Copy fails before writing if that prefix
   is unknown or a key is outside it. Without a path override, full keys are read as stored.
