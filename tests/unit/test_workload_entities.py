@@ -7,8 +7,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from ch_backup.backup_context import BackupContext
+from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.models import WorkloadEntityType
-from ch_backup.logic.workload_entities import WorkloadEntitiesBackup, WorkloadEntity
+from ch_backup.logic.workload_entities import (
+    WorkloadEntitiesBackup,
+    WorkloadEntity,
+    get_config_workload_entity_names,
+)
 
 CONFIG_ENTITIES = """
     CREATE RESOURCE xml_s3_read (READ DISK s3);
@@ -40,6 +45,9 @@ def _context(
 
 
 def test_backup_takes_sql_entities_without_config_ones() -> None:
+    """
+    Entities from the server config are backed up with the config.
+    """
     context = _context(
         {
             "xml_all": "CREATE WORKLOAD xml_all",
@@ -56,6 +64,9 @@ def test_backup_takes_sql_entities_without_config_ones() -> None:
 
 
 def test_restore_skips_same_and_replaces_changed_entities_parents_first() -> None:
+    """
+    ClickHouse does not drop an entity referenced by others, so it is replaced in place.
+    """
     context = _context(
         on_server={
             "xml_all": "CREATE WORKLOAD xml_all",
@@ -85,6 +96,9 @@ def test_restore_skips_same_and_replaces_changed_entities_parents_first() -> Non
 
 
 def test_restore_fails_on_entity_of_another_type() -> None:
+    """
+    An entity of another type is not replaced.
+    """
     context = _context(
         on_server={"all": "CREATE RESOURCE `all` (READ DISK s3)"},
         in_backup={"all": "CREATE WORKLOAD `all`"},
@@ -96,11 +110,38 @@ def test_restore_fails_on_entity_of_another_type() -> None:
 
 
 def test_restore_fails_on_parent_missing_everywhere() -> None:
+    """
+    A workload is created only under an existing parent.
+    """
     context = _context(on_server={}, in_backup={"dev": "CREATE WORKLOAD dev IN user"})
 
     with pytest.raises(RuntimeError, match="Parent user for workload dev"):
         WorkloadEntitiesBackup().restore(cast(BackupContext, context))
     context.ch_ctl.restore_workload_entity.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        CONFIG_ENTITIES,
+        "-- io limits\nCREATE RESOURCE IF NOT EXISTS xml_s3_read ON CLUSTER c "
+        "(READ DISK s3);\ncreate or replace workload `xml_all`;\n"
+        "CREATE WORKLOAD xml_production IN xml_all",
+        {"@replace": "1", "#text": CONFIG_ENTITIES},
+    ],
+    ids=["statements", "other forms", "with attribute"],
+)
+def test_config_entity_names(config: str | dict) -> None:
+    """
+    A statement the restore can not parse must not fail a backup.
+    """
+    ch_config = SimpleNamespace(config={"resources_and_workloads": config})
+
+    assert get_config_workload_entity_names(cast(ClickhouseConfig, ch_config)) == {
+        "xml_s3_read",
+        "xml_all",
+        "xml_production",
+    }
 
 
 @pytest.mark.parametrize(
@@ -216,6 +257,9 @@ def test_restore_fails_on_parent_missing_everywhere() -> None:
 def test_from_create_statement(
     statement, expected_name, expected_type, expected_parent
 ):
+    """
+    Name, type and parent are taken from a create statement.
+    """
     entity = WorkloadEntity.from_create_statement(statement)
     assert entity.name == expected_name
     assert entity.type == expected_type

@@ -365,21 +365,31 @@ def test_only_requested_objects_are_read() -> None:
     source.get_workload_entities_query.assert_not_called()
 
 
-def test_workload_entities_are_read_without_ones_from_server_config() -> None:
+def test_workload_entities_are_read_from_the_replica() -> None:
     """
-    ClickHouse does not let replace entities from the server config of this host.
+    Restore skips ones this host has the same and replaces others.
     """
-    layout = _layout(
-        _source(),
-        ch_config={"resources_and_workloads": "CREATE WORKLOAD xml_all;"},
-    )
+    local = _local(get_workload_entities_query={"user": "CREATE WORKLOAD user"})
+    layout = _layout(_source(), local)
 
     backup = layout.get_backup("replica1")
 
-    assert backup.get_workload_entities() == ["s3_read", "user"]
+    assert backup.get_workload_entities() == list(WORKLOADS)
     assert (
         layout.get_workload_entity_create_statement(backup, "user") == WORKLOADS["user"]
     )
+
+
+def test_workload_entity_of_another_type_fails_the_restore() -> None:
+    """
+    It is found before the restore changes the host.
+    """
+    local = _local(
+        get_workload_entities_query={"s3_read": "CREATE WORKLOAD s3_read IN xml_all"}
+    )
+
+    with pytest.raises(ClickhouseBackupError, match="s3_read is a resource"):
+        _layout(_source(), local).get_backup("replica1")
 
 
 def test_workload_entities_in_zookeeper_are_read_only_if_missing() -> None:

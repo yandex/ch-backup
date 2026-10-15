@@ -12,6 +12,12 @@ from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.models import WorkloadEntityType
 from ch_backup.logic.backup_manager import BackupManager
 
+CONFIG_ENTITY_NAME_RE = re.compile(
+    r"\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:WORKLOAD|RESOURCE)\s+"
+    r"(?:IF\s+NOT\s+EXISTS\s+)?(`[^`]+`|[^\s;(]+)",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class WorkloadEntity:
@@ -217,7 +223,8 @@ class WorkloadEntitiesBackup(BackupManager):
                 _walk_to_parents(workload_map[parent])
             elif parent is not None and parent not in existing:
                 raise RuntimeError(
-                    f"Parent {parent} for workload {entity.name} doesn't exist in backup"
+                    f"Parent {parent} for workload {entity.name} doesn't exist in backup "
+                    "or on the server"
                 )
 
             result.append(entity)
@@ -234,11 +241,9 @@ def get_config_workload_entity_names(ch_config: ClickhouseConfig) -> set[str]:
     config. ClickHouse shows them with ones created by SQL but does not let replace them.
     """
     statements = ch_config.config.get("resources_and_workloads") or ""
-    return {
-        WorkloadEntity.from_create_statement(statement).name
-        for statement in statements.split(";")
-        if statement.strip()
-    }
+    if isinstance(statements, dict):
+        statements = statements.get("#text", "")
+    return {name.strip("`") for name in CONFIG_ENTITY_NAME_RE.findall(statements)}
 
 
 def _normalize(statement: str) -> str:
