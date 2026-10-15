@@ -162,8 +162,22 @@ How it works:
   so large failure reports do not accumulate entirely in RAM. Copy tasks are drained in batches
   of at most 256 objects; the validated object plan and backup metadata still take memory
   proportional to their size.
-- Backup data is copied as is, without decryption. Therefore, encryption settings (`encryption.type`,
-  `encryption.key`, `encryption.chunk_size`) and `compression.type` must be the same for both storages.
+- New backups store `backup_struct.json` and `backup_light_struct.json` as plaintext JSON,
+  with `meta.metadata_encrypted=false`. This does not change `meta.encrypted`, which describes
+  encryption of data and schema. DDL, access control, named collections and UDF definitions
+  retain their encryption. The public JSON exposes names, paths, sizes, checksums, deduplication
+  links, labels and failure messages; do not put secrets in labels.
+- Backup data is copied as is, without decryption. New backups can be copied with
+  `encryption.type=nacl` and no `encryption.key` configured on either side. Encryption settings
+  (`encryption.type`, `encryption.chunk_size`, and keys when provided) and `compression.type`
+  must match between the copy configs. Restore still needs the original encryption key.
+  Reading and restoring old backups remains supported, including encrypted full JSON and
+  S3 metadata archives. Missing encryption flags keep their historical defaults of `true`.
+  Legacy encrypted metadata, including metadata of deduplication dependencies, still requires
+  its original key when it must be read. Local deduplicated parts can be materialized from
+  the file list in the selected backup without reading the owner's metadata.
+  To start an independent series of keyless-copyable backups,
+  set `backup.deduplication_start_time` to the beginning of the series when enabling the new format.
 - If both buckets belong to the same S3 service and are accessible with the same credentials, objects
   are copied on the server side. Otherwise, data is streamed through ch-backup. Server-side copy can be
   disabled with `--no-server-side-copy`.
@@ -190,9 +204,25 @@ How it works:
   The location of the source objects is taken from ClickHouse configuration of the disk (so the command
   should be run on a host of the source cluster), or it can be set with `--cloud-storage-source-bucket` and
   `--cloud-storage-source-path`. Credentials can be overridden in the `copy.cloud_storage` config section.
+  Disk metadata is unencrypted by default (`cloud_storage.encryption=false`); the saved flag
+  continues to control reading of older encrypted archives. Before uploading an unencrypted
+  archive, ch-backup rejects malformed or unsupported disk metadata, unexpected trailing content
+  and nonempty inline file data.
+  Each file is limited to 1 MiB, checked and archived from the same bounded memory buffer.
+  Larger disk metadata files also require `cloud_storage.encryption=true`.
+  Such files require `cloud_storage.encryption=true`, and copying that backup requires a key.
+  The flag only controls disk metadata: blobs retain the encryption applied by ClickHouse or S3.
+  To use a separate worker, provide source endpoint, bucket, path and credentials explicitly;
+  neither a local ClickHouse configuration nor a connection to the source server is required.
+  Without the original disk configuration, leave the source path unset for V5 metadata to
+  copy its full object keys as stored; set the source prefix for older relative-key metadata.
   Source endpoint, bucket and path overrides are applied independently: omitted fields retain the
   values from stored source metadata or disk configuration. An explicitly empty source path selects
   the bucket root.
+  A source endpoint from backup metadata must match the configured backup-storage or ClickHouse-disk
+  endpoint (ignoring trailing slashes). To copy from another endpoint, set
+  `copy.cloud_storage.source.endpoint_url` explicitly in the target configuration.
+  Otherwise, copy fails before making requests to the stored endpoint.
   For version-5 metadata containing full object keys, a source path override replaces the original
   prefix from stored source metadata or disk configuration. Copy fails before writing if that prefix
   is unknown or a key is outside it. Without a path override, full keys are read as stored.

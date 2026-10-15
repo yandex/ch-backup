@@ -466,7 +466,7 @@ class TestCloudStorageFlags:
         [
             ({"encryption": False, "compression": False}, False, False),
             ({"encryption": True, "compression": True}, True, True),
-            ({}, True, True),
+            ({}, False, True),
         ],
         ids=["disabled", "enabled", "absent"],
     )
@@ -475,7 +475,7 @@ class TestCloudStorageFlags:
     ) -> None:
         """
         The options decide whether cloud storage metadata is encrypted and
-        compressed. Absent, they keep the default of doing both.
+        compressed. By default metadata is public and compressed.
         """
         backup_meta = self._backup_with_cloud_conf(cloud_conf)
 

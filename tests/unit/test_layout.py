@@ -21,11 +21,7 @@ def make_layout() -> BackupLayout:
     """Helper: build a BackupLayout with a mocked storage loader."""
     config: dict = copy.deepcopy(DEFAULT_CONFIG)
     config["backup"]["path_root"] = "ch_backup"
-    with (
-        patch("ch_backup.backup.layout.StorageLoader"),
-        patch("ch_backup.backup.layout.get_encryption") as get_encryption,
-    ):
-        get_encryption.return_value.metadata_size.return_value = 0
+    with patch("ch_backup.backup.layout.StorageLoader"):
         layout = BackupLayout(config)  # type: ignore[arg-type]
     setattr(layout, "_storage_loader", MagicMock())
     return layout
@@ -200,10 +196,9 @@ class TestCloudStorageMetadataUpload:
         source_disk = Disk("s3_backup", "/var/lib/clickhouse/disks/s3_backup/", "s3")
         table = self._make_table(disk)
 
-        with patch("ch_backup.backup.layout.dir_is_empty", return_value=False):
-            layout.upload_cloud_storage_metadata(
-                self._make_backup_meta(), disk, table, source_disk=source_disk
-            )
+        layout.upload_cloud_storage_metadata(
+            self._make_backup_meta(), disk, table, source_disk=source_disk
+        )
 
         kwargs = loader.upload_files_tarball_scan.call_args.kwargs
         assert kwargs["dir_path"] == (
@@ -223,8 +218,7 @@ class TestCloudStorageMetadataUpload:
         disk = Disk("s3", "/var/lib/clickhouse/disks/s3/", "s3")
         table = self._make_table(disk)
 
-        with patch("ch_backup.backup.layout.dir_is_empty", return_value=False):
-            layout.upload_cloud_storage_metadata(self._make_backup_meta(), disk, table)
+        layout.upload_cloud_storage_metadata(self._make_backup_meta(), disk, table)
 
         kwargs = loader.upload_files_tarball_scan.call_args.kwargs
         assert kwargs["dir_path"] == (

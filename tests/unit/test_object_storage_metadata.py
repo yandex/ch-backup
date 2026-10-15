@@ -123,6 +123,8 @@ def test_replace_object_keys_with_wrong_number_of_keys() -> None:
         pytest.param(b"not a metadata file", id="garbage"),
         pytest.param(b"3\n2\t20\n10\tabc\n", id="truncated"),
         pytest.param(b"3\n1\t10\n10\tabc\n0\nmaybe\n", id="invalid read-only flag"),
+        pytest.param(b"2\n0\t0\n0\nTRAILING_SECRET\n", id="trailing content v2"),
+        pytest.param(b"5\n0\t0\n0\n0\n\nTRAILING_SECRET\n", id="trailing content v5"),
     ],
 )
 def test_malformed(data: bytes) -> None:

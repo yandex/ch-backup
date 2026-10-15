@@ -81,7 +81,7 @@ class TableBackup(BackupManager):
 
         backup_name = context.backup_meta.get_sanitized_name()
 
-        encrypted = context.cloud_conf.get("encryption", True)
+        encrypted = context.cloud_conf.get("encryption", False)
         if encrypted:
             logging.debug('Cloud storage "shadow" backup will be encrypted')
         context.backup_meta.cloud_storage.encrypted = encrypted

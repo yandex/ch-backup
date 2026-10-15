@@ -5,7 +5,7 @@ Pipeline builder.
 from functools import reduce
 from math import ceil
 from pathlib import Path
-from typing import Any, BinaryIO, Iterable, Sequence, Union
+from typing import Any, BinaryIO, Callable, Iterable, Sequence, Union
 
 from pypeln import utils as pypeln_utils
 from pypeln.thread.api.from_iterable import from_iterable
@@ -118,6 +118,7 @@ class PipelineBuilder:
         dir_path: Path,
         tar_base_dir: str | None = None,
         exclude_file_names: list[str] | None = None,
+        file_reader: Callable[[Path], bytes] | None = None,
     ) -> "PipelineBuilder":
         """
         Build reading files to tarball stage.
@@ -128,7 +129,11 @@ class PipelineBuilder:
         self.append(
             thread_input(
                 ReadFilesTarballScanStage(
-                    stage_config, dir_path, tar_base_dir, exclude_file_names
+                    stage_config,
+                    dir_path,
+                    tar_base_dir,
+                    exclude_file_names,
+                    file_reader,
                 ),
                 maxsize=queue_size,
             )
