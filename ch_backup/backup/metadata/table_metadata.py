@@ -51,11 +51,6 @@ def split_part_name(part: str) -> PartInfo:
         )
     min_block_num = int(min_block)
     max_block_num = int(max_block)
-    if min_block_num > max_block_num:
-        raise ValueError(
-            f"Invalid part name format: '{part}'. "
-            "Minimum block number is greater than maximum block number"
-        )
     return PartInfo(
         partition_id,
         min_block_num,

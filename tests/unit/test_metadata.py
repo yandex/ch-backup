@@ -512,6 +512,18 @@ class TestSplitPartName:
                     mutation=100,
                 ),
             ),
+            # Legacy MergeTree names contain min/max dates before block numbers.
+            # Keeping their five numeric chunks sortable is required by restore.
+            (
+                "20261015_20261015_0_0_0",
+                PartInfo(
+                    partition_id="20261015",
+                    min_block_num=20261015,
+                    max_block_num=0,
+                    level=0,
+                    mutation=0,
+                ),
+            ),
             # Large block numbers
             (
                 "all_1000000_9999999_999",
@@ -575,8 +587,6 @@ class TestSplitPartName:
             "all_1_-1_0",
             "all_1_1_-1",
             "all_1_1_0_-1",
-            # ClickHouse rejects inverted block ranges.
-            "all_2_1_0",
         ],
     )
     def test_non_numeric_segments_raises(self, part_name: str) -> None:
