@@ -15,7 +15,11 @@ import pytest
 from ch_backup.backup.copier import BackupCopier
 from ch_backup.backup.copy_report import CopyReport, print_copy_report
 from ch_backup.backup.layout import BackupLayout
-from ch_backup.backup.metadata import BackupMetadata, BackupState
+from ch_backup.backup.metadata import (
+    BackupMetadata,
+    BackupState,
+    DetachedPartMetadata,
+)
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import (
     ClickhouseBackupError,
@@ -284,6 +288,41 @@ class CopyTestContext:
 def _with_files(ctx: CopyTestContext, backup_name: str, files: dict[str, int]) -> None:
     for path, size in files.items():
         ctx.src_objects[f"ch_backup/{backup_name}/{path}"] = size
+
+
+def test_copy_backup_with_detached_object_storage_metadata() -> None:
+    backup = _backup("b1")
+    backup.add_detached_part(
+        DetachedPartMetadata(
+            database="db1",
+            table="t1",
+            name="all_1_1_0",
+            reason="",
+            checksum="checksum",
+            size=100,
+            files=["checksums.txt"],
+            tarball=True,
+            disk_name="object_storage",
+            object_storage=True,
+        )
+    )
+    ctx = CopyTestContext([backup])
+    ctx.target_config["copy"]["server_side_copy"] = False
+    _with_files(
+        ctx,
+        "b1",
+        {
+            "backup_struct.json": 10,
+            "backup_light_struct.json": 10,
+            "detached/db1/t1/object_storage/all_1_1_0/all_1_1_0.tar": 100,
+        },
+    )
+
+    assert ctx.copy() == (["b1"], [])
+    assert (
+        "ch_backup/b1/detached/db1/t1/object_storage/all_1_1_0/all_1_1_0.tar"
+        in ctx.copied_paths()
+    )
 
 
 def test_copy_backup() -> None:

@@ -232,6 +232,42 @@ How it works:
   Restore preserves the HTTP/HTTPS scheme of the stored endpoint. Its `--cloud-storage-source-endpoint`
   option accepts a full HTTP(S) URL or `host[:port]`; the latter uses the original disk's scheme.
 
+### Detached parts
+
+Detached MergeTree parts can be included explicitly with `--detached-parts`.
+The existing `--databases` and `--tables` options select their tables; optional
+`--detached-parts-disks` and `--detached-parts-reasons` comma-separated filters
+select disks and detach reasons. The disk list defaults to `object_storage`;
+with no reason filter, every detached part on the selected disks is copied.
+Use an empty reason argument for parts detached by a user:
+
+```bash
+ch-backup backup --detached-parts --tables db.table \
+    --detached-parts-disks object_storage,archive_storage \
+    --detached-parts-reasons ''
+```
+
+The feature is CLI-only and remains disabled unless `--detached-parts` is
+passed. Disk names select their actual table directories; the value reported
+by `system.detached_parts` is not used, so cache-disk naming differences
+between ClickHouse versions do not affect selection.
+
+Detached parts are scanned and uploaded on a best-effort basis without a
+point-in-time snapshot. A part created during the backup may be omitted; a part
+that disappears or becomes inaccessible during scanning or upload is skipped
+with a warning. Only successfully uploaded detached parts are added to backup
+metadata, and an individual detached-part failure does not fail the regular
+table backup. Executor failures and termination signals still abort the backup.
+
+Restore currently ignores detached-part metadata: it neither writes to the
+table's `detached` directory nor attaches the backed-up parts automatically.
+
+For object-storage disks, the archive contains the local part metadata files,
+not the referenced bucket objects, and its recorded size is the aligned size
+of those metadata files. `--copy-cloud-storage-data` still copies active table
+parts, but emits a warning and keeps detached parts metadata-only. Such backup
+archives are copied normally by `ch-backup copy`.
+
 ## Testing
 
 ### Regression

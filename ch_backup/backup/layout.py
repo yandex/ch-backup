@@ -26,12 +26,13 @@ from nacl.exceptions import CryptoError
 from ch_backup import logging
 from ch_backup.backup.metadata import (
     BackupMetadata,
+    DetachedPartMetadata,
     PartMetadata,
     sanitize_backup_name,
 )
 from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.calculators import calc_encrypted_size, calc_tarball_size
-from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
+from ch_backup.clickhouse.models import Database, DetachedPart, Disk, FrozenPart, Table
 from ch_backup.clickhouse.object_storage_metadata import (
     ObjectStorageMetadataError,
     parse_object_storage_metadata,
@@ -284,6 +285,41 @@ class BackupLayout:
             disk.path, backup_meta.get_sanitized_name(), table.path_on_disk
         )
         return not dir_is_empty(shadow_path, CLOUD_STORAGE_EXCLUDE_FILE_NAMES)
+
+    def upload_detached_part(
+        self,
+        backup_meta: BackupMetadata,
+        detached_part: DetachedPart,
+        callback: Callable,
+    ) -> None:
+        """Upload a detached part without removing it from ClickHouse storage."""
+        logging.debug(
+            'Uploading detached data part {} of "{}"."{}" from disk {}',
+            detached_part.name,
+            detached_part.database,
+            detached_part.table,
+            detached_part.disk_name,
+        )
+        remote_dir_path = _detached_part_path(
+            self.get_backup_path(backup_meta.name),
+            detached_part.database,
+            detached_part.table,
+            detached_part.disk_name,
+            detached_part.name,
+        )
+        remote_path = os.path.join(remote_dir_path, detached_part.name + ".tar")
+        try:
+            self._storage_loader.upload_files_tarball(
+                dir_path=detached_part.path,
+                files=detached_part.files,
+                remote_path=remote_path,
+                is_async=True,
+                encryption=backup_meta.encrypted,
+                delete=False,
+                callback=callback,
+            )
+        except Exception as e:
+            raise StorageError(f"Failed to create async upload of {remote_path}") from e
 
     def upload_cloud_storage_metadata(
         self,
@@ -809,6 +845,41 @@ class BackupLayout:
 
         return True
 
+    def check_detached_part(self, backup_name: str, part: DetachedPartMetadata) -> bool:
+        """Check availability and size of a detached part archive."""
+        try:
+            remote_dir_path = self._get_escaped_if_exists(
+                _detached_part_path,
+                self.get_backup_path(backup_name),
+                part.database,
+                part.table,
+                part.disk_name,
+                part.name,
+            )
+            remote_files = self._storage_loader.list_dir(remote_dir_path)
+            if remote_files != [f"{part.name}.tar"]:
+                logging.warning(
+                    "Detached part archive was not found in {}", remote_dir_path
+                )
+                return False
+
+            actual_size = self._storage_loader.get_file_size(
+                os.path.join(remote_dir_path, f"{part.name}.tar")
+            )
+            target_size = self._target_part_size(part, encrypted=part.encrypted)
+            if target_size != actual_size:
+                logging.warning(
+                    f"Detached part {part.name} size does not match {target_size} != {actual_size}"
+                )
+                return False
+            return True
+        except S3RetryingError:
+            logging.warning(
+                f"Failed to check detached data part {part.name}, consider it broken",
+                exc_info=True,
+            )
+            return False
+
     def get_cloud_storage_metadata_remote_paths(
         self,
         backup_name: str,
@@ -1137,6 +1208,28 @@ class BackupLayout:
         if index % 256:
             self.wait(keep_going=keep_going)
 
+    def delete_detached_parts(
+        self,
+        backup_meta: BackupMetadata,
+        parts: Sequence[DetachedPartMetadata],
+    ) -> None:
+        """Delete detached part archives from backup storage."""
+        if not parts:
+            return
+        deleting_files: list[str] = []
+        for part in parts:
+            part_path = self._get_escaped_if_exists(
+                _detached_part_path,
+                self.get_backup_path(backup_meta.name),
+                part.database,
+                part.table,
+                part.disk_name,
+                part.name,
+            )
+            logging.debug("Deleting detached data part {}", part_path)
+            deleting_files.append(os.path.join(part_path, f"{part.name}.tar"))
+        self._delete_files(deleting_files)
+
     def wait(self, keep_going: bool = False) -> None:
         """
         Wait for completion of data upload and download.
@@ -1192,7 +1285,9 @@ class BackupLayout:
     def _backup_light_metadata_path(self, backup_name: str) -> str:
         return os.path.join(self.get_backup_path(backup_name), BACKUP_LIGHT_META_FNAME)
 
-    def _target_part_size(self, part: PartMetadata, encrypted: bool) -> int:
+    def _target_part_size(
+        self, part: PartMetadata | DetachedPartMetadata, encrypted: bool
+    ) -> int:
         """
         Predicts tar archive size after encryption.
         """
@@ -1318,6 +1413,30 @@ def _part_path(
             backup_path, "data", _quote(db_name), _quote(table_name), part_name
         )
     return os.path.join(backup_path, "data", db_name, table_name, part_name)
+
+
+# pylint: disable=too-many-positional-arguments
+def _detached_part_path(
+    backup_path: str,
+    db_name: str,
+    table_name: str,
+    disk_name: str,
+    part_name: str,
+    escape_names: bool = True,
+) -> str:
+    """Return storage path to a detached part archive."""
+    if escape_names:
+        return os.path.join(
+            backup_path,
+            "detached",
+            _quote(db_name),
+            _quote(table_name),
+            _quote(disk_name),
+            _quote(part_name),
+        )
+    return os.path.join(
+        backup_path, "detached", db_name, table_name, disk_name, part_name
+    )
 
 
 def _disk_metadata_path(
