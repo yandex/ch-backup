@@ -200,10 +200,9 @@ class TestCloudStorageMetadataUpload:
         source_disk = Disk("s3_backup", "/var/lib/clickhouse/disks/s3_backup/", "s3")
         table = self._make_table(disk)
 
-        with patch("ch_backup.backup.layout.scan_dir_files", return_value=[]):
-            layout.upload_cloud_storage_metadata(
-                self._make_backup_meta(), disk, table, source_disk=source_disk
-            )
+        layout.upload_cloud_storage_metadata(
+            self._make_backup_meta(), disk, table, source_disk=source_disk
+        )
 
         kwargs = loader.upload_files_tarball_scan.call_args.kwargs
         assert kwargs["dir_path"] == (
@@ -223,8 +222,7 @@ class TestCloudStorageMetadataUpload:
         disk = Disk("s3", "/var/lib/clickhouse/disks/s3/", "s3")
         table = self._make_table(disk)
 
-        with patch("ch_backup.backup.layout.scan_dir_files", return_value=[]):
-            layout.upload_cloud_storage_metadata(self._make_backup_meta(), disk, table)
+        layout.upload_cloud_storage_metadata(self._make_backup_meta(), disk, table)
 
         kwargs = loader.upload_files_tarball_scan.call_args.kwargs
         assert kwargs["dir_path"] == (

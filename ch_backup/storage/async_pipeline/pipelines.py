@@ -8,6 +8,7 @@ from typing import (
     Any,
     AnyStr,
     BinaryIO,
+    Callable,
     Iterator,
     Sequence,
 )
@@ -111,6 +112,7 @@ def upload_files_tarball_scan_pipeline(
     compression: bool,
     tar_base_dir: str | None = None,
     exclude_file_names: list[str] | None = None,
+    file_reader: Callable[[Path], bytes] | None = None,
 ) -> None:
     """
     Entrypoint of upload files tarball pipeline.
@@ -124,7 +126,7 @@ def upload_files_tarball_scan_pipeline(
         base_path, estimated_size, exclude_file_names
     )
     builder.build_read_files_tarball_scan_stage(
-        base_path, tar_base_dir, exclude_file_names
+        base_path, tar_base_dir, exclude_file_names, file_reader
     )
     if compression:
         builder.build_compress_stage()

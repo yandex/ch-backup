@@ -3,6 +3,7 @@ Module providing API for storage management (upload and download data, check
 remote path on existence, etc.).
 """
 
+from pathlib import Path
 from typing import BinaryIO, Callable, Sequence
 
 from ch_backup.storage.async_pipeline.pipeline_executor import PipelineExecutor
@@ -107,10 +108,14 @@ class StorageLoader:
         delete: bool = False,
         callback: Callable | None = None,
         compression: bool = False,
+        file_reader: Callable[[Path], bytes] | None = None,
     ) -> str:
         """
         Scan given directory for files a upload them as tarball.
         Do not load all file names in memory.
+
+        If file_reader is set, archive its returned bytes without rereading the file.
+        The reader must bound its memory usage and be picklable for async uploads.
 
         If delete is True, the file will be deleted after upload.
         """
@@ -124,6 +129,7 @@ class StorageLoader:
             delete=delete,
             callback=callback,
             compression=compression,
+            file_reader=file_reader,
         )
         return remote_path
 

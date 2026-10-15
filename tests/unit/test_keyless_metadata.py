@@ -5,19 +5,27 @@
 
 import copy
 import json
+import tarfile
+from io import BytesIO
 from pathlib import Path
-from typing import cast
+from typing import Iterator, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ch_backup.backup.layout import BackupLayout
+from ch_backup.backup.layout import (
+    MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE,
+    BackupLayout,
+)
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
 from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.clickhouse.models import Database, Disk
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.encryption import get_encryption
 from ch_backup.exceptions import ConfigurationError, StorageError
+from ch_backup.storage.async_pipeline.stages.filesystem.read_files_tarball_stage import (
+    ReadFilesTarballScanStage,
+)
 
 KEY = "a" * 32
 
@@ -157,20 +165,60 @@ def test_rewritten_cloud_metadata_is_checked_before_upload(data, safe, encrypted
         get_loader(layout).upload_data_tarball.assert_not_called()
 
 
-def test_frozen_inline_data_is_rejected_before_upload(tmp_path: Path) -> None:
+def cloud_metadata_stream(tmp_path: Path) -> Iterator[bytes]:
     layout = make_layout()
     backup = make_backup()
     backup.cloud_storage.encrypted = False
-    (tmp_path / "part").mkdir()
-    (tmp_path / "part" / "data.bin").write_bytes(b"5\n1\t3\n3\tdata/key\n0\n0\n\n")
-    (tmp_path / "frozen_metadata.txt").write_text("service metadata", encoding="utf-8")
-    (tmp_path / "part" / "inline.bin").write_bytes(b"4\n0\t0\n0\n0\nSECRET\n")
     table = MagicMock(path_on_disk="store/uuid", database="db", name="table")
     table.name = "table"
     disk = Disk("s3", str(tmp_path), "s3")
     with patch(
         "ch_backup.backup.layout._table_shadow_path", return_value=str(tmp_path)
     ):
+        layout.upload_cloud_storage_metadata(backup, disk, table)
+    kwargs = get_loader(layout).upload_files_tarball_scan.call_args.kwargs
+    assert kwargs["is_async"] and not kwargs["encryption"]
+    return ReadFilesTarballScanStage(
+        {"chunk_size": 16},
+        Path(kwargs["dir_path"]),
+        tar_base_dir=kwargs["tar_base_dir"],
+        exclude_file_names=kwargs["exclude_file_names"],
+        file_reader=kwargs["file_reader"],
+    )()
+
+
+@pytest.mark.parametrize("after_validation", [False, True])
+def test_frozen_metadata_change_cannot_publish_inline_data(tmp_path, after_validation):
+    safe = b"5\n1\t3\n3\tdata/key\n0\n0\n\n"
+    file_path = tmp_path / "data.bin"
+    file_path.write_bytes(safe)
+    (tmp_path / "frozen_metadata.txt").write_text("service metadata", encoding="utf-8")
+    stream = cloud_metadata_stream(tmp_path)
+
+    # A yielded header means validation finished, but the payload has not been read yet.
+    header = next(stream) if after_validation else b""
+    file_path.write_bytes(b"4\n0\t0\n0\n0\nINLINE_SECRET\n")
+    if after_validation:
+        with tarfile.open(fileobj=BytesIO(header + b"".join(stream))) as archive:
+            assert archive.getnames() == ["store/uuid/data.bin"]
+            content = archive.extractfile("store/uuid/data.bin")
+            assert content is not None
+            assert content.read() == safe
+    else:
         with pytest.raises(StorageError, match="inline file data"):
-            layout.upload_cloud_storage_metadata(backup, disk, table)
-        get_loader(layout).upload_files_tarball_scan.assert_not_called()
+            next(stream)
+
+
+def test_large_frozen_metadata_is_rejected_with_bounded_read(tmp_path: Path) -> None:
+    file_path = tmp_path / "data.bin"
+    with file_path.open("wb") as source:
+        source.truncate(128 * 1024 * 1024)
+    stream = cloud_metadata_stream(tmp_path)
+    with file_path.open("rb") as source:
+        reader = MagicMock(wraps=source)
+        reader.__enter__.return_value = reader
+        with patch.object(Path, "open", return_value=reader):
+            with pytest.raises(StorageError, match="larger than 1 MiB"):
+                next(stream)
+        reader.read.assert_called_once_with(MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE + 1)
+        assert source.tell() == MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE + 1

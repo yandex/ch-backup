@@ -207,6 +207,8 @@ How it works:
   Disk metadata is unencrypted by default (`cloud_storage.encryption=false`); the saved flag
   continues to control reading of older encrypted archives. Before uploading an unencrypted
   archive, ch-backup rejects malformed or unsupported disk metadata and nonempty inline file data.
+  Each file is limited to 1 MiB, checked and archived from the same bounded memory buffer.
+  Larger disk metadata files also require `cloud_storage.encryption=true`.
   Such files require `cloud_storage.encryption=true`, and copying that backup requires a key.
   The flag only controls disk metadata: blobs retain the encryption applied by ClickHouse or S3.
   To use a separate worker, provide source endpoint, bucket, path and credentials explicitly;

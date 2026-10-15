@@ -46,7 +46,6 @@ from ch_backup.util import (
     CLOUD_STORAGE_EXCLUDE_FILE_NAMES,
     dir_is_empty,
     escape_metadata_file_name,
-    scan_dir_files,
 )
 
 BACKUP_META_FNAME = "backup_struct.json"
@@ -56,6 +55,7 @@ DATABASES_FNAME = "databases.tar"
 COMPRESSED_EXTENSION = ".gz"
 CLOUD_STORAGE_METADATA_DIR = "disks"
 CLOUD_STORAGE_DATA_DIR = "cloud_storage"
+MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE = 1024 * 1024
 
 
 # pylint: disable=too-many-public-methods
@@ -317,13 +317,6 @@ class BackupLayout:
         logging.debug(f'Uploading "{shadow_path}" content to "{remote_path}"')
 
         try:
-            if not backup_meta.cloud_storage.encrypted:
-                self._validate_plaintext_cloud_metadata(
-                    (str(path), (Path(shadow_path) / path).read_bytes())
-                    for path in scan_dir_files(
-                        Path(shadow_path), CLOUD_STORAGE_EXCLUDE_FILE_NAMES
-                    )
-                )
             self._storage_loader.upload_files_tarball_scan(
                 dir_path=shadow_path,
                 remote_path=remote_path,
@@ -333,6 +326,11 @@ class BackupLayout:
                 encryption=backup_meta.cloud_storage.encrypted,
                 delete=False,
                 compression=compression,
+                file_reader=(
+                    self._read_plaintext_cloud_metadata
+                    if not backup_meta.cloud_storage.encrypted
+                    else None
+                ),
             )
         except StorageError:
             raise
@@ -943,6 +941,19 @@ class BackupLayout:
         except Exception as e:
             msg = f'Failed to create async upload of "{remote_path}"'
             raise StorageError(msg) from e
+
+    @staticmethod
+    def _read_plaintext_cloud_metadata(file_path: Path) -> bytes:
+        """Bound memory and return exactly the bytes checked for plaintext upload."""
+        with file_path.open("rb") as source:
+            data = source.read(MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE + 1)
+        if len(data) > MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE:
+            raise StorageError(
+                f'Cannot publish unencrypted disk metadata "{file_path}": '
+                "files larger than 1 MiB require cloud_storage.encryption=true"
+            )
+        BackupLayout._validate_plaintext_cloud_metadata([(str(file_path), data)])
+        return data
 
     @staticmethod
     def _validate_plaintext_cloud_metadata(files: Iterable[tuple[str, bytes]]) -> None:
