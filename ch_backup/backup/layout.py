@@ -64,7 +64,6 @@ class BackupLayout:
         self._access_control_path = config["clickhouse"]["access_control_path"]
         self._metadata_path = config["clickhouse"]["metadata_path"]
         self._named_collections_path = config["clickhouse"]["named_collections_path"]
-        self._workload_path = config["clickhouse"]["workload_path"]
         enc_conf = config["encryption"]
         self._encryption_chunk_size = enc_conf["chunk_size"]
         self._encryption_metadata_size = get_encryption(
@@ -397,25 +396,6 @@ class BackupLayout:
         )
         return self._storage_loader.download_data(remote_path, encryption=True)
 
-    def get_local_workload_entity_create_statement(
-        self, entity_name: str
-    ) -> str | None:
-        """
-        Read workload entity create statement from local file.
-        """
-        local_path = os.path.join(
-            self._workload_path, f"{escape_metadata_file_name(entity_name)}.sql"
-        )
-        try:
-            return Path(local_path).read_bytes().decode("utf-8")
-        except OSError as e:
-            logging.debug(
-                'Cannot load a create statement of the workload entity "{}": {}',
-                entity_name,
-                str(e),
-            )
-            return None
-
     def get_workload_entity_create_statement(
         self, backup_meta: BackupMetadata, filename: str
     ) -> str:
@@ -511,7 +491,7 @@ class BackupLayout:
             if backup:
                 backups.append(backup)
 
-        return sorted(backups, key=lambda b: b.start_time.isoformat(), reverse=True)
+        return sorted(backups, key=lambda b: b.start_time, reverse=True)
 
     def reload_backup(
         self, backup: BackupMetadata, use_light_meta: bool = False
@@ -739,29 +719,12 @@ class BackupLayout:
                 source_part_name,
             )
             remote_files = self._storage_loader.list_dir(remote_dir_path)
-
+            files = dict.fromkeys(remote_files, 0)
             if remote_files == [f"{source_part_name}.tar"]:
-                actual_size = self._storage_loader.get_file_size(
-                    os.path.join(remote_dir_path, f"{source_part_name}.tar")
+                files[remote_files[0]] = self._storage_loader.get_file_size(
+                    os.path.join(remote_dir_path, remote_files[0])
                 )
-                target_size = self._target_part_size(part, encrypted=part.encrypted)
-                if target_size != actual_size:
-                    logging.warning(
-                        f"Part {source_part_name} files stored in tar, size not match {target_size} != {actual_size}"
-                    )
-                    return False
-                return True
-
-            notfound_files = set(part.files) - set(remote_files)
-            if notfound_files:
-                logging.warning(
-                    "Some part files were not found in {}: {}",
-                    remote_dir_path,
-                    ", ".join(notfound_files),
-                )
-                return False
-
-            return True
+            return self.check_data_part_files(part, files)
 
         except S3RetryingError:
             logging.warning(
@@ -769,6 +732,62 @@ class BackupLayout:
                 exc_info=True,
             )
             return False
+
+    def get_table_data_files(
+        self, backup_name: str, database: str, table: str
+    ) -> dict[str, dict[str, int]]:
+        """
+        List data of a table stored in a backup at once: file sizes grouped by part name.
+
+        Backups made by older versions keep data under unescaped names, they are
+        listed if nothing is found under escaped ones. A failed listing gives no
+        files, so the parts are uploaded again.
+        """
+        backup_path = self.get_backup_path(backup_name)
+        try:
+            for escape_names in (True, False):
+                prefix = _part_path(
+                    backup_path, database, table, "", escape_names=escape_names
+                ).strip("/")
+                parts: dict[str, dict[str, int]] = {}
+                for key, size in self._storage_loader.list_dir_with_sizes(
+                    prefix
+                ).items():
+                    part_name, _, file_name = key[len(prefix) + 1 :].partition("/")
+                    parts.setdefault(part_name, {})[file_name] = size
+                if parts:
+                    return parts
+        except S3RetryingError:
+            logging.warning(
+                f"Failed to list data of {database}.{table} in backup {backup_name}, consider it's broken",
+                exc_info=True,
+            )
+        return {}
+
+    def check_data_part_files(self, part: PartMetadata, files: dict[str, int]) -> bool:
+        """
+        Check data of a part against sizes of its stored files keyed by file name.
+        """
+        tar_name = f"{part.deduplicated_part_name}.tar"
+        if list(files) == [tar_name]:
+            target_size = self._target_part_size(part, encrypted=part.encrypted)
+            if target_size != files[tar_name]:
+                logging.warning(
+                    f"Part {tar_name} size not match {target_size} != {files[tar_name]}"
+                )
+                return False
+            return True
+
+        notfound_files = set(part.files) - set(files)
+        if notfound_files:
+            logging.warning(
+                "Some files of part {} were not found: {}",
+                part.deduplicated_part_name,
+                ", ".join(notfound_files),
+            )
+            return False
+
+        return True
 
     def get_cloud_storage_metadata_remote_paths(
         self,

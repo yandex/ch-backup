@@ -279,18 +279,6 @@ DROP_NAMED_COLLECTION_SQL = strip_query(
 """
 )
 
-DROP_WORKLOAD_SQL = strip_query(
-    """
-    DROP WORKLOAD IF EXISTS `{entity_name}`
-"""
-)
-
-DROP_RESOURCE_SQL = strip_query(
-    """
-    DROP RESOURCE IF EXISTS `{entity_name}`
-"""
-)
-
 TRUNCATE_TABLE_IF_EXISTS_SQL = strip_query(
     """
     TRUNCATE TABLE IF EXISTS `{db_name}`.`{table_name}`
@@ -522,12 +510,35 @@ GET_NAMED_COLLECTIONS_QUERY_SQL = strip_query(
 """
 )
 
+GET_SQL_NAMED_COLLECTIONS_CREATE_QUERY_SQL = strip_query(
+    "SELECT name, create_query FROM system.named_collections WHERE source = 'SQL' FORMAT JSON"
+)
+GET_ACCESS_STORAGE_TYPES_SQL = strip_query(
+    "SELECT DISTINCT type FROM system.user_directories FORMAT JSON"
+)
+GET_LOCAL_ACCESS_ENTITIES_SQL = strip_query(
+    """
+    SELECT {columns} FROM system.{table}
+    WHERE storage IN (SELECT name FROM system.user_directories WHERE type = 'local_directory')
+    FORMAT JSON
+"""
+)
+SHOW_CREATE_ACCESS_ENTITY_SQL = strip_query("SHOW CREATE {type} {name} FORMAT TSVRaw")
+SHOW_GRANTS_SQL = strip_query("SHOW GRANTS FOR {name} FORMAT TSVRaw")
+DROP_ACCESS_ENTITY_SQL = strip_query("DROP {type} IF EXISTS {name}")
+ACCESS_ENTITY_TABLES = {
+    "ROLE": "roles",
+    "SETTINGS PROFILE": "settings_profiles",
+    "USER": "users",
+    "QUOTA": "quotas",
+}
+
 GET_WORKLOAD_ENTITIES_QUERY_SQL = strip_query(
     f"""
-    SELECT name, type FROM (
-        SELECT name, '{WorkloadEntityType.WORKLOAD.value}' AS type FROM system.workloads
+    SELECT name, type, create_query FROM (
+        SELECT name, '{WorkloadEntityType.WORKLOAD.value}' AS type, create_query FROM system.workloads
         UNION ALL
-        SELECT name, '{WorkloadEntityType.RESOURCE.value}' AS type FROM system.resources
+        SELECT name, '{WorkloadEntityType.RESOURCE.value}' AS type, create_query FROM system.resources
     )
     ORDER BY name
     FORMAT JSON
@@ -1048,6 +1059,87 @@ class ClickhouseCTL:
         """
         self._ch_client.query(nc_statement, sensitive=True)
 
+    def restore_access_entity(self, statement: str) -> None:
+        """
+        Run an access statement without retries.
+        """
+        self._ch_client.query(statement, sensitive=True, should_retry=False)
+
+    def get_local_access_statements(self) -> list[str]:
+        """
+        Return statements recreating local access entities. Roles and profiles refer to each
+        other and to users, so they are created bare and altered after users. ClickHouse
+        creates a user before it resolves GRANTEES and then fails on a grantee created later,
+        so users are created with IF NOT EXISTS to let the retry pass and are altered after
+        all are created. Grants go last.
+        """
+        entities = self._get_local_access_entities()
+        mutual = [(t, n) for t in ("ROLE", "SETTINGS PROFILE") for n in entities[t]]
+        users = [self._show_create_access_entity("USER", n) for n in entities["USER"]]
+        statements = [f"CREATE {t} {n}" for t, n in mutual]
+        statements += [
+            re.sub("^CREATE USER", "CREATE USER IF NOT EXISTS", s) for s in users
+        ]
+        statements += [
+            re.sub("^CREATE", "ALTER", self._show_create_access_entity(t, n))
+            for t, n in mutual
+        ]
+        statements += [re.sub("^CREATE", "ALTER", s) for s in users]
+        statements += [
+            self._show_create_access_entity(t, n)
+            for t in ("QUOTA", "ROW POLICY")
+            for n in entities[t]
+        ]
+        for name in entities["ROLE"] + entities["USER"]:
+            grants = self._ch_client.query(SHOW_GRANTS_SQL.format(name=name))
+            statements += grants.splitlines()
+        return statements
+
+    def drop_local_access_entities(self) -> None:
+        """
+        Drop local access entities.
+        """
+        for entity_type, names in self._get_local_access_entities().items():
+            for name in names:
+                self._ch_client.query(
+                    DROP_ACCESS_ENTITY_SQL.format(type=entity_type, name=name)
+                )
+
+    def get_access_storage_types(self) -> set[str]:
+        """
+        Return types of access storages.
+        """
+        resp = self._ch_client.query(GET_ACCESS_STORAGE_TYPES_SQL)
+        return {row["type"] for row in resp["data"]}
+
+    def _get_local_access_entities(self) -> dict[str, list[str]]:
+        """
+        Return quoted names of local access entities by type.
+        """
+        entities = {}
+        for entity_type, table in ACCESS_ENTITY_TABLES.items():
+            query_sql = GET_LOCAL_ACCESS_ENTITIES_SQL.format(
+                columns="name", table=table
+            )
+            rows = self._ch_client.query(query_sql)["data"]
+            entities[entity_type] = [_quote_or_any(row["name"]) for row in rows]
+        query_sql = GET_LOCAL_ACCESS_ENTITIES_SQL.format(
+            columns="short_name, database, table", table="row_policies"
+        )
+        entities["ROW POLICY"] = [
+            f"{_quote_or_any(row['short_name'])} ON "
+            f"{_quote_or_any(row['database'])}.{_quote_or_any(row['table'])}"
+            for row in self._ch_client.query(query_sql)["data"]
+        ]
+        return entities
+
+    def _show_create_access_entity(self, entity_type: str, name: str) -> str:
+        """
+        Return the create statement of an access entity.
+        """
+        query_sql = SHOW_CREATE_ACCESS_ENTITY_SQL.format(type=entity_type, name=name)
+        return self._ch_client.query(query_sql)
+
     def restore_workload_entity(self, entity_statement):
         """
         Restore workload entity (WORKLOAD or RESOURCE).
@@ -1120,18 +1212,6 @@ class ClickhouseCTL:
         Drop named collection.
         """
         self._ch_client.query(DROP_NAMED_COLLECTION_SQL.format(nc_name=escape(nc_name)))
-
-    def drop_workload(self, entity_name: str) -> None:
-        """
-        Drop WORKLOAD entity.
-        """
-        self._ch_client.query(DROP_WORKLOAD_SQL.format(entity_name=escape(entity_name)))
-
-    def drop_resource(self, entity_name: str) -> None:
-        """
-        Drop RESOURCE entity.
-        """
-        self._ch_client.query(DROP_RESOURCE_SQL.format(entity_name=escape(entity_name)))
 
     def system_drop_replica(self, replica: str, zookeeper_path: str) -> None:
         """
@@ -1241,6 +1321,7 @@ class ClickhouseCTL:
         data_path: str,
         backup_name: str,
         copy_data: bool = False,
+        fail_on_unparsable_metadata: bool = False,
     ) -> Iterable[FrozenPart]:
         """
         Yield frozen parts from specific disk and path.
@@ -1256,16 +1337,12 @@ class ClickhouseCTL:
             part = dir_entry.name
             part_path = dir_entry.path
             rel_paths = list_dir_files(part_path)
-            if disk.keeps_object_metadata:
-                checksum, objects_size = _get_cloud_part_checksum_and_size(
-                    part_path, rel_paths
+            if copy_data and disk.keeps_object_metadata:
+                checksum, size = _get_cloud_part_checksum_and_size(
+                    part_path, rel_paths, fail_on_unparsable_metadata
                 )
             else:
-                checksum, objects_size = _get_part_checksum(part_path), 0
-
-            if copy_data and disk.keeps_object_metadata:
-                size = objects_size
-            else:
+                checksum = _get_part_checksum(part_path)
                 abs_paths = [Path(part_path) / file for file in rel_paths]
                 size = calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE)
             logging.debug(
@@ -1379,15 +1456,33 @@ class ClickhouseCTL:
         resp = self._ch_client.query(GET_NAMED_COLLECTIONS_QUERY_SQL)
         return [row["name"] for row in resp.get("data", [])]
 
-    def get_workload_entities_query(self) -> list[tuple[str, WorkloadEntityType]]:
+    def get_named_collections_create_queries(self) -> dict[str, str]:
         """
-        Get workload entities (WORKLOADs and RESOURCEs) from system tables.
+        Return create statements of named collections created by SQL, shown since 25.5.
+        """
+        resp = self._ch_client.query(GET_SQL_NAMED_COLLECTIONS_CREATE_QUERY_SQL)
+        return {row["name"]: row["create_query"] for row in resp["data"]}
+
+    def get_workload_entities(self) -> dict[str, tuple[WorkloadEntityType, str]]:
+        """
+        Get workload entity names, types and live create queries from system tables.
         """
         resp = self._ch_client.query(GET_WORKLOAD_ENTITIES_QUERY_SQL)
-        return [
-            (row["name"], WorkloadEntityType(row["type"]))
+        return {
+            row["name"]: (WorkloadEntityType(row["type"]), row["create_query"])
             for row in resp.get("data", [])
-        ]
+        }
+
+    def format_query(self, query: str) -> str:
+        """
+        Canonicalize SQL using the server parser without changing literal values.
+        """
+        # Hex encoding preserves quotes, backslashes and whitespace in the input.
+        query_hex = query.encode("utf-8").hex()
+        resp = self._ch_client.query(
+            f"SELECT formatQuerySingleLine(unhex('{query_hex}')) AS query FORMAT JSON"
+        )
+        return resp["data"][0]["query"]
 
     def decrypt_aes_ctr(
         self, data_hex: str, key_hex: str, key_size: int, iv_hex: str
@@ -1644,7 +1739,7 @@ def _get_part_checksum(part_path: str) -> str:
 
 
 def _get_cloud_part_checksum_and_size(
-    part_path: str, rel_paths: Sequence[str]
+    part_path: str, rel_paths: Sequence[str], fail_on_unparsable: bool = False
 ) -> tuple[str, int]:
     """
     Calculate checksum and size of a part stored on an object storage disk.
@@ -1656,16 +1751,38 @@ def _get_cloud_part_checksum_and_size(
 
     The size is that of the objects: what a copy of the part weighs in the
     backup, unlike its metadata.
+
+    Metadata that cannot be parsed leaves the part described by its files, as
+    it was before the keys were read: such a checksum changes on every freeze,
+    so the part is never deduplicated. With fail_on_unparsable such metadata
+    fails the backup instead. An unreadable file is left to fail.
     """
     checksum = md5()  # nosec
     size = 0
-    for rel_path in sorted(rel_paths):
-        if rel_path in CLOUD_STORAGE_EXCLUDE_FILE_NAMES:
-            continue
-        checksum.update(rel_path.encode())
-        for object_key, object_size in _read_objects(os.path.join(part_path, rel_path)):
-            checksum.update(object_key.encode())
-            size += object_size
+    try:
+        for rel_path in sorted(rel_paths):
+            if rel_path in CLOUD_STORAGE_EXCLUDE_FILE_NAMES:
+                continue
+            checksum.update(rel_path.encode())
+            for object_key, object_size in _read_objects(
+                os.path.join(part_path, rel_path)
+            ):
+                checksum.update(object_key.encode())
+                size += object_size
+    except (ClickhouseBackupError, ValueError):
+        if fail_on_unparsable:
+            raise
+        logging.warning(
+            "Failed to parse object storage metadata of part {}, describing it by"
+            " its metadata files",
+            part_path,
+            exc_info=True,
+        )
+        abs_paths = [Path(part_path) / rel_path for rel_path in rel_paths]
+        return (
+            _get_part_checksum(part_path),
+            calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE),
+        )
 
     return checksum.hexdigest(), size
 
@@ -1685,6 +1802,13 @@ def _read_objects(metadata_path: str) -> list[tuple[str, int]]:
                 f"Failed to read objects of {metadata_path},"
                 f" metadata version {version}"
             ) from e
+
+
+def _quote_or_any(name: str) -> str:
+    """
+    Quote an identifier, or return * for an empty one, as a row policy table can be.
+    """
+    return f"`{escape(name)}`" if name else "*"
 
 
 def _format_string_array(value: Sequence[str]) -> str:

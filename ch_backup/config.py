@@ -4,6 +4,7 @@ config module defines Config class and default values
 
 import copy
 import socket
+from datetime import datetime, timezone
 from typing import Any
 
 import yaml
@@ -15,7 +16,26 @@ def _as_seconds(t: str) -> int:
     return int(parse_timespan(t))
 
 
-DEFAULT_CONFIG = {
+def as_datetime(value: Any) -> datetime | None:
+    """Parse an optional timezone-aware ISO timestamp and normalize it to UTC."""
+    if value is None:
+        return None
+
+    error = "Expected an ISO 8601 timestamp with a timezone, or null"
+    if isinstance(value, str):
+        try:
+            # Python 3.10 does not accept the UTC suffix Z in fromisoformat.
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(error) from exc
+
+    # YAML may already have parsed an unquoted timestamp into a datetime.
+    if not isinstance(value, datetime) or value.utcoffset() is None:
+        raise ValueError(error)
+    return value.astimezone(timezone.utc)
+
+
+DEFAULT_CONFIG: dict[str, Any] = {
     "clickhouse": {
         "data_path": "/var/lib/clickhouse",
         "metadata_path": "/var/lib/clickhouse/metadata",
@@ -49,10 +69,12 @@ DEFAULT_CONFIG = {
         "exclude_dbs": [],
         "path_root": None,
         "deduplicate_parts": True,
+        "deduplication_start_time": None,
         "deduplication_age_limit": {
             "days": 7,
         },
         "deduplication_batch_size": 500,
+        "deduplication_verify_links": True,
         "min_interval": {
             "minutes": 0,
         },
@@ -73,6 +95,7 @@ DEFAULT_CONFIG = {
         "restore_context_sync_threshold_ops": 100,
         "validate_part_after_upload": False,
         "restore_fail_on_attach_error": False,
+        "fail_on_unparsable_part_metadata": False,
         "update_metadata_interval": _as_seconds("30 min"),
         "kill_old_freeze_queries": True,
     },
