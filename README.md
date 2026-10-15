@@ -13,7 +13,8 @@ Backup is performed for tables of MergeTree engine family only as these are
  the only tables that support consistent data snapshots without server shutdown.
 
 The tool also supports deduplication at part-level granularity. It's set up
- through configuration file and enabled by default.
+ through configuration file and enabled by default. You could also
+ set a start time to exclude earlier backups from deduplication.
 
 
 ## Installation

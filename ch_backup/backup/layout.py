@@ -511,7 +511,7 @@ class BackupLayout:
             if backup:
                 backups.append(backup)
 
-        return sorted(backups, key=lambda b: b.start_time.isoformat(), reverse=True)
+        return sorted(backups, key=lambda b: b.start_time, reverse=True)
 
     def reload_backup(
         self, backup: BackupMetadata, use_light_meta: bool = False

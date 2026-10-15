@@ -3,6 +3,7 @@ ClickhouseBackup unit tests.
 """
 
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Callable, Sequence, cast
 from unittest.mock import MagicMock, Mock, patch
 
@@ -22,12 +23,44 @@ from ch_backup.ch_backup import CleanZooKeeperMode, ClickhouseBackup
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
 from ch_backup.clickhouse.models import Database
-from ch_backup.config import DEFAULT_CONFIG
+from ch_backup.config import DEFAULT_CONFIG, Config
 from ch_backup.exceptions import (
     ClickhouseBackupError,
     InvalidBackupStruct,
     StorageError,
 )
+
+
+def test_future_start_time_rejected_before_operations(tmp_path, monkeypatch):
+    now = datetime(2026, 10, 14, tzinfo=timezone.utc)
+    monkeypatch.setattr("ch_backup.ch_backup.utcnow", lambda: now)
+    path = tmp_path / "config.yaml"
+    path.write_text("", encoding="utf-8")
+    config = Config(str(path))
+    config["backup"]["deduplicate_parts"] = False
+    config["backup"]["deduplication_start_time"] = now
+    backup = ClickhouseBackup(config)
+    original_context = getattr(backup, "_context")
+    future = config.derive(
+        patch={
+            "backup": {
+                "deduplication_start_time": now.replace(microsecond=1),
+            }
+        }
+    )
+
+    with pytest.raises(ValueError, match="must not be in the future"):
+        ClickhouseBackup(future)
+    with pytest.raises(ValueError, match="must not be in the future"):
+        backup.reload_config(future)
+
+    assert backup.config is config
+    assert getattr(backup, "_context") is original_context
+
+    with patch("ch_backup.backup_context.BackupLayout") as layout:
+        with pytest.raises(ValueError, match="must not be in the future"):
+            backup.copy(future, ["backup"])
+        layout.assert_not_called()
 
 
 def _restore_backup_with_cloud_storage(
