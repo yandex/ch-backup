@@ -32,7 +32,12 @@ ACCESS = [
     "GRANT SELECT ON db1.* TO r1",
     "GRANT r1 TO u1",
 ]
-ALL = BackupSources(data=False, workload_entities=False)
+WORKLOADS = {
+    "xml_all": "CREATE WORKLOAD xml_all",
+    "s3_read": "CREATE RESOURCE s3_read (READ DISK s3)",
+    "user": "CREATE WORKLOAD user IN xml_all SETTINGS weight = 9",
+}
+ALL = BackupSources(data=False)
 
 
 def _ctl(version: str = "25.8.1.1", macros: dict | None = None) -> MagicMock:
@@ -77,6 +82,7 @@ def _source(
     ctl.get_named_collections_query.return_value = ["nc1", "nc_config"]
     ctl.get_named_collections_create_queries.return_value = {"nc1": NAMED_COLLECTION}
     ctl.get_local_access_statements.return_value = list(ACCESS)
+    ctl.get_workload_entities_query.return_value = dict(WORKLOADS)
     return ctl
 
 
@@ -356,6 +362,49 @@ def test_only_requested_objects_are_read() -> None:
     source.get_databases.assert_not_called()
     source.get_named_collections_query.assert_not_called()
     source.get_local_access_statements.assert_not_called()
+    source.get_workload_entities_query.assert_not_called()
+
+
+def test_workload_entities_are_read_without_ones_from_server_config() -> None:
+    """
+    ClickHouse does not let replace entities from the server config of this host.
+    """
+    layout = _layout(
+        _source(),
+        ch_config={"resources_and_workloads": "CREATE WORKLOAD xml_all;"},
+    )
+
+    backup = layout.get_backup("replica1")
+
+    assert backup.get_workload_entities() == ["s3_read", "user"]
+    assert (
+        layout.get_workload_entity_create_statement(backup, "user") == WORKLOADS["user"]
+    )
+
+
+def test_workload_entities_in_zookeeper_are_read_only_if_missing() -> None:
+    """
+    They are shared with the replica.
+    """
+    local = _local(get_workload_entities_query={"xml_all": "CREATE WORKLOAD xml_all"})
+    ch_config = {"workload_zookeeper_path": "/workload"}
+
+    backup = _layout(_source(), local, ch_config=ch_config).get_backup("replica1")
+
+    assert backup.get_workload_entities() == ["s3_read", "user"]
+
+
+def test_workload_entities_need_a_version_that_has_them() -> None:
+    """
+    Before 24.11 ClickHouse has no workload entities.
+    """
+    source = _source(version="24.8.1.1")
+    sources = BackupSources.for_restore(workload_entities=True)
+
+    backup = _layout(source, _local("24.8.1.1"), sources=sources).get_backup("replica1")
+
+    assert not backup.get_workload_entities()
+    source.get_workload_entities_query.assert_not_called()
 
 
 @pytest.mark.parametrize(

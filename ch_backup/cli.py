@@ -710,6 +710,7 @@ def restore_command(
     option("--access", is_flag=True, help="Restore access control entities."),
     option("--udf", is_flag=True, help="Restore user defined functions."),
     option("--nc", is_flag=True, help="Restore named collections."),
+    option("--workload", is_flag=True, help="Restore workload entities."),
 )
 # pylint: disable=too-many-positional-arguments
 def restore_from_replica_command(
@@ -721,17 +722,18 @@ def restore_from_replica_command(
     access: bool = False,
     udf: bool = False,
     nc: bool = False,
+    workload: bool = False,
 ) -> None:
     """Restore from a live replica of the shard instead of a backup. All without options."""
-    sources = BackupSources(data=False, workload_entities=False)
-    if any([schema, access, udf, nc]):
+    sources = BackupSources(data=False)
+    if any([schema, access, udf, nc, workload]):
         sources = BackupSources(
             access=access,
             data=False,
             schema=schema,
             udf=udf,
             named_collections=nc,
-            workload_entities=False,
+            workload_entities=workload,
         )
     ch_backup.restore_from_replica(source_host, sources, replica_name)
 

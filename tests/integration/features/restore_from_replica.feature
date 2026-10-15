@@ -263,6 +263,43 @@ Feature: Restore schema from a live replica
     """
     Then clickhouse02 has same named collections as clickhouse01
 
+  @require_version_24.11
+  Scenario: Restore workload entities from a live replica
+    Given we have executed queries on clickhouse01
+    """
+    CREATE RESOURCE s3_read (READ DISK s3);
+    CREATE WORKLOAD all SETTINGS max_bytes_per_second = 2147483648;
+    CREATE WORKLOAD user IN all SETTINGS weight = 9;
+    CREATE WORKLOAD production IN user SETTINGS weight = 3;
+    """
+    ## A changed parent with a child can not be dropped, it is replaced in place.
+    And we have executed queries on clickhouse02
+    """
+    CREATE WORKLOAD all;
+    CREATE WORKLOAD user IN all;
+    """
+    When we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore-from-replica --source-host clickhouse01
+    """
+    And we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore-from-replica --source-host clickhouse01 --workload
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT
+        (SELECT count() FROM system.workloads
+         INNER JOIN remote('clickhouse01', system.workloads) USING (name, parent, create_query)),
+        (SELECT count() FROM system.resources
+         INNER JOIN remote('clickhouse01', system.resources) USING (name, create_query))
+    FORMAT CSV
+    """
+    Then we get response
+    """
+    3,1
+    """
+
   @require_version_23.8
   @require_version_less_than_25.5
   Scenario: Named collections from a replica need a supported ClickHouse version

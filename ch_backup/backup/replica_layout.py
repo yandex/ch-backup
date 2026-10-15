@@ -14,10 +14,12 @@ from ch_backup.clickhouse.schema import rewrite_database_schema, rewrite_table_s
 from ch_backup.config import Config
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.logic.named_collections import NamedCollectionsStorageConfig
+from ch_backup.logic.workload_entities import get_config_workload_entity_names
 from ch_backup.version import get_version
 
 MIN_CLICKHOUSE_VERSION = "23.8"
 NAMED_COLLECTIONS_MIN_CLICKHOUSE_VERSION = "25.5"
+WORKLOAD_ENTITIES_MIN_CLICKHOUSE_VERSION = "24.11"
 SOURCE_SETTINGS = {
     "format_display_secrets_in_show_and_select": 1,
     "show_table_uuid_in_table_create_query_if_not_nil": 1,
@@ -42,8 +44,8 @@ class ReplicaLayout(BackupLayout):
 
     get_backup reads and checks everything requested before the restore changes the host.
     Objects shared through ZooKeeper or from the server config are left out: tables of
-    Replicated databases, named collections from the server config of this host or shared
-    through ZooKeeper, access entities of non-local storages.
+    Replicated databases, named collections and workload entities from the server config
+    of this host or shared through ZooKeeper, access entities of non-local storages.
     """
 
     # pylint: disable=too-many-instance-attributes
@@ -69,6 +71,7 @@ class ReplicaLayout(BackupLayout):
         self._table_statements: dict[tuple[str, str], str] = {}
         self._udf_statements: dict[str, str] = {}
         self._named_collection_statements: dict[str, str] = {}
+        self._workload_entity_statements: dict[str, str] = {}
         self._access_statements: list[str] = []
 
     def get_backup(
@@ -93,6 +96,8 @@ class ReplicaLayout(BackupLayout):
             self._read_udf(backup)
         if self._sources.named_collections:
             self._read_named_collections(backup)
+        if self._sources.workload_entities:
+            self._read_workload_entities(backup)
         if self._sources.access:
             self._read_access()
         logging.info(
@@ -134,6 +139,14 @@ class ReplicaLayout(BackupLayout):
         Return the create statement of a named collection.
         """
         return self._named_collection_statements[filename]
+
+    def get_workload_entity_create_statement(
+        self, backup_meta: BackupMetadata, filename: str
+    ) -> str:
+        """
+        Return the create statement of a workload or a resource.
+        """
+        return self._workload_entity_statements[filename]
 
     def get_access_statements(self) -> list[str]:
         """
@@ -200,7 +213,7 @@ class ReplicaLayout(BackupLayout):
             raise ClickhouseBackupError(
                 f"Named collections {', '.join(missing)} are missing on this host, and "
                 f"restoring them needs ClickHouse {NAMED_COLLECTIONS_MIN_CLICKHOUSE_VERSION} "
-                "or newer. Run with --schema --access --udf to skip them"
+                "or newer. Run with --schema --access --udf --workload to skip them"
             )
         statements = self._source_ctl.get_named_collections_create_queries()
         names = missing
@@ -222,6 +235,22 @@ class ReplicaLayout(BackupLayout):
             )
             backup.add_named_collection(name)
 
+    def _read_workload_entities(self, backup: BackupMetadata) -> None:
+        """
+        Read workloads and resources, except ones from the server config of this host.
+        ClickHouse keeps them in ZooKeeper if workload_zookeeper_path is set, then they
+        are shared with the replica and only missing ones are read.
+        """
+        if not self._source_ctl.ch_version_ge(WORKLOAD_ENTITIES_MIN_CLICKHOUSE_VERSION):
+            return
+        skipped = get_config_workload_entity_names(self._ch_config)
+        if "workload_zookeeper_path" in self._ch_config.config:
+            skipped.update(self._local_ctl.get_workload_entities_query())
+        for name, statement in self._source_ctl.get_workload_entities_query().items():
+            if name not in skipped:
+                self._workload_entity_statements[name] = statement
+                backup.add_workload_entity(name)
+
     def _read_access(self) -> None:
         """
         Read access entities of local storages. Without shown secrets ClickHouse prints
@@ -237,7 +266,7 @@ class ReplicaLayout(BackupLayout):
         ):
             raise ClickhouseBackupError(
                 f"Access entities can be restored only into local storage, this host has "
-                f"{', '.join(sorted(storages))}. Run with --schema --udf --nc to skip them"
+                f"{', '.join(sorted(storages))}. Run with --schema --udf --nc --workload to skip them"
             )
         for statement in statements:
             if HIDDEN_PASSWORD_RE.search(statement):
