@@ -14,6 +14,7 @@ import pytest
 
 from ch_backup.backup.copier import BackupCopier
 from ch_backup.backup.copy_report import CopyReport, print_copy_report
+from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, BackupState
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import (
@@ -985,7 +986,7 @@ def test_cloud_source_overrides_are_independent(
         base["endpoint_url"] = "https://s3.mds.yandex.net"
     if stored_source:
         base = {
-            "endpoint_url": "http://previous:9000",
+            "endpoint_url": base["endpoint_url"],
             "bucket": "previous",
             "path": "previous/b1",
         }
@@ -1121,14 +1122,41 @@ def test_explicit_cloud_source_without_disk_configuration(version: int) -> None:
     )
 
 
-def test_cloud_storage_of_copied_backup() -> None:
+def test_copy_rejects_unconfigured_stored_endpoint_before_requests() -> None:
+    ctx = _cloud_storage_context()
+    ctx.target_config["copy"]["server_side_copy"] = True
+    # Bucket/path overrides must not authorize the endpoint from metadata.
+    ctx.target_config["copy"]["cloud_storage"]["source"].update(
+        bucket="source", path="data"
+    )
+    ctx.layout.backups["b1"].cloud_storage.source = {
+        "endpoint_url": "http://127.0.0.1:9000",
+        "bucket": "source",
+        "path": "data",
+    }
+
+    with pytest.raises(
+        ConfigurationError, match=r"copy\.cloud_storage\.source\.endpoint_url"
+    ):
+        ctx.copy(["b1"])
+
+    assert not ctx.store.probes
+    assert not ctx.target_layout.uploaded
+    assert not ctx.target_layout.copied
+
+
+@pytest.mark.parametrize("endpoint_override", [None, "http://other-s3:9000"])
+def test_cloud_storage_of_copied_backup(endpoint_override: str | None) -> None:
     ctx = _cloud_storage_context()
     ctx.ch_config.config = {}
     ctx.layout.backups["b1"].cloud_storage.source = {
-        "endpoint_url": "http://other-s3:9000",
+        "endpoint_url": (endpoint_override or ENDPOINT) + "/",
         "bucket": "copied-disk-data",
         "path": "prev/b1",
     }
+    ctx.target_config["copy"]["cloud_storage"]["source"][
+        "endpoint_url"
+    ] = endpoint_override
 
     ctx.copy(["b1"])
 
@@ -1141,8 +1169,8 @@ def test_cloud_storage_of_copied_backup() -> None:
         for e in ctx.target_layout.copied
         if e.dst_storage["credentials"]["bucket"] == "disk-copy"
     } == {
-        ("http://other-s3:9000", "copied-disk-data", "prev/b1/xyz/aaa"),
-        ("http://other-s3:9000", "copied-disk-data", "prev/b1/xyz/bbb"),
+        (endpoint_override or ENDPOINT, "copied-disk-data", "prev/b1/xyz/aaa"),
+        (endpoint_override or ENDPOINT, "copied-disk-data", "prev/b1/xyz/bbb"),
     }
 
 
@@ -2214,6 +2242,59 @@ def test_copy_counts_rewritten_metadata(metadata_failure: bool) -> None:
     ) == (2, 1 if metadata_failure else 2, int(metadata_failure), 1000)
     if metadata_failure:
         assert result.errors[0]["target"] == dst_path
+
+
+@pytest.mark.parametrize("keep_going", [False, True])
+def test_copy_records_synchronous_cloud_metadata_validation_failure(
+    keep_going: bool,
+) -> None:
+    ctx = _cloud_storage_context()
+    ctx.layout.backups["b1"].cloud_storage.encrypted = False
+    src_path = "ch_backup/b1/disks/s3/db1/t1.tar.gz"
+    dst_path = "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
+    ctx.layout.cloud_storage_files[src_path] = [
+        ("part/data.bin", _object_storage_metadata(("data/xyz/aaa", 1000), version=5)),
+        ("part/count.txt", b"5\n0\t1\n0\n0\n1\n"),
+    ]
+    ctx.layout.backups["b2"] = _backup("b2", start_time="2026-01-02 00:00:00 +0000")
+    _with_files(ctx, "b2", {"metadata/db.sql": 10})
+    with patch("ch_backup.backup.layout.StorageLoader") as loader:
+        validating_layout = BackupLayout(ctx.target_config)  # type: ignore[arg-type]
+    report = CopyReport()
+    with patch.object(
+        ctx.target_layout,
+        "upload_cloud_storage_metadata_files",
+        side_effect=validating_layout.upload_cloud_storage_metadata_files,
+    ):
+        with pytest.raises(ClickhouseBackupError if keep_going else StorageError):
+            ctx.copy(keep_going=keep_going, report=report)
+
+    loader.return_value.upload_data_tarball.assert_not_called()
+    assert dst_path not in {entry.dst_path for entry in ctx.target_layout.copied}
+    assert dst_path not in ctx.target_layout.cloud_storage_files
+    assert ctx.target_layout.backups["b1"].state == BackupState.FAILED
+    assert ctx.target_layout.uploaded[:2] == [
+        ("b1", BackupState.CREATING),
+        ("b1", BackupState.FAILED),
+    ]
+    failed, independent = report.backups
+    assert failed.status == "failed"
+    assert (failed.objects_total, failed.objects_copied, failed.objects_failed) == (
+        2,
+        1,
+        1,
+    )
+    assert len(failed.errors) == 1
+    assert failed.errors[0]["stage"] == "copy_metadata"
+    assert failed.errors[0]["target"] == dst_path
+    assert "inline file data" in failed.errors[0]["message"]
+    assert independent.status == ("copied" if keep_going else "not_processed")
+
+    # A corrected archive must be retried, rather than skipped as an existing copy.
+    ctx.layout.cloud_storage_files[src_path].pop()
+    assert ctx.copy(["b1"], keep_going=keep_going) == (["b1"], [])
+    assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
+    assert dst_path in ctx.target_layout.cloud_storage_files
 
 
 def test_failed_metadata_save_preserves_copy_error_and_clears_cache() -> None:

@@ -81,6 +81,8 @@ class BackupMetadata:
         self.real_size = 0
         self.schema_only = schema_only
         self.encrypted = encrypted
+        # None means an older light metadata file does not identify the full JSON format.
+        self.metadata_encrypted: bool | None = False
         self.cloud_storage: CloudStorageMetadata = CloudStorageMetadata()
         # Location of the storage the backup was copied from (for backups created by "copy" command).
         self.copied_from: dict | None = None
@@ -158,6 +160,8 @@ class BackupMetadata:
         meta: dict[str, Any] = {}
         if self.copied_from:
             meta["copied_from"] = self.copied_from
+        if self.metadata_encrypted is not None:
+            meta["metadata_encrypted"] = self.metadata_encrypted
 
         return {
             "databases": databases,
@@ -332,6 +336,7 @@ class BackupMetadata:
             backup.version = meta["version"]
             backup.schema_only = meta.get("schema_only", False)
             backup.encrypted = meta.get("encrypted", True)
+            backup.metadata_encrypted = meta.get("metadata_encrypted")
             backup.copied_from = meta.get("copied_from")
             # TODO remove after a several weeks/months, when backups rotated
             # OR NOT TODO, because of backward compatibility
