@@ -255,18 +255,6 @@ DROP_NAMED_COLLECTION_SQL = strip_query(
 """
 )
 
-DROP_WORKLOAD_SQL = strip_query(
-    """
-    DROP WORKLOAD IF EXISTS `{entity_name}`
-"""
-)
-
-DROP_RESOURCE_SQL = strip_query(
-    """
-    DROP RESOURCE IF EXISTS `{entity_name}`
-"""
-)
-
 TRUNCATE_TABLE_IF_EXISTS_SQL = strip_query(
     """
     TRUNCATE TABLE IF EXISTS `{db_name}`.`{table_name}`
@@ -523,10 +511,10 @@ ACCESS_ENTITY_TABLES = {
 
 GET_WORKLOAD_ENTITIES_QUERY_SQL = strip_query(
     f"""
-    SELECT name, type FROM (
-        SELECT name, '{WorkloadEntityType.WORKLOAD.value}' AS type FROM system.workloads
+    SELECT name, type, create_query FROM (
+        SELECT name, '{WorkloadEntityType.WORKLOAD.value}' AS type, create_query FROM system.workloads
         UNION ALL
-        SELECT name, '{WorkloadEntityType.RESOURCE.value}' AS type FROM system.resources
+        SELECT name, '{WorkloadEntityType.RESOURCE.value}' AS type, create_query FROM system.resources
     )
     ORDER BY name
     FORMAT JSON
@@ -1201,18 +1189,6 @@ class ClickhouseCTL:
         """
         self._ch_client.query(DROP_NAMED_COLLECTION_SQL.format(nc_name=escape(nc_name)))
 
-    def drop_workload(self, entity_name: str) -> None:
-        """
-        Drop WORKLOAD entity.
-        """
-        self._ch_client.query(DROP_WORKLOAD_SQL.format(entity_name=escape(entity_name)))
-
-    def drop_resource(self, entity_name: str) -> None:
-        """
-        Drop RESOURCE entity.
-        """
-        self._ch_client.query(DROP_RESOURCE_SQL.format(entity_name=escape(entity_name)))
-
     def system_drop_replica(self, replica: str, zookeeper_path: str) -> None:
         """
         System drop replica query.
@@ -1467,15 +1443,26 @@ class ClickhouseCTL:
         resp = self._ch_client.query(GET_SQL_NAMED_COLLECTIONS_CREATE_QUERY_SQL)
         return {row["name"]: row["create_query"] for row in resp["data"]}
 
-    def get_workload_entities_query(self) -> list[tuple[str, WorkloadEntityType]]:
+    def get_workload_entities(self) -> dict[str, tuple[WorkloadEntityType, str]]:
         """
-        Get workload entities (WORKLOADs and RESOURCEs) from system tables.
+        Get workload entity names, types and live create queries from system tables.
         """
         resp = self._ch_client.query(GET_WORKLOAD_ENTITIES_QUERY_SQL)
-        return [
-            (row["name"], WorkloadEntityType(row["type"]))
+        return {
+            row["name"]: (WorkloadEntityType(row["type"]), row["create_query"])
             for row in resp.get("data", [])
-        ]
+        }
+
+    def format_query(self, query: str) -> str:
+        """
+        Canonicalize SQL using the server parser without changing literal values.
+        """
+        # Hex encoding preserves quotes, backslashes and whitespace in the input.
+        query_hex = query.encode("utf-8").hex()
+        resp = self._ch_client.query(
+            f"SELECT formatQuerySingleLine(unhex('{query_hex}')) AS query FORMAT JSON"
+        )
+        return resp["data"][0]["query"]
 
     def decrypt_aes_ctr(
         self, data_hex: str, key_hex: str, key_size: int, iv_hex: str
