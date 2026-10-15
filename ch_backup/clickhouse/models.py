@@ -364,6 +364,25 @@ class FrozenPart(Slotted):
         self.files = files
 
 
+DETACH_REASONS = frozenset(
+    {
+        "broken",
+        "unexpected",
+        "noquorum",
+        "ignored",
+        "broken-on-start",
+        "clone",
+        "attaching",
+        "deleting",
+        "tmp-fetch",
+        "covered-by-broken",
+        "merge-not-byte-identical",
+        "mutate-not-byte-identical",
+        "broken-from-backup",
+    }
+)
+
+
 class DetachedPart(Slotted):
     """A detached data part scanned from a table's detached directory."""
 

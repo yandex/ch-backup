@@ -568,6 +568,15 @@ class TestSplitPartName:
             "all_1_y_0",
             "all_1_1_z",
             "all_1_1_0_abc",
+            # Python's int() accepts underscores, but ClickHouse part names do not.
+            "all_1_1_0_5_6",
+            # Numeric part fields are non-negative.
+            "all_-1_1_0",
+            "all_1_-1_0",
+            "all_1_1_-1",
+            "all_1_1_0_-1",
+            # ClickHouse rejects inverted block ranges.
+            "all_2_1_0",
         ],
     )
     def test_non_numeric_segments_raises(self, part_name: str) -> None:

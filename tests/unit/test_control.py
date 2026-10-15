@@ -1,3 +1,4 @@
+import errno
 from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE
@@ -11,7 +12,7 @@ from ch_backup.clickhouse.control import (
     _get_cloud_part_checksum_and_size,
     _parse_version,
 )
-from ch_backup.clickhouse.models import Disk, Table
+from ch_backup.clickhouse.models import DETACH_REASONS, Disk, Table
 from ch_backup.exceptions import ClickhouseBackupError
 from tests.unit.utils import parametrize
 
@@ -405,8 +406,55 @@ def test_scan_detached_parts_reads_reason_from_directory_name(
     ]
 
 
+@pytest.mark.parametrize("reason", ["", *sorted(DETACH_REASONS)])
+@pytest.mark.parametrize(
+    "partition_id", ["all", "202401", "20240101", "1", "1-2", "-1"]
+)
+@pytest.mark.parametrize(
+    "suffix",
+    ["", "_5", "_try1", "_5_try12"],
+    ids=["regular", "mutated", "try-suffix", "mutated-try-suffix"],
+)
+def test_scan_detached_parts_recognizes_clickhouse_reasons(
+    tmp_path: Path, reason: str, partition_id: str, suffix: str
+) -> None:
+    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    disk = Disk("default", str(tmp_path), "Local")
+    ch_ctl._disks = {disk.name: disk}  # pylint: disable=protected-access
+    table_path = tmp_path / "store" / "table"
+    part_name = f"{partition_id}_1_1_0{suffix}"
+    if reason:
+        part_name = f"{reason}_{part_name}"
+    part_path = table_path / "detached" / part_name
+    part_path.mkdir(parents=True)
+    (part_path / "data.bin").write_bytes(b"data")
+    table = Table(
+        "db1",
+        "table1",
+        "MergeTree",
+        [disk],
+        [str(table_path)],
+        "",
+        "",
+        None,
+    )
+
+    parts = list(
+        ch_ctl.scan_detached_parts(table, disk_names=["default"], reasons=[reason])
+    )
+
+    assert [(part.name, part.reason) for part in parts] == [(part_name, reason)]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(PermissionError("permission denied"), id="permission"),
+        pytest.param(OSError(errno.EIO, "I/O error"), id="io-error"),
+    ],
+)
 def test_scan_detached_parts_skips_inaccessible_detached_directory(
-    tmp_path: Path,
+    tmp_path: Path, error: OSError
 ) -> None:
     ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
     disk = Disk("default", str(tmp_path), "Local")
@@ -425,7 +473,7 @@ def test_scan_detached_parts_skips_inaccessible_detached_directory(
     with (
         mock.patch(
             "ch_backup.clickhouse.control.os.scandir",
-            side_effect=PermissionError("permission denied"),
+            side_effect=error,
         ),
         mock.patch("ch_backup.clickhouse.control.logging.warning") as warning,
     ):
@@ -435,8 +483,15 @@ def test_scan_detached_parts_skips_inaccessible_detached_directory(
     assert "not accessible" in warning.call_args.args[0]
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(PermissionError("permission denied"), id="permission"),
+        pytest.param(OSError(errno.EIO, "I/O error"), id="io-error"),
+    ],
+)
 def test_scan_detached_parts_skips_inaccessible_part_directory(
-    tmp_path: Path,
+    tmp_path: Path, error: OSError
 ) -> None:
     ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
     disk = Disk("default", str(tmp_path), "Local")
@@ -457,7 +512,7 @@ def test_scan_detached_parts_skips_inaccessible_part_directory(
     with (
         mock.patch(
             "ch_backup.clickhouse.control.scan_dir_files",
-            side_effect=PermissionError("permission denied"),
+            side_effect=error,
         ),
         mock.patch("ch_backup.clickhouse.control.logging.warning") as warning,
     ):

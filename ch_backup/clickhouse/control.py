@@ -20,6 +20,7 @@ from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.calculators import calc_aligned_files_size
 from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.clickhouse.models import (
+    DETACH_REASONS,
     Database,
     DetachedPart,
     Disk,
@@ -1281,9 +1282,9 @@ class ClickhouseCTL:
     ) -> Iterable[DetachedPart]:
         """Yield detached parts found in the selected disks' directories.
 
-        The filesystem is the source of truth. ClickHouse encodes a non-empty
-        detach reason as the prefix before the first underscore; a directory
-        whose whole name is a valid MergeTree part has an empty reason.
+        The filesystem is the source of truth. Known ClickHouse detach reason
+        prefixes take precedence over parsing the whole directory name as a
+        MergeTree part; a valid part name without such a prefix has no reason.
         """
         reason_filter = set(reasons or [])
 
@@ -1317,10 +1318,11 @@ class ClickhouseCTL:
                 )
             except (FileNotFoundError, NotADirectoryError):
                 continue
-            except PermissionError:
+            except OSError as e:
                 logging.warning(
-                    'Detached directory is not accessible and will be skipped: "{}"',
+                    'Detached directory is not accessible and will be skipped: "{}": {}',
                     detached_path,
+                    e,
                 )
                 continue
 
@@ -1329,23 +1331,18 @@ class ClickhouseCTL:
                     if not entry.is_dir(follow_symlinks=False):
                         continue
 
-                    try:
-                        split_part_name(entry.name)
-                        reason = ""
-                    except ValueError:
-                        reason = entry.name.partition("_")[0]
+                    reason = _get_detached_part_reason(entry.name)
                     if reason_filter and reason not in reason_filter:
                         continue
 
-                    part_path = entry.path
-                    rel_paths = list(scan_dir_files(Path(part_path)))
-                    checksum = _get_detached_part_checksum(part_path, rel_paths, disk)
+                    rel_paths = list(scan_dir_files(Path(entry.path)))
+                    checksum = _get_detached_part_checksum(entry.path, rel_paths, disk)
 
                     # Detached object-storage parts contain local metadata files.
                     # Those files are what the backup archives, so their aligned
                     # size (not the size of referenced bucket objects) is recorded.
                     size = calc_aligned_files_size(
-                        [Path(part_path) / file for file in rel_paths],
+                        [Path(entry.path) / file for file in rel_paths],
                         alignment=BLOCKSIZE,
                     )
 
@@ -1355,7 +1352,7 @@ class ClickhouseCTL:
                         name=entry.name,
                         reason=reason,
                         disk_name=disk_name,
-                        path=part_path,
+                        path=entry.path,
                         checksum=checksum,
                         size=size,
                         files=rel_paths,
@@ -1366,10 +1363,11 @@ class ClickhouseCTL:
                         'Detached part directory disappeared while scanning: "{}"',
                         entry.path,
                     )
-                except PermissionError:
+                except OSError as e:
                     logging.warning(
-                        'Detached part directory is not accessible and will be skipped: "{}"',
+                        'Detached part directory is not accessible and will be skipped: "{}": {}',
                         entry.path,
+                        e,
                     )
 
     def get_version(self) -> str:
@@ -1824,6 +1822,24 @@ def _get_part_checksum(part_path: str) -> str:
     """
     with open(os.path.join(part_path, "checksums.txt"), "rb") as f:
         return md5(f.read()).hexdigest()  # nosec
+
+
+def _get_detached_part_reason(part_name: str) -> str:
+    """Parse a detached directory name in the same order as ClickHouse."""
+    name_to_parse = part_name
+    try_suffix_pos = part_name.rfind("_try")
+    try_suffix = part_name[try_suffix_pos + 4 :]
+    if try_suffix_pos != -1 and try_suffix.isascii() and try_suffix.isdigit():
+        name_to_parse = part_name[:try_suffix_pos]
+
+    prefix, separator, _ = name_to_parse.partition("_")
+    if separator and prefix in DETACH_REASONS:
+        return prefix
+    try:
+        split_part_name(name_to_parse)
+        return ""
+    except ValueError:
+        return prefix if separator else name_to_parse
 
 
 def _get_detached_part_checksum(

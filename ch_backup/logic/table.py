@@ -884,22 +884,59 @@ class TableBackup(BackupManager):
         if not context.config["validate_part_after_upload"]:
             return
 
-        invalid_parts = [
-            part
-            for part in uploaded_parts
-            if not context.backup_layout.check_detached_part(
-                context.backup_meta.name, part
-            )
-        ]
-        if invalid_parts:
-            for part in invalid_parts:
-                logging.error(
-                    f"Uploaded detached part is broken, {part.database}.{part.table} on {part.disk_name}: {part.name}"
+        invalid_parts = []
+        for part in uploaded_parts:
+            try:
+                valid = context.backup_layout.check_detached_part(
+                    context.backup_meta.name, part
                 )
-            raise RuntimeError(
-                "Uploaded detached parts are broken, "
-                + ", ".join(part.name for part in invalid_parts)
+            except Exception as e:
+                if is_broken_executor(e):
+                    raise
+                logging.warning(
+                    "Failed to validate uploaded detached part {} of {}.{} "
+                    "on disk {}; treating it as invalid: {}",
+                    part.name,
+                    part.database,
+                    part.table,
+                    part.disk_name,
+                    e,
+                )
+                valid = False
+            if not valid:
+                invalid_parts.append(part)
+
+        if not invalid_parts:
+            return
+
+        for part in invalid_parts:
+            logging.warning(
+                "Uploaded detached part is invalid and will be removed from "
+                "the backup, {}.{} on {}: {}",
+                part.database,
+                part.table,
+                part.disk_name,
+                part.name,
             )
+
+        try:
+            context.backup_layout.delete_detached_parts(
+                context.backup_meta, invalid_parts
+            )
+        except Exception as e:
+            if is_broken_executor(e):
+                raise
+            logging.warning(
+                "Failed to schedule cleanup of invalid detached parts; "
+                "their archives may remain unreferenced: {}",
+                e,
+            )
+
+        table = context.backup_meta.get_table(
+            invalid_parts[0].database, invalid_parts[0].table
+        )
+        context.backup_meta.remove_detached_parts(table, invalid_parts)
+        context.backup_layout.wait(keep_going=True)
 
     @staticmethod
     def _get_change_time(file_name: str) -> TableMetadataChangeTime | None:

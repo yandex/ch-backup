@@ -1,16 +1,20 @@
 # pylint: disable=too-many-lines
 
 import copy
+import errno
 import os
 import threading
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
+from pathlib import Path
+from tarfile import BLOCKSIZE
 from unittest.mock import MagicMock, Mock, call, patch
 
 import pytest
 
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata, TableMetadata
 from ch_backup.backup_context import BackupContext
+from ch_backup.calculators import calc_aligned_files_size, calc_tarball_size
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseDisksException
 from ch_backup.clickhouse.models import Database, DetachedPart, Disk, FrozenPart, Table
@@ -1200,6 +1204,81 @@ class TestDetachedPartsBackup:
             successful.name
         ]
         context.backup_layout.wait.assert_called_once_with(keep_going=True)
+
+    def test_async_failed_upload_is_skipped(self) -> None:
+        failed = self._detached("all_1_1_0", "default", "")
+        successful = self._detached("all_2_2_0", "default", "")
+        context = self._backup_context([failed, successful])
+
+        def fail_upload() -> None:
+            raise OSError(errno.EIO, "I/O error")
+
+        def complete_upload() -> None:
+            return
+
+        with ThreadExecPool(1) as pool:
+
+            def upload(_backup, part, callback):
+                operation = fail_upload if part is failed else complete_upload
+                pool.submit(part.name, operation, callback=callback)
+
+            context.backup_layout.upload_detached_part.side_effect = upload
+            context.backup_layout.wait.side_effect = pool.wait_all
+
+            TableBackup()._backup_detached_table_data(  # pylint: disable=protected-access
+                context, self._table()
+            )
+
+        assert [part.name for part in context.backup_meta.get_detached_parts()] == [
+            successful.name
+        ]
+        context.backup_layout.wait.assert_called_once_with(keep_going=True)
+
+    def test_changed_part_failing_validation_is_removed(self, tmp_path: Path) -> None:
+        failed = self._detached("all_1_1_0", "default", "")
+        successful = self._detached("all_2_2_0", "default", "")
+        failed.files = ["data.bin"]
+        failed.size = BLOCKSIZE
+        failed.path = str(tmp_path / failed.name)
+        source_file = Path(failed.path) / "data.bin"
+        source_file.parent.mkdir()
+        source_file.write_bytes(b"x")
+        context = self._backup_context([failed, successful])
+        context.config["validate_part_after_upload"] = True
+
+        def upload(_backup, part, callback):
+            if part is failed:
+                source_file.write_bytes(b"x" * 513)
+            callback()
+
+        context.backup_layout.upload_detached_part.side_effect = upload
+
+        def check(_backup_name, part):
+            if part.name != failed.name:
+                return True
+            current_size = calc_aligned_files_size([source_file], alignment=BLOCKSIZE)
+            return calc_tarball_size(part.files, part.size) == calc_tarball_size(
+                part.files, current_size
+            )
+
+        context.backup_layout.check_detached_part.side_effect = check
+
+        TableBackup()._backup_detached_table_data(  # pylint: disable=protected-access
+            context, self._table()
+        )
+
+        assert source_file.stat().st_size == 513
+        assert [part.name for part in context.backup_meta.get_detached_parts()] == [
+            successful.name
+        ]
+        assert context.backup_meta.size == successful.size
+        assert context.backup_meta.real_size == successful.size
+        deleted_parts = context.backup_layout.delete_detached_parts.call_args.args[1]
+        assert [part.name for part in deleted_parts] == [failed.name]
+        assert context.backup_layout.wait.call_args_list == [
+            call(keep_going=True),
+            call(keep_going=True),
+        ]
 
     def test_object_storage_kind_is_recorded_on_detached_part(self) -> None:
         context = self._backup_context(

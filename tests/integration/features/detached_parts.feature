@@ -33,6 +33,7 @@ Feature: Detached parts backup
     Then we got the following backups on clickhouse01
       | num | state   | data_count | link_count |
       | 0   | created | 2          | 0          |
+    And detached archives of "detached_db"."selected" on disk "default" in clickhouse01 backup #0 match source parts
 
     # Restore support is intentionally not part of this change. Metadata is
     # ignored and no detached directory is populated on the target node.

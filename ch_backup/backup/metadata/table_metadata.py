@@ -38,18 +38,31 @@ def split_part_name(part: str) -> PartInfo:
             f"Invalid part name format: '{part}'. "
             f"Expected format: partition_id_minBlock_maxBlock_level[_mutation]"
         )
-    try:
-        partition_id = chunks[0]
-        min_block_num = int(chunks[1])
-        max_block_num = int(chunks[2])
-        level = int(chunks[3])
-        mutation = int(chunks[4]) if max_split + 1 == len(chunks) else 0
-    except (IndexError, ValueError) as e:
+    partition_id = chunks[0]
+    min_block, max_block, level = chunks[1:4]
+    mutation = chunks[4] if max_split + 1 == len(chunks) else "0"
+    if not partition_id or not all(
+        value.isascii() and value.isdigit()
+        for value in (min_block, max_block, level, mutation)
+    ):
         raise ValueError(
             f"Invalid part name format: '{part}'. "
-            f"Failed to parse numeric segments: {e}"
+            "Numeric segments must contain decimal digits only"
         )
-    return PartInfo(partition_id, min_block_num, max_block_num, level, mutation)
+    min_block_num = int(min_block)
+    max_block_num = int(max_block)
+    if min_block_num > max_block_num:
+        raise ValueError(
+            f"Invalid part name format: '{part}'. "
+            "Minimum block number is greater than maximum block number"
+        )
+    return PartInfo(
+        partition_id,
+        min_block_num,
+        max_block_num,
+        int(level),
+        int(mutation),
+    )
 
 
 class DataSkippedReason(str, Enum):
