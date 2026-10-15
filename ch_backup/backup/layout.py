@@ -4,6 +4,7 @@ Management of backup data layout.
 
 # pylint: disable=too-many-lines
 
+import json
 import os
 from contextlib import contextmanager
 from functools import partial
@@ -31,9 +32,13 @@ from ch_backup.backup.metadata import (
 from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.calculators import calc_encrypted_size, calc_tarball_size
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
+from ch_backup.clickhouse.object_storage_metadata import (
+    ObjectStorageMetadataError,
+    parse_object_storage_metadata,
+)
 from ch_backup.config import Config
-from ch_backup.encryption import get_encryption
-from ch_backup.exceptions import StorageError, is_broken_executor
+from ch_backup.encryption import get_encryption, get_encryption_class
+from ch_backup.exceptions import ConfigurationError, StorageError, is_broken_executor
 from ch_backup.storage import StorageLoader
 from ch_backup.storage.engine.s3 import S3RetryingError
 from ch_backup.storage.object_copy import CopyEntry
@@ -41,6 +46,7 @@ from ch_backup.util import (
     CLOUD_STORAGE_EXCLUDE_FILE_NAMES,
     dir_is_empty,
     escape_metadata_file_name,
+    scan_dir_files,
 )
 
 BACKUP_META_FNAME = "backup_struct.json"
@@ -66,9 +72,10 @@ class BackupLayout:
         self._named_collections_path = config["clickhouse"]["named_collections_path"]
         self._workload_path = config["clickhouse"]["workload_path"]
         enc_conf = config["encryption"]
+        self._encryption_config = enc_conf
         self._encryption_chunk_size = enc_conf["chunk_size"]
-        self._encryption_metadata_size = get_encryption(
-            enc_conf["type"], enc_conf
+        self._encryption_metadata_size = get_encryption_class(
+            enc_conf["type"]
         ).metadata_size()
 
     def upload_backup_metadata(
@@ -79,14 +86,19 @@ class BackupLayout:
         """
         remote_path = self._backup_metadata_path(backup.name)
         remote_light_path = self._backup_light_metadata_path(backup.name)
+        previous_encryption = backup.metadata_encrypted
         try:
             if not light_only:
+                backup.metadata_encrypted = False
                 logging.debug("Saving backup metadata in {}", remote_path)
-                self._storage_loader.upload_data(
-                    backup.dump_json(light=False),
-                    remote_path=remote_path,
-                    encryption=True,
-                )
+                try:
+                    self._storage_loader.upload_data(
+                        backup.dump_json(light=False),
+                        remote_path=remote_path,
+                    )
+                except Exception:
+                    backup.metadata_encrypted = previous_encryption
+                    raise
             logging.debug("Saving backup light metadata in {}", remote_light_path)
             self._storage_loader.upload_data(
                 backup.dump_json(light=True), remote_path=remote_light_path
@@ -306,6 +318,13 @@ class BackupLayout:
         logging.debug(f'Uploading "{shadow_path}" content to "{remote_path}"')
 
         try:
+            if not backup_meta.cloud_storage.encrypted:
+                self._validate_plaintext_cloud_metadata(
+                    (str(path), (Path(shadow_path) / path).read_bytes())
+                    for path in scan_dir_files(
+                        Path(shadow_path), CLOUD_STORAGE_EXCLUDE_FILE_NAMES
+                    )
+                )
             self._storage_loader.upload_files_tarball_scan(
                 dir_path=shadow_path,
                 remote_path=remote_path,
@@ -316,6 +335,8 @@ class BackupLayout:
                 delete=False,
                 compression=compression,
             )
+        except StorageError:
+            raise
         except Exception as e:
             msg = f'Failed to upload "{shadow_path}" content to "{remote_path}"'
             raise StorageError(msg) from e
@@ -435,16 +456,41 @@ class BackupLayout:
             self._config["path_root"], recursive=False, absolute=False
         )
 
-    def _load_metadata(self, path: str, encryption: bool) -> BackupMetadata:
+    def _load_metadata(
+        self, path: str, allow_legacy_encryption: bool
+    ) -> BackupMetadata:
         try:
-            data = self._storage_loader.download_data(path, encryption=encryption)
-            logging.debug(
-                "Downloaded backup metadata: {}",
-                data,
+            data = self._storage_loader.download_data(path, encoding=None)
+            try:
+                backup = BackupMetadata.load_json(data)
+                if allow_legacy_encryption:
+                    backup.metadata_encrypted = False
+                return backup
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                if not allow_legacy_encryption:
+                    raise
+            # Legacy full metadata used the same chunked encryption as data files.
+            # Decode the bytes already fetched rather than reading the object twice.
+            crypto = get_encryption(
+                self._encryption_config["type"], self._encryption_config
             )
-            return BackupMetadata.load_json(data)
-        except CryptoError:
-            raise
+            chunk_size = self._encryption_chunk_size + crypto.metadata_size()
+            data = b"".join(
+                crypto.decrypt(data[pos : pos + chunk_size])
+                for pos in range(0, len(data), chunk_size)
+            )
+            backup = BackupMetadata.load_json(data)
+            backup.metadata_encrypted = True
+            return backup
+        except CryptoError as e:
+            raise StorageError(
+                f"Failed to decrypt legacy backup metadata {path}: "
+                "incorrect encryption key or corrupt ciphertext"
+            ) from e
+        except ConfigurationError as e:
+            raise StorageError(
+                f"Backup metadata {path} is not valid plaintext JSON; {e}"
+            ) from e
         except Exception as e:
             raise StorageError(f"Failed to download backup metadata {path}") from e
 
@@ -463,16 +509,7 @@ class BackupLayout:
         if not self._storage_loader.path_exists(path):
             return None
 
-        # New backup metadata is encrypted
-        # Retry in case it is old and not encrypted
-        try:
-            return self._load_metadata(path, not use_light_meta)
-        except CryptoError:
-            logging.exception(
-                "Attempt to download encrypted metadata from {} has failed. Will try to download it as not encrypted",
-                path,
-            )
-        return self._load_metadata(path, False)
+        return self._load_metadata(path, not use_light_meta)
 
     def get_backups(
         self,
@@ -525,13 +562,7 @@ class BackupLayout:
             else self._backup_metadata_path(backup.name)
         )
 
-        # New backup metadata is encrypted
-        # Retry in case it is old and not encrypted
-        try:
-            return self._load_metadata(path, not use_light_meta)
-        except CryptoError:
-            pass
-        return self._load_metadata(path, False)
+        return self._load_metadata(path, not use_light_meta)
 
     def get_database_create_statement(
         self, backup_meta: BackupMetadata, db_name: str
@@ -915,6 +946,8 @@ class BackupLayout:
         Upload files with cloud storage metadata as a tarball.
         """
         try:
+            if not backup_meta.cloud_storage.encrypted:
+                self._validate_plaintext_cloud_metadata(files)
             self._storage_loader.upload_data_tarball(
                 file_names=[file_name for file_name, _ in files],
                 data_list=[data for _, data in files],
@@ -925,9 +958,28 @@ class BackupLayout:
                 callback=callback,
                 on_error=on_error,
             )
+        except StorageError:
+            raise
         except Exception as e:
             msg = f'Failed to create async upload of "{remote_path}"'
             raise StorageError(msg) from e
+
+    @staticmethod
+    def _validate_plaintext_cloud_metadata(files: Iterable[tuple[str, bytes]]) -> None:
+        """Never publish inline file contents in unencrypted disk metadata."""
+        for file_name, data in files:
+            try:
+                metadata = parse_object_storage_metadata(data)
+            except ObjectStorageMetadataError as e:
+                raise StorageError(
+                    f'Cannot publish unencrypted disk metadata "{file_name}": '
+                    "unsupported or malformed metadata"
+                ) from e
+            if metadata.inline_data:
+                raise StorageError(
+                    f'Cannot publish unencrypted disk metadata "{file_name}": '
+                    "inline file data requires cloud_storage.encryption=true"
+                )
 
     def cloud_storage_metadata_exists(
         self, backup_meta: BackupMetadata, disk: Disk

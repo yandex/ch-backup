@@ -2,7 +2,7 @@
 Encryption package
 """
 
-from typing import Mapping, Type
+from typing import Mapping
 
 from ch_backup.encryption.base import BaseEncryption
 from ch_backup.encryption.nacl import NaClEncryption
@@ -15,13 +15,18 @@ SUPPORTED_CRYPTO: Mapping[str, type[BaseEncryption]] = {
 }
 
 
+def get_encryption_class(type_id: str) -> type[BaseEncryption]:
+    """
+    Resolve an encryption provider without requiring its key.
+    """
+    try:
+        return SUPPORTED_CRYPTO[type_id]
+    except KeyError as e:
+        raise UnknownEncryptionError(f'Unknown encryption type "{type_id}"') from e
+
+
 def get_encryption(type_id: str, config: dict) -> BaseEncryption:
     """
     Resolve and instantiate a supported encryption provider.
     """
-    try:
-        cls = SUPPORTED_CRYPTO[type_id]
-    except KeyError:
-        raise UnknownEncryptionError(f'Unknown encryption type "{type_id}"')
-
-    return cls(config)
+    return get_encryption_class(type_id)(config)

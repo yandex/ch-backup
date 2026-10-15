@@ -186,7 +186,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "cloud_storage": {
         # Encryption and compression are applied to cloud storage metadata only.
         # Data copied by "copy_data" is stored as ClickHouse wrote it.
-        "encryption": True,
+        "encryption": False,
         "compression": True,
         "copy_data": False,
     },
