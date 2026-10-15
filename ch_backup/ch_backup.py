@@ -33,7 +33,7 @@ from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner, select_replica_drop
 from ch_backup.clickhouse.models import Database, Table
-from ch_backup.config import Config
+from ch_backup.config import Config, as_datetime
 from ch_backup.exceptions import (
     BackupNotFound,
     ClickhouseBackupError,
@@ -74,6 +74,7 @@ class ClickhouseBackup:
     # pylint: disable=too-many-instance-attributes
 
     def __init__(self, config: Config) -> None:
+        self._validate_config(config)
         self._config = config
         self._access_backup_manager = AccessBackup()
         self._database_backup_manager = DatabaseBackup()
@@ -81,6 +82,14 @@ class ClickhouseBackup:
         self._udf_backup_manager = UDFBackup()
         self._nc_backup_manager = NamedCollectionsBackup()
         self._we_backup_manager = WorkloadEntitiesBackup()
+
+    @staticmethod
+    def _validate_config(config: Config) -> None:
+        start_time = as_datetime(config["backup"].get("deduplication_start_time"))
+        if start_time is not None and start_time > utcnow():
+            raise ValueError(
+                "backup.deduplication_start_time must not be in the future"
+            )
 
     @property
     def config(self) -> Config:
@@ -101,6 +110,7 @@ class ClickhouseBackup:
         """
         Completely reloads the config.
         """
+        self._validate_config(config)
         logging.info("Reloading config.")
         del self._context
         self._config = config
@@ -571,6 +581,7 @@ class ClickhouseBackup:
             report.error = None
             report.backups.clear()
         try:
+            self._validate_config(target_config)
             copier = BackupCopier(
                 config=self._config,
                 target_config=target_config,

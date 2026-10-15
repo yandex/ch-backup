@@ -13,7 +13,22 @@ Backup is performed for tables of MergeTree engine family only as these are
  the only tables that support consistent data snapshots without server shutdown.
 
 The tool also supports deduplication at part-level granularity. It's set up
- through configuration file and enabled by default.
+ through configuration file and enabled by default. You could also
+ set a start time to exclude earlier backups from deduplication.
+
+
+## Workload and resource restore
+
+Restore skips identical workload/resource definitions and uses `CREATE OR REPLACE`
+for changed definitions of the same type, preserving dependent entities. Entities
+absent from the backup remain on the server; replacing a shared parent or resource
+can change their effective limits. Restore does not synchronize the entire hierarchy.
+
+Parents omitted from the backup must already exist as workloads on the target,
+including parents defined in XML configuration. Type conflicts, changes to XML
+definitions, and server restrictions (such as creating a second root workload)
+abort restore with the affected entity's name. Concurrent workload/resource DDL
+during restore is unsupported.
 
 
 ## Installation

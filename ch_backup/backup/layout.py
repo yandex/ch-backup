@@ -65,7 +65,6 @@ class BackupLayout:
         self._access_control_path = config["clickhouse"]["access_control_path"]
         self._metadata_path = config["clickhouse"]["metadata_path"]
         self._named_collections_path = config["clickhouse"]["named_collections_path"]
-        self._workload_path = config["clickhouse"]["workload_path"]
         enc_conf = config["encryption"]
         self._encryption_chunk_size = enc_conf["chunk_size"]
         self._encryption_metadata_size = get_encryption(
@@ -433,25 +432,6 @@ class BackupLayout:
         )
         return self._storage_loader.download_data(remote_path, encryption=True)
 
-    def get_local_workload_entity_create_statement(
-        self, entity_name: str
-    ) -> str | None:
-        """
-        Read workload entity create statement from local file.
-        """
-        local_path = os.path.join(
-            self._workload_path, f"{escape_metadata_file_name(entity_name)}.sql"
-        )
-        try:
-            return Path(local_path).read_bytes().decode("utf-8")
-        except OSError as e:
-            logging.debug(
-                'Cannot load a create statement of the workload entity "{}": {}',
-                entity_name,
-                str(e),
-            )
-            return None
-
     def get_workload_entity_create_statement(
         self, backup_meta: BackupMetadata, filename: str
     ) -> str:
@@ -547,7 +527,7 @@ class BackupLayout:
             if backup:
                 backups.append(backup)
 
-        return sorted(backups, key=lambda b: b.start_time.isoformat(), reverse=True)
+        return sorted(backups, key=lambda b: b.start_time, reverse=True)
 
     def reload_backup(
         self, backup: BackupMetadata, use_light_meta: bool = False

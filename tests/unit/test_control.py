@@ -185,6 +185,22 @@ def test_cloud_part_with_an_unreadable_metadata_file_fails(tmp_path):
         _get_cloud_part_checksum_and_size(str(path), ["checksums.txt"])
 
 
+def test_cloud_part_without_copy_is_described_by_its_files(tmp_path):
+    """Object keys matter only for a copy of the data, so they are not read."""
+    disk = Disk("s3", f"{tmp_path}/", "ObjectStorage", "S3", "Local")
+    table = Table("db1", "table1", "MergeTree", [], [], "", "", None)
+    path = tmp_path / "shadow" / "backup1" / "store" / "all_1_1_0"
+    path.mkdir(parents=True)
+    (path / "checksums.txt").write_text("6\nabc/defg\n", encoding="utf-8")
+
+    (part,) = ClickhouseCTL.scan_frozen_parts(
+        table, disk, str(tmp_path / "store"), "backup1", False, True
+    )
+
+    assert part.checksum == md5((path / "checksums.txt").read_bytes()).hexdigest()
+    assert part.size == BLOCKSIZE
+
+
 @pytest.mark.parametrize(
     "disk,expected",
     [
