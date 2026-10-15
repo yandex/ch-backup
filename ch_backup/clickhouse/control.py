@@ -255,18 +255,6 @@ DROP_NAMED_COLLECTION_SQL = strip_query(
 """
 )
 
-DROP_WORKLOAD_SQL = strip_query(
-    """
-    DROP WORKLOAD IF EXISTS `{entity_name}`
-"""
-)
-
-DROP_RESOURCE_SQL = strip_query(
-    """
-    DROP RESOURCE IF EXISTS `{entity_name}`
-"""
-)
-
 TRUNCATE_TABLE_IF_EXISTS_SQL = strip_query(
     """
     TRUNCATE TABLE IF EXISTS `{db_name}`.`{table_name}`
@@ -523,10 +511,10 @@ ACCESS_ENTITY_TABLES = {
 
 GET_WORKLOAD_ENTITIES_QUERY_SQL = strip_query(
     f"""
-    SELECT name, type FROM (
-        SELECT name, '{WorkloadEntityType.WORKLOAD.value}' AS type FROM system.workloads
+    SELECT name, type, create_query FROM (
+        SELECT name, '{WorkloadEntityType.WORKLOAD.value}' AS type, create_query FROM system.workloads
         UNION ALL
-        SELECT name, '{WorkloadEntityType.RESOURCE.value}' AS type FROM system.resources
+        SELECT name, '{WorkloadEntityType.RESOURCE.value}' AS type, create_query FROM system.resources
     )
     ORDER BY name
     FORMAT JSON
@@ -1201,18 +1189,6 @@ class ClickhouseCTL:
         """
         self._ch_client.query(DROP_NAMED_COLLECTION_SQL.format(nc_name=escape(nc_name)))
 
-    def drop_workload(self, entity_name: str) -> None:
-        """
-        Drop WORKLOAD entity.
-        """
-        self._ch_client.query(DROP_WORKLOAD_SQL.format(entity_name=escape(entity_name)))
-
-    def drop_resource(self, entity_name: str) -> None:
-        """
-        Drop RESOURCE entity.
-        """
-        self._ch_client.query(DROP_RESOURCE_SQL.format(entity_name=escape(entity_name)))
-
     def system_drop_replica(self, replica: str, zookeeper_path: str) -> None:
         """
         System drop replica query.
@@ -1341,16 +1317,12 @@ class ClickhouseCTL:
             part_path = dir_entry.path
             try:
                 rel_paths = list_dir_files(part_path)
-                if disk.keeps_object_metadata:
-                    checksum, objects_size = _get_cloud_part_checksum_and_size(
+                if copy_data and disk.keeps_object_metadata:
+                    checksum, size = _get_cloud_part_checksum_and_size(
                         part_path, rel_paths, fail_on_unparsable_metadata
                     )
                 else:
-                    checksum, objects_size = _get_part_checksum(part_path), 0
-
-                if copy_data and disk.keeps_object_metadata:
-                    size = objects_size
-                else:
+                    checksum = _get_part_checksum(part_path)
                     abs_paths = [Path(part_path) / file for file in rel_paths]
                     size = calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE)
             except Exception as e:
@@ -1476,15 +1448,26 @@ class ClickhouseCTL:
         resp = self._ch_client.query(GET_SQL_NAMED_COLLECTIONS_CREATE_QUERY_SQL)
         return {row["name"]: row["create_query"] for row in resp["data"]}
 
-    def get_workload_entities_query(self) -> list[tuple[str, WorkloadEntityType]]:
+    def get_workload_entities(self) -> dict[str, tuple[WorkloadEntityType, str]]:
         """
-        Get workload entities (WORKLOADs and RESOURCEs) from system tables.
+        Get workload entity names, types and live create queries from system tables.
         """
         resp = self._ch_client.query(GET_WORKLOAD_ENTITIES_QUERY_SQL)
-        return [
-            (row["name"], WorkloadEntityType(row["type"]))
+        return {
+            row["name"]: (WorkloadEntityType(row["type"]), row["create_query"])
             for row in resp.get("data", [])
-        ]
+        }
+
+    def format_query(self, query: str) -> str:
+        """
+        Canonicalize SQL using the server parser without changing literal values.
+        """
+        # Hex encoding preserves quotes, backslashes and whitespace in the input.
+        query_hex = query.encode("utf-8").hex()
+        resp = self._ch_client.query(
+            f"SELECT formatQuerySingleLine(unhex('{query_hex}')) AS query FORMAT JSON"
+        )
+        return resp["data"][0]["query"]
 
     def decrypt_aes_ctr(
         self, data_hex: str, key_hex: str, key_size: int, iv_hex: str
