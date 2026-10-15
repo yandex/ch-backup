@@ -154,7 +154,7 @@ Feature: Backups with unreadable metadata
     Then command exits with code 1
     And we get response contains
     """
-    Failed to download backup metadata
+    Failed to decrypt legacy backup metadata
     """
     And s3 bucket ch-backup contains objects with prefix "ch_backup/old_backup/"
     When we restore clickhouse backup "new_backup" to clickhouse02
