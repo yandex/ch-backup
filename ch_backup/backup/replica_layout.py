@@ -14,7 +14,10 @@ from ch_backup.clickhouse.schema import rewrite_database_schema, rewrite_table_s
 from ch_backup.config import Config
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.logic.named_collections import NamedCollectionsStorageConfig
-from ch_backup.logic.workload_entities import WorkloadEntity
+from ch_backup.logic.workload_entities import (
+    WorkloadEntity,
+    get_config_workload_entity_names,
+)
 from ch_backup.version import get_version
 
 MIN_CLICKHOUSE_VERSION = "23.8"
@@ -245,12 +248,13 @@ class ReplicaLayout(BackupLayout):
         if not self._source_ctl.ch_version_ge(WORKLOAD_ENTITIES_MIN_CLICKHOUSE_VERSION):
             return
         local = self._local_ctl.get_workload_entities_query()
+        from_config = get_config_workload_entity_names(self._ch_config)
         shared = "workload_zookeeper_path" in self._ch_config.config
         for name, statement in self._source_ctl.get_workload_entities_query().items():
             if shared and name in local:
                 continue
             entity = WorkloadEntity.from_create_statement(statement)
-            if name in local:
+            if name in local and name not in from_config:
                 local_type = WorkloadEntity.from_create_statement(local[name]).type
                 if local_type != entity.type:
                     raise ClickhouseBackupError(

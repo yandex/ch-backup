@@ -203,7 +203,7 @@ class WorkloadEntitiesBackup(BackupManager):
     @staticmethod
     def topologically_sort_workload_entities(
         workload_entities: list[WorkloadEntity],
-        existing: Collection[str] = (),
+        existing: Collection[str],
     ) -> list[WorkloadEntity]:
         """
         Sort WORKLOAD entities create them in the right order.

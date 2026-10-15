@@ -392,6 +392,18 @@ def test_workload_entity_of_another_type_fails_the_restore() -> None:
         _layout(_source(), local).get_backup("replica1")
 
 
+def test_workload_entity_from_server_config_is_not_checked() -> None:
+    """
+    Restore leaves it alone whatever its type.
+    """
+    local = _local(get_workload_entities_query={"s3_read": "CREATE WORKLOAD s3_read"})
+    ch_config = {"resources_and_workloads": "CREATE WORKLOAD s3_read;"}
+
+    backup = _layout(_source(), local, ch_config=ch_config).get_backup("replica1")
+
+    assert backup.get_workload_entities() == list(WORKLOADS)
+
+
 def test_workload_entities_in_zookeeper_are_read_only_if_missing() -> None:
     """
     They are shared with the replica.
