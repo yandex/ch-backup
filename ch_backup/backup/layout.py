@@ -347,11 +347,14 @@ class BackupLayout:
             self.get_backup_path(backup_name), entity_name
         )
         try:
+            logging.debug(
+                'Uploading workload entity create statement "{}"', entity_name
+            )
             self._storage_loader.upload_data(
-                data=statement, remote_path=remote_path, encryption=True
+                statement, remote_path=remote_path, encryption=True
             )
         except Exception as e:
-            msg = f'Failed to upload workload entity "{remote_path}"'
+            msg = f"Failed to create async upload of {remote_path}"
             raise StorageError(msg) from e
 
     def get_udf_create_statement(

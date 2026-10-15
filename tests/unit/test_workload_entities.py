@@ -257,9 +257,6 @@ def test_config_entity_names(config: str | dict) -> None:
 def test_from_create_statement(
     statement, expected_name, expected_type, expected_parent
 ):
-    """
-    Name, type and parent are taken from a create statement.
-    """
     entity = WorkloadEntity.from_create_statement(statement)
     assert entity.name == expected_name
     assert entity.type == expected_type

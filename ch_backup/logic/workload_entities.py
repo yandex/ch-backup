@@ -84,7 +84,7 @@ class WorkloadEntitiesBackup(BackupManager):
 
     def backup(self, context: BackupContext) -> None:
         """
-        Backup workload entities created by SQL.
+        Backup workload entities.
         """
         if not context.ch_ctl.ch_version_ge("24.11"):
             # CREATE WORKLOAD and CREATE RESOURCE SQL syntax added in 24.11
@@ -124,7 +124,7 @@ class WorkloadEntitiesBackup(BackupManager):
 
         logging.info("Restoring workload entities: {}", ", ".join(we_list))
 
-        we_on_clickhouse = context.ch_ctl.get_workload_entities_query()
+        we_on_clickhouse = dict(context.ch_ctl.get_workload_entities_query())
         from_config = get_config_workload_entity_names(context.ch_config)
 
         resources_from_backup: list[WorkloadEntity] = []
@@ -160,7 +160,7 @@ class WorkloadEntitiesBackup(BackupManager):
     def _restore_entity_with_collision_check(
         context: BackupContext,
         entity: "WorkloadEntity",
-        existing: dict[str, str],
+        existing: dict,
     ) -> None:
         """
         Restore a single workload entity, handling collisions with existing entities on server.

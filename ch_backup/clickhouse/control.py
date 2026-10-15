@@ -1439,7 +1439,7 @@ class ClickhouseCTL:
 
     def get_workload_entities_query(self) -> dict[str, str]:
         """
-        Get create statements of workload entities (WORKLOADs and RESOURCEs).
+        Get workload entities (WORKLOADs and RESOURCEs) from system tables.
         """
         resp = self._ch_client.query(GET_WORKLOAD_ENTITIES_QUERY_SQL)
         return {row["name"]: row["create_query"] for row in resp.get("data", [])}
