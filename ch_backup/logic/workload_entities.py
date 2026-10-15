@@ -4,10 +4,10 @@ Clickhouse backup logic for workload entities (WORKLOADs and RESOURCEs)
 
 import re
 from dataclasses import dataclass
-from typing import Collection
 
 from ch_backup import logging
 from ch_backup.backup_context import BackupContext
+from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.models import WorkloadEntityType
 from ch_backup.logic.backup_manager import BackupManager
@@ -95,7 +95,7 @@ class WorkloadEntitiesBackup(BackupManager):
             return
 
         from_config = get_config_workload_entity_names(context.ch_config)
-        for name, statement in context.ch_ctl.get_workload_entities_query().items():
+        for name, (_, statement) in context.ch_ctl.get_workload_entities().items():
             if name in from_config:
                 logging.info(
                     "Skipping workload entity {} defined in the server config", name
@@ -124,7 +124,7 @@ class WorkloadEntitiesBackup(BackupManager):
 
         logging.info("Restoring workload entities: {}", ", ".join(we_list))
 
-        we_on_clickhouse = dict(context.ch_ctl.get_workload_entities_query())
+        we_on_clickhouse = context.ch_ctl.get_workload_entities()
         from_config = get_config_workload_entity_names(context.ch_config)
 
         resources_from_backup: list[WorkloadEntity] = []
@@ -148,11 +148,23 @@ class WorkloadEntitiesBackup(BackupManager):
                 workloads_from_backup.append(entity)
 
         sorted_workloads = self.topologically_sort_workload_entities(
-            workloads_from_backup, we_on_clickhouse
+            workloads_from_backup,
+            {
+                name
+                for name, (entity_type, _) in we_on_clickhouse.items()
+                if entity_type == WorkloadEntityType.WORKLOAD
+            },
         )
 
         for entity in [*resources_from_backup, *sorted_workloads]:
-            self._restore_entity_with_collision_check(context, entity, we_on_clickhouse)
+            try:
+                self._restore_entity_with_collision_check(
+                    context, entity, we_on_clickhouse
+                )
+            except ClickhouseError as error:
+                raise RuntimeError(
+                    f"Cannot restore workload entity '{entity.name}': {error}"
+                ) from error
 
         logging.info("All workload entities restored")
 
@@ -160,21 +172,18 @@ class WorkloadEntitiesBackup(BackupManager):
     def _restore_entity_with_collision_check(
         context: BackupContext,
         entity: "WorkloadEntity",
-        existing: dict,
+        existing: dict[str, tuple[WorkloadEntityType, str]],
     ) -> None:
         """
         Restore a single workload entity, handling collisions with existing entities on server.
 
         - If name collision with different type: raise RuntimeError.
         - If name collision with same type and same create statement: skip.
-        - If name collision with same type but different create statement: replace it
-          in place, as ClickHouse does not drop entities referenced by others.
+        - If name collision with same type but different create statement: replace without dropping.
         """
         statement = entity.create_statement
         if entity.name in existing:
-            existing_type = WorkloadEntity.from_create_statement(
-                existing[entity.name]
-            ).type
+            existing_type, existing_statement = existing[entity.name]
             if existing_type != entity.type:
                 raise RuntimeError(
                     f"Cannot restore workload entity '{entity.name}': "
@@ -182,7 +191,9 @@ class WorkloadEntitiesBackup(BackupManager):
                     f"server has {existing_type.value!r})"
                 )
 
-            if _normalize(existing[entity.name]) == _normalize(statement):
+            if context.ch_ctl.format_query(
+                existing_statement
+            ) == context.ch_ctl.format_query(statement):
                 logging.debug(
                     "Workload entity {} already exists with identical create statement, skipping",
                     entity.name,
@@ -194,20 +205,28 @@ class WorkloadEntitiesBackup(BackupManager):
                 "replacing",
                 entity.name,
             )
-            statement = re.sub(
-                r"^\s*CREATE\s", "CREATE OR REPLACE ", statement, flags=re.IGNORECASE
-            )
 
-        context.ch_ctl.restore_workload_entity(statement)
+        context.ch_ctl.restore_workload_entity(
+            WorkloadEntitiesBackup._rewrite_workload_entity_schema(statement)
+        )
+
+    @staticmethod
+    def _rewrite_workload_entity_schema(statement: str) -> str:
+        return re.sub(
+            r"^\s*CREATE\b",
+            "CREATE OR REPLACE",
+            statement,
+            count=1,
+            flags=re.IGNORECASE,
+        )
 
     @staticmethod
     def topologically_sort_workload_entities(
         workload_entities: list[WorkloadEntity],
-        existing: Collection[str],
+        live_workload_names: set[str],
     ) -> list[WorkloadEntity]:
         """
         Sort WORKLOAD entities create them in the right order.
-        A parent missing in backup must exist on the server.
         """
         workload_map = {entity.name: entity for entity in workload_entities}
         result = []
@@ -219,12 +238,11 @@ class WorkloadEntitiesBackup(BackupManager):
             visited.add(entity.name)
 
             parent = entity.parent
-            if parent in workload_map:
+            if parent is not None and parent in workload_map:
                 _walk_to_parents(workload_map[parent])
-            elif parent is not None and parent not in existing:
+            elif parent is not None and parent not in live_workload_names:
                 raise RuntimeError(
-                    f"Parent {parent} for workload {entity.name} doesn't exist in backup "
-                    "or on the server"
+                    f"Parent {parent} for workload {entity.name} is unavailable"
                 )
 
             result.append(entity)
@@ -244,10 +262,3 @@ def get_config_workload_entity_names(ch_config: ClickhouseConfig) -> set[str]:
     if isinstance(statements, dict):
         statements = statements.get("#text", "")
     return {name.strip("`") for name in CONFIG_ENTITY_NAME_RE.findall(statements)}
-
-
-def _normalize(statement: str) -> str:
-    """
-    Strip whitespace and semicolons that differ between storages of an entity.
-    """
-    return statement.strip().rstrip(";").strip()

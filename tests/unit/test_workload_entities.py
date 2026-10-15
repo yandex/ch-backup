@@ -2,11 +2,12 @@
 
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
 from ch_backup.backup_context import BackupContext
+from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.models import WorkloadEntityType
 from ch_backup.logic.workload_entities import (
@@ -22,13 +23,165 @@ CONFIG_ENTITIES = """
 """
 
 
+@pytest.fixture(name="restore_context")
+def fixture_restore_context() -> MagicMock:
+    context = MagicMock()
+    context.ch_ctl.ch_version_ge.return_value = True
+    context.ch_config.config = {}
+    context.ch_ctl.get_workload_entities.return_value = {
+        "io": (WorkloadEntityType.RESOURCE, "CREATE RESOURCE io (READ ANY DISK)")
+    }
+    context.ch_ctl.format_query.side_effect = lambda query: query
+    context.backup_meta.get_workload_entities.return_value = ["io"]
+    context.backup_layout.get_workload_entity_create_statement.return_value = (
+        "CREATE RESOURCE io (READ ANY DISK)"
+    )
+    return context
+
+
+def test_restore_skips_identical_live_definition(restore_context: MagicMock) -> None:
+    WorkloadEntitiesBackup().restore(restore_context)
+
+    restore_context.ch_ctl.restore_workload_entity.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("entity_type", "old", "new", "replacement"),
+    [
+        (
+            WorkloadEntityType.RESOURCE,
+            "CREATE RESOURCE io (READ ANY DISK)",
+            "CREATE RESOURCE io (WRITE ANY DISK)",
+            "CREATE OR REPLACE RESOURCE io (WRITE ANY DISK)",
+        ),
+        (
+            WorkloadEntityType.WORKLOAD,
+            "CREATE WORKLOAD io SETTINGS weight = 1",
+            "  create workload io SETTINGS weight = 2;\n",
+            "CREATE OR REPLACE workload io SETTINGS weight = 2;\n",
+        ),
+    ],
+    ids=["resource", "workload"],
+)
+def test_restore_replaces_changed_definition(
+    restore_context: MagicMock,
+    entity_type: WorkloadEntityType,
+    old: str,
+    new: str,
+    replacement: str,
+) -> None:
+    restore_context.ch_ctl.get_workload_entities.return_value = {
+        "io": (entity_type, old)
+    }
+    restore_context.backup_layout.get_workload_entity_create_statement.return_value = (
+        new
+    )
+
+    WorkloadEntitiesBackup().restore(restore_context)
+
+    restore_context.ch_ctl.restore_workload_entity.assert_called_once_with(replacement)
+
+
+def test_restore_rejects_type_mismatch(restore_context: MagicMock) -> None:
+    restore_context.ch_ctl.get_workload_entities.return_value = {
+        "io": (WorkloadEntityType.WORKLOAD, "CREATE WORKLOAD io")
+    }
+
+    with pytest.raises(RuntimeError, match="'io'.*type mismatch"):
+        WorkloadEntitiesBackup().restore(restore_context)
+
+    restore_context.ch_ctl.restore_workload_entity.assert_not_called()
+
+
+def test_restore_reports_replacement_error(restore_context: MagicMock) -> None:
+    restore_context.backup_layout.get_workload_entity_create_statement.return_value = (
+        "CREATE RESOURCE io (WRITE ANY DISK)"
+    )
+    error = ClickhouseError("Server rejected replacement")
+    restore_context.ch_ctl.restore_workload_entity.side_effect = error
+
+    with pytest.raises(
+        RuntimeError, match="'io'.*Server rejected replacement"
+    ) as raised:
+        WorkloadEntitiesBackup().restore(restore_context)
+
+    assert raised.value.__cause__ is error
+
+
+def test_restore_creates_missing_entities_in_dependency_order(
+    restore_context: MagicMock,
+) -> None:
+    statements = {
+        "child": "CREATE WORKLOAD child IN root SETTINGS weight = 2 FOR io",
+        "root": "CREATE WORKLOAD root",
+        "io": "CREATE RESOURCE io (READ ANY DISK)",
+    }
+    restore_context.ch_ctl.get_workload_entities.return_value = {}
+    restore_context.backup_meta.get_workload_entities.return_value = list(statements)
+    restore_context.backup_layout.get_workload_entity_create_statement.side_effect = (
+        lambda _, name: statements[name]
+    )
+
+    WorkloadEntitiesBackup().restore(restore_context)
+
+    assert restore_context.ch_ctl.restore_workload_entity.call_args_list == [
+        call("CREATE OR REPLACE RESOURCE io (READ ANY DISK)"),
+        call("CREATE OR REPLACE WORKLOAD root"),
+        call("CREATE OR REPLACE WORKLOAD child IN root SETTINGS weight = 2 FOR io"),
+    ]
+    restore_context.ch_ctl.format_query.assert_not_called()
+
+
+def test_restore_uses_existing_parent(restore_context: MagicMock) -> None:
+    restore_context.ch_ctl.get_workload_entities.return_value = {
+        "root": (WorkloadEntityType.WORKLOAD, "CREATE WORKLOAD root")
+    }
+    restore_context.backup_meta.get_workload_entities.return_value = ["child"]
+    restore_context.backup_layout.get_workload_entity_create_statement.return_value = (
+        "CREATE WORKLOAD child IN root"
+    )
+
+    WorkloadEntitiesBackup().restore(restore_context)
+
+    restore_context.ch_ctl.restore_workload_entity.assert_called_once_with(
+        "CREATE OR REPLACE WORKLOAD child IN root"
+    )
+
+
+@pytest.mark.parametrize(
+    "existing",
+    [
+        {},
+        {"root": (WorkloadEntityType.RESOURCE, "CREATE RESOURCE root (READ ANY DISK)")},
+    ],
+    ids=["missing-parent", "resource-parent"],
+)
+def test_restore_rejects_unavailable_parent(
+    restore_context: MagicMock, existing: dict[str, tuple[WorkloadEntityType, str]]
+) -> None:
+    restore_context.ch_ctl.get_workload_entities.return_value = existing
+    restore_context.backup_meta.get_workload_entities.return_value = ["child"]
+    restore_context.backup_layout.get_workload_entity_create_statement.return_value = (
+        "CREATE WORKLOAD child IN root"
+    )
+
+    with pytest.raises(RuntimeError, match="Parent root for workload child"):
+        WorkloadEntitiesBackup().restore(restore_context)
+
+    restore_context.ch_ctl.restore_workload_entity.assert_not_called()
+
+
 def _context(
     on_server: dict[str, str], in_backup: dict[str, str] | None = None
 ) -> SimpleNamespace:
     """Helper: a context of a server with the given entities and entities from config."""
     ch_ctl = MagicMock()
     ch_ctl.ch_version_ge.return_value = True
-    ch_ctl.get_workload_entities_query.return_value = on_server
+    ch_ctl.get_workload_entities.return_value = {
+        name: (WorkloadEntity.from_create_statement(statement).type, statement)
+        for name, statement in on_server.items()
+    }
+    ch_ctl.format_query.side_effect = lambda query: query
     backup_meta = MagicMock()
     backup_meta.name = "backup"
     backup_meta.get_workload_entities.return_value = list(in_backup or {})
@@ -63,61 +216,25 @@ def test_backup_takes_sql_entities_without_config_ones() -> None:
     )
 
 
-def test_restore_skips_same_and_replaces_changed_entities_parents_first() -> None:
+def test_restore_skips_config_entities() -> None:
     """
-    ClickHouse does not drop an entity referenced by others, so it is replaced in place.
+    ClickHouse does not let replace entities from the server config, so they are
+    skipped even if the backup has another definition.
     """
     context = _context(
-        on_server={
-            "xml_all": "CREATE WORKLOAD xml_all",
-            "s3_read": "CREATE RESOURCE s3_read (READ DISK s3)",
-            "all": "CREATE WORKLOAD `all`",
-            "user": "CREATE WORKLOAD user IN `all`",
-        },
+        on_server={"xml_all": "CREATE WORKLOAD xml_all"},
         in_backup={
-            "user": "CREATE WORKLOAD user IN `all` SETTINGS weight = 9\n",
             "xml_all": "CREATE WORKLOAD xml_all SETTINGS weight = 2",
-            "dev": "CREATE WORKLOAD dev IN user",
-            "s3_read": "CREATE RESOURCE s3_read (READ DISK s3);",
-            "all": "CREATE WORKLOAD `all`\n",
+            "xml_s3_read": "CREATE RESOURCE xml_s3_read (READ DISK s3)",
             "etl": "CREATE WORKLOAD etl IN xml_all",
         },
     )
 
     WorkloadEntitiesBackup().restore(cast(BackupContext, context))
 
-    assert [
-        call.args[0] for call in context.ch_ctl.restore_workload_entity.call_args_list
-    ] == [
-        "CREATE OR REPLACE WORKLOAD user IN `all` SETTINGS weight = 9\n",
-        "CREATE WORKLOAD dev IN user",
-        "CREATE WORKLOAD etl IN xml_all",
+    assert context.ch_ctl.restore_workload_entity.call_args_list == [
+        call("CREATE OR REPLACE WORKLOAD etl IN xml_all")
     ]
-
-
-def test_restore_fails_on_entity_of_another_type() -> None:
-    """
-    An entity of another type is not replaced.
-    """
-    context = _context(
-        on_server={"all": "CREATE RESOURCE `all` (READ DISK s3)"},
-        in_backup={"all": "CREATE WORKLOAD `all`"},
-    )
-
-    with pytest.raises(RuntimeError, match="type mismatch"):
-        WorkloadEntitiesBackup().restore(cast(BackupContext, context))
-    context.ch_ctl.restore_workload_entity.assert_not_called()
-
-
-def test_restore_fails_on_parent_missing_everywhere() -> None:
-    """
-    A workload is created only under an existing parent.
-    """
-    context = _context(on_server={}, in_backup={"dev": "CREATE WORKLOAD dev IN user"})
-
-    with pytest.raises(RuntimeError, match="Parent user for workload dev"):
-        WorkloadEntitiesBackup().restore(cast(BackupContext, context))
-    context.ch_ctl.restore_workload_entity.assert_not_called()
 
 
 @pytest.mark.parametrize(
