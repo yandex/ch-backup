@@ -89,12 +89,12 @@ Feature: Workload entities (WORKLOADs and RESOURCEs) support
     Given ch-backup configuration on clickhouse01
     """
     encryption:
-      enabled: False
+      type: noop
     """
     And ch-backup configuration on clickhouse02
     """
     encryption:
-      enabled: False
+      type: noop
     """
     And we replace config file no_storage.xml in favor of <config> on clickhouse02 with restart
     And we have executed queries on clickhouse01
