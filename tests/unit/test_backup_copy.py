@@ -14,6 +14,7 @@ import pytest
 
 from ch_backup.backup.copier import BackupCopier
 from ch_backup.backup.copy_report import CopyReport, print_copy_report
+from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, BackupState
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import (
@@ -2241,6 +2242,59 @@ def test_copy_counts_rewritten_metadata(metadata_failure: bool) -> None:
     ) == (2, 1 if metadata_failure else 2, int(metadata_failure), 1000)
     if metadata_failure:
         assert result.errors[0]["target"] == dst_path
+
+
+@pytest.mark.parametrize("keep_going", [False, True])
+def test_copy_records_synchronous_cloud_metadata_validation_failure(
+    keep_going: bool,
+) -> None:
+    ctx = _cloud_storage_context()
+    ctx.layout.backups["b1"].cloud_storage.encrypted = False
+    src_path = "ch_backup/b1/disks/s3/db1/t1.tar.gz"
+    dst_path = "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
+    ctx.layout.cloud_storage_files[src_path] = [
+        ("part/data.bin", _object_storage_metadata(("data/xyz/aaa", 1000), version=5)),
+        ("part/count.txt", b"5\n0\t1\n0\n0\n1\n"),
+    ]
+    ctx.layout.backups["b2"] = _backup("b2", start_time="2026-01-02 00:00:00 +0000")
+    _with_files(ctx, "b2", {"metadata/db.sql": 10})
+    with patch("ch_backup.backup.layout.StorageLoader") as loader:
+        validating_layout = BackupLayout(ctx.target_config)  # type: ignore[arg-type]
+    report = CopyReport()
+    with patch.object(
+        ctx.target_layout,
+        "upload_cloud_storage_metadata_files",
+        side_effect=validating_layout.upload_cloud_storage_metadata_files,
+    ):
+        with pytest.raises(ClickhouseBackupError if keep_going else StorageError):
+            ctx.copy(keep_going=keep_going, report=report)
+
+    loader.return_value.upload_data_tarball.assert_not_called()
+    assert dst_path not in {entry.dst_path for entry in ctx.target_layout.copied}
+    assert dst_path not in ctx.target_layout.cloud_storage_files
+    assert ctx.target_layout.backups["b1"].state == BackupState.FAILED
+    assert ctx.target_layout.uploaded[:2] == [
+        ("b1", BackupState.CREATING),
+        ("b1", BackupState.FAILED),
+    ]
+    failed, independent = report.backups
+    assert failed.status == "failed"
+    assert (failed.objects_total, failed.objects_copied, failed.objects_failed) == (
+        2,
+        1,
+        1,
+    )
+    assert len(failed.errors) == 1
+    assert failed.errors[0]["stage"] == "copy_metadata"
+    assert failed.errors[0]["target"] == dst_path
+    assert "inline file data" in failed.errors[0]["message"]
+    assert independent.status == ("copied" if keep_going else "not_processed")
+
+    # A corrected archive must be retried, rather than skipped as an existing copy.
+    ctx.layout.cloud_storage_files[src_path].pop()
+    assert ctx.copy(["b1"], keep_going=keep_going) == (["b1"], [])
+    assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
+    assert dst_path in ctx.target_layout.cloud_storage_files
 
 
 def test_failed_metadata_save_preserves_copy_error_and_clears_cache() -> None:

@@ -177,6 +177,15 @@ def upload_files_tarball_pipeline(
     run(builder.pipeline())
 
 
+def decrypt_data_pipeline(config: dict, data: bytes) -> bytes:
+    """Decrypt bytes already in memory using the standard download stages."""
+    builder = PipelineBuilder(config)
+    builder.build_iterable_stage([data])
+    builder.build_decrypt_stage()
+    builder.build_collect_data_stage()
+    return run_and_return_first(builder.pipeline())
+
+
 def download_data_pipeline(config: dict, remote_path: str, decrypt: bool) -> bytes:
     """
     Entrypoint of download data pipeline.

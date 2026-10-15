@@ -1139,6 +1139,7 @@ class BackupCopier:
             for index, (remote_path, files) in enumerate(
                 plan.rewritten_cloud_storage_metadata, 1
             ):
+                errors_before_upload = len(result.errors)
                 try:
                     self._target_layout.upload_cloud_storage_metadata_files(
                         backup,
@@ -1153,6 +1154,15 @@ class BackupCopier:
                         ),
                     )
                 except Exception as e:
+                    # Validation can fail before the upload registers its error callback.
+                    # Synchronous pipeline errors may already have called it.
+                    if len(result.errors) == errors_before_upload:
+                        result.add_error(
+                            e,
+                            "copy_metadata",
+                            target=remote_path,
+                            object_failed=True,
+                        )
                     if not self._keep_going or is_broken_executor(e):
                         raise
                 if index % 256 == 0:

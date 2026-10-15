@@ -21,11 +21,7 @@ def make_layout() -> BackupLayout:
     """Helper: build a BackupLayout with a mocked storage loader."""
     config: dict = copy.deepcopy(DEFAULT_CONFIG)
     config["backup"]["path_root"] = "ch_backup"
-    with (
-        patch("ch_backup.backup.layout.StorageLoader"),
-        patch("ch_backup.backup.layout.get_encryption") as get_encryption,
-    ):
-        get_encryption.return_value.metadata_size.return_value = 0
+    with patch("ch_backup.backup.layout.StorageLoader"):
         layout = BackupLayout(config)  # type: ignore[arg-type]
     setattr(layout, "_storage_loader", MagicMock())
     return layout

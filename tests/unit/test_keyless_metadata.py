@@ -6,6 +6,7 @@
 import copy
 import json
 import tarfile
+from functools import partial
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Iterator, cast
@@ -25,6 +26,7 @@ from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.encryption import get_encryption
 from ch_backup.exceptions import ConfigurationError, StorageError
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
+from ch_backup.storage.async_pipeline.pipelines import decrypt_data_pipeline
 from ch_backup.storage.async_pipeline.stages.filesystem.read_files_tarball_stage import (
     ReadFilesTarballScanStage,
 )
@@ -37,7 +39,10 @@ def make_layout(key: str | None = None) -> BackupLayout:
     config = copy.deepcopy(DEFAULT_CONFIG)
     config["backup"]["path_root"] = "backups"
     config["encryption"].update(key=key, chunk_size=64)
-    with patch("ch_backup.backup.layout.StorageLoader"):
+    with patch("ch_backup.backup.layout.StorageLoader") as loader:
+        loader.return_value.decrypt_data.side_effect = partial(
+            decrypt_data_pipeline, config
+        )
         return BackupLayout(config)  # type: ignore[arg-type]
 
 
@@ -54,12 +59,16 @@ def test_read_plaintext_without_initializing_crypto():
     backup = make_backup()
     loader = get_loader(layout)
     loader.download_data.return_value = backup.dump_json().encode()
-    with patch("ch_backup.backup.layout.get_encryption", side_effect=AssertionError):
+    with patch(
+        "ch_backup.storage.async_pipeline.pipeline_builder.get_encryption",
+        side_effect=AssertionError,
+    ):
         loaded = layout.get_backup(backup.name)
     assert loaded is not None
     assert loaded.encrypted is True
     assert loaded.name == backup.name
     loader.download_data.assert_called_once()
+    loader.decrypt_data.assert_not_called()
     assert loader.download_data.call_args.kwargs == {"encoding": None}
 
 

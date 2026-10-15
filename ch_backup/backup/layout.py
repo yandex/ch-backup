@@ -37,7 +37,7 @@ from ch_backup.clickhouse.object_storage_metadata import (
     parse_object_storage_metadata,
 )
 from ch_backup.config import Config
-from ch_backup.encryption import get_encryption, get_encryption_class
+from ch_backup.encryption import get_encryption_class
 from ch_backup.exceptions import ConfigurationError, StorageError, is_broken_executor
 from ch_backup.storage import StorageLoader
 from ch_backup.storage.engine.s3 import S3RetryingError
@@ -71,7 +71,6 @@ class BackupLayout:
         self._metadata_path = config["clickhouse"]["metadata_path"]
         self._named_collections_path = config["clickhouse"]["named_collections_path"]
         enc_conf = config["encryption"]
-        self._encryption_config = enc_conf
         self._encryption_chunk_size = enc_conf["chunk_size"]
         self._encryption_metadata_size = get_encryption_class(
             enc_conf["type"]
@@ -447,16 +446,8 @@ class BackupLayout:
             except (json.JSONDecodeError, UnicodeDecodeError):
                 if not allow_legacy_encryption:
                     raise
-            # Legacy full metadata used the same chunked encryption as data files.
-            # Decode the bytes already fetched rather than reading the object twice.
-            crypto = get_encryption(
-                self._encryption_config["type"], self._encryption_config
-            )
-            chunk_size = self._encryption_chunk_size + crypto.metadata_size()
-            data = b"".join(
-                crypto.decrypt(data[pos : pos + chunk_size])
-                for pos in range(0, len(data), chunk_size)
-            )
+            # Reuse the download pipeline's decryption without fetching the object again.
+            data = self._storage_loader.decrypt_data(data)
             backup = BackupMetadata.load_json(data)
             backup.metadata_encrypted = True
             return backup

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import BinaryIO, Callable, Sequence
 
 from ch_backup.storage.async_pipeline.pipeline_executor import PipelineExecutor
+from ch_backup.storage.async_pipeline.pipelines import decrypt_data_pipeline
 from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.object_copy import CopyEntry
 
@@ -176,6 +177,10 @@ class StorageLoader:
             remote_path, is_async=is_async, encryption=encryption
         )
         return data.decode(encoding) if encoding else data
+
+    def decrypt_data(self, data: bytes) -> bytes:
+        """Decrypt downloaded bytes with the same stages as an encrypted download."""
+        return decrypt_data_pipeline(self._config, data)
 
     def download_data_tarball(
         self,
