@@ -26,12 +26,9 @@ Feature: Backup of a table with an unreadable data part
     """
     set -e
     part=/var/lib/clickhouse/data/test_db/test_table/1_2_2_0
-    target=$(find /sys/module -maxdepth 2 -name uevent -perm 0200 | head -n 1)
-    test -n "$target"
-    if cat "$target" > /dev/null 2>&1; then exit 1; fi
     for file in "$part"/*.bin; do
-        ln -sfn "$target" "$file"
-        chown -h --reference="$part" "$file"
+        chmod 000 "$file"
+        if runuser -u clickhouse -- cat "$file" > /dev/null 2>&1; then exit 1; fi
     done
     """
 
