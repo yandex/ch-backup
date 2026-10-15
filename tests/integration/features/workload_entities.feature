@@ -86,7 +86,17 @@ Feature: Workload entities (WORKLOADs and RESOURCEs) support
 
   @require_version_24.11
   Scenario Outline: Restore existing workload hierarchy in <storage> storage
-    Given we replace config file no_storage.xml in favor of <config> on clickhouse02 with restart
+    Given ch-backup configuration on clickhouse01
+    """
+    encryption:
+      enabled: False
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    encryption:
+      enabled: False
+    """
+    And we replace config file no_storage.xml in favor of <config> on clickhouse02 with restart
     And we have executed queries on clickhouse01
     """
     CREATE RESOURCE s3_read (READ DISK s3);
