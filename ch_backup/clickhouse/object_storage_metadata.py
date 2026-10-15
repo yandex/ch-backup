@@ -119,9 +119,10 @@ def parse_object_storage_metadata(data: bytes) -> ObjectStorageMetadata:
         if any(lines[pos:]):
             raise ObjectStorageMetadataError("Unexpected trailing content")
     except (IndexError, ValueError) as e:
-        raise ObjectStorageMetadataError(
-            f"Malformed object storage metadata: {e!r}"
-        ) from e
+        # Conversion errors can contain raw file data. Keep the exception type
+        # and traceback for diagnostics, but do not expose the rejected value.
+        e.args = ("Invalid object storage metadata field",)
+        raise ObjectStorageMetadataError("Malformed object storage metadata") from e
 
     return ObjectStorageMetadata(
         version=version,

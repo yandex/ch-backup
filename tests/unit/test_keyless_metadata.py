@@ -6,13 +6,14 @@
 import copy
 import json
 import tarfile
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Iterator, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from ch_backup import logging
 from ch_backup.backup.layout import (
     MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE,
     BackupLayout,
@@ -23,6 +24,7 @@ from ch_backup.clickhouse.models import Database, Disk
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.encryption import get_encryption
 from ch_backup.exceptions import ConfigurationError, StorageError
+from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.storage.async_pipeline.stages.filesystem.read_files_tarball_stage import (
     ReadFilesTarballScanStage,
 )
@@ -164,6 +166,46 @@ def test_rewritten_cloud_metadata_is_checked_before_upload(data, safe, encrypted
             layout.upload_cloud_storage_metadata_files(backup, "disks/table.tar", files)
         assert "SECRET" not in str(error.value)
         get_loader(layout).upload_data_tarball.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(b"PRIVATE_PAYLOAD\n", id="invalid version"),
+        pytest.param(b"5\nPRIVATE_PAYLOAD\t0\n", id="invalid object count"),
+        pytest.param(
+            b"5\n1\t0\nPRIVATE_PAYLOAD\tdata/key\n0\n0\n\n",
+            id="invalid object size",
+        ),
+        pytest.param(b"5\n0\t0\nPRIVATE_PAYLOAD\n0\n\n", id="invalid ref count"),
+        pytest.param(b"5\n0\t0\n0\nPRIVATE_PAYLOAD\n\n", id="invalid read-only flag"),
+    ],
+)
+def test_malformed_cloud_metadata_does_not_leak_into_error_log(
+    tmp_path: Path, data: bytes
+) -> None:
+    file_path = tmp_path / "data.bin"
+    file_path.write_bytes(data)
+    output = StringIO()
+    logger = logging.getLogger("ch-backup")
+    sink = logger.add(output, format="{message}", diagnose=False, backtrace=False)
+    try:
+        with ThreadExecPool(1) as pool:
+            pool.submit(
+                "upload disk metadata",
+                next,
+                cloud_metadata_stream(tmp_path),
+            )
+            with pytest.raises(StorageError, match="Cannot publish unencrypted"):
+                pool.wait_all()
+    finally:
+        logger.remove(sink)
+
+    log = output.getvalue()
+    assert "StorageError" in log
+    assert "ObjectStorageMetadataError: Malformed object storage metadata" in log
+    assert "ValueError: Invalid object storage metadata field" in log
+    assert "PRIVATE_PAYLOAD" not in log
 
 
 def cloud_metadata_stream(tmp_path: Path) -> Iterator[bytes]:
