@@ -1012,7 +1012,27 @@ class BackupCopier:
         if backup.cloud_storage.source:
             # Data was copied out of the disk by previous copying of the backup.
             source = backup.cloud_storage.source
-            endpoint_url = source["endpoint_url"]
+            endpoint_url = conf.get("endpoint_url")
+            if not endpoint_url:
+                # Metadata is not authenticated. Only use an endpoint from trusted config.
+                trusted_endpoints = [self._storage["credentials"]["endpoint_url"]]
+                if disk_location:
+                    trusted_endpoints.append(disk_location[0])
+                stored_endpoint = source.get("endpoint_url", "").rstrip("/")
+                endpoint_url = next(
+                    (
+                        endpoint
+                        for endpoint in trusted_endpoints
+                        if endpoint and endpoint.rstrip("/") == stored_endpoint
+                    ),
+                    None,
+                )
+                if not endpoint_url:
+                    raise ConfigurationError(
+                        "Cloud storage source endpoint in backup metadata does not match "
+                        "a configured storage or disk endpoint; set "
+                        '"copy.cloud_storage.source.endpoint_url" explicitly'
+                    )
             bucket, path = source["bucket"], source["path"]
         elif disk_location:
             endpoint_url, bucket, path = disk_location
@@ -1119,6 +1139,7 @@ class BackupCopier:
             for index, (remote_path, files) in enumerate(
                 plan.rewritten_cloud_storage_metadata, 1
             ):
+                errors_before_upload = len(result.errors)
                 try:
                     self._target_layout.upload_cloud_storage_metadata_files(
                         backup,
@@ -1133,6 +1154,15 @@ class BackupCopier:
                         ),
                     )
                 except Exception as e:
+                    # Validation can fail before the upload registers its error callback.
+                    # Synchronous pipeline errors may already have called it.
+                    if len(result.errors) == errors_before_upload:
+                        result.add_error(
+                            e,
+                            "copy_metadata",
+                            target=remote_path,
+                            object_failed=True,
+                        )
                     if not self._keep_going or is_broken_executor(e):
                         raise
                 if index % 256 == 0:

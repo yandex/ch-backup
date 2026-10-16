@@ -17,7 +17,10 @@ from hamcrest import (
 )
 
 from tests.integration.modules.ch_backup_cli import BackupManager
-from tests.integration.modules.clickhouse import restart_clickhouse_and_wait
+from tests.integration.modules.clickhouse import (
+    ClickhouseClient,
+    restart_clickhouse_and_wait,
+)
 from tests.integration.modules.docker import get_container
 from tests.integration.modules.steps import get_step_data
 
@@ -236,6 +239,63 @@ def step_check_backups_conditions(context, node):
                 f"Backup #{i}: {backup.name} expected {attr} ="
                 f" {expected_value}, but was {current_value}",
             )
+
+
+@then(
+    'detached archives of "{db:w}"."{table:w}" on disk "{disk:w}" in '
+    "{node:w} backup #{backup_id:d} match source parts"
+)
+# pylint: disable=too-many-positional-arguments
+def step_detached_archives_match_source(context, db, table, disk, node, backup_id):
+    """Download, unpack and compare detached archives with their source parts."""
+    archives = BackupManager(context, node).download_detached_part_files(
+        backup_id, db, table, disk
+    )
+    assert_that(bool(archives), equal_to(True), "No detached archives were found")
+
+    data_paths = (
+        ClickhouseClient(context, node)
+        .get_response(
+            f"SELECT arrayJoin(data_paths) FROM system.tables "
+            f"WHERE database = '{db}' AND name = '{table}' FORMAT TSVRaw"
+        )
+        .splitlines()
+    )
+    container = get_container(context, node)
+
+    for part_name, archived_files in archives.items():
+        source_path = _find_detached_source_path(container, data_paths, part_name)
+
+        listed = container.exec_run(
+            ["find", source_path, "-type", "f", "-printf", "%P\n"], user="root"
+        )
+        assert listed.exit_code == 0, listed.output.decode(errors="replace")
+        source_files = set(listed.output.decode().splitlines())
+        assert_that(set(archived_files), equal_to(source_files))
+
+        for file_name, archived_data in archived_files.items():
+            source = container.exec_run(
+                ["cat", f"{source_path}/{file_name}"], user="root"
+            )
+            assert source.exit_code == 0, source.output.decode(errors="replace")
+            assert_that(archived_data, equal_to(source.output))
+
+
+def _find_detached_source_path(container, data_paths, part_name):
+    """Find one unambiguous source directory for an archived detached part."""
+    source_paths = [
+        f"{data_path.rstrip('/')}/detached/{part_name}" for data_path in data_paths
+    ]
+    existing_source_paths = [
+        path
+        for path in source_paths
+        if container.exec_run(["test", "-d", path], user="root").exit_code == 0
+    ]
+    assert len(existing_source_paths) == 1, (
+        f"Expected exactly one detached source directory {part_name} "
+        f"under {data_paths}, found {existing_source_paths}"
+    )
+    return existing_source_paths[0]
 
 
 @when(

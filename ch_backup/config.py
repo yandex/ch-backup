@@ -4,6 +4,7 @@ config module defines Config class and default values
 
 import copy
 import socket
+from datetime import datetime, timezone
 from typing import Any
 
 import yaml
@@ -15,7 +16,26 @@ def _as_seconds(t: str) -> int:
     return int(parse_timespan(t))
 
 
-DEFAULT_CONFIG = {
+def as_datetime(value: Any) -> datetime | None:
+    """Parse an optional timezone-aware ISO timestamp and normalize it to UTC."""
+    if value is None:
+        return None
+
+    error = "Expected an ISO 8601 timestamp with a timezone, or null"
+    if isinstance(value, str):
+        try:
+            # Python 3.10 does not accept the UTC suffix Z in fromisoformat.
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(error) from exc
+
+    # YAML may already have parsed an unquoted timestamp into a datetime.
+    if not isinstance(value, datetime) or value.utcoffset() is None:
+        raise ValueError(error)
+    return value.astimezone(timezone.utc)
+
+
+DEFAULT_CONFIG: dict[str, Any] = {
     "clickhouse": {
         "data_path": "/var/lib/clickhouse",
         "metadata_path": "/var/lib/clickhouse/metadata",
@@ -49,6 +69,7 @@ DEFAULT_CONFIG = {
         "exclude_dbs": [],
         "path_root": None,
         "deduplicate_parts": True,
+        "deduplication_start_time": None,
         "deduplication_age_limit": {
             "days": 7,
         },
@@ -86,6 +107,7 @@ DEFAULT_CONFIG = {
         "cloud_storage": {
             # Location of the source disk objects. If not set, it's taken from backup metadata
             # (for backups that were already copied) or from ClickHouse disk configuration.
+            # A stored endpoint must match a configured storage/disk endpoint unless explicitly overridden.
             "source": {
                 "endpoint_url": None,
                 "bucket": None,
@@ -165,7 +187,7 @@ DEFAULT_CONFIG = {
     "cloud_storage": {
         # Encryption and compression are applied to cloud storage metadata only.
         # Data copied by "copy_data" is stored as ClickHouse wrote it.
-        "encryption": True,
+        "encryption": False,
         "compression": True,
         "copy_data": False,
     },

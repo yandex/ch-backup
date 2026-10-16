@@ -232,11 +232,7 @@ def _make_backup_storage_config() -> dict:
 
 def _make_backup_layout(config: dict) -> unittest.mock.MagicMock:
     """Helper: mock a BackupLayout that still builds real backup paths."""
-    with (
-        unittest.mock.patch("ch_backup.backup.layout.StorageLoader"),
-        unittest.mock.patch("ch_backup.backup.layout.get_encryption") as get_encryption,
-    ):
-        get_encryption.return_value.metadata_size.return_value = 0
+    with unittest.mock.patch("ch_backup.backup.layout.StorageLoader"):
         real_layout = BackupLayout(config)  # type: ignore[arg-type]
 
     layout = unittest.mock.MagicMock()

@@ -13,6 +13,7 @@ from typing import Any, Sequence
 from ch_backup.backup.metadata.access_control_metadata import AccessControlMetadata
 from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageMetadata
 from ch_backup.backup.metadata.common import BackupStorageFormat
+from ch_backup.backup.metadata.detached_part_metadata import DetachedPartMetadata
 from ch_backup.backup.metadata.part_metadata import PartMetadata
 from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.clickhouse.models import Database
@@ -49,6 +50,7 @@ class BackupMetadata:  # pylint: disable=too-many-public-methods
     # pylint: disable=too-many-instance-attributes
     # pylint: disable=too-many-arguments
     # pylint: disable=too-many-positional-arguments
+    # pylint: disable=too-many-public-methods
     def __init__(
         self,
         name: str,
@@ -81,6 +83,8 @@ class BackupMetadata:  # pylint: disable=too-many-public-methods
         self.real_size = 0
         self.schema_only = schema_only
         self.encrypted = encrypted
+        # None means an older light metadata file does not identify the full JSON format.
+        self.metadata_encrypted: bool | None = False
         self.cloud_storage: CloudStorageMetadata = CloudStorageMetadata()
         # Location of the storage the backup was copied from (for backups created by "copy" command).
         self.copied_from: dict | None = None
@@ -159,6 +163,8 @@ class BackupMetadata:  # pylint: disable=too-many-public-methods
         meta: dict[str, Any] = {}
         if self.copied_from:
             meta["copied_from"] = self.copied_from
+        if self.metadata_encrypted is not None:
+            meta["metadata_encrypted"] = self.metadata_encrypted
 
         return {
             "databases": databases,
@@ -334,6 +340,7 @@ class BackupMetadata:  # pylint: disable=too-many-public-methods
             backup.version = meta["version"]
             backup.schema_only = meta.get("schema_only", False)
             backup.encrypted = meta.get("encrypted", True)
+            backup.metadata_encrypted = meta.get("metadata_encrypted")
             backup.copied_from = meta.get("copied_from")
             # TODO remove after a several weeks/months, when backups rotated
             # OR NOT TODO, because of backward compatibility
@@ -427,6 +434,9 @@ class BackupMetadata:  # pylint: disable=too-many-public-methods
             self.size += part.size
             if not part.link:
                 self.real_size += part.size
+        for detached_part in table.get_detached_parts():
+            self.size += detached_part.size
+            self.real_size += detached_part.size
 
     def add_udf(self, udf_name: str) -> None:
         """
@@ -457,6 +467,14 @@ class BackupMetadata:  # pylint: disable=too-many-public-methods
             for table in self.get_tables(db_name):
                 parts.extend(table.get_parts())
 
+        return parts
+
+    def get_detached_parts(self) -> Sequence[DetachedPartMetadata]:
+        """Get detached data parts of all tables."""
+        parts: list[DetachedPartMetadata] = []
+        for db_name in self.get_databases():
+            for table in self.get_tables(db_name):
+                parts.extend(table.get_detached_parts())
         return parts
 
     def get_named_collections(self) -> list[str]:
@@ -527,6 +545,16 @@ class BackupMetadata:  # pylint: disable=too-many-public-methods
         raw_part["link_part_name"] = None
         self.real_size += part.size
 
+    def add_detached_part(self, part: DetachedPartMetadata) -> None:
+        """Add a detached data part to backup metadata."""
+        table = self.get_table(part.database, part.table)
+        table.add_detached_part(part)
+        self._databases[part.database]["tables"][part.table]["detached_parts"] = (
+            table.raw_metadata["detached_parts"]
+        )
+        self.size += part.size
+        self.real_size += part.size
+
     def remove_parts(self, table: TableMetadata, parts: list[PartMetadata]) -> None:
         """
         Remove data parts from backup metadata.
@@ -539,6 +567,26 @@ class BackupMetadata:  # pylint: disable=too-many-public-methods
             self.size -= part.size
             if not part.link:
                 self.real_size -= part.size
+
+    def remove_detached_parts(
+        self, table: TableMetadata, parts: list[DetachedPartMetadata]
+    ) -> None:
+        """Remove detached parts from backup metadata and size counters."""
+        detached_parts = self._databases[table.database]["tables"][table.name].get(
+            "detached_parts", {}
+        )
+        for part in parts:
+            disk_parts = detached_parts[part.disk_name]
+            del disk_parts[part.name]
+            if not disk_parts:
+                del detached_parts[part.disk_name]
+            self.size -= part.size
+            self.real_size -= part.size
+
+        if not detached_parts:
+            self._databases[table.database]["tables"][table.name].pop(
+                "detached_parts", None
+            )
 
     def is_empty(self) -> bool:
         """

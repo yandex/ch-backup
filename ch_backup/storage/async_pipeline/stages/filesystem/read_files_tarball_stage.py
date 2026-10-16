@@ -6,7 +6,7 @@ import tarfile
 import time
 from io import BytesIO
 from pathlib import Path
-from typing import Any, BinaryIO, Iterable, Iterator
+from typing import Any, BinaryIO, Callable, Iterable, Iterator
 
 from ch_backup.storage.async_pipeline.base_pipeline.handler import InputHandler
 from ch_backup.storage.async_pipeline.stages.types import StageType
@@ -46,11 +46,13 @@ class ReadFilesTarballStageBase(InputHandler):
         config: dict,
         base_path: Path,
         tar_base_dir: str | None = None,
+        file_reader: Callable[[Path], bytes] | None = None,
     ) -> None:
         self._chunk_size = config["chunk_size"]
         self._base_path = base_path
         self._file_source: Iterable[Any] = []
         self._tar_base_dir: str | None = tar_base_dir
+        self._file_reader = file_reader
 
     def __call__(self) -> Iterator[bytes]:
         """
@@ -64,8 +66,14 @@ class ReadFilesTarballStageBase(InputHandler):
                 else file_relative_path
             )
 
-            yield _make_tar_header_from_file(str(file_path_in_tar), file_path)
-            yield from self._read_file_content(file_path)
+            if self._file_reader is not None:
+                # Both the header and payload use the same validated snapshot.
+                data = self._file_reader(file_path)
+                yield _make_tar_header(str(file_path_in_tar), len(data))
+                yield from self._read_content(BytesIO(data), len(data))
+            else:
+                yield _make_tar_header_from_file(str(file_path_in_tar), file_path)
+                yield from self._read_file_content(file_path)
 
     def _read_file_content(self, file_path: Path) -> Iterator[bytes]:
         """
@@ -92,14 +100,16 @@ class ReadFilesTarballScanStage(ReadFilesTarballStageBase):
     Do not load all file names in memory.
     """
 
+    # pylint: disable=too-many-positional-arguments
     def __init__(
         self,
         config: dict,
         base_path: Path,
         tar_base_dir: str | None = None,
         exclude_file_names: list[str] | None = None,
+        file_reader: Callable[[Path], bytes] | None = None,
     ) -> None:
-        super().__init__(config, base_path, tar_base_dir)
+        super().__init__(config, base_path, tar_base_dir, file_reader)
         self._file_source = scan_dir_files(self._base_path, exclude_file_names)
 
 

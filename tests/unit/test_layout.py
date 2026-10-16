@@ -3,6 +3,7 @@
 import copy
 import os
 from collections import Counter
+from datetime import datetime
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -20,11 +21,7 @@ def make_layout() -> BackupLayout:
     """Helper: build a BackupLayout with a mocked storage loader."""
     config: dict = copy.deepcopy(DEFAULT_CONFIG)
     config["backup"]["path_root"] = "ch_backup"
-    with (
-        patch("ch_backup.backup.layout.StorageLoader"),
-        patch("ch_backup.backup.layout.get_encryption") as get_encryption,
-    ):
-        get_encryption.return_value.metadata_size.return_value = 0
+    with patch("ch_backup.backup.layout.StorageLoader"):
         layout = BackupLayout(config)  # type: ignore[arg-type]
     setattr(layout, "_storage_loader", MagicMock())
     return layout
@@ -46,6 +43,31 @@ def test_http_handler_upload_download_uses_same_escaped_encrypted_path(name):
     assert storage.upload_data.call_args.kwargs["encryption"] is True
     assert layout.get_http_handler_create_statement(metadata, name) == statement
     storage.download_data.assert_called_once_with(path, encryption=True)
+
+
+@pytest.mark.parametrize("use_light_meta", [False, True])
+def test_list_sorts_backups_by_instant_across_timezone_offsets(use_light_meta):
+    layout = make_layout()
+    storage = getattr(layout, "_storage_loader")
+    timestamps = {
+        "east": "2026-10-14T02:00:00+03:00",  # October 13, 23:00 UTC
+        "utc": "2026-10-14T01:00:00+00:00",  # October 14, 01:00 UTC
+        "west": "2026-10-13T23:00:00-03:00",  # October 14, 02:00 UTC
+    }
+    metadata = []
+    for name, timestamp in timestamps.items():
+        backup = BackupMetadata(
+            name, "2", "26.6", DEFAULT_CONFIG["backup"]["time_format"]
+        )
+        backup.start_time = datetime.fromisoformat(timestamp)
+        metadata.append(backup.dump_json(light=use_light_meta))
+    storage.list_dir.return_value = list(timestamps)
+    storage.path_exists.return_value = True
+    storage.download_data.side_effect = metadata
+
+    backups = layout.get_backups(use_light_meta=use_light_meta)
+
+    assert [backup.name for backup in backups] == ["west", "utc", "east"]
 
 
 @pytest.mark.parametrize("operation", ["head", "get"])
@@ -192,10 +214,9 @@ class TestCloudStorageMetadataUpload:
         source_disk = Disk("s3_backup", "/var/lib/clickhouse/disks/s3_backup/", "s3")
         table = self._make_table(disk)
 
-        with patch("ch_backup.backup.layout.dir_is_empty", return_value=False):
-            layout.upload_cloud_storage_metadata(
-                self._make_backup_meta(), disk, table, source_disk=source_disk
-            )
+        layout.upload_cloud_storage_metadata(
+            self._make_backup_meta(), disk, table, source_disk=source_disk
+        )
 
         kwargs = loader.upload_files_tarball_scan.call_args.kwargs
         assert kwargs["dir_path"] == (
@@ -215,8 +236,7 @@ class TestCloudStorageMetadataUpload:
         disk = Disk("s3", "/var/lib/clickhouse/disks/s3/", "s3")
         table = self._make_table(disk)
 
-        with patch("ch_backup.backup.layout.dir_is_empty", return_value=False):
-            layout.upload_cloud_storage_metadata(self._make_backup_meta(), disk, table)
+        layout.upload_cloud_storage_metadata(self._make_backup_meta(), disk, table)
 
         kwargs = loader.upload_files_tarball_scan.call_args.kwargs
         assert kwargs["dir_path"] == (

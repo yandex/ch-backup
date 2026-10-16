@@ -2,6 +2,7 @@
 Docker Compose interface.
 """
 
+import logging
 import os
 import shlex
 import shutil
@@ -28,11 +29,24 @@ def startup_containers(context: ContextT) -> None:
     """
     Start up docker containers.
     """
-    _call_compose(
-        context.conf,
-        project_name=_project_name(context.conf),
-        command=f"up -d --timeout {COMPOSE_UP_DOWN_TIMEOUT}",
-    )
+    project_name = _project_name(context.conf)
+    try:
+        _call_compose(
+            context.conf,
+            project_name=project_name,
+            command=f"up -d --timeout {COMPOSE_UP_DOWN_TIMEOUT}",
+        )
+    except subprocess.CalledProcessError:
+        # Behave may remove containers after a failed setup hook.
+        try:
+            _call_compose(
+                context.conf,
+                project_name=project_name,
+                command="logs --no-color --timestamps",
+            )
+        except Exception:
+            logging.exception("Failed to collect container startup logs")
+        raise
 
 
 @utils.env_stage("stop", fail=False)

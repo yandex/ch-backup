@@ -7,7 +7,7 @@ Feature: Copy backups to another storage
     And a working clickhouse on clickhouse01
     And a working clickhouse on clickhouse02
 
-  Scenario Outline: Copy backup to another bucket
+  Scenario Outline: Copy backup to another bucket without encryption keys
     Given clickhouse on clickhouse01 has test schema
     And clickhouse01 has test clickhouse data test1
     And we have created clickhouse01 clickhouse backup
@@ -19,7 +19,7 @@ Feature: Copy backups to another storage
     """
     When we execute command on clickhouse01
     """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy LAST <options> \
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf --config-parameter encryption.key null copy LAST <options> \
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
     """
     Then we get response contains
@@ -33,7 +33,7 @@ Feature: Copy backups to another storage
     Then we got same clickhouse data at clickhouse01 clickhouse02
     When we execute command on clickhouse01
     """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy LAST <options> \
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf --config-parameter encryption.key null copy LAST <options> \
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
     """
     Then we get response contains
@@ -697,9 +697,17 @@ Feature: Copy backups to another storage
         credentials:
             bucket: ch-backup-copy
     """
+    And a keyless copy configuration "/tmp/keyless-cloud.conf" on clickhouse01
+    """
+    backup_name: 12345678T123456
+    disk: s3
+    source:
+      bucket: cloud-storage-01
+      path: data
+    """
     When we execute command on clickhouse01
     """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy 12345678T123456 \
+    ch-backup -c /tmp/keyless-cloud.conf copy 12345678T123456 \
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
         --target-cloud-storage-bucket cloud-storage-02 \
         --target-cloud-storage-path copy
@@ -941,3 +949,41 @@ Feature: Copy backups to another storage
       | selection |
       | LAST      |
       | --all     |
+
+  @require_version_24.9
+  Scenario: Keyless copy preserves encryption of data and private definitions
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.private_data (n UInt32 COMMENT 'PRIVATE_DDL_50977')
+    ENGINE = MergeTree ORDER BY n;
+    INSERT INTO test_db.private_data VALUES (1), (2);
+    CREATE NAMED COLLECTION copy_secret AS password = 'PRIVATE_NC_50977';
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: keyless
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    storage:
+      credentials:
+        bucket: ch-backup-copy
+    """
+    Then private definitions in clickhouse01 backup "keyless" are encrypted
+    """
+    database: test_db
+    table: private_data
+    ddl_marker: PRIVATE_DDL_50977
+    collection_marker: PRIVATE_NC_50977
+    """
+    Given a keyless copy configuration "/tmp/keyless-copy.conf" on clickhouse01
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /tmp/keyless-copy.conf copy keyless \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    Then clickhouse02 has same schema as clickhouse01
+    And we got same clickhouse data at clickhouse01 clickhouse02
+    And clickhouse01 has same named collections as clickhouse02
