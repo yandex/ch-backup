@@ -39,31 +39,45 @@ jobs:
         include:
         - python: "3.10"
           clickhouse: "23.3.22.3"
+          runner: yc
         - python: "3.10"
           clickhouse: "23.8.16.40"
+          runner: yc
         - python: "3.10"
           clickhouse: "24.3.18.7"
+          runner: yc
         - python: "3.10"
           clickhouse: "24.8.14.39"
+          runner: yc
         - python: "3.10"
           clickhouse: "25.3.12.8"
+          runner: yc
         - python: "3.10"
           clickhouse: "25.8.23.13"
+          runner: yc
         - python: "3.10"
           clickhouse: "26.3.12.3"
+          runner: yc
         - python: "3.10"
           clickhouse: "latest"
+          runner: yc
         - python: "3.11"
           clickhouse: "latest"
+          runner: github
         - python: "3.12"
           clickhouse: "latest"
+          runner: github
         - python: "3.13"
           clickhouse: "latest"
+          runner: github
         - python: "3.14"
           clickhouse: "latest"
-    runs-on: ubuntu-22.04
+          runner: github
+    runs-on: ${{ matrix.runner == 'yc' && fromJSON('["self-hosted", "yc-ci"]') || 'ubuntu-22.04' }}
     steps:
     - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
     - uses: astral-sh/setup-uv@v7
       with:
         python-version: ${{ matrix.python }}

@@ -17,9 +17,11 @@ on:
 
 jobs:
   test_integration:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, yc-ci]
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v7
       - name: run integration tests
         run: CLICKHOUSE_VERSION=${{ inputs.clickhouse_version }} make test-integration
