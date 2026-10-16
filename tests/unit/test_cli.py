@@ -415,3 +415,46 @@ def test_delete_command_accepts_unreadable_backup():
     result = _invoke(cli.delete_command, ["delete", "broken"], backup)
     assert result.exit_code == 0, result.output
     backup.delete.assert_called_once_with("broken", False)
+
+
+def test_backup_help_lists_detached_parts_filters() -> None:
+    result = CliRunner().invoke(cli.cli.commands["backup"], ["--help"])
+
+    assert result.exit_code == 0
+    assert "--detached-parts" in result.output
+    assert "--detached-parts-disks" in result.output
+    assert "--detached-parts-reasons" in result.output
+
+
+def test_empty_detached_reason_is_preserved_by_cli_parser() -> None:
+    with cli.cli.commands["backup"].make_context(
+        "backup", ["--detached-parts-reason", ""]
+    ) as context:
+        assert context.params["detached_parts_reasons"] == [""]
+
+
+def test_detached_disks_are_parsed_as_a_list() -> None:
+    with cli.cli.commands["backup"].make_context(
+        "backup",
+        ["--detached-parts-disk", "object_storage,archive_storage"],
+    ) as context:
+        assert context.params["detached_parts_disks"] == [
+            "object_storage",
+            "archive_storage",
+        ]
+
+
+def test_detached_parts_are_opt_in_with_object_storage_default() -> None:
+    backup_mock = _invoke_backup_command([])
+
+    assert backup_mock.backup.call_args.kwargs["include_detached_parts"] is False
+    assert backup_mock.backup.call_args.kwargs["detached_parts_disks"] == [
+        "object_storage"
+    ]
+
+
+def test_detached_filter_without_opt_in_does_not_enable_backup() -> None:
+    backup_mock = _invoke_backup_command(["--detached-parts-disk", "default"])
+
+    assert backup_mock.backup.call_args.kwargs["include_detached_parts"] is False
+    assert backup_mock.backup.call_args.kwargs["detached_parts_disks"] == ["default"]

@@ -392,6 +392,27 @@ def show_command(
     option(
         "--workload", is_flag=True, help="Perform partial backup of workload entities."
     ),
+    option(
+        "--detached-parts",
+        is_flag=True,
+        help="Also backup detached parts of selected tables.",
+    ),
+    option(
+        "--detached-parts-disk",
+        "--detached-parts-disks",
+        "detached_parts_disks",
+        type=List(),
+        default="object_storage",
+        show_default=True,
+        help="Comma-separated disk names whose detached directories are backed up.",
+    ),
+    option(
+        "--detached-parts-reason",
+        "--detached-parts-reasons",
+        "detached_parts_reasons",
+        type=List(),
+        help="Comma-separated detach reasons. By default all reasons are included; pass an empty value to select user-detached parts.",
+    ),
 )
 @option_group(
     "Cloud Storage",
@@ -464,6 +485,9 @@ def backup_command(
     nc: bool,
     workload: bool,
     copy_cloud_storage_data: bool,
+    detached_parts: bool,
+    detached_parts_disks: list[str],
+    detached_parts_reasons: list[str] | None,
 ) -> None:
     """Perform backup."""
     # pylint: disable=too-many-arguments,too-many-locals
@@ -486,7 +510,15 @@ def backup_command(
         access, data, schema, udf, nc, workload, schema_only
     )
     name, msg = ch_backup.backup(
-        sources, name, db_names=databases, tables=tables, force=force, labels=labels
+        sources,
+        name,
+        db_names=databases,
+        tables=tables,
+        force=force,
+        labels=labels,
+        include_detached_parts=detached_parts,
+        detached_parts_disks=detached_parts_disks,
+        detached_parts_reasons=detached_parts_reasons,
     )
 
     if msg:
