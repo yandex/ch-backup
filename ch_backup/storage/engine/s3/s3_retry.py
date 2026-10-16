@@ -155,7 +155,7 @@ class S3RetryMeta(ABCMeta):
                     if code == 507 or (code not in (408, 429) and code < 500):
                         raise
                 self._s3_client_factory.reset()  # pylint: disable=protected-access
-                raise S3RetryingError(f"Failed to make S3 operation: {str(e)}") from e
+                raise S3RetryingError(f"Failed to make S3 operation: {str(e)}")
 
         return wrapper
 

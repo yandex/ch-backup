@@ -56,7 +56,7 @@ class S3ClientFactory:
         except socket.gaierror as e:
             raise S3BalancerUnknownHost(
                 f'{resolver_path} returned unknown hostname: "{host}"; DNS error: {e}'
-            ) from e
+            )
         return {
             "http": f"{host}:{proxy_port}",
             "https": f"{host}:{proxy_port}",
