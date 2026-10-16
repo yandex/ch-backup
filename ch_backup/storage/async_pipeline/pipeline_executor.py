@@ -133,6 +133,7 @@ class PipelineExecutor:
         tar_base_dir: str | None = None,
         exclude_file_names: list[str] | None = None,
         callback: Callable | None = None,
+        file_reader: Callable[[Path], bytes] | None = None,
     ) -> None:
         """
         Archive to tarball and upload files from local filesystem.
@@ -150,6 +151,7 @@ class PipelineExecutor:
             compression=compression,
             tar_base_dir=tar_base_dir,
             exclude_file_names=exclude_file_names,
+            file_reader=file_reader,
         )
         self._exec_pipeline(job_id, pipeline, is_async, callback)
 

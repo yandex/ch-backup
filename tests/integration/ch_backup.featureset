@@ -13,6 +13,7 @@ features/cloud_storage.feature
 features/database_engines.feature
 features/ddl_dictionary.feature
 features/deduplication.feature
+features/detached_parts.feature
 features/freeze_parallel.feature
 features/incremental_restore.feature
 features/metadata.feature

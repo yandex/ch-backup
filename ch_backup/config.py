@@ -111,6 +111,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "cloud_storage": {
             # Location of the source disk objects. If not set, it's taken from backup metadata
             # (for backups that were already copied) or from ClickHouse disk configuration.
+            # A stored endpoint must match a configured storage/disk endpoint unless explicitly overridden.
             "source": {
                 "endpoint_url": None,
                 "bucket": None,
@@ -190,7 +191,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "cloud_storage": {
         # Encryption and compression are applied to cloud storage metadata only.
         # Data copied by "copy_data" is stored as ClickHouse wrote it.
-        "encryption": True,
+        "encryption": False,
         "compression": True,
         "copy_data": False,
     },
