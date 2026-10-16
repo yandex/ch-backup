@@ -1466,7 +1466,7 @@ class ClickhouseCTL:
 
     def get_http_handlers_create_queries(self) -> dict[str, str]:
         """Read handlers without silently losing inaccessible objects or secrets."""
-        # CHECK GRANT does not accept a SQL FORMAT clause.
+        # Request JSON via HTTP because CHECK GRANT rejects a SQL FORMAT clause.
         grant = self._ch_client.query(
             "CHECK GRANT SHOW HANDLERS ON *.*", settings={"default_format": "JSON"}
         )
@@ -1481,27 +1481,14 @@ class ClickhouseCTL:
         )
         handlers = {row["name"]: row["create_query"] for row in response["data"]}
         if any("[HIDDEN]" in statement for statement in handlers.values()):
-            # The marker can also be a literal in valid SQL. Accept it only when
-            # all secret-display controls are enabled, so it cannot be masking.
-            grant = self._ch_client.query(
-                "CHECK GRANT displaySecretsInShowAndSelect ON *.*",
-                settings={"default_format": "JSON"},
+            # Later permission/configuration checks cannot establish whether this
+            # read hid secrets. Reject even a literal marker rather than guessing.
+            raise ClickhouseBackupError(
+                "HTTP handler definitions may contain hidden secrets: enable "
+                "display_secrets_in_show_and_select and grant "
+                "displaySecretsInShowAndSelect to the ch-backup user. "
+                "Literal [HIDDEN] markers are also unsupported"
             )
-            if not grant["data"][0]["result"]:
-                raise ClickhouseBackupError(
-                    "HTTP handler definitions may contain hidden secrets: enable "
-                    "display_secrets_in_show_and_select and grant "
-                    "displaySecretsInShowAndSelect to the ch-backup user"
-                )
-            settings = self._ch_client.query(
-                "SELECT value FROM system.server_settings "
-                "WHERE name = 'display_secrets_in_show_and_select' FORMAT JSON"
-            )
-            if not settings["data"] or settings["data"][0]["value"] != "1":
-                raise ClickhouseBackupError(
-                    "HTTP handler definitions may contain hidden secrets: enable "
-                    "display_secrets_in_show_and_select on the server"
-                )
         return handlers
 
     def get_named_collections_query(self) -> list[str]:

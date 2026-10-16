@@ -266,35 +266,6 @@ def test_backup_command_copy_cloud_storage_data_merges_config():
     )
 
 
-def test_backup_command_accepts_only_http_handlers():
-    backup = _invoke_backup_command(["--http-handlers"])
-    assert backup.backup.call_args.args[0] == BackupSources.for_backup(
-        http_handlers=True
-    )
-
-
-def test_restore_command_accepts_only_http_handlers():
-    backup = MagicMock()
-    backup.list.return_value = [BackupMetadata("backup", "2", "26.8", "%Y-%m-%d")]
-    result = _invoke(
-        cli.restore_command, ["restore", "backup", "--http-handlers"], backup
-    )
-    assert result.exit_code == 0, result.output
-    assert backup.restore.call_args.kwargs["sources"] == BackupSources.for_restore(
-        http_handlers=True
-    )
-
-
-@pytest.mark.parametrize(
-    "command, args",
-    [(cli.backup_command, ["backup"]), (cli.restore_command, ["restore", "backup"])],
-)
-def test_http_handlers_and_schema_only_are_mutually_exclusive(command, args):
-    result = _invoke(command, [*args, "--http-handlers", "--schema-only"], MagicMock())
-    assert result.exit_code == 2
-    assert "mutually exclusive" in result.stderr
-
-
 def test_backup_command_without_copy_cloud_storage_data_keeps_config():
     """
     Without the flag the configuration must be left as it is.

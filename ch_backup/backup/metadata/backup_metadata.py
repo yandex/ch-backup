@@ -479,12 +479,16 @@ class BackupMetadata:  # pylint: disable=too-many-public-methods
         return self._workload_entities
 
     def add_http_handler(self, name: str) -> None:
-        """Add a SQL-defined HTTP handler to the backup."""
+        """
+        Add a SQL-defined HTTP handler to the backup.
+        """
         assert name not in self._http_handlers
         self._http_handlers.append(name)
 
     def get_http_handlers(self) -> list[str]:
-        """Return names of SQL-defined HTTP handlers in the backup."""
+        """
+        Return names of SQL-defined HTTP handlers in the backup.
+        """
         return self._http_handlers
 
     def find_part(

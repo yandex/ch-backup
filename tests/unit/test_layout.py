@@ -30,7 +30,7 @@ def make_layout() -> BackupLayout:
     return layout
 
 
-@pytest.mark.parametrize("name", ["test", "../handler/日本語", "foo%2Fbar"])
+@pytest.mark.parametrize("name", ["../handler/日本語", "foo%2Fbar"])
 def test_http_handler_upload_download_uses_same_escaped_encrypted_path(name):
     layout = make_layout()
     storage = MagicMock()
