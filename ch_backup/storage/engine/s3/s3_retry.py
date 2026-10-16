@@ -10,10 +10,12 @@ from random import uniform
 from time import sleep
 from typing import TYPE_CHECKING, Any, Callable, TypeVar
 
+import requests
 from botocore.exceptions import BotoCoreError, ClientError
 from urllib3.exceptions import HTTPError
 
 from ch_backup import logging
+from ch_backup.storage.engine.s3.s3_client_factory import S3BalancerUnknownHost
 
 if TYPE_CHECKING:
     from ch_backup.storage.engine import (
@@ -67,10 +69,24 @@ class S3RetryMeta(ABCMeta):
         def wrapper(self: "S3StorageEngine", *args: Any, **kwargs: Any) -> RT:
             try:
                 return func(self, *args, **kwargs)
-            except (ClientError, BotoCoreError, HTTPException, HTTPError) as e:
+            except (
+                ClientError,
+                BotoCoreError,
+                HTTPException,
+                HTTPError,
+                S3BalancerUnknownHost,
+                requests.ConnectionError,
+                requests.Timeout,
+                requests.HTTPError,
+                requests.exceptions.ChunkedEncodingError,
+            ) as e:
                 if isinstance(e, ClientError):
                     code = e.response.get("Error", {}).get("Code")
                     if code in ("404", "NoSuchKey", "NotFound"):
+                        raise
+                if isinstance(e, requests.HTTPError) and e.response is not None:
+                    code = e.response.status_code
+                    if code not in (408, 429) and code < 500:
                         raise
                 self._s3_client_factory.reset()  # pylint: disable=protected-access
                 raise S3RetryingError(f"Failed to make S3 operation: {str(e)}") from e

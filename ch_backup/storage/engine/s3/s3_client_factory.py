@@ -11,8 +11,8 @@ import boto3
 import requests
 from botocore.config import Config
 
+from ch_backup import logging
 from ch_backup.type_hints.boto3.s3 import S3Client
-from ch_backup.util import retry
 
 
 class S3BalancerUnknownHost(ValueError):
@@ -35,25 +35,30 @@ class S3ClientFactory:
             region_name=self._config["boto_config"]["region_name"],
         )
 
-    @retry((S3BalancerUnknownHost, requests.RequestException))
     def _resolve_proxies(self, resolver_path: str, proxy_port: int) -> dict | None:
         """
-        Get proxy host name via a special handler
+        Get a proxy once; failures share the S3 operation's retry budget.
         """
-        # pylint: disable=missing-timeout
-
         if resolver_path is None:
             return None
-        req = requests.get(resolver_path)
-        req.raise_for_status()
-        host = req.text
+        # requests.get creates and closes a separate Session on every call.
+        # Keep a fresh connection so the balancer can select another proxy.
+        with requests.get(
+            resolver_path,
+            timeout=self._config.get("proxy_resolver", {}).get("timeout", 10),
+        ) as req:
+            req.raise_for_status()
+            host = req.text.strip()
+        logging.debug(
+            "S3 proxy resolver {} returned hostname {!r}", resolver_path, host
+        )
         # Try to resolve hostname to check the output
         try:
             socket.getaddrinfo(host, 0)
-        except socket.gaierror:
+        except socket.gaierror as e:
             raise S3BalancerUnknownHost(
-                f'{resolver_path} returned unknown hostname: "{host}"'
-            )
+                f'{resolver_path} returned unknown hostname: "{host}"; DNS error: {e}'
+            ) from e
         return {
             "http": f"{host}:{proxy_port}",
             "https": f"{host}:{proxy_port}",
