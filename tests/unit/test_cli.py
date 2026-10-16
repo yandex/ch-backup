@@ -319,6 +319,27 @@ def test_restore_command_passes_source_endpoint(endpoint: str) -> None:
     assert backup.restore.call_args.kwargs["cloud_storage_source_endpoint"] == endpoint
 
 
+@pytest.mark.parametrize(
+    ("option", "expected"),
+    [([], False), (["--restore-detached-parts"], True)],
+)
+def test_restore_command_passes_detached_parts_option(
+    option: list[str], expected: bool
+) -> None:
+    backup = MagicMock()
+    backup.list.return_value = [MagicMock()]
+    backup.list.return_value[0].name = "backup1"
+    parent = Context(cli.cli)
+    parent.obj = {"backup": backup}
+    with cli.restore_command.make_context(
+        "restore", ["backup1", *option], parent=parent
+    ) as ctx:
+        cli.restore_command.invoke(ctx)
+
+    backup.restore.assert_called_once()
+    assert backup.restore.call_args.kwargs["restore_detached_parts"] is expected
+
+
 def _invoke(command: Command, args: list[str], backup: MagicMock) -> Result:
     """Invoke a CLI command with a mocked ClickhouseBackup."""
     return CliRunner(mix_stderr=False).invoke(

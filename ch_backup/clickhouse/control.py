@@ -14,7 +14,7 @@ from tarfile import BLOCKSIZE  # type: ignore
 from typing import Any, Iterable, Sequence
 
 from ch_backup import logging
-from ch_backup.backup.metadata import TableMetadata
+from ch_backup.backup.metadata import DetachedPartMetadata, TableMetadata
 from ch_backup.backup.metadata.table_metadata import split_part_name
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.calculators import calc_aligned_files_size
@@ -678,7 +678,7 @@ class ClickhouseCTL:
                 logging.warning(
                     f"table {table.database}.{table.name} path {detached_path} not found"
                 )
-                context.add_failed_chown(table.database, table.database, detached_path)
+                context.add_failed_chown(table.database, table.name, detached_path)
 
     def attach_part(self, table: Table, part_name: str) -> None:
         """
@@ -1250,6 +1250,29 @@ class ClickhouseCTL:
         """
         return os.path.join(self._get_table_detached_path(table, disk_name), part_name)
 
+    @staticmethod
+    def detached_part_matches(part: DetachedPartMetadata, part_path: str) -> bool:
+        """Return whether an existing directory matches backed-up part metadata."""
+        if not os.path.isdir(part_path):
+            return False
+        try:
+            files = list_dir_files(part_path)
+            if sorted(files) != sorted(part.files):
+                return False
+            abs_paths = [Path(part_path) / file for file in files]
+            if calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE) != part.size:
+                return False
+            if not part.checksum:
+                return False
+            checksum = (
+                _get_cloud_part_checksum_and_size(part_path, files)[0]
+                if part.object_storage
+                else _get_part_checksum(part_path)
+            )
+            return checksum == part.checksum
+        except OSError:
+            return False
+
     def scan_detached_parts(
         self,
         table: Table,
@@ -1436,11 +1459,16 @@ class ClickhouseCTL:
                 rel_paths,
             )
 
-    @staticmethod
-    def _get_table_detached_path(table: Table, disk_name: str) -> str:
+    def _get_table_detached_path(self, table: Table, disk_name: str) -> str:
         for data_path, disk in table.paths_with_disks:
             if disk.name == disk_name:
                 return os.path.join(data_path, "detached")
+
+        requested_disk = self._disks.get(disk_name)
+        if requested_disk is not None:
+            for data_path, disk in table.paths_with_disks:
+                if disk.path == requested_disk.path:
+                    return os.path.join(data_path, "detached")
         raise RuntimeError(f"Disk not found: {disk_name}")
 
     def chown_dir(self, dir_path: str) -> None:

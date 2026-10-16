@@ -191,13 +191,19 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         ch_config: ClickhouseConfig,
         desired_tables: Sequence[TableMetadata] | Literal["all"] = "all",
         use_local_copy: bool = False,
+        skip_cloud_storage: bool = False,
     ):
         super().__init__(ch_ctl, backup_layout, config, backup_meta, ch_config)
         self._use_local_copy = use_local_copy
+        self._skip_cloud_storage = skip_cloud_storage
         self._source_bucket: str = source_bucket or ""
         self._source_path: str = source_path or ""
         self._source_endpoint: str = source_endpoint or ""
-        if backup_meta.cloud_storage.requires_source_bucket and source_bucket is None:
+        if (
+            backup_meta.cloud_storage.requires_source_bucket
+            and source_bucket is None
+            and not skip_cloud_storage
+        ):
             raise RuntimeError(
                 "Backup contains cloud storage data, cloud-storage-source-bucket must be set."
             )
@@ -207,16 +213,17 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
 
     def __enter__(self):
         self._read_configured_disks()
-        for disk_name in self._backup_meta.cloud_storage.disks:
-            self._create_temporary_disk(
-                self._backup_meta,
-                disk_name,
-                self._desired_tables,
-            )
-        for backup_meta, disk_name, tables in self._linked_backups_data():
-            self._create_temporary_disk(
-                backup_meta, disk_name, tables, link=backup_meta.name
-            )
+        if not self._skip_cloud_storage:
+            for disk_name in self._backup_meta.cloud_storage.disks:
+                self._create_temporary_disk(
+                    self._backup_meta,
+                    disk_name,
+                    self._desired_tables,
+                )
+            for backup_meta, disk_name, tables in self._linked_backups_data():
+                self._create_temporary_disk(
+                    backup_meta, disk_name, tables, link=backup_meta.name
+                )
         self._backup_layout.wait()
         self._ch_availible_disks = self._ch_ctl.get_disks()
         _render_ch_disks_config(self._disks)

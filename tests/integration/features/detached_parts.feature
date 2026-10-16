@@ -1,4 +1,4 @@
-Feature: Detached parts backup
+Feature: Detached parts backup and restore
 
   Background:
     Given default configuration
@@ -7,7 +7,7 @@ Feature: Detached parts backup
     And a working clickhouse on clickhouse01
     And a working clickhouse on clickhouse02
 
-  Scenario: Filter detached parts by table, disk, and empty reason
+  Scenario: Filter and restore user-detached parts without attaching them
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE detached_db;
@@ -35,21 +35,65 @@ Feature: Detached parts backup
       | 0   | created | 2          | 0          |
     And detached archives of "detached_db"."selected" on disk "default" in clickhouse01 backup #0 match source parts
 
-    # Restore support is intentionally not part of this change. Metadata is
-    # ignored and no detached directory is populated on the target node.
     When we drop all databases at clickhouse02
     And we restore clickhouse backup #0 to clickhouse02
     When we execute query on clickhouse02
     """
-    SELECT
-      (SELECT groupArray(id) FROM detached_db.selected),
-      (SELECT count() FROM system.detached_parts
-       WHERE database = 'detached_db' AND table = 'selected')
+    SELECT count()
+    FROM system.detached_parts
+    WHERE database = 'detached_db' AND table = 'selected'
     FORMAT TSV
     """
     Then we get response
     """
-    [2]	0
+    0
+    """
+
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    restore_detached_parts: true
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT table, reason, count()
+    FROM system.detached_parts
+    WHERE database = 'detached_db'
+    GROUP BY table, reason
+    FORMAT TSV
+    """
+    Then we get response
+    """
+    selected		1
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT groupArray(id) FROM detached_db.selected FORMAT TSV
+    """
+    Then we get response
+    """
+    [2]
+    """
+
+    # A conflicting directory must be preserved. Repeated restore uses the
+    # same _tryN convention as ClickHouse instead of overwriting it.
+    When we execute command on clickhouse02
+    """
+    find /var/lib/clickhouse -path '*/detached/*/checksums.txt' -exec sh -c 'printf conflict >> "$1"' _ {} \;
+    """
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    restore_detached_parts: true
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count(), countIf(endsWith(name, '_try1'))
+    FROM system.detached_parts
+    WHERE database = 'detached_db' AND table = 'selected'
+    FORMAT TSV
+    """
+    Then we get response
+    """
+    2	1
     """
 
   Scenario: Detached parts are not backed up by default
@@ -69,9 +113,26 @@ Feature: Detached parts backup
     Then we got the following backups on clickhouse01
       | num | state   | data_count | link_count |
       | 0   | created | 1          | 0          |
+    When we drop all databases at clickhouse02
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    restore_detached_parts: true
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT
+      (SELECT count() FROM detached_db.opt_in),
+      (SELECT count() FROM system.detached_parts
+       WHERE database = 'detached_db' AND table = 'opt_in')
+    FORMAT TSV
+    """
+    Then we get response
+    """
+    1	0
+    """
 
   @require_version_20.8
-  Scenario: Disk filter accepts a list of local disks
+  Scenario: Filter and restore detached parts from multiple local disks
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE detached_db;
@@ -97,9 +158,134 @@ Feature: Detached parts backup
     Then we got the following backups on clickhouse01
       | num | state   | data_count | link_count |
       | 0   | created | 3          | 0          |
+    When we drop all databases at clickhouse02
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    restore_detached_parts: true
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT disk, count()
+    FROM system.detached_parts
+    WHERE database = 'detached_db' AND table = 'multidisk'
+    GROUP BY disk
+    ORDER BY disk
+    FORMAT TSV
+    """
+    Then we get response
+    """
+    default	1
+    hdd1	1
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT groupArray(id) FROM detached_db.multidisk FORMAT TSV
+    """
+    Then we get response
+    """
+    [3]
+    """
+
+  Scenario: Schema-only restore leaves detached parts out
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE detached_db;
+    CREATE TABLE detached_db.schema_only (id UInt32)
+      ENGINE = MergeTree PARTITION BY id ORDER BY id;
+    INSERT INTO detached_db.schema_only VALUES (1), (2);
+    ALTER TABLE detached_db.schema_only DETACH PARTITION 1;
+    """
+    When we create clickhouse01 clickhouse backup
+    """
+    tables:
+      - detached_db.schema_only
+    detached_parts: true
+    detached_parts_disks:
+      - default
+    """
+    When we drop all databases at clickhouse02
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    schema_only: true
+    restore_detached_parts: true
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count()
+    FROM system.detached_parts
+    WHERE database = 'detached_db' AND table = 'schema_only'
+    FORMAT TSV
+    """
+    Then we get response
+    """
+    0
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM detached_db.schema_only FORMAT TSV
+    """
+    Then we get response
+    """
+    0
+    """
 
   @require_version_22.8
-  Scenario: Back up a detached part from an S3 disk
+  Scenario: Partial restore includes detached parts only for selected tables
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE detached_db;
+    CREATE TABLE detached_db.local_only (id UInt32)
+      ENGINE = MergeTree PARTITION BY id ORDER BY id;
+    CREATE TABLE detached_db.excluded_object_storage (id UInt32)
+      ENGINE = MergeTree PARTITION BY id ORDER BY id
+      SETTINGS storage_policy = 's3';
+    INSERT INTO detached_db.local_only VALUES (1);
+    INSERT INTO detached_db.excluded_object_storage VALUES (2);
+    ALTER TABLE detached_db.local_only DETACH PARTITION 1;
+    ALTER TABLE detached_db.excluded_object_storage DETACH PARTITION 2;
+    """
+    When we create clickhouse01 clickhouse backup
+    """
+    databases:
+      - detached_db
+    detached_parts: true
+    detached_parts_disks:
+      - default
+      - s3
+    """
+    When we drop all databases at clickhouse02
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    table_included_patterns: detached_db.local_only
+    restore_detached_parts: true
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT name
+    FROM system.tables
+    WHERE database = 'detached_db'
+    ORDER BY name
+    FORMAT TSV
+    """
+    Then we get response
+    """
+    local_only
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT table, count()
+    FROM system.detached_parts
+    WHERE database = 'detached_db'
+    GROUP BY table
+    FORMAT TSV
+    """
+    Then we get response
+    """
+    local_only	1
+    """
+
+  @require_version_22.8
+  Scenario: Restore detached part from an S3 disk without attaching it
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE detached_db;
@@ -120,6 +306,47 @@ Feature: Detached parts backup
     Then we got the following backups on clickhouse01
       | num | state   | data_count | link_count |
       | 0   | created | 2          | 0          |
+    Given we use the same object storage bucket for clickhouse02 as on clickhouse01
+    When we drop all databases at clickhouse02
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    cloud_storage_source_bucket: cloud-storage-01
+    cloud_storage_source_path: data
+    restore_detached_parts: true
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count()
+    FROM system.detached_parts
+    WHERE database = 'detached_db' AND table = 'object_storage'
+    FORMAT TSV
+    """
+    Then we get response
+    """
+    1
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT groupArray(id) FROM detached_db.object_storage FORMAT TSV
+    """
+    Then we get response
+    """
+    [2]
+    """
+    When we execute queries on clickhouse02
+    """
+    ALTER TABLE detached_db.object_storage ATTACH PARTITION 1;
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT groupArray(id)
+    FROM (SELECT id FROM detached_db.object_storage ORDER BY id)
+    FORMAT TSV;
+    """
+    Then we get response
+    """
+    [1, 2]
+    """
 
   @require_version_22.8
   Scenario: Full cloud backup keeps detached S3 parts metadata-only
@@ -144,6 +371,64 @@ Feature: Detached parts backup
     Then we got the following backups on clickhouse01
       | num | state   | data_count | link_count |
       | 0   | created | 2          | 0          |
+    Given we use the same object storage bucket for clickhouse02 as on clickhouse01
+    When we drop all databases at clickhouse02
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    cloud_storage_source_bucket: cloud-storage-01
+    cloud_storage_source_path: data
+    restore_detached_parts: true
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT
+      (SELECT count() FROM detached_db.object_storage_full),
+      (SELECT count() FROM system.detached_parts
+       WHERE database = 'detached_db' AND table = 'object_storage_full')
+    FORMAT TSV
+    """
+    Then we get response
+    """
+    1	1
+    """
+
+  @require_version_22.8
+  Scenario: Skip active and detached S3 parts with skip-cloud-storage
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE detached_db;
+    CREATE TABLE detached_db.skip_object_storage (id UInt32)
+      ENGINE = MergeTree PARTITION BY id ORDER BY id
+      SETTINGS storage_policy = 's3';
+    INSERT INTO detached_db.skip_object_storage VALUES (1), (2);
+    ALTER TABLE detached_db.skip_object_storage DETACH PARTITION 1;
+    """
+    When we create clickhouse01 clickhouse backup
+    """
+    tables:
+      - detached_db.skip_object_storage
+    detached_parts: true
+    detached_parts_disks:
+      - s3
+    """
+    When we drop all databases at clickhouse02
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    skip_cloud_storage: true
+    restore_detached_parts: true
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT
+      (SELECT count() FROM detached_db.skip_object_storage),
+      (SELECT count() FROM system.detached_parts
+       WHERE database = 'detached_db' AND table = 'skip_object_storage')
+    FORMAT TSV
+    """
+    Then we get response
+    """
+    0	0
+    """
 
   @require_version_22.8
   Scenario: Copy a backup containing detached S3 metadata

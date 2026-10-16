@@ -6,6 +6,7 @@ from unittest import mock
 
 import pytest
 
+from ch_backup.backup.metadata import DetachedPartMetadata
 from ch_backup.clickhouse.control import (
     ClickhouseCTL,
     _format_string_array,
@@ -577,3 +578,81 @@ def test_scan_detached_parts_uses_selected_backing_disk_directory(
     assert part.path == str(part_path)
     assert part.checksum == expected_checksum
     assert part.size == BLOCKSIZE
+
+
+def test_detached_part_matches_local_backup_metadata(tmp_path: Path) -> None:
+    part_path = tmp_path / "all_1_1_0"
+    part_path.mkdir()
+    checksums = part_path / "checksums.txt"
+    checksums.write_bytes(b"checksums")
+    part = DetachedPartMetadata(
+        "db",
+        "table",
+        part_path.name,
+        "",
+        md5(checksums.read_bytes()).hexdigest(),  # nosec
+        BLOCKSIZE,
+        [checksums.name],
+        True,
+        "default",
+    )
+
+    assert ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+    checksums.write_bytes(b"changed")
+    assert not ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+
+def test_detached_part_matches_object_storage_metadata(tmp_path: Path) -> None:
+    part_path = tmp_path / "all_1_1_0"
+    checksum = _make_cloud_part(part_path, {"checksums.txt": ["store/object-key"]})
+    part = DetachedPartMetadata(
+        "db",
+        "table",
+        part_path.name,
+        "",
+        checksum,
+        BLOCKSIZE,
+        ["checksums.txt"],
+        True,
+        "object_storage",
+        object_storage=True,
+    )
+
+    assert ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+    (part_path / "checksums.txt").write_text(
+        "5\n1\t370\n370\tstore/other-key\n0\n0\n", encoding="utf-8"
+    )
+    assert not ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+
+def test_detached_path_accepts_table_disk_with_same_storage_path(
+    tmp_path: Path,
+) -> None:
+    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    backing_disk = Disk("object_storage", str(tmp_path), "ObjectStorage", "S3")
+    cache_disk = Disk(
+        "object_storage_cache",
+        str(tmp_path),
+        "ObjectStorage",
+        "S3",
+        cache_path=str(tmp_path / "cache"),
+    )
+    # pylint: disable=protected-access
+    ch_ctl._disks = {backing_disk.name: backing_disk}
+    table_path = tmp_path / "store" / "table"
+    table = Table(
+        "db",
+        "table",
+        "MergeTree",
+        [cache_disk],
+        [str(table_path)],
+        "",
+        "",
+        None,
+    )
+
+    assert ch_ctl.get_detached_part_path(table, backing_disk.name, "all_1_1_0") == str(
+        table_path / "detached" / "all_1_1_0"
+    )
