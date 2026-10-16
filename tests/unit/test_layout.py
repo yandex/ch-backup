@@ -27,6 +27,24 @@ def make_layout() -> BackupLayout:
     return layout
 
 
+@pytest.mark.parametrize("name", ["../handler/日本語", "foo%2Fbar"])
+def test_http_handler_upload_download_uses_same_escaped_encrypted_path(name):
+    layout = make_layout()
+    storage = MagicMock()
+    setattr(layout, "_storage_loader", storage)
+    storage.download_data.return_value = "CREATE HANDLER test URL '/test' AS SELECT 1"
+    statement = storage.download_data.return_value
+    metadata = BackupMetadata("backup", "2", "26.8", "%Y-%m-%d")
+    layout.upload_http_handler(metadata.name, name, statement)
+    path = storage.upload_data.call_args.kwargs["remote_path"]
+    assert path.startswith("ch_backup/backup/http_handlers/")
+    assert path.endswith(".sql")
+    assert "/" not in path.removeprefix("ch_backup/backup/http_handlers/")
+    assert storage.upload_data.call_args.kwargs["encryption"] is True
+    assert layout.get_http_handler_create_statement(metadata, name) == statement
+    storage.download_data.assert_called_once_with(path, encryption=True)
+
+
 @pytest.mark.parametrize("use_light_meta", [False, True])
 def test_list_sorts_backups_by_instant_across_timezone_offsets(use_light_meta):
     layout = make_layout()

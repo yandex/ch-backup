@@ -1039,6 +1039,17 @@ class ClickhouseCTL:
         """
         self._ch_client.query(nc_statement, sensitive=True)
 
+    def restore_http_handler(self, statement: str) -> None:
+        """Restore a handler without logging its query or retrying CREATE."""
+        self._ch_client.query(statement, sensitive=True, should_retry=False)
+
+    def drop_http_handler(self, name: str) -> None:
+        """Drop an existing SQL-defined HTTP handler."""
+        escaped_name = escape(name.replace("\\", "\\\\"))
+        self._ch_client.query(
+            f"DROP HANDLER `{escaped_name}`", sensitive=True, should_retry=False
+        )
+
     def restore_access_entity(self, statement: str) -> None:
         """
         Run an access statement without retries.
@@ -1524,6 +1535,33 @@ class ClickhouseCTL:
         """
         resp = self._ch_client.query(GET_UDF_QUERY_SQL)
         return {row["name"]: row["create_query"] for row in resp.get("data", [])}
+
+    def get_http_handlers_create_queries(self) -> dict[str, str]:
+        """Read handlers without silently losing inaccessible objects or secrets."""
+        # Request JSON via HTTP because CHECK GRANT rejects a SQL FORMAT clause.
+        grant = self._ch_client.query(
+            "CHECK GRANT SHOW HANDLERS ON *.*", settings={"default_format": "JSON"}
+        )
+        if not grant["data"][0]["result"]:
+            raise ClickhouseBackupError(
+                "HTTP handler backup/restore requires SHOW HANDLERS"
+            )
+        response = self._ch_client.query(
+            "SELECT name, create_query FROM system.handlers ORDER BY name FORMAT JSON",
+            settings={"format_display_secrets_in_show_and_select": 1},
+            sensitive=True,
+        )
+        handlers = {row["name"]: row["create_query"] for row in response["data"]}
+        if any("[HIDDEN]" in statement for statement in handlers.values()):
+            # Later permission/configuration checks cannot establish whether this
+            # read hid secrets. Reject even a literal marker rather than guessing.
+            raise ClickhouseBackupError(
+                "HTTP handler definitions may contain hidden secrets: enable "
+                "display_secrets_in_show_and_select and grant "
+                "displaySecretsInShowAndSelect to the ch-backup user. "
+                "Literal [HIDDEN] markers are also unsupported"
+            )
+        return handlers
 
     def get_named_collections_query(self) -> list[str]:
         """

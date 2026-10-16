@@ -1,0 +1,8 @@
+<yandex>
+    <display_secrets_in_show_and_select>1</display_secrets_in_show_and_select>
+    <query_rules_storage>
+        <type>zookeeper</type>
+        <path>/http_handlers/</path>
+        <update_timeout_ms>1000</update_timeout_ms>
+    </query_rules_storage>
+</yandex>
