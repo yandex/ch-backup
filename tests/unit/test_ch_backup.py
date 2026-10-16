@@ -484,10 +484,14 @@ def _readable_backup(name: str, link: str | None = None) -> Mock:
     return meta
 
 
-def _light_backup(name: str, age_days: int, incomplete: bool = False) -> Mock:
+def _light_backup(
+    name: str, age_days: int, incomplete: bool = False, schema_only: bool = False
+) -> Mock:
     """Mock light metadata of a created backup started age_days ago."""
     meta = Mock(
-        state=BackupState.CREATED, start_time=util.now() - timedelta(days=age_days)
+        state=BackupState.CREATED,
+        start_time=util.now() - timedelta(days=age_days),
+        schema_only=schema_only,
     )
     meta.name = name
     meta.count_skipped_data_tables.return_value = (0, 1) if incomplete else (0, 0)
@@ -535,6 +539,29 @@ def test_newest_complete_backup_outlives_retain_time() -> None:
     ]
 
     assert _purge(backups, retain_count=0, retain_time={"days": 1}) == ["older"]
+
+
+def test_schema_only_backup_does_not_replace_the_newest_complete_one() -> None:
+    """A schema-only backup holds no data, so it does not count as complete."""
+    backups = [
+        _light_backup("incomplete", 0, incomplete=True),
+        _light_backup("schema", 1, schema_only=True),
+        _light_backup("complete", 2),
+        _light_backup("older", 3),
+    ]
+
+    assert _purge(backups, retain_count=1, retain_time={}) == ["schema", "older"]
+
+
+def test_retained_schema_only_backup_does_not_count_as_complete() -> None:
+    """A retained schema-only backup does not stand in for the data."""
+    backups = [
+        _light_backup("incomplete", 0, incomplete=True),
+        _light_backup("schema", 1, schema_only=True),
+        _light_backup("complete", 2),
+    ]
+
+    assert not _purge(backups, retain_count=2, retain_time={})
 
 
 def test_deleted_incomplete_backup_does_not_keep_a_complete_one() -> None:

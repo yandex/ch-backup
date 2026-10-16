@@ -1040,6 +1040,8 @@ def _is_complete(backup: BackupMetadata) -> bool:
     """
     Return True if a backup is created and holds all data of its tables.
     """
-    return backup.state == BackupState.CREATED and not any(
-        backup.count_skipped_data_tables()
+    return (
+        backup.state == BackupState.CREATED
+        and not backup.schema_only
+        and not any(backup.count_skipped_data_tables())
     )
