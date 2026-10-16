@@ -143,8 +143,8 @@ def test_proxy_dns_failure_uses_one_retry_budget(max_attempts: int) -> None:
     assert get.call_count == max_attempts
     assert all(call.kwargs["timeout"] == 2 for call in get.call_args_list)
     assert getattr(engine, "_retry").sleep_function.call_count == max_attempts - 1
-    assert isinstance(exc.value.__cause__, S3BalancerUnknownHost)
-    assert exc.value.__cause__.__cause__ is dns_error
+    assert isinstance(exc.value.__context__, S3BalancerUnknownHost)
+    assert exc.value.__context__.__context__ is dns_error
 
 
 @pytest.mark.parametrize(
