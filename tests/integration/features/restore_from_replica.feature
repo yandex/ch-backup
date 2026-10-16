@@ -290,9 +290,9 @@ Feature: Restore schema from a live replica
     """
     SELECT
         (SELECT count() FROM system.workloads
-         INNER JOIN remote('clickhouse01', system.workloads) USING (name, parent, create_query)),
+         INNER JOIN remote('clickhouse01', system.workloads) AS r USING (name, parent, create_query)),
         (SELECT count() FROM system.resources
-         INNER JOIN remote('clickhouse01', system.resources) USING (name, create_query))
+         INNER JOIN remote('clickhouse01', system.resources) AS r USING (name, create_query))
     FORMAT CSV
     """
     Then we get response
