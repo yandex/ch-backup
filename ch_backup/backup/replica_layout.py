@@ -237,10 +237,10 @@ class ReplicaLayout(BackupLayout):
 
     def _read_workload_entities(self, backup: BackupMetadata) -> None:
         """
-        Read workloads and resources, failing on ones this host has of another type.
-        ClickHouse keeps them in ZooKeeper if workload_zookeeper_path is set, then they
-        are shared with the replica and only missing ones are read. Restore leaves out
-        ones from the server config of this host.
+        Read workloads and resources, except ones from the server config of this host,
+        failing on ones this host has of another type. ClickHouse keeps them in ZooKeeper
+        if workload_zookeeper_path is set, then they are shared with the replica and only
+        missing ones are read.
         """
         if not self._source_ctl.ch_version_ge(WORKLOAD_ENTITIES_MIN_CLICKHOUSE_VERSION):
             return
@@ -249,9 +249,9 @@ class ReplicaLayout(BackupLayout):
         shared = "workload_zookeeper_path" in self._ch_config.config
         source = self._source_ctl.get_workload_entities()
         for name, (entity_type, statement) in source.items():
-            if shared and name in local:
+            if name in from_config or (shared and name in local):
                 continue
-            if name in local and name not in from_config:
+            if name in local:
                 local_type = local[name][0]
                 if local_type != entity_type:
                     raise ClickhouseBackupError(
