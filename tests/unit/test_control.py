@@ -354,10 +354,12 @@ class TestGetLocalAccessStatements:
     Tests for reading access entities of local storages of a replica.
     """
 
-    @staticmethod
-    def _ctl() -> tuple[ClickhouseCTL, mock.Mock]:
-        """Helper: a control object over a replica with one entity of each type."""
-        ch_ctl, client = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    @pytest.fixture(name="local_access_ctl")
+    def fixture_local_access_ctl(
+        self, clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock]
+    ) -> tuple[ClickhouseCTL, mock.Mock]:
+        """A control object over a replica with one entity of each type."""
+        ch_ctl, client = clickhouse_ctl
         names = {
             "system.roles": ["r`1"],
             "system.settings_profiles": ["p1"],
@@ -388,12 +390,14 @@ class TestGetLocalAccessStatements:
         client.query.side_effect = query
         return ch_ctl, client
 
-    def test_bare_roles_and_profiles_go_first_and_are_altered_after_users(self) -> None:
+    def test_bare_roles_and_profiles_go_first_and_are_altered_after_users(
+        self, local_access_ctl: tuple[ClickhouseCTL, mock.Mock]
+    ) -> None:
         """
         Roles and users may refer to profiles and profiles to roles and users, and users
         may refer to each other through GRANTEES.
         """
-        ch_ctl, _ = self._ctl()
+        ch_ctl, _ = local_access_ctl
 
         assert ch_ctl.get_local_access_statements() == [
             "CREATE ROLE `r\\`1`",
@@ -408,11 +412,13 @@ class TestGetLocalAccessStatements:
             "GRANT r1 TO u1",
         ]
 
-    def test_only_local_storages_are_read_and_dropped(self) -> None:
+    def test_only_local_storages_are_read_and_dropped(
+        self, local_access_ctl: tuple[ClickhouseCTL, mock.Mock]
+    ) -> None:
         """
         Entities from users.xml or shared through ZooKeeper must stay as they are.
         """
-        ch_ctl, client = self._ctl()
+        ch_ctl, client = local_access_ctl
 
         ch_ctl.drop_local_access_entities()
 
@@ -432,12 +438,14 @@ class TestGetLocalAccessStatements:
         ]
 
 
-def test_only_named_collections_created_by_sql_are_read() -> None:
+def test_only_named_collections_created_by_sql_are_read(
+    clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock],
+) -> None:
     """
     A collection from the server config created by SQL elsewhere would clash with the
     config of that host.
     """
-    ch_ctl, client = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    ch_ctl, client = clickhouse_ctl
     client.query.return_value = {
         "data": [{"name": "nc1", "create_query": "CREATE ..."}]
     }
