@@ -240,7 +240,11 @@ class BackupLayout:
             raise StorageError(msg) from e
 
     def upload_data_part(
-        self, backup_meta: BackupMetadata, fpart: FrozenPart, callback: Callable
+        self,
+        backup_meta: BackupMetadata,
+        fpart: FrozenPart,
+        callback: Callable,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         """
         Upload part data.
@@ -268,6 +272,7 @@ class BackupLayout:
                 encryption=backup_meta.encrypted,
                 delete=True,
                 callback=callback,
+                on_error=on_error,
             )
         except Exception as e:
             msg = f"Failed to create async upload of {remote_path}"
@@ -1146,7 +1151,10 @@ class BackupLayout:
         return deleting_files
 
     def delete_data_parts(
-        self, backup_meta: BackupMetadata, parts: Sequence[PartMetadata]
+        self,
+        backup_meta: BackupMetadata,
+        parts: Sequence[PartMetadata],
+        is_async: bool = True,
     ) -> None:
         """
         Delete backup data parts from storage.
@@ -1160,7 +1168,7 @@ class BackupLayout:
             logging.debug("Deleting data part {}", part.name)
             deleting_files.extend(part_files)
 
-        self._delete_files(deleting_files)
+        self._delete_files(deleting_files, is_async)
 
     def get_data_part_files(self, backup_name: str, part: PartMetadata) -> list[str]:
         """
@@ -1269,12 +1277,14 @@ class BackupLayout:
         )
         return os.path.join(path, disk_name) if disk_name else path
 
-    def _delete_files(self, remote_paths: Sequence[str]) -> None:
+    def _delete_files(self, remote_paths: Sequence[str], is_async: bool = True) -> None:
         """
         Delete files from storage.
         """
         try:
-            self._storage_loader.delete_files(remote_paths=remote_paths, is_async=True)
+            self._storage_loader.delete_files(
+                remote_paths=remote_paths, is_async=is_async
+            )
         except Exception as e:
             msg = f'Failed to delete files {", ".join(remote_paths)}'
             raise StorageError(msg) from e

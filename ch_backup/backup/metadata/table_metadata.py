@@ -66,6 +66,7 @@ class DataSkippedReason(str, Enum):
     """
 
     UNIQUE_KEY = "unique_key"
+    BACKUP_FAILED = "backup_failed"
 
 
 class TableMetadata(SimpleNamespace):

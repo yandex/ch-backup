@@ -11,7 +11,7 @@ from contextlib import contextmanager, suppress
 from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE  # type: ignore
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from ch_backup import logging
 from ch_backup.backup.metadata import TableMetadata
@@ -1398,9 +1398,12 @@ class ClickhouseCTL:
         backup_name: str,
         copy_data: bool = False,
         fail_on_unparsable_metadata: bool = False,
+        on_error: Callable[[str, Exception], object] | None = None,
     ) -> Iterable[FrozenPart]:
         """
         Yield frozen parts from specific disk and path.
+
+        A part that cannot be read is passed to on_error and skipped, if given.
         """
         table_relative_path = os.path.relpath(data_path, disk.path)
         path = os.path.join(disk.path, "shadow", backup_name, table_relative_path)
@@ -1412,15 +1415,21 @@ class ClickhouseCTL:
         for dir_entry in os.scandir(path):
             part = dir_entry.name
             part_path = dir_entry.path
-            rel_paths = list_dir_files(part_path)
-            if copy_data and disk.keeps_object_metadata:
-                checksum, size = _get_cloud_part_checksum_and_size(
-                    part_path, rel_paths, fail_on_unparsable_metadata
-                )
-            else:
-                checksum = _get_part_checksum(part_path)
-                abs_paths = [Path(part_path) / file for file in rel_paths]
-                size = calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE)
+            try:
+                rel_paths = list_dir_files(part_path)
+                if copy_data and disk.keeps_object_metadata:
+                    checksum, size = _get_cloud_part_checksum_and_size(
+                        part_path, rel_paths, fail_on_unparsable_metadata
+                    )
+                else:
+                    checksum = _get_part_checksum(part_path)
+                    abs_paths = [Path(part_path) / file for file in rel_paths]
+                    size = calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE)
+            except Exception as e:
+                if on_error is None:
+                    raise
+                on_error(part, e)
+                continue
             logging.debug(
                 f"scan_freezed_parts: {table.name} -> {escape(table.name)} \n {part}"
             )
