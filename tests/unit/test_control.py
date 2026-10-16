@@ -458,8 +458,9 @@ def test_only_named_collections_created_by_sql_are_read(
 
 def test_scan_detached_parts_reads_reason_from_directory_name(
     tmp_path: Path,
+    clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock],
 ) -> None:
-    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    ch_ctl, _ = clickhouse_ctl
     disk = Disk("default", str(tmp_path), "Local")
     ch_ctl._disks = {disk.name: disk}  # pylint: disable=protected-access
     table_path = tmp_path / "store" / "table"
@@ -511,9 +512,13 @@ def test_scan_detached_parts_reads_reason_from_directory_name(
     ids=["regular", "mutated", "try-suffix", "mutated-try-suffix"],
 )
 def test_scan_detached_parts_recognizes_clickhouse_reasons(
-    tmp_path: Path, reason: str, partition_id: str, suffix: str
+    tmp_path: Path,
+    reason: str,
+    partition_id: str,
+    suffix: str,
+    clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock],
 ) -> None:
-    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    ch_ctl, _ = clickhouse_ctl
     disk = Disk("default", str(tmp_path), "Local")
     ch_ctl._disks = {disk.name: disk}  # pylint: disable=protected-access
     table_path = tmp_path / "store" / "table"
@@ -549,9 +554,11 @@ def test_scan_detached_parts_recognizes_clickhouse_reasons(
     ],
 )
 def test_scan_detached_parts_skips_inaccessible_detached_directory(
-    tmp_path: Path, error: OSError
+    tmp_path: Path,
+    error: OSError,
+    clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock],
 ) -> None:
-    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    ch_ctl, _ = clickhouse_ctl
     disk = Disk("default", str(tmp_path), "Local")
     ch_ctl._disks = {disk.name: disk}  # pylint: disable=protected-access
     table = Table(
@@ -586,9 +593,11 @@ def test_scan_detached_parts_skips_inaccessible_detached_directory(
     ],
 )
 def test_scan_detached_parts_skips_inaccessible_part_directory(
-    tmp_path: Path, error: OSError
+    tmp_path: Path,
+    error: OSError,
+    clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock],
 ) -> None:
-    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    ch_ctl, _ = clickhouse_ctl
     disk = Disk("default", str(tmp_path), "Local")
     ch_ctl._disks = {disk.name: disk}  # pylint: disable=protected-access
     table_path = tmp_path / "store" / "table"
@@ -619,8 +628,9 @@ def test_scan_detached_parts_skips_inaccessible_part_directory(
 
 def test_scan_detached_parts_uses_selected_backing_disk_directory(
     tmp_path: Path,
+    clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock],
 ) -> None:
-    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    ch_ctl, _ = clickhouse_ctl
     storage_disk = Disk("object_storage", str(tmp_path), "ObjectStorage", "S3")
     cache_disk = Disk(
         "object_storage_cache",
