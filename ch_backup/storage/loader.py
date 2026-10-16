@@ -3,9 +3,11 @@ Module providing API for storage management (upload and download data, check
 remote path on existence, etc.).
 """
 
+from pathlib import Path
 from typing import BinaryIO, Callable, Sequence
 
 from ch_backup.storage.async_pipeline.pipeline_executor import PipelineExecutor
+from ch_backup.storage.async_pipeline.pipelines import decrypt_data_pipeline
 from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.object_copy import CopyEntry
 
@@ -107,10 +109,14 @@ class StorageLoader:
         delete: bool = False,
         callback: Callable | None = None,
         compression: bool = False,
+        file_reader: Callable[[Path], bytes] | None = None,
     ) -> str:
         """
         Scan given directory for files a upload them as tarball.
         Do not load all file names in memory.
+
+        If file_reader is set, archive its returned bytes without rereading the file.
+        The reader must bound its memory usage and be picklable for async uploads.
 
         If delete is True, the file will be deleted after upload.
         """
@@ -124,6 +130,7 @@ class StorageLoader:
             delete=delete,
             callback=callback,
             compression=compression,
+            file_reader=file_reader,
         )
         return remote_path
 
@@ -138,6 +145,7 @@ class StorageLoader:
         delete: bool = False,
         callback: Callable | None = None,
         compression: bool = False,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> str:
         """
         Upload multiple files as tarball.
@@ -153,6 +161,7 @@ class StorageLoader:
             delete=delete,
             callback=callback,
             compression=compression,
+            on_error=on_error,
         )
         return remote_path
 
@@ -170,6 +179,10 @@ class StorageLoader:
             remote_path, is_async=is_async, encryption=encryption
         )
         return data.decode(encoding) if encoding else data
+
+    def decrypt_data(self, data: bytes) -> bytes:
+        """Decrypt downloaded bytes with the same stages as an encrypted download."""
+        return decrypt_data_pipeline(self._config, data)
 
     def download_data_tarball(
         self,

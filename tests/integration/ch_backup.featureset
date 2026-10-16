@@ -13,6 +13,7 @@ features/cloud_storage.feature
 features/database_engines.feature
 features/ddl_dictionary.feature
 features/deduplication.feature
+features/detached_parts.feature
 features/freeze_parallel.feature
 features/incremental_restore.feature
 features/metadata.feature
@@ -33,3 +34,4 @@ features/cloud_storage_full_backup.feature
 features/unique_key.feature
 features/backup_unreadable_metadata.feature
 features/restore_from_replica.feature
+features/backup_keep_going.feature

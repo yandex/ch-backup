@@ -1,5 +1,8 @@
+import errno
 from hashlib import md5
+from pathlib import Path
 from tarfile import BLOCKSIZE
+from typing import Callable
 from unittest import mock
 
 import pytest
@@ -10,7 +13,7 @@ from ch_backup.clickhouse.control import (
     _get_cloud_part_checksum_and_size,
     _parse_version,
 )
-from ch_backup.clickhouse.models import Disk, Table
+from ch_backup.clickhouse.models import DETACH_REASONS, Disk, Table
 from ch_backup.exceptions import ClickhouseBackupError
 from tests.unit.utils import parametrize
 
@@ -278,6 +281,49 @@ class TestCreateTable:
         client.query.assert_called_once_with(statement, settings=settings)
 
 
+class TestScanFrozenParts:
+    """
+    Tests for ClickhouseCTL.scan_frozen_parts.
+    """
+
+    _BACKUP_NAME = "backup1"
+
+    @classmethod
+    def _scan(
+        cls, root: Path, on_error: Callable[[str, Exception], None] | None = None
+    ) -> list[str]:
+        """Helper: scan a shadow directory with a readable and a broken part."""
+        disk = Disk("default", f"{root}/", "Local")
+        shadow = root / "shadow" / cls._BACKUP_NAME / "data" / "db1" / "table1"
+        (shadow / "all_1_1_0").mkdir(parents=True)
+        (shadow / "all_1_1_0" / "checksums.txt").write_bytes(b"checksums")
+        (shadow / "all_2_2_0").mkdir()
+        table = Table("db1", "table1", "MergeTree", [disk], [], "", "", None)
+
+        parts = ClickhouseCTL.scan_frozen_parts(
+            table,
+            disk,
+            str(root / "data" / "db1" / "table1"),
+            cls._BACKUP_NAME,
+            on_error=on_error,
+        )
+        return [part.name for part in parts]
+
+    def test_unreadable_part_fails_the_scan_by_default(self, tmp_path: Path) -> None:
+        """Without a handler a broken part is not silently left out."""
+        with pytest.raises(FileNotFoundError):
+            self._scan(tmp_path)
+
+    def test_unreadable_part_is_passed_to_the_handler(self, tmp_path: Path) -> None:
+        """With a handler the remaining parts are still scanned."""
+        errors: list[str] = []
+
+        names = self._scan(tmp_path, on_error=lambda name, _e: errors.append(name))
+
+        assert names == ["all_1_1_0"]
+        assert errors == ["all_2_2_0"]
+
+
 class TestGetLocalAccessStatements:
     """
     Tests for reading access entities of local storages of a replica.
@@ -373,3 +419,205 @@ def test_only_named_collections_created_by_sql_are_read() -> None:
 
     assert ch_ctl.get_named_collections_create_queries() == {"nc1": "CREATE ..."}
     assert "WHERE source = 'SQL'" in client.query.call_args.args[0]
+
+
+def test_scan_detached_parts_reads_reason_from_directory_name(
+    tmp_path: Path,
+) -> None:
+    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    disk = Disk("default", str(tmp_path), "Local")
+    ch_ctl._disks = {disk.name: disk}  # pylint: disable=protected-access
+    table_path = tmp_path / "store" / "table"
+    detached_path = table_path / "detached"
+    normal_part = detached_path / "all_1_1_0"
+    broken_part = detached_path / "broken-on-start_all_2_2_0"
+    normal_part.mkdir(parents=True)
+    broken_part.mkdir()
+    (normal_part / "data.bin").write_bytes(b"data")
+    (broken_part / "data.bin").write_bytes(b"broken")
+    table = Table(
+        "db1",
+        "table1",
+        "MergeTree",
+        [disk],
+        [str(table_path)],
+        "",
+        "",
+        None,
+    )
+
+    parts = list(
+        ch_ctl.scan_detached_parts(table, disk_names=["default"], reasons=[""])
+    )
+
+    assert len(parts) == 1
+    assert parts[0].name == "all_1_1_0"
+    assert parts[0].reason == ""
+    assert parts[0].disk_name == "default"
+    assert parts[0].checksum == ""
+
+    broken_parts = list(
+        ch_ctl.scan_detached_parts(
+            table, disk_names=["default"], reasons=["broken-on-start"]
+        )
+    )
+    assert [(part.name, part.reason) for part in broken_parts] == [
+        ("broken-on-start_all_2_2_0", "broken-on-start")
+    ]
+
+
+@pytest.mark.parametrize("reason", ["", *sorted(DETACH_REASONS)])
+@pytest.mark.parametrize(
+    "partition_id", ["all", "202401", "20240101", "1", "1-2", "-1"]
+)
+@pytest.mark.parametrize(
+    "suffix",
+    ["", "_5", "_try1", "_5_try12"],
+    ids=["regular", "mutated", "try-suffix", "mutated-try-suffix"],
+)
+def test_scan_detached_parts_recognizes_clickhouse_reasons(
+    tmp_path: Path, reason: str, partition_id: str, suffix: str
+) -> None:
+    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    disk = Disk("default", str(tmp_path), "Local")
+    ch_ctl._disks = {disk.name: disk}  # pylint: disable=protected-access
+    table_path = tmp_path / "store" / "table"
+    part_name = f"{partition_id}_1_1_0{suffix}"
+    if reason:
+        part_name = f"{reason}_{part_name}"
+    part_path = table_path / "detached" / part_name
+    part_path.mkdir(parents=True)
+    (part_path / "data.bin").write_bytes(b"data")
+    table = Table(
+        "db1",
+        "table1",
+        "MergeTree",
+        [disk],
+        [str(table_path)],
+        "",
+        "",
+        None,
+    )
+
+    parts = list(
+        ch_ctl.scan_detached_parts(table, disk_names=["default"], reasons=[reason])
+    )
+
+    assert [(part.name, part.reason) for part in parts] == [(part_name, reason)]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(PermissionError("permission denied"), id="permission"),
+        pytest.param(OSError(errno.EIO, "I/O error"), id="io-error"),
+    ],
+)
+def test_scan_detached_parts_skips_inaccessible_detached_directory(
+    tmp_path: Path, error: OSError
+) -> None:
+    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    disk = Disk("default", str(tmp_path), "Local")
+    ch_ctl._disks = {disk.name: disk}  # pylint: disable=protected-access
+    table = Table(
+        "db1",
+        "table1",
+        "MergeTree",
+        [disk],
+        [str(tmp_path / "store" / "table")],
+        "",
+        "",
+        None,
+    )
+
+    with (
+        mock.patch(
+            "ch_backup.clickhouse.control.os.scandir",
+            side_effect=error,
+        ),
+        mock.patch("ch_backup.clickhouse.control.logging.warning") as warning,
+    ):
+        assert not list(ch_ctl.scan_detached_parts(table, disk_names=["default"]))
+
+    warning.assert_called_once()
+    assert "not accessible" in warning.call_args.args[0]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(PermissionError("permission denied"), id="permission"),
+        pytest.param(OSError(errno.EIO, "I/O error"), id="io-error"),
+    ],
+)
+def test_scan_detached_parts_skips_inaccessible_part_directory(
+    tmp_path: Path, error: OSError
+) -> None:
+    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    disk = Disk("default", str(tmp_path), "Local")
+    ch_ctl._disks = {disk.name: disk}  # pylint: disable=protected-access
+    table_path = tmp_path / "store" / "table"
+    (table_path / "detached" / "all_1_1_0").mkdir(parents=True)
+    table = Table(
+        "db1",
+        "table1",
+        "MergeTree",
+        [disk],
+        [str(table_path)],
+        "",
+        "",
+        None,
+    )
+
+    with (
+        mock.patch(
+            "ch_backup.clickhouse.control.scan_dir_files",
+            side_effect=error,
+        ),
+        mock.patch("ch_backup.clickhouse.control.logging.warning") as warning,
+    ):
+        assert not list(ch_ctl.scan_detached_parts(table, disk_names=["default"]))
+
+    warning.assert_called_once()
+    assert "not accessible" in warning.call_args.args[0]
+
+
+def test_scan_detached_parts_uses_selected_backing_disk_directory(
+    tmp_path: Path,
+) -> None:
+    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    storage_disk = Disk("object_storage", str(tmp_path), "ObjectStorage", "S3")
+    cache_disk = Disk(
+        "object_storage_cache",
+        str(tmp_path),
+        "ObjectStorage",
+        "S3",
+        cache_path=str(tmp_path / "cache"),
+    )
+    ch_ctl._disks = {  # pylint: disable=protected-access
+        storage_disk.name: storage_disk,
+        cache_disk.name: cache_disk,
+    }
+    table_path = tmp_path / "store" / "table"
+    part_path = table_path / "detached" / "all_1_1_0"
+    expected_checksum = _make_cloud_part(
+        part_path, {"checksums.txt": ["store/object-key"]}
+    )
+    table = Table(
+        "db1",
+        "table1",
+        "MergeTree",
+        [cache_disk],
+        [str(table_path)],
+        "",
+        "",
+        None,
+    )
+
+    part = next(iter(ch_ctl.scan_detached_parts(table, disk_names=["object_storage"])))
+
+    assert part.disk_name == "object_storage"
+    assert part.object_storage is True
+    assert part.path == str(part_path)
+    assert part.checksum == expected_checksum
+    assert part.size == BLOCKSIZE

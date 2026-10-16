@@ -109,10 +109,7 @@ def _layout(
     config: dict = copy.deepcopy(DEFAULT_CONFIG)
     config["zookeeper"]["hosts"] = zookeeper_hosts
     config["backup"]["override_replica_name"] = override_replica_name
-    with (
-        patch("ch_backup.backup.layout.StorageLoader"),
-        patch("ch_backup.backup.layout.get_encryption"),
-    ):
+    with patch("ch_backup.backup.layout.StorageLoader"):
         layout = ReplicaLayout(
             config,  # type: ignore[arg-type]
             local or _local(),

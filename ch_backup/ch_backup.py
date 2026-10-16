@@ -2,6 +2,8 @@
 Clickhouse backup logic
 """
 
+# pylint: disable=too-many-lines
+
 import builtins
 from collections import defaultdict
 from copy import copy
@@ -148,6 +150,9 @@ class ClickhouseBackup:
         tables: Sequence[str] = None,
         force: bool = False,
         labels: dict = None,
+        include_detached_parts: bool = False,
+        detached_parts_disks: Sequence[str] = None,
+        detached_parts_reasons: Sequence[str] = None,
     ) -> tuple[str, str | None]:
         """
         Perform backup.
@@ -176,6 +181,14 @@ class ClickhouseBackup:
 
         logging.info(f"Backup sources: {sources}")
         assert not (db_names and tables)
+
+        if detached_parts_disks is None:
+            detached_parts_disks = ["object_storage"]
+
+        if isinstance(detached_parts_disks, str):
+            detached_parts_disks = [detached_parts_disks]
+        if isinstance(detached_parts_reasons, str):
+            detached_parts_reasons = [detached_parts_reasons]
 
         backup_labels: dict = copy(self._context.config.get("labels"))  # type: ignore
         if labels:
@@ -249,6 +262,9 @@ class ClickhouseBackup:
                         db_tables,
                         schema_only=sources.schema_only,
                         multiprocessing_config=self._config["multiprocessing"],
+                        include_detached_parts=include_detached_parts,
+                        detached_parts_disks=detached_parts_disks,
+                        detached_parts_reasons=detached_parts_reasons,
                     )
 
                 # Upload operations are async. Should wait until they are all finished.
@@ -268,7 +284,23 @@ class ClickhouseBackup:
                 if not self._context.config.get("keep_freezed_data_on_failure"):
                     self._context.ch_ctl.remove_freezed_data()
 
-        return self._context.backup_meta.name, None
+        return self._context.backup_meta.name, self._skipped_data_message()
+
+    def _skipped_data_message(self) -> str | None:
+        """
+        Report tables that were backed up without some or all of their data.
+        """
+        data_skipped_tables, incomplete_tables = (
+            self._context.backup_meta.count_skipped_data_tables()
+        )
+        if not (data_skipped_tables or incomplete_tables):
+            return None
+
+        return (
+            f"Backup is incomplete: {data_skipped_tables} tables without data,"
+            f" {incomplete_tables} tables without some data parts. Run show to see"
+            " them by data_skipped_reason and skipped_parts."
+        )
 
     # pylint: disable=too-many-arguments,duplicate-code,too-many-positional-arguments,too-many-branches,too-many-locals
     def restore(
@@ -294,6 +326,15 @@ class ClickhouseBackup:
         """
         logging.info(f"Restore sources: {sources}")
         self._context.backup_meta = self._get_backup(backup_name)
+        data_skipped_tables, incomplete_tables = (
+            self._context.backup_meta.get_skipped_data_tables()
+        )
+        if data_skipped_tables or incomplete_tables:
+            logging.warning(
+                "Backup holds no data of tables: {}; and only some parts of tables: {}",
+                ", ".join(data_skipped_tables) or "none",
+                ", ".join(incomplete_tables) or "none",
+            )
 
         cloud_storage_source = self._context.backup_meta.cloud_storage.source
         if cloud_storage_source_bucket is None and cloud_storage_source:
@@ -585,6 +626,10 @@ class ClickhouseBackup:
     def purge(self) -> tuple[Sequence[str], str | None]:
         """
         Purge backups.
+
+        When every retained backup that is created holds incomplete table data,
+        the newest complete backup is kept anyway: it may hold the last copy of
+        the data the retained backups lack.
         """
         retain_time = self._context.config["retain_time"]
         retain_count = self._context.config["retain_count"]
@@ -626,6 +671,19 @@ class ClickhouseBackup:
                     continue
 
                 deleting_backups.append(backup)
+
+            if any(
+                backup.state == BackupState.CREATED for backup in retained_backups
+            ) and not any(map(_is_complete, retained_backups)):
+                complete_backup = next(filter(_is_complete, deleting_backups), None)
+                if complete_backup:
+                    logging.info(
+                        "Preserving the newest complete backup, the retained ones"
+                        " hold incomplete table data: {}",
+                        complete_backup.name,
+                    )
+                    deleting_backups.remove(complete_backup)
+                    retained_backups.append(complete_backup)
 
             dedup_references = collect_dedup_references_for_batch_backup_deletion(
                 layout=self._context.backup_layout,
@@ -729,8 +787,12 @@ class ClickhouseBackup:
                     self._delete_data_parts(
                         backup, table, db_dedup_references[table.name]
                     )
+                    self._delete_detached_parts(backup, table)
 
-            if backup.cloud_storage.enabled:
+            if backup.cloud_storage.enabled or (
+                backup.cloud_storage.data_copied
+                and backup.count_skipped_data_tables()[0]
+            ):
                 if self._cloud_storage_data_is_shared(backup, dedup_references):
                     logging.info(
                         "Keeping cloud storage data of the backup, it is in use by subsequent backups"
@@ -819,6 +881,13 @@ class ClickhouseBackup:
         own_parts = [part for part in parts if not part.link]
         self._context.backup_layout.delete_data_parts(backup, own_parts)
         backup.remove_parts(table, parts)
+
+    def _delete_detached_parts(
+        self, backup: BackupMetadata, table: TableMetadata
+    ) -> None:
+        parts = table.get_detached_parts()
+        self._context.backup_layout.delete_detached_parts(backup, parts)
+        backup.remove_detached_parts(table, parts)
 
     # pylint: disable=too-many-positional-arguments
     def _restore(
@@ -965,3 +1034,14 @@ class ClickhouseBackup:
             return False
 
         return skip_lock.get("backup", False)
+
+
+def _is_complete(backup: BackupMetadata) -> bool:
+    """
+    Return True if a backup is created and holds all data of its tables.
+    """
+    return (
+        backup.state == BackupState.CREATED
+        and not backup.schema_only
+        and not any(backup.count_skipped_data_tables())
+    )

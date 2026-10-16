@@ -45,6 +45,12 @@ class CloudStorageMetadata:
         if disk_name not in self._disks:
             self._disks.append(disk_name)
 
+    def retain_disks(self, disk_names: set[str]) -> None:
+        """
+        Drop the disks the backup holds no data on from the backed up disks list.
+        """
+        self._disks = [disk for disk in self._disks if disk in disk_names]
+
     @property
     def encrypted(self) -> bool:
         """

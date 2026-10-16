@@ -13,6 +13,7 @@ from ch_backup.backup.metadata import (
     BackupState,
     BackupStorageFormat,
     CloudStorageMetadata,
+    DetachedPartMetadata,
     PartMetadata,
     normalize_backup_link,
 )
@@ -380,6 +381,55 @@ class TestPartMetadata:
         assert part.link_part_name == "all_1_1_0"
 
 
+class TestDetachedPartMetadata:
+    """Tests for detached parts kept separately from attachable parts."""
+
+    @staticmethod
+    def _part(
+        disk: str, reason: str, name: str, object_storage: bool = False
+    ) -> DetachedPartMetadata:
+        return DetachedPartMetadata(
+            database="db1",
+            table="table1",
+            name=name,
+            reason=reason,
+            checksum="checksum",
+            size=1024,
+            files=["checksums.txt", "data.bin"],
+            tarball=True,
+            disk_name=disk,
+            encrypted=True,
+            object_storage=object_storage,
+        )
+
+    def test_round_trip_preserves_disk_reason_and_original_name(self) -> None:
+        table = TableMetadata("db1", "table1", "MergeTree", None)
+        table.add_detached_part(
+            self._part("disk1", "broken-on-start", "broken-on-start_all_1_1_0", True)
+        )
+        table.add_detached_part(self._part("disk2", "", "all_1_1_0"))
+
+        loaded = TableMetadata.load(
+            "db1", "table1", json.loads(json.dumps(table.raw_metadata))
+        )
+
+        parts = loaded.get_detached_parts()
+        assert [(part.disk_name, part.reason, part.name) for part in parts] == [
+            ("disk1", "broken-on-start", "broken-on-start_all_1_1_0"),
+            ("disk2", "", "all_1_1_0"),
+        ]
+        assert parts[0].object_storage is True
+        assert parts[1].object_storage is False
+        assert not loaded.get_parts()
+
+    def test_same_directory_name_is_allowed_on_different_disks(self) -> None:
+        table = TableMetadata("db1", "table1", "MergeTree", None)
+        table.add_detached_part(self._part("disk1", "", "all_1_1_0"))
+        table.add_detached_part(self._part("disk2", "", "all_1_1_0"))
+
+        assert len(table.get_detached_parts()) == 2
+
+
 class TestNormalizeBackupLink:
     """
     Tests for the normalize_backup_link() module-level helper.
@@ -462,6 +512,18 @@ class TestSplitPartName:
                     mutation=100,
                 ),
             ),
+            # Legacy MergeTree names contain min/max dates before block numbers.
+            # Keeping their five numeric chunks sortable is required by restore.
+            (
+                "20261015_20261015_0_0_0",
+                PartInfo(
+                    partition_id="20261015",
+                    min_block_num=20261015,
+                    max_block_num=0,
+                    level=0,
+                    mutation=0,
+                ),
+            ),
             # Large block numbers
             (
                 "all_1000000_9999999_999",
@@ -518,6 +580,13 @@ class TestSplitPartName:
             "all_1_y_0",
             "all_1_1_z",
             "all_1_1_0_abc",
+            # Python's int() accepts underscores, but ClickHouse part names do not.
+            "all_1_1_0_5_6",
+            # Numeric part fields are non-negative.
+            "all_-1_1_0",
+            "all_1_-1_0",
+            "all_1_1_-1",
+            "all_1_1_0_-1",
         ],
     )
     def test_non_numeric_segments_raises(self, part_name: str) -> None:
