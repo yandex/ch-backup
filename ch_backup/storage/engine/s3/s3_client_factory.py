@@ -4,8 +4,6 @@ S3 client factory.
 
 import socket
 import threading
-from functools import wraps
-from typing import Callable
 
 import boto3
 import requests
@@ -88,20 +86,6 @@ class S3ClientFactory:
         )
 
 
-def synchronized(method: Callable) -> Callable:
-    """
-    Decorator for synchronizing access to the instance's methods
-    """
-    lock = threading.Lock()
-
-    @wraps(method)
-    def _decorator(self, *args, **kwargs):
-        with lock:
-            return method(self, *args, **kwargs)
-
-    return _decorator
-
-
 class S3ClientCachedFactory:
     """
     Thread safe S3 client factory returning cached client or creating new.
@@ -110,20 +94,27 @@ class S3ClientCachedFactory:
     def __init__(self, s3_client_factory: S3ClientFactory) -> None:
         self._s3_client_factory = s3_client_factory
         self._cached_s3_client: S3Client | None = None
+        self._lock = threading.Lock()
+        self._thread_state = threading.local()
 
-    @synchronized
     def create_s3_client(self, cached: bool = True) -> S3Client:
         """
         Return cached S3 client. Or re-create it if needed.
         """
-        if not cached or self._cached_s3_client is None:
-            self._cached_s3_client = self._s3_client_factory.create_s3_client()
+        # Failed discovery must not invalidate a client created by another worker.
+        self._thread_state.client = None
+        with self._lock:
+            if not cached or self._cached_s3_client is None:
+                self._cached_s3_client = self._s3_client_factory.create_s3_client()
+            self._thread_state.client = self._cached_s3_client
+            return self._cached_s3_client
 
-        return self._cached_s3_client
-
-    @synchronized
     def reset(self) -> None:
         """
-        Reset cached client.
+        Invalidate only the client most recently obtained by this thread.
         """
-        self._cached_s3_client = None
+        client = getattr(self._thread_state, "client", None)
+        with self._lock:
+            if client is not None and self._cached_s3_client is client:
+                self._cached_s3_client = None
+        self._thread_state.client = None
