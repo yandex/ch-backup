@@ -665,13 +665,27 @@ class ClickhouseCTL:
                 settings["database_replicated_allow_explicit_uuid"] = 1
         self._ch_client.settings.update(settings)
 
-    def chown_detached_table_parts(self, table: Table, context: RestoreContext) -> None:
+    def chown_detached_table_parts(
+        self,
+        table: Table,
+        context: RestoreContext,
+        disk_names: Iterable[str] | None = None,
+    ) -> None:
         """
         Change permissions (owner and group) of detached data parts for the
         specified table. New values for permissions are taken from the config.
+        If disk names are provided, only their detached directories are changed.
         """
-        for _, disk in table.paths_with_disks:
-            detached_path = self._get_table_detached_path(table, disk.name)
+        selected_disks = (
+            disk_names
+            if disk_names is not None
+            else (disk.name for _, disk in table.paths_with_disks)
+        )
+        detached_paths = dict.fromkeys(
+            self._get_table_detached_path(table, disk_name)
+            for disk_name in selected_disks
+        )
+        for detached_path in detached_paths:
             try:
                 self.chown_dir(detached_path)
             except FileNotFoundError:
@@ -1263,7 +1277,7 @@ class ClickhouseCTL:
             if calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE) != part.size:
                 return False
             if not part.checksum:
-                return False
+                return True
             checksum = (
                 _get_cloud_part_checksum_and_size(part_path, files)[0]
                 if part.object_storage

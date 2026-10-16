@@ -602,6 +602,9 @@ def test_detached_part_matches_local_backup_metadata(tmp_path: Path) -> None:
     checksums.write_bytes(b"changed")
     assert not ClickhouseCTL.detached_part_matches(part, str(part_path))
 
+    part.raw_metadata.checksum = ""
+    assert ClickhouseCTL.detached_part_matches(part, str(part_path))
+
 
 def test_detached_part_matches_object_storage_metadata(tmp_path: Path) -> None:
     part_path = tmp_path / "all_1_1_0"

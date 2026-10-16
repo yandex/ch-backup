@@ -545,6 +545,7 @@ class TableBackup(BackupManager):
         (
             tables_to_restore,
             preprocessing_failed_skipped,
+            preprocessing_failed_tables,
         ) = self._preprocess_tables_to_restore(
             context,
             databases,
@@ -580,6 +581,17 @@ class TableBackup(BackupManager):
             )
         )
 
+        tables_with_create_statements = {
+            (table.database, table.name) for table in tables_to_preprocess
+        }
+        tables_to_restore_detached = [
+            table
+            for table in filtered_tables_meta
+            if (table.database, table.name) in tables_with_create_statements
+            and (table.database, table.name) not in preprocessing_failed_tables
+            and f"`{table.database}`.`{table.name}`" not in failed_tables_names
+        ]
+
         use_inplace_cloud_restore = context.config_root["restore"][
             "use_inplace_cloud_restore"
         ]
@@ -606,11 +618,11 @@ class TableBackup(BackupManager):
             )
 
         if restore_detached_parts and any(
-            table.get_detached_parts() for table in tables_to_restore_data
+            table.get_detached_parts() for table in tables_to_restore_detached
         ):
             self._restore_detached_data(
                 context,
-                tables=tables_to_restore_data,
+                tables=tables_to_restore_detached,
                 skip_cloud_storage=skip_cloud_storage,
                 keep_going=keep_going,
             )
@@ -989,7 +1001,7 @@ class TableBackup(BackupManager):
         keep_going: bool,
         restore_tables_in_replicated_database: bool,
         metadata_cleaner: MetadataCleaner | None,
-    ) -> tuple[list[Table], int]:
+    ) -> tuple[list[Table], int, set[tuple[str, str]]]:
         # Prepare table schema to restore.
 
         detached_tables_by_uuid = {}
@@ -1016,6 +1028,7 @@ class TableBackup(BackupManager):
         result: list[Table] = []
         tables_to_clean_metadata: list[Table] = []
         preprocessing_failed_skipped = 0
+        preprocessing_failed_tables: set[tuple[str, str]] = set()
         for table in tables:
             table_name_for_logs = f'"{table.database}"."{table.name}"'
             try:
@@ -1116,6 +1129,7 @@ class TableBackup(BackupManager):
                 if not keep_going:
                     raise
                 preprocessing_failed_skipped += 1
+                preprocessing_failed_tables.add((table.database, table.name))
                 logging.exception(
                     f"Preprocessing of table {table.database}.{table.name} failed, skipping due to --keep-going flag. Reason: {e}"
                 )
@@ -1124,7 +1138,7 @@ class TableBackup(BackupManager):
         if metadata_cleaner and tables_to_clean_metadata:
             metadata_cleaner.clean_tables_metadata(tables_to_clean_metadata)
 
-        return result, preprocessing_failed_skipped
+        return result, preprocessing_failed_skipped, preprocessing_failed_tables
 
     def _get_remaining_readonly_tables_after_fix_attempt(
         self,
@@ -1579,7 +1593,7 @@ class TableBackup(BackupManager):
 
             scheduled_paths: list[str] = []
             downloaded_parts: list[tuple[DetachedPartMetadata, str, str]] = []
-            restored_any = False
+            disks_to_chown: set[str] = set()
             for part in detached_parts:
                 try:
                     if part.object_storage and skip_cloud_storage:
@@ -1596,6 +1610,7 @@ class TableBackup(BackupManager):
                         context, table, part
                     )
                     if destination is None:
+                        disks_to_chown.add(part.disk_name)
                         continue
                     restore_part, destination_path = destination
 
@@ -1633,7 +1648,7 @@ class TableBackup(BackupManager):
                         TableBackup._promote_detached_part(
                             context, part, staging_path, target_path
                         )
-                        restored_any = True
+                        disks_to_chown.add(part.disk_name)
                     except Exception:
                         if keep_going:
                             logging.exception(
@@ -1644,9 +1659,11 @@ class TableBackup(BackupManager):
             finally:
                 TableBackup._cleanup_detached_staging_paths(scheduled_paths)
 
-            if restored_any:
+            if disks_to_chown:
                 context.ch_ctl.chown_detached_table_parts(
-                    table, context.restore_context
+                    table,
+                    context.restore_context,
+                    disk_names=sorted(disks_to_chown),
                 )
 
         logging.info("Restoring detached table parts completed")
@@ -1663,6 +1680,15 @@ class TableBackup(BackupManager):
         directory with different contents is preserved and the first free
         ``_tryN`` name is used instead.
         """
+        if (
+            not part.name
+            or part.name in {".", ".."}
+            or os.path.basename(part.name) != part.name
+        ):
+            raise ClickhouseBackupError(
+                f'Invalid detached part directory name: "{part.name}"'
+            )
+
         for try_no in count():
             restore_part = (
                 part if try_no == 0 else part.with_name(f"{part.name}_try{try_no}")

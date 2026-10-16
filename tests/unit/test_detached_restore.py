@@ -3,12 +3,15 @@
 from typing import Any, Callable
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from ch_backup.backup.metadata import (
     BackupMetadata,
     DetachedPartMetadata,
     TableMetadata,
 )
 from ch_backup.clickhouse.models import Database, Table
+from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.logic.table import TableBackup
 
 
@@ -96,7 +99,7 @@ def test_restore_uses_try_suffix_for_conflicting_part() -> None:
 
 def test_restore_is_idempotent_for_matching_existing_part() -> None:
     part = _part()
-    context, table_meta, _ = _context(part)
+    context, table_meta, table = _context(part)
     context.ch_ctl.detached_part_matches.return_value = True
 
     with patch("ch_backup.logic.table.os.path.exists", return_value=True):
@@ -108,7 +111,25 @@ def test_restore_is_idempotent_for_matching_existing_part() -> None:
         )
 
     context.backup_layout.download_detached_part.assert_not_called()
+    context.ch_ctl.chown_detached_table_parts.assert_called_once_with(
+        table, context.restore_context, disk_names=["default"]
+    )
     context.ch_ctl.attach_part.assert_not_called()
+
+
+def test_restore_rejects_part_name_outside_detached_directory() -> None:
+    part = _part("../all_1_1_0")
+    context, table_meta, _ = _context(part)
+
+    with pytest.raises(ClickhouseBackupError, match="Invalid detached part"):
+        TableBackup()._restore_detached_data(  # pylint: disable=protected-access
+            context,
+            [table_meta],
+            skip_cloud_storage=False,
+            keep_going=False,
+        )
+
+    context.backup_layout.download_detached_part.assert_not_called()
 
 
 def test_cloud_restore_places_original_metadata_files_directly_in_detached() -> None:
