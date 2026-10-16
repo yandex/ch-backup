@@ -245,7 +245,7 @@ class BackupManager:
             context, conf.get("storage", {}).get("credentials", {}).get("bucket")
         )
 
-    # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+    # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches
     def backup(
         self,
         name: str = "{uuid}",
