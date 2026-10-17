@@ -396,11 +396,11 @@ class BackupLayout:
             msg = f"Failed to create async upload of {remote_path}"
             raise StorageError(msg) from e
 
-    def upload_workload_entity_ddl_from_file(
-        self, local_path: str, backup_name: str, entity_name: str
+    def upload_workload_entity(
+        self, backup_name: str, entity_name: str, statement: str
     ) -> None:
         """
-        Upload workload entity create statement file.
+        Upload workload entity create statement.
         """
         remote_path = _workload_entities_data_path(
             self.get_backup_path(backup_name), entity_name
@@ -409,8 +409,8 @@ class BackupLayout:
             logging.debug(
                 'Uploading workload entity create statement "{}"', entity_name
             )
-            self._storage_loader.upload_file(
-                local_path, remote_path=remote_path, encryption=True
+            self._storage_loader.upload_data(
+                statement, remote_path=remote_path, encryption=True
             )
         except Exception as e:
             msg = f"Failed to create async upload of {remote_path}"
