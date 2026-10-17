@@ -5,6 +5,7 @@ Clickhouse backup logic for tables
 # pylint: disable=too-many-lines
 
 import os
+import shutil
 from collections import deque
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseBackupDisks, ClickHouseTemporaryDisks
 from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
+from ch_backup.clickhouse.part_checksums import check_part_files
 from ch_backup.clickhouse.schema import (
     rewrite_table_schema,
     to_attach_query,
@@ -973,7 +975,8 @@ class TableBackup(BackupManager):
         """
         Find replicated tables that are in readonly state and attempt to fix them in-place by:
         1. Cleaning ZooKeeper metadata via MetadataCleaner
-        2. Running SYSTEM RESTORE REPLICA
+        2. Downloading parts of other replicas from the backup given by --parts-from-backup
+        3. Running SYSTEM RESTORE REPLICA
 
         Returns a tuple of:
         - set of (database, table_name) tuples for tables that are still readonly
@@ -1007,6 +1010,7 @@ class TableBackup(BackupManager):
 
         for table in replicated_readonly_tables:
             try:
+                self._download_parts_of_other_replicas(context, table)
                 logging.debug(
                     f'Running SYSTEM RESTORE REPLICA for "{table.database}"."{table.name}"'
                 )
@@ -1550,10 +1554,9 @@ class TableBackup(BackupManager):
         """
         Download to detached/ the backup parts that every other replica has as active.
 
-        SYSTEM RESTORE REPLICA queues ATTACH_PART instead of GET_PART for the parts of
-        the source replica, and ClickHouse takes a detached part with the same checksum
-        instead of fetching it. A part that does not match stays in detached/. A part
-        that failed to download is skipped by ClickHouse as broken and fetched instead.
+        SYSTEM RESTORE REPLICA takes such a part by checksum instead of fetching it, but
+        does not hash its files, so they are checked here. Parts active in the table or
+        already in detached/ are skipped. Any failure leaves the parts to replicas.
         """
         backup_meta = context.parts_backup_meta
         if not backup_meta:
@@ -1563,16 +1566,40 @@ class TableBackup(BackupManager):
         except KeyError:
             return
 
-        ch_table: Table = context.ch_ctl.get_table(table.database, table.name)  # type: ignore
-        local_disks = {
-            disk.name for _, disk in ch_table.paths_with_disks if disk.type == "local"
-        }
-        replica_parts = context.ch_ctl.get_parts_of_other_replicas(table)
-        parts = [
-            part
-            for part in table_meta.get_parts()
-            if part.name in replica_parts and part.disk_name in local_disks
-        ]
+        try:
+            ch_table: Table = context.ch_ctl.get_table(table.database, table.name)  # type: ignore
+            local_disks = {
+                disk.name
+                for _, disk in ch_table.paths_with_disks
+                if disk.type == "local"
+            }
+            replica_parts = context.ch_ctl.get_parts_of_other_replicas(
+                table, context.zk_ctl
+            )
+            parts = [
+                part
+                for part in table_meta.get_parts(
+                    excluded_parts=context.ch_ctl.get_active_parts(table)
+                )
+                if part.name in replica_parts and part.disk_name in local_disks
+            ]
+            part_paths = {
+                part.name: context.ch_ctl.get_detached_part_path(
+                    ch_table, part.disk_name, part.name
+                )
+                for part in parts
+            }
+            parts = [
+                part for part in parts if not os.path.exists(part_paths[part.name])
+            ]
+        except Exception:
+            logging.warning(
+                'Failed to choose parts of "{}"."{}" to download, they are left to replicas',
+                table.database,
+                table.name,
+                exc_info=True,
+            )
+            return
         if not parts:
             return
         logging.info(
@@ -1587,9 +1614,7 @@ class TableBackup(BackupManager):
                 context.backup_layout.download_data_part(
                     backup_meta,
                     part,
-                    context.ch_ctl.get_detached_part_path(
-                        ch_table, part.disk_name, part.name
-                    ),
+                    part_paths[part.name],
                     callback=lambda _: None,
                 )
             except Exception:
@@ -1601,4 +1626,19 @@ class TableBackup(BackupManager):
                     exc_info=True,
                 )
         context.backup_layout.wait(keep_going=True)
+        for part in parts:
+            part_path = part_paths[part.name]
+            if not os.path.exists(part_path):
+                continue
+            try:
+                check_part_files(part_path)
+            except Exception:
+                logging.warning(
+                    'Part {} of "{}"."{}" does not match its checksums, it is left to replicas',
+                    part.name,
+                    table.database,
+                    table.name,
+                    exc_info=True,
+                )
+                shutil.rmtree(part_path)
         context.ch_ctl.chown_detached_table_parts(ch_table, context.restore_context)

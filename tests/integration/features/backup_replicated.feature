@@ -1226,8 +1226,7 @@ Feature: Backup replicated merge tree table
     INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10, 10;
     """
     And we have created clickhouse01 clickhouse backup
-    ## The source parts of the merge stay in ZooKeeper until old_parts_lifetime passes.
-    ## table_02 is not in the backup with parts.
+    ## Merged parts stay in ZooKeeper for old_parts_lifetime; table_02 is not in the backup.
     And we have executed queries on clickhouse01
     """
     SYSTEM START MERGES test_db.table_01;
@@ -1287,8 +1286,7 @@ Feature: Backup replicated merge tree table
     INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10;
     """
     And we have created clickhouse01 clickhouse backup
-    ## Dropping the last replica removes the table from ZooKeeper, so block numbers
-    ## start over and the new part gets the same name with other data.
+    ## Block numbers start over, so a new part gets the same name with other data.
     And we have executed queries on clickhouse01
     """
     DROP TABLE test_db.table_01 SYNC;
@@ -1338,6 +1336,237 @@ Feature: Backup replicated merge tree table
     Then we get response
     """
     ['all_0_0_0']
+    """
+
+  @require_version_23.3
+  Scenario: Restore replica with parts from another backup that are broken in storage
+    Given ClickHouse settings
+    """
+    check_query_single_value_result: 1
+    """
+    And we have enabled shared zookeeper for clickhouse01
+    And we have enabled shared zookeeper for clickhouse02
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (n UInt32)
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard01/test_db.parts_from_backup_04', '{replica}')
+    ORDER BY n;
+    SYSTEM STOP MERGES test_db.table_01;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10, 10;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 20, 10;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 30, 10;
+    """
+    And we have created clickhouse01 clickhouse backup
+    And we have created clickhouse01 clickhouse backup
+    """
+    schema_only: True
+    """
+    And file "data/test_db/table_01/all_0_0_0/all_0_0_0.tar" was deleted from clickhouse01 backup #1
+    And file "data/test_db/table_01/all_1_1_0/all_1_1_0.tar" in clickhouse01 backup #1 is empty
+    And file "data/test_db/table_01/all_2_2_0/all_2_2_0.tar" in clickhouse01 backup #1 data set to
+    """
+    garbage
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    schema_only: True
+    parts_from_backup: 1
+    """
+    And we execute queries on clickhouse02
+    """
+    SYSTEM SYNC REPLICA test_db.table_01;
+    SYSTEM FLUSH LOGS
+    """
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+    When we execute query on clickhouse02
+    """
+    SELECT count(), sum(n) FROM test_db.table_01 FORMAT CSV
+    """
+    Then we get response
+    """
+    40,780
+    """
+    When we execute query on clickhouse02
+    """
+    CHECK TABLE test_db.table_01
+    """
+    Then we get response
+    """
+    1
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT groupArray((event_type, part_name)) FROM (
+        SELECT event_type, part_name FROM system.part_log
+        WHERE database = 'test_db' AND table = 'table_01'
+        AND event_type IN ('NewPart', 'DownloadPart')
+        ORDER BY event_type, part_name
+    )
+    """
+    Then we get response
+    """
+    [('NewPart','all_3_3_0'),('DownloadPart','all_0_0_0'),('DownloadPart','all_1_1_0'),('DownloadPart','all_2_2_0')]
+    """
+
+  ## The file is put back after the backup, so the source replica stays healthy.
+  @require_version_23.3
+  Scenario Outline: Restore replica with parts from another backup that rotted on disk before the backup
+    Given ClickHouse settings
+    """
+    check_query_single_value_result: 1
+    """
+    And we have enabled shared zookeeper for clickhouse01
+    And we have enabled shared zookeeper for clickhouse02
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (n UInt32)
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard01/test_db.parts_from_backup_05_<case>', '{replica}')
+    ORDER BY n;
+    SYSTEM STOP MERGES test_db.table_01;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10, 10;
+    """
+    And we have executed command on clickhouse01
+    """
+    part=$(clickhouse-client -q "SELECT path FROM system.parts WHERE database = 'test_db' AND table = 'table_01' AND name = 'all_0_0_0'")
+    cp "$part/<file>" /tmp/<file>.orig
+    <corrupt> "$part/<file>"
+    """
+    And we have created clickhouse01 clickhouse backup
+    And we have executed command on clickhouse01
+    """
+    part=$(clickhouse-client -q "SELECT path FROM system.parts WHERE database = 'test_db' AND table = 'table_01' AND name = 'all_0_0_0'")
+    cp /tmp/<file>.orig "$part/<file>"
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    schema_only: True
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    schema_only: True
+    parts_from_backup: 1
+    """
+    And we execute queries on clickhouse02
+    """
+    SYSTEM SYNC REPLICA test_db.table_01;
+    SYSTEM FLUSH LOGS
+    """
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+    When we execute query on clickhouse02
+    """
+    SELECT count(), sum(n) FROM test_db.table_01 FORMAT CSV
+    """
+    Then we get response
+    """
+    20,190
+    """
+    When we execute query on clickhouse02
+    """
+    CHECK TABLE test_db.table_01
+    """
+    Then we get response
+    """
+    1
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT groupArray((event_type, part_name)) FROM (
+        SELECT event_type, part_name FROM system.part_log
+        WHERE database = 'test_db' AND table = 'table_01'
+        AND event_type IN ('NewPart', 'DownloadPart')
+        ORDER BY event_type, part_name
+    )
+    """
+    Then we get response
+    """
+    [('NewPart','all_1_1_0'),('DownloadPart','all_0_0_0')]
+    """
+
+    Examples:
+      | case      | file          | corrupt                                                                                                     |
+      | data      | data.bin      | python3 -c 'import sys; f = open(sys.argv[1], "r+b"); b = f.read(1); f.seek(0); f.write(bytes([b[0] ^ 8]))' |
+      | count     | count.txt     | python3 -c 'import sys; f = open(sys.argv[1], "r+b"); b = f.read(1); f.seek(0); f.write(bytes([b[0] ^ 8]))' |
+      | checksums | checksums.txt | python3 -c 'import sys; f = open(sys.argv[1], "r+b"); b = f.read(1); f.seek(0); f.write(bytes([b[0] ^ 8]))' |
+      | truncated | data.bin      | truncate -s -1                                                                                              |
+
+  @require_version_23.3
+  Scenario: Restore replica with parts from another backup while the source replica merges
+    Given ClickHouse settings
+    """
+    check_query_single_value_result: 1
+    """
+    And we have enabled shared zookeeper for clickhouse01
+    And we have enabled shared zookeeper for clickhouse02
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (n UInt32)
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/shard01/test_db.parts_from_backup_06', '{replica}')
+    ORDER BY n
+    SETTINGS old_parts_lifetime = 1;
+    SYSTEM STOP MERGES test_db.table_01;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10, 10;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 20, 10;
+    INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 30, 10;
+    """
+    And we have created clickhouse01 clickhouse backup
+    And we have created clickhouse01 clickhouse backup
+    """
+    schema_only: True
+    """
+    ## Parts are merged away and inserted once the download starts.
+    When we put following info in "/tmp/load.sh" at clickhouse01
+    """
+    for _ in $(seq 600); do
+        detached=$(clickhouse-client --host clickhouse02 -q "SELECT count() FROM system.detached_parts WHERE database = 'test_db'")
+        [ "${detached:-0}" -gt 0 ] && break
+        sleep 0.1
+    done
+    clickhouse-client -q "SYSTEM START MERGES test_db.table_01"
+    for i in $(seq 4 53); do
+        clickhouse-client -q "INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT $((i * 10)), 10"
+        clickhouse-client -q "OPTIMIZE TABLE test_db.table_01 FINAL"
+    done
+    touch /tmp/load.done
+    """
+    And we execute command on clickhouse01
+    """
+    nohup setsid bash /tmp/load.sh > /tmp/load.log 2>&1 &
+    """
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    schema_only: True
+    parts_from_backup: 1
+    """
+    And we execute command on clickhouse01
+    """
+    timeout 300 bash -c 'until [ -f /tmp/load.done ]; do sleep 1; done'
+    """
+    And we execute queries on clickhouse02
+    """
+    SYSTEM SYNC REPLICA test_db.table_01
+    """
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+    When we execute query on clickhouse02
+    """
+    SELECT count(), uniqExact(n) FROM test_db.table_01 FORMAT CSV
+    """
+    Then we get response
+    """
+    540,540
+    """
+    When we execute query on clickhouse02
+    """
+    CHECK TABLE test_db.table_01
+    """
+    Then we get response
+    """
+    1
     """
 
   Scenario: Restore with parts from another backup rejects wrong arguments

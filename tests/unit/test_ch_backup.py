@@ -19,7 +19,11 @@ from ch_backup.backup.metadata import (
     TableMetadata,
 )
 from ch_backup.backup.sources import BackupSources
-from ch_backup.ch_backup import CleanZooKeeperMode, ClickhouseBackup
+from ch_backup.ch_backup import (
+    CleanZooKeeperMode,
+    ClickhouseBackup,
+    _zookeeper_roots_differ,
+)
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
 from ch_backup.clickhouse.models import Database
@@ -80,34 +84,41 @@ def test_restore_of_copied_data_does_not_require_source_bucket():
 
 
 @pytest.mark.parametrize(
-    "parts_backup_name,parts_schema_only,schema_only,error",
+    "parts_backup_name,parts_schema_only,schema_only,zk_hosts,binary,error",
     [
-        ("parts", True, True, "schema-only"),
-        ("parts", False, False, "without data"),
-        ("parts", False, True, None),
-        (None, False, True, None),
+        ("parts", True, True, ["zk"], True, "schema-only"),
+        ("parts", False, False, ["zk"], True, "without data"),
+        ("parts", False, True, ["zk"], True, None),
+        ("parts", False, True, [], True, None),
+        ("parts", False, True, ["zk"], False, None),
+        (None, False, True, ["zk"], True, None),
     ],
     ids=[
         "schema-only parts backup",
         "restore with data",
         "parts backup with data",
+        "parts backup without zookeeper",
+        "parts backup without clickhouse binary",
         "no parts backup",
     ],
 )
+# pylint: disable=too-many-positional-arguments
 def test_restore_checks_parts_backup(
     parts_backup_name: str | None,
     parts_schema_only: bool,
     schema_only: bool,
+    zk_hosts: list[str],
+    binary: bool,
     error: str | None,
 ) -> None:
     """
-    A schema-only backup has no parts, so the restore would fetch everything from
-    replicas without telling; LAST points to it right after the schema backup. A
-    restore with data would attach the parts of the main backup on top. A parts
-    backup of an earlier call must not leak into the next one.
+    Wrong arguments fail, missing ZooKeeper or ClickHouse binary turns the parts
+    backup off, and it does not leak into the next restore.
     """
     backup = ClickhouseBackup(DEFAULT_CONFIG)  # type: ignore[arg-type]
     context = MagicMock()
+    context.zk_config = {"hosts": zk_hosts}
+    context.ch_config.config = {}
     backup.__dict__["_context"] = context
     backup_meta = MagicMock()
     backup_meta.schema_only = parts_schema_only
@@ -123,6 +134,7 @@ def test_restore_checks_parts_backup(
         expected_error,
         patch.object(ClickhouseBackup, "_get_backup", return_value=backup_meta),
         patch.object(ClickhouseBackup, "_restore") as restore_mock,
+        patch("ch_backup.ch_backup.os.access", return_value=binary),
     ):
         backup.restore(
             sources=sources,
@@ -134,7 +146,26 @@ def test_restore_checks_parts_backup(
 
     assert restore_mock.called is not bool(error)
     if not error:
-        assert context.parts_backup_meta is (backup_meta if parts_backup_name else None)
+        assert context.parts_backup_meta is (
+            backup_meta if parts_backup_name and zk_hosts and binary else None
+        )
+
+
+@pytest.mark.parametrize(
+    "ch_config,zk_config,differ",
+    [
+        ({}, {"root_path": ""}, False),
+        ({"zookeeper": {"root": "/clickhouse"}}, {"root_path": "/clickhouse/"}, False),
+        ({"zookeeper": {"root": "/clickhouse"}}, {"root_path": ""}, True),
+        ({"zookeeper": None}, {"root_path": "/clickhouse"}, True),
+    ],
+    ids=["no roots", "same root", "root of clickhouse only", "root of ch-backup only"],
+)
+def test_zookeeper_roots_differ(ch_config: dict, zk_config: dict, differ: bool) -> None:
+    """
+    Paths of replicated tables are found only under the same root as ClickHouse uses.
+    """
+    assert _zookeeper_roots_differ(ch_config, zk_config) is differ
 
 
 SOURCES = BackupSources.for_restore(access=True, schema=True, named_collections=True)

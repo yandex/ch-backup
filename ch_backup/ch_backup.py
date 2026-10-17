@@ -2,7 +2,10 @@
 Clickhouse backup logic
 """
 
+# pylint: disable=too-many-lines
+
 import builtins
+import os
 from collections import defaultdict
 from copy import copy
 from datetime import timedelta
@@ -33,6 +36,7 @@ from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner, select_replica_drop
 from ch_backup.clickhouse.models import Database, Table
+from ch_backup.clickhouse.part_checksums import CLICKHOUSE_BINARY
 from ch_backup.config import Config
 from ch_backup.exceptions import (
     BackupNotFound,
@@ -260,7 +264,7 @@ class ClickhouseBackup:
 
         return self._context.backup_meta.name, None
 
-    # pylint: disable=too-many-arguments,duplicate-code,too-many-positional-arguments,too-many-branches,too-many-locals,too-many-statements
+    # pylint: disable=too-many-arguments,duplicate-code,too-many-positional-arguments,too-many-branches,too-many-locals
     def restore(
         self,
         sources: BackupSources,
@@ -285,17 +289,9 @@ class ClickhouseBackup:
         """
         logging.info(f"Restore sources: {sources}")
         self._context.backup_meta = self._get_backup(backup_name)
-        self._context.parts_backup_meta = None
-        if parts_backup_name:
-            if sources.data:
-                raise ClickhouseBackupError(
-                    "Parts from another backup work only for restore without data"
-                )
-            self._context.parts_backup_meta = self._get_backup(parts_backup_name)
-            if self._context.parts_backup_meta.schema_only:
-                raise ClickhouseBackupError(
-                    f"Backup {parts_backup_name} is schema-only and has no data parts"
-                )
+        self._context.parts_backup_meta = self._get_parts_backup(
+            sources, parts_backup_name
+        )
 
         cloud_storage_source = self._context.backup_meta.cloud_storage.source
         if cloud_storage_source_bucket is None and cloud_storage_source:
@@ -932,6 +928,44 @@ class ClickhouseBackup:
                 if self._context.config["restore_fail_on_attach_error"]:
                     raise ClickhouseBackupError(msg)
 
+    def _get_parts_backup(
+        self, sources: BackupSources, parts_backup_name: str | None
+    ) -> BackupMetadata | None:
+        """
+        Get the backup to take data parts from in a restore without data.
+        """
+        if not parts_backup_name:
+            return None
+        if sources.data:
+            raise ClickhouseBackupError(
+                "Parts from another backup work only for restore without data"
+            )
+        parts_backup = self._get_backup(parts_backup_name)
+        if parts_backup.schema_only:
+            raise ClickhouseBackupError(
+                f"Backup {parts_backup_name} is schema-only and has no data parts"
+            )
+        if not self._context.zk_config.get("hosts"):
+            logging.warning(
+                f"ZooKeeper is not configured, parts of backup {parts_backup_name}"
+                " are left to replicas"
+            )
+            return None
+        if not os.access(CLICKHOUSE_BINARY, os.X_OK):
+            logging.warning(
+                f"{CLICKHOUSE_BINARY} is not found, parts of backup {parts_backup_name}"
+                " are left to replicas"
+            )
+            return None
+        if _zookeeper_roots_differ(
+            self._context.ch_config.config, self._context.zk_config
+        ):
+            logging.warning(
+                "ZooKeeper root_path of ch-backup differs from the root of ClickHouse,"
+                f" parts of backup {parts_backup_name} may be left to replicas"
+            )
+        return parts_backup
+
     def _get_backup(
         self, backup_name: str, use_light_meta: bool = False
     ) -> BackupMetadata:
@@ -966,3 +1000,11 @@ class ClickhouseBackup:
             return False
 
         return skip_lock.get("backup", False)
+
+
+def _zookeeper_roots_differ(ch_config: dict, zk_config: dict) -> bool:
+    """
+    Check if ch-backup and ClickHouse use different roots in ZooKeeper.
+    """
+    ch_root = (ch_config.get("zookeeper") or {}).get("root") or ""
+    return ch_root.rstrip("/") != (zk_config.get("root_path") or "").rstrip("/")

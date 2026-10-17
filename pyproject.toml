@@ -34,6 +34,7 @@ classifiers = [
 dependencies = [
     "boto3 >= 1.24, < 1.36",
     "click >= 8.1, < 8.2",
+    "clickhouse-cityhash >= 1.0.2.6",
     "cloup >= 3.0",
     "humanfriendly >= 10.0",
     "kazoo >= 2.10",
@@ -120,6 +121,7 @@ lint.ignore = [
 [tool.pylint.main]
 py-version = "3.10"  # Minimum Python version to use for version dependent checks
 jobs = 4  # Use multiple processes to speed up Pylint
+extension-pkg-allow-list = ["clickhouse_cityhash"]  # C extensions to load for inspection
 ignored-modules = [  # List of module names for which member attributes should not be checked
     "behave",
     "requests.packages",
