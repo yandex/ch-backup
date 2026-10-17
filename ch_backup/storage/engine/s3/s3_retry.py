@@ -2,6 +2,7 @@
 S3 retry helper metaclass.
 """
 
+import ssl
 from abc import ABCMeta
 from functools import wraps
 from http.client import HTTPException
@@ -10,10 +11,13 @@ from random import uniform
 from time import sleep
 from typing import TYPE_CHECKING, Any, Callable, TypeVar
 
+import requests
 from botocore.exceptions import BotoCoreError, ClientError
 from urllib3.exceptions import HTTPError
+from urllib3.util.ssl_match_hostname import CertificateError as Urllib3CertificateError
 
 from ch_backup import logging
+from ch_backup.storage.engine.s3.s3_client_factory import S3BalancerUnknownHost
 
 if TYPE_CHECKING:
     from ch_backup.storage.engine import (
@@ -21,6 +25,70 @@ if TYPE_CHECKING:
     )
 
 RT = TypeVar("RT")
+
+
+def is_retryable_s3_error(error: ClientError) -> bool:
+    """Classify S3 responses while retaining retries for timeout/throttling 4xx."""
+    status = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    code = error.response.get("Error", {}).get("Code")
+    # 507 can mean object data unavailable for days; short retries cannot help.
+    if status in (404, 507) or code in (
+        "404",
+        "NoSuchKey",
+        "NotFound",
+        "507",
+        "InsufficientStorage",
+        "AccessDenied",
+        "InvalidAccessKeyId",
+        "SignatureDoesNotMatch",
+        "ExpiredToken",
+        "InvalidToken",
+        "NoSuchBucket",
+        "MalformedXML",
+        "InvalidArgument",
+        "InvalidRequest",
+        "AuthorizationHeaderMalformed",
+    ):
+        return False
+    if code in (
+        "RequestTimeout",
+        "RequestTimeoutException",
+        "SlowDown",
+        "Throttling",
+        "ThrottlingException",
+        "ThrottledException",
+        "RequestThrottled",
+        "RequestThrottledException",
+        "RequestLimitExceeded",
+        "TooManyRequestsException",
+        "PriorRequestNotComplete",
+    ):
+        return True
+    return status is None or status in (408, 429) or status >= 500
+
+
+def is_certificate_error(error: BaseException) -> bool:
+    """Find verification failures inside Requests/urllib3/botocore wrappers."""
+    pending = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, (ssl.CertificateError, Urllib3CertificateError)):
+            return True
+        # Requests keeps urllib3 errors in args; urllib3 keeps the cause in reason.
+        # Botocore also stores the original exception in kwargs['error'].
+        nested = (
+            *current.args,
+            current.__cause__,
+            current.__context__,
+            getattr(current, "reason", None),
+            getattr(current, "kwargs", {}).get("error"),
+        )
+        pending.extend(item for item in nested if isinstance(item, BaseException))
+    return False
 
 
 class S3RetryingError(Exception):
@@ -37,15 +105,25 @@ class S3RetryMeta(ABCMeta):
 
     def __new__(mcs, name, bases, attrs):  # pylint: disable=arguments-differ
         new_attrs = {}
-        retry_wrapper = retry(
-            max_attempts=30, max_interval=180, exception_types=S3RetryingError
-        )
         for attr_name, attr_value in attrs.items():
             if not attr_name.startswith("_") and isfunction(attr_value):
-                attr_value = retry_wrapper(mcs.s3_exception_wrapper(attr_value))
+                attr_value = mcs.retry_wrapper(mcs.s3_exception_wrapper(attr_value))
             new_attrs[attr_name] = attr_value
 
         return super().__new__(mcs, name, bases, new_attrs)
+
+    @classmethod
+    def retry_wrapper(mcs, func: Callable[..., RT]) -> Callable[..., RT]:
+        """
+        Retries the function with the retry limits of the engine it is called on.
+        """
+
+        @wraps(func)
+        def wrapper(self: "S3StorageEngine", *args: Any, **kwargs: Any) -> RT:
+            # pylint: disable=protected-access
+            return self._retry(func, self, *args, **kwargs)
+
+        return wrapper
 
     @classmethod
     def s3_exception_wrapper(mcs, func: Callable[..., RT]) -> Callable[..., RT]:
@@ -57,13 +135,27 @@ class S3RetryMeta(ABCMeta):
         def wrapper(self: "S3StorageEngine", *args: Any, **kwargs: Any) -> RT:
             try:
                 return func(self, *args, **kwargs)
-            except (ClientError, BotoCoreError, HTTPException, HTTPError) as e:
-                if isinstance(e, ClientError):
-                    code = e.response.get("Error", {}).get("Code")
-                    if code in ("404", "NoSuchKey", "NotFound"):
+            except (
+                ClientError,
+                BotoCoreError,
+                HTTPException,
+                HTTPError,
+                S3BalancerUnknownHost,
+                requests.ConnectionError,
+                requests.Timeout,
+                requests.HTTPError,
+                requests.exceptions.ChunkedEncodingError,
+            ) as e:
+                if isinstance(e, ClientError) and not is_retryable_s3_error(e):
+                    raise
+                if is_certificate_error(e):
+                    raise
+                if isinstance(e, requests.HTTPError) and e.response is not None:
+                    code = e.response.status_code
+                    if code == 507 or (code not in (408, 429) and code < 500):
                         raise
                 self._s3_client_factory.reset()  # pylint: disable=protected-access
-                raise S3RetryingError(f"Failed to make S3 operation: {str(e)}") from e
+                raise S3RetryingError(f"Failed to make S3 operation: {str(e)}")
 
         return wrapper
 

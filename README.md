@@ -13,7 +13,22 @@ Backup is performed for tables of MergeTree engine family only as these are
  the only tables that support consistent data snapshots without server shutdown.
 
 The tool also supports deduplication at part-level granularity. It's set up
- through configuration file and enabled by default.
+ through configuration file and enabled by default. You could also
+ set a start time to exclude earlier backups from deduplication.
+
+
+## Workload and resource restore
+
+Restore skips identical workload/resource definitions and uses `CREATE OR REPLACE`
+for changed definitions of the same type, preserving dependent entities. Entities
+absent from the backup remain on the server; replacing a shared parent or resource
+can change their effective limits. Restore does not synchronize the entire hierarchy.
+
+Parents omitted from the backup must already exist as workloads on the target,
+including parents defined in XML configuration. Type conflicts, changes to XML
+definitions, and server restrictions (such as creating a second root workload)
+abort restore with the affected entity's name. Concurrent workload/resource DDL
+during restore is unsupported.
 
 
 ## Installation
@@ -90,12 +105,168 @@ Options:
 
 Commands:
   backup   Perform backup.
+  copy     Copy backup to another storage (another S3 bucket, endpoint or path).
   delete   Delete particular backup.
   list     List existing backups.
   purge    Purge outdated backups.
   restore  Restore data from a particular backup.
   show     Show details for a particular backup.
 ```
+
+### Copying backups to another storage
+
+`ch-backup copy` copies a backup (or all backups with `--all`) to another S3 bucket,
+endpoint or `backup.path_root`. The main configuration describes the source storage. The
+target storage is described by the main configuration merged with a configuration file passed
+in `--target-config` and values passed in `--target-config-parameter`, so it's enough to
+specify only differing settings:
+
+```bash
+# Copy the last backup to another bucket of the same S3 service.
+ch-backup copy LAST --target-config-parameter storage.credentials.bucket '"backups-dr"'
+
+# Copy all backups to another S3 service.
+ch-backup copy --all --target-config /etc/yandex/ch-backup/dr.conf
+
+# Continue after errors and save confirmed results, including on failure.
+ch-backup copy --all --keep-going --target-config /etc/yandex/ch-backup/dr.conf \
+    --report-path /tmp/ch-backup-copy-report.json
+```
+
+```yaml
+# /etc/yandex/ch-backup/dr.conf
+storage:
+    credentials:
+        endpoint_url: https://s3.other.example
+        access_key_id: ...
+        secret_access_key: ...
+        bucket: backups-dr
+```
+
+How it works:
+
+- A final text report lists copied, skipped, failed and unprocessed backups. `--report-path`
+  also saves a JSON report (schema version 1) once the command finishes, including failures
+  and handled termination signals. Any failure gives a nonzero exit code.
+- `--keep-going` continues copying independent objects and subsequent backups after errors.
+  Local planning errors are collected per part or metadata file; available independent objects
+  are still copied and the incomplete backup remains failed. Each plan's destinations are validated
+  before any writes. Unreadable target backups reserve their names and do not block independent
+  backups; unusable deduplication links are materialized from the source when possible.
+  Shared configuration, listing, lock and executor failures still stop the run.
+  Object counters include rewritten metadata tarballs and count only confirmed completions.
+  `known_bytes_copied` sums source sizes of successfully copied objects, excluding rewritten
+  tarballs whose final stored sizes are not known. Operations without a confirmed result are
+  not counted as successes. Storage credentials are not included in the report.
+  Error details spill to temporary files above 64 KiB per backup and JSON output is streamed,
+  so large failure reports do not accumulate entirely in RAM. Copy tasks are drained in batches
+  of at most 256 objects; the validated object plan and backup metadata still take memory
+  proportional to their size.
+- New backups store `backup_struct.json` and `backup_light_struct.json` as plaintext JSON,
+  with `meta.metadata_encrypted=false`. This does not change `meta.encrypted`, which describes
+  encryption of data and schema. DDL, access control, named collections and UDF definitions
+  retain their encryption. The public JSON exposes names, paths, sizes, checksums, deduplication
+  links, labels and failure messages; do not put secrets in labels.
+- Backup data is copied as is, without decryption. New backups can be copied with
+  `encryption.type=nacl` and no `encryption.key` configured on either side. Encryption settings
+  (`encryption.type`, `encryption.chunk_size`, and keys when provided) and `compression.type`
+  must match between the copy configs. Restore still needs the original encryption key.
+  Reading and restoring old backups remains supported, including encrypted full JSON and
+  S3 metadata archives. Missing encryption flags keep their historical defaults of `true`.
+  Legacy encrypted metadata, including metadata of deduplication dependencies, still requires
+  its original key when it must be read. Local deduplicated parts can be materialized from
+  the file list in the selected backup without reading the owner's metadata.
+  To start an independent series of keyless-copyable backups,
+  set `backup.deduplication_start_time` to the beginning of the series when enabling the new format.
+- If both buckets belong to the same S3 service and are accessible with the same credentials, objects
+  are copied on the server side. Otherwise, data is streamed through ch-backup. Server-side copy can be
+  disabled with `--no-server-side-copy`.
+- The copy becomes valid (gets the state `created`) only after all its data is copied. If copying is
+  interrupted, the copy remains in the state `creating` or `failed`, and the next run of the command
+  retries copying all objects. Existing objects are overwritten even when their sizes match, since
+  size alone does not establish that their contents are correct. Completed backups are skipped.
+  When a linked part has already been materialized in a successfully copied backup, subsequent
+  backups reuse that copy, including mutation-renamed parts and full cloud-storage backups.
+- Copy acquires the configured source and target locks through completion, including retries and
+  failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
+  and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.
+  Locking remains optional; the local file lock retains its shared semantics.
+- Deduplicated data parts of the backup are stored in older backups. If such a backup is already
+  present in the target storage, the deduplication link is kept. Otherwise, the data part is copied
+  into the copied backup. `--all` copies older backups first, so deduplication is kept in the target storage.
+- Full cloud-storage backups created with `--copy-cloud-storage-data` keep their data in the backup
+  bucket. Copying them moves that data into the target backup bucket, including linked parts when
+  their owning backup is absent there. No ClickHouse disk credentials or `--target-cloud-storage-bucket`
+  are needed; restore and deletion use the normal full-backup behavior.
+- Backups without `--copy-cloud-storage-data` reference objects in the bucket of the S3 disk. These
+  objects are copied to the bucket set with `--target-cloud-storage-bucket` under
+  `<--target-cloud-storage-path>/<backup name>/`, so the copy doesn't depend on the source cluster.
+  The location of the source objects is taken from ClickHouse configuration of the disk (so the command
+  should be run on a host of the source cluster), or it can be set with `--cloud-storage-source-bucket` and
+  `--cloud-storage-source-path`. Credentials can be overridden in the `copy.cloud_storage` config section.
+  Disk metadata is unencrypted by default (`cloud_storage.encryption=false`); the saved flag
+  continues to control reading of older encrypted archives. Before uploading an unencrypted
+  archive, ch-backup rejects malformed or unsupported disk metadata, unexpected trailing content
+  and nonempty inline file data.
+  Each file is limited to 1 MiB, checked and archived from the same bounded memory buffer.
+  Larger disk metadata files also require `cloud_storage.encryption=true`.
+  Such files require `cloud_storage.encryption=true`, and copying that backup requires a key.
+  The flag only controls disk metadata: blobs retain the encryption applied by ClickHouse or S3.
+  To use a separate worker, provide source endpoint, bucket, path and credentials explicitly;
+  neither a local ClickHouse configuration nor a connection to the source server is required.
+  Without the original disk configuration, leave the source path unset for V5 metadata to
+  copy its full object keys as stored; set the source prefix for older relative-key metadata.
+  Source endpoint, bucket and path overrides are applied independently: omitted fields retain the
+  values from stored source metadata or disk configuration. An explicitly empty source path selects
+  the bucket root.
+  A source endpoint from backup metadata must match the configured backup-storage or ClickHouse-disk
+  endpoint (ignoring trailing slashes). To copy from another endpoint, set
+  `copy.cloud_storage.source.endpoint_url` explicitly in the target configuration.
+  Otherwise, copy fails before making requests to the stored endpoint.
+  For version-5 metadata containing full object keys, a source path override replaces the original
+  prefix from stored source metadata or disk configuration. Copy fails before writing if that prefix
+  is unknown or a key is outside it. Without a path override, full keys are read as stored.
+  Restore of the copy uses the copied objects by default; they must be accessible with credentials of the
+  object storage disk of the host where the backup is restored. Note that these objects are not removed
+  when the copy is deleted, and they're stored for each copied backup separately.
+  Restore preserves the HTTP/HTTPS scheme of the stored endpoint. Its `--cloud-storage-source-endpoint`
+  option accepts a full HTTP(S) URL or `host[:port]`; the latter uses the original disk's scheme.
+
+### Detached parts
+
+Detached MergeTree parts can be included explicitly with `--detached-parts`.
+The existing `--databases` and `--tables` options select their tables; optional
+`--detached-parts-disks` and `--detached-parts-reasons` comma-separated filters
+select disks and detach reasons. The disk list defaults to `object_storage`;
+with no reason filter, every detached part on the selected disks is copied.
+Use an empty reason argument for parts detached by a user:
+
+```bash
+ch-backup backup --detached-parts --tables db.table \
+    --detached-parts-disks object_storage,archive_storage \
+    --detached-parts-reasons ''
+```
+
+The feature is CLI-only and remains disabled unless `--detached-parts` is
+passed. Disk names select their actual table directories; the value reported
+by `system.detached_parts` is not used, so cache-disk naming differences
+between ClickHouse versions do not affect selection.
+
+Detached parts are scanned and uploaded on a best-effort basis without a
+point-in-time snapshot. A part created during the backup may be omitted; a part
+that disappears or becomes inaccessible during scanning or upload is skipped
+with a warning. Only successfully uploaded detached parts are added to backup
+metadata, and an individual detached-part failure does not fail the regular
+table backup. Executor failures and termination signals still abort the backup.
+
+Restore currently ignores detached-part metadata: it neither writes to the
+table's `detached` directory nor attaches the backed-up parts automatically.
+
+For object-storage disks, the archive contains the local part metadata files,
+not the referenced bucket objects, and its recorded size is the aligned size
+of those metadata files. `--copy-cloud-storage-data` still copies active table
+parts, but emits a warning and keeps detached parts metadata-only. Such backup
+archives are copied normally by `ch-backup copy`.
 
 ## Testing
 

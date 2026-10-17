@@ -13,6 +13,7 @@ from ch_backup.backup.metadata import (
     BackupState,
     BackupStorageFormat,
     CloudStorageMetadata,
+    DetachedPartMetadata,
     PartMetadata,
     normalize_backup_link,
 )
@@ -380,6 +381,55 @@ class TestPartMetadata:
         assert part.link_part_name == "all_1_1_0"
 
 
+class TestDetachedPartMetadata:
+    """Tests for detached parts kept separately from attachable parts."""
+
+    @staticmethod
+    def _part(
+        disk: str, reason: str, name: str, object_storage: bool = False
+    ) -> DetachedPartMetadata:
+        return DetachedPartMetadata(
+            database="db1",
+            table="table1",
+            name=name,
+            reason=reason,
+            checksum="checksum",
+            size=1024,
+            files=["checksums.txt", "data.bin"],
+            tarball=True,
+            disk_name=disk,
+            encrypted=True,
+            object_storage=object_storage,
+        )
+
+    def test_round_trip_preserves_disk_reason_and_original_name(self) -> None:
+        table = TableMetadata("db1", "table1", "MergeTree", None)
+        table.add_detached_part(
+            self._part("disk1", "broken-on-start", "broken-on-start_all_1_1_0", True)
+        )
+        table.add_detached_part(self._part("disk2", "", "all_1_1_0"))
+
+        loaded = TableMetadata.load(
+            "db1", "table1", json.loads(json.dumps(table.raw_metadata))
+        )
+
+        parts = loaded.get_detached_parts()
+        assert [(part.disk_name, part.reason, part.name) for part in parts] == [
+            ("disk1", "broken-on-start", "broken-on-start_all_1_1_0"),
+            ("disk2", "", "all_1_1_0"),
+        ]
+        assert parts[0].object_storage is True
+        assert parts[1].object_storage is False
+        assert not loaded.get_parts()
+
+    def test_same_directory_name_is_allowed_on_different_disks(self) -> None:
+        table = TableMetadata("db1", "table1", "MergeTree", None)
+        table.add_detached_part(self._part("disk1", "", "all_1_1_0"))
+        table.add_detached_part(self._part("disk2", "", "all_1_1_0"))
+
+        assert len(table.get_detached_parts()) == 2
+
+
 class TestNormalizeBackupLink:
     """
     Tests for the normalize_backup_link() module-level helper.
@@ -462,6 +512,18 @@ class TestSplitPartName:
                     mutation=100,
                 ),
             ),
+            # Legacy MergeTree names contain min/max dates before block numbers.
+            # Keeping their five numeric chunks sortable is required by restore.
+            (
+                "20261015_20261015_0_0_0",
+                PartInfo(
+                    partition_id="20261015",
+                    min_block_num=20261015,
+                    max_block_num=0,
+                    level=0,
+                    mutation=0,
+                ),
+            ),
             # Large block numbers
             (
                 "all_1000000_9999999_999",
@@ -518,6 +580,13 @@ class TestSplitPartName:
             "all_1_y_0",
             "all_1_1_z",
             "all_1_1_0_abc",
+            # Python's int() accepts underscores, but ClickHouse part names do not.
+            "all_1_1_0_5_6",
+            # Numeric part fields are non-negative.
+            "all_-1_1_0",
+            "all_1_-1_0",
+            "all_1_1_-1",
+            "all_1_1_0_-1",
         ],
     )
     def test_non_numeric_segments_raises(self, part_name: str) -> None:
@@ -639,3 +708,105 @@ class TestTableMetadataDataSkippedReason:
         )
 
         assert loaded.data_skipped_reason is None
+
+
+class TestCopiedBackupMetadata:
+    """
+    Tests for metadata of backups copied from another storage.
+    """
+
+    @staticmethod
+    def _metadata(**extra: dict) -> dict:
+        return {
+            "meta": {
+                "name": "20181017T210300",
+                "path": "ch_backup/20181017T210300",
+                "time_format": "%Y-%m-%d %H:%M:%S %z",
+                "bytes": 300,
+                "real_bytes": 200,
+                "hostname": "clickhouse01.test_net_711",
+                "version": "1.0.100",
+                "ch_version": "25.3.1.1",
+                "labels": None,
+                "state": "created",
+                "start_time": "2018-10-18 00:03:00 +0300",
+                "end_time": "2018-10-18 00:04:00 +0300",
+                **extra.get("meta", {}),
+            },
+            "databases": {
+                "db1": {
+                    "engine": "Atomic",
+                    "tables": {
+                        "t1": {
+                            "engine": "MergeTree",
+                            "uuid": None,
+                            "parts": {
+                                "all_1_1_0": {
+                                    "checksum": "c1",
+                                    "bytes": 100,
+                                    "files": ["data.bin"],
+                                    "tarball": True,
+                                    "link": "ch_backup/20181016T210300",
+                                    "link_part_name": "all_1_1_0_1",
+                                },
+                                "all_2_2_0": {
+                                    "checksum": "c2",
+                                    "bytes": 200,
+                                    "files": ["data.bin"],
+                                    "tarball": True,
+                                    "link": None,
+                                },
+                            },
+                        }
+                    },
+                }
+            },
+            "cloud_storage": extra.get("cloud_storage", {"disks": []}),
+        }
+
+    def test_regular_backup_has_no_copy_fields(self) -> None:
+        backup = BackupMetadata.load(self._metadata())
+
+        assert backup.copied_from is None
+        assert backup.cloud_storage.source is None
+        dump = backup.dump()
+        assert "copied_from" not in dump["meta"]
+        assert "source" not in dump["cloud_storage"]
+
+    def test_copy_fields_round_trip(self) -> None:
+        copied_from = {
+            "endpoint_url": "https://s3.test",
+            "bucket": "backups",
+            "path_root": "ch_backup",
+        }
+        source = {
+            "endpoint_url": "https://s3.test",
+            "bucket": "disk-data",
+            "path": "copies/20181017T210300",
+        }
+        backup = BackupMetadata.load(
+            self._metadata(
+                meta={"copied_from": copied_from},
+                cloud_storage={"disks": ["s3"], "source": source},
+            )
+        )
+
+        assert backup.copied_from == copied_from
+        assert backup.cloud_storage.source == source
+        for light in (False, True):
+            reloaded = BackupMetadata.load_json(backup.dump_json(light=light))
+            assert reloaded.copied_from == copied_from
+            assert reloaded.cloud_storage.source == source
+
+    def test_unlink_part(self) -> None:
+        backup = BackupMetadata.load(self._metadata())
+
+        backup.unlink_part(backup.find_part("db1", "t1", "all_1_1_0"))  # type: ignore[arg-type]
+        # Unlinking of a regular part is no-op
+        backup.unlink_part(backup.find_part("db1", "t1", "all_2_2_0"))  # type: ignore[arg-type]
+
+        part = backup.find_part("db1", "t1", "all_1_1_0")
+        assert part and part.link is None and part.link_part_name is None
+        assert backup.real_size == backup.size == 300
+        reloaded = BackupMetadata.load_json(backup.dump_json())
+        assert all(not p.link for p in reloaded.get_parts())

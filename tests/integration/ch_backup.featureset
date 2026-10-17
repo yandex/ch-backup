@@ -1,5 +1,6 @@
 features/access_control_backup.feature
 features/access_control_replicated_backup.feature
+features/backup_copy.feature
 features/backup_delete.feature
 features/backup_multiple_disks.feature
 features/backup_multiple_disks_replicated.feature
@@ -12,6 +13,7 @@ features/cloud_storage.feature
 features/database_engines.feature
 features/ddl_dictionary.feature
 features/deduplication.feature
+features/detached_parts.feature
 features/freeze_parallel.feature
 features/incremental_restore.feature
 features/metadata.feature
@@ -30,3 +32,6 @@ features/backup_replicated_database.feature
 features/workload_entities.feature
 features/cloud_storage_full_backup.feature
 features/unique_key.feature
+features/backup_unreadable_metadata.feature
+features/restore_from_replica.feature
+features/backup_keep_going.feature

@@ -4,13 +4,16 @@ Interface to ch-backup command-line tool.
 
 import json
 import os
-from copy import copy
+import shlex
+from copy import copy, deepcopy
 from typing import Sequence
 from urllib.parse import quote
 
 import yaml
 
 from ch_backup.backup.metadata import normalize_backup_link
+from ch_backup.config import DEFAULT_CONFIG
+from ch_backup.storage import StorageLoader
 
 from . import docker, s3, utils
 from .typing import ContextT
@@ -67,6 +70,9 @@ class Backup:
                 for part_obj in table_obj["parts"].values():
                     if not part_obj["link"]:
                         count += 1
+                count += sum(
+                    len(parts) for parts in table_obj.get("detached_parts", {}).values()
+                )
         return count
 
     @property
@@ -200,6 +206,19 @@ class Backup:
                         file_paths.update(
                             os.path.join(part_path, f) for f in part_obj["files"]
                         )
+                for disk_name, detached_parts in table_obj.get(
+                    "detached_parts", {}
+                ).items():
+                    for part_name in detached_parts:
+                        part_path = os.path.join(
+                            backup_path,
+                            "detached",
+                            _quote(db_name),
+                            _quote(table_name),
+                            _quote(disk_name),
+                            _quote(part_name),
+                        )
+                        file_paths.add(os.path.join(part_path, f"{part_name}.tar"))
 
         return tuple(file_paths)
 
@@ -210,19 +229,23 @@ class BackupManager:
     """
 
     def __init__(self, context: ContextT, node_name: str, timeout: int = 300) -> None:
+        self._context = context
         self._container = docker.get_container(context, node_name)
-        self._s3_client = s3.S3Client(context)
         self._config_path = CH_BACKUP_CONF_PATH
         protocol = context.ch_backup["protocol"]
         self._cmd_base = f"timeout {timeout} {CH_BACKUP_CLI_PATH} --protocol {protocol} --insecure  --config {self._config_path}"
-        # Read path_root from the ch-backup config on the container.
+        # Read path_root and bucket from the ch-backup config on the container.
         conf_output = self._container.exec_run(
             f"/bin/cat {self._config_path}", user="root"
         ).output.decode()
         conf = yaml.load(conf_output, yaml.SafeLoader)
+        self._raw_config = conf
         self._path_root: str = conf.get("backup", {}).get("path_root", "ch_backup/")
+        self._s3_client = s3.S3Client(
+            context, conf.get("storage", {}).get("credentials", {}).get("bucket")
+        )
 
-    # pylint: disable=too-many-arguments,too-many-positional-arguments
+    # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     def backup(
         self,
         name: str = "{uuid}",
@@ -237,6 +260,9 @@ class BackupManager:
         udf: bool = None,
         nc: bool = None,
         copy_cloud_storage_data: bool = False,
+        detached_parts: bool = False,
+        detached_parts_disks: Sequence[str] = None,
+        detached_parts_reasons: Sequence[str] = None,
     ) -> str:
         """
         Execute backup command.
@@ -264,6 +290,14 @@ class BackupManager:
             options.append("--udf")
         if nc:
             options.append("--nc")
+        if detached_parts:
+            options.append("--detached-parts")
+        if detached_parts_disks is not None:
+            disks = shlex.quote(",".join(detached_parts_disks))
+            options.append(f"--detached-parts-disks {disks}")
+        if detached_parts_reasons is not None:
+            reasons = shlex.quote(",".join(detached_parts_reasons))
+            options.append(f"--detached-parts-reasons {reasons}")
         return self._exec(f'backup {" ".join(options)}').strip()
 
     def delete(
@@ -498,6 +532,51 @@ class BackupManager:
             if not self._s3_client.path_exists(path):
                 missed.append(path)
         return missed
+
+    def download_detached_part_files(
+        self,
+        backup_id: BackupId,
+        database: str,
+        table: str,
+        disk_name: str,
+    ) -> dict[str, dict[str, bytes]]:
+        """Download and unpack detached-part archives through the storage pipeline."""
+        backup = self.get_backup(backup_id)
+        detached_parts = backup.metadata["databases"][database]["tables"][table][
+            "detached_parts"
+        ][disk_name]
+
+        config: dict = deepcopy(DEFAULT_CONFIG)
+        utils.merge(config, self._raw_config)
+        s3_container = docker.get_container(
+            self._context, self._context.conf["s3"]["container"]
+        )
+        host, port = docker.get_exposed_port(
+            s3_container, self._context.conf["s3"]["port"]
+        )
+        config["storage"]["credentials"]["endpoint_url"] = f"http://{host}:{port}"
+        config["storage"]["proxy_resolver"]["uri"] = None
+        config["multiprocessing"]["workers"] = 0
+        loader = StorageLoader(config)
+
+        result = {}
+        for part_name, part_meta in detached_parts.items():
+            part_path = os.path.join(
+                backup.get_backup_path(self._path_root),
+                "detached",
+                _quote(database),
+                _quote(table),
+                _quote(disk_name),
+                _quote(part_name),
+                f"{part_name}.tar",
+            )
+            result[part_name] = dict(
+                loader.download_data_tarball(
+                    part_path,
+                    encryption=part_meta.get("encrypted", True),
+                )
+            )
+        return result
 
     def _exec(self, command: str) -> str:
         cmd = f"{self._cmd_base} {command}"

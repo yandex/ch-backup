@@ -2,6 +2,8 @@
 Clickhouse backup logic
 """
 
+# pylint: disable=too-many-lines
+
 import builtins
 from collections import defaultdict
 from copy import copy
@@ -12,32 +14,39 @@ from typing import Sequence
 import requests
 
 from ch_backup import logging
+from ch_backup.backup.copier import BackupCopier
+from ch_backup.backup.copy_report import CopyReport
 from ch_backup.backup.deduplication import (
     DedupReferences,
     collect_dedup_info,
     collect_dedup_references_for_batch_backup_deletion,
 )
+from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
     TableMetadata,
     sanitize_backup_name,
 )
+from ch_backup.backup.replica_layout import SOURCE_SETTINGS, ReplicaLayout
 from ch_backup.backup.sources import BackupSources
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.client import ClickhouseError
+from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner, select_replica_drop
 from ch_backup.clickhouse.models import Database, Table
-from ch_backup.config import Config
+from ch_backup.config import Config, as_datetime
 from ch_backup.exceptions import (
     BackupNotFound,
     ClickhouseBackupError,
     InvalidBackupStruct,
+    StorageError,
     TerminatingSignal,
 )
 from ch_backup.logic.access import AccessBackup
 from ch_backup.logic.database import DatabaseBackup
 from ch_backup.logic.database_sync import SyncStatus, wait_sync_replicated_databases
+from ch_backup.logic.lock_manager import storage_locks
 from ch_backup.logic.named_collections import NamedCollectionsBackup
 from ch_backup.logic.partial_restore import PartialRestoreFilter
 from ch_backup.logic.table import TableBackup
@@ -67,6 +76,7 @@ class ClickhouseBackup:
     # pylint: disable=too-many-instance-attributes
 
     def __init__(self, config: Config) -> None:
+        self._validate_config(config)
         self._config = config
         self._access_backup_manager = AccessBackup()
         self._database_backup_manager = DatabaseBackup()
@@ -74,6 +84,14 @@ class ClickhouseBackup:
         self._udf_backup_manager = UDFBackup()
         self._nc_backup_manager = NamedCollectionsBackup()
         self._we_backup_manager = WorkloadEntitiesBackup()
+
+    @staticmethod
+    def _validate_config(config: Config) -> None:
+        start_time = as_datetime(config["backup"].get("deduplication_start_time"))
+        if start_time is not None and start_time > utcnow():
+            raise ValueError(
+                "backup.deduplication_start_time must not be in the future"
+            )
 
     @property
     def config(self) -> Config:
@@ -94,6 +112,7 @@ class ClickhouseBackup:
         """
         Completely reloads the config.
         """
+        self._validate_config(config)
         logging.info("Reloading config.")
         del self._context
         self._config = config
@@ -105,12 +124,17 @@ class ClickhouseBackup:
         """
         return self._get_backup(backup_name)
 
-    def list(self, state: BackupState = None) -> Sequence[BackupMetadata]:
+    def list(
+        self, state: BackupState = None, *, unreadable: dict[str, str] | None = None
+    ) -> Sequence[BackupMetadata]:
         """
         Get list of existing backups sorted by start timestamp.
+        If unreadable is provided, collect per-backup read errors there.
         """
         backups = []
-        for backup in self._context.backup_layout.get_backups(use_light_meta=True):
+        for backup in self._context.backup_layout.get_backups(
+            use_light_meta=True, unreadable=unreadable
+        ):
             if state and backup.state != state:
                 continue
             backups.append(backup)
@@ -126,6 +150,9 @@ class ClickhouseBackup:
         tables: Sequence[str] = None,
         force: bool = False,
         labels: dict = None,
+        include_detached_parts: bool = False,
+        detached_parts_disks: Sequence[str] = None,
+        detached_parts_reasons: Sequence[str] = None,
     ) -> tuple[str, str | None]:
         """
         Perform backup.
@@ -135,23 +162,33 @@ class ClickhouseBackup:
         # pylint: disable=too-many-branches
         # pylint: disable=too-many-locals
         # pylint: disable=too-many-statements
-        backups_with_light_meta = self._context.backup_layout.get_backups(
-            use_light_meta=True
+        backups_with_light_meta = (
+            self._context.backup_layout.get_backups(use_light_meta=True, unreadable={})
+            if not force or self._context.config.get("deduplicate_parts")
+            else []
         )
 
         sanitized_name = sanitize_backup_name(name)
-        for backup in backups_with_light_meta:
-            if name == backup.name:
+        for backup_name in self._context.backup_layout.get_backup_names():
+            if name == backup_name:
                 raise ClickhouseBackupError(f"Backup with name {name} already exists")
-            if sanitized_name == sanitize_backup_name(backup.name):
+            if sanitized_name == sanitize_backup_name(backup_name):
                 raise ClickhouseBackupError(
                     f"Backup with name {name} conflicts with existing backup "
-                    f"{backup.name}: names that differ only in '-' and '_' share "
+                    f"{backup_name}: names that differ only in '-' and '_' share "
                     "the same cloud storage path"
                 )
 
         logging.info(f"Backup sources: {sources}")
         assert not (db_names and tables)
+
+        if detached_parts_disks is None:
+            detached_parts_disks = ["object_storage"]
+
+        if isinstance(detached_parts_disks, str):
+            detached_parts_disks = [detached_parts_disks]
+        if isinstance(detached_parts_reasons, str):
+            detached_parts_reasons = [detached_parts_reasons]
 
         backup_labels: dict = copy(self._context.config.get("labels"))  # type: ignore
         if labels:
@@ -225,6 +262,9 @@ class ClickhouseBackup:
                         db_tables,
                         schema_only=sources.schema_only,
                         multiprocessing_config=self._config["multiprocessing"],
+                        include_detached_parts=include_detached_parts,
+                        detached_parts_disks=detached_parts_disks,
+                        detached_parts_reasons=detached_parts_reasons,
                     )
 
                 # Upload operations are async. Should wait until they are all finished.
@@ -244,7 +284,23 @@ class ClickhouseBackup:
                 if not self._context.config.get("keep_freezed_data_on_failure"):
                     self._context.ch_ctl.remove_freezed_data()
 
-        return self._context.backup_meta.name, None
+        return self._context.backup_meta.name, self._skipped_data_message()
+
+    def _skipped_data_message(self) -> str | None:
+        """
+        Report tables that were backed up without some or all of their data.
+        """
+        data_skipped_tables, incomplete_tables = (
+            self._context.backup_meta.count_skipped_data_tables()
+        )
+        if not (data_skipped_tables or incomplete_tables):
+            return None
+
+        return (
+            f"Backup is incomplete: {data_skipped_tables} tables without data,"
+            f" {incomplete_tables} tables without some data parts. Run show to see"
+            " them by data_skipped_reason and skipped_parts."
+        )
 
     # pylint: disable=too-many-arguments,duplicate-code,too-many-positional-arguments,too-many-branches,too-many-locals
     def restore(
@@ -270,6 +326,31 @@ class ClickhouseBackup:
         """
         logging.info(f"Restore sources: {sources}")
         self._context.backup_meta = self._get_backup(backup_name)
+        data_skipped_tables, incomplete_tables = (
+            self._context.backup_meta.get_skipped_data_tables()
+        )
+        if data_skipped_tables or incomplete_tables:
+            logging.warning(
+                "Backup holds no data of tables: {}; and only some parts of tables: {}",
+                ", ".join(data_skipped_tables) or "none",
+                ", ".join(incomplete_tables) or "none",
+            )
+
+        cloud_storage_source = self._context.backup_meta.cloud_storage.source
+        if cloud_storage_source_bucket is None and cloud_storage_source:
+            # Cloud storage data was copied out of the source disk along with the backup.
+            cloud_storage_source_bucket = cloud_storage_source["bucket"]
+            cloud_storage_source_path = (
+                cloud_storage_source_path or cloud_storage_source["path"]
+            )
+            cloud_storage_source_endpoint = (
+                cloud_storage_source_endpoint or cloud_storage_source["endpoint_url"]
+            )
+            logging.info(
+                "Using cloud storage data location from backup metadata: bucket {}, path {}",
+                cloud_storage_source_bucket,
+                cloud_storage_source_path,
+            )
 
         if (
             cloud_storage_source_bucket is None
@@ -360,6 +441,40 @@ class ClickhouseBackup:
                 restore_tables_in_replicated_database=restore_tables_in_replicated_database,
             )
 
+    def restore_from_replica(
+        self,
+        source_host: str,
+        sources: BackupSources,
+        replica_name: str | None = None,
+    ) -> None:
+        """
+        Restore from a live replica of the shard instead of a backup.
+        """
+        source_ctl = ClickhouseCTL(
+            {
+                **self._context.ch_ctl_conf,
+                "host": source_host,
+                "settings": SOURCE_SETTINGS,
+            },
+            self._context.main_conf,
+            self._context.config,
+        )
+        self._context.backup_layout = ReplicaLayout(
+            self._context.config_root,
+            self._context.ch_ctl,
+            source_ctl,
+            sources,
+            replica_name,
+        )
+        self.restore(
+            sources=sources,
+            backup_name=source_host,
+            databases=[],
+            exclude_databases=[],
+            replica_name=replica_name,
+            clean_zookeeper_mode=CleanZooKeeperMode.REPLICA_ONLY,
+        )
+
     def _check_zookeeper_for_restore(
         self,
         sources: BackupSources,
@@ -428,11 +543,10 @@ class ClickhouseBackup:
         found = False
         deleting_backups = []
         retained_backups = []
+        unreadable: dict[str, str] = {}
         with self._context.locker(operation="DELETE"):
             # Use light metadata in backups iteration to avoid high memory usage.
-            for i, backup in enumerate(
-                self._context.backup_layout.get_backups(use_light_meta=True)
-            ):
+            for i, backup in enumerate(self.list(unreadable=unreadable)):
                 if backup.name == backup_name:
                     deleting_backups.append(backup)
                     found = True
@@ -443,26 +557,79 @@ class ClickhouseBackup:
                 else:
                     retained_backups.append(backup)
 
-            if not found:
+            if blocking := set(unreadable) - {backup_name}:
+                raise StorageError(
+                    f"Failed to read metadata of backups: {', '.join(sorted(blocking))}"
+                )
+            if not found and backup_name not in unreadable:
                 raise BackupNotFound(backup_name)
 
             dedup_references = collect_dedup_references_for_batch_backup_deletion(
                 layout=self._context.backup_layout,
                 retained_backups_light_meta=retained_backups,
-                deleting_backups_light_meta=deleting_backups,
+                deleting_backup_names={
+                    backup_name,
+                    *(b.name for b in deleting_backups),
+                },
             )
+
+            if backup_name in unreadable and dedup_references[backup_name]:
+                raise ClickhouseBackupError(
+                    f"Backup {backup_name} has unreadable metadata and is referenced "
+                    "by other backups"
+                )
 
             result: tuple[str | None, str | None] = (None, None)
             for backup in deleting_backups:
                 deleted_name, msg = self._delete(backup, dedup_references[backup.name])
                 if backup_name == backup.name:
                     result = (deleted_name, msg)
+            if backup_name in unreadable:
+                result = self._delete_unreadable(backup_name)
 
         return result
+
+    def copy(
+        self,
+        target_config: Config,
+        backup_names: Sequence[str] | None = None,
+        *,
+        keep_going: bool = False,
+        report: CopyReport | None = None,
+    ) -> tuple[Sequence[str], Sequence[str]]:
+        """
+        Copy backups to the storage specified in the target config.
+        If backup names are not specified, all backups in the state "created" are copied.
+
+        Return names of copied backups and names of backups skipped as already copied.
+        The optional report also receives partial results when copying raises.
+        """
+        if report is not None:
+            report.error = None
+            report.backups.clear()
+        try:
+            self._validate_config(target_config)
+            copier = BackupCopier(
+                config=self._config,
+                target_config=target_config,
+                layout=self._context.backup_layout,
+                target_layout=BackupLayout(target_config),
+                ch_config=self._context.ch_config,
+            )
+            with storage_locks([self._config, target_config], operation="COPY"):
+                return copier.copy(backup_names, keep_going=keep_going, report=report)
+        except BaseException as e:
+            if report is not None:
+                report.error = f"{type(e).__name__}: {e}"
+            raise
 
     def purge(self) -> tuple[Sequence[str], str | None]:
         """
         Purge backups.
+
+        When every retained backup that is created holds incomplete table data,
+        the newest complete backup is kept anyway: it may hold the last copy of
+        the data the retained backups lack.
         """
         retain_time = self._context.config["retain_time"]
         retain_count = self._context.config["retain_count"]
@@ -505,10 +672,23 @@ class ClickhouseBackup:
 
                 deleting_backups.append(backup)
 
+            if any(
+                backup.state == BackupState.CREATED for backup in retained_backups
+            ) and not any(map(_is_complete, retained_backups)):
+                complete_backup = next(filter(_is_complete, deleting_backups), None)
+                if complete_backup:
+                    logging.info(
+                        "Preserving the newest complete backup, the retained ones"
+                        " hold incomplete table data: {}",
+                        complete_backup.name,
+                    )
+                    deleting_backups.remove(complete_backup)
+                    retained_backups.append(complete_backup)
+
             dedup_references = collect_dedup_references_for_batch_backup_deletion(
                 layout=self._context.backup_layout,
                 retained_backups_light_meta=retained_backups,
-                deleting_backups_light_meta=deleting_backups,
+                deleting_backup_names={b.name for b in deleting_backups},
             )
 
             for backup in deleting_backups:
@@ -557,13 +737,28 @@ class ClickhouseBackup:
     def _delete(
         self, backup_light_meta: BackupMetadata, dedup_references: DedupReferences
     ) -> tuple[str | None, str | None]:
+        """
+        Delete a backup, keeping the parts other backups link to.
+
+        Without readable full metadata the backup is deleted whole by its light
+        metadata, which is allowed only if nothing links to it.
+        """
         logging.info(
             "Deleting backup {}, state: {}",
             backup_light_meta.name,
             backup_light_meta.state,
         )
 
-        backup = self._context.backup_layout.get_backup(backup_light_meta.name)
+        try:
+            backup = self._context.backup_layout.get_backup(backup_light_meta.name)
+        except StorageError:
+            if dedup_references:
+                raise
+            logging.exception(
+                "Full metadata of backup {} is unreadable, deleting it by light metadata",
+                backup_light_meta.name,
+            )
+            backup = None
         if backup is None and dedup_references:
             raise InvalidBackupStruct(
                 f"Full metadata is missing for referenced backup {backup_light_meta.name}"
@@ -581,7 +776,7 @@ class ClickhouseBackup:
                 logging.info("Removing backup data entirely")
                 self._context.backup_layout.delete_backup(
                     backup.name,
-                    lambda: self._context.ch_ctl.system_unfreeze(backup.name),
+                    lambda: self._system_unfreeze(backup),
                 )
                 return backup.name, None
 
@@ -592,8 +787,12 @@ class ClickhouseBackup:
                     self._delete_data_parts(
                         backup, table, db_dedup_references[table.name]
                     )
+                    self._delete_detached_parts(backup, table)
 
-            if backup.cloud_storage.enabled:
+            if backup.cloud_storage.enabled or (
+                backup.cloud_storage.data_copied
+                and backup.count_skipped_data_tables()[0]
+            ):
                 if self._cloud_storage_data_is_shared(backup, dedup_references):
                     logging.info(
                         "Keeping cloud storage data of the backup, it is in use by subsequent backups"
@@ -601,7 +800,7 @@ class ClickhouseBackup:
                 else:
                     self._context.backup_layout.delete_cloud_storage_data(backup.name)
             self._context.backup_layout.wait()
-            self._context.ch_ctl.system_unfreeze(backup.name)
+            self._system_unfreeze(backup)
             backup.state = BackupState.PARTIALLY_DELETED
             self._context.backup_layout.upload_backup_metadata(
                 backup, light_only=light_only
@@ -621,6 +820,23 @@ class ClickhouseBackup:
             )
             raise
 
+    def _delete_unreadable(self, backup_name: str) -> tuple[str, str]:
+        """
+        Delete a backup with unreadable light metadata.
+
+        It goes last, after the backups deleted along with it, so a failed deletion
+        cannot leave a backup linking to it. Frozen data is kept: without metadata
+        it is unknown whether the backup is a copy sharing its name with a live
+        original on this host.
+        """
+        logging.warning("Deleting backup {} with unreadable metadata", backup_name)
+        self._context.backup_layout.delete_backup(backup_name, lambda: None)
+        return (
+            backup_name,
+            f"Frozen data of the backup was not unfrozen. If it is not a copy, run "
+            f"SYSTEM UNFREEZE WITH NAME '{backup_name}' on the hosts that created it.",
+        )
+
     @staticmethod
     def _cloud_storage_data_is_shared(
         backup: BackupMetadata, dedup_references: DedupReferences
@@ -638,6 +854,23 @@ class ClickhouseBackup:
             for part in table.get_parts()
         )
 
+    def _system_unfreeze(self, backup: BackupMetadata) -> None:
+        if backup.cloud_storage.source:
+            source = backup.cloud_storage.source
+            logging.warning(
+                "Cloud storage data of backup {} stored in bucket {} under {} is not deleted",
+                backup.name,
+                source["bucket"],
+                source["path"],
+            )
+
+        # Copied backups don't own frozen data, it belongs to the original backup.
+        if backup.copied_from:
+            logging.info("Skipping unfreeze for the copied backup {}", backup.name)
+            return
+
+        self._context.ch_ctl.system_unfreeze(backup.name)
+
     def _delete_data_parts(
         self,
         backup: BackupMetadata,
@@ -648,6 +881,13 @@ class ClickhouseBackup:
         own_parts = [part for part in parts if not part.link]
         self._context.backup_layout.delete_data_parts(backup, own_parts)
         backup.remove_parts(table, parts)
+
+    def _delete_detached_parts(
+        self, backup: BackupMetadata, table: TableMetadata
+    ) -> None:
+        parts = table.get_detached_parts()
+        self._context.backup_layout.delete_detached_parts(backup, parts)
+        backup.remove_detached_parts(table, parts)
 
     # pylint: disable=too-many-positional-arguments
     def _restore(
@@ -794,3 +1034,14 @@ class ClickhouseBackup:
             return False
 
         return skip_lock.get("backup", False)
+
+
+def _is_complete(backup: BackupMetadata) -> bool:
+    """
+    Return True if a backup is created and holds all data of its tables.
+    """
+    return (
+        backup.state == BackupState.CREATED
+        and not backup.schema_only
+        and not any(backup.count_skipped_data_tables())
+    )

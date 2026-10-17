@@ -336,8 +336,18 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
 
         disk_config = copy.copy(self._disks[disk_name])
         endpoint = urlparse(disk_config["endpoint"])
+        if self._source_endpoint:
+            source_endpoint = urlparse(
+                self._source_endpoint
+                if "://" in self._source_endpoint
+                else f"//{self._source_endpoint}"
+            )
+            endpoint = endpoint._replace(
+                scheme=source_endpoint.scheme or endpoint.scheme,
+                netloc=source_endpoint.netloc,
+            )
         disk_config["endpoint"] = os.path.join(
-            f"{endpoint.scheme}://{self._source_endpoint or endpoint.netloc}",
+            f"{endpoint.scheme}://{endpoint.netloc}",
             self._source_bucket,
             self._source_path,
             "",

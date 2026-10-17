@@ -12,11 +12,13 @@ from typing import (
     Sequence,
 )
 
+from ch_backup.exceptions import TerminatingSignal
 from ch_backup.profile import profile
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
     ProcessExecPool,
 )
 from ch_backup.storage.async_pipeline.pipelines import (
+    copy_object_pipeline,
     delete_multiple_storage_pipeline,
     download_data_pipeline,
     download_data_tarball_pipeline,
@@ -29,6 +31,7 @@ from ch_backup.storage.async_pipeline.pipelines import (
     upload_files_tarball_scan_pipeline,
 )
 from ch_backup.storage.async_pipeline.suppress_exceptions import suppress_exceptions
+from ch_backup.storage.object_copy import CopyEntry
 from ch_backup.util import current_func_name
 
 
@@ -70,6 +73,8 @@ class PipelineExecutor:
         is_async: bool,
         encryption: bool,
         compression: bool,
+        callback: Callable | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         """
         Upload given data as tarball with specified file names.
@@ -85,7 +90,7 @@ class PipelineExecutor:
             encryption,
             compression,
         )
-        self._exec_pipeline(job_id, pipeline, is_async)
+        self._exec_pipeline(job_id, pipeline, is_async, callback, on_error)
 
     # pylint: disable=too-many-positional-arguments
     def upload_file(
@@ -128,6 +133,7 @@ class PipelineExecutor:
         tar_base_dir: str | None = None,
         exclude_file_names: list[str] | None = None,
         callback: Callable | None = None,
+        file_reader: Callable[[Path], bytes] | None = None,
     ) -> None:
         """
         Archive to tarball and upload files from local filesystem.
@@ -145,6 +151,7 @@ class PipelineExecutor:
             compression=compression,
             tar_base_dir=tar_base_dir,
             exclude_file_names=exclude_file_names,
+            file_reader=file_reader,
         )
         self._exec_pipeline(job_id, pipeline, is_async, callback)
 
@@ -159,6 +166,7 @@ class PipelineExecutor:
         compression: bool,
         files: list[str],
         callback: Callable | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         """
         Archive to tarball and upload files from local filesystem.
@@ -175,7 +183,7 @@ class PipelineExecutor:
             delete_after=delete,
             compression=compression,
         )
-        self._exec_pipeline(job_id, pipeline, is_async, callback)
+        self._exec_pipeline(job_id, pipeline, is_async, callback, on_error)
 
     def download_data(
         self, remote_path: str, is_async: bool, encryption: bool
@@ -271,6 +279,21 @@ class PipelineExecutor:
         pipeline = partial(delete_multiple_storage_pipeline, self._config, remote_paths)
         self._exec_pipeline(job_id, pipeline, is_async)
 
+    def copy_object(
+        self,
+        entry: CopyEntry,
+        is_async: bool,
+        callback: Callable | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
+    ) -> None:
+        """
+        Copy object from one storage to another.
+        """
+        job_id = self._make_job_id(current_func_name(), entry.src_path, entry.dst_path)
+
+        pipeline = partial(copy_object_pipeline, self._config, entry)
+        self._exec_pipeline(job_id, pipeline, is_async, callback, on_error)
+
     def wait(self, keep_going: bool = False) -> None:
         """
         Wait for completion of async operations.
@@ -288,17 +311,25 @@ class PipelineExecutor:
         pipeline: Callable,
         is_async: bool,
         callback: Callable | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> Any:
         """
         Run pipeline inplace or schedule for exec in process pool
         """
 
-        if is_async and self._exec_pool:
-            return self._exec_pool.submit(
-                job_id, profile(10, 60)(pipeline), callback=callback
-            )
-
-        result = pipeline()
+        try:
+            if is_async and self._exec_pool:
+                return self._exec_pool.submit(
+                    job_id,
+                    profile(10, 60)(pipeline),
+                    callback=callback,
+                    on_error=on_error,
+                )
+            result = pipeline()
+        except (Exception, TerminatingSignal) as e:
+            if on_error:
+                on_error(e)
+            raise
         if callback:
             callback()
         return result

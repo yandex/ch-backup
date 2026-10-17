@@ -10,4 +10,5 @@ HEALTHCHECK --interval=500ms --timeout=1s --retries=240 \
 
 EXPOSE 9000
 
-CMD ["mini", "-s3.port=9000"]
+# Keep Admin gRPC (HTTP port + 10000) outside Linux's ephemeral port range.
+CMD ["mini", "-s3.port=9000", "-admin.port=9346"]

@@ -26,7 +26,7 @@ def create():
         "container": "seaweedfs01",
         "bucket": bucket,
         "cloud_storage_bucket": cloud_storage_bucket,
-        "buckets": [bucket]
+        "buckets": [bucket, f"{bucket}-copy"]
         + [
             f"{cloud_storage_bucket}-{num:02d}"
             for num in range(1, clickhouse_instances + 1)

@@ -2,8 +2,8 @@
 Unit tests schema module.
 """
 
-from ch_backup.clickhouse.models import Table
-from ch_backup.clickhouse.schema import rewrite_table_schema
+from ch_backup.clickhouse.models import Database, Table
+from ch_backup.clickhouse.schema import rewrite_database_schema, rewrite_table_schema
 from tests.unit.utils import parametrize
 
 UUID = "223b4576-76f0-4ed3-976f-46db82af82a9"
@@ -301,6 +301,19 @@ def test_is_view(engine, result):
             "result_table_engine": "MergeTree",
         },
     },
+    {
+        "id": "override replica name only in engine arguments",
+        "args": {
+            "table_schema": "CREATE TABLE _ (n Int32, flag String DEFAULT '1')"
+            " ENGINE = ReplicatedMergeTree('/tables/{shard}/t', '1') ORDER BY n",
+            "table_engine": "ReplicatedMergeTree",
+            "force_non_replicated_engine": False,
+            "add_uuid": False,
+            "result_table_schema": "CREATE TABLE `test_db`.`test_table` (n Int32, flag String DEFAULT '1')"
+            " ENGINE = ReplicatedMergeTree('/tables/{shard}/t', '{replica}') ORDER BY n",
+            "result_table_engine": "ReplicatedMergeTree",
+        },
+    },
 )
 # pylint: disable=too-many-positional-arguments
 def test_rewrite_table_schema(
@@ -330,3 +343,16 @@ def test_rewrite_table_schema(
     )
     assert table.create_statement == result_table_schema
     assert table.engine == result_table_engine
+
+
+def test_rewrite_database_schema_overrides_only_replica_argument():
+    """
+    A string equal to the replica name elsewhere in the statement must stay as is.
+    """
+    db = Database("test_db", "Replicated", None, None, None)
+    db_sql = "CREATE DATABASE _ ENGINE = Replicated('/db', '{shard}', '1') COMMENT '1'"
+
+    assert rewrite_database_schema(db, db_sql, override_replica_name="{replica}") == (
+        "CREATE DATABASE `test_db` ENGINE = Replicated('/db', '{shard}', '{replica}') "
+        "COMMENT '1'"
+    )

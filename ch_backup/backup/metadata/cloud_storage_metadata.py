@@ -16,11 +16,13 @@ class CloudStorageMetadata:
         compression: bool = True,
         data_copied: bool = False,
         disks: list[str] | None = None,
+        source: dict[str, str] | None = None,
     ) -> None:
         self._encryption: bool = encryption
         self._compression: bool = compression
         self._data_copied: bool = data_copied
         self._disks: list[str] = disks or []
+        self._source: dict[str, str] | None = source
 
     @property
     def enabled(self) -> bool:
@@ -42,6 +44,12 @@ class CloudStorageMetadata:
         """
         if disk_name not in self._disks:
             self._disks.append(disk_name)
+
+    def retain_disks(self, disk_names: set[str]) -> None:
+        """
+        Drop the disks the backup holds no data on from the backed up disks list.
+        """
+        self._disks = [disk for disk in self._disks if disk in disk_names]
 
     @property
     def encrypted(self) -> bool:
@@ -92,6 +100,21 @@ class CloudStorageMetadata:
         """
         return self.enabled and not self._data_copied
 
+    @property
+    def source(self) -> dict[str, str] | None:
+        """
+        Return location of cloud storage data (keys "endpoint_url", "bucket" and "path")
+        if it was copied out of the source disk, or None if the data is stored on the source disk.
+        """
+        return self._source
+
+    @source.setter
+    def source(self, value: dict[str, str] | None) -> None:
+        """
+        Set location of cloud storage data.
+        """
+        self._source = value
+
     @classmethod
     def load(cls, data: dict[str, Any]) -> "CloudStorageMetadata":
         """
@@ -102,15 +125,19 @@ class CloudStorageMetadata:
             compression=data.get("compression", False),
             data_copied=data.get("data_copied", False),
             disks=data.get("disks", []),
+            source=data.get("source"),
         )
 
     def dump(self) -> dict[str, Any]:
         """
         Serialize Cloud Storage metadata.
         """
-        return {
+        result: dict[str, Any] = {
             "encryption": self._encryption,
             "compression": self._compression,
             "data_copied": self._data_copied,
             "disks": self._disks,
         }
+        if self._source:
+            result["source"] = self._source
+        return result
