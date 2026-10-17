@@ -11,6 +11,7 @@ from docker.models.containers import ExecResult
 from requests import HTTPError, Session
 from tenacity import retry, stop_after_attempt, wait_fixed
 
+from ch_backup.clickhouse.control import GET_TABLES_SHORT_SQL
 from tests.integration.diagnostics import record_stage_failure
 
 from . import docker
@@ -100,6 +101,20 @@ class ClickhouseClient:
         Get ClickHouse version.
         """
         return self._query("GET", "SELECT version()")
+
+    def get_short_tables_during_load(self, database: str, table: str) -> list[dict]:
+        """Force a load between the short query's two catalog scans."""
+        condition = f"database = '{database}' AND name = '{table}'"
+        engine_query = f"SELECT engine FROM system.tables WHERE {condition}"
+        assert self.get_response(engine_query) == "TableProxy", "Table must be cold"
+        first, second = GET_TABLES_SHORT_SQL.format(
+            db_condition=f"database = '{database}'", tables_condition="1"
+        ).split("UNION ALL", 1)
+        rows = self._query("POST", first + " FORMAT JSON")["data"]
+        self.execute(f"SELECT data_paths FROM system.tables WHERE {condition}")
+        assert self.get_response(engine_query) != "TableProxy", "Table must be loaded"
+        rows.extend(self._query("POST", second)["data"])
+        return rows
 
     def ch_version_ge(self, comparing_version: str) -> bool:
         """

@@ -128,6 +128,9 @@ GET_TABLES_SQL_23_8 = strip_query(
 """
 )
 
+# Partition by database type: a table's reported engine changes when it loads.
+# Only Atomic/Ordinary support lazy_load_tables. Keep other databases' projection
+# narrow to avoid additional external metadata work.
 GET_TABLES_SHORT_SQL = strip_query(
     """
     SELECT
@@ -139,6 +142,27 @@ GET_TABLES_SHORT_SQL = strip_query(
     FROM system.tables
     WHERE ({db_condition})
       AND ({tables_condition})
+      AND database NOT IN (
+          SELECT name FROM system.databases
+          WHERE engine IN ('Atomic', 'Ordinary')
+      )
+
+    UNION ALL
+
+    WITH extract(t.engine_full, '^[A-Za-z_][A-Za-z0-9_]*') AS declared_engine
+    SELECT
+        database,
+        name,
+        uuid,
+        if(t.engine = 'TableProxy' AND notEmpty(declared_engine), declared_engine, t.engine) AS engine,
+        create_table_query
+    FROM system.tables AS t
+    WHERE ({db_condition})
+      AND ({tables_condition})
+      AND t.database IN (
+          SELECT name FROM system.databases
+          WHERE engine IN ('Atomic', 'Ordinary')
+      )
     ORDER BY metadata_modification_time
     FORMAT JSON
 """
@@ -1652,16 +1676,23 @@ class ClickhouseCTL:
         }
 
     def _make_table(self, record: dict) -> Table:
+        engine = record["engine"]
+        if engine == "TableProxy":
+            # A paths query can load the table after its engine column was read.
+            # Use the stored engine definition, also available without loading.
+            match = re.match(r"[A-Za-z_][A-Za-z0-9_]*", record.get("engine_full") or "")
+            if not match:
+                raise ClickhouseBackupError(
+                    f"Cannot determine engine of lazy table {record['database']}.{record['name']}"
+                )
+            engine = match.group()
+
         return Table(
             database=record["database"],
             name=record["name"],
-            engine=record.get("engine", None),
+            engine=engine,
             disks=list(self._disks.values()),
-            data_paths=(
-                record.get("data_paths", [])
-                if "MergeTree" in record.get("engine", "")
-                else []
-            ),
+            data_paths=(record.get("data_paths", []) if "MergeTree" in engine else []),
             metadata_path=self._get_metadata_path(record),
             create_statement=record["create_table_query"],
             uuid=record.get("uuid", None),
