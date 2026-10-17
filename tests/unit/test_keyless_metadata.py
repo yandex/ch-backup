@@ -1,0 +1,276 @@
+"""Keyless metadata reads, legacy encryption and protection of inline data."""
+
+# The storage loader is mocked; Pylint infers the real loader's method types.
+# pylint: disable=no-member
+
+import copy
+import json
+import tarfile
+from functools import partial
+from io import BytesIO, StringIO
+from pathlib import Path
+from typing import Iterator, cast
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from ch_backup import logging
+from ch_backup.backup.layout import (
+    MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE,
+    BackupLayout,
+)
+from ch_backup.backup.metadata import BackupMetadata, PartMetadata
+from ch_backup.backup.metadata.table_metadata import TableMetadata
+from ch_backup.clickhouse.models import Database, Disk
+from ch_backup.config import DEFAULT_CONFIG
+from ch_backup.encryption import get_encryption
+from ch_backup.exceptions import ConfigurationError, StorageError
+from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
+from ch_backup.storage.async_pipeline.pipelines import decrypt_data_pipeline
+from ch_backup.storage.async_pipeline.stages.filesystem.read_files_tarball_stage import (
+    ReadFilesTarballScanStage,
+)
+
+KEY = "a" * 32
+
+
+def make_layout(key: str | None = None) -> BackupLayout:
+    """Use real crypto settings with an in-memory storage loader."""
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["backup"]["path_root"] = "backups"
+    config["encryption"].update(key=key, chunk_size=64)
+    with patch("ch_backup.backup.layout.StorageLoader") as loader:
+        loader.return_value.decrypt_data.side_effect = partial(
+            decrypt_data_pipeline, config
+        )
+        return BackupLayout(config)  # type: ignore[arg-type]
+
+
+def make_backup() -> BackupMetadata:
+    return BackupMetadata("test", "2", "26.3", DEFAULT_CONFIG["backup"]["time_format"])
+
+
+def get_loader(layout: BackupLayout) -> MagicMock:
+    return cast(MagicMock, getattr(layout, "_storage_loader"))
+
+
+def test_read_plaintext_without_initializing_crypto():
+    layout = make_layout()
+    backup = make_backup()
+    loader = get_loader(layout)
+    loader.download_data.return_value = backup.dump_json().encode()
+    with patch(
+        "ch_backup.storage.async_pipeline.pipeline_builder.get_encryption",
+        side_effect=AssertionError,
+    ):
+        loaded = layout.get_backup(backup.name)
+    assert loaded is not None
+    assert loaded.encrypted is True
+    assert loaded.name == backup.name
+    loader.download_data.assert_called_once()
+    loader.decrypt_data.assert_not_called()
+    assert loader.download_data.call_args.kwargs == {"encoding": None}
+
+
+def test_upload_public_metadata_preserves_data_encryption():
+    layout = make_layout()
+    layout.upload_backup_metadata(make_backup())
+    calls = get_loader(layout).upload_data.call_args_list
+    assert len(calls) == 2
+    for uploaded in calls:
+        assert not uploaded.kwargs.get("encryption", False)
+        meta = json.loads(uploaded.args[0])["meta"]
+        assert meta["encrypted"] is True
+        assert meta["metadata_encrypted"] is False
+
+
+@pytest.mark.parametrize("legacy_format", [None, True])
+def test_light_only_update_preserves_full_metadata_encryption(legacy_format):
+    layout = make_layout()
+    backup = make_backup()
+    backup.metadata_encrypted = legacy_format
+    layout.upload_backup_metadata(backup, light_only=True)
+    uploaded = get_loader(layout).upload_data.call_args
+    assert uploaded.kwargs["remote_path"].endswith("backup_light_struct.json")
+    assert (
+        json.loads(uploaded.args[0])["meta"].get("metadata_encrypted") is legacy_format
+    )
+
+
+def test_failed_full_metadata_upload_preserves_legacy_format():
+    layout = make_layout()
+    backup = make_backup()
+    backup.metadata_encrypted = True
+    get_loader(layout).upload_data.side_effect = StorageError("upload failed")
+    with pytest.raises(StorageError):
+        layout.upload_backup_metadata(backup)
+    assert backup.metadata_encrypted is True
+    get_loader(layout).upload_data.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "encrypted, key", [(False, None), (True, KEY), (True, None), (True, "b" * 32)]
+)
+def test_read_legacy_metadata_preserves_encryption_defaults(encrypted, key):
+    layout = make_layout(key)
+    backup = make_backup()
+    backup.add_database(Database("db", "Atomic", None, None, None))
+    table = TableMetadata("db", "table", "MergeTree", None)
+    table.add_part(
+        PartMetadata("db", "table", "all_1_1_0", "checksum", 10, ["data.bin"], True)
+    )
+    backup.add_table(table)
+    backup.cloud_storage.add_disk("s3")
+    legacy = backup.dump()
+    legacy["meta"].pop("metadata_encrypted")
+    legacy["meta"].pop("encrypted")
+    legacy["cloud_storage"].pop("encryption")
+    legacy["databases"]["db"]["tables"]["table"]["parts"]["all_1_1_0"].pop("encrypted")
+    raw = json.dumps(legacy).encode()
+    if encrypted:
+        crypto = get_encryption("nacl", {"key": KEY})
+        raw = b"".join(
+            crypto.encrypt(raw[pos : pos + 64]) for pos in range(0, len(raw), 64)
+        )
+    get_loader(layout).download_data.return_value = raw
+
+    if not encrypted or key == KEY:
+        loaded = layout.get_backup(backup.name)
+        assert loaded is not None
+        assert loaded.metadata_encrypted is encrypted
+        assert loaded.encrypted is True
+        assert loaded.cloud_storage.encrypted is True
+        assert loaded.get_parts()[0].encrypted is True
+    elif key is None:
+        with pytest.raises(StorageError, match=r"encryption.key is required") as error:
+            layout.get_backup(backup.name)
+        assert isinstance(error.value.__cause__, ConfigurationError)
+    else:
+        with pytest.raises(StorageError, match="incorrect encryption key"):
+            layout.get_backup(backup.name)
+    get_loader(layout).download_data.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "data, encrypted, safe",
+    [
+        (b"5\n1\t3\n3\tdata/key\n0\n0\n\n", False, True),
+        (b"5\n0\t0\n0\n0\nINLINE_SECRET\n", False, False),
+        (b"5\n0\t0\n0\n0\n\nTRAILING_SECRET\n", False, False),
+        (b"6\n0\t0\n0\n0\nUNKNOWN_CONTENT\n", False, False),
+        (b"not metadata", False, False),
+        (b"5\n0\t0\n0\n0\nINLINE_SECRET\n", True, True),
+    ],
+)
+def test_rewritten_cloud_metadata_is_checked_before_upload(data, safe, encrypted):
+    layout = make_layout()
+    backup = make_backup()
+    backup.cloud_storage.encrypted = encrypted
+    files = [("store/part/data.bin", data)]
+    if safe or encrypted:
+        layout.upload_cloud_storage_metadata_files(backup, "disks/table.tar", files)
+        get_loader(layout).upload_data_tarball.assert_called_once()
+    else:
+        with pytest.raises(StorageError, match="Cannot publish unencrypted") as error:
+            layout.upload_cloud_storage_metadata_files(backup, "disks/table.tar", files)
+        assert "SECRET" not in str(error.value)
+        get_loader(layout).upload_data_tarball.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(b"PRIVATE_PAYLOAD\n", id="invalid version"),
+        pytest.param(b"5\nPRIVATE_PAYLOAD\t0\n", id="invalid object count"),
+        pytest.param(
+            b"5\n1\t0\nPRIVATE_PAYLOAD\tdata/key\n0\n0\n\n",
+            id="invalid object size",
+        ),
+        pytest.param(b"5\n0\t0\nPRIVATE_PAYLOAD\n0\n\n", id="invalid ref count"),
+        pytest.param(b"5\n0\t0\n0\nPRIVATE_PAYLOAD\n\n", id="invalid read-only flag"),
+    ],
+)
+def test_malformed_cloud_metadata_does_not_leak_into_error_log(
+    tmp_path: Path, data: bytes
+) -> None:
+    file_path = tmp_path / "data.bin"
+    file_path.write_bytes(data)
+    output = StringIO()
+    logger = logging.getLogger("ch-backup")
+    sink = logger.add(output, format="{message}", diagnose=False, backtrace=False)
+    try:
+        with ThreadExecPool(1) as pool:
+            pool.submit(
+                "upload disk metadata",
+                next,
+                cloud_metadata_stream(tmp_path),
+            )
+            with pytest.raises(StorageError, match="Cannot publish unencrypted"):
+                pool.wait_all()
+    finally:
+        logger.remove(sink)
+
+    log = output.getvalue()
+    assert "StorageError" in log
+    assert "ObjectStorageMetadataError: Malformed object storage metadata" in log
+    assert "ValueError: Invalid object storage metadata field" in log
+    assert "PRIVATE_PAYLOAD" not in log
+
+
+def cloud_metadata_stream(tmp_path: Path) -> Iterator[bytes]:
+    layout = make_layout()
+    backup = make_backup()
+    backup.cloud_storage.encrypted = False
+    table = MagicMock(path_on_disk="store/uuid", database="db", name="table")
+    table.name = "table"
+    disk = Disk("s3", str(tmp_path), "s3")
+    with patch(
+        "ch_backup.backup.layout._table_shadow_path", return_value=str(tmp_path)
+    ):
+        layout.upload_cloud_storage_metadata(backup, disk, table)
+    kwargs = get_loader(layout).upload_files_tarball_scan.call_args.kwargs
+    assert kwargs["is_async"] and not kwargs["encryption"]
+    return ReadFilesTarballScanStage(
+        {"chunk_size": 16},
+        Path(kwargs["dir_path"]),
+        tar_base_dir=kwargs["tar_base_dir"],
+        exclude_file_names=kwargs["exclude_file_names"],
+        file_reader=kwargs["file_reader"],
+    )()
+
+
+@pytest.mark.parametrize("after_validation", [False, True])
+def test_frozen_metadata_change_cannot_publish_inline_data(tmp_path, after_validation):
+    safe = b"5\n1\t3\n3\tdata/key\n0\n0\n\n"
+    file_path = tmp_path / "data.bin"
+    file_path.write_bytes(safe)
+    (tmp_path / "frozen_metadata.txt").write_text("service metadata", encoding="utf-8")
+    stream = cloud_metadata_stream(tmp_path)
+
+    # A yielded header means validation finished, but the payload has not been read yet.
+    header = next(stream) if after_validation else b""
+    file_path.write_bytes(b"4\n0\t0\n0\n0\nINLINE_SECRET\n")
+    if after_validation:
+        with tarfile.open(fileobj=BytesIO(header + b"".join(stream))) as archive:
+            assert archive.getnames() == ["store/uuid/data.bin"]
+            content = archive.extractfile("store/uuid/data.bin")
+            assert content is not None
+            assert content.read() == safe
+    else:
+        with pytest.raises(StorageError, match="inline file data"):
+            next(stream)
+
+
+def test_large_frozen_metadata_is_rejected_with_bounded_read(tmp_path: Path) -> None:
+    file_path = tmp_path / "data.bin"
+    with file_path.open("wb") as source:
+        source.truncate(128 * 1024 * 1024)
+    stream = cloud_metadata_stream(tmp_path)
+    with file_path.open("rb") as source:
+        reader = MagicMock(wraps=source)
+        reader.__enter__.return_value = reader
+        with patch.object(Path, "open", return_value=reader):
+            with pytest.raises(StorageError, match="larger than 1 MiB"):
+                next(stream)
+        reader.read.assert_called_once_with(MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE + 1)
+        assert source.tell() == MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE + 1

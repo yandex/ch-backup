@@ -133,6 +133,7 @@ class PipelineExecutor:
         tar_base_dir: str | None = None,
         exclude_file_names: list[str] | None = None,
         callback: Callable | None = None,
+        file_reader: Callable[[Path], bytes] | None = None,
     ) -> None:
         """
         Archive to tarball and upload files from local filesystem.
@@ -150,6 +151,7 @@ class PipelineExecutor:
             compression=compression,
             tar_base_dir=tar_base_dir,
             exclude_file_names=exclude_file_names,
+            file_reader=file_reader,
         )
         self._exec_pipeline(job_id, pipeline, is_async, callback)
 
@@ -164,6 +166,7 @@ class PipelineExecutor:
         compression: bool,
         files: list[str],
         callback: Callable | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         """
         Archive to tarball and upload files from local filesystem.
@@ -180,7 +183,7 @@ class PipelineExecutor:
             delete_after=delete,
             compression=compression,
         )
-        self._exec_pipeline(job_id, pipeline, is_async, callback)
+        self._exec_pipeline(job_id, pipeline, is_async, callback, on_error)
 
     def download_data(
         self, remote_path: str, is_async: bool, encryption: bool

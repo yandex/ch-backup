@@ -251,6 +251,7 @@ def list_command(
 
     records = []
     for backup in backups:
+        data_skipped_tables, incomplete_tables = backup.count_skipped_data_tables()
         record: dict = OrderedDict(
             (
                 ("name", backup.name),
@@ -260,6 +261,8 @@ def list_command(
                 ("size", backup.size),
                 ("real_size", backup.real_size),
                 ("ch_version", backup.ch_version),
+                ("data_skipped_tables", data_skipped_tables),
+                ("incomplete_tables", incomplete_tables),
             )
         )
         if format_ == "json":
@@ -276,7 +279,16 @@ def list_command(
 
     for name, error in sorted(unreadable.items()):
         record = dict.fromkeys(
-            ("start_time", "end_time", "size", "real_size", "ch_version", "labels")
+            (
+                "start_time",
+                "end_time",
+                "size",
+                "real_size",
+                "ch_version",
+                "data_skipped_tables",
+                "incomplete_tables",
+                "labels",
+            )
         )
         record = {"name": name, "state": "unknown", **record}
         if format_ == "json":
@@ -392,6 +404,27 @@ def show_command(
     option(
         "--workload", is_flag=True, help="Perform partial backup of workload entities."
     ),
+    option(
+        "--detached-parts",
+        is_flag=True,
+        help="Also backup detached parts of selected tables.",
+    ),
+    option(
+        "--detached-parts-disk",
+        "--detached-parts-disks",
+        "detached_parts_disks",
+        type=List(),
+        default="object_storage",
+        show_default=True,
+        help="Comma-separated disk names whose detached directories are backed up.",
+    ),
+    option(
+        "--detached-parts-reason",
+        "--detached-parts-reasons",
+        "detached_parts_reasons",
+        type=List(),
+        help="Comma-separated detach reasons. By default all reasons are included; pass an empty value to select user-detached parts.",
+    ),
 )
 @option_group(
     "Cloud Storage",
@@ -438,6 +471,12 @@ def show_command(
         is_flag=True,
         help="Enables force mode (backup.min_interval is ignored).",
     ),
+    option(
+        "--keep-going",
+        is_flag=True,
+        help="Leave out a data part, or the data of a table, that cannot be "
+        "backed up, instead of failing the whole backup. Overrides backup.keep_going.",
+    ),
 )
 @constraint(mutually_exclusive, ["schema_only", "access"])
 @constraint(mutually_exclusive, ["schema_only", "data"])
@@ -454,6 +493,7 @@ def backup_command(
     databases: list,
     tables: list,
     force: bool,
+    keep_going: bool,
     label: list,
     schema_only: bool,
     freeze_timeout: int,
@@ -464,11 +504,16 @@ def backup_command(
     nc: bool,
     workload: bool,
     copy_cloud_storage_data: bool,
+    detached_parts: bool,
+    detached_parts_disks: list[str],
+    detached_parts_reasons: list[str] | None,
 ) -> None:
     """Perform backup."""
     # pylint: disable=too-many-arguments,too-many-locals
     if copy_cloud_storage_data:
         ch_backup.config.merge({"cloud_storage": {"copy_data": True}})
+    if keep_going:
+        ch_backup.config.merge({"backup": {"keep_going": True}})
     if freeze_timeout:
         logging.info(f"ALTER FREEZE timeout force set to {freeze_timeout} sec.")
         ch_backup.reload_config(
@@ -486,7 +531,15 @@ def backup_command(
         access, data, schema, udf, nc, workload, schema_only
     )
     name, msg = ch_backup.backup(
-        sources, name, db_names=databases, tables=tables, force=force, labels=labels
+        sources,
+        name,
+        db_names=databases,
+        tables=tables,
+        force=force,
+        labels=labels,
+        include_detached_parts=detached_parts,
+        detached_parts_disks=detached_parts_disks,
+        detached_parts_reasons=detached_parts_reasons,
     )
 
     if msg:

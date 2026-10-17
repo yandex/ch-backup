@@ -12,8 +12,10 @@ from click.testing import CliRunner, Result
 
 from ch_backup import cli
 from ch_backup.backup.copy_report import BackupCopyResult
-from ch_backup.backup.metadata import BackupMetadata, BackupState
+from ch_backup.backup.metadata import BackupMetadata, BackupState, TableMetadata
+from ch_backup.backup.metadata.table_metadata import DataSkippedReason
 from ch_backup.backup.sources import BackupSources
+from ch_backup.clickhouse.models import Database
 from ch_backup.exceptions import StorageError, TerminatingSignal
 from tests.unit.test_backup_copy import CopyTestContext, _backup
 from tests.unit.utils import parametrize
@@ -266,6 +268,18 @@ def test_backup_command_copy_cloud_storage_data_merges_config():
     )
 
 
+def test_backup_command_keep_going_merges_config():
+    """
+    The flag must be passed to the logic through the configuration, so that a
+    service can turn it on without changing how the command is called.
+    """
+    backup_mock = _invoke_backup_command(["--keep-going"])
+
+    backup_mock.config.merge.assert_called_once_with(  # pylint: disable=no-member
+        {"backup": {"keep_going": True}}
+    )
+
+
 def test_backup_command_without_copy_cloud_storage_data_keeps_config():
     """
     Without the flag the configuration must be left as it is.
@@ -378,6 +392,33 @@ def test_list_command_with_unreadable_metadata(format_, flags):
         )
 
 
+@pytest.mark.parametrize("format_", ["json", "table"])
+def test_list_command_reports_tables_with_skipped_data(format_):
+    """An incomplete backup is told apart without reading its full metadata."""
+    backup = MagicMock()
+    incomplete = BackupMetadata("incomplete", "2", "26.6", "%Y-%m-%d")
+    incomplete.state = BackupState.CREATED
+    incomplete.add_database(Database("db", "Atomic", None, None, None))
+    incomplete.add_table(
+        TableMetadata(
+            "db", "skipped", "MergeTree", None, DataSkippedReason.BACKUP_FAILED
+        )
+    )
+    incomplete.add_table(TableMetadata("db", "partial", "MergeTree", None))
+    incomplete.skip_part("db", "partial", "all_1_1_0")
+    backup.list.return_value = [incomplete]
+
+    result = _invoke(cli.list_command, ["list", "-v", "--format", format_], backup)
+
+    assert result.exit_code == 0
+    if format_ == "json":
+        row = json.loads(result.stdout)[0]
+        assert (row["data_skipped_tables"], row["incomplete_tables"]) == (1, 1)
+    else:
+        assert "data_skipped_tables" in result.stdout
+        assert "incomplete_tables" in result.stdout
+
+
 def test_list_command_requires_verbose_for_unreadable_entries():
     """Reject the flag combination before reading storage."""
     backup = MagicMock()
@@ -415,3 +456,46 @@ def test_delete_command_accepts_unreadable_backup():
     result = _invoke(cli.delete_command, ["delete", "broken"], backup)
     assert result.exit_code == 0, result.output
     backup.delete.assert_called_once_with("broken", False)
+
+
+def test_backup_help_lists_detached_parts_filters() -> None:
+    result = CliRunner().invoke(cli.cli.commands["backup"], ["--help"])
+
+    assert result.exit_code == 0
+    assert "--detached-parts" in result.output
+    assert "--detached-parts-disks" in result.output
+    assert "--detached-parts-reasons" in result.output
+
+
+def test_empty_detached_reason_is_preserved_by_cli_parser() -> None:
+    with cli.cli.commands["backup"].make_context(
+        "backup", ["--detached-parts-reason", ""]
+    ) as context:
+        assert context.params["detached_parts_reasons"] == [""]
+
+
+def test_detached_disks_are_parsed_as_a_list() -> None:
+    with cli.cli.commands["backup"].make_context(
+        "backup",
+        ["--detached-parts-disk", "object_storage,archive_storage"],
+    ) as context:
+        assert context.params["detached_parts_disks"] == [
+            "object_storage",
+            "archive_storage",
+        ]
+
+
+def test_detached_parts_are_opt_in_with_object_storage_default() -> None:
+    backup_mock = _invoke_backup_command([])
+
+    assert backup_mock.backup.call_args.kwargs["include_detached_parts"] is False
+    assert backup_mock.backup.call_args.kwargs["detached_parts_disks"] == [
+        "object_storage"
+    ]
+
+
+def test_detached_filter_without_opt_in_does_not_enable_backup() -> None:
+    backup_mock = _invoke_backup_command(["--detached-parts-disk", "default"])
+
+    assert backup_mock.backup.call_args.kwargs["include_detached_parts"] is False
+    assert backup_mock.backup.call_args.kwargs["detached_parts_disks"] == ["default"]

@@ -11,15 +11,18 @@ from contextlib import contextmanager, suppress
 from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE  # type: ignore
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from ch_backup import logging
-from ch_backup.backup.metadata import TableMetadata, split_part_name
+from ch_backup.backup.metadata import TableMetadata
+from ch_backup.backup.metadata.table_metadata import split_part_name
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.calculators import calc_aligned_files_size
 from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.clickhouse.models import (
+    DETACH_REASONS,
     Database,
+    DetachedPart,
     Disk,
     FrozenPart,
     Table,
@@ -34,6 +37,7 @@ from ch_backup.util import (
     escape,
     list_dir_files,
     retry,
+    scan_dir_files,
     strip_query,
 )
 from ch_backup.zookeeper.zookeeper import ZookeeperCTL
@@ -255,18 +259,6 @@ DROP_UDF_SQL = strip_query(
 DROP_NAMED_COLLECTION_SQL = strip_query(
     """
     DROP NAMED COLLECTION `{nc_name}`
-"""
-)
-
-DROP_WORKLOAD_SQL = strip_query(
-    """
-    DROP WORKLOAD IF EXISTS `{entity_name}`
-"""
-)
-
-DROP_RESOURCE_SQL = strip_query(
-    """
-    DROP RESOURCE IF EXISTS `{entity_name}`
 """
 )
 
@@ -526,10 +518,10 @@ ACCESS_ENTITY_TABLES = {
 
 GET_WORKLOAD_ENTITIES_QUERY_SQL = strip_query(
     f"""
-    SELECT name, type FROM (
-        SELECT name, '{WorkloadEntityType.WORKLOAD.value}' AS type FROM system.workloads
+    SELECT name, type, create_query FROM (
+        SELECT name, '{WorkloadEntityType.WORKLOAD.value}' AS type, create_query FROM system.workloads
         UNION ALL
-        SELECT name, '{WorkloadEntityType.RESOURCE.value}' AS type FROM system.resources
+        SELECT name, '{WorkloadEntityType.RESOURCE.value}' AS type, create_query FROM system.resources
     )
     ORDER BY name
     FORMAT JSON
@@ -1244,18 +1236,6 @@ class ClickhouseCTL:
         """
         self._ch_client.query(DROP_NAMED_COLLECTION_SQL.format(nc_name=escape(nc_name)))
 
-    def drop_workload(self, entity_name: str) -> None:
-        """
-        Drop WORKLOAD entity.
-        """
-        self._ch_client.query(DROP_WORKLOAD_SQL.format(entity_name=escape(entity_name)))
-
-    def drop_resource(self, entity_name: str) -> None:
-        """
-        Drop RESOURCE entity.
-        """
-        self._ch_client.query(DROP_RESOURCE_SQL.format(entity_name=escape(entity_name)))
-
     def system_drop_replica(self, replica: str, zookeeper_path: str) -> None:
         """
         System drop replica query.
@@ -1313,6 +1293,102 @@ class ClickhouseCTL:
         """
         return os.path.join(self._get_table_detached_path(table, disk_name), part_name)
 
+    def scan_detached_parts(
+        self,
+        table: Table,
+        disk_names: Sequence[str] = None,
+        reasons: Sequence[str] = None,
+    ) -> Iterable[DetachedPart]:
+        """Yield detached parts found in the selected disks' directories.
+
+        The filesystem is the source of truth. Known ClickHouse detach reason
+        prefixes take precedence over parsing the whole directory name as a
+        MergeTree part; a valid part name without such a prefix has no reason.
+        """
+        reason_filter = set(reasons or [])
+
+        selected: list[tuple[str, Disk, str]] = []
+        if disk_names:
+            for disk_name in dict.fromkeys(disk_names):
+                disk = self._disks.get(disk_name)
+                if disk is None:
+                    raise RuntimeError(f"Disk not found: {disk_name}")
+                selected.extend(
+                    (disk_name, disk, data_path)
+                    for data_path, table_disk in table.paths_with_disks
+                    if table_disk.path == disk.path
+                )
+        else:
+            selected.extend(
+                (disk.name, disk, data_path)
+                for data_path, disk in table.paths_with_disks
+            )
+
+        scanned_paths: set[str] = set()
+        for disk_name, disk, data_path in selected:
+            detached_path = os.path.join(data_path, "detached")
+            if detached_path in scanned_paths:
+                continue
+            scanned_paths.add(detached_path)
+
+            try:
+                entries = sorted(
+                    os.scandir(detached_path), key=lambda entry: entry.name
+                )
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except OSError as e:
+                logging.warning(
+                    'Detached directory is not accessible and will be skipped: "{}": {}',
+                    detached_path,
+                    e,
+                )
+                continue
+
+            for entry in entries:
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+
+                    reason = _get_detached_part_reason(entry.name)
+                    if reason_filter and reason not in reason_filter:
+                        continue
+
+                    rel_paths = list(scan_dir_files(Path(entry.path)))
+                    checksum = _get_detached_part_checksum(entry.path, rel_paths, disk)
+
+                    # Detached object-storage parts contain local metadata files.
+                    # Those files are what the backup archives, so their aligned
+                    # size (not the size of referenced bucket objects) is recorded.
+                    size = calc_aligned_files_size(
+                        [Path(entry.path) / file for file in rel_paths],
+                        alignment=BLOCKSIZE,
+                    )
+
+                    yield DetachedPart(
+                        database=table.database,
+                        table=table.name,
+                        name=entry.name,
+                        reason=reason,
+                        disk_name=disk_name,
+                        path=entry.path,
+                        checksum=checksum,
+                        size=size,
+                        files=rel_paths,
+                        object_storage=disk.type == "s3",
+                    )
+                except FileNotFoundError:
+                    logging.warning(
+                        'Detached part directory disappeared while scanning: "{}"',
+                        entry.path,
+                    )
+                except OSError as e:
+                    logging.warning(
+                        'Detached part directory is not accessible and will be skipped: "{}": {}',
+                        entry.path,
+                        e,
+                    )
+
     def get_version(self) -> str:
         """
         Get ClickHouse version.
@@ -1365,9 +1441,12 @@ class ClickhouseCTL:
         backup_name: str,
         copy_data: bool = False,
         fail_on_unparsable_metadata: bool = False,
+        on_error: Callable[[str, Exception], object] | None = None,
     ) -> Iterable[FrozenPart]:
         """
         Yield frozen parts from specific disk and path.
+
+        A part that cannot be read is passed to on_error and skipped, if given.
         """
         table_relative_path = os.path.relpath(data_path, disk.path)
         path = os.path.join(disk.path, "shadow", backup_name, table_relative_path)
@@ -1379,19 +1458,21 @@ class ClickhouseCTL:
         for dir_entry in os.scandir(path):
             part = dir_entry.name
             part_path = dir_entry.path
-            rel_paths = list_dir_files(part_path)
-            if disk.keeps_object_metadata:
-                checksum, objects_size = _get_cloud_part_checksum_and_size(
-                    part_path, rel_paths, fail_on_unparsable_metadata
-                )
-            else:
-                checksum, objects_size = _get_part_checksum(part_path), 0
-
-            if copy_data and disk.keeps_object_metadata:
-                size = objects_size
-            else:
-                abs_paths = [Path(part_path) / file for file in rel_paths]
-                size = calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE)
+            try:
+                rel_paths = list_dir_files(part_path)
+                if copy_data and disk.keeps_object_metadata:
+                    checksum, size = _get_cloud_part_checksum_and_size(
+                        part_path, rel_paths, fail_on_unparsable_metadata
+                    )
+                else:
+                    checksum = _get_part_checksum(part_path)
+                    abs_paths = [Path(part_path) / file for file in rel_paths]
+                    size = calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE)
+            except Exception as e:
+                if on_error is None:
+                    raise
+                on_error(part, e)
+                continue
             logging.debug(
                 f"scan_freezed_parts: {table.name} -> {escape(table.name)} \n {part}"
             )
@@ -1510,15 +1591,26 @@ class ClickhouseCTL:
         resp = self._ch_client.query(GET_SQL_NAMED_COLLECTIONS_CREATE_QUERY_SQL)
         return {row["name"]: row["create_query"] for row in resp["data"]}
 
-    def get_workload_entities_query(self) -> list[tuple[str, WorkloadEntityType]]:
+    def get_workload_entities(self) -> dict[str, tuple[WorkloadEntityType, str]]:
         """
-        Get workload entities (WORKLOADs and RESOURCEs) from system tables.
+        Get workload entity names, types and live create queries from system tables.
         """
         resp = self._ch_client.query(GET_WORKLOAD_ENTITIES_QUERY_SQL)
-        return [
-            (row["name"], WorkloadEntityType(row["type"]))
+        return {
+            row["name"]: (WorkloadEntityType(row["type"]), row["create_query"])
             for row in resp.get("data", [])
-        ]
+        }
+
+    def format_query(self, query: str) -> str:
+        """
+        Canonicalize SQL using the server parser without changing literal values.
+        """
+        # Hex encoding preserves quotes, backslashes and whitespace in the input.
+        query_hex = query.encode("utf-8").hex()
+        resp = self._ch_client.query(
+            f"SELECT formatQuerySingleLine(unhex('{query_hex}')) AS query FORMAT JSON"
+        )
+        return resp["data"][0]["query"]
 
     def decrypt_aes_ctr(
         self, data_hex: str, key_hex: str, key_size: int, iv_hex: str
@@ -1765,6 +1857,39 @@ def _get_part_checksum(part_path: str) -> str:
     """
     with open(os.path.join(part_path, "checksums.txt"), "rb") as f:
         return md5(f.read()).hexdigest()  # nosec
+
+
+def _get_detached_part_reason(part_name: str) -> str:
+    """Parse a detached directory name in the same order as ClickHouse."""
+    name_to_parse = part_name
+    try_suffix_pos = part_name.rfind("_try")
+    try_suffix = part_name[try_suffix_pos + 4 :]
+    if try_suffix_pos != -1 and try_suffix.isascii() and try_suffix.isdigit():
+        name_to_parse = part_name[:try_suffix_pos]
+
+    prefix, separator, _ = name_to_parse.partition("_")
+    if separator and prefix in DETACH_REASONS:
+        return prefix
+    try:
+        split_part_name(name_to_parse)
+        return ""
+    except ValueError:
+        return prefix if separator else name_to_parse
+
+
+def _get_detached_part_checksum(
+    part_path: str, rel_paths: Sequence[str], disk: Disk
+) -> str:
+    """Calculate a detached part checksum according to its disk format."""
+    try:
+        if disk.keeps_object_metadata:
+            checksum, _ = _get_cloud_part_checksum_and_size(part_path, rel_paths)
+            return checksum
+        return _get_part_checksum(part_path)
+    except OSError:
+        # Broken detached parts are precisely one of the things this feature must
+        # preserve, and they may have no checksums.txt.
+        return ""
 
 
 def _get_cloud_part_checksum_and_size(
