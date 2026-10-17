@@ -105,6 +105,7 @@ Options:
 
 Commands:
   backup   Perform backup.
+  check    Check that backups are readable and their data is in place.
   copy     Copy backup to another storage (another S3 bucket, endpoint or path).
   delete   Delete particular backup.
   list     List existing backups.
@@ -112,6 +113,33 @@ Commands:
   restore  Restore data from a particular backup.
   show     Show details for a particular backup.
 ```
+
+### Checking backups
+
+`ch-backup check` reads backups (or all backups with `--all`) and reports for each of them whether
+it can be restored completely. Nothing is written, ClickHouse and ZooKeeper are not used.
+
+```bash
+ch-backup check --all
+ch-backup check --deep --workers 8 --tmp-dir /var/tmp --format json 20261010T000000
+```
+
+- Light and full metadata and schemas are downloaded and decrypted.
+- Data of a part may be stored in an older backup it links to. Each stored object is checked once,
+  and its problem is reported for every backup linking to it.
+- Without `--deep`, presence and size of part tarballs are checked. `--deep` downloads parts as restore
+  does into `--tmp-dir` and compares their files and `checksums.txt` with metadata. Content of encrypted
+  parts is verified completely, content of not encrypted parts is verified only for `checksums.txt`.
+- For cloud storage disks, disk metadata of tables is downloaded and parsed. Data copied into the backup
+  with `--copy-cloud-storage-data` is checked for presence and size of objects; objects in the bucket of
+  the disk are not checked and are counted in `unverified`.
+- Tables whose data was left out of the backup with a reason recorded in its metadata, such as a unique
+  key, are listed in `skipped_data`: there is nothing to check in them, and restore brings back only
+  their schema. A backup made with `--schema-only` holds no data at all and is reported as intact.
+- Objects whose content can't be verified are counted in `unverified`. The command exits with code 2 if
+  any backup in the state `created` or with unreadable state is broken; backups in other states, such as
+  `failed`, are reported but don't affect the exit code.
+- Backups are not locked, so a backup deleted or purged during the check may be reported as broken.
 
 ### Copying backups to another storage
 

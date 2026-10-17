@@ -35,3 +35,4 @@ features/unique_key.feature
 features/backup_unreadable_metadata.feature
 features/restore_from_replica.feature
 features/backup_keep_going.feature
+features/backup_check.feature

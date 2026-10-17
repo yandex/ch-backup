@@ -830,7 +830,7 @@ class BackupLayout:
         Check data of a part against sizes of its stored files keyed by file name.
         """
         tar_name = f"{part.deduplicated_part_name}.tar"
-        if list(files) == [tar_name]:
+        if part.tarball and list(files) == [tar_name]:
             target_size = self._target_part_size(part, encrypted=part.encrypted)
             if target_size != files[tar_name]:
                 logging.warning(
