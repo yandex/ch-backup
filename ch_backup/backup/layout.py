@@ -4,6 +4,7 @@ Management of backup data layout.
 
 # pylint: disable=too-many-lines
 
+import json
 import os
 from contextlib import contextmanager
 from functools import partial
@@ -13,6 +14,7 @@ from typing import (
     Any,
     BinaryIO,
     Callable,
+    Iterable,
     Iterator,
     Literal,
     Sequence,
@@ -22,22 +24,39 @@ from urllib.parse import quote
 from nacl.exceptions import CryptoError
 
 from ch_backup import logging
-from ch_backup.backup.metadata import BackupMetadata, PartMetadata
+from ch_backup.backup.metadata import (
+    BackupMetadata,
+    DetachedPartMetadata,
+    PartMetadata,
+    sanitize_backup_name,
+)
 from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.calculators import calc_encrypted_size, calc_tarball_size
-from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
+from ch_backup.clickhouse.models import Database, DetachedPart, Disk, FrozenPart, Table
+from ch_backup.clickhouse.object_storage_metadata import (
+    ObjectStorageMetadataError,
+    parse_object_storage_metadata,
+)
 from ch_backup.config import Config
-from ch_backup.encryption import get_encryption
-from ch_backup.exceptions import StorageError
+from ch_backup.encryption import get_encryption_class
+from ch_backup.exceptions import ConfigurationError, StorageError, is_broken_executor
 from ch_backup.storage import StorageLoader
 from ch_backup.storage.engine.s3 import S3RetryingError
-from ch_backup.util import dir_is_empty, escape_metadata_file_name
+from ch_backup.storage.object_copy import CopyEntry
+from ch_backup.util import (
+    CLOUD_STORAGE_EXCLUDE_FILE_NAMES,
+    dir_is_empty,
+    escape_metadata_file_name,
+)
 
 BACKUP_META_FNAME = "backup_struct.json"
 BACKUP_LIGHT_META_FNAME = "backup_light_struct.json"
 ACCESS_CONTROL_FNAME = "access_control.tar"
 DATABASES_FNAME = "databases.tar"
 COMPRESSED_EXTENSION = ".gz"
+CLOUD_STORAGE_METADATA_DIR = "disks"
+CLOUD_STORAGE_DATA_DIR = "cloud_storage"
+MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE = 1024 * 1024
 
 
 # pylint: disable=too-many-public-methods
@@ -52,24 +71,33 @@ class BackupLayout:
         self._access_control_path = config["clickhouse"]["access_control_path"]
         self._metadata_path = config["clickhouse"]["metadata_path"]
         self._named_collections_path = config["clickhouse"]["named_collections_path"]
-        self._workload_path = config["clickhouse"]["workload_path"]
         enc_conf = config["encryption"]
         self._encryption_chunk_size = enc_conf["chunk_size"]
-        self._encryption_metadata_size = get_encryption(
-            enc_conf["type"], enc_conf
+        self._encryption_metadata_size = get_encryption_class(
+            enc_conf["type"]
         ).metadata_size()
 
-    def upload_backup_metadata(self, backup: BackupMetadata) -> None:
+    def upload_backup_metadata(
+        self, backup: BackupMetadata, light_only: bool = False
+    ) -> None:
         """
         Upload backup metadata.
         """
         remote_path = self._backup_metadata_path(backup.name)
         remote_light_path = self._backup_light_metadata_path(backup.name)
+        previous_encryption = backup.metadata_encrypted
         try:
-            logging.debug("Saving backup metadata in {}", remote_path)
-            self._storage_loader.upload_data(
-                backup.dump_json(light=False), remote_path=remote_path, encryption=True
-            )
+            if not light_only:
+                backup.metadata_encrypted = False
+                logging.debug("Saving backup metadata in {}", remote_path)
+                try:
+                    self._storage_loader.upload_data(
+                        backup.dump_json(light=False),
+                        remote_path=remote_path,
+                    )
+                except Exception:
+                    backup.metadata_encrypted = previous_encryption
+                    raise
             logging.debug("Saving backup light metadata in {}", remote_light_path)
             self._storage_loader.upload_data(
                 backup.dump_json(light=True), remote_path=remote_light_path
@@ -212,7 +240,11 @@ class BackupLayout:
             raise StorageError(msg) from e
 
     def upload_data_part(
-        self, backup_meta: BackupMetadata, fpart: FrozenPart, callback: Callable
+        self,
+        backup_meta: BackupMetadata,
+        fpart: FrozenPart,
+        callback: Callable,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         """
         Upload part data.
@@ -240,21 +272,72 @@ class BackupLayout:
                 encryption=backup_meta.encrypted,
                 delete=True,
                 callback=callback,
+                on_error=on_error,
             )
         except Exception as e:
             msg = f"Failed to create async upload of {remote_path}"
             raise StorageError(msg) from e
+
+    def has_frozen_cloud_storage_data(
+        self, backup_meta: BackupMetadata, disk: Disk, table: Table
+    ) -> bool:
+        """
+        Return True if a cloud storage disk holds shadow data of a table.
+        """
+        assert table.path_on_disk, f"Table {table} doesn't store data on disk"
+
+        shadow_path = _table_shadow_path(
+            disk.path, backup_meta.get_sanitized_name(), table.path_on_disk
+        )
+        return not dir_is_empty(shadow_path, CLOUD_STORAGE_EXCLUDE_FILE_NAMES)
+
+    def upload_detached_part(
+        self,
+        backup_meta: BackupMetadata,
+        detached_part: DetachedPart,
+        callback: Callable,
+    ) -> None:
+        """Upload a detached part without removing it from ClickHouse storage."""
+        logging.debug(
+            'Uploading detached data part {} of "{}"."{}" from disk {}',
+            detached_part.name,
+            detached_part.database,
+            detached_part.table,
+            detached_part.disk_name,
+        )
+        remote_dir_path = _detached_part_path(
+            self.get_backup_path(backup_meta.name),
+            detached_part.database,
+            detached_part.table,
+            detached_part.disk_name,
+            detached_part.name,
+        )
+        remote_path = os.path.join(remote_dir_path, detached_part.name + ".tar")
+        try:
+            self._storage_loader.upload_files_tarball(
+                dir_path=detached_part.path,
+                files=detached_part.files,
+                remote_path=remote_path,
+                is_async=True,
+                encryption=backup_meta.encrypted,
+                delete=False,
+                callback=callback,
+            )
+        except Exception as e:
+            raise StorageError(f"Failed to create async upload of {remote_path}") from e
 
     def upload_cloud_storage_metadata(
         self,
         backup_meta: BackupMetadata,
         disk: Disk,
         table: Table,
-        delete_after_upload: bool = False,
-    ) -> bool:
+        source_disk: Disk | None = None,
+    ) -> None:
         """
-        Upload specified disk metadata files from given directory path as a tarball.
-        Returns: whether backed up disk had data.
+        Upload disk metadata files of a table as a tarball.
+
+        Metadata is read from source_disk when data is copied into the backup:
+        ClickHouse writes metadata of the copies to a temporary disk.
         """
         assert table.path_on_disk, f"Table {table} doesn't store data on disk"
 
@@ -267,10 +350,9 @@ class BackupLayout:
             disk.name,
             compression,
         )
-        shadow_path = _table_shadow_path(disk.path, backup_name, table.path_on_disk)
-        exclude_file_names = ["frozen_metadata.txt"]
-        if dir_is_empty(shadow_path, exclude_file_names):
-            return False
+        shadow_path = _table_shadow_path(
+            (source_disk or disk).path, backup_name, table.path_on_disk
+        )
 
         logging.debug(f'Uploading "{shadow_path}" content to "{remote_path}"')
 
@@ -279,16 +361,22 @@ class BackupLayout:
                 dir_path=shadow_path,
                 remote_path=remote_path,
                 tar_base_dir=table.path_on_disk,
-                exclude_file_names=exclude_file_names,
+                exclude_file_names=CLOUD_STORAGE_EXCLUDE_FILE_NAMES,
                 is_async=True,
                 encryption=backup_meta.cloud_storage.encrypted,
-                delete=delete_after_upload,
+                delete=False,
                 compression=compression,
+                file_reader=(
+                    self._read_plaintext_cloud_metadata
+                    if not backup_meta.cloud_storage.encrypted
+                    else None
+                ),
             )
+        except StorageError:
+            raise
         except Exception as e:
             msg = f'Failed to upload "{shadow_path}" content to "{remote_path}"'
             raise StorageError(msg) from e
-        return True
 
     def upload_named_collections_ddl_from_file(
         self, local_path: str, backup_name: str, nc_name: str
@@ -367,25 +455,6 @@ class BackupLayout:
         )
         return self._storage_loader.download_data(remote_path, encryption=True)
 
-    def get_local_workload_entity_create_statement(
-        self, entity_name: str
-    ) -> str | None:
-        """
-        Read workload entity create statement from local file.
-        """
-        local_path = os.path.join(
-            self._workload_path, f"{escape_metadata_file_name(entity_name)}.sql"
-        )
-        try:
-            return Path(local_path).read_bytes().decode("utf-8")
-        except OSError as e:
-            logging.debug(
-                'Cannot load a create statement of the workload entity "{}": {}',
-                entity_name,
-                str(e),
-            )
-            return None
-
     def get_workload_entity_create_statement(
         self, backup_meta: BackupMetadata, filename: str
     ) -> str:
@@ -405,18 +474,35 @@ class BackupLayout:
             self._config["path_root"], recursive=False, absolute=False
         )
 
-    def _load_metadata(self, path: str, encryption: bool) -> BackupMetadata:
+    def _load_metadata(
+        self, path: str, allow_legacy_encryption: bool
+    ) -> BackupMetadata:
         try:
-            data = self._storage_loader.download_data(path, encryption=encryption)
-            logging.debug(
-                "Downloaded backup metadata: {}",
-                data,
-            )
-            return BackupMetadata.load_json(data)
-        except CryptoError:
-            raise
+            data = self._storage_loader.download_data(path, encoding=None)
+            try:
+                backup = BackupMetadata.load_json(data)
+                if allow_legacy_encryption:
+                    backup.metadata_encrypted = False
+                return backup
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                if not allow_legacy_encryption:
+                    raise
+            # Reuse the download pipeline's decryption without fetching the object again.
+            data = self._storage_loader.decrypt_data(data)
+            backup = BackupMetadata.load_json(data)
+            backup.metadata_encrypted = True
+            return backup
+        except CryptoError as e:
+            raise StorageError(
+                f"Failed to decrypt legacy backup metadata {path}: "
+                "incorrect encryption key or corrupt ciphertext"
+            ) from e
+        except ConfigurationError as e:
+            raise StorageError(
+                f"Backup metadata {path} is not valid plaintext JSON; {e}"
+            ) from e
         except Exception as e:
-            raise StorageError("Failed to download backup metadata") from e
+            raise StorageError(f"Failed to download backup metadata {path}") from e
 
     def get_backup(
         self, backup_name: str, use_light_meta: bool = False
@@ -433,20 +519,17 @@ class BackupLayout:
         if not self._storage_loader.path_exists(path):
             return None
 
-        # New backup metadata is encrypted
-        # Retry in case it is old and not encrypted
-        try:
-            return self._load_metadata(path, not use_light_meta)
-        except CryptoError:
-            logging.exception(
-                "Attempt to download encrypted metadata from {} has failed. Will try to download it as not encrypted",
-                path,
-            )
-        return self._load_metadata(path, False)
+        return self._load_metadata(path, not use_light_meta)
 
-    def get_backups(self, use_light_meta: bool = False) -> list[BackupMetadata]:
+    def get_backups(
+        self,
+        use_light_meta: bool = False,
+        *,
+        unreadable: dict[str, str] | None = None,
+    ) -> list[BackupMetadata]:
         """
         Return list of existing backups sorted by start_time in descent order.
+        If unreadable is provided, collect per-backup read errors there.
         """
         logging.debug(
             "Collecting {} of existing backups",
@@ -460,11 +543,22 @@ class BackupLayout:
                 "light metadata" if use_light_meta else "metadata",
                 name,
             )
-            backup = self.get_backup(name, use_light_meta)
+            try:
+                backup = self.get_backup(name, use_light_meta)
+            except (StorageError, S3RetryingError) as exc:
+                if unreadable is None:
+                    raise
+                error: BaseException = exc
+                while error.__cause__ is not None:
+                    error = error.__cause__
+                message = str(error).strip().split("\n", 1)[0]
+                unreadable[name] = f"{type(error).__name__}: {message}"
+                logging.exception("Failed to read metadata of backup {}", name)
+                continue
             if backup:
                 backups.append(backup)
 
-        return sorted(backups, key=lambda b: b.start_time.isoformat(), reverse=True)
+        return sorted(backups, key=lambda b: b.start_time, reverse=True)
 
     def reload_backup(
         self, backup: BackupMetadata, use_light_meta: bool = False
@@ -478,13 +572,7 @@ class BackupLayout:
             else self._backup_metadata_path(backup.name)
         )
 
-        # New backup metadata is encrypted
-        # Retry in case it is old and not encrypted
-        try:
-            return self._load_metadata(path, not use_light_meta)
-        except CryptoError:
-            pass
-        return self._load_metadata(path, False)
+        return self._load_metadata(path, not use_light_meta)
 
     def get_database_create_statement(
         self, backup_meta: BackupMetadata, db_name: str
@@ -692,29 +780,12 @@ class BackupLayout:
                 source_part_name,
             )
             remote_files = self._storage_loader.list_dir(remote_dir_path)
-
+            files = dict.fromkeys(remote_files, 0)
             if remote_files == [f"{source_part_name}.tar"]:
-                actual_size = self._storage_loader.get_file_size(
-                    os.path.join(remote_dir_path, f"{source_part_name}.tar")
+                files[remote_files[0]] = self._storage_loader.get_file_size(
+                    os.path.join(remote_dir_path, remote_files[0])
                 )
-                target_size = self._target_part_size(part, encrypted=part.encrypted)
-                if target_size != actual_size:
-                    logging.warning(
-                        f"Part {source_part_name} files stored in tar, size not match {target_size} != {actual_size}"
-                    )
-                    return False
-                return True
-
-            notfound_files = set(part.files) - set(remote_files)
-            if notfound_files:
-                logging.warning(
-                    "Some part files were not found in {}: {}",
-                    remote_dir_path,
-                    ", ".join(notfound_files),
-                )
-                return False
-
-            return True
+            return self.check_data_part_files(part, files)
 
         except S3RetryingError:
             logging.warning(
@@ -723,13 +794,107 @@ class BackupLayout:
             )
             return False
 
-    def _get_cloud_storage_metadata_remote_paths(
+    def get_table_data_files(
+        self, backup_name: str, database: str, table: str
+    ) -> dict[str, dict[str, int]]:
+        """
+        List data of a table stored in a backup at once: file sizes grouped by part name.
+
+        Backups made by older versions keep data under unescaped names, they are
+        listed if nothing is found under escaped ones. A failed listing gives no
+        files, so the parts are uploaded again.
+        """
+        backup_path = self.get_backup_path(backup_name)
+        try:
+            for escape_names in (True, False):
+                prefix = _part_path(
+                    backup_path, database, table, "", escape_names=escape_names
+                ).strip("/")
+                parts: dict[str, dict[str, int]] = {}
+                for key, size in self._storage_loader.list_dir_with_sizes(
+                    prefix
+                ).items():
+                    part_name, _, file_name = key[len(prefix) + 1 :].partition("/")
+                    parts.setdefault(part_name, {})[file_name] = size
+                if parts:
+                    return parts
+        except S3RetryingError:
+            logging.warning(
+                f"Failed to list data of {database}.{table} in backup {backup_name}, consider it's broken",
+                exc_info=True,
+            )
+        return {}
+
+    def check_data_part_files(self, part: PartMetadata, files: dict[str, int]) -> bool:
+        """
+        Check data of a part against sizes of its stored files keyed by file name.
+        """
+        tar_name = f"{part.deduplicated_part_name}.tar"
+        if list(files) == [tar_name]:
+            target_size = self._target_part_size(part, encrypted=part.encrypted)
+            if target_size != files[tar_name]:
+                logging.warning(
+                    f"Part {tar_name} size not match {target_size} != {files[tar_name]}"
+                )
+                return False
+            return True
+
+        notfound_files = set(part.files) - set(files)
+        if notfound_files:
+            logging.warning(
+                "Some files of part {} were not found: {}",
+                part.deduplicated_part_name,
+                ", ".join(notfound_files),
+            )
+            return False
+
+        return True
+
+    def check_detached_part(self, backup_name: str, part: DetachedPartMetadata) -> bool:
+        """Check availability and size of a detached part archive."""
+        try:
+            remote_dir_path = self._get_escaped_if_exists(
+                _detached_part_path,
+                self.get_backup_path(backup_name),
+                part.database,
+                part.table,
+                part.disk_name,
+                part.name,
+            )
+            remote_files = self._storage_loader.list_dir(remote_dir_path)
+            if remote_files != [f"{part.name}.tar"]:
+                logging.warning(
+                    "Detached part archive was not found in {}", remote_dir_path
+                )
+                return False
+
+            actual_size = self._storage_loader.get_file_size(
+                os.path.join(remote_dir_path, f"{part.name}.tar")
+            )
+            target_size = self._target_part_size(part, encrypted=part.encrypted)
+            if target_size != actual_size:
+                logging.warning(
+                    f"Detached part {part.name} size does not match {target_size} != {actual_size}"
+                )
+                return False
+            return True
+        except S3RetryingError:
+            logging.warning(
+                f"Failed to check detached data part {part.name}, consider it broken",
+                exc_info=True,
+            )
+            return False
+
+    def get_cloud_storage_metadata_remote_paths(
         self,
         backup_name: str,
         source_disk_name: str,
         compression: bool,
         desired_tables: Sequence[TableMetadata] | Literal["all"],
     ) -> Sequence[str]:
+        """
+        Return remote paths of tarballs with cloud storage metadata of the specified disk.
+        """
         backup_path = self.get_backup_path(backup_name)
         # Check if metadata is stored as 'disks/s3.tar.gz' for backwards compatibility
         old_style_remote_path = _disk_metadata_path(
@@ -738,7 +903,9 @@ class BackupLayout:
         if self._storage_loader.path_exists(old_style_remote_path):
             return [old_style_remote_path]
 
-        disk_path = os.path.join(backup_path, "disks", source_disk_name)
+        disk_path = os.path.join(
+            backup_path, CLOUD_STORAGE_METADATA_DIR, source_disk_name
+        )
         existing_paths = self._storage_loader.list_dir(
             disk_path, recursive=True, absolute=True
         )
@@ -782,6 +949,96 @@ class BackupLayout:
             os.makedirs(path, exist_ok=True)
             yield path
 
+    def has_cloud_storage_metadata(
+        self, backup_name: str, database: str, table: str, disk_name: str
+    ) -> bool:
+        """
+        Check that disk metadata of a table is stored in a backup.
+        """
+        backup_path = self.get_cloud_storage_path(backup_name)
+        return any(
+            self._storage_loader.path_exists(
+                _disk_metadata_path(backup_path, database, table, disk_name, compressed)
+            )
+            for compressed in (True, False)
+        )
+
+    def get_cloud_storage_metadata_files(
+        self, backup_meta: BackupMetadata, remote_path: str
+    ) -> list[tuple[str, bytes]]:
+        """
+        Download tarball with cloud storage metadata and return its files as (file_name, data) pairs.
+        """
+        try:
+            return self._storage_loader.download_data_tarball(
+                remote_path,
+                encryption=backup_meta.cloud_storage.encrypted,
+                compression=backup_meta.cloud_storage.compressed,
+            )
+        except Exception as e:
+            msg = f'Failed to download tarball file "{remote_path}"'
+            raise StorageError(msg) from e
+
+    def upload_cloud_storage_metadata_files(
+        self,
+        backup_meta: BackupMetadata,
+        remote_path: str,
+        files: list[tuple[str, bytes]],
+        callback: Callable | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
+    ) -> None:
+        """
+        Upload files with cloud storage metadata as a tarball.
+        """
+        try:
+            if not backup_meta.cloud_storage.encrypted:
+                self._validate_plaintext_cloud_metadata(files)
+            self._storage_loader.upload_data_tarball(
+                file_names=[file_name for file_name, _ in files],
+                data_list=[data for _, data in files],
+                remote_path=remote_path,
+                is_async=True,
+                encryption=backup_meta.cloud_storage.encrypted,
+                compression=backup_meta.cloud_storage.compressed,
+                callback=callback,
+                on_error=on_error,
+            )
+        except StorageError:
+            raise
+        except Exception as e:
+            msg = f'Failed to create async upload of "{remote_path}"'
+            raise StorageError(msg) from e
+
+    @staticmethod
+    def _read_plaintext_cloud_metadata(file_path: Path) -> bytes:
+        """Bound memory and return exactly the bytes checked for plaintext upload."""
+        with file_path.open("rb") as source:
+            data = source.read(MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE + 1)
+        if len(data) > MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE:
+            raise StorageError(
+                f'Cannot publish unencrypted disk metadata "{file_path}": '
+                "files larger than 1 MiB require cloud_storage.encryption=true"
+            )
+        BackupLayout._validate_plaintext_cloud_metadata([(str(file_path), data)])
+        return data
+
+    @staticmethod
+    def _validate_plaintext_cloud_metadata(files: Iterable[tuple[str, bytes]]) -> None:
+        """Never publish inline file contents in unencrypted disk metadata."""
+        for file_name, data in files:
+            try:
+                metadata = parse_object_storage_metadata(data)
+            except ObjectStorageMetadataError as e:
+                raise StorageError(
+                    f'Cannot publish unencrypted disk metadata "{file_name}": '
+                    "unsupported or malformed metadata"
+                ) from e
+            if metadata.inline_data:
+                raise StorageError(
+                    f'Cannot publish unencrypted disk metadata "{file_name}": '
+                    "inline file data requires cloud_storage.encryption=true"
+                )
+
     def cloud_storage_metadata_exists(
         self, backup_meta: BackupMetadata, disk: Disk
     ) -> bool:
@@ -808,7 +1065,7 @@ class BackupLayout:
         backup_name = backup_meta.get_sanitized_name()
         compression = backup_meta.cloud_storage.compressed
         encryption = backup_meta.cloud_storage.encrypted
-        metadata_remote_paths = self._get_cloud_storage_metadata_remote_paths(
+        metadata_remote_paths = self.get_cloud_storage_metadata_remote_paths(
             backup_name,
             source_disk_name,
             compression,
@@ -838,21 +1095,66 @@ class BackupLayout:
                     msg = f'Failed to download tarball file "{remote_path}"'
                     raise StorageError(msg) from e
 
-    def delete_backup(self, backup_name: str) -> None:
+    def delete_backup(self, backup_name: str, unfreeze: Callable[[], None]) -> None:
         """
         Delete backup data and metadata from storage.
         """
         backup_path = self.get_backup_path(backup_name)
-
         logging.debug("Deleting data in {}", backup_path)
-
+        full_metadata = self._backup_metadata_path(backup_name)
+        light_metadata = self._backup_light_metadata_path(backup_name)
         deleting_files = self._storage_loader.list_dir(
             backup_path, recursive=True, absolute=True
         )
-        self._delete_files(deleting_files)
+        metadata_paths = {full_metadata.lstrip("/"), light_metadata.lstrip("/")}
+        payload_files = [
+            path for path in deleting_files if path.lstrip("/") not in metadata_paths
+        ]
+        if self.get_cloud_storage_path(backup_name) != backup_path:
+            payload_files += self._list_cloud_storage_files(backup_name)
+        if payload_files:
+            self._delete_files(payload_files)
+        self.wait()
+        unfreeze()
+        self._storage_loader.delete_files([full_metadata], is_async=False)
+        self._storage_loader.delete_files([light_metadata], is_async=False)
+
+    def delete_cloud_storage_data(self, backup_name: str) -> None:
+        """
+        Delete cloud storage metadata and copied data of a backup.
+
+        Data of a whole backup is deleted at once, so the caller must be sure
+        that no other backup reuses parts of it.
+        """
+        logging.debug("Deleting cloud storage data of backup {}", backup_name)
+
+        self._delete_files(self._list_cloud_storage_files(backup_name))
+
+    def _list_cloud_storage_files(self, backup_name: str) -> list[str]:
+        """
+        List cloud storage metadata and copied data of a backup.
+
+        Only the two directories are listed, never the whole path: it is formed
+        from the sanitized backup name and may belong to another backup whose
+        name differs only in the characters that get sanitized.
+        """
+        cloud_storage_path = self.get_cloud_storage_path(backup_name)
+
+        deleting_files: list[str] = []
+        for directory in (
+            os.path.join(cloud_storage_path, CLOUD_STORAGE_METADATA_DIR),
+            self.get_cloud_storage_data_path(backup_name),
+        ):
+            deleting_files += self._storage_loader.list_dir(
+                directory, recursive=True, absolute=True
+            )
+        return deleting_files
 
     def delete_data_parts(
-        self, backup_meta: BackupMetadata, parts: Sequence[PartMetadata]
+        self,
+        backup_meta: BackupMetadata,
+        parts: Sequence[PartMetadata],
+        is_async: bool = True,
     ) -> None:
         """
         Delete backup data parts from storage.
@@ -862,24 +1164,78 @@ class BackupLayout:
 
         deleting_files: list[str] = []
         for part in parts:
-            # part.link is the source backup name for deduplicated parts (or None).
-            source_backup_name = part.link or backup_meta.name
-            source_part_name = part.deduplicated_part_name
+            part_files = self.get_data_part_files(backup_meta.name, part)
+            logging.debug("Deleting data part {}", part.name)
+            deleting_files.extend(part_files)
+
+        self._delete_files(deleting_files, is_async)
+
+    def get_data_part_files(self, backup_name: str, part: PartMetadata) -> list[str]:
+        """
+        Return remote paths of data part files.
+        """
+        # part.link is the source backup name for deduplicated parts (or None).
+        source_backup_name = part.link or backup_name
+        part_path = self._get_escaped_if_exists(
+            _part_path,
+            self.get_backup_path(source_backup_name),
+            part.database,
+            part.table,
+            part.deduplicated_part_name,
+        )
+        return [os.path.join(part_path, f) for f in get_data_part_file_names(part)]
+
+    def copy_objects(
+        self,
+        entries: Iterable[CopyEntry],
+        *,
+        keep_going: bool = False,
+        callback: Callable[[CopyEntry], None] | None = None,
+        on_error: Callable[[CopyEntry, BaseException], None] | None = None,
+    ) -> None:
+        """
+        Copy objects from one storage to another as is.
+        """
+        index = 0
+        for index, entry in enumerate(entries, 1):
+            try:
+                self._storage_loader.copy_object(
+                    entry,
+                    is_async=True,
+                    callback=partial(callback, entry) if callback else None,
+                    on_error=partial(on_error, entry) if on_error else None,
+                )
+            except Exception as e:
+                if not keep_going or is_broken_executor(e):
+                    msg = f"Failed to create async copy of {entry.src_path} to {entry.dst_path}"
+                    raise StorageError(msg) from e
+            # Workers limit running copies, not queued futures and their callbacks.
+            # Drain regularly even if all jobs have already finished in the workers.
+            if index % 256 == 0:
+                self.wait(keep_going=keep_going)
+        if index % 256:
+            self.wait(keep_going=keep_going)
+
+    def delete_detached_parts(
+        self,
+        backup_meta: BackupMetadata,
+        parts: Sequence[DetachedPartMetadata],
+    ) -> None:
+        """Delete detached part archives from backup storage."""
+        if not parts:
+            return
+        deleting_files: list[str] = []
+        for part in parts:
             part_path = self._get_escaped_if_exists(
-                _part_path,
-                self.get_backup_path(source_backup_name),
+                _detached_part_path,
+                self.get_backup_path(backup_meta.name),
                 part.database,
                 part.table,
-                source_part_name,
+                part.disk_name,
+                part.name,
             )
-            logging.debug("Deleting data part {}", part_path)
-            if part.tarball:
-                deleting_files.append(
-                    os.path.join(part_path, f"{source_part_name}.tar")
-                )
-            else:
-                deleting_files.extend(os.path.join(part_path, f) for f in part.files)
-
+            logging.debug("Deleting detached data part {}", part_path)
+            deleting_files.append(os.path.join(part_path, f"{part.name}.tar"))
         self._delete_files(deleting_files)
 
     def wait(self, keep_going: bool = False) -> None:
@@ -901,12 +1257,34 @@ class BackupLayout:
         """
         return os.path.join(self._config["path_root"], backup_name)
 
-    def _delete_files(self, remote_paths: Sequence[str]) -> None:
+    def get_cloud_storage_path(self, backup_name: str) -> str:
+        """
+        Get path of the backup directory with cloud storage metadata and data.
+
+        ClickHouse writes cloud storage data under the sanitized backup name,
+        so the whole directory is addressed by it.
+        """
+        return self.get_backup_path(sanitize_backup_name(backup_name))
+
+    def get_cloud_storage_data_path(
+        self, backup_name: str, disk_name: str | None = None
+    ) -> str:
+        """
+        Get path of cloud storage data copied into a backup.
+        """
+        path = os.path.join(
+            self.get_cloud_storage_path(backup_name), CLOUD_STORAGE_DATA_DIR
+        )
+        return os.path.join(path, disk_name) if disk_name else path
+
+    def _delete_files(self, remote_paths: Sequence[str], is_async: bool = True) -> None:
         """
         Delete files from storage.
         """
         try:
-            self._storage_loader.delete_files(remote_paths=remote_paths, is_async=True)
+            self._storage_loader.delete_files(
+                remote_paths=remote_paths, is_async=is_async
+            )
         except Exception as e:
             msg = f'Failed to delete files {", ".join(remote_paths)}'
             raise StorageError(msg) from e
@@ -917,7 +1295,9 @@ class BackupLayout:
     def _backup_light_metadata_path(self, backup_name: str) -> str:
         return os.path.join(self.get_backup_path(backup_name), BACKUP_LIGHT_META_FNAME)
 
-    def _target_part_size(self, part: PartMetadata, encrypted: bool) -> int:
+    def _target_part_size(
+        self, part: PartMetadata | DetachedPartMetadata, encrypted: bool
+    ) -> int:
         """
         Predicts tar archive size after encryption.
         """
@@ -940,6 +1320,32 @@ class BackupLayout:
         if self._storage_loader.path_exists(path, is_dir=True):
             return path
         return path_function(*args, escape_names=False, **kwargs)
+
+
+def get_data_part_relative_dirs(part: PartMetadata) -> list[str]:
+    """
+    Return possible paths of the directory with data part files relative to the backup directory.
+    Escaped path goes first, unescaped path is used by backups made by older versions.
+    """
+    return [
+        _part_path(
+            "",
+            part.database,
+            part.table,
+            part.deduplicated_part_name,
+            escape_names=escape_names,
+        )
+        for escape_names in (True, False)
+    ]
+
+
+def get_data_part_file_names(part: PartMetadata) -> list[str]:
+    """
+    Return names of data part files stored in the data part directory.
+    """
+    if part.tarball:
+        return [f"{part.deduplicated_part_name}.tar"]
+    return list(part.files)
 
 
 def _access_control_data_path(backup_path: str, file_name: str) -> str:
@@ -1019,6 +1425,30 @@ def _part_path(
     return os.path.join(backup_path, "data", db_name, table_name, part_name)
 
 
+# pylint: disable=too-many-positional-arguments
+def _detached_part_path(
+    backup_path: str,
+    db_name: str,
+    table_name: str,
+    disk_name: str,
+    part_name: str,
+    escape_names: bool = True,
+) -> str:
+    """Return storage path to a detached part archive."""
+    if escape_names:
+        return os.path.join(
+            backup_path,
+            "detached",
+            _quote(db_name),
+            _quote(table_name),
+            _quote(disk_name),
+            _quote(part_name),
+        )
+    return os.path.join(
+        backup_path, "detached", db_name, table_name, disk_name, part_name
+    )
+
+
 def _disk_metadata_path(
     backup_path: str,
     db_name: str | None,
@@ -1036,12 +1466,21 @@ def _disk_metadata_path(
         assert table_name and db_name
         return os.path.join(
             backup_path,
-            "disks",
+            CLOUD_STORAGE_METADATA_DIR,
             disk_name,
             _quote(db_name),
             f"{_quote(table_name)}{extension}",
         )
-    return os.path.join(backup_path, "disks", f"{disk_name}{extension}")
+    return os.path.join(
+        backup_path, CLOUD_STORAGE_METADATA_DIR, f"{disk_name}{extension}"
+    )
+
+
+def table_shadow_relpath(backup_name: str, table_path_on_disk: str) -> str:
+    """
+    Returns path to frozen table data relative to the root of a disk.
+    """
+    return os.path.join("shadow", backup_name, table_path_on_disk)
 
 
 def _table_shadow_path(
@@ -1050,7 +1489,9 @@ def _table_shadow_path(
     """
     Returns path to frozen table data on given disk.
     """
-    return os.path.join(disk_path, "shadow", backup_name, table_path_on_disk)
+    return os.path.join(
+        disk_path, table_shadow_relpath(backup_name, table_path_on_disk)
+    )
 
 
 def _quote(value: str) -> str:

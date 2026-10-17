@@ -4,7 +4,7 @@ Steps for interacting with ClickHouse DBMS.
 
 import yaml
 from behave import given, then, when
-from hamcrest import assert_that, contains_string, equal_to, has_length
+from hamcrest import assert_that, contains_string, equal_to, greater_than, has_length
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 from tests.integration.modules.ch_backup_cli import BackupManager
@@ -349,6 +349,18 @@ def step_check_data_equal(context, node):
     ch_client = ClickhouseClient(context, node)
     new_user_data = ch_client.get_all_user_data()
     assert new_user_data == context.user_data
+
+
+@when("we save data part checksums in context on {node:w}")
+def step_save_part_checksums(context, node):
+    context.part_checksums = ClickhouseClient(context, node).get_all_part_checksums()
+    assert_that(context.part_checksums, has_length(greater_than(0)))
+
+
+@then("data part checksums equal to saved ones on {node:w}")
+def step_check_part_checksums(context, node):
+    checksums = ClickhouseClient(context, node).get_all_part_checksums()
+    assert_that(checksums, equal_to(context.part_checksums))
 
 
 @then("database replica {database} on {node:w} does not exists")

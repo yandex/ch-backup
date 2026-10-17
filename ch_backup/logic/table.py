@@ -6,6 +6,7 @@ Clickhouse backup logic for tables
 
 import os
 from collections import deque
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from functools import partial
 from itertools import chain
@@ -16,20 +17,20 @@ from typing import Iterable, Sequence
 
 from ch_backup import logging
 from ch_backup.backup.deduplication import deduplicate_parts
-from ch_backup.backup.metadata import PartMetadata, TableMetadata
+from ch_backup.backup.metadata import DetachedPartMetadata, PartMetadata, TableMetadata
 from ch_backup.backup.metadata.table_metadata import DataSkippedReason
 from ch_backup.backup.restore_context import PartState
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.client import ClickhouseError
-from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
+from ch_backup.clickhouse.disks import ClickHouseBackupDisks, ClickHouseTemporaryDisks
 from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner
-from ch_backup.clickhouse.models import Database, FrozenPart, Table
+from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
 from ch_backup.clickhouse.schema import (
     rewrite_table_schema,
     to_attach_query,
     to_create_query,
 )
-from ch_backup.exceptions import ClickhouseBackupError
+from ch_backup.exceptions import ClickhouseBackupError, is_broken_executor
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.logic.upload_part_observer import UploadPartObserver
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
@@ -56,7 +57,7 @@ class TableBackup(BackupManager):
     Table backup class
     """
 
-    # pylint: disable=too-many-positional-arguments
+    # pylint: disable=too-many-positional-arguments,too-many-arguments
     def backup(
         self,
         context: BackupContext,
@@ -64,14 +65,23 @@ class TableBackup(BackupManager):
         db_tables: dict[str, list],
         schema_only: bool,
         multiprocessing_config: dict,
+        include_detached_parts: bool = False,
+        detached_parts_disks: Sequence[str] = None,
+        detached_parts_reasons: Sequence[str] = None,
     ) -> None:
         """
         Backup tables metadata, MergeTree data and Cloud storage metadata.
+
+        Frozen data holds the objects of cloud storage disks. Once the data is
+        copied into the backup it is unfrozen, so that those objects are not
+        kept in the bucket of the disk for as long as the backup lives. This
+        happens only after the temporary disks are gone: their frozen data
+        refers to the copies, and unfreezing it would delete them.
         """
 
         backup_name = context.backup_meta.get_sanitized_name()
 
-        encrypted = context.cloud_conf.get("encryption", True)
+        encrypted = context.cloud_conf.get("encryption", False)
         if encrypted:
             logging.debug('Cloud storage "shadow" backup will be encrypted')
         context.backup_meta.cloud_storage.encrypted = encrypted
@@ -80,6 +90,11 @@ class TableBackup(BackupManager):
         if compressed:
             logging.debug('Cloud storage "shadow" backup will be compressed')
         context.backup_meta.cloud_storage.compressed = compressed
+
+        data_copied = context.cloud_conf.get("copy_data", False) and not schema_only
+        if data_copied:
+            logging.debug("Cloud storage data will be copied into the backup")
+        context.backup_meta.cloud_storage.data_copied = data_copied
 
         # Since https://github.com/ClickHouse/ClickHouse/pull/75016
         if (
@@ -97,16 +112,45 @@ class TableBackup(BackupManager):
             context, databases, db_tables
         )
 
-        for db in databases:
-            self._backup(
-                context,
-                db,
-                db_tables[db.name],
-                backup_name,
-                schema_only,
-                multiprocessing_config,
-                change_times,
+        copy_workers = multiprocessing_config.get("cloud_storage_backup_workers", 1)
+        if (
+            data_copied
+            and copy_workers > 1
+            and not context.ch_ctl.ch_version_ge("23.3")
+        ):
+            raise ClickhouseBackupError(
+                "It is unsafe to use cloud_storage_backup_workers > 1 with clickhouse version < 23.3"
+                f" (cloud_storage_backup_workers: {copy_workers}, ch_version: {context.ch_ctl.get_version()})"
             )
+
+        disks_context: AbstractContextManager[ClickHouseBackupDisks | None] = (
+            nullcontext()
+        )
+        if data_copied:
+            disks_context = ClickHouseBackupDisks(
+                context.ch_ctl,
+                context.backup_layout,
+                context.config_root,
+                context.backup_meta,
+                context.ch_config,
+            )
+        with disks_context as backup_disks:
+            for db in databases:
+                self._backup(
+                    context,
+                    db,
+                    db_tables[db.name],
+                    backup_name,
+                    schema_only,
+                    multiprocessing_config,
+                    change_times,
+                    backup_disks,
+                    include_detached_parts,
+                    detached_parts_disks,
+                    detached_parts_reasons,
+                )
+        if data_copied:
+            context.ch_ctl.system_unfreeze(backup_name)
 
     def _collect_local_metadata_change_times(
         self,
@@ -147,6 +191,10 @@ class TableBackup(BackupManager):
         schema_only: bool,
         multiprocessing_config: dict,
         change_times: dict[Table, TableMetadataChangeTime],
+        backup_disks: ClickHouseBackupDisks | None,
+        include_detached_parts: bool,
+        detached_parts_disks: Sequence[str] = None,
+        detached_parts_reasons: Sequence[str] = None,
     ) -> None:
         """
         Backup single database tables.
@@ -164,9 +212,14 @@ class TableBackup(BackupManager):
             # race condition with parallel freeze
             context.ch_ctl.create_shadow_increment()
             try:
-                with ThreadExecPool(
-                    multiprocessing_config.get("freeze_threads", 1)
-                ) as pool:
+                with (
+                    ThreadExecPool(
+                        multiprocessing_config.get("cloud_storage_backup_workers", 1)
+                    ) as copy_pool,
+                    ThreadExecPool(
+                        multiprocessing_config.get("freeze_threads", 1)
+                    ) as pool,
+                ):
                     for table in tables_:
                         pool.submit(
                             f'Freeze table "{table.database}"."{table.name}"',
@@ -210,14 +263,22 @@ class TableBackup(BackupManager):
                                     not schema_only
                                     and not freezed_table.data_skipped_reason
                                 ):
-                                    self._backup_frozen_table_data(
+                                    self._backup_table_data(
                                         context,
                                         freezed_table,
                                         backup_name,
+                                        backup_disks,
+                                        copy_pool,
                                     )
-                                    self._backup_cloud_storage_metadata(
-                                        context, freezed_table
+                                if include_detached_parts and not schema_only:
+                                    self._backup_detached_table_data(
+                                        context,
+                                        freezed_table,
+                                        detached_parts_disks,
+                                        detached_parts_reasons,
                                     )
+
+                    self._upload_cloud_storage_metadata(context, copy_pool)
             finally:
                 if create_statements_to_backup:
                     context.backup_layout.upload_create_statements(
@@ -288,8 +349,12 @@ class TableBackup(BackupManager):
                         'Cannot freeze table "{}"."{}"',
                         table.database,
                         table.name,
+                        exc_info=True,
                     )
-                    raise
+                    if not context.config["keep_going"]:
+                        raise
+                    table.data_skipped_reason = DataSkippedReason.BACKUP_FAILED
+                    return table
 
                 return None
 
@@ -320,10 +385,136 @@ class TableBackup(BackupManager):
             )
             return None
 
-    @staticmethod
-    def _backup_cloud_storage_metadata(context: BackupContext, table: Table) -> None:
+    def _backup_table_data(
+        self,
+        context: BackupContext,
+        table: Table,
+        backup_name: str,
+        backup_disks: ClickHouseBackupDisks | None,
+        copy_pool: ThreadExecPool,
+    ) -> None:
         """
-        Backup cloud storage metadata files.
+        Backup data of a table, scheduling the copy of its cloud storage data.
+
+        With keep_going, a part on a local disk that cannot be read or uploaded is
+        left out of the backup, and any other failure leaves out the data of the
+        whole table. A broken upload pool fails the backup all the same, and so
+        do a failed check of uploaded parts and a failure to delete data left out
+        after it was stored.
+        """
+        try:
+            uploaded_parts = self._backup_frozen_table_data(
+                context, table, backup_name, backup_disks
+            )
+        except Exception as e:
+            if not context.config["keep_going"] or is_broken_executor(e):
+                raise
+            self._skip_failed_table_data(context, table)
+            return
+
+        if uploaded_parts is not None:
+            context.backup_layout.wait(keep_going=context.config["keep_going"])
+            self._validate_uploaded_parts(context, uploaded_parts)
+            context.ch_ctl.remove_freezed_data(backup_name, table)
+
+        try:
+            self._backup_cloud_storage_data(context, copy_pool, table, backup_disks)
+        except Exception as e:
+            if not context.config["keep_going"] or is_broken_executor(e):
+                raise
+            self._skip_failed_table_data(context, table)
+
+    @staticmethod
+    def _skip_failed_table_data(context: BackupContext, table: Table) -> None:
+        """
+        Leave data of a table out of the backup after a failure to back it up.
+
+        Uploads of the table already started are awaited first, so that none of
+        its parts is added to the backup metadata afterwards.
+        """
+        logging.error(
+            'Backing up data of table "{}"."{}" failed, backing up its schema only',
+            table.database,
+            table.name,
+            exc_info=True,
+        )
+        context.backup_layout.wait(keep_going=True)
+        TableBackup._drop_table_data(context, table)
+
+    @staticmethod
+    def _drop_table_data(context: BackupContext, table: Table) -> None:
+        """
+        Drop data of a table from the backup, deleting the parts uploaded so far.
+
+        Once out of the metadata, those parts would not be found by deletion of
+        a backup whose other parts are reused by later backups. A table dropped
+        already is left as it is.
+        """
+        uploaded_disks = {
+            disk.name for _, disk in table.paths_with_disks if disk.type != "s3"
+        }
+        table_meta = context.backup_meta.get_table(table.database, table.name)
+        if table_meta.data_skipped_reason == DataSkippedReason.BACKUP_FAILED:
+            return
+        context.backup_layout.delete_data_parts(
+            context.backup_meta,
+            [
+                part
+                for part in table_meta.get_parts()
+                if part.disk_name in uploaded_disks and not part.link
+            ],
+            is_async=False,
+        )
+        table.data_skipped_reason = DataSkippedReason.BACKUP_FAILED
+        context.backup_meta.skip_table_data(
+            table.database, table.name, DataSkippedReason.BACKUP_FAILED
+        )
+
+    @staticmethod
+    def _skip_failed_part(
+        context: BackupContext,
+        table: Table,
+        part_name: str,
+        error: BaseException,
+        uploaded: PartMetadata | None = None,
+    ) -> bool:
+        """
+        Leave a data part that cannot be read or uploaded out of the backup.
+
+        It is called while the error is handled, so the traceback is logged. An
+        upload may fail after its data is stored, so that data is deleted. A
+        broken pool or a terminating signal fails the backup, so it is ignored.
+        Return True if the part is left out.
+        """
+        if not isinstance(error, Exception) or is_broken_executor(error):
+            return False
+        logging.error(
+            'Backing up part "{}" of table "{}"."{}" failed, leaving it out',
+            part_name,
+            table.database,
+            table.name,
+            exc_info=True,
+        )
+        if uploaded:
+            context.backup_layout.delete_data_parts(
+                context.backup_meta, [uploaded], is_async=False
+            )
+        context.backup_meta.skip_part(table.database, table.name, part_name)
+        return True
+
+    @staticmethod
+    def _backup_cloud_storage_data(
+        context: BackupContext,
+        pool: ThreadExecPool,
+        table: Table,
+        backup_disks: ClickHouseBackupDisks | None,
+    ) -> None:
+        """
+        Schedule backup of cloud storage data of a table: a copy of the data
+        when backup disks are given, otherwise its metadata files alone.
+
+        Data of every disk is copied on its own, so that copies of different
+        tables and disks go in parallel.
         """
         logging.debug(
             'Backing up Cloud Storage disks "shadow" directory of "{}"."{}"',
@@ -331,13 +522,85 @@ class TableBackup(BackupManager):
             table.name,
         )
         for _, disk in table.paths_with_disks:
-            if disk.type == "s3" and not disk.cache_path:
-                if not context.backup_layout.upload_cloud_storage_metadata(
-                    context.backup_meta, disk, table
-                ):
-                    logging.debug(f'No data frozen on disk "{disk.name}", skipping')
-                    continue
-                context.backup_meta.cloud_storage.add_disk(disk.name)
+            if disk.type != "s3" or disk.cache_path:
+                continue
+
+            if not context.backup_layout.has_frozen_cloud_storage_data(
+                context.backup_meta, disk, table
+            ):
+                logging.debug(f'No data frozen on disk "{disk.name}", skipping')
+                continue
+
+            pool.submit(
+                f'Backup of disk "{disk.name}" of "{table.database}"."{table.name}"',
+                TableBackup._copy_cloud_storage_data,
+                context,
+                table,
+                disk,
+                backup_disks,
+            )
+
+    @staticmethod
+    def _copy_cloud_storage_data(
+        context: BackupContext,
+        table: Table,
+        disk: Disk,
+        backup_disks: ClickHouseBackupDisks | None,
+    ) -> tuple[Table, Disk, Disk | None]:
+        """
+        Copy data of a table on a cloud storage disk into the backup.
+
+        The result is checked explicitly, since clickhouse-disks reports its
+        errors with a zero exit code. A failure is reported on the table, as
+        the backup metadata is not meant to be used from several threads.
+        """
+        if not backup_disks:
+            return table, disk, None
+
+        try:
+            source_disk = backup_disks.copy_table_data(disk.name, table)
+            if not context.backup_layout.has_frozen_cloud_storage_data(
+                context.backup_meta, source_disk, table
+            ):
+                raise ClickhouseBackupError(
+                    f'Copying data of disk "{disk.name}" of table '
+                    f"`{table.database}`.`{table.name}` produced no metadata"
+                )
+        except Exception:
+            if not context.config["keep_going"]:
+                raise
+            logging.error(
+                'Copying data of disk "{}" of table "{}"."{}" failed, backing up'
+                " its schema only",
+                disk.name,
+                table.database,
+                table.name,
+                exc_info=True,
+            )
+            table.data_skipped_reason = DataSkippedReason.BACKUP_FAILED
+            return table, disk, None
+
+        return table, disk, source_disk
+
+    @staticmethod
+    def _upload_cloud_storage_metadata(
+        context: BackupContext, pool: ThreadExecPool
+    ) -> None:
+        """
+        Upload cloud storage metadata files of tables as their data is copied.
+
+        Uploading stays in the calling thread: both the upload pipeline and the
+        backup metadata are not meant to be used from several threads.
+        """
+        for table, disk, source_disk in pool.as_completed(keep_going=False):
+            if table.data_skipped_reason == DataSkippedReason.BACKUP_FAILED:
+                TableBackup._drop_table_data(context, table)
+                continue
+
+            context.backup_layout.upload_cloud_storage_metadata(
+                context.backup_meta, disk, table, source_disk=source_disk
+            )
+            context.backup_meta.cloud_storage.add_disk(disk.name)
 
     # pylint: disable=too-many-arguments,too-many-locals,too-many-positional-arguments
     def restore(
@@ -506,14 +769,20 @@ class TableBackup(BackupManager):
         context.ch_ctl.remove_freezed_data(backup_name, table)
         return False
 
+    # pylint: disable=too-many-statements
     def _backup_frozen_table_data(
         self,
         context: BackupContext,
         table: Table,
         backup_name: str,
-    ) -> None:
+        backup_disks: ClickHouseBackupDisks | None,
+    ) -> list[PartMetadata] | None:
         """
         Backup table with data opposed to schema only.
+
+        Return the list the uploaded parts are added to as the caller awaits
+        their uploads, or None for a table that keeps no data parts. Without
+        upload workers a failed upload raises at once, after its handler ran.
         """
 
         def deduplicate_parts_in_batch(
@@ -525,7 +794,7 @@ class TableBackup(BackupManager):
                 "Working on deduplication of {} frozen parts", len(frozen_parts)
             )
             deduplicated_parts = deduplicate_parts(
-                context, table.database, table.name, frozen_parts
+                context, table.database, table.name, frozen_parts, stored_files
             )
             logging.debug(
                 "{} out of {} parts are deduplicated",
@@ -538,16 +807,67 @@ class TableBackup(BackupManager):
                     context.ch_ctl.remove_freezed_part(frozen_parts[part_name])
                     context.backup_meta.add_part(deduplicated_parts[part_name])
                 else:
-                    context.backup_layout.upload_data_part(
-                        context.backup_meta,
-                        frozen_parts[part_name],
-                        partial(
-                            upload_observer,
-                            PartMetadata.from_frozen_part(
-                                frozen_parts[part_name], context.backup_meta.encrypted
-                            ),
-                        ),
+                    part = PartMetadata.from_frozen_part(
+                        frozen_parts[part_name], context.backup_meta.encrypted
                     )
+                    try:
+                        context.backup_layout.upload_data_part(
+                            context.backup_meta,
+                            frozen_parts[part_name],
+                            partial(upload_observer, part),
+                            on_error=(
+                                partial(skip_failed_upload, part)
+                                if skip_failed_part
+                                else None
+                            ),
+                        )
+                    except Exception:
+                        if part_name not in left_out_parts:
+                            raise
+            frozen_parts.clear()
+
+        def deduplicate_cloud_parts_in_batch(
+            context: BackupContext,
+            frozen_parts: dict[str, FrozenPart],
+        ) -> None:
+            """
+            Deduplicate parts stored on cloud storage disks.
+
+            Frozen data of a deduplicated part is moved aside, so that the part
+            is left out of the copy of the table data.
+            """
+            assert backup_disks, "Cloud storage parts are deduplicated without disks"
+            matched_parts = deduplicate_parts(
+                context,
+                table.database,
+                table.name,
+                frozen_parts,
+                stored_files,
+                cloud_storage=True,
+            )
+            deduplicated_parts = {
+                name: part
+                for name, part in matched_parts.items()
+                if part.disk_name == frozen_parts[name].disk_name
+            }
+            logging.debug(
+                "{} out of {} cloud storage parts are deduplicated",
+                len(deduplicated_parts),
+                len(frozen_parts),
+            )
+
+            for part_name, frozen_part in frozen_parts.items():
+                context.backup_meta.add_part(
+                    deduplicated_parts.get(part_name)
+                    or PartMetadata.from_frozen_part(
+                        frozen_part, context.backup_meta.encrypted
+                    )
+                )
+
+            backup_disks.exclude_frozen_parts(
+                {disk.name: disk for _, disk in table.paths_with_disks},
+                [frozen_parts[name] for name in deduplicated_parts],
+            )
             frozen_parts.clear()
 
         logging.debug(
@@ -560,13 +880,30 @@ class TableBackup(BackupManager):
                 table.database,
                 table.name,
             )
-            return
+            return None
 
         logging.debug('Uploading table data for "{}"."{}"', table.database, table.name)
 
         upload_observer = UploadPartObserver(context)
+        stored_files: dict[tuple[str, str, str], dict[str, dict[str, int]]] = {}
+        skip_failed_part = (
+            partial(TableBackup._skip_failed_part, context, table)
+            if context.config["keep_going"]
+            else None
+        )
+        left_out_parts: set[str] = set()
+
+        def skip_failed_upload(part: PartMetadata, error: BaseException) -> None:
+            """
+            Leave out a part whose upload failed, noting that it is left out.
+            """
+            if TableBackup._skip_failed_part(
+                context, table, part.name, error, uploaded=part
+            ):
+                left_out_parts.add(part.name)
 
         frozen_parts_batch: dict[str, FrozenPart] = {}
+        cloud_parts_batch: dict[str, FrozenPart] = {}
         dedup_batch_size = context.config["deduplication_batch_size"]
         for data_path, disk in table.paths_with_disks:
             for fpart in context.ch_ctl.scan_frozen_parts(
@@ -574,14 +911,24 @@ class TableBackup(BackupManager):
                 disk,
                 data_path,
                 backup_name,
+                backup_disks is not None,
+                context.config["fail_on_unparsable_part_metadata"],
+                on_error=skip_failed_part if disk.type == "local" else None,
             ):
                 logging.debug("Working on {}", fpart)
                 if disk.type == "s3":
-                    context.backup_meta.add_part(
-                        PartMetadata.from_frozen_part(
-                            fpart, context.backup_meta.encrypted
+                    if disk.cache_path or backup_disks is None:
+                        context.backup_meta.add_part(
+                            PartMetadata.from_frozen_part(
+                                fpart, context.backup_meta.encrypted
+                            )
                         )
-                    )
+                        continue
+
+                    context.backup_meta.cloud_storage.add_disk(disk.name)
+                    cloud_parts_batch[fpart.name] = fpart
+                    if len(cloud_parts_batch) >= dedup_batch_size:
+                        deduplicate_cloud_parts_in_batch(context, cloud_parts_batch)
                     continue
 
                 frozen_parts_batch[fpart.name] = fpart
@@ -597,12 +944,79 @@ class TableBackup(BackupManager):
                 upload_observer,
                 frozen_parts_batch,
             )
+        if cloud_parts_batch:
+            deduplicate_cloud_parts_in_batch(context, cloud_parts_batch)
 
-        context.backup_layout.wait()
+        return upload_observer.uploaded_parts
 
-        self._validate_uploaded_parts(context, upload_observer.uploaded_parts)
+    def _backup_detached_table_data(
+        self,
+        context: BackupContext,
+        table: Table,
+        disk_names: Sequence[str] = None,
+        reasons: Sequence[str] = None,
+    ) -> None:
+        """Back up matching detached parts while preserving directory names."""
+        if not table.is_merge_tree():
+            return
 
-        context.ch_ctl.remove_freezed_data(backup_name, table)
+        disk_filter = set(disk_names or [])
+        reason_filter = set(reasons or [])
+        uploaded_parts: list[DetachedPartMetadata] = []
+        warned_metadata_only = False
+
+        def observe_uploaded_part(part: DetachedPartMetadata) -> None:
+            uploaded_parts.append(part)
+            context.backup_meta.add_detached_part(part)
+
+        for detached_part in context.ch_ctl.scan_detached_parts(
+            table, disk_names=disk_names, reasons=reasons
+        ):
+            if disk_filter and detached_part.disk_name not in disk_filter:
+                continue
+            if reason_filter and detached_part.reason not in reason_filter:
+                continue
+
+            part_meta = DetachedPartMetadata.from_detached_part(
+                detached_part, context.backup_meta.encrypted
+            )
+            if (
+                detached_part.object_storage
+                and context.backup_meta.cloud_storage.data_copied
+                and not warned_metadata_only
+            ):
+                logging.warning(
+                    "Detached parts of {}.{} on object storage are metadata-only: "
+                    "--copy-cloud-storage-data does not copy their referenced "
+                    "objects; only local metadata files will be backed up",
+                    detached_part.database,
+                    detached_part.table,
+                )
+                warned_metadata_only = True
+            try:
+                context.backup_layout.upload_detached_part(
+                    context.backup_meta,
+                    detached_part,
+                    partial(observe_uploaded_part, part_meta),
+                )
+            except Exception as e:
+                if is_broken_executor(e):
+                    raise
+                logging.warning(
+                    "Failed to upload detached part {} of {}.{} from disk {}; "
+                    "skipping it because detached-parts backup is best effort: {}",
+                    detached_part.name,
+                    detached_part.database,
+                    detached_part.table,
+                    detached_part.disk_name,
+                    e,
+                )
+
+        # Detached parts are not frozen and may disappear while their uploads
+        # are still running. Keep the regular backup successful and retain
+        # metadata only for uploads whose callbacks completed.
+        context.backup_layout.wait(keep_going=True)
+        self._validate_uploaded_detached_parts(context, uploaded_parts)
 
     @staticmethod
     def _validate_uploaded_parts(context: BackupContext, uploaded_parts: list) -> None:
@@ -624,6 +1038,67 @@ class TableBackup(BackupManager):
                 raise RuntimeError(
                     f'Uploaded parts are broken, {", ".join(map(lambda p: p.name, invalid_parts))}'
                 )
+
+    @staticmethod
+    def _validate_uploaded_detached_parts(
+        context: BackupContext, uploaded_parts: list[DetachedPartMetadata]
+    ) -> None:
+        if not context.config["validate_part_after_upload"]:
+            return
+
+        invalid_parts = []
+        for part in uploaded_parts:
+            try:
+                valid = context.backup_layout.check_detached_part(
+                    context.backup_meta.name, part
+                )
+            except Exception as e:
+                if is_broken_executor(e):
+                    raise
+                logging.warning(
+                    "Failed to validate uploaded detached part {} of {}.{} "
+                    "on disk {}; treating it as invalid: {}",
+                    part.name,
+                    part.database,
+                    part.table,
+                    part.disk_name,
+                    e,
+                )
+                valid = False
+            if not valid:
+                invalid_parts.append(part)
+
+        if not invalid_parts:
+            return
+
+        for part in invalid_parts:
+            logging.warning(
+                "Uploaded detached part is invalid and will be removed from "
+                "the backup, {}.{} on {}: {}",
+                part.database,
+                part.table,
+                part.disk_name,
+                part.name,
+            )
+
+        try:
+            context.backup_layout.delete_detached_parts(
+                context.backup_meta, invalid_parts
+            )
+        except Exception as e:
+            if is_broken_executor(e):
+                raise
+            logging.warning(
+                "Failed to schedule cleanup of invalid detached parts; "
+                "their archives may remain unreferenced: {}",
+                e,
+            )
+
+        table = context.backup_meta.get_table(
+            invalid_parts[0].database, invalid_parts[0].table
+        )
+        context.backup_meta.remove_detached_parts(table, invalid_parts)
+        context.backup_layout.wait(keep_going=True)
 
     @staticmethod
     def _get_change_time(file_name: str) -> TableMetadataChangeTime | None:

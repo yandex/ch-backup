@@ -9,7 +9,7 @@ import os
 from docker.models.containers import Container
 
 from .docker import copy_container_dir, get_containers
-from .minio import export_s3_data
+from .s3 import export_s3_data
 from .typing import ContextT
 
 

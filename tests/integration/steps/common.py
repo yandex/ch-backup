@@ -3,7 +3,7 @@ Common steps.
 """
 
 import yaml
-from behave import given, when
+from behave import given, then, when
 
 from tests.integration.modules.ch_backup_cli import get_version
 from tests.integration.modules.clickhouse import restart_clickhouse_and_wait
@@ -50,6 +50,14 @@ def step_command(context, node):
     assert context.exit_code == 0, (
         f'"{context.command}" failed with exit code {context.exit_code},'
         f" output:\n {context.response}"
+    )
+
+
+@then("command exits with code {code:d}")
+def step_command_exit_code(context, code):
+    assert context.exit_code == code, (
+        f'"{context.command}" exited with {context.exit_code}, expected {code}; '
+        f"output:\n{context.response}"
     )
 
 

@@ -6,7 +6,6 @@ from behave import given, then, when
 from hamcrest import assert_that, equal_to
 
 from tests.integration.modules import s3
-from tests.integration.modules.minio import configure_s3_credentials, create_s3_buckets
 from tests.integration.modules.steps import get_step_data
 
 
@@ -14,10 +13,9 @@ from tests.integration.modules.steps import get_step_data
 def step_wait_for_s3_alive(context):
     """
     Ensure that s3 is ready to accept incoming requests, and
-    the bucket specified in the config is created.
+    the buckets specified in the config are created.
     """
-    configure_s3_credentials(context)
-    create_s3_buckets(context)
+    s3.wait_for_s3_buckets(context)
 
 
 @then("s3 contains {count:d} objects")
@@ -40,6 +38,36 @@ def step_cloud_storage_bucket_contains_files(context, bucket, count):
         equal_to(count),
         f"Objects count = {len(objects)}, expected {count}, objects {objects}",
     )
+
+
+@then('s3 bucket {bucket} contains objects with prefix "{prefix}"')
+def step_cloud_storage_bucket_contains_prefix(context, bucket, prefix):
+    s3_client = s3.S3Client(context, bucket)
+    objects = s3_client.list_objects(prefix)
+    assert_that(
+        len(objects) > 0,
+        equal_to(True),
+        f"No objects with prefix {prefix} in bucket {bucket}",
+    )
+
+
+@then('s3 bucket {bucket} contains no objects with prefix "{prefix}"')
+def step_cloud_storage_bucket_has_no_prefix(context, bucket, prefix):
+    s3_client = s3.S3Client(context, bucket)
+    objects = s3_client.list_objects(prefix)
+    assert_that(
+        objects,
+        equal_to([]),
+        f"Unexpected objects with prefix {prefix} in bucket {bucket}: {objects}",
+    )
+
+
+@when("we delete all objects in s3 bucket {bucket}")
+def step_delete_all_objects_in_bucket(context, bucket):
+    s3_client = s3.S3Client(context, bucket)
+    for path in s3_client.list_objects(""):
+        s3_client.delete_data(path)
+    assert_that(s3_client.list_objects(""), equal_to([]))
 
 
 @when("we put object in S3")

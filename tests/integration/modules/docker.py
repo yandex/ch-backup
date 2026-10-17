@@ -101,14 +101,6 @@ def copy_container_dir(
         tar.extractall(path=local_dir, members=members)
 
 
-def get_file_size(container: Container, path: str) -> int:
-    """
-    Return size of the specified file inside the container.
-    """
-    output = container.exec_run(f'stat --format "%s" "{path}"')
-    return int(output.decode())
-
-
 @utils.env_stage("create", fail=True)
 def create_network(context: ContextT) -> None:
     """

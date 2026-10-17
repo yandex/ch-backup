@@ -4,6 +4,7 @@ config module defines Config class and default values
 
 import copy
 import socket
+from datetime import datetime, timezone
 from typing import Any
 
 import yaml
@@ -15,7 +16,26 @@ def _as_seconds(t: str) -> int:
     return int(parse_timespan(t))
 
 
-DEFAULT_CONFIG = {
+def as_datetime(value: Any) -> datetime | None:
+    """Parse an optional timezone-aware ISO timestamp and normalize it to UTC."""
+    if value is None:
+        return None
+
+    error = "Expected an ISO 8601 timestamp with a timezone, or null"
+    if isinstance(value, str):
+        try:
+            # Python 3.10 does not accept the UTC suffix Z in fromisoformat.
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(error) from exc
+
+    # YAML may already have parsed an unquoted timestamp into a datetime.
+    if not isinstance(value, datetime) or value.utcoffset() is None:
+        raise ValueError(error)
+    return value.astimezone(timezone.utc)
+
+
+DEFAULT_CONFIG: dict[str, Any] = {
     "clickhouse": {
         "data_path": "/var/lib/clickhouse",
         "metadata_path": "/var/lib/clickhouse/metadata",
@@ -49,14 +69,20 @@ DEFAULT_CONFIG = {
         "exclude_dbs": [],
         "path_root": None,
         "deduplicate_parts": True,
+        "deduplication_start_time": None,
         "deduplication_age_limit": {
             "days": 7,
         },
         "deduplication_batch_size": 500,
+        "deduplication_verify_links": True,
         "min_interval": {
             "minutes": 0,
         },
         "time_format": "%Y-%m-%d %H:%M:%S.%f %z",
+        # Leave out a data part, or the data of a table, that cannot be backed
+        # up, instead of failing the whole backup. Such a backup is created, and
+        # list shows how many tables are left without data or some parts.
+        "keep_going": False,
         # Retain policy for the purge command that sets the maximum age of
         # backups to keep.
         "retain_time": {},
@@ -73,8 +99,36 @@ DEFAULT_CONFIG = {
         "restore_context_sync_threshold_ops": 100,
         "validate_part_after_upload": False,
         "restore_fail_on_attach_error": False,
+        "fail_on_unparsable_part_metadata": False,
         "update_metadata_interval": _as_seconds("30 min"),
         "kill_old_freeze_queries": True,
+    },
+    "copy": {
+        # Copy objects on the server side if source and target buckets belong to the same S3 service
+        # and are accessible with the same credentials.
+        "server_side_copy": True,
+        # Copying of data stored on object storage (S3) disks.
+        "cloud_storage": {
+            # Location of the source disk objects. If not set, it's taken from backup metadata
+            # (for backups that were already copied) or from ClickHouse disk configuration.
+            # A stored endpoint must match a configured storage/disk endpoint unless explicitly overridden.
+            "source": {
+                "endpoint_url": None,
+                "bucket": None,
+                "path": None,
+                "access_key_id": None,
+                "secret_access_key": None,
+            },
+            # Location where disk objects are copied to. Objects of the backup are put
+            # under "<path>/<backup name>/". Endpoint and credentials default to ones of the target storage.
+            "target": {
+                "endpoint_url": None,
+                "bucket": None,
+                "path": "",
+                "access_key_id": None,
+                "secret_access_key": None,
+            },
+        },
     },
     "restore": {
         "use_inplace_cloud_restore": False,
@@ -98,6 +152,8 @@ DEFAULT_CONFIG = {
         "proxy_resolver": {
             "uri": None,
             "proxy_port": None,
+            # HTTP connect and read timeout, in seconds (not a total DNS/request deadline).
+            "timeout": 10,
         },
         "disable_ssl_warnings": True,
         # Chunk size used when uploading / downloading data, in bytes.
@@ -109,6 +165,10 @@ DEFAULT_CONFIG = {
         # chunk_size will be multiplied on a required number of times
         # to satisfy the limit.
         "max_chunk_count": 10000,
+        # Attempts per S3 operation, including proxy resolution; 1 disables retries
+        "retry_max_attempts": 30,
+        # Upper bound of the randomized exponential pause between attempts, in seconds
+        "retry_max_interval": 180,
         # Enable bulk delete (DeleteObjects in S3 API)
         "bulk_delete_enabled": True,
         # How many files we can delete by bulk delete operation in one call
@@ -131,8 +191,11 @@ DEFAULT_CONFIG = {
     },
     # Same structure as 'storage' section, but for cloud storage
     "cloud_storage": {
-        "encryption": True,
+        # Encryption and compression are applied to cloud storage metadata only.
+        # Data copied by "copy_data" is stored as ClickHouse wrote it.
+        "encryption": False,
         "compression": True,
+        "copy_data": False,
     },
     "compression": {
         "type": "gzip",
@@ -166,6 +229,8 @@ DEFAULT_CONFIG = {
         "workers": 4,
         # The number of processes for parts restoring from S3 disks.
         "cloud_storage_restore_workers": 4,
+        # The number of threads for copying data of S3 disks into the backup.
+        "cloud_storage_backup_workers": 4,
         # The number of threads for parallel freeze of tables
         "freeze_threads": 4,
         # To execute freeze efficiently, we should parallelize freeze operations. We have two options where we can parallelize:
@@ -280,12 +345,29 @@ class Config:
         self._recursively_update(self._conf, update_dict=patch_dict)
         return self._conf
 
+    def derive(
+        self, config_file: str | None = None, patch: dict | None = None
+    ) -> "Config":
+        """
+        Return a copy of the config with applied changes from config file and the patch.
+        """
+        config = copy.deepcopy(self)
+        if config_file:
+            config.merge(self._load_config_file(config_file))
+        if patch:
+            config.merge(patch)
+        return config
+
     def _read_config(self, file_name):
+        custom_config = self._load_config_file(file_name)
+        if custom_config:
+            self._recursively_update(self._conf, custom_config)
+
+    @staticmethod
+    def _load_config_file(file_name: str) -> dict:
         with open(file_name, "r", encoding="utf-8") as fileobj:
             try:
-                custom_config = yaml.safe_load(fileobj)
-                if custom_config:
-                    self._recursively_update(self._conf, custom_config)
+                return yaml.safe_load(fileobj) or {}
             except yaml.YAMLError as e:
                 raise RuntimeError(f"Failed to load config file: {e}")
 

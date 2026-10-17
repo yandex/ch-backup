@@ -38,6 +38,7 @@ T = TypeVar("T")
 LOCAL_TZ = timezone(
     timedelta(seconds=-1 * (time.altzone if time.daylight else time.timezone))
 )
+CLOUD_STORAGE_EXCLUDE_FILE_NAMES = ["frozen_metadata.txt"]
 _ALLOWED_NAME_CHARS = set(["_"] + list(ascii_letters) + list(digits))
 _HEX_UPPERCASE_TABLE = [
     "0",
