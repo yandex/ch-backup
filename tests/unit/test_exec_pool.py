@@ -2,14 +2,21 @@
 
 # pylint: disable=protected-access
 
+import os
+import signal
+import subprocess
+import sys
+import time
 from concurrent.futures import BrokenExecutor
 from functools import partial
+from pathlib import Path
 from unittest.mock import ANY, MagicMock, call
 
 import pytest
 
 from ch_backup import logging
 from ch_backup.exceptions import TerminatingSignal
+from ch_backup.storage.async_pipeline.base_pipeline import exec_pool
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
     ProcessExecPool,
     ThreadExecPool,
@@ -167,3 +174,48 @@ def test_terminating_signal_is_reported_and_always_propagated(
     assert len(errors) == 1
     assert isinstance(errors[0], TerminatingSignal)
     completed.assert_not_called()
+
+
+def _busy_worker(ready_path: str) -> None:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    Path(ready_path).touch()
+    time.sleep(60)
+
+
+def _shutdown_with_buffered_calls(ready_path: str) -> None:
+    logging.logger.remove()
+    exec_pool.TIMEOUT_WORKER_TERMINATING_SEC = 0.1
+    pool = ProcessExecPool(1)
+    pool.submit("busy", _busy_worker, ready_path)
+    while not Path(ready_path).exists():
+        time.sleep(0.01)
+    pool.submit("queued", len, b"x" * 2_000_000)
+    # Let the feeder start writing while its only consumer remains busy.
+    time.sleep(0.2)
+    pool.shutdown(graceful=False)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Uses POSIX signals and process groups")
+def test_forced_shutdown_with_buffered_calls_exits(tmp_path: Path) -> None:
+    code = (
+        "import sys; "
+        "from tests.unit.test_exec_pool import _shutdown_with_buffered_calls; "
+        "_shutdown_with_buffered_calls(sys.argv[1])"
+    )
+    with subprocess.Popen(
+        [sys.executable, "-c", code, str(tmp_path / "ready")],
+        cwd=Path(__file__).resolve().parents[2],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    ) as proc:
+        try:
+            output, _ = proc.communicate(timeout=15)
+        finally:
+            # Also clean up descendants when the child hangs or fails early.
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        assert proc.returncode == 0, output
