@@ -4,7 +4,7 @@
 
 from concurrent.futures import BrokenExecutor
 from functools import partial
-from unittest.mock import MagicMock, call
+from unittest.mock import ANY, MagicMock, call
 
 import pytest
 
@@ -63,11 +63,11 @@ def test_submission_error_is_reported_once() -> None:
     assert errors == [failure]
 
 
-def test_ungraceful_process_pool_shutdown_is_bounded_for_stuck_worker() -> None:
+def test_ungraceful_process_pool_shutdown_does_not_wait_for_stuck_worker() -> None:
     executor = ProcessExecPool.__new__(ProcessExecPool)
     executor._pool = MagicMock()
     process = MagicMock()
-    process.is_alive.side_effect = [True, True, True, True]
+    process.is_alive.side_effect = [True, True, True]
     executor._pool._processes = {1: process}
 
     executor.shutdown(graceful=False)
@@ -75,13 +75,14 @@ def test_ungraceful_process_pool_shutdown_is_bounded_for_stuck_worker() -> None:
     assert process.method_calls == [
         call.is_alive(),
         call.terminate(),
-        call.join(5.0),
+        call.join(ANY),
         call.is_alive(),
         call.kill(),
-        call.is_alive(),
-        call.join(5.0),
+        call.join(ANY),
         call.is_alive(),
     ]
+    executor._pool._call_queue.cancel_join_thread.assert_called_once_with()
+    assert all(0 <= args[0] <= 5.0 for args, _ in process.join.call_args_list)
     executor._pool.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
 
 
@@ -89,7 +90,7 @@ def test_ungraceful_process_pool_shutdown_waits_after_worker_exits() -> None:
     executor = ProcessExecPool.__new__(ProcessExecPool)
     executor._pool = MagicMock()
     process = MagicMock()
-    process.is_alive.side_effect = [True, True, True, False]
+    process.is_alive.side_effect = [True, True, False]
     executor._pool._processes = {1: process}
 
     executor.shutdown(graceful=False)

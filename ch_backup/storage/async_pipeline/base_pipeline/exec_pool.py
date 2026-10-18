@@ -244,6 +244,9 @@ class ProcessExecPool(ExecPool):
                 self._shutdown = True
             return
 
+        # Do not wait for the call queue feeder after killing its consumers.
+        self._pool._call_queue.cancel_join_thread()  # type: ignore[attr-defined]
+
         # Send SIGTERM to the pool processes
         processes = list(self._pool._processes.values())
         for p in processes:
@@ -254,12 +257,9 @@ class ProcessExecPool(ExecPool):
                     logging.exception("Failed terminating of worker process. Ignore it")
 
         # Wait for termination
-        remaining_timeout = TIMEOUT_WORKER_TERMINATING_SEC
+        deadline = time.monotonic() + TIMEOUT_WORKER_TERMINATING_SEC
         for p in processes:
-            start = time.time()
-            p.join(remaining_timeout)
-            elapsed = time.time() - start
-            remaining_timeout = max(remaining_timeout - elapsed, 0)
+            p.join(max(deadline - time.monotonic(), 0))
 
         # Forcibly kill it if it's not responding to the SIGTERM
         for p in processes:
@@ -271,14 +271,9 @@ class ProcessExecPool(ExecPool):
 
         # Give killed workers a bounded amount of time to exit. A process stuck in
         # an uninterruptible kernel wait may remain alive even after SIGKILL.
-        remaining_timeout = TIMEOUT_WORKER_TERMINATING_SEC
+        deadline = time.monotonic() + TIMEOUT_WORKER_TERMINATING_SEC
         for p in processes:
-            if not p.is_alive():
-                continue
-            start = time.time()
-            p.join(remaining_timeout)
-            elapsed = time.time() - start
-            remaining_timeout = max(remaining_timeout - elapsed, 0)
+            p.join(max(deadline - time.monotonic(), 0))
 
         stuck_processes = [p for p in processes if p.is_alive()]
         if stuck_processes:
