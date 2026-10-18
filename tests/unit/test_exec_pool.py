@@ -4,7 +4,7 @@
 
 from concurrent.futures import BrokenExecutor
 from functools import partial
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -61,6 +61,53 @@ def test_submission_error_is_reported_once() -> None:
     with pytest.raises(BrokenExecutor):
         executor._exec_pipeline("bad", int, True, on_error=errors.append)
     assert errors == [failure]
+
+
+def test_ungraceful_process_pool_shutdown_is_bounded_for_stuck_worker() -> None:
+    executor = ProcessExecPool.__new__(ProcessExecPool)
+    executor._pool = MagicMock()
+    process = MagicMock()
+    process.is_alive.side_effect = [True, True, True, True]
+    executor._pool._processes = {1: process}
+
+    executor.shutdown(graceful=False)
+
+    assert process.method_calls == [
+        call.is_alive(),
+        call.terminate(),
+        call.join(5.0),
+        call.is_alive(),
+        call.kill(),
+        call.is_alive(),
+        call.join(5.0),
+        call.is_alive(),
+    ]
+    executor._pool.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
+
+
+def test_ungraceful_process_pool_shutdown_waits_after_worker_exits() -> None:
+    executor = ProcessExecPool.__new__(ProcessExecPool)
+    executor._pool = MagicMock()
+    process = MagicMock()
+    process.is_alive.side_effect = [True, True, True, False]
+    executor._pool._processes = {1: process}
+
+    executor.shutdown(graceful=False)
+
+    executor._pool.shutdown.assert_called_once_with(wait=True, cancel_futures=True)
+
+
+def test_ungraceful_process_pool_shutdown_is_idempotent() -> None:
+    executor = ProcessExecPool.__new__(ProcessExecPool)
+    executor._pool = MagicMock()
+    process = MagicMock()
+    process.is_alive.return_value = False
+    executor._pool._processes = {1: process}
+
+    executor.shutdown(graceful=False)
+    executor.shutdown(graceful=False)
+
+    executor._pool.shutdown.assert_called_once_with(wait=True, cancel_futures=True)
 
 
 def test_draining_pool_does_not_repeat_consumed_callbacks() -> None:
