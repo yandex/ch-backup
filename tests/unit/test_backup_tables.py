@@ -446,7 +446,7 @@ class TestRestorePreprocessing:
                 backup_table, "create_statement", "CREATE TABLE"
             ),
         ):
-            result, _ = table_backup._preprocess_tables_to_restore(
+            result, _, failed_tables = table_backup._preprocess_tables_to_restore(
                 context,
                 databases,
                 [backup_table],
@@ -458,6 +458,7 @@ class TestRestorePreprocessing:
         attached_table = context.ch_ctl.attach_table.call_args.args[0]
         assert attached_table.name == expected_detached_name
         assert result == [backup_table]
+        assert not failed_tables
 
 
 class TestCloudStorageFlags:

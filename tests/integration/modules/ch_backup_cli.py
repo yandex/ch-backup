@@ -374,6 +374,9 @@ class BackupManager:
         parts_from_backup: BackupId = None,
         cloud_storage_source_bucket: str = None,
         cloud_storage_source_path: str = None,
+        cloud_storage_source_endpoint: str = None,
+        skip_cloud_storage: bool = False,
+        restore_detached_parts: bool = False,
         access: bool = None,
         data: bool = None,
         schema: bool = None,
@@ -409,6 +412,14 @@ class BackupManager:
             )
         if cloud_storage_source_path:
             options.append(f"--cloud-storage-source-path {cloud_storage_source_path}")
+        if cloud_storage_source_endpoint:
+            options.append(
+                f"--cloud-storage-source-endpoint {cloud_storage_source_endpoint}"
+            )
+        if skip_cloud_storage:
+            options.append("--skip-cloud-storage")
+        if restore_detached_parts:
+            options.append("--restore-detached-parts")
         if access:
             options.append("--access")
         if data:

@@ -276,6 +276,7 @@ def _make_temporary_disks(
     data_copied: bool = False,
     source_bucket: str | None = "test-bucket",
     parts: Sequence[PartMetadata] = (),
+    skip_cloud_storage: bool = False,
 ) -> ClickHouseTemporaryDisks:
     """Helper: build ClickHouseTemporaryDisks with mocked dependencies."""
     context = _make_context(_make_backup_storage_config(), clickhouse_config_xml)
@@ -306,7 +307,28 @@ def _make_temporary_disks(
         None,
         None,
         context.ch_config,
+        skip_cloud_storage=skip_cloud_storage,
     )
+
+
+def test_skip_cloud_storage_does_not_require_bucket_or_create_temporary_disk():
+    disk_manager = _make_temporary_disks(
+        BACKUP_DISK_CLICKHOUSE_CONFIG,
+        cloud_storage_disks=["object_storage"],
+        source_bucket=None,
+        skip_cloud_storage=True,
+    )
+
+    with (
+        unittest.mock.patch.object(
+            disk_manager, "_create_temporary_disk"
+        ) as create_disk,
+        _capture_config_files(),
+    ):
+        with disk_manager:
+            pass
+
+    create_disk.assert_not_called()
 
 
 def test_enter_without_storage_configuration():
