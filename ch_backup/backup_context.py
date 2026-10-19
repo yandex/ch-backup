@@ -26,6 +26,7 @@ class BackupContext:
     _restore_context: RestoreContext
     _locker: LockManager
     _ch_config: ClickhouseConfig
+    parts_backup_meta: BackupMetadata | None = None
 
     def __init__(self, config: Config) -> None:
         self._config_root = config

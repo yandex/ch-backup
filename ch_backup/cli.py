@@ -589,6 +589,12 @@ def backup_command(
         type=str,
         help=f'Replica name to be removed from zookeeper. Default - {style("hostname", fg=Color.bright_green)}.',
     ),
+    option(
+        "--parts-from-backup",
+        type=str,
+        help="Download data parts that all other replicas have from this backup instead "
+        "of fetching them from replicas. Only for restore without data.",
+    ),
 )
 @option_group(
     "Cloud Storage",
@@ -692,6 +698,7 @@ def restore_command(
     override_replica_name: str = None,
     force_non_replicated: bool = False,
     replica_name: str = None,
+    parts_from_backup: str | None = None,
     cloud_storage_source_bucket: str = None,
     cloud_storage_source_path: str = None,
     cloud_storage_source_endpoint: str = None,
@@ -725,6 +732,10 @@ def restore_command(
     sources = BackupSources.for_restore(
         access, data, schema, udf, nc, workload, schema_only
     )
+    if parts_from_backup:
+        parts_from_backup = _validate_and_resolve_name(
+            ctx, ch_backup, parts_from_backup, BackupState.CREATED
+        )
     ch_backup.restore(
         sources=sources,
         backup_name=name,
@@ -733,6 +744,7 @@ def restore_command(
         override_replica_name=override_replica_name,
         force_non_replicated=force_non_replicated,
         replica_name=replica_name,
+        parts_backup_name=parts_from_backup,
         cloud_storage_source_bucket=cloud_storage_source_bucket,
         cloud_storage_source_path=cloud_storage_source_path,
         cloud_storage_source_endpoint=cloud_storage_source_endpoint,

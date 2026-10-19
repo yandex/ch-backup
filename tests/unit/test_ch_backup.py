@@ -3,6 +3,7 @@ ClickhouseBackup unit tests.
 """
 
 from collections import defaultdict
+from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Sequence, cast
 from unittest.mock import MagicMock, Mock, patch
@@ -20,7 +21,11 @@ from ch_backup.backup.metadata import (
     TableMetadata,
 )
 from ch_backup.backup.sources import BackupSources
-from ch_backup.ch_backup import CleanZooKeeperMode, ClickhouseBackup
+from ch_backup.ch_backup import (
+    CleanZooKeeperMode,
+    ClickhouseBackup,
+    _zookeeper_roots_differ,
+)
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
 from ch_backup.clickhouse.models import Database
@@ -111,6 +116,92 @@ def test_restore_of_copied_data_does_not_require_source_bucket():
 
     restore_mock.assert_called_once()
     assert restore_mock.call_args.kwargs["cloud_storage_source_bucket"] is None
+
+
+@pytest.mark.parametrize(
+    "parts_backup_name,parts_schema_only,schema_only,zk_hosts,binary,error",
+    [
+        ("parts", True, True, ["zk"], True, "schema-only"),
+        ("parts", False, False, ["zk"], True, "without data"),
+        ("parts", False, True, ["zk"], True, None),
+        ("parts", False, True, [], True, None),
+        ("parts", False, True, ["zk"], False, None),
+        (None, False, True, ["zk"], True, None),
+    ],
+    ids=[
+        "schema-only parts backup",
+        "restore with data",
+        "parts backup with data",
+        "parts backup without zookeeper",
+        "parts backup without clickhouse binary",
+        "no parts backup",
+    ],
+)
+# pylint: disable=too-many-positional-arguments
+def test_restore_checks_parts_backup(
+    parts_backup_name: str | None,
+    parts_schema_only: bool,
+    schema_only: bool,
+    zk_hosts: list[str],
+    binary: bool,
+    error: str | None,
+) -> None:
+    """
+    Wrong arguments fail, missing ZooKeeper or ClickHouse binary turns the parts
+    backup off, and it does not leak into the next restore.
+    """
+    backup = ClickhouseBackup(DEFAULT_CONFIG)  # type: ignore[arg-type]
+    context = MagicMock()
+    context.zk_config = {"hosts": zk_hosts}
+    context.ch_config.config = {}
+    backup.__dict__["_context"] = context
+    backup_meta = MagicMock()
+    backup_meta.schema_only = parts_schema_only
+    backup_meta.get_databases.return_value = []
+    backup_meta.get_skipped_data_tables.return_value = ([], [])
+    sources = BackupSources.for_restore(
+        False, False, False, False, False, False, schema_only
+    )
+
+    expected_error: AbstractContextManager = nullcontext()
+    if error:
+        expected_error = pytest.raises(ClickhouseBackupError, match=error)
+    with (
+        expected_error,
+        patch.object(ClickhouseBackup, "_get_backup", return_value=backup_meta),
+        patch.object(ClickhouseBackup, "_restore") as restore_mock,
+        patch("ch_backup.ch_backup.os.access", return_value=binary),
+    ):
+        backup.restore(
+            sources=sources,
+            backup_name="schema",
+            databases=[],
+            exclude_databases=[],
+            parts_backup_name=parts_backup_name,
+        )
+
+    assert restore_mock.called is not bool(error)
+    if not error:
+        assert context.parts_backup_meta is (
+            backup_meta if parts_backup_name and zk_hosts and binary else None
+        )
+
+
+@pytest.mark.parametrize(
+    "ch_config,zk_config,differ",
+    [
+        ({}, {"root_path": ""}, False),
+        ({"zookeeper": {"root": "/clickhouse"}}, {"root_path": "/clickhouse/"}, False),
+        ({"zookeeper": {"root": "/clickhouse"}}, {"root_path": ""}, True),
+        ({"zookeeper": None}, {"root_path": "/clickhouse"}, True),
+    ],
+    ids=["no roots", "same root", "root of clickhouse only", "root of ch-backup only"],
+)
+def test_zookeeper_roots_differ(ch_config: dict, zk_config: dict, differ: bool) -> None:
+    """
+    Paths of replicated tables are found only under the same root as ClickHouse uses.
+    """
+    assert _zookeeper_roots_differ(ch_config, zk_config) is differ
 
 
 SOURCES = BackupSources.for_restore(access=True, schema=True, named_collections=True)
