@@ -56,6 +56,32 @@ def test_metadata_roundtrip_and_legacy_default(metadata):
     assert BackupMetadata.load(data).get_http_handlers() == []
 
 
+def test_backup_does_not_record_handler_when_upload_fails(manager, context):
+    context.backup_layout.upload_http_handler.side_effect = RuntimeError(
+        "upload failed"
+    )
+    with pytest.raises(RuntimeError, match="upload failed"):
+        manager.backup(context)
+    assert context.backup_meta.get_http_handlers() == []
+
+
+def test_restore_reads_all_definitions_before_changing_handlers(manager, context):
+    context.backup_meta.add_http_handler("test")
+    context.backup_meta.add_http_handler("missing")
+    context.backup_layout.get_http_handler_create_statement.side_effect = [
+        STATEMENT + " + 1",
+        RuntimeError("read failed"),
+    ]
+    with pytest.raises(RuntimeError, match="read failed"):
+        manager.restore(context)
+    assert context.backup_layout.get_http_handler_create_statement.call_args_list == [
+        call(context.backup_meta, "test"),
+        call(context.backup_meta, "missing"),
+    ]
+    context.ch_ctl.drop_http_handler.assert_not_called()
+    context.ch_ctl.restore_http_handler.assert_not_called()
+
+
 def test_restore_drops_changed_handlers_before_creating_to_allow_url_swaps(
     manager, context
 ):

@@ -17,21 +17,6 @@ The tool also supports deduplication at part-level granularity. It's set up
  set a start time to exclude earlier backups from deduplication.
 
 
-## Workload and resource restore
-
-Restore skips identical workload/resource definitions and uses `CREATE OR REPLACE`
-for changed definitions of the same type, preserving dependent entities. Entities
-absent from the backup remain on the server; replacing a shared parent or resource
-can change their effective limits. Restore does not synchronize the entire hierarchy.
-
-Parents omitted from the backup must already exist as workloads on the target,
-including parents defined in XML configuration. Entities defined in XML configuration
-of the target are skipped with a log message, even if the backup has another
-definition. Type conflicts and server restrictions (such as creating a second root
-workload) abort restore with the affected entity's name. Concurrent workload/resource
-DDL during restore is unsupported.
-
-
 ## Installation
 
 In order to get an up-to-date version of ch-backup, run `make build`. It will produce
@@ -144,7 +129,7 @@ storage:
         bucket: backups-dr
 ```
 
-How it works:
+Behavior and limitations:
 
 - A final text report lists copied, skipped, failed and unprocessed backups. `--report-path`
   also saves a JSON report (schema version 1) once the command finishes, including failures
@@ -232,6 +217,18 @@ How it works:
   when the copy is deleted, and they're stored for each copied backup separately.
   Restore preserves the HTTP/HTTPS scheme of the stored endpoint. Its `--cloud-storage-source-endpoint`
   option accepts a full HTTP(S) URL or `host[:port]`; the latter uses the original disk's scheme.
+- ClickHouse 26.8+ SQL-defined HTTP handlers are included in full backups; use `--http-handlers` with backup
+  or restore handlers only.
+  Export requires `SHOW HANDLERS`, `SELECT ... system.handlers`, and a server setting
+  `display_secrets_in_show_and_select=1` plus grant `displaySecretsInShowAndSelect` if you have any secrets.
+  In the latter case, any `[HIDDEN]`, including literals, is rejected.
+  Restore requires `CREATE HANDLER` and `DROP HANDLER` for replacements.
+  Identical definitions are skipped; changed definitions use non-atomic `DROP/CREATE`
+- Workload and resource restore skips identical definitions and uses `CREATE OR REPLACE`
+  for changes, preserving dependencies. Entities absent from the backup remain; XML-defined
+  target entities are skipped. Parents omitted from the backup must already exist. Replacing
+  shared parents or resources can affect other entities. Type conflicts and server restrictions
+  abort restore; concurrent workload/resource DDL is unsupported.
 
 ### Detached parts
 
