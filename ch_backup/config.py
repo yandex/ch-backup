@@ -45,7 +45,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "config_dir": "/etc/clickhouse-server/config.d/",
         "preprocessed_config_path": "/var/lib/clickhouse/preprocessed_configs/config.xml",
         "named_collections_path": "/var/lib/clickhouse/named_collections",
-        "workload_path": "/var/lib/clickhouse/workload",
         "host": socket.gethostname(),
         "protocol": "http",
         "port": None,
@@ -79,6 +78,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "minutes": 0,
         },
         "time_format": "%Y-%m-%d %H:%M:%S.%f %z",
+        # Leave out a data part, or the data of a table, that cannot be backed
+        # up, instead of failing the whole backup. Such a backup is created, and
+        # list shows how many tables are left without data or some parts.
+        "keep_going": False,
         # Retain policy for the purge command that sets the maximum age of
         # backups to keep.
         "retain_time": {},
@@ -148,6 +151,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "proxy_resolver": {
             "uri": None,
             "proxy_port": None,
+            # HTTP connect and read timeout, in seconds (not a total DNS/request deadline).
+            "timeout": 10,
         },
         "disable_ssl_warnings": True,
         # Chunk size used when uploading / downloading data, in bytes.
@@ -159,7 +164,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # chunk_size will be multiplied on a required number of times
         # to satisfy the limit.
         "max_chunk_count": 10000,
-        # Attempts per S3 operation before failing, 1 disables retries
+        # Attempts per S3 operation, including proxy resolution; 1 disables retries
         "retry_max_attempts": 30,
         # Upper bound of the randomized exponential pause between attempts, in seconds
         "retry_max_interval": 180,

@@ -203,7 +203,7 @@ Feature: Workload entities (WORKLOADs and RESOURCEs) support
     """
 
   @require_version_25.10
-  Scenario: Restore reports a configuration conflict without removing dependents
+  Scenario: Restore skips changed configuration-defined entities
     Given we replace config file no_storage.xml in favor of workload_entity_storage/resources_and_workloads.xml on clickhouse02 with restart
     And we have executed queries on clickhouse01
     """
@@ -215,16 +215,8 @@ Feature: Workload entities (WORKLOADs and RESOURCEs) support
     CREATE WORKLOAD extra IN xml_production;
     """
     When we create clickhouse01 clickhouse backup
-    And we try to execute command on clickhouse02
-    """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore LAST
-    """
-    Then command exits with code 1
-    And we get response contains
-    """
-    Cannot restore workload entity 'xml_production':
-    """
-    When we execute query on clickhouse02
+    And we restore clickhouse backup #0 to clickhouse02
+    And we execute query on clickhouse02
     """
     SELECT create_query FROM system.workloads ORDER BY name;
     """

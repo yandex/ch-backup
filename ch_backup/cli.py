@@ -251,6 +251,7 @@ def list_command(
 
     records = []
     for backup in backups:
+        data_skipped_tables, incomplete_tables = backup.count_skipped_data_tables()
         record: dict = OrderedDict(
             (
                 ("name", backup.name),
@@ -260,6 +261,8 @@ def list_command(
                 ("size", backup.size),
                 ("real_size", backup.real_size),
                 ("ch_version", backup.ch_version),
+                ("data_skipped_tables", data_skipped_tables),
+                ("incomplete_tables", incomplete_tables),
             )
         )
         if format_ == "json":
@@ -276,7 +279,16 @@ def list_command(
 
     for name, error in sorted(unreadable.items()):
         record = dict.fromkeys(
-            ("start_time", "end_time", "size", "real_size", "ch_version", "labels")
+            (
+                "start_time",
+                "end_time",
+                "size",
+                "real_size",
+                "ch_version",
+                "data_skipped_tables",
+                "incomplete_tables",
+                "labels",
+            )
         )
         record = {"name": name, "state": "unknown", **record}
         if format_ == "json":
@@ -464,6 +476,12 @@ def show_command(
         is_flag=True,
         help="Enables force mode (backup.min_interval is ignored).",
     ),
+    option(
+        "--keep-going",
+        is_flag=True,
+        help="Leave out a data part, or the data of a table, that cannot be "
+        "backed up, instead of failing the whole backup. Overrides backup.keep_going.",
+    ),
 )
 @constraint(mutually_exclusive, ["schema_only", "access"])
 @constraint(mutually_exclusive, ["schema_only", "data"])
@@ -481,6 +499,7 @@ def backup_command(
     databases: list,
     tables: list,
     force: bool,
+    keep_going: bool,
     label: list,
     schema_only: bool,
     freeze_timeout: int,
@@ -500,6 +519,8 @@ def backup_command(
     # pylint: disable=too-many-arguments,too-many-locals
     if copy_cloud_storage_data:
         ch_backup.config.merge({"cloud_storage": {"copy_data": True}})
+    if keep_going:
+        ch_backup.config.merge({"backup": {"keep_going": True}})
     if freeze_timeout:
         logging.info(f"ALTER FREEZE timeout force set to {freeze_timeout} sec.")
         ch_backup.reload_config(
@@ -582,6 +603,12 @@ def backup_command(
         type=str,
         help=f'Replica name to be removed from zookeeper. Default - {style("hostname", fg=Color.bright_green)}.',
     ),
+    option(
+        "--parts-from-backup",
+        type=str,
+        help="Download data parts that all other replicas have from this backup instead "
+        "of fetching them from replicas. Only for restore without data.",
+    ),
 )
 @option_group(
     "Cloud Storage",
@@ -662,6 +689,11 @@ def backup_command(
     ),
 )
 @option(
+    "--restore-detached-parts",
+    is_flag=True,
+    help="Restore backed-up detached parts without attaching them.",
+)
+@option(
     "--keep-going",
     is_flag=True,
     help="Forces to keep going if some tables are failed on restore",
@@ -691,10 +723,12 @@ def restore_command(
     override_replica_name: str = None,
     force_non_replicated: bool = False,
     replica_name: str = None,
+    parts_from_backup: str | None = None,
     cloud_storage_source_bucket: str = None,
     cloud_storage_source_path: str = None,
     cloud_storage_source_endpoint: str = None,
     skip_cloud_storage: bool = False,
+    restore_detached_parts: bool = False,
     clean_zookeeper_mode: CleanZooKeeperMode = CleanZooKeeperMode.REPLICA_ONLY,
     keep_going: bool = False,
     restore_tables_in_replicated_database: bool = False,
@@ -732,6 +766,10 @@ def restore_command(
         schema_only,
         http_handlers=http_handlers,
     )
+    if parts_from_backup:
+        parts_from_backup = _validate_and_resolve_name(
+            ctx, ch_backup, parts_from_backup, BackupState.CREATED
+        )
     ch_backup.restore(
         sources=sources,
         backup_name=name,
@@ -740,10 +778,12 @@ def restore_command(
         override_replica_name=override_replica_name,
         force_non_replicated=force_non_replicated,
         replica_name=replica_name,
+        parts_backup_name=parts_from_backup,
         cloud_storage_source_bucket=cloud_storage_source_bucket,
         cloud_storage_source_path=cloud_storage_source_path,
         cloud_storage_source_endpoint=cloud_storage_source_endpoint,
         skip_cloud_storage=skip_cloud_storage,
+        restore_detached_parts=restore_detached_parts,
         clean_zookeeper_mode=clean_zookeeper_mode,
         keep_going=keep_going,
         restore_tables_in_replicated_database=restore_tables_in_replicated_database,
@@ -770,6 +810,7 @@ def restore_command(
     option("--access", is_flag=True, help="Restore access control entities."),
     option("--udf", is_flag=True, help="Restore user defined functions."),
     option("--nc", is_flag=True, help="Restore named collections."),
+    option("--workload", is_flag=True, help="Restore workload entities."),
 )
 # pylint: disable=too-many-positional-arguments
 def restore_from_replica_command(
@@ -781,17 +822,18 @@ def restore_from_replica_command(
     access: bool = False,
     udf: bool = False,
     nc: bool = False,
+    workload: bool = False,
 ) -> None:
     """Restore from a live replica of the shard instead of a backup. All without options."""
-    sources = BackupSources(data=False, workload_entities=False, http_handlers=False)
-    if any([schema, access, udf, nc]):
+    sources = BackupSources(data=False, http_handlers=False)
+    if any([schema, access, udf, nc, workload]):
         sources = BackupSources(
             access=access,
             data=False,
             schema=schema,
             udf=udf,
             named_collections=nc,
-            workload_entities=False,
+            workload_entities=workload,
             http_handlers=False,
         )
     ch_backup.restore_from_replica(source_host, sources, replica_name)

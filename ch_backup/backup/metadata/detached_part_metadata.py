@@ -8,7 +8,7 @@ from ch_backup.util import Slotted
 
 
 class DetachedPartMetadata(Slotted):
-    """Metadata stored for a backed-up detached ClickHouse data part."""
+    """Metadata required to restore a part into a table's detached directory."""
 
     __slots__ = (
         "database",
@@ -93,6 +93,22 @@ class DetachedPartMetadata(Slotted):
     def tarball(self) -> bool:
         """Return whether the files are stored as one tar archive."""
         return self.raw_metadata.tarball
+
+    def with_name(self, name: str) -> "DetachedPartMetadata":
+        """Return equivalent metadata for a different detached directory name."""
+        return type(self)(
+            database=self.database,
+            table=self.table,
+            name=name,
+            reason=self.reason,
+            checksum=self.checksum,
+            size=self.size,
+            files=self.files,
+            tarball=self.tarball,
+            disk_name=self.disk_name,
+            encrypted=self.encrypted,
+            object_storage=self.object_storage,
+        )
 
     @classmethod
     def load(

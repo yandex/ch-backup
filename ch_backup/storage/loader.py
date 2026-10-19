@@ -145,6 +145,7 @@ class StorageLoader:
         delete: bool = False,
         callback: Callable | None = None,
         compression: bool = False,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> str:
         """
         Upload multiple files as tarball.
@@ -160,6 +161,7 @@ class StorageLoader:
             delete=delete,
             callback=callback,
             compression=compression,
+            on_error=on_error,
         )
         return remote_path
 
