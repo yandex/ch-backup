@@ -17,6 +17,44 @@ The tool also supports deduplication at part-level granularity. It's set up
  set a start time to exclude earlier backups from deduplication.
 
 
+## Restore without cloud storage
+
+`ch-backup restore --skip-cloud-storage BACKUP` restores local parts and skips
+cloud parts, including detached parts. It also adapts MergeTree schemas and
+materialized views with their own storage to the target server:
+
+- A policy missing from `system.storage_policies` is replaced with `default`.
+- TTL MOVE rules referencing disks or volumes absent from the resulting policy
+  are removed as whole rules. DELETE, conditional DELETE, RECOMPRESS, GROUP BY,
+  column TTLs and available MOVE rules are preserved.
+- Local parts whose original disk is outside the adapted policy go to its first
+  local disk, in volume priority and disk order.
+
+For replicated tables this mode assumes a coordinated restore of the entire
+target cluster, with the same flag and storage configuration on every replica.
+Restore each replicated shard's data on one replica. On its other replicas, use
+`--schema-only --skip-cloud-storage`, optionally with `--parts-from-backup BACKUP`
+to accelerate recovery. The existing `--parts-from-backup` mode downloads eligible
+parts into `detached/`, verifies their file checksums, then runs
+`SYSTEM RESTORE REPLICA`; replication fetches any remaining parts. This mode
+requires restore without ordinary data loading, so `--schema-only` is still
+needed. Restore non-replicated tables separately with their data.
+Old replicas must not keep running with the previous schema. If Keeper still
+contains unavailable TTL destinations, ch-backup resets all replica metadata
+of that table and recreates it from the adapted schema. This resets the table's
+replication state, including its queues. A per-table Keeper lock covers this
+check, cleanup and table creation, including schema-only restore. Subsequent
+replicas join the adapted table without repeating the reset. Direct ZooKeeper
+access must be configured in ch-backup and use the same root as ClickHouse.
+Explicit `--clean-zookeeper-mode disabled` prevents a required reset and returns
+an error. Schema-only restore does not recover the data removed by a reset.
+
+Policy replacements, removed TTL rules and Keeper resets are logged. With
+`--keep-going`, independent tables continue after a schema adaptation failure,
+but the command reports those failures with a nonzero exit status. A shared
+Keeper cleanup failure stops the restore immediately. The behavior without
+`--skip-cloud-storage` is unchanged.
+
 ## Workload and resource restore
 
 Restore skips identical workload/resource definitions and uses `CREATE OR REPLACE`

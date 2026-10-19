@@ -617,7 +617,10 @@ def backup_command(
     option(
         "--skip-cloud-storage",
         is_flag=True,
-        help="Forces to skip restoring data on cloud storage.",
+        help=(
+            "Skip cloud data and adapt storage policies and TTL MOVE rules to the target. "
+            "Incompatible Keeper metadata may be reset for all replicas of affected tables."
+        ),
     ),
 )
 @option_group(

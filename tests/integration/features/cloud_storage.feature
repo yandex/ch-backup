@@ -323,3 +323,193 @@ Feature: Backup & Clean & Restore
     """
     missing from ClickHouse storage_configuration
     """
+
+  Scenario Outline: Restore warm parts and dependent objects without the source policy
+    Given a working clickhouse on clickhouse02
+    # Future timestamps keep TTL inactive. Move only one source partition to S3,
+    # leaving both rows local in the materialized view's own table.
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (d DateTime, p UInt32, id UInt64)
+    ENGINE = <engine>
+    PARTITION BY p ORDER BY id
+    TTL d + INTERVAL 1 DAY TO VOLUME 'external', d + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold';
+    CREATE MATERIALIZED VIEW storage_restore.mv ENGINE = MergeTree ORDER BY id
+    TTL d + INTERVAL 1 DAY TO VOLUME 'external', d + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold' AS SELECT d, id FROM storage_restore.t;
+    INSERT INTO storage_restore.t VALUES ('2099-01-01', 0, 10);
+    INSERT INTO storage_restore.t VALUES ('2099-01-01', 1, 20);
+    ALTER TABLE storage_restore.t MOVE PARTITION 1 TO VOLUME 'external';
+    """
+    And we create clickhouse01 clickhouse backup
+    And we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse02 with restart
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    skip_cloud_storage: true
+    keep_going: <keep_going>
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT id FROM storage_restore.t ORDER BY id
+    """
+    Then we get response
+    """
+    10
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM storage_restore.mv
+    """
+    Then we get response
+    """
+    2
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT storage_policy, position(create_table_query, 'TO VOLUME') = 0, position(create_table_query, 'toIntervalDay(100)') > 0 FROM system.tables WHERE database = 'storage_restore' AND name = 't'
+    """
+    Then we get response
+    """
+    default	1	1
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    skip_cloud_storage: true
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT count() FROM storage_restore.t
+    """
+    Then we get response
+    """
+    1
+    """
+
+    Examples:
+      | engine                                                     | keep_going |
+      | MergeTree()                                                | false      |
+      | ReplicatedMergeTree('/storage_restore/t', '{replica}')       | true       |
+
+  Scenario: Remap local active and detached parts after replacing a missing policy
+    Given a working clickhouse on clickhouse02
+    # Both source disks disappear on the target. Active and detached parts must
+    # land on its default disk while retaining their respective states.
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (p UInt32, id UInt64) ENGINE = MergeTree
+    PARTITION BY p ORDER BY id SETTINGS storage_policy = 'multiple_disks';
+    INSERT INTO storage_restore.t VALUES (0, 10);
+    INSERT INTO storage_restore.t VALUES (1, 20);
+    ALTER TABLE storage_restore.t MOVE PARTITION 0 TO DISK 'hdd1';
+    ALTER TABLE storage_restore.t MOVE PARTITION 1 TO DISK 'hdd2';
+    ALTER TABLE storage_restore.t DETACH PARTITION 1;
+    """
+    And we create clickhouse01 clickhouse backup
+    """
+    detached_parts: true
+    detached_parts_disks:
+      - hdd2
+    """
+    And we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse02 with restart
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    skip_cloud_storage: true
+    restore_detached_parts: true
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT id FROM storage_restore.t
+    """
+    Then we get response
+    """
+    10
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT disk, count() FROM system.detached_parts WHERE database = 'storage_restore' AND table = 't' GROUP BY disk
+    """
+    Then we get response
+    """
+    default	1
+    """
+
+  Scenario: Recreate incompatible Keeper state once and join a second replica using backup parts
+    Given a working clickhouse on clickhouse02
+    And we have enabled shared zookeeper for clickhouse01
+    And we have enabled shared zookeeper for clickhouse02
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (d DateTime, id UInt64)
+    ENGINE = ReplicatedMergeTree('/storage_restore/t', '{replica}') ORDER BY id
+    TTL d + INTERVAL 1 DAY TO VOLUME 'external', d + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.t VALUES ('2099-01-01', 10);
+    """
+    And we create clickhouse01 clickhouse backup
+    # Lose local tables while retaining their old shared schema in Keeper.
+    And we dirty remove clickhouse data at clickhouse01
+    And we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse01 with restart
+    And we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse02 with restart
+    And we try to execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore --skip-cloud-storage --clean-zookeeper-mode disabled LAST
+    """
+    Then we get response contains
+    """
+    ZooKeeper cleanup is disabled
+    """
+    When we restore clickhouse backup #0 to clickhouse01
+    """
+    skip_cloud_storage: true
+    """
+    # Restore ordinary data once per shard. The second replica preloads parts
+    # from the backup and lets replica recovery register them.
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    skip_cloud_storage: true
+    schema_only: true
+    parts_from_backup: 0
+    """
+    And we execute query on clickhouse02
+    """
+    SYSTEM SYNC REPLICA storage_restore.t
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT count() FROM storage_restore.t
+    """
+    Then we get response
+    """
+    1
+    """
+    When we execute query on clickhouse02
+    """
+    SYSTEM FLUSH LOGS
+    """
+    # NewPart without DownloadPart proves recovery used the preloaded backup part
+    # instead of fetching it over the replication protocol.
+    And we execute query on clickhouse02
+    """
+    SELECT countIf(event_type = 'NewPart'), countIf(event_type = 'DownloadPart') FROM system.part_log WHERE database = 'storage_restore' AND table = 't'
+    """
+    Then we get response
+    """
+    1	0
+    """
+    When we restore clickhouse backup #0 to clickhouse01
+    """
+    skip_cloud_storage: true
+    """
+    And we restart clickhouse on clickhouse02
+    And we execute query on clickhouse02
+    """
+    SELECT is_readonly, (SELECT count() FROM storage_restore.t) FROM system.replicas WHERE database = 'storage_restore' AND table = 't'
+    """
+    Then we get response
+    """
+    0	1
+    """

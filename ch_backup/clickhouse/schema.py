@@ -42,13 +42,15 @@ def rewrite_table_schema(
             create_statement,
         )
         if match:
-            params = match.group("params")
-            if len(params) > 0:
-                create_statement = create_statement.replace(params, "").replace(
-                    match.group("replicated"), ""
-                )
-                create_statement = create_statement.replace("MergeTree()", "MergeTree")
-                table.create_statement = create_statement
+            # Strip only the matched replica arguments and engine prefix. Empty
+            # arguments still need conversion; edit right to left to keep offsets.
+            start, end = match.span("params")
+            create_statement = create_statement[:start] + create_statement[end:]
+            start, end = match.span("replicated")
+            create_statement = create_statement[:start] + create_statement[end:]
+            table.create_statement = create_statement.replace(
+                "MergeTree()", "MergeTree"
+            )
             if table.is_replicated():
                 table.engine = table.engine.replace("Replicated", "")
 
