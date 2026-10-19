@@ -456,15 +456,27 @@ Feature: Backup of tables with different engines and configurations
     CREATE DATABASE test_db ENGINE = Atomic <settings>;
     CREATE TABLE test_db.table_01 (date Date, n Int32) AS url('http://127.0.0.1:12345/', CSV);
     CREATE TABLE test_db.table_02 (n Int32) ENGINE = MergeTree ORDER BY n;
+    INSERT INTO test_db.table_02 VALUES (1), (2), (3);
     DETACH DATABASE test_db;
     ATTACH DATABASE test_db;
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
       | num | state   | data_count | link_count |
-      | 0   | created | 0          | 0          |
+      | 0   | created | 1          | 0          |
     When we restore clickhouse backup #0 to clickhouse02
     Then clickhouse02 has same schema as clickhouse01
+
+    When we execute query on clickhouse02
+    """
+    SELECT n FROM test_db.table_02 ORDER BY n
+    """
+    Then we get response
+    """
+    1
+    2
+    3
+    """
 
     Examples:
       | loading | settings |
