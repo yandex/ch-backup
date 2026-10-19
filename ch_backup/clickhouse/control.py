@@ -40,6 +40,7 @@ from ch_backup.util import (
     scan_dir_files,
     strip_query,
 )
+from ch_backup.zookeeper.zookeeper import ZookeeperCTL
 
 ACCESS_ENTITY_CHAR = {
     "users": "U",
@@ -165,7 +166,9 @@ GET_REPLICAS_SQL = strip_query(
     SELECT
         database,
         table,
-        is_readonly
+        is_readonly,
+        zookeeper_path,
+        replica_name
     FROM system.replicas
     WHERE ({db_condition})
       AND ({tables_condition})
@@ -592,6 +595,15 @@ GET_PARTITIONS = strip_query(
 """
 )
 
+GET_ACTIVE_PARTS_SQL = strip_query(
+    """
+    SELECT name
+    FROM system.parts
+    WHERE database = '{db_name}' AND table = '{table_name}' AND active = 1
+    FORMAT JSONCompact
+"""
+)
+
 METADATA_PLACEHOLDER_FOR_MISSED_DETACHED_TABLE = strip_query(
     """
 ATTACH TABLE _ UUID '{uuid}'
@@ -797,6 +809,17 @@ class ClickhouseCTL:
         )
         result = self._ch_client.query(query_sql, should_retry=False)["data"]
         return [partition[0] for partition in result]
+
+    def get_active_parts(self, table: Table) -> set[str]:
+        """
+        Get names of active parts of table.
+        """
+        query_sql = GET_ACTIVE_PARTS_SQL.format(
+            db_name=escape(table.database),
+            table_name=escape(table.name),
+        )
+        result = self._ch_client.query(query_sql, should_retry=False)["data"]
+        return {part[0] for part in result}
 
     def system_unfreeze(self, backup_name: str) -> None:
         """
@@ -1150,6 +1173,26 @@ class ClickhouseCTL:
             ),
             timeout=self._restore_replica_timeout,
         )
+
+    def get_parts_of_other_replicas(
+        self, table: Table, zk_ctl: ZookeeperCTL
+    ) -> set[str]:
+        """
+        Get names of the active parts that every other replica of the table has in ZooKeeper.
+        """
+        replica = self.get_replicas(table.database, [table.name])[0]
+        replicas_path = os.path.join(replica["zookeeper_path"], "replicas")
+        with zk_ctl.zk_client:
+            other_replicas = set(zk_ctl.get_children(replicas_path)) - {
+                replica["replica_name"]
+            }
+            parts = [
+                _active_parts(
+                    set(zk_ctl.get_children(os.path.join(replicas_path, name, "parts")))
+                )
+                for name in other_replicas
+            ]
+        return set.intersection(*parts) if parts else set()
 
     def drop_table_if_exists(self, table: Table) -> None:
         """
@@ -1913,6 +1956,38 @@ def _read_objects(metadata_path: str) -> list[tuple[str, int]]:
                 f"Failed to read objects of {metadata_path},"
                 f" metadata version {version}"
             ) from e
+
+
+def _active_parts(names: set[str]) -> set[str]:
+    """
+    Drop the parts covered by another part of the set, as ZooKeeper keeps merged parts
+    for old_parts_lifetime. A set with an unparsable name is kept as is.
+    """
+    try:
+        parts = sorted(
+            ((name, split_part_name(name)) for name in names),
+            key=lambda item: (
+                item[1].partition_id,
+                item[1].min_block_num,
+                -item[1].max_block_num,
+                -item[1].level,
+                -item[1].mutation,
+            ),
+        )
+    except ValueError:
+        return names
+    active: set[str] = set()
+    covering = None
+    for name, part in parts:
+        if (
+            covering
+            and covering.partition_id == part.partition_id
+            and covering.max_block_num >= part.max_block_num
+        ):
+            continue
+        active.add(name)
+        covering = part
+    return active
 
 
 def _quote_or_any(name: str) -> str:

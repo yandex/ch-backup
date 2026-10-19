@@ -1169,6 +1169,263 @@ class TestUniqueKeyTables:
         )
 
 
+class TestDownloadPartsOfOtherReplicas:
+    """
+    Tests for downloading parts from another backup before SYSTEM RESTORE REPLICA.
+    """
+
+    # pylint: disable=protected-access
+
+    _DB = "db1"
+    _TABLE = "table1"
+    _STATEMENT = (
+        f"CREATE TABLE {_DB}.{_TABLE} UUID '{UUID}' (id UInt64) ENGINE = "
+        "ReplicatedMergeTree('/clickhouse/tables/table1', '{replica}') ORDER BY id"
+    )
+
+    @classmethod
+    def _parts_backup(cls) -> BackupMetadata:
+        """Helper: a backup with parts on a local disk and on object storage."""
+        backup = _make_backup_context().backup_meta
+        table = TableMetadata(cls._DB, cls._TABLE, "ReplicatedMergeTree", UUID)
+        for name, disk in [
+            ("all_1_1_0", "default"),
+            ("all_2_2_0", "default"),
+            ("all_3_3_0", "s3"),
+        ]:
+            table.add_part(
+                PartMetadata(
+                    database=cls._DB,
+                    table=cls._TABLE,
+                    name=name,
+                    checksum="abc123",
+                    size=1024,
+                    files=["data.bin"],
+                    tarball=True,
+                    disk_name=disk,
+                )
+            )
+        backup.add_table(table)
+        return backup
+
+    @classmethod
+    def _setup(
+        cls,
+        parts_backup: BackupMetadata | None,
+        detached: Path,
+        *,
+        download_error: Exception | None = None,
+        check_error: Exception | None = None,
+        active_parts: set[str] | None = None,
+        lookup_error: Exception | None = None,
+    ) -> tuple[MagicMock, BackupContext, Table]:
+        """Helper: a context with the table and the mock that sees all calls."""
+        calls = MagicMock()
+        calls.backup_layout.download_data_part.side_effect = download_error or (
+            lambda _backup, _part, path, callback: os.makedirs(path)
+        )
+        calls.check_part_files.side_effect = check_error
+        context = BackupContext(DEFAULT_CONFIG)  # type: ignore[arg-type]
+        context.ch_ctl = calls.ch_ctl
+        context.zk_ctl = calls.zk_ctl
+        context.backup_layout = calls.backup_layout
+        context.parts_backup_meta = parts_backup
+        ch_table = MagicMock()
+        ch_table.paths_with_disks = [
+            ("", Disk("default", "", "local")),
+            ("", Disk("s3", "", "s3")),
+        ]
+        calls.ch_ctl.get_table.return_value = ch_table
+        calls.ch_ctl.get_parts_of_other_replicas.return_value = {
+            "all_1_1_0",
+            "all_3_3_0",
+        }
+        calls.ch_ctl.get_parts_of_other_replicas.side_effect = lookup_error
+        calls.ch_ctl.get_active_parts.return_value = active_parts or set()
+        calls.ch_ctl.get_detached_part_path.side_effect = (
+            lambda _table, _disk, name: str(detached / name)
+        )
+        table = Table(
+            cls._DB, cls._TABLE, "ReplicatedMergeTree", [], [], "", cls._STATEMENT, UUID
+        )
+        return calls, context, table
+
+    @classmethod
+    def _restore(
+        cls,
+        parts_backup: BackupMetadata | None,
+        detached: Path,
+        *,
+        download_error: Exception | None = None,
+        check_error: Exception | None = None,
+        active_parts: set[str] | None = None,
+        lookup_error: Exception | None = None,
+    ) -> MagicMock:
+        """Helper: restore the table object and return the mock that saw all calls."""
+        calls, context, table = cls._setup(
+            parts_backup,
+            detached,
+            download_error=download_error,
+            check_error=check_error,
+            active_parts=active_parts,
+            lookup_error=lookup_error,
+        )
+        with patch("ch_backup.logic.table.check_part_files", calls.check_part_files):
+            TableBackup._restore_table_object(context, DATABASE, table)
+        return calls
+
+    def test_only_parts_of_other_replicas_on_local_disks_are_downloaded_before_restore_replica(
+        self, tmp_path: Path
+    ) -> None:
+        """
+        Only local parts of replicas are downloaded, and checked before the clone.
+        """
+        calls = self._restore(self._parts_backup(), tmp_path)
+
+        names = [name for name, _, _ in calls.mock_calls]
+        downloaded = [
+            args[1].name
+            for name, args, _ in calls.mock_calls
+            if name == "backup_layout.download_data_part"
+        ]
+        assert downloaded == ["all_1_1_0"]
+        calls.backup_layout.wait.assert_called_once_with(keep_going=True)
+        calls.check_part_files.assert_called_once_with(str(tmp_path / "all_1_1_0"))
+        assert (tmp_path / "all_1_1_0").exists()
+        assert (
+            names.index("backup_layout.wait")
+            < names.index("check_part_files")
+            < names.index("ch_ctl.restore_replica")
+        )
+
+    def test_part_active_in_table_is_not_downloaded(self, tmp_path: Path) -> None:
+        """
+        SYSTEM RESTORE REPLICA moves an active part to detached/ under the same name.
+        """
+        calls = self._restore(
+            self._parts_backup(), tmp_path, active_parts={"all_1_1_0"}
+        )
+
+        calls.backup_layout.download_data_part.assert_not_called()
+        calls.ch_ctl.restore_replica.assert_called_once()
+
+    def test_parts_are_downloaded_before_restore_replica_of_readonly_table(
+        self, tmp_path: Path
+    ) -> None:
+        """
+        A readonly table fixed in place gets the parts before RESTORE REPLICA.
+        """
+        calls, context, table = self._setup(self._parts_backup(), tmp_path)
+        calls.ch_ctl.get_replicas.side_effect = [
+            [{"database": self._DB, "table": self._TABLE}],
+            [],
+        ]
+
+        with patch("ch_backup.logic.table.check_part_files", calls.check_part_files):
+            (
+                still_readonly,
+                _,
+            ) = TableBackup()._get_remaining_readonly_tables_after_fix_attempt(
+                context, [table], calls.metadata_cleaner
+            )
+
+        names = [name for name, _, _ in calls.mock_calls]
+        assert not still_readonly
+        assert (
+            names.index("metadata_cleaner.clean_tables_metadata")
+            < names.index("backup_layout.download_data_part")
+            < names.index("ch_ctl.restore_replica")
+        )
+
+    def test_failed_choice_of_parts_is_left_to_replicas(self, tmp_path: Path) -> None:
+        """
+        A failure to reach ZooKeeper of ch-backup must not fail the restore.
+        """
+        calls = self._restore(
+            self._parts_backup(), tmp_path, lookup_error=RuntimeError("x")
+        )
+
+        calls.backup_layout.download_data_part.assert_not_called()
+        calls.ch_ctl.drop_table_if_exists.assert_not_called()
+        calls.ch_ctl.restore_replica.assert_called_once()
+
+    def test_failed_choice_of_parts_does_not_skip_restore_replica_of_readonly_table(
+        self, tmp_path: Path
+    ) -> None:
+        """
+        A readonly table is still fixed in place, not recreated.
+        """
+        calls, context, table = self._setup(
+            self._parts_backup(), tmp_path, lookup_error=RuntimeError("x")
+        )
+        calls.ch_ctl.get_replicas.side_effect = [
+            [{"database": self._DB, "table": self._TABLE}],
+            [],
+        ]
+
+        (
+            still_readonly,
+            _,
+        ) = TableBackup()._get_remaining_readonly_tables_after_fix_attempt(
+            context, [table], calls.metadata_cleaner
+        )
+
+        assert not still_readonly
+        calls.backup_layout.download_data_part.assert_not_called()
+        calls.ch_ctl.restore_replica.assert_called_once()
+
+    def test_part_already_in_detached_is_not_touched(self, tmp_path: Path) -> None:
+        """
+        A directory already in detached/ is neither overwritten nor removed.
+        """
+        (tmp_path / "all_1_1_0").mkdir()
+        (tmp_path / "all_1_1_0" / "data.bin").write_bytes(b"x")
+
+        calls = self._restore(
+            self._parts_backup(), tmp_path, check_error=ValueError("x")
+        )
+
+        calls.backup_layout.download_data_part.assert_not_called()
+        calls.check_part_files.assert_not_called()
+        assert (tmp_path / "all_1_1_0" / "data.bin").read_bytes() == b"x"
+        calls.ch_ctl.restore_replica.assert_called_once()
+
+    def test_failed_download_is_left_to_replicas(self, tmp_path: Path) -> None:
+        """
+        An error raised before the download is queued must not fail the restore.
+        """
+        calls = self._restore(
+            self._parts_backup(), tmp_path, download_error=StorageError("x")
+        )
+
+        calls.backup_layout.wait.assert_called_once_with(keep_going=True)
+        calls.check_part_files.assert_not_called()
+        calls.ch_ctl.restore_replica.assert_called_once()
+
+    def test_part_that_does_not_match_its_checksums_is_left_to_replicas(
+        self, tmp_path: Path
+    ) -> None:
+        """
+        A rotten part is removed, as ClickHouse would take it.
+        """
+        calls = self._restore(
+            self._parts_backup(), tmp_path, check_error=ValueError("x")
+        )
+
+        assert not (tmp_path / "all_1_1_0").exists()
+        calls.ch_ctl.restore_replica.assert_called_once()
+
+    def test_nothing_is_downloaded_without_parts_backup(self, tmp_path: Path) -> None:
+        """
+        Without the option the replica is restored exactly as before.
+        """
+        calls = self._restore(None, tmp_path)
+
+        calls.backup_layout.download_data_part.assert_not_called()
+        calls.ch_ctl.get_parts_of_other_replicas.assert_not_called()
+        calls.ch_ctl.restore_replica.assert_called_once()
+
+
 def _upload_part(fail: bool) -> None:
     """Helper: stand for the upload of a data part, failing it if asked."""
     if fail:
