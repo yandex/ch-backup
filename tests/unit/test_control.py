@@ -2,10 +2,12 @@ import errno
 from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE
+from typing import Callable
 from unittest import mock
 
 import pytest
 
+from ch_backup.backup.metadata import DetachedPartMetadata
 from ch_backup.clickhouse.control import (
     ClickhouseCTL,
     _format_string_array,
@@ -351,6 +353,135 @@ class TestCreateTable:
         client.query.assert_called_once_with(statement, settings=settings)
 
 
+class TestGetPartsOfOtherReplicas:
+    """
+    Tests for picking the parts that every other replica of a table has.
+    """
+
+    @staticmethod
+    def _parts(
+        clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock],
+        zookeeper: dict[str, list[str]],
+    ) -> set[str]:
+        """Helper: run the lookup against the given ZooKeeper children."""
+        ch_ctl, client = clickhouse_ctl
+        client.query.return_value = {
+            "data": [{"zookeeper_path": "/zk/t1", "replica_name": "new"}]
+        }
+        zk_ctl = mock.MagicMock()
+        zk_ctl.get_children.side_effect = lambda path: zookeeper.get(path, [])
+        table = Table("db1", "table1", "ReplicatedMergeTree", [], [], "", "", None)
+        return ch_ctl.get_parts_of_other_replicas(table, zk_ctl)
+
+    def test_parts_are_intersected_over_other_replicas(
+        self, clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock]
+    ) -> None:
+        """
+        The own replica is ignored, a lagging replica narrows the result.
+        """
+        assert self._parts(
+            clickhouse_ctl,
+            {
+                "/zk/t1/replicas": ["new", "r1", "r2"],
+                "/zk/t1/replicas/new/parts": ["all_9_9_0"],
+                "/zk/t1/replicas/r1/parts": ["all_1_1_0", "all_2_2_0", "all_3_3_0"],
+                "/zk/t1/replicas/r2/parts": ["all_2_2_0", "all_3_3_0", "all_4_4_0"],
+            },
+        ) == {"all_2_2_0", "all_3_3_0"}
+
+    def test_covered_parts_are_dropped_before_intersection(
+        self, clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock]
+    ) -> None:
+        """
+        ZooKeeper keeps merged parts for a while, the clone takes only active ones.
+        """
+        assert self._parts(
+            clickhouse_ctl,
+            {
+                "/zk/t1/replicas": ["new", "r1", "r2"],
+                "/zk/t1/replicas/r1/parts": [
+                    "1_0_9_1",
+                    "all_0_0_0",
+                    "all_1_1_0",
+                    "all_0_1_1",
+                    "all_2_2_0",
+                    "all_2_2_0_3",
+                ],
+                "/zk/t1/replicas/r2/parts": [
+                    "1_0_9_1",
+                    "all_0_0_0",
+                    "all_1_1_0",
+                    "all_2_2_0_3",
+                ],
+            },
+        ) == {"1_0_9_1", "all_2_2_0_3"}
+
+    def test_parts_are_kept_if_a_name_does_not_parse(
+        self, clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock]
+    ) -> None:
+        """
+        The filter only saves downloads, so it must not fail the restore.
+        """
+        assert self._parts(
+            clickhouse_ctl,
+            {
+                "/zk/t1/replicas": ["new", "r1"],
+                "/zk/t1/replicas/r1/parts": ["all_0_0_0", "all_0_1_1", "bad"],
+            },
+        ) == {"all_0_0_0", "all_0_1_1", "bad"}
+
+    def test_no_parts_without_other_replicas(
+        self, clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock]
+    ) -> None:
+        """
+        The first replica gets nothing, as ClickHouse attaches all of detached/ then.
+        """
+        assert not self._parts(clickhouse_ctl, {"/zk/t1/replicas": ["new"]})
+
+
+class TestScanFrozenParts:
+    """
+    Tests for ClickhouseCTL.scan_frozen_parts.
+    """
+
+    _BACKUP_NAME = "backup1"
+
+    @classmethod
+    def _scan(
+        cls, root: Path, on_error: Callable[[str, Exception], None] | None = None
+    ) -> list[str]:
+        """Helper: scan a shadow directory with a readable and a broken part."""
+        disk = Disk("default", f"{root}/", "Local")
+        shadow = root / "shadow" / cls._BACKUP_NAME / "data" / "db1" / "table1"
+        (shadow / "all_1_1_0").mkdir(parents=True)
+        (shadow / "all_1_1_0" / "checksums.txt").write_bytes(b"checksums")
+        (shadow / "all_2_2_0").mkdir()
+        table = Table("db1", "table1", "MergeTree", [disk], [], "", "", None)
+
+        parts = ClickhouseCTL.scan_frozen_parts(
+            table,
+            disk,
+            str(root / "data" / "db1" / "table1"),
+            cls._BACKUP_NAME,
+            on_error=on_error,
+        )
+        return [part.name for part in parts]
+
+    def test_unreadable_part_fails_the_scan_by_default(self, tmp_path: Path) -> None:
+        """Without a handler a broken part is not silently left out."""
+        with pytest.raises(FileNotFoundError):
+            self._scan(tmp_path)
+
+    def test_unreadable_part_is_passed_to_the_handler(self, tmp_path: Path) -> None:
+        """With a handler the remaining parts are still scanned."""
+        errors: list[str] = []
+
+        names = self._scan(tmp_path, on_error=lambda name, _e: errors.append(name))
+
+        assert names == ["all_1_1_0"]
+        assert errors == ["all_2_2_0"]
+
+
 class TestGetLocalAccessStatements:
     """
     Tests for reading access entities of local storages of a replica.
@@ -666,3 +797,85 @@ def test_scan_detached_parts_uses_selected_backing_disk_directory(
     assert part.path == str(part_path)
     assert part.checksum == expected_checksum
     assert part.size == BLOCKSIZE
+
+
+def test_detached_part_matches_local_backup_metadata(tmp_path: Path) -> None:
+    part_path = tmp_path / "all_1_1_0"
+    part_path.mkdir()
+    checksums = part_path / "checksums.txt"
+    checksums.write_bytes(b"checksums")
+    part = DetachedPartMetadata(
+        "db",
+        "table",
+        part_path.name,
+        "",
+        md5(checksums.read_bytes()).hexdigest(),  # nosec
+        BLOCKSIZE,
+        [checksums.name],
+        True,
+        "default",
+    )
+
+    assert ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+    checksums.write_bytes(b"changed")
+    assert not ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+    part.raw_metadata.checksum = ""
+    assert ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+
+def test_detached_part_matches_object_storage_metadata(tmp_path: Path) -> None:
+    part_path = tmp_path / "all_1_1_0"
+    checksum = _make_cloud_part(part_path, {"checksums.txt": ["store/object-key"]})
+    part = DetachedPartMetadata(
+        "db",
+        "table",
+        part_path.name,
+        "",
+        checksum,
+        BLOCKSIZE,
+        ["checksums.txt"],
+        True,
+        "object_storage",
+        object_storage=True,
+    )
+
+    assert ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+    (part_path / "checksums.txt").write_text(
+        "5\n1\t370\n370\tstore/other-key\n0\n0\n", encoding="utf-8"
+    )
+    assert not ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+
+def test_detached_path_accepts_table_disk_with_same_storage_path(
+    tmp_path: Path,
+    clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock],
+) -> None:
+    ch_ctl, _ = clickhouse_ctl
+    backing_disk = Disk("object_storage", str(tmp_path), "ObjectStorage", "S3")
+    cache_disk = Disk(
+        "object_storage_cache",
+        str(tmp_path),
+        "ObjectStorage",
+        "S3",
+        cache_path=str(tmp_path / "cache"),
+    )
+    # pylint: disable=protected-access
+    ch_ctl._disks = {backing_disk.name: backing_disk}
+    table_path = tmp_path / "store" / "table"
+    table = Table(
+        "db",
+        "table",
+        "MergeTree",
+        [cache_disk],
+        [str(table_path)],
+        "",
+        "",
+        None,
+    )
+
+    assert ch_ctl.get_detached_part_path(table, backing_disk.name, "all_1_1_0") == str(
+        table_path / "detached" / "all_1_1_0"
+    )

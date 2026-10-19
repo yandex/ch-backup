@@ -2,11 +2,8 @@
 Clickhouse backup logic for workload entities (WORKLOADs and RESOURCEs)
 """
 
-import os
-import posixpath
 import re
-from dataclasses import dataclass, field
-from enum import Enum
+from dataclasses import dataclass
 
 from ch_backup import logging
 from ch_backup.backup_context import BackupContext
@@ -14,14 +11,12 @@ from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.models import WorkloadEntityType
 from ch_backup.logic.backup_manager import BackupManager
-from ch_backup.util import (
-    chown_dir_contents,
-    copy_directory_content,
-    ensure_owned_directory,
-    escape_metadata_file_name,
-    temp_directory,
+
+CONFIG_ENTITY_NAME_RE = re.compile(
+    r"\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:WORKLOAD|RESOURCE)\s+"
+    r"(?:IF\s+NOT\s+EXISTS\s+)?(`[^`]+`|[^\s;(]+)",
+    re.IGNORECASE,
 )
-from ch_backup.zookeeper.zookeeper import ZookeeperCTL
 
 
 @dataclass
@@ -34,12 +29,6 @@ class WorkloadEntity:
     type: WorkloadEntityType
     create_statement: str
     parent: str | None = None
-
-    def filename_on_disk(self) -> str:
-        """
-        Entities have 'workload_' or 'resource_' prefix in file name.
-        """
-        return f"{self.type.value}_{escape_metadata_file_name(self.name)}.sql"
 
     @classmethod
     def from_create_statement(cls, create_statement: str) -> "WorkloadEntity":
@@ -105,59 +94,17 @@ class WorkloadEntitiesBackup(BackupManager):
             )
             return
 
-        workload_entities = context.ch_ctl.get_workload_entities()
-
-        if len(workload_entities) == 0:
-            return
-
-        user = context.ch_ctl_conf["user"]
-        group = context.ch_ctl_conf["group"]
-        tmp_path = context.ch_ctl_conf["tmp_path"]
-
-        ensure_owned_directory(tmp_path, user, group)
-
-        with temp_directory(
-            tmp_path,
-            context.backup_meta.name,
-        ) as backup_tmp_path:
-            we_config = WorkloadEntitiesStorageConfig.from_ch_config(
-                context.ch_ctl_conf, context.ch_config
+        from_config = get_config_workload_entity_names(context.ch_config)
+        for name, (_, statement) in context.ch_ctl.get_workload_entities().items():
+            if name in from_config:
+                logging.info(
+                    "Skipping workload entity {} defined in the server config", name
+                )
+                continue
+            context.backup_meta.add_workload_entity(name)
+            context.backup_layout.upload_workload_entity(
+                context.backup_meta.name, name, statement
             )
-            if we_config.is_local_storage():
-                if os.path.exists(we_config.storage_path):
-                    copy_directory_content(we_config.storage_path, backup_tmp_path)
-            elif we_config.is_storage_zookeeper():
-                self._write_entities_from_zookeeper_node(
-                    context.zk_ctl,
-                    we_config.storage_path,
-                    backup_tmp_path,
-                )
-
-            chown_dir_contents(user, group, backup_tmp_path)
-
-            for entity_name, (entity_type, _) in workload_entities.items():
-                local_path = os.path.join(
-                    backup_tmp_path,
-                    WorkloadEntity(
-                        name=entity_name, type=entity_type, create_statement=""
-                    ).filename_on_disk(),
-                )
-                if not os.path.isfile(local_path):
-                    logging.info(
-                        "Skipping {} workload entity {} because no matching SQL "
-                        "definition was found in {} storage",
-                        entity_type.value,
-                        entity_name,
-                        we_config.storage_type.value,
-                    )
-                    continue
-
-                context.backup_meta.add_workload_entity(entity_name)
-                context.backup_layout.upload_workload_entity_ddl_from_file(
-                    local_path,
-                    context.backup_meta.name,
-                    entity_name,
-                )
 
     def restore(self, context: BackupContext) -> None:
         """
@@ -178,6 +125,7 @@ class WorkloadEntitiesBackup(BackupManager):
         logging.info("Restoring workload entities: {}", ", ".join(we_list))
 
         we_on_clickhouse = context.ch_ctl.get_workload_entities()
+        from_config = get_config_workload_entity_names(context.ch_config)
 
         resources_from_backup: list[WorkloadEntity] = []
         workloads_from_backup: list[WorkloadEntity] = []
@@ -189,7 +137,12 @@ class WorkloadEntitiesBackup(BackupManager):
 
             entity = WorkloadEntity.from_create_statement(statement)
 
-            if entity.type == WorkloadEntityType.RESOURCE:
+            if entity.name in from_config:
+                logging.info(
+                    "Skipping workload entity {} defined in the server config",
+                    entity.name,
+                )
+            elif entity.type == WorkloadEntityType.RESOURCE:
                 resources_from_backup.append(entity)
             else:
                 workloads_from_backup.append(entity)
@@ -299,86 +252,13 @@ class WorkloadEntitiesBackup(BackupManager):
 
         return result
 
-    def _write_entities_from_zookeeper_node(
-        self,
-        zk_ctl: ZookeeperCTL,
-        from_path: str,
-        to_path_dir: str,
-    ) -> None:
-        """
-        All entities are stored in a single node. Read them and write to separate files to match local storage layout.
-        """
-        if posixpath.isabs(from_path):
-            from_path = from_path[1:]
 
-        with zk_ctl.zk_client as client:
-            from_path = posixpath.normpath(
-                posixpath.join(zk_ctl.zk_root_path, from_path)
-            )
-
-            if not client.exists(from_path):
-                return
-
-            # Layout example:
-            # CREATE RESOURCE s3_write (WRITE DISK s3);
-            # CREATE RESOURCE s3_read (READ DISK s3);
-            # CREATE WORKLOAD `all` SETTINGS max_bytes_per_second = 2147483648;
-            we_create_statements_binary, _ = client.get(from_path)
-            we_create_statements: list[str] = we_create_statements_binary.decode(
-                "utf-8"
-            ).splitlines()
-
-            for statement in we_create_statements:
-                entity = WorkloadEntity.from_create_statement(statement)
-                subpath_to = os.path.join(to_path_dir, entity.filename_on_disk())
-                if not os.path.exists(subpath_to):
-                    with open(subpath_to, "w", encoding="utf-8") as f:
-                        f.write(statement)
-
-
-@dataclass
-class WorkloadEntitiesStorageConfig:
+def get_config_workload_entity_names(ch_config: ClickhouseConfig) -> set[str]:
     """
-    Class representing workload entities storage config.
+    Return names of workload entities defined in resources_and_workloads of the server
+    config. ClickHouse shows them with ones created by SQL but does not let replace them.
     """
-
-    class StorageType(Enum):
-        """
-        Workload entities storage type.
-        """
-
-        LOCAL = "local"
-        ZOOKEEPER = "zookeeper"
-
-    storage_type: StorageType = field(default=StorageType.LOCAL)
-    storage_path: str = field(default="/")
-
-    def is_local_storage(self) -> bool:
-        """
-        Determines if config using local filesystem for storage.
-        """
-        return self.storage_type == self.StorageType.LOCAL
-
-    def is_storage_zookeeper(self) -> bool:
-        """
-        Determines if config using zookeeper for storage.
-        """
-        return self.storage_type == self.StorageType.ZOOKEEPER
-
-    @classmethod
-    def from_ch_config(
-        cls, ch_backup_config: dict, ch_config: ClickhouseConfig
-    ) -> "WorkloadEntitiesStorageConfig":
-        """
-        Create WorkloadEntitiesStorageConfig from ClickhouseConfig.
-        """
-        we_config = ch_config.config.get("workload_zookeeper_path")
-        if we_config:
-            return cls(storage_path=we_config, storage_type=cls.StorageType.ZOOKEEPER)
-        we_config = ch_config.config.get("workload_path")
-        if we_config:
-            return cls(storage_path=we_config, storage_type=cls.StorageType.LOCAL)
-        return cls(
-            storage_path=ch_backup_config.get("workload_path", ""),
-            storage_type=cls.StorageType.LOCAL,
-        )
+    statements = ch_config.config.get("resources_and_workloads") or ""
+    if isinstance(statements, dict):
+        statements = statements.get("#text", "")
+    return {name.strip("`") for name in CONFIG_ENTITY_NAME_RE.findall(statements)}

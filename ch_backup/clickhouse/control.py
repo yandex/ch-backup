@@ -11,10 +11,10 @@ from contextlib import contextmanager, suppress
 from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE  # type: ignore
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from ch_backup import logging
-from ch_backup.backup.metadata import TableMetadata
+from ch_backup.backup.metadata import DetachedPartMetadata, TableMetadata
 from ch_backup.backup.metadata.table_metadata import split_part_name
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.calculators import calc_aligned_files_size
@@ -40,6 +40,7 @@ from ch_backup.util import (
     scan_dir_files,
     strip_query,
 )
+from ch_backup.zookeeper.zookeeper import ZookeeperCTL
 
 ACCESS_ENTITY_CHAR = {
     "users": "U",
@@ -189,7 +190,9 @@ GET_REPLICAS_SQL = strip_query(
     SELECT
         database,
         table,
-        is_readonly
+        is_readonly,
+        zookeeper_path,
+        replica_name
     FROM system.replicas
     WHERE ({db_condition})
       AND ({tables_condition})
@@ -616,6 +619,15 @@ GET_PARTITIONS = strip_query(
 """
 )
 
+GET_ACTIVE_PARTS_SQL = strip_query(
+    """
+    SELECT name
+    FROM system.parts
+    WHERE database = '{db_name}' AND table = '{table_name}' AND active = 1
+    FORMAT JSONCompact
+"""
+)
+
 METADATA_PLACEHOLDER_FOR_MISSED_DETACHED_TABLE = strip_query(
     """
 ATTACH TABLE _ UUID '{uuid}'
@@ -689,20 +701,34 @@ class ClickhouseCTL:
                 settings["database_replicated_allow_explicit_uuid"] = 1
         self._ch_client.settings.update(settings)
 
-    def chown_detached_table_parts(self, table: Table, context: RestoreContext) -> None:
+    def chown_detached_table_parts(
+        self,
+        table: Table,
+        context: RestoreContext,
+        disk_names: Iterable[str] | None = None,
+    ) -> None:
         """
         Change permissions (owner and group) of detached data parts for the
         specified table. New values for permissions are taken from the config.
+        If disk names are provided, only their detached directories are changed.
         """
-        for _, disk in table.paths_with_disks:
-            detached_path = self._get_table_detached_path(table, disk.name)
+        selected_disks = (
+            disk_names
+            if disk_names is not None
+            else (disk.name for _, disk in table.paths_with_disks)
+        )
+        detached_paths = dict.fromkeys(
+            self._get_table_detached_path(table, disk_name)
+            for disk_name in selected_disks
+        )
+        for detached_path in detached_paths:
             try:
                 self.chown_dir(detached_path)
             except FileNotFoundError:
                 logging.warning(
                     f"table {table.database}.{table.name} path {detached_path} not found"
                 )
-                context.add_failed_chown(table.database, table.database, detached_path)
+                context.add_failed_chown(table.database, table.name, detached_path)
 
     def attach_part(self, table: Table, part_name: str) -> None:
         """
@@ -821,6 +847,17 @@ class ClickhouseCTL:
         )
         result = self._ch_client.query(query_sql, should_retry=False)["data"]
         return [partition[0] for partition in result]
+
+    def get_active_parts(self, table: Table) -> set[str]:
+        """
+        Get names of active parts of table.
+        """
+        query_sql = GET_ACTIVE_PARTS_SQL.format(
+            db_name=escape(table.database),
+            table_name=escape(table.name),
+        )
+        result = self._ch_client.query(query_sql, should_retry=False)["data"]
+        return {part[0] for part in result}
 
     def system_unfreeze(self, backup_name: str) -> None:
         """
@@ -1175,6 +1212,26 @@ class ClickhouseCTL:
             timeout=self._restore_replica_timeout,
         )
 
+    def get_parts_of_other_replicas(
+        self, table: Table, zk_ctl: ZookeeperCTL
+    ) -> set[str]:
+        """
+        Get names of the active parts that every other replica of the table has in ZooKeeper.
+        """
+        replica = self.get_replicas(table.database, [table.name])[0]
+        replicas_path = os.path.join(replica["zookeeper_path"], "replicas")
+        with zk_ctl.zk_client:
+            other_replicas = set(zk_ctl.get_children(replicas_path)) - {
+                replica["replica_name"]
+            }
+            parts = [
+                _active_parts(
+                    set(zk_ctl.get_children(os.path.join(replicas_path, name, "parts")))
+                )
+                for name in other_replicas
+            ]
+        return set.intersection(*parts) if parts else set()
+
     def drop_table_if_exists(self, table: Table) -> None:
         """
         Drop table. If the specified table doesn't exist, do nothing.
@@ -1273,6 +1330,29 @@ class ClickhouseCTL:
         Get filesystem absolute path to detached data part.
         """
         return os.path.join(self._get_table_detached_path(table, disk_name), part_name)
+
+    @staticmethod
+    def detached_part_matches(part: DetachedPartMetadata, part_path: str) -> bool:
+        """Return whether an existing directory matches backed-up part metadata."""
+        if not os.path.isdir(part_path):
+            return False
+        try:
+            files = list_dir_files(part_path)
+            if sorted(files) != sorted(part.files):
+                return False
+            abs_paths = [Path(part_path) / file for file in files]
+            if calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE) != part.size:
+                return False
+            if not part.checksum:
+                return True
+            checksum = (
+                _get_cloud_part_checksum_and_size(part_path, files)[0]
+                if part.object_storage
+                else _get_part_checksum(part_path)
+            )
+            return checksum == part.checksum
+        except OSError:
+            return False
 
     def scan_detached_parts(
         self,
@@ -1422,9 +1502,12 @@ class ClickhouseCTL:
         backup_name: str,
         copy_data: bool = False,
         fail_on_unparsable_metadata: bool = False,
+        on_error: Callable[[str, Exception], object] | None = None,
     ) -> Iterable[FrozenPart]:
         """
         Yield frozen parts from specific disk and path.
+
+        A part that cannot be read is passed to on_error and skipped, if given.
         """
         table_relative_path = os.path.relpath(data_path, disk.path)
         path = os.path.join(disk.path, "shadow", backup_name, table_relative_path)
@@ -1436,15 +1519,21 @@ class ClickhouseCTL:
         for dir_entry in os.scandir(path):
             part = dir_entry.name
             part_path = dir_entry.path
-            rel_paths = list_dir_files(part_path)
-            if copy_data and disk.keeps_object_metadata:
-                checksum, size = _get_cloud_part_checksum_and_size(
-                    part_path, rel_paths, fail_on_unparsable_metadata
-                )
-            else:
-                checksum = _get_part_checksum(part_path)
-                abs_paths = [Path(part_path) / file for file in rel_paths]
-                size = calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE)
+            try:
+                rel_paths = list_dir_files(part_path)
+                if copy_data and disk.keeps_object_metadata:
+                    checksum, size = _get_cloud_part_checksum_and_size(
+                        part_path, rel_paths, fail_on_unparsable_metadata
+                    )
+                else:
+                    checksum = _get_part_checksum(part_path)
+                    abs_paths = [Path(part_path) / file for file in rel_paths]
+                    size = calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE)
+            except Exception as e:
+                if on_error is None:
+                    raise
+                on_error(part, e)
+                continue
             logging.debug(
                 f"scan_freezed_parts: {table.name} -> {escape(table.name)} \n {part}"
             )
@@ -1460,11 +1549,16 @@ class ClickhouseCTL:
                 rel_paths,
             )
 
-    @staticmethod
-    def _get_table_detached_path(table: Table, disk_name: str) -> str:
+    def _get_table_detached_path(self, table: Table, disk_name: str) -> str:
         for data_path, disk in table.paths_with_disks:
             if disk.name == disk_name:
                 return os.path.join(data_path, "detached")
+
+        requested_disk = self._disks.get(disk_name)
+        if requested_disk is not None:
+            for data_path, disk in table.paths_with_disks:
+                if disk.path == requested_disk.path:
+                    return os.path.join(data_path, "detached")
         raise RuntimeError(f"Disk not found: {disk_name}")
 
     def chown_dir(self, dir_path: str) -> None:
@@ -1935,6 +2029,38 @@ def _read_objects(metadata_path: str) -> list[tuple[str, int]]:
                 f"Failed to read objects of {metadata_path},"
                 f" metadata version {version}"
             ) from e
+
+
+def _active_parts(names: set[str]) -> set[str]:
+    """
+    Drop the parts covered by another part of the set, as ZooKeeper keeps merged parts
+    for old_parts_lifetime. A set with an unparsable name is kept as is.
+    """
+    try:
+        parts = sorted(
+            ((name, split_part_name(name)) for name in names),
+            key=lambda item: (
+                item[1].partition_id,
+                item[1].min_block_num,
+                -item[1].max_block_num,
+                -item[1].level,
+                -item[1].mutation,
+            ),
+        )
+    except ValueError:
+        return names
+    active: set[str] = set()
+    covering = None
+    for name, part in parts:
+        if (
+            covering
+            and covering.partition_id == part.partition_id
+            and covering.max_block_num >= part.max_block_num
+        ):
+            continue
+        active.add(name)
+        covering = part
+    return active
 
 
 def _quote_or_any(name: str) -> str:

@@ -1,23 +1,33 @@
 """Unit tests for workload entity backup logic."""
 
-from pathlib import Path
 from types import SimpleNamespace
-from typing import Sequence, cast
-from unittest.mock import MagicMock, call, patch
+from typing import cast
+from unittest.mock import MagicMock, call
 
 import pytest
 
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.client import ClickhouseError
+from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.models import WorkloadEntityType
-from ch_backup.logic import workload_entities
-from ch_backup.logic.workload_entities import WorkloadEntitiesBackup, WorkloadEntity
+from ch_backup.logic.workload_entities import (
+    WorkloadEntitiesBackup,
+    WorkloadEntity,
+    get_config_workload_entity_names,
+)
+
+CONFIG_ENTITIES = """
+    CREATE RESOURCE xml_s3_read (READ DISK s3);
+    CREATE WORKLOAD xml_all;
+    CREATE WORKLOAD xml_production IN xml_all SETTINGS weight = 3;
+"""
 
 
 @pytest.fixture(name="restore_context")
 def fixture_restore_context() -> MagicMock:
     context = MagicMock()
     context.ch_ctl.ch_version_ge.return_value = True
+    context.ch_config.config = {}
     context.ch_ctl.get_workload_entities.return_value = {
         "io": (WorkloadEntityType.RESOURCE, "CREATE RESOURCE io (READ ANY DISK)")
     }
@@ -161,121 +171,94 @@ def test_restore_rejects_unavailable_parent(
     restore_context.ch_ctl.restore_workload_entity.assert_not_called()
 
 
-def _backup_context(
-    tmp_path: Path,
-    storage_path: str,
-    entities: Sequence[tuple[str, WorkloadEntityType]],
-    *,
-    zookeeper: bool = False,
+def _context(
+    on_server: dict[str, str], in_backup: dict[str, str] | None = None
 ) -> SimpleNamespace:
+    """Helper: a context of a server with the given entities and entities from config."""
     ch_ctl = MagicMock()
     ch_ctl.ch_version_ge.return_value = True
     ch_ctl.get_workload_entities.return_value = {
-        name: (entity_type, "") for name, entity_type in entities
+        name: (WorkloadEntity.from_create_statement(statement).type, statement)
+        for name, statement in on_server.items()
     }
-
+    ch_ctl.format_query.side_effect = lambda query: query
     backup_meta = MagicMock()
     backup_meta.name = "backup"
-
-    ch_config = {}
-    if zookeeper:
-        ch_config["workload_zookeeper_path"] = storage_path
-
-    zk_client = MagicMock()
-    zk_client.__enter__.return_value = zk_client
-    zk_ctl = SimpleNamespace(zk_client=zk_client, zk_root_path="/root")
-
+    backup_meta.get_workload_entities.return_value = list(in_backup or {})
+    backup_layout = MagicMock()
+    backup_layout.get_workload_entity_create_statement.side_effect = lambda _, name: (
+        in_backup or {}
+    )[name]
     return SimpleNamespace(
         ch_ctl=ch_ctl,
-        ch_ctl_conf={
-            "user": "clickhouse",
-            "group": "clickhouse",
-            "tmp_path": str(tmp_path),
-            "workload_path": storage_path,
-        },
-        ch_config=SimpleNamespace(config=ch_config),
+        ch_config=SimpleNamespace(config={"resources_and_workloads": CONFIG_ENTITIES}),
         backup_meta=backup_meta,
-        backup_layout=MagicMock(),
-        zk_ctl=zk_ctl,
+        backup_layout=backup_layout,
     )
 
 
-def _backup(context: SimpleNamespace) -> None:
-    with (
-        patch.object(workload_entities, "ensure_owned_directory"),
-        patch.object(workload_entities, "chown_dir_contents"),
-    ):
-        WorkloadEntitiesBackup().backup(cast(BackupContext, context))
-
-
-def test_backup_skips_visible_xml_entities_without_local_storage(
-    tmp_path: Path,
-) -> None:
-    context = _backup_context(
-        tmp_path,
-        str(tmp_path / "missing-workload-storage"),
-        [("xml_workload", WorkloadEntityType.WORKLOAD)],
+def test_backup_takes_sql_entities_without_config_ones() -> None:
+    """
+    Entities from the server config are backed up with the config.
+    """
+    context = _context(
+        {
+            "xml_all": "CREATE WORKLOAD xml_all",
+            "sql workload": "CREATE WORKLOAD `sql workload` IN xml_all",
+        }
     )
 
-    with patch.object(workload_entities.logging, "info") as log_info:
-        _backup(context)
+    WorkloadEntitiesBackup().backup(cast(BackupContext, context))
 
-    context.backup_meta.add_workload_entity.assert_not_called()
-    context.backup_layout.upload_workload_entity_ddl_from_file.assert_not_called()
-    log_info.assert_any_call(
-        "Skipping {} workload entity {} because no matching SQL definition was found in {} storage",
-        "workload",
-        "xml_workload",
-        "local",
+    context.backup_meta.add_workload_entity.assert_called_once_with("sql workload")
+    context.backup_layout.upload_workload_entity.assert_called_once_with(
+        "backup", "sql workload", "CREATE WORKLOAD `sql workload` IN xml_all"
     )
 
 
-def test_backup_includes_only_entities_with_stored_sql_files(tmp_path: Path) -> None:
-    storage_path = tmp_path / "workload"
-    storage_path.mkdir()
-    sql_entity = WorkloadEntity(
-        name="sql workload",
-        type=WorkloadEntityType.WORKLOAD,
-        create_statement="CREATE WORKLOAD `sql workload`",
-    )
-    (storage_path / sql_entity.filename_on_disk()).write_text(
-        sql_entity.create_statement, encoding="utf-8"
-    )
-    context = _backup_context(
-        tmp_path,
-        str(storage_path),
-        [
-            ("xml_resource", WorkloadEntityType.RESOURCE),
-            (sql_entity.name, sql_entity.type),
-        ],
+def test_restore_skips_config_entities() -> None:
+    """
+    ClickHouse does not let replace entities from the server config, so they are
+    skipped even if the backup has another definition.
+    """
+    context = _context(
+        on_server={"xml_all": "CREATE WORKLOAD xml_all"},
+        in_backup={
+            "xml_all": "CREATE WORKLOAD xml_all SETTINGS weight = 2",
+            "xml_s3_read": "CREATE RESOURCE xml_s3_read (READ DISK s3)",
+            "etl": "CREATE WORKLOAD etl IN xml_all",
+        },
     )
 
-    _backup(context)
+    WorkloadEntitiesBackup().restore(cast(BackupContext, context))
 
-    context.backup_meta.add_workload_entity.assert_called_once_with(sql_entity.name)
-    upload_call = (
-        context.backup_layout.upload_workload_entity_ddl_from_file.call_args.args
-    )
-    assert Path(upload_call[0]).name == sql_entity.filename_on_disk()
-    assert upload_call[1:] == ("backup", sql_entity.name)
+    assert context.ch_ctl.restore_workload_entity.call_args_list == [
+        call("CREATE OR REPLACE WORKLOAD etl IN xml_all")
+    ]
 
 
-def test_backup_skips_entities_when_zookeeper_data_is_missing(tmp_path: Path) -> None:
-    context = _backup_context(
-        tmp_path,
-        "/clickhouse/workload/definitions.sql",
-        [("sql_workload", WorkloadEntityType.WORKLOAD)],
-        zookeeper=True,
-    )
-    context.zk_ctl.zk_client.exists.return_value = False
+@pytest.mark.parametrize(
+    "config",
+    [
+        CONFIG_ENTITIES,
+        "-- io limits\nCREATE RESOURCE IF NOT EXISTS xml_s3_read ON CLUSTER c "
+        "(READ DISK s3);\ncreate or replace workload `xml_all`;\n"
+        "CREATE WORKLOAD xml_production IN xml_all",
+        {"@replace": "1", "#text": CONFIG_ENTITIES},
+    ],
+    ids=["statements", "other forms", "with attribute"],
+)
+def test_config_entity_names(config: str | dict) -> None:
+    """
+    A statement the restore can not parse must not fail a backup.
+    """
+    ch_config = SimpleNamespace(config={"resources_and_workloads": config})
 
-    _backup(context)
-
-    context.zk_ctl.zk_client.exists.assert_called_once_with(
-        "/root/clickhouse/workload/definitions.sql"
-    )
-    context.backup_meta.add_workload_entity.assert_not_called()
-    context.backup_layout.upload_workload_entity_ddl_from_file.assert_not_called()
+    assert get_config_workload_entity_names(cast(ClickhouseConfig, ch_config)) == {
+        "xml_s3_read",
+        "xml_all",
+        "xml_production",
+    }
 
 
 @pytest.mark.parametrize(

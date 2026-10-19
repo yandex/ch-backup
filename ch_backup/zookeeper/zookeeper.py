@@ -5,7 +5,7 @@ ZooKeeper-control classes module
 import logging as py_logging
 
 from kazoo.client import KazooClient
-from kazoo.exceptions import KazooException
+from kazoo.exceptions import KazooException, NoNodeError
 from kazoo.handlers.threading import KazooTimeoutError
 
 from ..util import retry
@@ -75,3 +75,13 @@ class ZookeeperCTL:
         Getter zk_root_path
         """
         return self._zk_root_path
+
+    def get_children(self, path: str) -> list[str]:
+        """
+        Get names of the child nodes of a path under the root, empty if the path is missing.
+        """
+        with self._zk_client as client:
+            try:
+                return client.get_children(self._zk_root_path + path)
+            except NoNodeError:
+                return []

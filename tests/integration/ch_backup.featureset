@@ -34,3 +34,4 @@ features/cloud_storage_full_backup.feature
 features/unique_key.feature
 features/backup_unreadable_metadata.feature
 features/restore_from_replica.feature
+features/backup_keep_going.feature

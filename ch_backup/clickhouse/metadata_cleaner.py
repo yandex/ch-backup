@@ -219,14 +219,7 @@ class MetadataCleaner:
                 logging.debug("ZK node {} was already deleted", zk_path)
 
     def _list_replicas(self, zk_path: str) -> list[str]:
-        replicas_path = (
-            self._zk_ctl.zk_root_path + zk_path + "/replicas/"  # type: ignore
-        )
-        with self._zk_ctl.zk_client as zk_client:
-            try:
-                return zk_client.get_children(replicas_path)
-            except NoNodeError:
-                return []
+        return self._zk_ctl.get_children(zk_path + "/replicas/")
 
     def clean_database_metadata(self, replicated_databases: list[Database]) -> None:
         """

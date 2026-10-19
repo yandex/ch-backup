@@ -240,7 +240,11 @@ class BackupLayout:
             raise StorageError(msg) from e
 
     def upload_data_part(
-        self, backup_meta: BackupMetadata, fpart: FrozenPart, callback: Callable
+        self,
+        backup_meta: BackupMetadata,
+        fpart: FrozenPart,
+        callback: Callable,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         """
         Upload part data.
@@ -268,6 +272,7 @@ class BackupLayout:
                 encryption=backup_meta.encrypted,
                 delete=True,
                 callback=callback,
+                on_error=on_error,
             )
         except Exception as e:
             msg = f"Failed to create async upload of {remote_path}"
@@ -391,11 +396,11 @@ class BackupLayout:
             msg = f"Failed to create async upload of {remote_path}"
             raise StorageError(msg) from e
 
-    def upload_workload_entity_ddl_from_file(
-        self, local_path: str, backup_name: str, entity_name: str
+    def upload_workload_entity(
+        self, backup_name: str, entity_name: str, statement: str
     ) -> None:
         """
-        Upload workload entity create statement file.
+        Upload workload entity create statement.
         """
         remote_path = _workload_entities_data_path(
             self.get_backup_path(backup_name), entity_name
@@ -404,8 +409,8 @@ class BackupLayout:
             logging.debug(
                 'Uploading workload entity create statement "{}"', entity_name
             )
-            self._storage_loader.upload_file(
-                local_path, remote_path=remote_path, encryption=True
+            self._storage_loader.upload_data(
+                statement, remote_path=remote_path, encryption=True
             )
         except Exception as e:
             msg = f"Failed to create async upload of {remote_path}"
@@ -756,6 +761,44 @@ class BackupLayout:
                 except Exception as e:
                     msg = f"Failed to download part file {remote_path}"
                     raise StorageError(msg) from e
+
+    def download_detached_part(
+        self,
+        backup_meta: BackupMetadata,
+        part: DetachedPartMetadata,
+        fs_part_path: str,
+        callback: Callable | None = None,
+    ) -> None:
+        """Download a detached-part archive to a staging directory."""
+        logging.debug(
+            'Downloading detached part {} of "{}"."{}" to disk {}',
+            part.name,
+            part.database,
+            part.table,
+            part.disk_name,
+        )
+        os.makedirs(fs_part_path, exist_ok=False)
+        remote_dir_path = self._get_escaped_if_exists(
+            _detached_part_path,
+            self.get_backup_path(backup_meta.name),
+            part.database,
+            part.table,
+            part.disk_name,
+            part.name,
+        )
+        remote_path = os.path.join(remote_dir_path, f"{part.name}.tar")
+        try:
+            self._storage_loader.download_files(
+                remote_path=remote_path,
+                local_path=fs_part_path,
+                is_async=True,
+                encryption=part.encrypted,
+                callback=callback,
+            )
+        except Exception as e:
+            raise StorageError(
+                f"Failed to download detached part tarball file {remote_path}"
+            ) from e
 
     def check_data_part(self, backup_name: str, part: PartMetadata) -> bool:
         """
@@ -1146,7 +1189,10 @@ class BackupLayout:
         return deleting_files
 
     def delete_data_parts(
-        self, backup_meta: BackupMetadata, parts: Sequence[PartMetadata]
+        self,
+        backup_meta: BackupMetadata,
+        parts: Sequence[PartMetadata],
+        is_async: bool = True,
     ) -> None:
         """
         Delete backup data parts from storage.
@@ -1160,7 +1206,7 @@ class BackupLayout:
             logging.debug("Deleting data part {}", part.name)
             deleting_files.extend(part_files)
 
-        self._delete_files(deleting_files)
+        self._delete_files(deleting_files, is_async)
 
     def get_data_part_files(self, backup_name: str, part: PartMetadata) -> list[str]:
         """
@@ -1269,12 +1315,14 @@ class BackupLayout:
         )
         return os.path.join(path, disk_name) if disk_name else path
 
-    def _delete_files(self, remote_paths: Sequence[str]) -> None:
+    def _delete_files(self, remote_paths: Sequence[str], is_async: bool = True) -> None:
         """
         Delete files from storage.
         """
         try:
-            self._storage_loader.delete_files(remote_paths=remote_paths, is_async=True)
+            self._storage_loader.delete_files(
+                remote_paths=remote_paths, is_async=is_async
+            )
         except Exception as e:
             msg = f'Failed to delete files {", ".join(remote_paths)}'
             raise StorageError(msg) from e
