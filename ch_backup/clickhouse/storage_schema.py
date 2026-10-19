@@ -24,18 +24,35 @@ _INNER_BRACKETS = re.compile(r"\([^()[\]]*\)|\[[^()[\]]*\]")
 _MERGE_TREE_ENGINE = re.compile(
     r"\bENGINE\s*=?\s*(?P<engine>\w*MergeTree)\b", re.IGNORECASE
 )
-_STORAGE_END = re.compile(r"\b(?:AS|COMMENT|EMPTY)\b|;", re.IGNORECASE)
 _POLICY_SETTING = re.compile(
     r"""(?:\bstorage_policy\b|`storage_policy`|"storage_policy")\s*(?P<equals>=)\s*""",
     re.IGNORECASE,
 )
-_TABLE_TTL = re.compile(
-    r"\bTTL\b(?P<rules>.*?)(?=\b(?:SETTINGS|PARTITION|PRIMARY|ORDER|SAMPLE|UNIQUE)\b|$)",
-    re.IGNORECASE | re.DOTALL,
-)
 _TTL_MOVE = re.compile(
     r"\bTO\s+(?P<kind>DISK|VOLUME)(?:\s+IF\s+EXISTS)?\b", re.IGNORECASE
 )
+_ATOM = "\x01"
+_EXPRESSION_OPERATORS = {
+    "AND",
+    "OR",
+    "NOT",
+    "IN",
+    "LIKE",
+    "ILIKE",
+    "BETWEEN",
+    "IS",
+    "DISTINCT",
+    "FROM",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "WHERE",
+    "BY",
+    "SET",
+    "TO",
+}
+_PREFIX_OPERATORS = {"NOT", "INTERVAL", "CASE", "WHEN", "THEN", "ELSE"}
+_SYMBOL_OPERATORS = set(",.=+-*/%<>!|&^?:")
 
 
 class StorageSchemaError(ClickhouseBackupError):
@@ -76,8 +93,15 @@ def adapt_storage_schema(
         return None
 
     # Only the storage clause after ENGINE and before a view's AS SELECT is edited.
-    boundary = _STORAGE_END.search(_top_level_sql(statement), engine.end())
-    start, end = engine.end(), boundary.start() if boundary else len(statement)
+    start = engine.end()
+    end = next(
+        (
+            start + begin
+            for name, begin, _ in _storage_clauses(statement[start:])
+            if name in {"AS", "COMMENT", "EMPTY", ";"}
+        ),
+        len(statement),
+    )
     storage = statement[start:end]
     # Resolve the target policy first: a TTL destination must belong to that
     # policy, even if a disk with the same name exists elsewhere on the server.
@@ -94,14 +118,15 @@ def _replace_missing_policy(
     storage: str, policies: dict[str, StoragePolicy], default_policy: str
 ) -> tuple[str, StoragePolicy, str]:
     surface = _top_level_sql(storage)
-    settings = re.search(r"\bSETTINGS\b", surface, re.IGNORECASE)
+    settings = next(
+        (end for name, _, end in _storage_clauses(storage) if name == "SETTINGS"),
+        None,
+    )
     value = None
-    if settings:
+    if settings is not None:
         # Search the original setting name to support quoted identifiers, then
         # use the masked copy to check that its '=' is outside any expression.
-        for setting in _POLICY_SETTING.finditer(
-            _without_comments(storage), settings.end()
-        ):
+        for setting in _POLICY_SETTING.finditer(_without_comments(storage), settings):
             # Ignore text resembling an assignment inside a string or expression.
             if surface[setting.start("equals")] != "=":
                 continue
@@ -122,7 +147,7 @@ def _replace_missing_policy(
             # Override an unavailable implicit default explicitly. Insert before
             # trailing comments so a line comment cannot swallow the new setting.
             end = len(_without_comments(storage).rstrip())
-            prefix = ", " if settings else " SETTINGS "
+            prefix = ", " if settings is not None else " SETTINGS "
             storage = (
                 storage[:end] + prefix + "storage_policy = 'default' " + storage[end:]
             )
@@ -132,17 +157,72 @@ def _replace_missing_policy(
 def _rewrite_table_ttl(
     storage: str, policy: StoragePolicy
 ) -> tuple[str, tuple[str, ...]]:
-    ttl = _TABLE_TTL.search(_top_level_sql(storage))
-    if ttl is None:
-        return storage, ()
-    rules, removed = remove_unavailable_move_ttls(
-        storage[ttl.start("rules") : ttl.end()], policy
-    )
-    if not removed:
-        return storage, ()
-    # If every rule was removed, remove TTL itself too; an empty TTL is invalid.
-    replacement = "TTL " + rules.strip() + " " if rules.strip() else ""
-    return storage[: ttl.start()] + replacement + storage[ttl.end() :], removed
+    clauses = _storage_clauses(storage)
+    for index, (name, start, rules_start) in enumerate(clauses):
+        if name != "TTL":
+            continue
+        end = clauses[index + 1][1] if index + 1 < len(clauses) else len(storage)
+        rules, removed = remove_unavailable_move_ttls(storage[rules_start:end], policy)
+        if not removed:
+            return storage, ()
+        # If every rule was removed, remove TTL itself too; an empty TTL is invalid.
+        replacement = "TTL " + rules.strip() + " " if rules.strip() else ""
+        return storage[:start] + replacement + storage[end:], removed
+    return storage, ()
+
+
+def _storage_clauses(sql: str) -> list[tuple[str, int, int]]:
+    """Locate clauses only between complete top-level expressions.
+
+    ClickHouse quotes column definitions but can print their references as bare
+    keywords: ORDER BY ttl TTL ttl ... . A keyword where an operand is expected
+    is an identifier, not a clause. Quoted values and nested expressions count as
+    operands while comments remain whitespace; all offsets refer to the input.
+    """
+    tokens = list(re.finditer(r"\w+|[^\s]", _top_level_sql(sql, keep_atoms=True)))
+    clauses = []
+    expect_operand = False
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        word = token.group().upper()
+        following = [item.group().upper() for item in tokens[index + 1 : index + 3]]
+        width = 0 if expect_operand else _clause_width(word, following)
+        if width:
+            clauses.append((word, token.start(), tokens[index + width - 1].end()))
+            if word in {"AS", "COMMENT", "EMPTY", ";"}:
+                break
+            expect_operand = True
+            index += width
+            continue
+        expect_operand = (
+            word in _PREFIX_OPERATORS
+            or word in _SYMBOL_OPERATORS
+            or (not expect_operand and word in _EXPRESSION_OPERATORS)
+        )
+        index += 1
+    return clauses
+
+
+def _clause_width(word: str, following: list[str]) -> int:
+    """Recognize clause syntax, including the assignment after SETTINGS."""
+    if following and (word, following[0]) in {
+        ("PARTITION", "BY"),
+        ("ORDER", "BY"),
+        ("SAMPLE", "BY"),
+        ("PRIMARY", "KEY"),
+        ("UNIQUE", "KEY"),
+    }:
+        return 2
+    if word == "SETTINGS":
+        return int(len(following) == 2 and following[1] == "=")
+    if word == "COMMENT":
+        return int(following[:1] == [_ATOM])
+    if word == "AS":
+        return int(bool(following) and following[0] in {"SELECT", "WITH"})
+    if word == "EMPTY":
+        return int(not following or following[0] in {"AS", ";"})
+    return int(word in {"TTL", ";"})
 
 
 def remove_unavailable_move_ttls(
@@ -195,7 +275,10 @@ def replicated_engine_path(statement: str) -> str | None:
 def _find_merge_tree_engine(statement: str) -> re.Match[str] | None:
     """Locate the table engine, ignoring column expressions and a view's SELECT."""
     before_select = re.split(
-        r"\bAS\b", _top_level_sql(statement), maxsplit=1, flags=re.IGNORECASE
+        r"\bAS\s+(?:SELECT|WITH)\b",
+        _top_level_sql(statement),
+        maxsplit=1,
+        flags=re.IGNORECASE,
     )[0]
     return _MERGE_TREE_ENGINE.search(before_select)
 
@@ -224,20 +307,29 @@ def _without_comments(sql: str) -> str:
     )
 
 
-def _top_level_sql(sql: str) -> str:
+def _top_level_sql(sql: str, keep_atoms: bool = False) -> str:
     """Hide quoted text, comments and bracket contents, preserving source offsets.
 
     For example, ``TTL if(x IN (1, 2), d, e) TO DISK 'cold'`` becomes
     ``TTL if                           TO DISK       `` for keyword/comma searches.
     This does not parse expressions or change the SQL sent to ClickHouse.
     """
-    surface = _QUOTED_OR_COMMENT.sub(_blank, sql)
+
+    def blank_atom(match: re.Match[str]) -> str:
+        return _ATOM + " " * (len(match.group()) - 1) if keep_atoms else _blank(match)
+
+    surface = _QUOTED_OR_COMMENT.sub(
+        lambda match: (
+            blank_atom(match) if match.group()[0] in "'\"`" else _blank(match)
+        ),
+        sql,
+    )
     # An unmatched opener would make subsequent keyword boundaries ambiguous.
     if re.search(r"""['"`]|/\*""", surface):
         raise StorageSchemaError("Unterminated SQL quoted text or comment")
     # Blank innermost bracket pairs until no nested expressions remain.
     while True:
-        surface, count = _INNER_BRACKETS.subn(_blank, surface)
+        surface, count = _INNER_BRACKETS.subn(blank_atom, surface)
         if not count:
             break
     if re.search(r"[()[\]]", surface):

@@ -30,8 +30,8 @@ materialized views with their own storage to the target server:
 - Local parts whose original disk is outside the adapted policy go to its first
   local disk, in volume priority and disk order.
 
-For replicated tables this mode assumes a coordinated restore of the entire
-target cluster, with the same flag and storage configuration on every replica.
+For replicated tables, use the same flag and storage configuration on every
+target replica.
 Restore each replicated shard's data on one replica. On its other replicas, use
 `--schema-only --skip-cloud-storage`, optionally with `--parts-from-backup BACKUP`
 to accelerate recovery. The existing `--parts-from-backup` mode downloads eligible
@@ -39,20 +39,19 @@ parts into `detached/`, verifies their file checksums, then runs
 `SYSTEM RESTORE REPLICA`; replication fetches any remaining parts. This mode
 requires restore without ordinary data loading, so `--schema-only` is still
 needed. Restore non-replicated tables separately with their data.
-Old replicas must not keep running with the previous schema. If Keeper still
-contains unavailable TTL destinations, ch-backup resets all replica metadata
-of that table and recreates it from the adapted schema. This resets the table's
-replication state, including its queues. A per-table Keeper lock covers this
-check, cleanup and table creation, including schema-only restore. Subsequent
-replicas join the adapted table without repeating the reset. Direct ZooKeeper
-access must be configured in ch-backup and use the same root as ClickHouse.
-Explicit `--clean-zookeeper-mode disabled` prevents a required reset and returns
-an error. Schema-only restore does not recover the data removed by a reset.
+If adapting a replicated table's TTL conflicts with existing Keeper metadata,
+restore fails before dropping local tables or cleaning replica metadata, including
+with `--keep-going` and any `--clean-zookeeper-mode`. It never resets shared Keeper
+metadata automatically. Restore to a separate Keeper table path or resolve the
+conflict before retrying. A per-table Keeper lock covers the check and table
+creation. Direct ZooKeeper access, using the same root as ClickHouse, is required
+only when the replicated table TTL is changed; unchanged schemas and policy-only
+changes retain the ordinary restore requirements.
 
-Policy replacements, removed TTL rules and Keeper resets are logged. With
-`--keep-going`, independent tables continue after a schema adaptation failure,
-but the command reports those failures with a nonzero exit status. A shared
-Keeper cleanup failure stops the restore immediately. The behavior without
+Policy replacements and removed TTL rules are logged. With `--keep-going`,
+independent tables continue after a schema adaptation or creation failure, but
+the command reports those failures with a nonzero exit status. A shared Keeper
+metadata conflict stops the restore immediately. The behavior without
 `--skip-cloud-storage` is unchanged.
 
 ## Workload and resource restore

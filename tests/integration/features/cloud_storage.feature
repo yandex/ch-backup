@@ -436,10 +436,8 @@ Feature: Backup & Clean & Restore
     default	1
     """
 
-  Scenario: Recreate incompatible Keeper state once and join a second replica using backup parts
+  Scenario: Restore adapted schemas into fresh Keeper state and join a second replica using backup parts
     Given a working clickhouse on clickhouse02
-    And we have enabled shared zookeeper for clickhouse01
-    And we have enabled shared zookeeper for clickhouse02
     When we execute queries on clickhouse01
     """
     CREATE DATABASE storage_restore;
@@ -450,18 +448,13 @@ Feature: Backup & Clean & Restore
     INSERT INTO storage_restore.t VALUES ('2099-01-01', 10);
     """
     And we create clickhouse01 clickhouse backup
-    # Lose local tables while retaining their old shared schema in Keeper.
+    # Restore both replicas into a fresh shared namespace. The source Keeper
+    # namespace retains its old metadata and must not be reset automatically.
     And we dirty remove clickhouse data at clickhouse01
-    And we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse01 with restart
+    Given we have enabled shared zookeeper for clickhouse01
+    And we have enabled shared zookeeper for clickhouse02
+    When we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse01 with restart
     And we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse02 with restart
-    And we try to execute command on clickhouse01
-    """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore --skip-cloud-storage --clean-zookeeper-mode disabled LAST
-    """
-    Then we get response contains
-    """
-    ZooKeeper cleanup is disabled
-    """
     When we restore clickhouse backup #0 to clickhouse01
     """
     skip_cloud_storage: true
@@ -512,4 +505,155 @@ Feature: Backup & Clean & Restore
     Then we get response
     """
     0	1
+    """
+
+
+  Scenario Outline: Reject incompatible Keeper metadata without changing any replica or local table
+    Given a working clickhouse on clickhouse02
+    And we have enabled shared zookeeper for clickhouse01
+    And we have enabled shared zookeeper for clickhouse02
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (d DateTime, id UInt64)
+    ENGINE = ReplicatedMergeTree('/storage_restore/t', '{replica}') ORDER BY id
+    TTL d + INTERVAL 1 DAY TO VOLUME 'external'
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.t VALUES ('2099-01-01', 10);
+    """
+    And we create clickhouse01 clickhouse backup
+    And we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse02 with restart
+    And we execute queries on clickhouse02
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (id UInt64) ENGINE = MergeTree ORDER BY id;
+    INSERT INTO storage_restore.t VALUES (99);
+    """
+    And we try to execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore --skip-cloud-storage --keep-going --clean-zookeeper-mode <cleanup_mode> LAST
+    """
+    Then command exits with code 1
+    And we get response contains
+    """
+    Keeper metadata at /shared/storage_restore/t contains TTL MOVE destinations
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT id FROM storage_restore.t
+    """
+    Then we get response
+    """
+    99
+    """
+    When we execute query on clickhouse01
+    """
+    SELECT is_readonly, total_replicas, active_replicas, (SELECT count() FROM storage_restore.t) FROM system.replicas WHERE database = 'storage_restore' AND table = 't'
+    """
+    Then we get response
+    """
+    0	1	1	1
+    """
+    When we execute query on clickhouse01
+    """
+    SELECT position(value, 'TO VOLUME') > 0 FROM system.zookeeper WHERE path = '/storage_restore/t' AND name = 'metadata'
+    """
+    Then we get response
+    """
+    1
+    """
+
+    Examples:
+      | cleanup_mode |
+      | disabled     |
+      | replica-only |
+      | all-replicas |
+
+  Scenario Outline: Restore schemas with SQL keywords as column names
+    Given a working clickhouse on clickhouse02
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.ttl (`ttl` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY ttl
+    TTL ttl + INTERVAL 1 DAY TO VOLUME 'external', ttl + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.ttl VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.comment (`comment` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY comment
+    TTL comment + INTERVAL 1 DAY TO VOLUME 'external', comment + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.comment VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.empty (`empty` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY empty
+    TTL empty + INTERVAL 1 DAY TO VOLUME 'external', empty + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.empty VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.settings (`settings` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY settings
+    TTL settings + INTERVAL 1 DAY TO VOLUME 'external', settings + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.settings VALUES ('2099-01-01', 42);
+    """
+    And we create clickhouse01 clickhouse backup
+    And we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse02 with restart
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    skip_cloud_storage: true
+    keep_going: <keep_going>
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT _table, id FROM merge('storage_restore', '^(ttl|comment|empty|settings)$') ORDER BY _table
+    """
+    Then we get response
+    """
+    comment	42
+    empty	42
+    settings	42
+    ttl	42
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count(), countIf(storage_policy = 'default'), countIf(position(create_table_query, 'TO VOLUME') = 0), countIf(position(create_table_query, 'toIntervalDay(100)') > 0) FROM system.tables WHERE database = 'storage_restore'
+    """
+    Then we get response
+    """
+    4	4	4	4
+    """
+
+    Examples:
+      | keep_going |
+      | false      |
+      | true       |
+
+  Scenario: Restore an unchanged replicated schema without direct Keeper configuration
+    Given a working clickhouse on clickhouse02
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (id UInt64)
+    ENGINE = ReplicatedMergeTree('/storage_restore/t', '{replica}') ORDER BY id;
+    INSERT INTO storage_restore.t VALUES (42);
+    """
+    And we create clickhouse01 clickhouse backup
+    Given ch-backup configuration on clickhouse02
+    """
+    zookeeper:
+      hosts: []
+    lock:
+      zk_flock: false
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    skip_cloud_storage: true
+    clean_zookeeper_mode: disabled
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT is_readonly, (SELECT id FROM storage_restore.t) FROM system.replicas WHERE database = 'storage_restore' AND table = 't'
+    """
+    Then we get response
+    """
+    0	42
     """

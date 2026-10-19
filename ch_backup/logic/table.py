@@ -685,13 +685,10 @@ class TableBackup(BackupManager):
             tables_to_preprocess,
             missing_create_statement_skipped,
         ) = self._get_tables_from_meta(context, filtered_tables_meta, keep_going)
-        storage_restore = (
-            StorageSchemaRestore(context, metadata_cleaner is not None)
-            if skip_cloud_storage
-            else None
-        )
+        storage_restore = StorageSchemaRestore(context) if skip_cloud_storage else None
         # Adapt DDL before comparing it with existing tables. Hold Keeper locks
-        # across local drops, shared metadata cleanup and creation of the new DDL.
+        # across compatibility checks and creation of the new DDL. Conflicting
+        # Keeper metadata must fail before preprocessing can drop any table.
         with ExitStack() as schema_locks:
             if storage_restore:
                 tables_to_preprocess = self._adapt_storage_schemas(
@@ -728,6 +725,14 @@ class TableBackup(BackupManager):
                 tables_to_restore,
                 keep_going,
             )
+
+        if storage_restore:
+            # A valid rewrite can still fail during preprocessing or CREATE. Do
+            # not report success with keep-going merely because parsing succeeded.
+            for key in preprocessing_failed_tables | {
+                (table.database, table.name) for table in failed_tables
+            }:
+                storage_restore.errors.setdefault(key, "Table schema restore failed")
 
         if schema_only:
             logging.debug(
@@ -1271,18 +1276,14 @@ class TableBackup(BackupManager):
                 existing_tables_by_uuid[table.uuid] = table
 
         # In-place replica repair reuses the old local schema. Tables with adapted
-        # DDL or a planned Keeper reset must instead go through drop and CREATE.
+        # DDL must instead go through drop and CREATE.
         existing_readonly_tables, readonly_cleaned_metadata = (
             self._get_remaining_readonly_tables_after_fix_attempt(
                 context,
                 [
                     table
                     for table in tables
-                    if not storage_restore
-                    or (
-                        not storage_restore.changed(table)
-                        and (table.database, table.name) not in storage_restore.resets
-                    )
+                    if not storage_restore or not storage_restore.changed(table)
                 ],
                 metadata_cleaner,
             )
@@ -1341,13 +1342,8 @@ class TableBackup(BackupManager):
                 elif existing_table := existing_tables_by_name.get(
                     (table.database, table.name)
                 ):
-                    # Matching local DDL is insufficient when shared metadata will
-                    # be reset: recreate the table so it registers its replica anew.
                     if compare_schema(
                         existing_table.create_statement, table.create_statement
-                    ) and (
-                        not storage_restore
-                        or (table.database, table.name) not in storage_restore.resets
                     ):
                         logging.debug(
                             f"Table {table_name_for_logs} already exists and its schema is the same as the schema from backup. Skipping it.",
@@ -1409,10 +1405,6 @@ class TableBackup(BackupManager):
                 )
                 continue
 
-        # Only reset tables that survived preprocessing, after their local tables
-        # were dropped and before any CREATE can publish the new shared schema.
-        if storage_restore:
-            storage_restore.reset_keeper(result)
         if metadata_cleaner and tables_to_clean_metadata:
             metadata_cleaner.clean_tables_metadata(tables_to_clean_metadata)
 

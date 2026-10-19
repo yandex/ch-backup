@@ -220,7 +220,7 @@ def _table():
     )
 
 
-def _restore(cleanup=True, metadata=b"ttl: d TO VOLUME 'cold', d + 10 DELETE\n"):
+def _restore(metadata=b"ttl: d TO VOLUME 'cold', d + 10 DELETE\n"):
     # Model a target with local policies and an existing shared Keeper schema.
     # Vary metadata to represent either the first restore or a later replica.
     context = MagicMock()
@@ -233,44 +233,57 @@ def _restore(cleanup=True, metadata=b"ttl: d TO VOLUME 'cold', d + 10 DELETE\n")
     client = context.zk_ctl.zk_client.__enter__.return_value
     client.get.return_value = (metadata, MagicMock())
     client.get_children.return_value = []
-    restore = StorageSchemaRestore(context, cleanup)
+    restore = StorageSchemaRestore(context)
     table = _table()
     restore.adapt(table)
     return restore, table, client
 
 
-def test_keeper_reset_is_held_until_creation_and_is_not_repeated():
-    restore, table, client = _restore()
-    with ExitStack() as stack:
-        restore.lock_tables([table], stack)
-        assert restore.resets == {("db", "t")}
-        client.Lock.return_value.release.assert_not_called()
-    client.Lock.return_value.release.assert_called_once()
-    # The next replica sees the metadata created from the adapted schema.
+def test_compatible_keeper_lock_is_held_until_creation():
     restore, table, client = _restore(metadata=b"ttl: d + 10 DELETE\n")
     with ExitStack() as stack:
         restore.lock_tables([table], stack)
-        assert not restore.resets
-        restore.reset_keeper([table])
+        client.Lock.return_value.release.assert_not_called()
+    client.Lock.return_value.release.assert_called_once()
     client.delete.assert_not_called()
 
 
 def test_keeper_absent_needs_no_cleanup():
-    restore, table, client = _restore(cleanup=False)
+    restore, table, client = _restore()
     client.get.side_effect = NoNodeError
     with ExitStack() as stack:
         restore.lock_tables([table], stack)
-        assert not restore.resets
+    client.delete.assert_not_called()
 
 
-def test_cleanup_disabled_rejects_incompatible_keeper_before_mutation():
-    restore, table, client = _restore(cleanup=False)
+def test_incompatible_keeper_fails_with_table_and_path_without_deleting_metadata():
+    restore, table, client = _restore()
     with (
         ExitStack() as stack,
-        pytest.raises(StorageSchemaKeeperError, match="disabled"),
+        pytest.raises(
+            StorageSchemaKeeperError, match="db.t.*?/root/tables/s/t"
+        ) as error,
     ):
         restore.lock_tables([table], stack)
+    assert "Existing replica metadata was not changed" in str(error.value)
     client.delete.assert_not_called()
+    client.Lock.return_value.release.assert_called_once()
+
+
+@pytest.mark.parametrize("policy", ["default", "s3"])
+def test_unchanged_ttl_needs_no_direct_keeper_configuration(policy):
+    restore, table, client = _restore()
+    restore.context.zk_config = {"hosts": []}
+    table.create_statement = (
+        "CREATE TABLE db.t (d DateTime) ENGINE = ReplicatedMergeTree('/t', 'r') "
+        f"ORDER BY d SETTINGS storage_policy = '{policy}'"
+    )
+    restore.adapt(table)
+    with ExitStack() as stack:
+        restore.lock_tables([table], stack)
+    client.get.assert_not_called()
+    client.Lock.assert_not_called()
+    restore.context.ch_ctl.get_macros.assert_not_called()
 
 
 def test_converted_table_never_connects_to_keeper():
@@ -327,35 +340,45 @@ def test_storage_policies_snapshot_uses_volume_order():
     assert ctl._ch_client.query.call_args.args[0].endswith("FORMAT JSON")
 
 
-def test_keeper_reset_cleans_all_replicas_and_residual_root():
-    restore, table, client = _restore()
-    restore.context.config_root = {"multiprocessing": {"drop_replica_threads": 2}}
+@pytest.mark.parametrize("replica_filter", ["disabled", "replica-1", None])
+@pytest.mark.parametrize("keep_going", [False, True])
+def test_keeper_conflict_precedes_local_drops_and_every_cleanup_mode(
+    replica_filter, keep_going
+):
+    restore, _, client = _restore()
+    context = restore.context
+    cleaner = None if replica_filter == "disabled" else MagicMock()
+    if cleaner is not None:
+        cleaner._replica_to_drop = replica_filter
+    context.backup_meta.get_tables.return_value = [MagicMock(database="db", name="t")]
+    manager = TableBackup()
     with (
-        ExitStack() as stack,
-        patch("ch_backup.logic.storage_schema_restore.MetadataCleaner") as cleaner,
+        patch.object(manager, "_filter_duplicate_uuid", return_value=([], 0)),
+        patch.object(manager, "_get_tables_from_meta", return_value=([_table()], 0)),
+        patch.object(manager, "_rewrite_table_schema"),
+        patch.object(manager, "_preprocess_tables_to_restore") as preprocess,
+        patch.object(manager, "_restore_tables") as create_tables,
+        pytest.raises(StorageSchemaKeeperError, match="Keeper metadata"),
     ):
-        restore.lock_tables([table], stack)
-        restore.reset_keeper([table])
-    # None selects all replicas; cleanup must use the resolved path and then
-    # remove the residual table root containing the incompatible shared TTL.
-    assert cleaner.call_args.args[2] is None
-    cleanup_table = cleaner.return_value.clean_tables_metadata.call_args.args[0][0]
-    assert "'/tables/s/t'" in cleanup_table.create_statement
-    client.delete.assert_called_once_with("/root/tables/s/t", recursive=True)
-
-
-def test_failed_keeper_reset_is_fatal_and_does_not_delete_residual_replicas():
-    restore, table, client = _restore()
-    restore.context.config_root = {"multiprocessing": {"drop_replica_threads": 2}}
-    client.get_children.return_value = ["remaining"]
-    with (
-        ExitStack() as stack,
-        patch("ch_backup.logic.storage_schema_restore.MetadataCleaner"),
-    ):
-        restore.lock_tables([table], stack)
-        with pytest.raises(StorageSchemaKeeperError, match="Failed to reset"):
-            restore.reset_keeper([table])
+        manager.restore(
+            context,
+            {"db": Database("db", "Atomic", None, None, None)},
+            schema_only=True,
+            tables=[],
+            metadata_cleaner=cleaner,
+            cloud_storage_source_bucket=None,
+            cloud_storage_source_path=None,
+            cloud_storage_source_endpoint=None,
+            skip_cloud_storage=True,
+            restore_detached_parts=False,
+            keep_going=keep_going,
+            restore_tables_in_replicated_database=False,
+        )
+    preprocess.assert_not_called()
+    create_tables.assert_not_called()
     client.delete.assert_not_called()
+    if cleaner is not None:
+        cleaner.clean_tables_metadata.assert_not_called()
 
 
 def test_default_replicated_engine_converts_before_storage_adaptation():
@@ -369,7 +392,8 @@ def test_default_replicated_engine_converts_before_storage_adaptation():
     assert change.removed_ttls == ("d TO DISK 's3'",)
 
 
-def test_keep_going_restores_independent_schema_then_reports_adaptation_error():
+@pytest.mark.parametrize("failure_stage", ["adapt", "preprocess", "create"])
+def test_keep_going_restores_independent_schema_then_reports_error(failure_stage):
     context = MagicMock()
     context.ch_ctl.get_storage_policies.return_value = POLICIES
     context.ch_config.config = {}
@@ -380,7 +404,8 @@ def test_keep_going_restores_independent_schema_then_reports_adaptation_error():
         table.create_statement = (
             "CREATE TABLE _ (d DateTime) ENGINE = MergeTree ORDER BY d"
         )
-    bad.create_statement += " TTL d TO DISK dynamic_disk"
+    if failure_stage == "adapt":
+        bad.create_statement += " TTL d TO DISK dynamic_disk"
     context.backup_meta.get_tables.return_value = [
         MagicMock(database="db", name="bad"),
         MagicMock(database="db", name="good"),
@@ -396,12 +421,16 @@ def test_keep_going_restores_independent_schema_then_reports_adaptation_error():
             manager,
             "_preprocess_tables_to_restore",
             side_effect=lambda _ctx, _dbs, tables, *_args, **_kwargs: (
-                tables,
-                0,
-                set(),
+                [good] if failure_stage == "preprocess" else tables,
+                int(failure_stage == "preprocess"),
+                {("db", "bad")} if failure_stage == "preprocess" else set(),
             ),
         ),
-        patch.object(manager, "_restore_tables", return_value=[]) as restore_tables,
+        patch.object(
+            manager,
+            "_restore_tables",
+            return_value=[bad] if failure_stage == "create" else [],
+        ) as restore_tables,
         pytest.raises(StorageSchemaError, match="db.bad"),
     ):
         manager.restore(
@@ -418,7 +447,9 @@ def test_keep_going_restores_independent_schema_then_reports_adaptation_error():
             keep_going=True,
             restore_tables_in_replicated_database=False,
         )
-    assert restore_tables.call_args.args[2] == [good]
+    assert restore_tables.call_args.args[2] == (
+        [bad, good] if failure_stage == "create" else [good]
+    )
 
 
 @pytest.mark.parametrize(
@@ -431,3 +462,64 @@ def test_keeper_invalid_path_never_acquires_lock_or_mutates(path):
         restore.lock_tables([table], stack)
     client.Lock.assert_not_called()
     client.delete.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "column",
+    [
+        "ttl",
+        "comment",
+        "empty",
+        "settings",
+        "partition",
+        "order",
+        "primary",
+        "sample",
+        "unique",
+        "as",
+    ],
+)
+@pytest.mark.parametrize("multiline", [False, True])
+def test_storage_clause_keywords_are_valid_column_references(column, multiline):
+    separator = "\n" if multiline else " "
+    prefix = (
+        f"CREATE TABLE _ (`{column}` DateTime) ENGINE = MergeTree ORDER BY {column}"
+    )
+    ttl = f"{column} + toIntervalDay(1) TO VOLUME 'cold', {column} + toIntervalDay(100) DELETE"
+    statement = separator.join([prefix, f"TTL {ttl}", "SETTINGS storage_policy = 's3'"])
+    change = adapt_storage_schema(statement, POLICIES)
+    assert change is not None
+    assert f"ORDER BY {column}" in change.statement
+    assert f"TTL {column} + toIntervalDay(100) DELETE" in change.statement
+    assert "storage_policy = 'default'" in change.statement
+    assert "TO VOLUME" not in change.statement
+    repeated = adapt_storage_schema(change.statement, POLICIES)
+    assert repeated is not None
+    assert not repeated.changed
+    assert repeated.statement == change.statement
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "ttl + 1",
+        "tuple(ttl, settings)",
+        "comment",
+        "empty(s)",
+        "x.settings",
+        "if(empty(s), ttl, settings)",
+    ],
+)
+def test_expression_operands_do_not_end_storage_clauses(expression):
+    statement = (
+        "CREATE TABLE _ (ttl DateTime, settings DateTime, comment DateTime, s String, x Tuple(settings UInt64)) "
+        f"ENGINE = MergeTree ORDER BY {expression} "
+        "TTL ttl TO VOLUME 'cold', settings DELETE WHERE comment < ttl "
+        "SETTINGS storage_policy = 's3' COMMENT 'saved comment'"
+    )
+    change = adapt_storage_schema(statement, POLICIES)
+    assert change is not None
+    assert f"ORDER BY {expression}" in change.statement
+    assert "TTL settings DELETE WHERE comment < ttl" in change.statement
+    assert change.statement.endswith("COMMENT 'saved comment'")
+    assert "TO VOLUME" not in change.statement

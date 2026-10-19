@@ -1,4 +1,4 @@
-"""Storage schema adaptation and coordinated Keeper reset during restore."""
+"""Storage schema adaptation and Keeper compatibility checks during restore."""
 
 import posixpath
 import re
@@ -9,7 +9,6 @@ from kazoo.exceptions import NoNodeError
 
 from ch_backup import logging
 from ch_backup.backup_context import BackupContext
-from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner
 from ch_backup.clickhouse.models import Table
 from ch_backup.clickhouse.storage_schema import (
     StorageSchemaChange,
@@ -19,27 +18,23 @@ from ch_backup.clickhouse.storage_schema import (
     replicated_engine_path,
 )
 from ch_backup.exceptions import ClickhouseBackupError
-from ch_backup.util import escape, replace_macros
+from ch_backup.util import replace_macros
 
 
 class StorageSchemaKeeperError(ClickhouseBackupError):
-    """A shared schema cannot be inspected or reset safely."""
+    """A shared schema cannot be inspected or is incompatible with the restore."""
 
 
 class StorageSchemaRestore:
     """State belonging to one restore, never persisted in backup metadata."""
 
-    def __init__(self, context: BackupContext, cleanup_enabled: bool) -> None:
+    def __init__(self, context: BackupContext) -> None:
         self.context = context
-        self.cleanup_enabled = cleanup_enabled
         self.policies = context.ch_ctl.get_storage_policies()
         self.ch_config = context.ch_config.config
         # Reuse the same policy decisions for table creation and part placement.
-        # 'resets' is planned under Keeper locks, then applied after local drops.
         self.changes: dict[tuple[str, str], StorageSchemaChange] = {}
         self.errors: dict[tuple[str, str], str] = {}
-        self.paths: dict[tuple[str, str], str] = {}
-        self.resets: set[tuple[str, str]] = set()
 
     def adapt(self, table: Table) -> None:
         """Adapt a rewritten table, recording placement and diagnostic details."""
@@ -90,15 +85,19 @@ class StorageSchemaRestore:
         replicated = [
             table
             for table in tables
-            if table.is_replicated() and (table.database, table.name) in self.changes
+            if table.is_replicated()
+            and (change := self.changes.get((table.database, table.name)))
+            and change.removed_ttls
         ]
         if not replicated:
             return
-        # Keeper reads and cleanup must address the same namespace as ClickHouse.
+        # Only a rewritten table TTL changes shared Keeper metadata. Policy-only
+        # and unchanged schemas retain the ordinary restore requirements.
+        # Keeper reads must address the same namespace as ClickHouse.
         # Fail before acquiring locks or changing any table if this is not known.
         if not self.context.zk_config.get("hosts"):
             raise StorageSchemaKeeperError(
-                "--skip-cloud-storage with replicated tables requires ch-backup ZooKeeper configuration"
+                "Adapting a replicated table TTL requires ch-backup ZooKeeper configuration to check existing metadata"
             )
         root = self.context.zk_ctl.zk_root_path.rstrip("/")
         server_root = (
@@ -109,13 +108,14 @@ class StorageSchemaRestore:
                 "ClickHouse and ch-backup ZooKeeper roots differ; cannot adapt shared schema"
             )
         macros = self.context.ch_ctl.get_macros()
-        for table in replicated:
-            self.paths[(table.database, table.name)] = self._table_path(table, macros)
+        paths = {
+            (table.database, table.name): self._table_path(table, macros)
+            for table in replicated
+        }
         client = stack.enter_context(self.context.zk_ctl.zk_client)
         # A fixed order prevents concurrent restores from taking locks in opposite
-        # orders. Locks live outside table roots, which cleanup may delete entirely.
-        for path in sorted(set(self.paths.values())):
-            full_path = root + path
+        # orders. Locks live outside table metadata and are held through creation.
+        for path in sorted(set(paths.values())):
             lock_path = (
                 root + "/ch-backup/storage-schema/" + sha256(path.encode()).hexdigest()
             )
@@ -123,16 +123,15 @@ class StorageSchemaRestore:
             acquired = lock.acquire(timeout=self.context.lock_conf["lock_timeout"])
             if not acquired:
                 raise StorageSchemaKeeperError(
-                    f"Cannot acquire storage schema lock for {full_path}"
+                    f"Cannot acquire storage schema lock for {root + path}"
                 )
             # The caller's ExitStack holds this lock until the new CREATE finishes,
             # so the next replica inspects the newly published shared schema.
             stack.callback(lock.release)
-        # Inspect current shared TTL, not only the backup's TTL. The first replica
-        # may already have replaced it, in which case another reset is unnecessary.
+        # Inspect the current shared TTL before any local drop or normal replica
+        # cleanup. Compatible metadata can belong to an already restored replica.
         for table in replicated:
-            key = (table.database, table.name)
-            path = root + self.paths[key]
+            path = root + paths[(table.database, table.name)]
             try:
                 metadata, _ = client.get(path + "/metadata")
             except NoNodeError:
@@ -145,65 +144,17 @@ class StorageSchemaRestore:
                 ),
                 "",
             )
-            _, removed = remove_unavailable_move_ttls(ttl, self.changes[key].policy)
+            _, removed = remove_unavailable_move_ttls(
+                ttl, self.changes[(table.database, table.name)].policy
+            )
             if removed:
-                # A shared TTL mismatch requires recreating the whole table root;
-                # deleting just this replica would leave the incompatible schema.
-                if not self.cleanup_enabled:
-                    raise StorageSchemaKeeperError(
-                        f"TTL at {path} requires resetting all replicas; ZooKeeper cleanup is disabled"
-                    )
-                self.resets.add(key)
-
-    def reset_keeper(self, tables: list[Table]) -> None:
-        """Reset only incompatible table roots while their creation lock is held."""
-        for table in tables:
-            key = (table.database, table.name)
-            if key not in self.resets:
-                continue
-            path = self.paths[key]
-            logging.warning(
-                "Resetting all replica metadata for {}.{} at {} to restore without unavailable TTL destinations",
-                *key,
-                path,
-            )
-            # MetadataCleaner reads paths from engine arguments. Supply the exact
-            # resolved path, including for tables that used default engine args.
-            cleanup_table = Table.make_dummy(table.database, table.name, table.uuid)
-            cleanup_table.create_statement = (
-                f"ENGINE = ReplicatedMergeTree('{escape(path)}', 'restore')"
-            )
-            # No replica filter: every replica belongs to the incompatible schema.
-            cleaner = MetadataCleaner(
-                self.context.ch_ctl,
-                self.context.zk_ctl,
-                None,
-                self.context.config_root["multiprocessing"]["drop_replica_threads"],
-            )
-            try:
-                cleaner.clean_tables_metadata([cleanup_table])
-                with self.context.zk_ctl.zk_client as client:
-                    full_path = self.context.zk_ctl.zk_root_path.rstrip("/") + path
-                    # The cleaner may leave shared nodes behind. Remove the root
-                    # only after confirming that all replica entries were cleaned.
-                    try:
-                        replicas = client.get_children(full_path + "/replicas")
-                    except NoNodeError:
-                        replicas = []
-                    if replicas:
-                        raise StorageSchemaKeeperError(
-                            f"Replicas remain after cleanup of {full_path}: {replicas}"
-                        )
-                    try:
-                        client.delete(full_path, recursive=True)
-                    except NoNodeError:
-                        pass
-            except Exception as error:
-                # Shared state is uncertain after a cleanup failure; unlike a
-                # per-table DDL error, it must abort restore even with keep-going.
                 raise StorageSchemaKeeperError(
-                    f"Failed to reset shared metadata for {table.database}.{table.name}"
-                ) from error
+                    f"Cannot adapt storage schema of {table.database}.{table.name}: "
+                    f"Keeper metadata at {path} contains TTL MOVE destinations "
+                    f"unavailable in target policy {self.changes[(table.database, table.name)].policy.name!r}. "
+                    "Existing replica metadata was not changed. Restore to a separate "
+                    "Keeper table path or resolve the metadata conflict before retrying."
+                )
 
     def raise_errors(self) -> None:
         """Report per-table adaptation failures after independent work completes."""
@@ -230,7 +181,7 @@ class StorageSchemaRestore:
                 "Cannot resolve a table path requiring a missing UUID"
             )
         # Use the final table name/UUID from schema rewriting, plus server macros,
-        # so locks and cleanup address the path that CREATE will actually use.
+        # so locks and checks address the path that CREATE will actually use.
         resolved = replace_macros(
             path,
             {
@@ -245,8 +196,7 @@ class StorageSchemaRestore:
                 f"Cannot resolve ZooKeeper path {path!r} for {table.database}.{table.name}"
             )
         resolved = posixpath.normpath(resolved)
-        # Cleanup deletes recursively. Reject paths that could include the Keeper
-        # root or the locks protecting this restore, including their ancestors.
+        # Table metadata must not overlap the root or the lock namespace.
         if (
             resolved == "/"
             or "/ch-backup/storage-schema".startswith(resolved + "/")

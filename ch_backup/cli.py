@@ -619,7 +619,7 @@ def backup_command(
         is_flag=True,
         help=(
             "Skip cloud data and adapt storage policies and TTL MOVE rules to the target. "
-            "Incompatible Keeper metadata may be reset for all replicas of affected tables."
+            "Conflicting Keeper metadata causes an error without resetting replicas."
         ),
     ),
 )
