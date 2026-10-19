@@ -47,6 +47,7 @@ class ExecPool:
     def __init__(self, executor: Executor) -> None:
         self._future_to_job: dict[Future, Job] = {}
         self._pool = executor
+        self._shutdown = False
         # It is necessary to start all processes while there are no running threads
         # Used to freeze and backup tables at the same time
         self._start_processes()
@@ -55,7 +56,12 @@ class ExecPool:
         """
         Wait workers for complete jobs and shutdown workers
         """
-        self._pool.shutdown(wait=graceful, cancel_futures=True)
+        if self._shutdown:
+            return
+        try:
+            self._pool.shutdown(wait=graceful, cancel_futures=True)
+        finally:
+            self._shutdown = True
 
     def submit(
         self,
@@ -223,14 +229,27 @@ class ProcessExecPool(ExecPool):
         """
         Wait workers for complete jobs and shutdown workers
         """
-        # Try to shutdown gracefully
-        if graceful:
-            self._pool.shutdown(wait=True, cancel_futures=True)
+        # ProcessPoolExecutor clears _processes during shutdown. Check both our
+        # state and its state because shutdown may also be initiated externally.
+        # pylint: disable=protected-access
+        if getattr(self, "_shutdown", False) or self._pool._processes is None:
+            self._shutdown = True
             return
 
+        # Try to shutdown gracefully
+        if graceful:
+            try:
+                self._pool.shutdown(wait=True, cancel_futures=True)
+            finally:
+                self._shutdown = True
+            return
+
+        # Do not wait for the call queue feeder after killing its consumers.
+        self._pool._call_queue.cancel_join_thread()  # type: ignore[attr-defined]
+
         # Send SIGTERM to the pool processes
-        # pylint: disable=protected-access
-        for p in self._pool._processes.values():
+        processes = list(self._pool._processes.values())
+        for p in processes:
             if p.is_alive():
                 try:
                     p.terminate()
@@ -238,17 +257,38 @@ class ProcessExecPool(ExecPool):
                     logging.exception("Failed terminating of worker process. Ignore it")
 
         # Wait for termination
-        remaining_timeout = TIMEOUT_WORKER_TERMINATING_SEC
-        for p in self._pool._processes.values():
-            start = time.time()
-            p.join(remaining_timeout)
-            elapsed = time.time() - start
-            remaining_timeout = max(remaining_timeout - elapsed, 0)
+        deadline = time.monotonic() + TIMEOUT_WORKER_TERMINATING_SEC
+        for p in processes:
+            p.join(max(deadline - time.monotonic(), 0))
 
         # Forcibly kill it if it's not responding to the SIGTERM
-        for p in self._pool._processes.values():
+        for p in processes:
             if p.is_alive():
                 try:
                     p.kill()
                 except Exception:
                     logging.exception("Failed killing of worker process. Ignore it")
+
+        # Give killed workers a bounded amount of time to exit. A process stuck in
+        # an uninterruptible kernel wait may remain alive even after SIGKILL.
+        deadline = time.monotonic() + TIMEOUT_WORKER_TERMINATING_SEC
+        for p in processes:
+            p.join(max(deadline - time.monotonic(), 0))
+
+        stuck_processes = [p for p in processes if p.is_alive()]
+        if stuck_processes:
+            logging.error(
+                "Failed to stop {} worker process(es); abandoning executor cleanup",
+                len(stuck_processes),
+            )
+
+        # ProcessPoolExecutor owns a management thread and multiprocessing queues in
+        # addition to the workers. Finalize them synchronously only when every
+        # worker has exited; otherwise its manager thread can wait indefinitely.
+        try:
+            self._pool.shutdown(
+                wait=not stuck_processes,
+                cancel_futures=True,
+            )
+        finally:
+            self._shutdown = True

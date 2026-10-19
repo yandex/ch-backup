@@ -25,10 +25,11 @@ absent from the backup remain on the server; replacing a shared parent or resour
 can change their effective limits. Restore does not synchronize the entire hierarchy.
 
 Parents omitted from the backup must already exist as workloads on the target,
-including parents defined in XML configuration. Type conflicts, changes to XML
-definitions, and server restrictions (such as creating a second root workload)
-abort restore with the affected entity's name. Concurrent workload/resource DDL
-during restore is unsupported.
+including parents defined in XML configuration. Entities defined in XML configuration
+of the target are skipped with a log message, even if the backup has another
+definition. Type conflicts and server restrictions (such as creating a second root
+workload) abort restore with the affected entity's name. Concurrent workload/resource
+DDL during restore is unsupported.
 
 
 ## Installation
