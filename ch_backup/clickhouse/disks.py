@@ -46,6 +46,13 @@ class ClickHouseDisksException(RuntimeError):
 CH_DISK_CONFIG_PATH = "/tmp/clickhouse-disks-config.xml"
 CH_DISK_HISTORY_FILE_PATH = "/tmp/.disks-file-history"
 CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS = 1 * 60 * 60 * 1000
+CH_DISKS_S3_RETRY_MIN_VERSION = "25.9"
+CH_DISKS_S3_RETRY_CONFIG_KEYS = (
+    "s3_retry_attempts",
+    "s3_retry_initial_delay_ms",
+    "s3_retry_max_delay_ms",
+    "s3_slow_all_threads_after_network_error",
+)
 BACKUP_DISK_CONFIG_KEYS = (
     "type",
     "object_storage_type",
@@ -72,6 +79,7 @@ class ClickHouseDiskManager:
         self._ch_ctl = ch_ctl
         self._backup_layout = backup_layout
         self._config_dir = config["clickhouse"]["config_dir"]
+        self._ch_disks_config = config.get("clickhouse_disks") or {}
         self._storage_config = config["storage"]
         self._backup_meta = backup_meta
         self._ch_config = ch_config
@@ -79,6 +87,34 @@ class ClickHouseDiskManager:
         self._disks: dict[str, dict] = {}
         self._created_disks: dict[str, Disk] = {}
         self._disks_lock = threading.Lock()
+
+    def _render_ch_disks_config(self) -> None:
+        """Write the utility config with supported S3 retry overrides."""
+        retry_config = {}
+        if self._ch_ctl.ch_version_ge(CH_DISKS_S3_RETRY_MIN_VERSION):
+            retry_config = {
+                key: self._ch_disks_config.get(key)
+                for key in CH_DISKS_S3_RETRY_CONFIG_KEYS
+                if self._ch_disks_config.get(key) is not None
+            }
+
+        _render_disks_config(
+            CH_DISK_CONFIG_PATH,
+            {
+                name: (
+                    {**conf, **retry_config}
+                    if conf
+                    and (
+                        conf.get("type") in {"s3", "s3_plain", "s3_plain_rewritable"}
+                        or conf.get("object_storage_type") == "s3"
+                    )
+                    else conf
+                )
+                for name, conf in self._disks.items()
+                if not conf or conf.get("type") != "cache"
+            },
+            history_file=CH_DISK_HISTORY_FILE_PATH,
+        )
 
     def _read_configured_disks(self) -> None:
         """
@@ -226,7 +262,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
                 )
         self._backup_layout.wait()
         self._ch_availible_disks = self._ch_ctl.get_disks()
-        _render_ch_disks_config(self._disks)
+        self._render_ch_disks_config()
         return self
 
     def __exit__(
@@ -480,7 +516,7 @@ class ClickHouseBackupDisks(ClickHouseDiskManager):
 
     def __enter__(self) -> "ClickHouseBackupDisks":
         self._read_configured_disks()
-        _render_ch_disks_config(self._disks)
+        self._render_ch_disks_config()
         try:
             for disk in self._ch_ctl.get_disks().values():
                 if (
@@ -534,7 +570,7 @@ class ClickHouseBackupDisks(ClickHouseDiskManager):
                 tmp_disk_name,
                 self._backup_disk_config(self._backup_meta.name, disk_name),
             )
-            _render_ch_disks_config(self._disks)
+            self._render_ch_disks_config()
             return disk
 
     def exclude_frozen_parts(
@@ -721,21 +757,6 @@ def _render_disks_config(
             f,
             pretty=True,
         )
-
-
-def _render_ch_disks_config(disks: dict[str, dict]) -> None:
-    """
-    Write configuration of the clickhouse-disks utility.
-    """
-    _render_disks_config(
-        CH_DISK_CONFIG_PATH,
-        {
-            name: conf
-            for name, conf in disks.items()
-            if not conf or conf.get("type") != "cache"
-        },
-        history_file=CH_DISK_HISTORY_FILE_PATH,
-    )
 
 
 # pylint: disable=too-many-positional-arguments

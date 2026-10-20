@@ -63,6 +63,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "clickhouse_user": None,
         "clickhouse_password": None,
     },
+    "clickhouse_disks": {
+        # Supported for ClickHouse 25.9+. None keeps the ClickHouse defaults.
+        "s3_retry_attempts": None,
+        "s3_retry_initial_delay_ms": None,
+        "s3_retry_max_delay_ms": None,
+        "s3_slow_all_threads_after_network_error": None,
+    },
     "backup": {
         "system_database": "_system",
         "exclude_dbs": [],
