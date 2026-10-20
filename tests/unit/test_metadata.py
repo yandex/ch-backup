@@ -468,6 +468,15 @@ class TestSplitPartName:
     @pytest.mark.parametrize(
         ("part_name", "expected"),
         [
+            # Legacy names encode two dates and use monthly partition IDs.
+            (
+                "20230101_20230122_19234_19448_5",
+                PartInfo("202301", 19234, 19448, 5, 0),
+            ),
+            (
+                "20230101_20230122_19234_19448_5_20538",
+                PartInfo("202301", 19234, 19448, 5, 20538),
+            ),
             # Standard format without mutation: partition_min_max_level
             (
                 "all_1_1_0",
@@ -513,12 +522,12 @@ class TestSplitPartName:
                 ),
             ),
             # Legacy MergeTree names contain min/max dates before block numbers.
-            # Keeping their five numeric chunks sortable is required by restore.
+            # Dates identify a monthly partition, not block numbers.
             (
                 "20261015_20261015_0_0_0",
                 PartInfo(
-                    partition_id="20261015",
-                    min_block_num=20261015,
+                    partition_id="202610",
+                    min_block_num=0,
                     max_block_num=0,
                     level=0,
                     mutation=0,

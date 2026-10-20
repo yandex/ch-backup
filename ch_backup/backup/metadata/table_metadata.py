@@ -31,16 +31,26 @@ def split_part_name(part: str) -> PartInfo:
     part name format: ``{partition_id}_{min_block}_{max_block}_{level}[_{mutation}]``.
     """
 
-    max_split = 4
-    chunks = part.split("_", maxsplit=max_split)
-    if len(chunks) < 4:
+    chunks = part.split("_")
+    # Legacy format has 5 fields, or 6 with mutation:
+    # minDate_maxDate_minBlock_maxBlock_level[_mutation].
+    # Dates are YYYYMMDD (8 digits); partition_id is YYYYMM (6 digits).
+    if (
+        len(chunks) in (5, 6)
+        and len(chunks[0]) == len(chunks[1]) == 8
+        and chunks[0].isdigit()
+        and chunks[1].isdigit()
+    ):
+        chunks = [chunks[0][:6], *chunks[2:]]
+    # Modern or normalized format has 4 fields, or 5 with mutation.
+    if len(chunks) not in (4, 5):
         raise ValueError(
             f"Invalid part name format: '{part}'. "
             f"Expected format: partition_id_minBlock_maxBlock_level[_mutation]"
         )
     partition_id = chunks[0]
     min_block, max_block, level = chunks[1:4]
-    mutation = chunks[4] if max_split + 1 == len(chunks) else "0"
+    mutation = chunks[4] if len(chunks) == 5 else "0"
     if not partition_id or not all(
         value.isascii() and value.isdigit()
         for value in (min_block, max_block, level, mutation)
