@@ -31,15 +31,28 @@ def split_part_name(part: str) -> PartInfo:
     part name format: ``{partition_id}_{min_block}_{max_block}_{level}[_{mutation}]``.
     """
 
-    chunks = part.split("_")
+    # At most 6 fields (5 separators); excess separators stay in the last field
+    # and fail numeric validation without allocating a list entry for each one.
+    chunks = part.split("_", maxsplit=5)
+    if (
+        not chunks[0]
+        or not part.isascii()
+        or not all(value.isdigit() for value in chunks[1:])
+    ):
+        raise ValueError(
+            f"Invalid part name format: '{part}'. "
+            "Numeric segments must contain decimal digits only"
+        )
     # Legacy format has 5 fields, or 6 with mutation:
     # minDate_maxDate_minBlock_maxBlock_level[_mutation].
     # Dates are YYYYMMDD (8 digits); partition_id is YYYYMM (6 digits).
+    # Five fields can also be modern: prefer that layout if minBlock <= maxBlock.
+    # Without the table format version, some names are inherently ambiguous.
     if (
         len(chunks) in (5, 6)
         and len(chunks[0]) == len(chunks[1]) == 8
         and chunks[0].isdigit()
-        and chunks[1].isdigit()
+        and (len(chunks) == 6 or int(chunks[1]) > int(chunks[2]))
     ):
         chunks = [chunks[0][:6], *chunks[2:]]
     # Modern or normalized format has 4 fields, or 5 with mutation.
@@ -51,16 +64,13 @@ def split_part_name(part: str) -> PartInfo:
     partition_id = chunks[0]
     min_block, max_block, level = chunks[1:4]
     mutation = chunks[4] if len(chunks) == 5 else "0"
-    if not partition_id or not all(
-        value.isascii() and value.isdigit()
-        for value in (min_block, max_block, level, mutation)
-    ):
-        raise ValueError(
-            f"Invalid part name format: '{part}'. "
-            "Numeric segments must contain decimal digits only"
-        )
     min_block_num = int(min_block)
     max_block_num = int(max_block)
+    if min_block_num > max_block_num:
+        raise ValueError(
+            f"Invalid part name format: '{part}'. "
+            "Minimum block number exceeds maximum block number"
+        )
     return PartInfo(
         partition_id,
         min_block_num,

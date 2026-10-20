@@ -336,6 +336,17 @@ class TestGetPartsOfOtherReplicas:
             }
         ) == {"1_0_9_1", "all_2_2_0_3"}
 
+    def test_mutated_date_partition_covers_unmutated_part(self) -> None:
+        """A modern date-like partition must keep its identity after mutation."""
+        original = "20230101_20230122_20230123_0"
+        mutated = original + "_20538"
+        assert self._parts(
+            {
+                "/zk/t1/replicas": ["new", "r1"],
+                "/zk/t1/replicas/r1/parts": [original, mutated],
+            }
+        ) == {mutated}
+
     def test_parts_are_kept_if_a_name_does_not_parse(self) -> None:
         """
         The filter only saves downloads, so it must not fail the restore.
