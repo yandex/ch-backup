@@ -74,6 +74,14 @@ class S3Client:
         """
         self._s3_client.download_file(self._s3_bucket_name, remote_path, local_path)
 
+    def download_data(self, remote_path: str) -> bytes:
+        """Read an object without changing its contents."""
+        response = self._s3_client.get_object(
+            Bucket=self._s3_bucket_name, Key=remote_path.lstrip("/")
+        )
+        with response["Body"] as body:
+            return body.read()
+
     def delete_data(self, remote_path: str) -> None:
         """
         Delete file from storage.

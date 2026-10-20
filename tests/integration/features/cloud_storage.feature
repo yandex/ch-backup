@@ -323,3 +323,78 @@ Feature: Backup & Clean & Restore
     """
     missing from ClickHouse storage_configuration
     """
+
+  @require_version_24.7
+  Scenario: Restore retries a partially copied S3 part into its original directory
+    # MDB-51258: copy into an existing detached/<part>/ must not create
+    # detached/<part>/<part>/. A missing data object leaves an incomplete
+    # destination on the first attempt; retry must restore the complete part.
+    Given a working clickhouse on clickhouse02
+    And ch-backup configuration on clickhouse02
+    """
+    backup:
+        restore_fail_on_attach_error: true
+    multiprocessing:
+        cloud_storage_restore_workers: 1
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    CREATE TABLE test_db.restore_retry (id UInt64, payload String)
+    ENGINE = MergeTree ORDER BY id
+    SETTINGS storage_policy = 'multiple_s3', min_bytes_for_wide_part = 0;
+    INSERT INTO test_db.restore_retry SELECT number, toString(number) FROM numbers(100);
+    """
+    When we execute query on clickhouse01
+    """
+    SELECT name, disk_name, part_type FROM system.parts
+    WHERE database = 'test_db' AND table = 'restore_retry' AND active;
+    """
+    Then we get response
+    """
+    all_1_1_0	s3	Wide
+    """
+    When we save all user's data in context on clickhouse01
+    And we save data part checksums in context on clickhouse01
+    And we create clickhouse01 clickhouse backup
+    """
+    name: restore_retry
+    """
+    # id.bin is required to attach a Wide part; columns.txt can be regenerated.
+    And we save and delete the S3 objects of a data part file on clickhouse01
+    """
+    database: test_db
+    table: restore_retry
+    part: all_1_1_0
+    file: id.bin
+    bucket: cloud-storage-01
+    path: data
+    """
+    And we try to execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore restore_retry \
+        --cloud-storage-source-bucket cloud-storage-01 \
+        --cloud-storage-source-path data
+    """
+    Then command exits with code 1
+    And we get response contains
+    """
+    clickhouse-disks call failed
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM test_db.restore_retry;
+    """
+    Then we get response
+    """
+    0
+    """
+    # Leave the destination and restore state intact. Only repair the source.
+    When we restore saved S3 objects
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    cloud_storage_source_bucket: cloud-storage-01
+    cloud_storage_source_path: data
+    """
+    Then the user's data equal to saved one on clickhouse02
+    And data part checksums equal to saved ones on clickhouse02
