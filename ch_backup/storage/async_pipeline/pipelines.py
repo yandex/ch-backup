@@ -9,6 +9,7 @@ from typing import (
     AnyStr,
     BinaryIO,
     Callable,
+    Iterable,
     Iterator,
     Sequence,
 )
@@ -23,10 +24,7 @@ from ch_backup.calculators import (
     calc_tarball_size_scan,
 )
 from ch_backup.encryption import get_encryption
-from ch_backup.storage.async_pipeline.pipeline_builder import (
-    PipelineBuilder,
-    PypelnStage,
-)
+from ch_backup.storage.async_pipeline.pipeline_builder import PipelineBuilder
 from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.object_copy import CopyEntry
 from ch_backup.util import exhaust_iterator
@@ -300,7 +298,7 @@ def delete_multiple_storage_pipeline(config: dict, remote_paths: Sequence[str]) 
     run(builder.pipeline())
 
 
-def run(pipeline: PypelnStage) -> None:
+def run(pipeline: Iterable[Any]) -> None:
     """
     Run pipeline until it is complete.
     """
@@ -312,7 +310,7 @@ def run(pipeline: PypelnStage) -> None:
             raise
 
 
-def run_and_return_first(pipeline: PypelnStage) -> Any:
+def run_and_return_first(pipeline: Iterable[Any]) -> Any:
     """
     Run pipeline until it is complete and return first its result.
     """
@@ -330,7 +328,7 @@ def run_and_return_first(pipeline: PypelnStage) -> Any:
     return result
 
 
-def run_and_collect_all(pipeline: PypelnStage) -> list[Any]:
+def run_and_collect_all(pipeline: Iterable[Any]) -> list[Any]:
     """
     Run pipeline until it is complete and collect all results.
     """
