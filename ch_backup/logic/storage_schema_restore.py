@@ -73,7 +73,7 @@ class StorageSchemaRestore:
     def changed(self, table: Table) -> bool:
         """Whether the local table must not be repaired using its old schema."""
         change = self.changes.get((table.database, table.name))
-        return bool(change and change.changed)
+        return change is not None and change.changed
 
     @property
     def storage_disks(self) -> dict[tuple[str, str], tuple[str, ...]]:
@@ -86,16 +86,19 @@ class StorageSchemaRestore:
             table
             for table in tables
             if table.is_replicated()
-            and (change := self.changes.get((table.database, table.name)))
-            and change.removed_ttls
+            and (change := self.changes.get((table.database, table.name))) is not None
+            and len(change.removed_ttls) > 0
         ]
-        if not replicated:
+        if len(replicated) == 0:
             return
         # Only a rewritten table TTL changes shared Keeper metadata. Policy-only
         # and unchanged schemas retain the ordinary restore requirements.
         # Keeper reads must address the same namespace as ClickHouse.
         # Fail before acquiring locks or changing any table if this is not known.
-        if not self.context.zk_config.get("hosts"):
+        if (
+            self.context.zk_config.get("hosts") is None
+            or len(self.context.zk_config["hosts"]) == 0
+        ):
             raise StorageSchemaKeeperError(
                 "Adapting a replicated table TTL requires ch-backup ZooKeeper configuration to check existing metadata"
             )
@@ -147,7 +150,7 @@ class StorageSchemaRestore:
             _, removed = remove_unavailable_move_ttls(
                 ttl, self.changes[(table.database, table.name)].policy
             )
-            if removed:
+            if len(removed) > 0:
                 raise StorageSchemaKeeperError(
                     f"Cannot adapt storage schema of {table.database}.{table.name}: "
                     f"Keeper metadata at {path} contains TTL MOVE destinations "
@@ -158,7 +161,7 @@ class StorageSchemaRestore:
 
     def raise_errors(self) -> None:
         """Report per-table adaptation failures after independent work completes."""
-        if self.errors:
+        if len(self.errors) > 0:
             details = "; ".join(
                 f"{db}.{table}: {error}" for (db, table), error in self.errors.items()
             )
@@ -176,7 +179,7 @@ class StorageSchemaRestore:
             path = self.ch_config.get(
                 "default_replica_path", "/clickhouse/tables/{uuid}/{shard}"
             )
-        if "{uuid}" in path and not table.uuid:
+        if "{uuid}" in path and (table.uuid is None or table.uuid == ""):
             raise StorageSchemaKeeperError(
                 "Cannot resolve a table path requiring a missing UUID"
             )
@@ -191,7 +194,7 @@ class StorageSchemaRestore:
                 "uuid": table.uuid or "",
             },
         )
-        if not resolved.startswith("/") or re.search(r"[{}]", resolved):
+        if not resolved.startswith("/") or re.search(r"[{}]", resolved) is not None:
             raise StorageSchemaKeeperError(
                 f"Cannot resolve ZooKeeper path {path!r} for {table.database}.{table.name}"
             )
@@ -222,7 +225,7 @@ def restore_disk_name(
         return source_disk
     # The snapshot keeps volume priority and disk order. If the original local
     # disk is absent, place the part on the first local disk of the target policy.
-    if not disks:
+    if len(disks) == 0:
         raise StorageSchemaError(
             f"No local disk in target policy of {table.database}.{table.name}"
         )

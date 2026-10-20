@@ -690,7 +690,7 @@ class TableBackup(BackupManager):
         # across compatibility checks and creation of the new DDL. Conflicting
         # Keeper metadata must fail before preprocessing can drop any table.
         with ExitStack() as schema_locks:
-            if storage_restore:
+            if storage_restore is not None:
                 tables_to_preprocess = self._adapt_storage_schemas(
                     context,
                     databases,
@@ -726,7 +726,7 @@ class TableBackup(BackupManager):
                 keep_going,
             )
 
-        if storage_restore:
+        if storage_restore is not None:
             # A valid rewrite can still fail during preprocessing or CREATE. Do
             # not report success with keep-going merely because parsing succeeded.
             for key in preprocessing_failed_tables | {
@@ -738,7 +738,7 @@ class TableBackup(BackupManager):
             logging.debug(
                 "Skipping restoring of table data as --schema-only flag passed"
             )
-            if storage_restore:
+            if storage_restore is not None:
                 # Keep-going may have restored other schemas successfully; it
                 # must still report any deferred adaptation errors to the caller.
                 storage_restore.raise_errors()
@@ -751,7 +751,7 @@ class TableBackup(BackupManager):
                 lambda t: f"`{t.database}`.`{t.name}`" not in failed_tables_names
                 and (t.database, t.name) not in preprocessing_failed_tables
                 and (
-                    not storage_restore
+                    storage_restore is None
                     or (t.database, t.name) not in storage_restore.errors
                 ),
                 tables_meta,
@@ -793,7 +793,9 @@ class TableBackup(BackupManager):
                 skip_cloud_storage=skip_cloud_storage,
                 keep_going=keep_going,
                 storage_disks=(
-                    storage_restore.storage_disks if storage_restore else None
+                    storage_restore.storage_disks
+                    if storage_restore is not None
+                    else None
                 ),
             )
 
@@ -806,10 +808,12 @@ class TableBackup(BackupManager):
                 skip_cloud_storage=skip_cloud_storage,
                 keep_going=keep_going,
                 storage_disks=(
-                    storage_restore.storage_disks if storage_restore else None
+                    storage_restore.storage_disks
+                    if storage_restore is not None
+                    else None
                 ),
             )
-        if storage_restore:
+        if storage_restore is not None:
             # Report deferred errors only after independent tables and their parts
             # have been restored, so keep-going preserves useful completed work.
             storage_restore.raise_errors()
@@ -1283,7 +1287,7 @@ class TableBackup(BackupManager):
                 [
                     table
                     for table in tables
-                    if not storage_restore or not storage_restore.changed(table)
+                    if storage_restore is None or not storage_restore.changed(table)
                 ],
                 metadata_cleaner,
             )
@@ -1298,7 +1302,7 @@ class TableBackup(BackupManager):
             try:
                 # Storage adaptation already rewrote names and UUIDs before locks
                 # were taken; repeating it here could change the resolved path.
-                if not storage_restore:
+                if storage_restore is None:
                     self._rewrite_table_schema(
                         context,
                         databases[table.database],

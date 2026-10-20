@@ -422,7 +422,7 @@ def test_keep_going_restores_independent_schema_then_reports_error(failure_stage
             "_preprocess_tables_to_restore",
             side_effect=lambda _ctx, _dbs, tables, *_args, **_kwargs: (
                 [good] if failure_stage == "preprocess" else tables,
-                int(failure_stage == "preprocess"),
+                1 if failure_stage == "preprocess" else 0,
                 {("db", "bad")} if failure_stage == "preprocess" else set(),
             ),
         ),

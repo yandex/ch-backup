@@ -81,7 +81,7 @@ class StorageSchemaChange:
     @property
     def changed(self) -> bool:
         """Whether policy placement or TTL semantics changed."""
-        return self.previous_policy != self.policy.name or bool(self.removed_ttls)
+        return self.previous_policy != self.policy.name or len(self.removed_ttls) > 0
 
 
 def adapt_storage_schema(
@@ -136,12 +136,14 @@ def _replace_missing_policy(
 
     # Without an explicit setting, CREATE uses the target server's engine default.
     # Keep any available policy; fall back to 'default' only when it is missing.
-    previous = _unquote_sql_string(value.group()) if value else default_policy
+    previous = (
+        _unquote_sql_string(value.group()) if value is not None else default_policy
+    )
     name = previous if previous in policies else "default"
     if name not in policies:
         raise StorageSchemaError(f"Target storage policy {name!r} is not available")
     if previous != name:
-        if value:
+        if value is not None:
             storage = storage[: value.start()] + "'default'" + storage[value.end() :]
         else:
             # Override an unavailable implicit default explicitly. Insert before
@@ -163,10 +165,10 @@ def _rewrite_table_ttl(
             continue
         end = clauses[index + 1][1] if index + 1 < len(clauses) else len(storage)
         rules, removed = remove_unavailable_move_ttls(storage[rules_start:end], policy)
-        if not removed:
+        if len(removed) == 0:
             return storage, ()
         # If every rule was removed, remove TTL itself too; an empty TTL is invalid.
-        replacement = "TTL " + rules.strip() + " " if rules.strip() else ""
+        replacement = "TTL " + rules.strip() + " " if rules.strip() != "" else ""
         return storage[:start] + replacement + storage[end:], removed
     return storage, ()
 
@@ -188,7 +190,7 @@ def _storage_clauses(sql: str) -> list[tuple[str, int, int]]:
         word = token.group().upper()
         following = [item.group().upper() for item in tokens[index + 1 : index + 3]]
         width = 0 if expect_operand else _clause_width(word, following)
-        if width:
+        if width > 0:
             clauses.append((word, token.start(), tokens[index + width - 1].end()))
             if word in {"AS", "COMMENT", "EMPTY", ";"}:
                 break
@@ -206,7 +208,7 @@ def _storage_clauses(sql: str) -> list[tuple[str, int, int]]:
 
 def _clause_width(word: str, following: list[str]) -> int:
     """Recognize clause syntax, including the assignment after SETTINGS."""
-    if following and (word, following[0]) in {
+    if len(following) > 0 and (word, following[0]) in {
         ("PARTITION", "BY"),
         ("ORDER", "BY"),
         ("SAMPLE", "BY"),
@@ -215,14 +217,14 @@ def _clause_width(word: str, following: list[str]) -> int:
     }:
         return 2
     if word == "SETTINGS":
-        return int(len(following) == 2 and following[1] == "=")
+        return 1 if len(following) == 2 and following[1] == "=" else 0
     if word == "COMMENT":
-        return int(following[:1] == [_ATOM])
+        return 1 if following[:1] == [_ATOM] else 0
     if word == "AS":
-        return int(bool(following) and following[0] in {"SELECT", "WITH"})
+        return 1 if len(following) > 0 and following[0] in {"SELECT", "WITH"} else 0
     if word == "EMPTY":
-        return int(not following or following[0] in {"AS", ";"})
-    return int(word in {"TTL", ";"})
+        return 1 if len(following) == 0 or following[0] in {"AS", ";"} else 0
+    return 1 if word in {"TTL", ";"} else 0
 
 
 def remove_unavailable_move_ttls(
@@ -243,11 +245,11 @@ def remove_unavailable_move_ttls(
         fragment = ttl[start:end]
         move = _TTL_MOVE.search(surface, start, end)
         start = end + 1
-        if move:
+        if move is not None:
             # The destination must be a literal. Reject unfamiliar syntax rather
             # than silently removing a fragment whose meaning is uncertain.
             destination = _without_comments(ttl[move.end() : end]).strip()
-            if not _STRING.fullmatch(destination):
+            if _STRING.fullmatch(destination) is None:
                 raise StorageSchemaError(f"Cannot parse TTL MOVE rule: {fragment!r}")
             allowed = policy.disks if move["kind"].upper() == "DISK" else policy.volumes
             if _unquote_sql_string(destination) not in allowed:
@@ -269,7 +271,7 @@ def replicated_engine_path(statement: str) -> str | None:
         _without_comments(statement[engine.end() :]),
         re.DOTALL,
     )
-    return _unquote_sql_string(path[1]) if path else None
+    return _unquote_sql_string(path[1]) if path is not None else None
 
 
 def _find_merge_tree_engine(statement: str) -> re.Match[str] | None:
@@ -325,13 +327,13 @@ def _top_level_sql(sql: str, keep_atoms: bool = False) -> str:
         sql,
     )
     # An unmatched opener would make subsequent keyword boundaries ambiguous.
-    if re.search(r"""['"`]|/\*""", surface):
+    if re.search(r"""['"`]|/\*""", surface) is not None:
         raise StorageSchemaError("Unterminated SQL quoted text or comment")
     # Blank innermost bracket pairs until no nested expressions remain.
     while True:
         surface, count = _INNER_BRACKETS.subn(blank_atom, surface)
-        if not count:
+        if count == 0:
             break
-    if re.search(r"[()[\]]", surface):
+    if re.search(r"[()[\]]", surface) is not None:
         raise StorageSchemaError("Unbalanced SQL brackets")
     return surface
