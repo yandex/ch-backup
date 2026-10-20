@@ -7,7 +7,7 @@ from hamcrest import assert_that, equal_to
 
 from ch_backup.clickhouse.object_storage_metadata import parse_object_storage_metadata
 from tests.integration.modules import s3
-from tests.integration.modules.clickhouse import ClickhouseClient
+from tests.integration.modules.clickhouse import get_part_path
 from tests.integration.modules.docker import get_container
 from tests.integration.modules.steps import get_step_data
 
@@ -89,22 +89,22 @@ def stop_delete_file_in_S3(context):
     assert not s3_client.path_exists(conf["path"])
 
 
+@then("an object in S3 contains")
+def step_s3_object_contents(context):
+    conf = get_step_data(context)
+    data = s3.S3Client(context, conf["bucket"]).download_data(conf["path"])
+    assert (
+        data == conf["data"].encode()
+    ), f"Unexpected contents of {conf['path']}: {data!r}"
+
+
 @when("we save and delete the S3 objects of a data part file on {node:w}")
 def step_save_and_delete_part_file_objects(context, node):
     """Temporarily remove the objects behind one active part's metadata file."""
     conf = get_step_data(context)
-    paths = (
-        ClickhouseClient(context, node)
-        .get_response(
-            f"SELECT path FROM system.parts WHERE active "
-            f"AND database = '{conf['database']}' AND table = '{conf['table']}' "
-            f"AND name = '{conf['part']}' FORMAT TSVRaw"
-        )
-        .splitlines()
-    )
-    assert len(paths) == 1, f"Expected one active part, found paths: {paths}"
+    path = get_part_path(context, node, conf["database"], conf["table"], conf["part"])
     result = get_container(context, node).exec_run(
-        ["cat", f"{paths[0].rstrip('/')}/{conf['file']}"], user="root"
+        ["cat", f"{path}/{conf['file']}"], user="root"
     )
     assert result.exit_code == 0, result.output.decode(errors="replace")
     metadata = parse_object_storage_metadata(result.output)
