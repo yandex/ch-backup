@@ -10,11 +10,12 @@ from collections import deque
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from functools import partial
-from itertools import chain
+from itertools import chain, count
 from pathlib import Path
 from random import choices
 from string import ascii_lowercase
 from typing import Iterable, Sequence
+from uuid import uuid4
 
 from ch_backup import logging
 from ch_backup.backup.deduplication import deduplicate_parts
@@ -616,6 +617,7 @@ class TableBackup(BackupManager):
         cloud_storage_source_path: str | None,
         cloud_storage_source_endpoint: str | None,
         skip_cloud_storage: bool,
+        restore_detached_parts: bool,
         keep_going: bool,
         restore_tables_in_replicated_database: bool,
     ) -> None:
@@ -682,6 +684,7 @@ class TableBackup(BackupManager):
         (
             tables_to_restore,
             preprocessing_failed_skipped,
+            preprocessing_failed_tables,
         ) = self._preprocess_tables_to_restore(
             context,
             databases,
@@ -710,10 +713,23 @@ class TableBackup(BackupManager):
             return
 
         failed_tables_names = [f"`{t.database}`.`{t.name}`" for t in failed_tables]
-        tables_to_restore_data = filter(
-            lambda t: f"`{t.database}`.`{t.name}`" not in failed_tables_names,
-            tables_meta,
+        tables_to_restore_data = list(
+            filter(
+                lambda t: f"`{t.database}`.`{t.name}`" not in failed_tables_names,
+                tables_meta,
+            )
         )
+
+        tables_with_create_statements = {
+            (table.database, table.name) for table in tables_to_preprocess
+        }
+        tables_to_restore_detached = [
+            table
+            for table in filtered_tables_meta
+            if (table.database, table.name) in tables_with_create_statements
+            and (table.database, table.name) not in preprocessing_failed_tables
+            and f"`{table.database}`.`{table.name}`" not in failed_tables_names
+        ]
 
         use_inplace_cloud_restore = context.config_root["restore"][
             "use_inplace_cloud_restore"
@@ -730,11 +746,22 @@ class TableBackup(BackupManager):
             context.ch_config,
             desired_tables=tables_meta,
             use_local_copy=use_inplace_cloud_restore,
+            skip_cloud_storage=skip_cloud_storage,
         ) as disks:
             self._restore_data(
                 context,
                 tables=tables_to_restore_data,
                 disks=disks,
+                skip_cloud_storage=skip_cloud_storage,
+                keep_going=keep_going,
+            )
+
+        if restore_detached_parts and any(
+            table.get_detached_parts() for table in tables_to_restore_detached
+        ):
+            self._restore_detached_data(
+                context,
+                tables=tables_to_restore_detached,
                 skip_cloud_storage=skip_cloud_storage,
                 keep_going=keep_going,
             )
@@ -1137,7 +1164,7 @@ class TableBackup(BackupManager):
         keep_going: bool,
         restore_tables_in_replicated_database: bool,
         metadata_cleaner: MetadataCleaner | None,
-    ) -> tuple[list[Table], int]:
+    ) -> tuple[list[Table], int, set[tuple[str, str]]]:
         # Prepare table schema to restore.
 
         detached_tables_by_uuid = {}
@@ -1164,6 +1191,7 @@ class TableBackup(BackupManager):
         result: list[Table] = []
         tables_to_clean_metadata: list[Table] = []
         preprocessing_failed_skipped = 0
+        preprocessing_failed_tables: set[tuple[str, str]] = set()
         for table in tables:
             table_name_for_logs = f'"{table.database}"."{table.name}"'
             try:
@@ -1264,6 +1292,7 @@ class TableBackup(BackupManager):
                 if not keep_going:
                     raise
                 preprocessing_failed_skipped += 1
+                preprocessing_failed_tables.add((table.database, table.name))
                 logging.exception(
                     f"Preprocessing of table {table.database}.{table.name} failed, skipping due to --keep-going flag. Reason: {e}"
                 )
@@ -1272,7 +1301,7 @@ class TableBackup(BackupManager):
         if metadata_cleaner and tables_to_clean_metadata:
             metadata_cleaner.clean_tables_metadata(tables_to_clean_metadata)
 
-        return result, preprocessing_failed_skipped
+        return result, preprocessing_failed_skipped, preprocessing_failed_tables
 
     def _get_remaining_readonly_tables_after_fix_attempt(
         self,
@@ -1697,6 +1726,202 @@ class TableBackup(BackupManager):
                 context.restore_context.dump_state()
 
         logging.info("Restoring tables data completed")
+
+    @staticmethod
+    def _restore_detached_data(
+        context: BackupContext,
+        tables: Iterable[TableMetadata],
+        skip_cloud_storage: bool,
+        keep_going: bool,
+    ) -> None:
+        """Restore backed-up detached parts without attaching them.
+
+        Both local parts and object-storage metadata files are downloaded into
+        a temporary directory and promoted only after a complete download.
+        Referenced object-storage blobs are neither copied nor rewritten.
+        """
+        logging.info("Restoring detached table parts")
+        for table_meta in tables:
+            detached_parts = table_meta.get_detached_parts()
+            if not detached_parts:
+                continue
+
+            table = context.ch_ctl.get_table(table_meta.database, table_meta.name)
+            if table is None:
+                error = ClickhouseBackupError(
+                    f"Table not found {table_meta.database}.{table_meta.name}"
+                )
+                if keep_going:
+                    logging.warning(str(error))
+                    continue
+                raise error
+
+            scheduled_paths: list[str] = []
+            downloaded_parts: list[tuple[DetachedPartMetadata, str, str]] = []
+            disks_to_chown: set[str] = set()
+            for part in detached_parts:
+                try:
+                    if part.object_storage and skip_cloud_storage:
+                        logging.debug(
+                            "Skipping detached part {}.{} {} on cloud disk {} because of --skip-cloud-storage flag",
+                            part.database,
+                            part.table,
+                            part.name,
+                            part.disk_name,
+                        )
+                        continue
+
+                    destination = TableBackup._find_detached_restore_destination(
+                        context, table, part
+                    )
+                    if destination is None:
+                        disks_to_chown.add(part.disk_name)
+                        continue
+                    restore_part, destination_path = destination
+
+                    staging_path = TableBackup._detached_staging_path(destination_path)
+                    scheduled_paths.append(staging_path)
+                    callback = partial(
+                        downloaded_parts.append,
+                        (restore_part, staging_path, destination_path),
+                    )
+                    # The archive is stored under its original backup name. The
+                    # possibly suffixed name applies only to the restore target.
+                    context.backup_layout.download_detached_part(
+                        context.backup_meta,
+                        part,
+                        staging_path,
+                        callback=callback,
+                    )
+                except Exception:
+                    if keep_going:
+                        logging.exception(
+                            f"Restore of detached part {part.name} failed, skipping due to --keep-going flag"
+                        )
+                    else:
+                        try:
+                            context.backup_layout.wait(keep_going=True)
+                        finally:
+                            TableBackup._cleanup_detached_staging_paths(scheduled_paths)
+                        raise
+
+            try:
+                context.backup_layout.wait(keep_going)
+
+                for part, staging_path, target_path in downloaded_parts:
+                    try:
+                        TableBackup._promote_detached_part(
+                            context, part, staging_path, target_path
+                        )
+                        disks_to_chown.add(part.disk_name)
+                    except Exception:
+                        if keep_going:
+                            logging.exception(
+                                f"Restore of detached part {part.name} failed, skipping due to --keep-going flag"
+                            )
+                        else:
+                            raise
+            finally:
+                TableBackup._cleanup_detached_staging_paths(scheduled_paths)
+
+            if disks_to_chown:
+                context.ch_ctl.chown_detached_table_parts(
+                    table,
+                    context.restore_context,
+                    disk_names=sorted(disks_to_chown),
+                )
+
+        logging.info("Restoring detached table parts completed")
+
+    @staticmethod
+    def _find_detached_restore_destination(
+        context: BackupContext,
+        table: Table,
+        part: DetachedPartMetadata,
+    ) -> tuple[DetachedPartMetadata, str] | None:
+        """Find a free detached path, adding ClickHouse-style ``_tryN`` suffixes.
+
+        An existing matching directory makes restore idempotent. An existing
+        directory with different contents is preserved and the first free
+        ``_tryN`` name is used instead.
+        """
+        if (
+            not part.name
+            or part.name in {".", ".."}
+            or os.path.basename(part.name) != part.name
+        ):
+            raise ClickhouseBackupError(
+                f'Invalid detached part directory name: "{part.name}"'
+            )
+
+        for try_no in count():
+            restore_part = (
+                part if try_no == 0 else part.with_name(f"{part.name}_try{try_no}")
+            )
+            target_path = context.ch_ctl.get_detached_part_path(
+                table, restore_part.disk_name, restore_part.name
+            )
+            if os.path.exists(target_path):
+                if context.ch_ctl.detached_part_matches(part, target_path):
+                    logging.debug(
+                        "Detached part {}.{} {} on disk {} is already restored as {}",
+                        part.database,
+                        part.table,
+                        part.name,
+                        part.disk_name,
+                        restore_part.name,
+                    )
+                    return None
+                logging.warning(
+                    'Detached part path "{}" already exists with different contents; trying a _tryN suffix',
+                    target_path,
+                )
+                continue
+
+            if try_no:
+                logging.warning(
+                    "Restoring detached part {}.{} {} on disk {} as {} because the original path is occupied",
+                    part.database,
+                    part.table,
+                    part.name,
+                    part.disk_name,
+                    restore_part.name,
+                )
+            return restore_part, target_path
+
+        raise AssertionError("unreachable")
+
+    @staticmethod
+    def _detached_staging_path(destination_path: str) -> str:
+        """Return a unique same-filesystem staging path for atomic promotion."""
+        return os.path.join(
+            os.path.dirname(destination_path), f".ch-backup-{uuid4().hex}"
+        )
+
+    @staticmethod
+    def _cleanup_detached_staging_paths(staging_paths: Iterable[str]) -> None:
+        """Remove private staging directories left by failed downloads."""
+        for staging_path in staging_paths:
+            if os.path.exists(staging_path):
+                shutil.rmtree(staging_path)
+
+    @staticmethod
+    def _promote_detached_part(
+        context: BackupContext,
+        part: DetachedPartMetadata,
+        staging_path: str,
+        destination_path: str,
+    ) -> None:
+        """Validate and atomically promote a completely downloaded part."""
+        if not context.ch_ctl.detached_part_matches(part, staging_path):
+            raise ClickhouseBackupError(
+                f'Downloaded detached part does not match backup metadata: "{staging_path}"'
+            )
+        if os.path.exists(destination_path):
+            raise ClickhouseBackupError(
+                f'Detached part path appeared during restore: "{destination_path}"'
+            )
+        os.rename(staging_path, destination_path)
 
     def _rewrite_table_schema(
         self,

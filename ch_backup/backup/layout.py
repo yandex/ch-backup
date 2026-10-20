@@ -771,6 +771,44 @@ class BackupLayout:
                     msg = f"Failed to download part file {remote_path}"
                     raise StorageError(msg) from e
 
+    def download_detached_part(
+        self,
+        backup_meta: BackupMetadata,
+        part: DetachedPartMetadata,
+        fs_part_path: str,
+        callback: Callable | None = None,
+    ) -> None:
+        """Download a detached-part archive to a staging directory."""
+        logging.debug(
+            'Downloading detached part {} of "{}"."{}" to disk {}',
+            part.name,
+            part.database,
+            part.table,
+            part.disk_name,
+        )
+        os.makedirs(fs_part_path, exist_ok=False)
+        remote_dir_path = self._get_escaped_if_exists(
+            _detached_part_path,
+            self.get_backup_path(backup_meta.name),
+            part.database,
+            part.table,
+            part.disk_name,
+            part.name,
+        )
+        remote_path = os.path.join(remote_dir_path, f"{part.name}.tar")
+        try:
+            self._storage_loader.download_files(
+                remote_path=remote_path,
+                local_path=fs_part_path,
+                is_async=True,
+                encryption=part.encrypted,
+                callback=callback,
+            )
+        except Exception as e:
+            raise StorageError(
+                f"Failed to download detached part tarball file {remote_path}"
+            ) from e
+
     def check_data_part(self, backup_name: str, part: PartMetadata) -> bool:
         """
         Check availability of part data in storage.

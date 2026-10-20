@@ -670,6 +670,11 @@ def backup_command(
     ),
 )
 @option(
+    "--restore-detached-parts",
+    is_flag=True,
+    help="Restore backed-up detached parts without attaching them.",
+)
+@option(
     "--keep-going",
     is_flag=True,
     help="Forces to keep going if some tables are failed on restore",
@@ -703,6 +708,7 @@ def restore_command(
     cloud_storage_source_path: str = None,
     cloud_storage_source_endpoint: str = None,
     skip_cloud_storage: bool = False,
+    restore_detached_parts: bool = False,
     clean_zookeeper_mode: CleanZooKeeperMode = CleanZooKeeperMode.REPLICA_ONLY,
     keep_going: bool = False,
     restore_tables_in_replicated_database: bool = False,
@@ -749,6 +755,7 @@ def restore_command(
         cloud_storage_source_path=cloud_storage_source_path,
         cloud_storage_source_endpoint=cloud_storage_source_endpoint,
         skip_cloud_storage=skip_cloud_storage,
+        restore_detached_parts=restore_detached_parts,
         clean_zookeeper_mode=clean_zookeeper_mode,
         keep_going=keep_going,
         restore_tables_in_replicated_database=restore_tables_in_replicated_database,

@@ -292,14 +292,32 @@ with a warning. Only successfully uploaded detached parts are added to backup
 metadata, and an individual detached-part failure does not fail the regular
 table backup. Executor failures and termination signals still abort the backup.
 
-Restore currently ignores detached-part metadata: it neither writes to the
-table's `detached` directory nor attaches the backed-up parts automatically.
+Restore is also opt-in: pass `--restore-detached-parts` to a data restore.
+Without this option detached-part metadata is ignored. Enabled restores put
+the parts under the corresponding table's `detached` directory on their
+original disk and never attach them automatically. Schema-only restore leaves
+them out. If the destination name is occupied by different data, the existing
+directory is preserved and the part is restored with the first free
+ClickHouse-style `_tryN` suffix. A directory with matching files, size and
+checksum is treated as already restored. If the backup has no checksum,
+equality cannot be proved and `_tryN` is used.
+
+```bash
+ch-backup restore --restore-detached-parts BACKUP
+```
 
 For object-storage disks, the archive contains the local part metadata files,
 not the referenced bucket objects, and its recorded size is the aligned size
 of those metadata files. `--copy-cloud-storage-data` still copies active table
 parts, but emits a warning and keeps detached parts metadata-only. Such backup
-archives are copied normally by `ch-backup copy`.
+archives are copied normally by `ch-backup copy`. Restoring an object-storage
+detached part only writes those metadata files into `detached`; it does not run
+`clickhouse-disks copy`, copy blobs, or rewrite their object keys. The restored
+metadata therefore continues to refer to the same objects as the source part,
+which must be accessible through the destination disk configuration. This also
+applies after `ch-backup copy`; `--cloud-storage-source-*` options do not alter
+detached-part metadata. `--skip-cloud-storage` skips both active and detached
+object-storage parts.
 
 ## Testing
 
