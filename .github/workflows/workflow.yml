@@ -73,7 +73,8 @@ jobs:
         - python: "3.14"
           clickhouse: "latest"
           runner: github
-    runs-on: ${{ matrix.runner == 'yc' && fromJSON('["self-hosted", "yc-ci"]') || 'ubuntu-22.04' }}
+    # With the repository variable SELF_HOSTED_RUNNERS = false, every job runs on GitHub-hosted runners.
+    runs-on: ${{ matrix.runner == 'yc' && vars.SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted", "yc-ci"]') || 'ubuntu-22.04' }}
     steps:
     - uses: actions/checkout@v7
       with:
