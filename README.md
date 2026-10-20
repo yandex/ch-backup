@@ -127,16 +127,20 @@ ch-backup check --deep --workers 8 --tmp-dir /var/tmp --format json 20261010T000
 
 - Light and full metadata and schemas are downloaded and decrypted.
 - Data of a part may be stored in an older backup it links to. Each stored object is checked once,
-  and its problem is reported for every backup linking to it.
+  and its problem is reported for every backup linking to it. Disk metadata of a table on a cloud
+  storage disk describes many parts, so its problem is reported only for backups needing those parts.
 - Without `--deep`, presence and size of part tarballs are checked. `--deep` downloads parts as restore
   does into `--tmp-dir` and compares their files and `checksums.txt` with metadata. Content of encrypted
   parts is verified completely, content of not encrypted parts is verified only for `checksums.txt`.
-- For cloud storage disks, disk metadata of tables is downloaded and parsed. Data copied into the backup
-  with `--copy-cloud-storage-data` is checked for presence and size of objects; objects in the bucket of
-  the disk are not checked and are counted in `unverified`.
+- For cloud storage disks, disk metadata of tables is downloaded and parsed, and files of each part in it
+  are compared with metadata. Data copied into the backup with `--copy-cloud-storage-data` is checked
+  for presence and size of objects; objects in the bucket of the disk are not checked and are counted
+  in `unverified`.
+- Presence of access control entities is checked; `--deep` downloads them as restore does and checks
+  that every entity listed in metadata is present.
 - Tables whose data was left out of the backup with a reason recorded in its metadata, such as a unique
   key, are listed in `skipped_data`: there is nothing to check in them, and restore brings back only
-  their schema. A backup made with `--schema-only` holds no data at all and is reported as intact.
+  their schema. Tables left without some parts after `--keep-going` are listed there with those parts. A backup made with `--schema-only` holds no data at all and is reported as intact.
 - Objects whose content can't be verified are counted in `unverified`. The command exits with code 2 if
   any backup in the state `created` or with unreadable state is broken; backups in other states, such as
   `failed`, are reported but don't affect the exit code.

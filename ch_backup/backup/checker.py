@@ -4,18 +4,18 @@ Check of backups: metadata, schemas and data are readable and in place.
 
 import hashlib
 import os
-import shutil
 import tempfile
 import threading
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from typing import NamedTuple, Sequence
+from typing import Callable, Iterable, NamedTuple, Sequence
 
 from ch_backup import logging
 from ch_backup.backup.copier import FROZEN_METADATA_FNAME
-from ch_backup.backup.layout import BackupLayout
+from ch_backup.backup.layout import ACCESS_CONTROL_FNAME, BackupLayout
 from ch_backup.backup.metadata import (
     BackupMetadata,
+    BackupStorageFormat,
     PartMetadata,
     TableMetadata,
     sanitize_backup_name,
@@ -24,16 +24,15 @@ from ch_backup.clickhouse.object_storage_metadata import parse_object_storage_me
 from ch_backup.config import Config
 from ch_backup.exceptions import BackupNotFound
 from ch_backup.storage.engine import get_storage_engine
-from ch_backup.util import list_dir_files
+from ch_backup.util import escape_metadata_file_name, list_dir_files
 
 
 class BackupCheckResult(NamedTuple):
     """
     Result of a backup check.
 
-    Objects that are in place but whose content can't be verified are counted in `unverified`.
-    Tables whose data was left out of the backup with a recorded reason are listed
-    in `skipped_data`.
+    `unverified` counts objects whose content can't be verified, `skipped_data` lists tables
+    left without data.
     """
 
     name: str
@@ -47,30 +46,96 @@ class BackupCheckResult(NamedTuple):
         """
         Return True if the backup can't be restored completely.
         """
-        return bool(self.problems)
+        return len(self.problems) != 0
 
 
 class _Listing:
     """
-    Listing of copied objects of a disk, filled once.
+    Listing of stored objects, filled once and dropped after its last user.
     """
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
-        self.sizes: dict[str, int] | None = None
+        self.sizes: dict | None = None
+        self.users = 0
+
+
+class _ObjectKey(NamedTuple):
+    """
+    Key of a stored object: a part tarball or disk metadata of a table.
+    """
+
+    kind: str
+    source: str
+    database: str
+    table: str
+    item: str
+    linked: bool
+    fields: tuple | None
 
 
 class _ObjectCheckResult(NamedTuple):
+    """
+    Result of a check of a stored object, the same for every backup needing it.
+    """
+
     problem: str | None = None
     unverified: int = 0
+
+    def for_parts(self, _parts: dict[str, tuple[str, ...]]) -> "_ObjectCheckResult":
+        """
+        Return the result itself, it holds for all parts.
+        """
+        return self
+
+
+class _DiskCheckResult(NamedTuple):
+    """
+    Result of a check of disk metadata of a table, given to a backup by the parts it needs.
+    """
+
+    missing_parts: set[str]
+    unreadable_parts: dict[str, str]
+    differing_files: dict[tuple[str, tuple[str, ...]], str]
+    broken_objects: dict[str, set[tuple[str, int]]]
+    unverified_objects: dict[str, set[tuple[str, int]]]
+
+    def for_parts(self, parts: dict[str, tuple[str, ...]]) -> _ObjectCheckResult:
+        """
+        Return the result for the specified parts with their files in backup metadata.
+        """
+        if missing := sorted(self.missing_parts & parts.keys()):
+            return _ObjectCheckResult(f"disk metadata is missing for parts {missing}")
+        if unreadable := [
+            self.unreadable_parts[part]
+            for part in sorted(parts)
+            if part in self.unreadable_parts
+        ]:
+            return _ObjectCheckResult(
+                f"disk metadata of parts is unreadable: {'; '.join(unreadable)}"
+            )
+        if differing := [
+            self.differing_files[item]
+            for item in sorted(parts.items())
+            if item in self.differing_files
+        ]:
+            return _ObjectCheckResult(
+                f"files of parts differ from disk metadata: {'; '.join(differing)}"
+            )
+        if broken := _objects_of_parts(self.broken_objects, parts):
+            return _ObjectCheckResult(
+                f"{len(broken)} objects of copied data are missing or have wrong size"
+            )
+        return _ObjectCheckResult(
+            unverified=len(_objects_of_parts(self.unverified_objects, parts))
+        )
 
 
 class BackupChecker:
     """
     Checks backups reading them only.
 
-    Data of a part may be stored in another backup it links to. Each stored object is checked once,
-    and its problem is reported for every backup that links to it.
+    Each stored object is checked once, and its problem goes to every backup needing it.
     """
 
     def __init__(
@@ -84,8 +149,8 @@ class BackupChecker:
         self._metas: dict[str, BackupMetadata] = {}
         self._light_metas: dict[str, BackupMetadata | None] = {}
         self._problems: dict[str, list[str]] = defaultdict(list)
-        self._objects: dict[tuple, dict] = {}
-        self._listings: dict[str, _Listing] = {}
+        self._objects: dict[_ObjectKey, dict] = {}
+        self._listings: dict[tuple, _Listing] = {}
 
     def check(
         self, backup_names: Sequence[str] | None = None
@@ -103,8 +168,7 @@ class BackupChecker:
             names = sorted(existing - _cloud_storage_dirs(existing))
 
         with ThreadPoolExecutor(self._workers) as pool:
-            list(pool.map(self._load, names))
-            self._collect_objects()
+            self._collect_objects(dict(zip(names, pool.map(self._load, names))))
             logging.info(
                 "Checking {} stored objects of {} backups",
                 len(self._objects),
@@ -124,9 +188,9 @@ class BackupChecker:
             self._local.layout = BackupLayout(self._config)
         return self._local.layout
 
-    def _load(self, name: str) -> None:
+    def _load(self, name: str) -> list[tuple]:
         """
-        Read light and full metadata and schemas of a backup.
+        Read light and full metadata and schemas of a backup, and return entries of its parts.
         """
         layout = self._layout()
         problems = self._problems[name]
@@ -140,15 +204,21 @@ class BackupChecker:
 
         try:
             backup = layout.get_backup(name)
+            entries = _entries(backup) if backup else []
         except Exception as e:
             problems.append(f"metadata: {_describe(e)}")
-            return
+            return []
         if not backup:
             problems.append("metadata: missing")
-            return
+            return []
 
         self._metas[name] = backup
         self._check_schemas(layout, backup, problems)
+        try:
+            self._check_access_control(layout, backup, problems)
+        except Exception as e:
+            problems.append(f"access control: {_describe(e)}")
+        return entries
 
     @staticmethod
     def _check_schemas(
@@ -157,8 +227,8 @@ class BackupChecker:
         """
         Check that create statements of databases and tables are readable and present.
 
-        Databases and tables are taken as restore takes them: create statements of databases
-        with embedded metadata are not stored, tables of external databases are not restored.
+        As restore does, databases with embedded metadata and tables of external databases
+        are skipped.
         """
         databases = [backup.get_database(name) for name in backup.get_databases()]
         db_names = [db.name for db in databases if not db.has_embedded_metadata()]
@@ -182,150 +252,184 @@ class BackupChecker:
             except Exception as e:
                 problems.append(f'table schemas of "{db.name}": {_describe(e)}')
 
-    def _collect_objects(self) -> None:
+    def _check_access_control(
+        self, layout: BackupLayout, backup: BackupMetadata, problems: list[str]
+    ) -> None:
+        """
+        Check that access control entities are present, deep check downloads them as restore does.
+        """
+        access_control = backup.access_control
+        if not access_control.acl_ids:
+            return
+        entities = {f"{acl_id}.sql" for acl_id in access_control.acl_ids}
+        tarball = access_control.backup_format == BackupStorageFormat.TAR
+        file_names = [ACCESS_CONTROL_FNAME] if tarball else sorted(entities)
+        if missing := [
+            file_name
+            for file_name in file_names
+            if not layout.check_access_control_file(backup.name, file_name)
+        ]:
+            problems.append(f"access control: missing {missing}")
+            return
+        if not self._deep:
+            return
+
+        with tempfile.TemporaryDirectory(
+            dir=self._tmp_dir, ignore_cleanup_errors=True
+        ) as access_dir:
+            if tarball:
+                layout.download_access_control(access_dir, backup.name)
+            else:
+                for file_name in file_names:
+                    layout.download_access_control_file(
+                        access_dir, backup.name, file_name
+                    )
+            if missing := sorted(entities - set(list_dir_files(access_dir))):
+                problems.append(f"access control: missing entities {missing}")
+
+    def _collect_objects(self, entries: dict[str, list[tuple]]) -> None:
         """
         Group parts of all backups by the stored object holding their data.
 
-        Data of a part on a local disk is a tarball of the part, data of parts on a cloud storage
-        disk is described by disk metadata of the whole table. Linked and own parts on a cloud
-        storage disk are checked apart, since restore reads data of linked parts differently.
-        Restore reads a part by metadata of the restored backup, so parts linking to the same
-        tarball with different metadata are checked apart too.
+        A local part is held by its tarball, parts on a cloud storage disk by disk metadata of
+        the table. Linked parts and parts with different metadata are grouped apart, since
+        restore reads them differently.
         """
-        for backup in self._metas.values():
-            for table in backup.get_tables():
-                for part in table.get_parts():
-                    cloud = part.disk_name in backup.cloud_storage.disks
-                    key = (
-                        "disk" if cloud else "part",
-                        part.link or backup.name,
-                        table.database,
-                        table.name,
-                        part.disk_name if cloud else part.deduplicated_part_name,
-                        cloud and part.link is not None,
-                        None if cloud else _part_fields(part),
-                    )
-                    obj = self._objects.setdefault(
-                        key,
-                        {
-                            "backup": backup,
-                            "part": part,
-                            "table": table,
-                            "parts": set(),
-                            "backups": set(),
-                        },
-                    )
-                    obj["parts"].add(part.deduplicated_part_name)
-                    obj["backups"].add(backup.name)
+        for name, backup in self._metas.items():
+            for table, table_paths, part, key, files in entries[name]:
+                if key not in self._objects:
+                    self._listings.setdefault(_listing_key(key), _Listing()).users += 1
+                obj = self._objects.setdefault(
+                    key,
+                    {
+                        "backup": backup,
+                        "part": part,
+                        "table": table,
+                        "table_paths": set(),
+                        "backups": {},
+                    },
+                )
+                obj["table_paths"] |= table_paths
+                obj["backups"].setdefault(name, {})[part.deduplicated_part_name] = files
 
-    def _check_object(self, key: tuple) -> _ObjectCheckResult:
+    def _check_object(self, key: _ObjectKey) -> _ObjectCheckResult | _DiskCheckResult:
         """
         Check a stored object and return its problem if there is any.
         """
         obj = self._objects[key]
         try:
-            if key[0] == "part":
-                return self._check_part(obj["backup"], obj["part"])
+            if key.kind == "part":
+                return self._check_part(key, obj["backup"], obj["part"])
             return self._check_cloud_storage_data(key, obj)
         except Exception as e:
             return _ObjectCheckResult(_describe(e))
+        finally:
+            self._release(key)
 
     def _check_part(
-        self, backup: BackupMetadata, part: PartMetadata
+        self, key: _ObjectKey, backup: BackupMetadata, part: PartMetadata
     ) -> _ObjectCheckResult:
         """
-        Check presence and size of a part tarball.
+        Check presence and size of a part tarball, listing data of its table once.
 
-        Deep check downloads the part as restore does, so encrypted data is verified completely.
-        Content of not encrypted data is verified only for checksums.txt of the part.
+        Deep check downloads the part as restore does, not encrypted parts are verified only by
+        checksums.txt.
         """
         layout = self._layout()
-        if not layout.check_data_part(backup.name, part):
+        stored = self._listing(
+            key,
+            lambda: layout.get_table_data_files(key.source, key.database, key.table),
+        )
+        if not layout.check_data_part_files(
+            part, stored.get(part.deduplicated_part_name, {})
+        ):
             return _ObjectCheckResult("data is missing or has wrong size")
         if not self._deep:
             return _ObjectCheckResult()
 
-        part_dir = tempfile.mkdtemp(dir=self._tmp_dir)
-        try:
+        with tempfile.TemporaryDirectory(
+            dir=self._tmp_dir, ignore_cleanup_errors=True
+        ) as part_dir:
             layout.download_data_part(backup, part, part_dir, callback=lambda *_: None)
             files = set(list_dir_files(part_dir))
             if files != set(part.files):
                 return _ObjectCheckResult(
-                    f"files differ from metadata: missing {sorted(set(part.files) - files)},"
-                    f" unexpected {sorted(files - set(part.files))}"
+                    f"files differ from metadata: {_difference(set(part.files), files)}"
                 )
             if "checksums.txt" in files:
                 with open(os.path.join(part_dir, "checksums.txt"), "rb") as f:
                     if hashlib.md5(f.read()).hexdigest() != part.checksum:  # nosec
                         return _ObjectCheckResult("checksums.txt differs from metadata")
             return _ObjectCheckResult(unverified=int(not part.encrypted))
-        finally:
-            shutil.rmtree(part_dir, ignore_errors=True)
 
-    def _check_cloud_storage_data(self, key: tuple, obj: dict) -> _ObjectCheckResult:
+    def _check_cloud_storage_data(
+        self, key: _ObjectKey, obj: dict
+    ) -> _ObjectCheckResult | _DiskCheckResult:
         """
-        Check disk metadata of a table and, if the data is copied into the backup, presence and
-        size of the objects it refers to.
+        Check disk metadata of a table and presence and size of copied objects it refers to.
 
-        Objects of data that is not copied stay in the bucket of the disk and are not checked.
-        As restore does, the backup holding data of linked parts is read by its light metadata
-        and must hold copied data.
+        Not copied objects stay in the bucket of the disk and are not checked. As restore does,
+        linked data is read by light metadata of the holding backup.
         """
-        _, source, _, _, disk_name, linked, _ = key
-        table: TableMetadata = obj["table"]
-        parts: set[str] = obj["parts"]
-        backup = self._light_meta(source) if linked else self._metas[source]
-        if not backup or (linked and not backup.cloud_storage.data_copied):
+        backup = self._light_meta(key.source) if key.linked else self._metas[key.source]
+        if not backup or (key.linked and not backup.cloud_storage.data_copied):
             return _ObjectCheckResult(
-                f'backup "{source}" holding the data is missing or holds no copied data'
+                f'backup "{key.source}" holding the data is missing or holds no copied data'
             )
 
         layout = self._layout()
         files = []
         for remote_path in layout.get_cloud_storage_metadata_remote_paths(
             backup.get_sanitized_name(),
-            disk_name,
+            key.item,
             backup.cloud_storage.compressed,
-            [table],
+            [obj["table"]],
         ):
             files += layout.get_cloud_storage_metadata_files(backup, remote_path)
-        files = [
-            (file_name, data)
-            for file_name, data in files
-            if set(file_name.split("/")[:-1]) & parts
-        ]
-
-        found = {c for file_name, _ in files for c in file_name.split("/")[:-1]} & parts
-        if found != parts:
-            return _ObjectCheckResult(
-                f"disk metadata is missing for parts {sorted(parts - found)}"
+        parts: set[str] = set().union(*obj["backups"].values())
+        found = _files_of_parts(files, parts, obj["table_paths"])
+        prefix = layout.get_cloud_storage_data_path(key.source, key.item).strip("/")
+        stored, unreadable = _stored_objects_of_parts(found, prefix)
+        broken, unverified = {}, stored
+        if backup.cloud_storage.data_copied:
+            listed = self._listing(
+                key,
+                lambda: get_storage_engine(self._config["storage"]).list_dir_with_sizes(
+                    prefix
+                ),
             )
+            broken = {
+                part: {item for item in items if listed.get(item[0]) != item[1]}
+                for part, items in stored.items()
+            }
+            unverified = {}
+        return _DiskCheckResult(
+            parts - set(found),
+            unreadable,
+            _differing_files(found, obj["backups"].values()),
+            broken,
+            unverified,
+        )
 
-        prefix = layout.get_cloud_storage_data_path(source, disk_name).strip("/")
-        stored = _stored_objects(files, prefix)
-        if not backup.cloud_storage.data_copied:
-            return _ObjectCheckResult(unverified=len(stored))
-
-        objects = self._list_cloud_storage_data(prefix)
-        broken = sum(objects.get(full_key) != size for full_key, size in stored)
-        if broken:
-            return _ObjectCheckResult(
-                f"{broken} objects of copied data are missing or have wrong size"
-            )
-        return _ObjectCheckResult()
-
-    def _list_cloud_storage_data(self, prefix: str) -> dict[str, int]:
+    def _listing(self, key: _ObjectKey, list_objects: Callable[[], dict]) -> dict:
         """
-        Return sizes of copied objects of a disk keyed by their full keys.
-
-        The listing may be huge, so threads needing it at once wait for the one listing it.
+        Return the listing of stored objects for an object, listing them once for all its users.
         """
-        listing = self._listings.setdefault(prefix, _Listing())
+        listing = self._listings[_listing_key(key)]
         with listing.lock:
             if listing.sizes is None:
-                engine = get_storage_engine(self._config["storage"])
-                listing.sizes = engine.list_dir_with_sizes(prefix)
+                listing.sizes = list_objects()
             return listing.sizes
+
+    def _release(self, key: _ObjectKey) -> None:
+        """
+        Drop the listing used by an object once it has no more users.
+        """
+        listing = self._listings[_listing_key(key)]
+        with listing.lock:
+            listing.users -= 1
+            if not listing.users:
+                listing.sizes = None
 
     def _light_meta(self, name: str) -> BackupMetadata | None:
         """
@@ -341,20 +445,20 @@ class BackupChecker:
         return self._light_metas[name]
 
     def _results(
-        self, names: list[str], results: dict[tuple, _ObjectCheckResult]
+        self,
+        names: list[str],
+        results: dict[_ObjectKey, _ObjectCheckResult | _DiskCheckResult],
     ) -> list[BackupCheckResult]:
         """
         Attribute results of stored objects to the backups linking to them.
         """
         problems = {name: list(self._problems[name]) for name in names}
         unverified: dict[str, int] = defaultdict(int)
-        for key, result in results.items():
-            kind, source, database, table, item, *_ = key
-            for name in self._objects[key]["backups"]:
+        for key, object_result in results.items():
+            for name, parts in self._objects[key]["backups"].items():
+                result = object_result.for_parts(parts)
                 if result.problem:
-                    problems[name].append(
-                        f'{kind} {item} of "{database}"."{table}" in backup "{source}": {result.problem}'
-                    )
+                    problems[name].append(f"{_object_name(key)}: {result.problem}")
                 else:
                     unverified[name] += result.unverified
 
@@ -371,30 +475,45 @@ class BackupChecker:
         return results_by_name
 
 
+def _object_name(key: _ObjectKey) -> str:
+    """
+    Return the name of a stored object to report its problem with.
+    """
+    return f'{key.kind} {key.item} of "{key.database}"."{key.table}" in backup "{key.source}"'
+
+
+def _listing_key(key: _ObjectKey) -> tuple:
+    """
+    Return the key of the listing of stored objects: data of a table or copied data of a disk.
+    """
+    if key.kind == "part":
+        return (key.source, key.database, key.table)
+    return (key.source, key.item)
+
+
 def _cloud_storage_dirs(names: set[str]) -> set[str]:
     """
-    Return directories holding only cloud storage data of backups.
-
-    Such a directory is named after the sanitized name of a backup whose name differs from it.
+    Return directories holding only cloud storage data, named after sanitized backup names.
     """
     return names & {
-        sanitize_backup_name(name)
-        for name in names
-        if sanitize_backup_name(name) != name
+        sanitized for name in names if (sanitized := sanitize_backup_name(name)) != name
     }
 
 
 def _skipped_data(backup: BackupMetadata | None) -> list[str]:
     """
-    Return tables of a backup whose data was left out of it, with the reason.
+    Return tables of a backup whose data or some parts were left out of it.
     """
     if not backup:
         return []
-    return [
-        f'"{table.database}"."{table.name}": {table.data_skipped_reason}'
-        for table in backup.get_tables()
-        if table.data_skipped_reason
-    ]
+    skipped = []
+    for table in backup.get_tables():
+        reason = table.data_skipped_reason
+        if not reason and table.skipped_parts:
+            reason = f"skipped parts {sorted(table.skipped_parts)}"
+        if reason:
+            skipped.append(f'"{table.database}"."{table.name}": {reason}')
+    return skipped
 
 
 def _missing(names: list[str], statements: list[tuple[str, str]]) -> list[str]:
@@ -404,20 +523,98 @@ def _missing(names: list[str], statements: list[tuple[str, str]]) -> list[str]:
     return sorted(set(names) - {name for name, _ in statements})
 
 
-def _stored_objects(
-    files: list[tuple[str, bytes]], prefix: str
-) -> set[tuple[str, int]]:
+def _files_of_parts(
+    files: list[tuple[str, bytes]], parts: set[str], table_paths: set[str]
+) -> dict[str, dict[str, bytes]]:
+    """
+    Return files of disk metadata keyed by part name and path relative to the part.
+
+    Paths start with the path of the table on disk. Old backups store disk metadata of all
+    tables of a disk in one tarball, then only files under the path of the table are taken.
+    """
+    entries = []
+    for file_name, data in files:
+        path = file_name.split("/")
+        for i, component in enumerate(path[:-1]):
+            if component in parts:
+                entries.append(("/".join(path[:i]), component, path[i + 1 :], data))
+                break
+    if len({table_path for table_path, *_ in entries}) > 1:
+        entries = [entry for entry in entries if entry[0] in table_paths]
+
+    result: dict[str, dict[str, bytes]] = {}
+    for _, part, path, data in entries:
+        files_of_part = result.setdefault(part, {})
+        if path[-1] != FROZEN_METADATA_FNAME:
+            files_of_part["/".join(path)] = data
+    return result
+
+
+def _table_paths(table: TableMetadata) -> set[str]:
+    """
+    Return possible paths of a table on disk, as ClickHouse lays them out.
+    """
+    paths = {
+        f"data/{escape_metadata_file_name(table.database)}/"
+        f"{escape_metadata_file_name(table.name)}"
+    }
+    if table.uuid:
+        paths.add(f"store/{table.uuid[:3]}/{table.uuid}")
+    return paths
+
+
+def _differing_files(
+    found: dict[str, dict[str, bytes]],
+    files_of_backups: Iterable[dict[str, tuple[str, ...]]],
+) -> dict[tuple[str, tuple[str, ...]], str]:
+    """
+    Return differences of files of parts in disk metadata from part metadata of each backup.
+    """
+    differing = {}
+    for part, part_files in {
+        item for parts in files_of_backups for item in parts.items()
+    }:
+        if part not in found:
+            continue
+        expected = set(part_files) - {FROZEN_METADATA_FNAME}
+        if expected != (actual := set(found[part])):
+            differing[(part, part_files)] = f"{part}: {_difference(expected, actual)}"
+    return differing
+
+
+def _difference(expected: set[str], actual: set[str]) -> str:
+    """
+    Return files missing from and unexpected in the actual files.
+    """
+    return (
+        f"missing {sorted(expected - actual)}, unexpected {sorted(actual - expected)}"
+    )
+
+
+def _stored_objects_of_parts(
+    found: dict[str, dict[str, bytes]], prefix: str
+) -> tuple[dict[str, set[tuple[str, int]]], dict[str, str]]:
+    """
+    Return objects referenced from disk metadata of each part, and problems of unreadable parts.
+    """
+    stored, unreadable = {}, {}
+    for part, files in found.items():
+        try:
+            stored[part] = _stored_objects(files.values(), prefix)
+        except Exception as e:
+            unreadable[part] = f"{part}: {_describe(e)}"
+    return stored, unreadable
+
+
+def _stored_objects(files: Iterable[bytes], prefix: str) -> set[tuple[str, int]]:
     """
     Return full keys and sizes of objects referenced from disk metadata files.
 
-    A key in disk metadata is either full in its bucket or relative to the key prefix of the disk.
-    ClickHouse writes copied data through a disk whose key prefix is the data path of the backup,
-    so full keys of copied data start with it.
+    A relative key is relative to the key prefix of the disk, for copied data the data path
+    of the backup.
     """
     stored = set()
-    for file_name, data in files:
-        if os.path.basename(file_name) == FROZEN_METADATA_FNAME:
-            continue
+    for data in files:
         metadata = parse_object_storage_metadata(data)
         stored |= {
             (
@@ -427,6 +624,46 @@ def _stored_objects(
             for item in metadata.objects
         }
     return stored
+
+
+def _objects_of_parts(
+    objects: dict[str, set[tuple[str, int]]], parts: Iterable[str]
+) -> set[tuple[str, int]]:
+    """
+    Return objects referenced from the specified parts.
+    """
+    return set().union(*(objects.get(part, set()) for part in parts))
+
+
+def _entries(backup: BackupMetadata) -> list[tuple]:
+    """
+    Return parts of a backup with their tables and keys of the stored objects holding them.
+    """
+    entries = []
+    for table in backup.get_tables():
+        table_paths = _table_paths(table)
+        for part in table.get_parts():
+            key = _object_key(backup, table, part)
+            entries.append((table, table_paths, part, key, tuple(part.files)))
+    return entries
+
+
+def _object_key(
+    backup: BackupMetadata, table: TableMetadata, part: PartMetadata
+) -> _ObjectKey:
+    """
+    Return the key of the stored object holding data of a part.
+    """
+    cloud = part.disk_name in backup.cloud_storage.disks
+    return _ObjectKey(
+        "disk" if cloud else "part",
+        part.link or backup.name,
+        table.database,
+        table.name,
+        part.disk_name if cloud else part.deduplicated_part_name,
+        cloud and part.link is not None,
+        None if cloud else _part_fields(part),
+    )
 
 
 def _part_fields(part: PartMetadata) -> tuple:

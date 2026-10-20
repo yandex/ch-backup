@@ -1,339 +1,47 @@
 """
 Unit tests for check of backups.
 
-Backups are created and checked by the real backup layout on top of an in-memory storage, so that
-encryption, compression and tarballs are the same as in a real storage.
+Logic of the checker is tested directly. Backups needing the real format of stored data, such as
+encryption, tarballs and disk metadata, are created by the real backup layout on top of an
+in-memory storage.
 """
 
-import hashlib
 import json
 import os
-import threading
 from pathlib import Path
-from typing import Any, Iterator, Sequence
-from unittest.mock import MagicMock, patch
+from typing import Iterator
 
 import pytest
-import yaml
-from click import Group
-from click.testing import CliRunner
 
-from ch_backup import cli
-from ch_backup.backup.checker import BackupChecker, BackupCheckResult
-from ch_backup.backup.layout import BackupLayout
-from ch_backup.backup.metadata import (
-    BackupMetadata,
-    BackupState,
-    PartMetadata,
-    TableMetadata,
+from ch_backup.backup.checker import (
+    BackupChecker,
+    _cloud_storage_dirs,
+    _differing_files,
+    _DiskCheckResult,
+    _files_of_parts,
+    _ObjectCheckResult,
+    _skipped_data,
+    _stored_objects,
+    _table_paths,
 )
+from ch_backup.backup.metadata import BackupMetadata, TableMetadata
 from ch_backup.backup.metadata.table_metadata import DataSkippedReason
-from ch_backup.clickhouse.models import Database, FrozenPart
-from ch_backup.config import Config
+from ch_backup.clickhouse.models import Database
 from ch_backup.exceptions import BackupNotFound
-
-PATH_ROOT = "ch_backup"
-DISK = "s3"
-
-
-class MemoryEngine:
-    """
-    Storage engine keeping objects in memory with the semantics of the S3 engine.
-    """
-
-    def __init__(self) -> None:
-        self.objects: dict[str, bytes] = {}
-        self._uploads: dict[str, dict[int, bytes]] = {}
-        self._downloads: dict[str, list] = {}
-        self._lock = threading.Lock()
-
-    def upload_data(self, data: bytes, remote_path: str) -> str:
-        self.objects[remote_path.lstrip("/")] = bytes(data)
-        return remote_path
-
-    def download_data(self, remote_path: str) -> bytes:
-        return self.objects[remote_path.lstrip("/")]
-
-    def list_dir(
-        self, remote_path: str, recursive: bool = False, absolute: bool = False
-    ) -> list[str]:
-        prefix = remote_path.strip("/") + "/"
-        result = set()
-        for key in self.objects:
-            if not key.startswith(prefix):
-                continue
-            path = key
-            if not recursive and "/" in key[len(prefix) :]:
-                path = prefix + key[len(prefix) :].split("/")[0] + "/"
-            result.add(path if absolute else os.path.relpath(path, prefix))
-        return sorted(result)
-
-    def list_dir_with_sizes(self, remote_path: str) -> dict[str, int]:
-        prefix = remote_path.strip("/") + "/"
-        return {k: len(v) for k, v in self.objects.items() if k.startswith(prefix)}
-
-    def path_exists(self, remote_path: str, is_dir: bool = False) -> bool:
-        key = remote_path.strip("/")
-        if is_dir:
-            return any(k.startswith(key + "/") for k in self.objects)
-        return key in self.objects
-
-    def get_object_size(self, remote_path: str) -> int:
-        return len(self.objects[remote_path.lstrip("/")])
-
-    def create_multipart_upload(self, remote_path: str) -> str:
-        with self._lock:
-            self._uploads[remote_path] = {}
-        return remote_path
-
-    def upload_part(
-        self, data: bytes, remote_path: str, upload_id: str, part_num: int = None
-    ) -> None:
-        assert upload_id == remote_path
-        with self._lock:
-            parts = self._uploads[upload_id]
-            parts[len(parts) if part_num is None else part_num] = bytes(data)
-
-    def complete_multipart_upload(self, remote_path: str, upload_id: str) -> None:
-        with self._lock:
-            parts = self._uploads.pop(upload_id)
-            self.upload_data(b"".join(parts[num] for num in sorted(parts)), remote_path)
-
-    def create_multipart_download(self, remote_path: str) -> str:
-        download_id = f"{remote_path}#{id(object())}"
-        with self._lock:
-            self._downloads[download_id] = [self.download_data(remote_path), 0]
-        return download_id
-
-    def download_part(self, download_id: str, part_len: int = None) -> bytes | None:
-        with self._lock:
-            download = self._downloads[download_id]
-        data, start = download
-        if start >= len(data):
-            return None
-        part_len = part_len or 8 * 1024 * 1024
-        download[1] = start + part_len
-        return data[start : start + part_len]
-
-    def complete_multipart_download(self, download_id: str) -> None:
-        with self._lock:
-            self._downloads.pop(download_id, None)
-
-
-class Storage:
-    """
-    Creates and damages backups in the in-memory storage.
-    """
-
-    def __init__(self, engine: MemoryEngine, config: Config, tmp_path: Path) -> None:
-        self.engine = engine
-        self.config = config
-        self._tmp_path = tmp_path
-        self.layout = BackupLayout(config)
-
-    def backup(
-        self,
-        name: str,
-        parts: Sequence[str] = (),
-        links: dict[str, str] | None = None,
-        encrypted: bool = True,
-        state: BackupState = BackupState.CREATED,
-        *,
-        data_skipped_reason: str | None = None,
-    ) -> BackupMetadata:
-        """
-        Create a backup of the table db.t with own parts and parts linked to other backups.
-        """
-        meta = BackupMetadata(
-            name, "1", "24.8", "%Y-%m-%d %H:%M:%S %z", encrypted=encrypted
-        )
-        meta.state = state
-        self._schemas(meta, ["t"])
-        meta.add_table(TableMetadata("db", "t", "MergeTree", None, data_skipped_reason))
-        for part_name in parts:
-            meta.add_part(self._part(meta, part_name))
-        for part_name, source in (links or {}).items():
-            own = self.meta(source).find_part("db", "t", part_name)
-            assert own
-            meta.add_part(_copy_part(own, link=source))
-        self.layout.upload_backup_metadata(meta)
-        return meta
-
-    def cloud_backup(
-        self,
-        name: str,
-        objects: dict[str, int] | None = None,
-        link: str | None = None,
-        data_copied: bool = True,
-        full_keys: bool = False,
-    ) -> BackupMetadata:
-        """
-        Create a backup of the table db.c with a part on a cloud storage disk.
-        """
-        meta = BackupMetadata(name, "1", "24.8", "%Y-%m-%d %H:%M:%S %z")
-        meta.state = BackupState.CREATED
-        meta.cloud_storage.add_disk(DISK)
-        meta.cloud_storage.encrypted = True
-        meta.cloud_storage.compressed = True
-        meta.cloud_storage.data_copied = data_copied
-        self._schemas(meta, ["c"])
-        meta.add_table(TableMetadata("db", "c", "MergeTree", None))
-        meta.add_part(
-            PartMetadata(
-                database="db",
-                table="c",
-                name="all_1_1_0",
-                checksum="keys",
-                size=15,
-                files=["data.bin"],
-                tarball=True,
-                link=link,
-                disk_name=DISK,
-            )
-        )
-        if objects is not None:
-            data_path = self.layout.get_cloud_storage_data_path(name, DISK)
-            version, tail = ("5", "0\n0\n\n") if full_keys else ("2", "0\n")
-            key_prefix = f"{data_path.strip('/')}/" if full_keys else ""
-            self.disk_metadata(
-                meta,
-                (
-                    f"{version}\n{len(objects)}\t{sum(objects.values())}\n"
-                    + "".join(
-                        f"{size}\t{key_prefix}{key}\n" for key, size in objects.items()
-                    )
-                    + tail
-                ).encode(),
-            )
-            for key, size in objects.items():
-                self.engine.upload_data(b"x" * size, os.path.join(data_path, key))
-        self.layout.upload_backup_metadata(meta)
-        return meta
-
-    def disk_metadata(self, meta: BackupMetadata, data: bytes) -> None:
-        """
-        Upload disk metadata of the part of the table db.c.
-        """
-        self.layout.upload_cloud_storage_metadata_files(
-            meta,
-            os.path.join(
-                self.layout.get_cloud_storage_path(meta.name),
-                "disks",
-                DISK,
-                "db",
-                "c.tar.gz",
-            ),
-            [("all_1_1_0/data.bin", data)],
-        )
-        self.layout.wait()
-
-    def adjust_part(self, backup_name: str, part_name: str, **fields: Any) -> None:
-        """
-        Change fields of a part in backup metadata.
-        """
-        meta = self.meta(backup_name)
-        part = meta.find_part("db", "t", part_name)
-        assert part
-        meta.remove_parts(meta.get_table("db", "t"), [part])
-        meta.add_part(_copy_part(part, **fields))
-        self.layout.upload_backup_metadata(meta)
-
-    def meta(self, backup_name: str) -> BackupMetadata:
-        """
-        Return full metadata of a backup.
-        """
-        meta = self.layout.get_backup(backup_name)
-        assert meta
-        return meta
-
-    def part_path(self, backup_name: str, part_name: str) -> str:
-        """
-        Return the key of a part tarball.
-        """
-        return f"{PATH_ROOT}/{backup_name}/data/db/t/{part_name}/{part_name}.tar"
-
-    def _schemas(self, meta: BackupMetadata, tables: list[str]) -> None:
-        meta.add_database(Database("default", "Atomic", "/default.sql", None, None))
-        meta.add_database(Database("db", "Atomic", "/db.sql", None, None))
-        backup_path = self.layout.get_backup_path(meta.name)
-        loader = self.layout._storage_loader  # pylint: disable=protected-access
-        loader.upload_data_tarball(
-            ["db"],
-            [b"CREATE DATABASE db"],
-            f"{backup_path}/metadata/databases.tar",
-            encryption=meta.encrypted,
-        )
-        loader.upload_data_tarball(
-            tables,
-            [b"CREATE TABLE db.t" for _ in tables],
-            f"{backup_path}/metadata/db.tar",
-            encryption=meta.encrypted,
-        )
-
-    def _part(self, meta: BackupMetadata, name: str) -> PartMetadata:
-        part_dir = self._tmp_path / f"{meta.name}_{name}"
-        part_dir.mkdir()
-        files = {
-            "checksums.txt": os.urandom(64),
-            "columns.txt": b"columns",
-            "data.bin": os.urandom(3000),
-        }
-        for file_name, data in files.items():
-            (part_dir / file_name).write_bytes(data)
-        frozen = FrozenPart(
-            "db",
-            "t",
-            name,
-            "default",
-            str(part_dir),
-            hashlib.md5(files["checksums.txt"]).hexdigest(),  # nosec
-            sum(-(-len(data) // 512) * 512 for data in files.values()),
-            sorted(files),
-        )
-        self.layout.upload_data_part(meta, frozen, lambda *_: None)
-        self.layout.wait()
-        return PartMetadata.from_frozen_part(frozen, meta.encrypted)
-
-
-def _copy_part(part: PartMetadata, **fields: Any) -> PartMetadata:
-    return PartMetadata(
-        **{
-            "database": part.database,
-            "table": part.table,
-            "name": part.name,
-            "checksum": part.checksum,
-            "size": part.size,
-            "files": part.files,
-            "tarball": True,
-            "disk_name": part.disk_name,
-            "encrypted": part.encrypted,
-            **fields,
-        }
-    )
+from tests.unit.backup_check_storage import (
+    DISK,
+    PATH_ROOT,
+    Storage,
+    copy_part,
+    in_memory_storage,
+    object_metadata,
+)
 
 
 @pytest.fixture(name="storage")
 def _storage(tmp_path: Path) -> Iterator[Storage]:
-    config_file = tmp_path / "ch-backup.conf"
-    config_file.write_text(
-        yaml.dump(
-            {
-                "backup": {"path_root": PATH_ROOT},
-                "encryption": {"key": "0123456789abcdef0123456789abcdef"},
-                "multiprocessing": {"workers": 0},
-            }
-        )
-    )
-    engine = MemoryEngine()
-    with (
-        patch("ch_backup.storage.loader.get_storage_engine", return_value=engine),
-        patch(
-            "ch_backup.storage.async_pipeline.pipeline_builder.get_storage_engine",
-            return_value=engine,
-        ),
-        patch("ch_backup.backup.checker.get_storage_engine", return_value=engine),
-    ):
-        yield Storage(engine, Config(str(config_file)), tmp_path)
+    with in_memory_storage(tmp_path) as storage:
+        yield storage
 
 
 def _check(storage: Storage, deep: bool, names: list[str] | None = None) -> dict:
@@ -481,6 +189,35 @@ def test_parts_linked_to_backup_with_unreadable_metadata_are_checked(
 
 
 @pytest.mark.parametrize(
+    "damage",
+    ["no part checksum", "no table engine", "invalid part name", "null part files"],
+)
+def test_backup_with_malformed_metadata_does_not_stop_the_check(
+    storage: Storage, damage: str
+) -> None:
+    storage.backup("b1", parts=["all_1_1_0"])
+    storage.backup("b2", parts=["all_2_2_0"])
+    key = f"{PATH_ROOT}/b1/backup_struct.json"
+    data = json.loads(storage.engine.objects[key])
+    table = data["databases"]["db"]["tables"]["t"]
+    if damage == "no part checksum":
+        del table["parts"]["all_1_1_0"]["checksum"]
+    elif damage == "no table engine":
+        del table["engine"]
+    elif damage == "null part files":
+        table["parts"]["all_1_1_0"]["files"] = None
+    else:
+        table["parts"]["invalid"] = table["parts"].pop("all_1_1_0")
+    storage.engine.objects[key] = json.dumps(data).encode()
+
+    results = _check(storage, deep=False)
+
+    assert set(results) == {"b1", "b2"}
+    assert _broken(results) == {"b1"}
+    assert results["b1"].problems[0].startswith("metadata: ")
+
+
+@pytest.mark.parametrize(
     "damage, problem",
     [
         ("delete", "1 objects of copied data are missing or have wrong size"),
@@ -505,20 +242,6 @@ def test_broken_cloud_storage_data(storage: Storage, damage: str, problem: str) 
     assert problem in results["c2"].problems[0]
 
 
-@pytest.mark.parametrize("full_keys", [False, True])
-def test_object_with_the_same_key_suffix_is_not_taken_for_copied_data(
-    storage: Storage, full_keys: bool
-) -> None:
-    storage.cloud_backup("c1", objects={"abc/obj1": 10}, full_keys=full_keys)
-    data_path = f"{PATH_ROOT}/c1/cloud_storage/{DISK}"
-
-    assert _broken(_check(storage, deep=False)) == set()
-    storage.engine.objects[f"{data_path}/obj1"] = storage.engine.objects.pop(
-        f"{data_path}/abc/obj1"
-    )
-    assert _broken(_check(storage, deep=False)) == {"c1"}
-
-
 def test_copied_data_of_a_disk_is_listed_once(storage: Storage) -> None:
     storage.cloud_backup("c1", objects={"abc/obj1": 10})
     storage.cloud_backup("c2", link="c1")
@@ -532,6 +255,27 @@ def test_copied_data_of_a_disk_is_listed_once(storage: Storage) -> None:
     assert listings == [f"{PATH_ROOT}/c1/cloud_storage/{DISK}"]
 
 
+def test_data_of_a_table_is_listed_once(storage: Storage) -> None:
+    storage.backup("b1", parts=["all_1_1_0", "all_2_2_0"])
+    storage.backup("b2", parts=["all_3_3_0"], links={"all_1_1_0": "b1"})
+    listings = []
+    list_dir_with_sizes = storage.engine.list_dir_with_sizes
+    storage.engine.list_dir_with_sizes = lambda path: listings.append(  # type: ignore
+        path
+    ) or list_dir_with_sizes(path)
+    checker = BackupChecker(storage.config, deep=False, workers=4)
+
+    assert not any(result.broken for result in checker.check())
+    assert sorted(listings) == [
+        f"{PATH_ROOT}/b1/data/db/t",
+        f"{PATH_ROOT}/b2/data/db/t",
+    ]
+    assert all(
+        listing.sizes is None
+        for listing in checker._listings.values()  # pylint: disable=protected-access
+    )
+
+
 def test_missing_disk_metadata_of_linked_part(storage: Storage) -> None:
     storage.cloud_backup("c1", objects={"abc/obj1": 10})
     storage.cloud_backup("c2", link="c1")
@@ -543,6 +287,66 @@ def test_missing_disk_metadata_of_linked_part(storage: Storage) -> None:
     assert (
         "disk metadata is missing for parts ['all_1_1_0']" in results["c3"].problems[0]
     )
+
+
+@pytest.mark.parametrize(
+    "damage, problem",
+    [
+        ("object", "1 objects of copied data are missing or have wrong size"),
+        ("metadata", "disk metadata of parts is unreadable: all_2_2_0: ValueError: "),
+    ],
+)
+def test_linked_cloud_storage_data_is_attributed_by_parts(
+    storage: Storage, damage: str, problem: str
+) -> None:
+    meta = storage.cloud_backup("c1", objects={"abc/obj1": 10, "abc/obj2": 5})
+    part = meta.find_part("db", "c", "all_1_1_0")
+    assert part
+    meta.add_part(copy_part(part, name="all_2_2_0"))
+    storage.layout.upload_backup_metadata(meta)
+    storage.disk_metadata(
+        meta,
+        {
+            "all_1_1_0/data.bin": object_metadata("abc/obj1", 10),
+            "all_2_2_0/data.bin": (
+                object_metadata("abc/obj2", 5) if damage == "object" else b"garbage"
+            ),
+        },
+    )
+    storage.cloud_backup("c2", link="c1")
+    linking = storage.cloud_backup("c3", link="c1")
+    linked = linking.find_part("db", "c", "all_1_1_0")
+    assert linked
+    linking.remove_parts(linking.get_table("db", "c"), [linked])
+    linking.add_part(copy_part(linked, name="all_2_2_0", link="c1"))
+    storage.layout.upload_backup_metadata(linking)
+    data_path = storage.layout.get_cloud_storage_data_path("c1", DISK)
+    del storage.engine.objects[os.path.join(data_path, "abc/obj2").lstrip("/")]
+
+    results = _check(storage, deep=False)
+
+    assert _broken(results) == {"c1", "c3"}
+    assert len(results["c3"].problems) == 1
+    assert (
+        results["c3"]
+        .problems[0]
+        .startswith(f'disk s3 of "db"."c" in backup "c1": {problem}')
+    )
+
+
+def test_disk_metadata_of_all_tables_of_a_disk(storage: Storage) -> None:
+    meta = storage.cloud_backup("c1", objects={"abc/obj1": 10})
+    storage.disk_metadata(
+        meta,
+        {
+            "data/db/c/all_1_1_0/data.bin": object_metadata("abc/obj1", 10),
+            "data/db/other/all_1_1_0/data.bin": object_metadata("abc/obj2", 5),
+            "data/db/other/all_1_1_0/columns.txt": object_metadata("abc/obj2", 5),
+        },
+        old_style=True,
+    )
+
+    assert _broken(_check(storage, deep=False)) == set()
 
 
 def test_not_copied_cloud_storage_data_is_reported_as_unverified(
@@ -560,12 +364,19 @@ def test_not_copied_cloud_storage_data_is_reported_as_unverified(
 
 def test_malformed_disk_metadata_of_not_copied_data(storage: Storage) -> None:
     meta = storage.cloud_backup("c1", objects={}, data_copied=False)
-    storage.disk_metadata(meta, b"garbage")
+    storage.disk_metadata(meta, {"all_1_1_0/data.bin": b"garbage"})
 
     results = _check(storage, deep=False)
 
     assert _broken(results) == {"c1"}
-    assert 'in backup "c1": ValueError: ' in results["c1"].problems[0]
+    assert (
+        results["c1"]
+        .problems[0]
+        .startswith(
+            'disk s3 of "db"."c" in backup "c1": disk metadata of parts is unreadable:'
+            " all_1_1_0: ValueError: "
+        )
+    )
 
 
 def test_only_specified_backups_are_checked(storage: Storage) -> None:
@@ -578,6 +389,45 @@ def test_only_specified_backups_are_checked(storage: Storage) -> None:
         _check(storage, deep=False, names=["b3"])
 
 
+@pytest.mark.parametrize("tarball", [True, False])
+@pytest.mark.parametrize("deep", [False, True])
+def test_access_control(storage: Storage, tarball: bool, deep: bool) -> None:
+    storage.backup("b1", parts=["all_1_1_0"])
+    storage.access_control("b1", ["u1", "u2"], tarball=tarball)
+    storage.backup("b2", parts=["all_2_2_0"])
+    storage.access_control("b2", ["u1", "u2"], tarball=tarball)
+    file_name = "access_control.tar" if tarball else "u1.sql"
+    del storage.engine.objects[f"{PATH_ROOT}/b2/access_control/{file_name}"]
+
+    results = _check(storage, deep)
+
+    assert _broken(results) == {"b2"}
+    assert results["b2"].problems == [f"access control: missing ['{file_name}']"]
+
+
+@pytest.mark.parametrize(
+    "damage, problem",
+    [
+        ("entity", "access control: missing entities ['u2.sql']"),
+        ("garbage", "access control: "),
+    ],
+)
+def test_damaged_access_control_is_found_by_deep_check(
+    storage: Storage, damage: str, problem: str
+) -> None:
+    storage.backup("b1", parts=["all_1_1_0"])
+    key = f"{PATH_ROOT}/b1/access_control/access_control.tar"
+    storage.access_control("b1", ["u1"])
+    tarball = storage.engine.objects[key]
+    storage.access_control("b1", ["u1", "u2"])
+    storage.engine.objects[key] = tarball if damage == "entity" else b"garbage"
+
+    assert _broken(_check(storage, deep=False)) == set()
+    results = _check(storage, deep=True)
+    assert _broken(results) == {"b1"}
+    assert results["b1"].problems[0].startswith(problem)
+
+
 def test_missing_light_metadata(storage: Storage) -> None:
     storage.backup("b1", parts=["all_1_1_0"])
     del storage.engine.objects[f"{PATH_ROOT}/b1/backup_light_struct.json"]
@@ -586,6 +436,35 @@ def test_missing_light_metadata(storage: Storage) -> None:
 
     assert results["b1"].problems == ["light metadata: missing"]
     assert results["b1"].state == "created"
+
+
+@pytest.mark.parametrize("damage", ["not copied", "no light metadata"])
+def test_linked_cloud_storage_data_must_be_copied(
+    storage: Storage, damage: str
+) -> None:
+    storage.cloud_backup(
+        "c1", objects={"abc/obj1": 10}, data_copied=damage != "not copied"
+    )
+    storage.cloud_backup("c2", link="c1")
+    if damage == "no light metadata":
+        del storage.engine.objects[f"{PATH_ROOT}/c1/backup_light_struct.json"]
+
+    results = _check(storage, deep=False)
+
+    assert _broken(results) == ({"c2"} if damage == "not copied" else {"c1", "c2"})
+    assert results["c2"].problems == [
+        'disk s3 of "db"."c" in backup "c1": '
+        'backup "c1" holding the data is missing or holds no copied data'
+    ]
+
+
+def test_cloud_storage_data_linked_from_unchecked_backup(storage: Storage) -> None:
+    storage.cloud_backup("c1", objects={"abc/obj1": 10})
+    storage.cloud_backup("c2", link="c1")
+
+    assert _broken(_check(storage, deep=False, names=["c2"])) == set()
+    storage.engine.objects[f"{PATH_ROOT}/c1/cloud_storage/{DISK}/abc/obj1"] = b"y"
+    assert _broken(_check(storage, deep=False, names=["c2"])) == {"c2"}
 
 
 def test_create_statement_missing_in_schemas(storage: Storage) -> None:
@@ -618,123 +497,154 @@ def test_tables_of_external_databases_are_not_checked(storage: Storage) -> None:
     assert _broken(_check(storage, deep=False)) == set()
 
 
-def test_table_left_without_data_is_reported_with_the_reason(storage: Storage) -> None:
-    storage.backup("b1", parts=["all_1_1_0"])
-    storage.backup("b2", data_skipped_reason=DataSkippedReason.UNIQUE_KEY)
-
-    results = _check(storage, deep=False)
-
-    assert _broken(results) == set()
-    assert results["b1"].skipped_data == []
-    assert results["b2"].skipped_data == ['"db"."t": unique_key']
-
-
-def test_cloud_storage_data_linked_from_unchecked_backup(storage: Storage) -> None:
-    storage.cloud_backup("c1", objects={"abc/obj1": 10})
-    storage.cloud_backup("c2", link="c1")
-
-    assert _broken(_check(storage, deep=False, names=["c2"])) == set()
-    storage.engine.objects[f"{PATH_ROOT}/c1/cloud_storage/{DISK}/abc/obj1"] = b"y"
-    assert _broken(_check(storage, deep=False, names=["c2"])) == {"c2"}
-
-
-def test_cloud_storage_directories_of_backups_are_not_checked(storage: Storage) -> None:
-    storage.cloud_backup("c-1", objects={"abc/obj1": 10})
-
-    results = _check(storage, deep=False)
-
-    assert list(results) == ["c-1"]
-    assert _broken(results) == set()
-
-
-@pytest.mark.parametrize("damage", ["not copied", "no light metadata"])
-def test_linked_cloud_storage_data_must_be_copied(
-    storage: Storage, damage: str
-) -> None:
-    storage.cloud_backup(
-        "c1", objects={"abc/obj1": 10}, data_copied=damage != "not copied"
-    )
-    storage.cloud_backup("c2", link="c1")
-    if damage == "no light metadata":
-        del storage.engine.objects[f"{PATH_ROOT}/c1/backup_light_struct.json"]
-
-    results = _check(storage, deep=False)
-
-    assert _broken(results) == ({"c2"} if damage == "not copied" else {"c1", "c2"})
-    assert results["c2"].problems == [
-        'disk s3 of "db"."c" in backup "c1": '
-        'backup "c1" holding the data is missing or holds no copied data'
-    ]
-
-
-@pytest.mark.parametrize("format_", ["json", "table"])
-def test_check_command(format_: str) -> None:
-    backup = MagicMock()
-    backup.check.return_value = [
-        BackupCheckResult("b1", "created", [], 1, ['"db"."t": unique_key']),
-        BackupCheckResult("b2", "created", ["part all_1_1_0: broken"], 0, []),
-    ]
-
-    result = CliRunner(mix_stderr=False).invoke(
-        Group(commands=[cli.check_command]),
-        ["check", "b1", "b2", "--deep", "--format", format_],
-        obj={"backup": backup},
-    )
-
-    assert result.exit_code == 2
-    backup.check.assert_called_once_with(
-        ["b1", "b2"], deep=True, workers=4, tmp_dir=None
-    )
-    if format_ == "json":
-        rows = json.loads(result.stdout)
-        assert [(r["name"], r["status"], r["unverified"]) for r in rows] == [
-            ("b1", "ok", 1),
-            ("b2", "broken", 0),
-        ]
-        assert rows[0]["skipped_data"] == ['"db"."t": unique_key']
-        assert rows[1]["problems"] == ["part all_1_1_0: broken"]
-    else:
-        rows = [line.split() for line in result.stdout.splitlines()[2:]]
-        assert result.stdout.splitlines()[0].split()[4:] == [
-            "skipped_data",
-            "problems",
-        ]
-        assert [row[:4] for row in rows] == [
-            ["b1", "created", "ok", "1"],
-            ["b2", "created", "broken", "0"],
-        ]
-        assert rows[0][4:] == ['"db"."t":', "unique_key"]
-        assert rows[1][4:] == ["part", "all_1_1_0:", "broken"]
-
-
-def test_check_command_requires_backups_or_all() -> None:
-    backup = MagicMock()
-
-    result = CliRunner().invoke(
-        Group(commands=[cli.check_command]), ["check"], obj={"backup": backup}
-    )
-
-    assert result.exit_code == 2
-    assert "Either BACKUP or --all must be specified" in result.output
-    backup.check.assert_not_called()
-
-
 @pytest.mark.parametrize(
-    "state, exit_code",
+    "file_names, problem",
     [
-        ("created", 2),
-        (None, 2),
-        ("failed", 0),
-        ("creating", 0),
-        ("partially_deleted", 0),
+        (
+            [
+                "all_1_1_0/columns.txt",
+                "all_1_1_0/data.bin",
+                "all_1_1_0/frozen_metadata.txt",
+                "all_2_2_0/data.bin",
+            ],
+            None,
+        ),
+        (
+            [
+                "store/abc/uuid/all_1_1_0/columns.txt",
+                "store/abc/uuid/all_1_1_0/data.bin",
+            ],
+            None,
+        ),
+        (
+            ["all_1_1_0/frozen_metadata.txt"],
+            "missing ['columns.txt', 'data.bin'], unexpected []",
+        ),
+        (["all_1_1_0/data.bin"], "missing ['columns.txt'], unexpected []"),
+        (
+            [
+                "all_1_1_0/columns.txt",
+                "all_1_1_0/data.bin",
+                "all_1_1_0/p.proj/data.bin",
+            ],
+            "missing [], unexpected ['p.proj/data.bin']",
+        ),
     ],
 )
-def test_check_command_exit_code(state: str | None, exit_code: int) -> None:
-    backup = MagicMock()
-    backup.check.return_value = [BackupCheckResult("b1", state, ["broken"], 0, [])]
+def test_files_of_part_in_disk_metadata(
+    file_names: list[str], problem: str | None
+) -> None:
+    files = ("columns.txt", "data.bin", "frozen_metadata.txt")
+    found = _files_of_parts([(name, b"") for name in file_names], {"all_1_1_0"}, set())
 
-    result = CliRunner().invoke(
-        Group(commands=[cli.check_command]), ["check", "--all"], obj={"backup": backup}
+    differing = _differing_files(found, [{"all_1_1_0": files}])
+
+    assert differing == (
+        {("all_1_1_0", files): f"all_1_1_0: {problem}"} if problem else {}
     )
 
-    assert result.exit_code == exit_code
+
+def test_files_of_part_are_compared_with_metadata_of_each_backup() -> None:
+    found = _files_of_parts([("all_1_1_0/data.bin", b"")], {"all_1_1_0"}, set())
+
+    differing = _differing_files(
+        found,
+        [{"all_1_1_0": ("data.bin",)}, {"all_1_1_0": ("columns.txt", "data.bin")}],
+    )
+
+    assert differing == {
+        ("all_1_1_0", ("columns.txt", "data.bin")): (
+            "all_1_1_0: missing ['columns.txt'], unexpected []"
+        )
+    }
+
+
+def test_files_of_table_are_taken_from_disk_metadata_of_all_tables() -> None:
+    files = [
+        ("store/abc/abcdef/all_1_1_0/data.bin", b"own"),
+        ("store/xyz/xyzuvw/all_1_1_0/data.bin", b"other"),
+        ("store/xyz/xyzuvw/all_1_1_0/columns.txt", b"other"),
+    ]
+
+    found = _files_of_parts(files, {"all_1_1_0"}, {"store/abc/abcdef"})
+
+    assert found == {"all_1_1_0": {"data.bin": b"own"}}
+    assert _table_paths(TableMetadata("db", "t-1", "MergeTree", "abcdef")) == {
+        "data/db/t%2D1",
+        "store/abc/abcdef",
+    }
+
+
+def test_disk_check_result_is_given_by_parts() -> None:
+    obj1, obj2 = ("p/obj1", 10), ("p/obj2", 5)
+    files = ("data.bin",)
+    result = _DiskCheckResult(
+        missing_parts={"all_3_3_0"},
+        unreadable_parts={"all_8_8_0": "all_8_8_0: ValueError: garbage"},
+        differing_files={
+            ("all_2_2_0", files): "all_2_2_0: missing ['data.bin'], unexpected []"
+        },
+        broken_objects={"all_1_1_0": {obj1}, "all_4_4_0": {obj1, obj2}},
+        unverified_objects={"all_5_5_0": {obj1}, "all_6_6_0": {obj1, obj2}},
+    )
+
+    assert result.for_parts(
+        {"all_2_2_0": files, "all_3_3_0": files}
+    ) == _ObjectCheckResult("disk metadata is missing for parts ['all_3_3_0']")
+    assert result.for_parts(
+        {"all_2_2_0": files, "all_8_8_0": files}
+    ) == _ObjectCheckResult(
+        "disk metadata of parts is unreadable: all_8_8_0: ValueError: garbage"
+    )
+    assert result.for_parts(
+        {"all_1_1_0": files, "all_2_2_0": files}
+    ) == _ObjectCheckResult(
+        "files of parts differ from disk metadata: all_2_2_0: missing ['data.bin'], unexpected []"
+    )
+    assert result.for_parts({"all_2_2_0": ()}) == _ObjectCheckResult()
+    assert result.for_parts(
+        {"all_1_1_0": files, "all_4_4_0": files}
+    ) == _ObjectCheckResult("2 objects of copied data are missing or have wrong size")
+    assert result.for_parts(
+        {"all_5_5_0": files, "all_6_6_0": files}
+    ) == _ObjectCheckResult(unverified=2)
+    assert result.for_parts({"all_7_7_0": files}) == _ObjectCheckResult()
+
+
+def test_tables_left_without_data_or_some_parts() -> None:
+    backup = BackupMetadata("b1", "1", "24.8", "%Y-%m-%d %H:%M:%S %z")
+    backup.add_database(Database("db", "Atomic", "/db.sql", None, None))
+    backup.add_table(TableMetadata("db", "t1", "MergeTree", None))
+    backup.add_table(
+        TableMetadata("db", "t2", "MergeTree", None, DataSkippedReason.UNIQUE_KEY.value)
+    )
+    backup.add_table(TableMetadata("db", "t3", "MergeTree", None))
+    backup.skip_part("db", "t3", "all_3_3_0")
+    backup.skip_part("db", "t3", "all_2_2_0")
+    backup.add_table(
+        TableMetadata(
+            "db", "t4", "MergeTree", None, DataSkippedReason.BACKUP_FAILED.value
+        )
+    )
+    backup.skip_part("db", "t4", "all_1_1_0")
+
+    assert _skipped_data(backup) == [
+        '"db"."t2": unique_key',
+        "\"db\".\"t3\": skipped parts ['all_2_2_0', 'all_3_3_0']",
+        '"db"."t4": backup_failed',
+    ]
+    assert not _skipped_data(None)
+
+
+def test_cloud_storage_directories_of_backups() -> None:
+    assert _cloud_storage_dirs({"b1", "c-1", "c_1", "d-1"}) == {"c_1"}
+
+
+def test_keys_of_stored_objects() -> None:
+    relative = object_metadata("abc/obj1", 10)
+    full = b"5\n1\t5\n5\tother/abc/obj2\n0\n0\n\n"
+
+    assert _stored_objects([relative, full], "prefix") == {
+        ("prefix/abc/obj1", 10),
+        ("other/abc/obj2", 5),
+    }

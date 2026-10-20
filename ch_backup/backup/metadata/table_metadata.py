@@ -102,6 +102,13 @@ class TableMetadata(SimpleNamespace):
         return self.raw_metadata.get("data_skipped_reason")
 
     @property
+    def skipped_parts(self) -> list[str]:
+        """
+        Return names of data parts left out of the backup.
+        """
+        return self.raw_metadata.get("skipped_parts", [])
+
+    @property
     def engine(self) -> str:
         """
         Return table engine.
@@ -203,4 +210,6 @@ class TableMetadata(SimpleNamespace):
         table.raw_metadata["parts"] = raw_metadata["parts"]
         if "detached_parts" in raw_metadata:
             table.raw_metadata["detached_parts"] = raw_metadata["detached_parts"]
+        if "skipped_parts" in raw_metadata:
+            table.raw_metadata["skipped_parts"] = raw_metadata["skipped_parts"]
         return table

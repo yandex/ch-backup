@@ -27,7 +27,7 @@ from cloup import (
     option,
     option_group,
 )
-from cloup.constraints import constraint, mutually_exclusive
+from cloup.constraints import constraint, mutually_exclusive, require_one
 from humanfriendly import format_timespan
 from tabulate import tabulate
 
@@ -1029,6 +1029,7 @@ def copy_command(
     default="table",
     help='Output format. The default is "table" format.',
 )
+@constraint(require_one, ["names", "all_"])
 # pylint: disable=too-many-arguments,too-many-positional-arguments
 def check_command(
     ctx: Context,
@@ -1045,10 +1046,9 @@ def check_command(
 
     Exit with code 2 if any broken backup is in the state "created" or its state is unknown.
     """
-    if bool(names) == all_:
-        ctx.fail("Either BACKUP or --all must be specified.")
-
-    results = ch_backup.check(list(names), deep=deep, workers=workers, tmp_dir=tmp_dir)
+    results = ch_backup.check(
+        None if all_ else list(names), deep=deep, workers=workers, tmp_dir=tmp_dir
+    )
 
     records = [
         {

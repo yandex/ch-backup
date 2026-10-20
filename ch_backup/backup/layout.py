@@ -681,6 +681,15 @@ class BackupLayout:
             msg = f"Failed to download access control metadata file {remote_path}"
             raise StorageError(msg) from e
 
+    def check_access_control_file(self, backup_name: str, file_name: str) -> bool:
+        """
+        Check that access control file of a backup is present in storage.
+        """
+        remote_path = _access_control_data_path(
+            self.get_backup_path(backup_name), file_name
+        )
+        return self._storage_loader.path_exists(remote_path)
+
     def download_access_control(self, local_path: str, backup_name: str) -> None:
         """
         Download access control object metadata and save on disk.
