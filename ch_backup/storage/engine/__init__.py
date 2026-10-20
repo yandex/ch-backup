@@ -6,7 +6,10 @@ It's currently supported only S3 storage engine.
 """
 
 from ch_backup.exceptions import ConfigurationError
-from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
+from ch_backup.storage.engine.base import (
+    PipeLineCompatibleStorageEngine,
+    StorageOperation,
+)
 from ch_backup.storage.engine.s3 import S3StorageEngine
 
 SUPPORTED_STORAGES = {
@@ -14,7 +17,9 @@ SUPPORTED_STORAGES = {
 }
 
 
-def get_storage_engine(config: dict) -> PipeLineCompatibleStorageEngine:
+def get_storage_engine(
+    config: dict, operation: StorageOperation = StorageOperation.DEFAULT
+) -> PipeLineCompatibleStorageEngine:
     """
     Return storage engine corresponding to passed in configuration.
     """
@@ -24,6 +29,6 @@ def get_storage_engine(config: dict) -> PipeLineCompatibleStorageEngine:
         raise ConfigurationError("Storage type is missing in the config")
 
     try:
-        return SUPPORTED_STORAGES[engine_id](config)
+        return SUPPORTED_STORAGES[engine_id](config, operation=operation)
     except KeyError:
         raise ConfigurationError(f'Unknown storage "{engine_id}"')

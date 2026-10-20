@@ -1,7 +1,7 @@
 import copy
 from collections.abc import Callable, Iterator
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -14,6 +14,7 @@ from ch_backup.storage.async_pipeline.pipelines import (
     run_and_collect_all,
     run_and_return_first,
 )
+from ch_backup.storage.engine import StorageOperation
 
 
 @pytest.mark.parametrize("size", [0, 1, 63, 64, 65, 128, 129])
@@ -45,6 +46,67 @@ def test_decrypt_downloaded_data_matches_download_pipeline(
         assert loader.decrypt_data(ciphertext) == plaintext
         get_engine.assert_not_called()
         assert download_data_pipeline(config, "metadata", decrypt=True) == plaintext
+        get_engine.assert_called_once_with(
+            config["storage"], operation=StorageOperation.READ
+        )
+
+
+def test_download_data_pipeline_passes_backup_listing_operation() -> None:
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    storage = MagicMock()
+    storage.download_part.side_effect = [b"metadata", b""]
+
+    with patch(
+        "ch_backup.storage.async_pipeline.pipeline_builder.get_storage_engine",
+        return_value=storage,
+    ) as get_engine:
+        assert (
+            download_data_pipeline(
+                config,
+                "metadata",
+                decrypt=False,
+                operation=StorageOperation.BACKUP_LISTING,
+            )
+            == b"metadata"
+        )
+
+    get_engine.assert_called_once_with(
+        config["storage"], operation=StorageOperation.BACKUP_LISTING
+    )
+
+
+def test_storage_loader_caches_engines_per_retry_policy() -> None:
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    listing_engine = MagicMock()
+    listing_engine.list_dir.return_value = ["backup"]
+    listing_engine.path_exists.return_value = True
+    read_engine = MagicMock()
+    read_engine.path_exists.return_value = True
+    engines = {
+        StorageOperation.BACKUP_LISTING: listing_engine,
+        StorageOperation.READ: read_engine,
+    }
+
+    with (
+        patch(
+            "ch_backup.storage.loader.get_storage_engine",
+            side_effect=lambda _config, operation: engines[operation],
+        ) as get_engine,
+        patch("ch_backup.storage.loader.PipelineExecutor"),
+    ):
+        loader = StorageLoader(config)
+        assert loader.list_dir(
+            "backups", operation=StorageOperation.BACKUP_LISTING
+        ) == ["backup"]
+        assert loader.path_exists(
+            "backups/backup", operation=StorageOperation.BACKUP_LISTING
+        )
+        assert loader.path_exists("backups/backup/metadata")
+
+    assert get_engine.call_args_list == [
+        call(config["storage"], operation=StorageOperation.BACKUP_LISTING),
+        call(config["storage"], operation=StorageOperation.READ),
+    ]
 
 
 def _pipeline_with_masked_error() -> Iterator[str]:

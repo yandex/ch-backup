@@ -12,6 +12,7 @@ import pytest
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.storage.async_pipeline.pipeline_builder import PipelineBuilder
 from ch_backup.storage.async_pipeline.pipelines import run
+from ch_backup.storage.engine import StorageOperation
 
 CHUNK_SIZE = 16
 REMOTE_PATH = "ch_backup/backup/data/db/table/part/part.tar"
@@ -74,11 +75,14 @@ def _upload(data: bytes, piece_size: int) -> FakeStorageEngine:
     with patch(
         "ch_backup.storage.async_pipeline.pipeline_builder.get_storage_engine",
         return_value=engine,
-    ):
+    ) as get_engine:
         builder = PipelineBuilder(config)
         builder.build_iterable_stage(pieces)
         builder.build_uploading_stage(REMOTE_PATH, len(data))
         run(builder.pipeline())
+        get_engine.assert_called_once_with(
+            config["storage"], operation=StorageOperation.WRITE
+        )
 
     return engine
 

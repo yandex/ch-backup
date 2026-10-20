@@ -12,7 +12,10 @@ from botocore.exceptions import ClientError
 
 from ch_backup import logging
 from ch_backup.exceptions import ConfigurationError, StorageError
-from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
+from ch_backup.storage.engine.base import (
+    PipeLineCompatibleStorageEngine,
+    StorageOperation,
+)
 from ch_backup.storage.engine.s3.s3_client_factory import (
     S3ClientCachedFactory,
     S3ClientFactory,
@@ -33,7 +36,11 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
 
     DEFAULT_DOWNLOAD_PART_LEN = 128 * 1024 * 1024
 
-    def __init__(self, config: dict) -> None:
+    def __init__(
+        self,
+        config: dict,
+        operation: StorageOperation = StorageOperation.DEFAULT,
+    ) -> None:
         self._s3_client_factory = S3ClientCachedFactory(S3ClientFactory(config))
         self._s3_bucket_name = config["credentials"]["bucket"]
 
@@ -47,12 +54,40 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
 
         self._bulk_delete_enabled = config.get("bulk_delete_enabled", True)
 
-        max_attempts = config.get("retry_max_attempts", 30)
-        max_interval = config.get("retry_max_interval", 180)
-        if not isinstance(max_attempts, int) or max_attempts < 1 or max_interval < 0:
+        retry_config = config.get("retry", {})
+        if not isinstance(retry_config, dict):
+            raise ConfigurationError("storage.retry must be a mapping")
+        operation_retry_config = retry_config.get(operation.value, {})
+        if not isinstance(operation_retry_config, dict):
             raise ConfigurationError(
-                "storage.retry_max_attempts must be an integer of at least 1 "
-                "and storage.retry_max_interval must not be negative"
+                f"storage.retry.{operation.value} must be a mapping"
+            )
+
+        max_attempts = operation_retry_config.get(
+            "max_attempts", config.get("retry_max_attempts", 10)
+        )
+        max_interval = operation_retry_config.get(
+            "max_interval", config.get("retry_max_interval", 60)
+        )
+        attempts_valid = (
+            isinstance(max_attempts, int)
+            and not isinstance(max_attempts, bool)
+            and max_attempts >= 1
+        )
+        interval_valid = (
+            isinstance(max_interval, (int, float))
+            and not isinstance(max_interval, bool)
+            and max_interval >= 0
+        )
+        if not attempts_valid or not interval_valid:
+            if operation == StorageOperation.DEFAULT:
+                raise ConfigurationError(
+                    "storage.retry_max_attempts must be an integer of at least 1 "
+                    "and storage.retry_max_interval must not be negative"
+                )
+            raise ConfigurationError(
+                f"storage.retry.{operation.value}: max_attempts must be "
+                "an integer of at least 1 and max_interval must not be negative"
             )
         self._retry = RetryExponential(
             S3RetryingError, max_attempts=max_attempts, max_interval=max_interval

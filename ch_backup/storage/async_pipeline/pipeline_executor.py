@@ -31,6 +31,7 @@ from ch_backup.storage.async_pipeline.pipelines import (
     upload_files_tarball_scan_pipeline,
 )
 from ch_backup.storage.async_pipeline.suppress_exceptions import suppress_exceptions
+from ch_backup.storage.engine import StorageOperation
 from ch_backup.storage.object_copy import CopyEntry
 from ch_backup.util import current_func_name
 
@@ -186,14 +187,18 @@ class PipelineExecutor:
         self._exec_pipeline(job_id, pipeline, is_async, callback, on_error)
 
     def download_data(
-        self, remote_path: str, is_async: bool, encryption: bool
+        self,
+        remote_path: str,
+        is_async: bool,
+        encryption: bool,
+        operation: StorageOperation = StorageOperation.READ,
     ) -> bytes:
         """
         Download file from storage and return its content as a string.
         """
         job_id = self._make_job_id(current_func_name(), remote_path)
         pipeline = partial(
-            download_data_pipeline, self._config, remote_path, encryption
+            download_data_pipeline, self._config, remote_path, encryption, operation
         )
 
         return self._exec_pipeline(job_id, pipeline, is_async)

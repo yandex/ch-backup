@@ -27,7 +27,7 @@ from ch_backup.storage.async_pipeline.pipeline_builder import (
     PipelineBuilder,
     PypelnStage,
 )
-from ch_backup.storage.engine import get_storage_engine
+from ch_backup.storage.engine import StorageOperation, get_storage_engine
 from ch_backup.storage.object_copy import CopyEntry
 from ch_backup.util import exhaust_iterator
 
@@ -186,13 +186,18 @@ def decrypt_data_pipeline(config: dict, data: bytes) -> bytes:
     return run_and_return_first(builder.pipeline())
 
 
-def download_data_pipeline(config: dict, remote_path: str, decrypt: bool) -> bytes:
+def download_data_pipeline(
+    config: dict,
+    remote_path: str,
+    decrypt: bool,
+    operation: StorageOperation = StorageOperation.READ,
+) -> bytes:
     """
     Entrypoint of download data pipeline.
     """
     builder = PipelineBuilder(config)
 
-    builder.build_download_storage_stage(remote_path)
+    builder.build_download_storage_stage(remote_path, operation=operation)
     if decrypt:
         builder.build_decrypt_stage()
     builder.build_collect_data_stage()
@@ -267,20 +272,25 @@ def copy_object_pipeline(config: dict, entry: CopyEntry) -> None:
     Entrypoint of copy object pipeline. Object data is copied as is.
     """
     if entry.server_side:
-        get_storage_engine(entry.dst_storage).copy_object(
+        get_storage_engine(
+            entry.dst_storage, operation=StorageOperation.WRITE
+        ).copy_object(
             entry.src_storage["credentials"]["bucket"], entry.src_path, entry.dst_path
         )
         return
 
     if entry.size == 0:
         # Uploading stage doesn't create an object if there is no data to upload
-        get_storage_engine(entry.dst_storage).upload_data(b"", entry.dst_path)
+        get_storage_engine(
+            entry.dst_storage, operation=StorageOperation.WRITE
+        ).upload_data(b"", entry.dst_path)
         return
 
     builder = PipelineBuilder(config)
 
     builder.build_download_storage_stage(
-        entry.src_path, storage_config=entry.src_storage
+        entry.src_path,
+        storage_config=entry.src_storage,
     )
     builder.build_uploading_stage(
         entry.dst_path, entry.size, storage_config=entry.dst_storage

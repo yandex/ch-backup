@@ -164,10 +164,24 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # chunk_size will be multiplied on a required number of times
         # to satisfy the limit.
         "max_chunk_count": 10000,
-        # Attempts per S3 operation, including proxy resolution; 1 disables retries
-        "retry_max_attempts": 30,
-        # Upper bound of the randomized exponential pause between attempts, in seconds
-        "retry_max_interval": 180,
+        # Base S3 retry policy; 1 attempt disables retries.
+        "retry_max_attempts": 10,
+        # Base upper bound of the randomized exponential pause, in seconds.
+        "retry_max_interval": 60,
+        # Policy fields below override the base values above.
+        "retry": {
+            # Listing backup names and checking/reading their light metadata.
+            "backup_listing": {
+                "max_attempts": 5,
+                "max_interval": 10,
+            },
+            # Reading selected backup metadata and objects, including ranged downloads.
+            "read": {},
+            # Uploading and copying objects, including all multipart upload operations.
+            "write": {
+                "max_attempts": 60,
+            },
+        },
         # Enable bulk delete (DeleteObjects in S3 API)
         "bulk_delete_enabled": True,
         # How many files we can delete by bulk delete operation in one call

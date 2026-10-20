@@ -38,7 +38,7 @@ from ch_backup.storage.async_pipeline.stages import (
     WriteFilesStage,
     WriteFileStage,
 )
-from ch_backup.storage.engine import get_storage_engine
+from ch_backup.storage.engine import StorageOperation, get_storage_engine
 
 # Union here is a workaround according to https://github.com/python/mypy/issues/7866
 PypelnStage = Union[pypeln_utils.BaseStage]  # noqa: UP007
@@ -235,7 +235,7 @@ class PipelineBuilder:
         max_upload_rate = rate_limiter_config["max_upload_rate"]
         retry_interval = rate_limiter_config["retry_interval"]
 
-        storage = get_storage_engine(stage_config)
+        storage = get_storage_engine(stage_config, operation=StorageOperation.WRITE)
 
         if source_size > chunk_size:
             # Adjust chunk size for multipart uploading if needed
@@ -298,7 +298,10 @@ class PipelineBuilder:
         return self
 
     def build_download_storage_stage(
-        self, remote_path: str, storage_config: dict | None = None
+        self,
+        remote_path: str,
+        storage_config: dict | None = None,
+        operation: StorageOperation = StorageOperation.READ,
     ) -> "PipelineBuilder":
         """
         Build downloading from storage stage.
@@ -306,7 +309,7 @@ class PipelineBuilder:
         Storage config can be overridden to download data from a storage other than the configured one.
         """
         stage_config = storage_config or self._config[DownloadStorageStage.stype]
-        storage = get_storage_engine(stage_config)
+        storage = get_storage_engine(stage_config, operation=operation)
         queue_size = stage_config["queue_size"]
 
         self.append(

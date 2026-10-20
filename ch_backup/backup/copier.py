@@ -45,8 +45,11 @@ from ch_backup.exceptions import (
     TerminatingSignal,
     is_broken_executor,
 )
-from ch_backup.storage.engine import get_storage_engine
-from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
+from ch_backup.storage.engine import (
+    PipeLineCompatibleStorageEngine,
+    StorageOperation,
+    get_storage_engine,
+)
 from ch_backup.storage.object_copy import (
     CopyEntry,
     server_side_copy_possible,
@@ -1214,7 +1217,9 @@ class BackupCopier:
             )
             if cache_key not in self._server_side_copy:
                 try:
-                    available = self._engine(entry.dst_storage).try_copy_object(
+                    available = self._engine(
+                        entry.dst_storage, StorageOperation.WRITE
+                    ).try_copy_object(
                         entry.src_storage["credentials"]["bucket"],
                         entry.src_path,
                         entry.dst_path,
@@ -1245,10 +1250,14 @@ class BackupCopier:
     def _list(self, storage: dict, prefix: str) -> dict[str, int]:
         return self._engine(storage).list_dir_with_sizes(prefix)
 
-    def _engine(self, storage: dict) -> PipeLineCompatibleStorageEngine:
-        key = _storage_cache_key(storage)
+    def _engine(
+        self,
+        storage: dict,
+        operation: StorageOperation = StorageOperation.READ,
+    ) -> PipeLineCompatibleStorageEngine:
+        key = (_storage_cache_key(storage), operation)
         if key not in self._engines:
-            self._engines[key] = get_storage_engine(storage)
+            self._engines[key] = get_storage_engine(storage, operation=operation)
         return self._engines[key]
 
 

@@ -14,6 +14,7 @@ from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.clickhouse.models import Disk, Table
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import StorageError
+from ch_backup.storage.engine import StorageOperation
 from ch_backup.storage.engine.s3 import S3RetryingError
 
 
@@ -30,7 +31,8 @@ def make_layout() -> BackupLayout:
 @pytest.mark.parametrize("use_light_meta", [False, True])
 def test_list_sorts_backups_by_instant_across_timezone_offsets(use_light_meta):
     layout = make_layout()
-    storage = getattr(layout, "_storage_loader")
+    storage = MagicMock()
+    setattr(layout, "_storage_loader", storage)
     timestamps = {
         "east": "2026-10-14T02:00:00+03:00",  # October 13, 23:00 UTC
         "utc": "2026-10-14T01:00:00+00:00",  # October 14, 01:00 UTC
@@ -50,6 +52,23 @@ def test_list_sorts_backups_by_instant_across_timezone_offsets(use_light_meta):
     backups = layout.get_backups(use_light_meta=use_light_meta)
 
     assert [backup.name for backup in backups] == ["west", "utc", "east"]
+    storage.list_dir.assert_called_once_with(
+        "ch_backup",
+        recursive=False,
+        absolute=False,
+        operation=StorageOperation.BACKUP_LISTING,
+    )
+    metadata_operation = (
+        StorageOperation.BACKUP_LISTING if use_light_meta else StorageOperation.READ
+    )
+    assert all(
+        item.kwargs["operation"] == metadata_operation
+        for item in storage.path_exists.call_args_list
+    )
+    assert all(
+        item.kwargs["operation"] == metadata_operation
+        for item in storage.download_data.call_args_list
+    )
 
 
 @pytest.mark.parametrize("operation", ["head", "get"])
@@ -61,7 +80,7 @@ def test_list_collects_read_errors_only_when_requested(operation):
     good = BackupMetadata("good", "2", "26.6", "%Y-%m-%d")
     error = S3RetryingError("\n\nInternalError\nTraceback details")
 
-    def path_exists(path):
+    def path_exists(path, **_kwargs):
         if "/broken/" in path and operation == "head":
             raise error
         return "/missing/" not in path

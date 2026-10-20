@@ -41,6 +41,7 @@ from ch_backup.config import Config
 from ch_backup.encryption import get_encryption_class
 from ch_backup.exceptions import ConfigurationError, StorageError, is_broken_executor
 from ch_backup.storage import StorageLoader
+from ch_backup.storage.engine import StorageOperation
 from ch_backup.storage.engine.s3 import S3RetryingError
 from ch_backup.storage.object_copy import CopyEntry
 from ch_backup.util import (
@@ -471,14 +472,22 @@ class BackupLayout:
         Get names of existing backups.
         """
         return self._storage_loader.list_dir(
-            self._config["path_root"], recursive=False, absolute=False
+            self._config["path_root"],
+            recursive=False,
+            absolute=False,
+            operation=StorageOperation.BACKUP_LISTING,
         )
 
     def _load_metadata(
-        self, path: str, allow_legacy_encryption: bool
+        self,
+        path: str,
+        allow_legacy_encryption: bool,
+        operation: StorageOperation = StorageOperation.READ,
     ) -> BackupMetadata:
         try:
-            data = self._storage_loader.download_data(path, encoding=None)
+            data = self._storage_loader.download_data(
+                path, encoding=None, operation=operation
+            )
             try:
                 backup = BackupMetadata.load_json(data)
                 if allow_legacy_encryption:
@@ -516,10 +525,13 @@ class BackupLayout:
             else self._backup_metadata_path(backup_name)
         )
 
-        if not self._storage_loader.path_exists(path):
+        operation = (
+            StorageOperation.BACKUP_LISTING if use_light_meta else StorageOperation.READ
+        )
+        if not self._storage_loader.path_exists(path, operation=operation):
             return None
 
-        return self._load_metadata(path, not use_light_meta)
+        return self._load_metadata(path, not use_light_meta, operation=operation)
 
     def get_backups(
         self,
@@ -572,7 +584,10 @@ class BackupLayout:
             else self._backup_metadata_path(backup.name)
         )
 
-        return self._load_metadata(path, not use_light_meta)
+        operation = (
+            StorageOperation.BACKUP_LISTING if use_light_meta else StorageOperation.READ
+        )
+        return self._load_metadata(path, not use_light_meta, operation=operation)
 
     def get_database_create_statement(
         self, backup_meta: BackupMetadata, db_name: str
