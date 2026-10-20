@@ -371,7 +371,7 @@ def show_command(
         option(
             "-d",
             "--databases",
-            type=List(regexp=r"\w+"),
+            type=List(regexp=r".+"),
             help="Comma-separated list of databases to backup.",
         ),
         option(
@@ -557,12 +557,12 @@ def backup_command(
         option(
             "-d",
             "--databases",
-            type=List(regexp=r"\w+"),
+            type=List(regexp=r".+"),
             help="Comma-separated list of databases to restore. Other databases will be skipped.",
         ),
         option(
             "--exclude-databases",
-            type=List(regexp=r"\w+"),
+            type=List(regexp=r".+"),
             help="Comma-separated list of databases to exclude for restore. Other databases will be restored.",
         ),
     ),

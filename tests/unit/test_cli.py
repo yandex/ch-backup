@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from click import Command, Context, Group
+from click import BadParameter, Command, Context, Group
 from click.testing import CliRunner, Result
 
 from ch_backup import cli
@@ -352,6 +352,49 @@ def test_restore_command_passes_detached_parts_option(
 
     backup.restore.assert_called_once()
     assert backup.restore.call_args.kwargs["restore_detached_parts"] is expected
+
+
+@pytest.mark.parametrize(
+    ("option", "kwarg"),
+    [("--databases", "databases"), ("--exclude-databases", "exclude_databases")],
+)
+def test_restore_command_accepts_quoted_database_names(option: str, kwarg: str) -> None:
+    """
+    ClickHouse allows any characters in a quoted database name, so the CLI must
+    pass names with a hyphen through as they are.
+    """
+    backup = MagicMock()
+    backup.list.return_value = [MagicMock()]
+    backup.list.return_value[0].name = "backup1"
+    parent = Context(cli.cli)
+    parent.obj = {"backup": backup}
+    with cli.restore_command.make_context(
+        "restore", ["backup1", option, "db-one, db_two"], parent=parent
+    ) as ctx:
+        cli.restore_command.invoke(ctx)
+
+    assert backup.restore.call_args.kwargs[kwarg] == ["db-one", "db_two"]
+
+
+def test_backup_command_accepts_quoted_database_names() -> None:
+    """
+    Database names with a hyphen must reach the backup logic as they are.
+    """
+    backup_mock = _invoke_backup_command(["--databases", "db-one,db_two"])
+
+    assert backup_mock.backup.call_args.kwargs["db_names"] == ["db-one", "db_two"]
+
+
+def test_restore_command_rejects_empty_database_name() -> None:
+    """
+    An empty item in the list is a typo and must fail instead of being passed on.
+    """
+    parent = Context(cli.cli)
+    parent.obj = {"backup": MagicMock()}
+    with pytest.raises(BadParameter):
+        cli.restore_command.make_context(
+            "restore", ["backup1", "--exclude-databases", "db1,,db2"], parent=parent
+        )
 
 
 def _invoke(command: Command, args: list[str], backup: MagicMock) -> Result:
