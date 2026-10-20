@@ -413,6 +413,10 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
                 target_path = os.path.join(table_path, "detached")
                 if self._ch_ctl.ch_version_ge("23.7"):
                     target_path = os.path.join(target_path, part.name, "")
+                    target_part_path = target_path
+                else:
+                    target_part_path = os.path.join(target_path, source_part_name)
+                self._remove_incomplete_part(target_disk, target_part_path, routine_tag)
                 source_path = os.path.join(
                     "shadow",
                     sanitize_backup_name(source_backup_name),
@@ -432,6 +436,21 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         raise RuntimeError(
             f'Disk "{target_disk.name}" path not found for table `{table.database}`.`{table.name}`'
         )
+
+    def _remove_incomplete_part(self, disk: Disk, path: str, routine_tag: str) -> None:
+        full_path = os.path.join(disk.path, path)
+        if not os.path.exists(full_path):
+            return
+
+        # A failed copy can leave a partial directory. Copying into it again
+        # would nest the source directory instead of completing the part.
+        logging.info("Removing incomplete part {} from disk {}", path, disk.name)
+        if self._use_local_copy:
+            # Inplace restore copies metadata referring to the source objects;
+            # deleting through the S3 disk would delete those objects as well.
+            shutil.rmtree(full_path)
+        else:
+            _ch_disks_remove(self._ch_ctl, disk.name, path, routine_tag)
 
     # pylint: disable=too-many-positional-arguments
     def _copy_dir(
@@ -793,6 +812,28 @@ def _ch_disks_copy(
         command_args=command_args,
     )
     logging.info(f"clickhouse-disks copy result for {routine_tag}: {result}")
+
+
+def _ch_disks_remove(
+    ch_ctl: ClickhouseCTL, disk: str, path: str, routine_tag: str
+) -> None:
+    """Remove a directory and its objects through the ClickHouse disk."""
+    command = "remove"
+    common_args = ["--config", CH_DISK_CONFIG_PATH, "--disk", disk]
+    command_args = [path]
+    if ch_ctl.ch_version_ge("24.7"):
+        common_args.append("--query")
+        command = "'" + command
+        command_args = ["--recursive", path, "'"]
+
+    result = _exec(
+        routine_tag,
+        exe="/usr/bin/clickhouse-disks",
+        common_args=common_args,
+        command=command,
+        command_args=command_args,
+    )
+    logging.info("clickhouse-disks remove result for {}: {}", routine_tag, result)
 
 
 def _get_config_path(config_dir: str, disk_name: str) -> str:

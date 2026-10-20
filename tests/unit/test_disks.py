@@ -8,6 +8,7 @@ Unit tests disks module.
 import copy
 import io
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -29,6 +30,7 @@ from ch_backup.clickhouse.disks import (
     ClickHouseBackupDisks,
     ClickHouseDisksException,
     ClickHouseTemporaryDisks,
+    _ch_disks_remove,
     _open_config_file,
     _render_disks_config,
 )
@@ -1073,6 +1075,128 @@ def test_restore_copies_a_deduplicated_part_from_its_own_backup(part):
     _, from_disk, from_path, _, _, _ = copy_command.call_args.args
     assert_equal(from_disk, source_disk_name)
     assert_equal(from_path, f"shadow/{LINKED_BACKUP_NAME}/store/abc/abcdef/all_1_1_0/")
+
+
+@pytest.fixture(name="part_copy")
+def fixture_part_copy(tmp_path):
+    part = _make_linked_part(name="all_1_1_0_2", link_part_name="all_1_1_0")
+    manager = _make_temporary_disks(BACKUP_DISK_CLICKHOUSE_CONFIG, parts=[part])
+    target_disk = Disk("object_storage", str(tmp_path / "target"), "s3")
+    source_name = f"object_storage_source_{LINKED_BACKUP_NAME}"
+    source_disk = Disk(source_name, str(tmp_path / "source"), "s3")
+    # pylint: disable=protected-access
+    manager._ch_availible_disks = {
+        target_disk.name: target_disk,
+        source_name: source_disk,
+    }
+    manager._ch_ctl.get_disk.side_effect = manager._ch_availible_disks.__getitem__  # type: ignore[attr-defined]
+    table = Table(
+        "db1",
+        "table1",
+        "MergeTree",
+        [target_disk],
+        [os.path.join(target_disk.path, "store/abc/abcdef")],
+        "",
+        "",
+        None,
+    )
+    source = (
+        Path(source_disk.path)
+        / "shadow"
+        / LINKED_BACKUP_NAME
+        / "store/abc/abcdef"
+        / part.deduplicated_part_name
+    )
+    source.mkdir(parents=True)
+    (source / "id.bin").write_text("complete part")
+    detached = Path(target_disk.path) / "store/abc/abcdef/detached"
+    detached.mkdir(parents=True)
+    (detached / "all_2_2_0").mkdir()
+    return manager, table, part, source, detached
+
+
+@pytest.mark.parametrize("version", ["23.3", "23.9", "24.7"])
+@pytest.mark.parametrize("inplace", [False, True])
+def test_restore_replaces_incomplete_part_without_nesting(part_copy, version, inplace):
+    manager, table, part, source, detached = part_copy
+    # pylint: disable=protected-access
+    manager._ch_ctl.ch_version_ge.side_effect = lambda minimum: version >= minimum
+    manager._use_local_copy = inplace
+    target = detached / (
+        part.name if version >= "23.7" else part.deduplicated_part_name
+    )
+    # Include a nested directory left by a retry before MDB-51258 was fixed.
+    (target / part.deduplicated_part_name).mkdir(parents=True)
+    (target / "stale.bin").write_text("incomplete part")
+
+    def remove_objects(_ctl, disk, path, _tag):
+        shutil.rmtree(Path(manager._ch_availible_disks[disk].path) / path)
+
+    # pylint: disable=too-many-positional-arguments
+    def copy_objects(_ctl, _from_disk, _from_path, to_disk, to_path, _tag):
+        # Match clickhouse-disks: an existing destination gets a child directory.
+        destination = Path(manager._ch_availible_disks[to_disk].path) / to_path
+        if destination.exists():
+            destination /= source.name
+        shutil.copytree(source, destination)
+
+    with (
+        unittest.mock.patch(
+            "ch_backup.clickhouse.disks._ch_disks_remove", side_effect=remove_objects
+        ) as remove,
+        unittest.mock.patch(
+            "ch_backup.clickhouse.disks._ch_disks_copy", side_effect=copy_objects
+        ) as copy_command,
+    ):
+        manager._run_copy_command(manager._backup_meta, table, part)
+
+    assert (target / "id.bin").read_text() == "complete part"
+    assert sorted(path.name for path in target.iterdir()) == ["id.bin"]
+    assert (detached / "all_2_2_0").is_dir()
+    assert (source / "id.bin").read_text() == "complete part"
+    assert remove.call_count == (0 if inplace else 1)
+    assert copy_command.call_count == (0 if inplace else 1)
+
+
+def test_restore_does_not_copy_or_mark_downloaded_when_cleanup_fails(part_copy):
+    manager, table, part, _, detached = part_copy
+    (detached / part.name).mkdir()
+    callback = unittest.mock.Mock()
+    with (
+        unittest.mock.patch(
+            "ch_backup.clickhouse.disks._ch_disks_remove",
+            side_effect=ClickHouseDisksException("cleanup failed"),
+        ),
+        unittest.mock.patch(
+            "ch_backup.clickhouse.disks._ch_disks_copy"
+        ) as copy_command,
+    ):
+        # pylint: disable=protected-access
+        with pytest.raises(ClickHouseDisksException, match="cleanup failed"):
+            manager.copy_parts(
+                manager._backup_meta, [(table, part)], 1, False, callback
+            )
+
+    copy_command.assert_not_called()
+    callback.assert_not_called()
+
+
+@pytest.mark.parametrize("modern_cli", [False, True])
+def test_remove_part_uses_disk_and_version_specific_cli(modern_cli):
+    ch_ctl = unittest.mock.Mock()
+    ch_ctl.ch_version_ge.return_value = modern_cli
+    with unittest.mock.patch("ch_backup.clickhouse.disks._exec") as execute:
+        _ch_disks_remove(ch_ctl, "s3", "store/table/detached/all_1_1_0/", "part")
+
+    common_args = ["--config", CH_DISK_CONFIG_PATH, "--disk", "s3"]
+    path = "store/table/detached/all_1_1_0/"
+    execute.assert_called_once_with(
+        "part",
+        exe="/usr/bin/clickhouse-disks",
+        common_args=common_args + (["--query"] if modern_cli else []),
+        command="'remove" if modern_cli else "remove",
+        command_args=["--recursive", path, "'"] if modern_cli else [path],
+    )
 
 
 def test_restore_fails_when_the_backup_holding_data_is_gone():
