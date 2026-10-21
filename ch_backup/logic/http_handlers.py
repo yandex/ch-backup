@@ -31,7 +31,7 @@ class HTTPHandlersBackup(BackupManager):
                 "Restoring SQL-defined HTTP handlers requires ClickHouse 26.8 or newer"
             )
 
-        existing = context.ch_ctl.get_http_handlers_create_queries()
+        existing = context.ch_ctl.get_http_handlers_create_queries(names)
         # Read every definition before changing the server. Drop changed handlers
         # before creating any: their URLs may have been swapped in the backup.
         statements = {

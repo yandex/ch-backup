@@ -100,7 +100,7 @@ def test_restore_drops_changed_handlers_before_creating_to_allow_url_swaps(
     manager.restore(context)
     assert context.ch_ctl.method_calls == [
         call.ch_version_ge("26.8"),
-        call.get_http_handlers_create_queries(),
+        call.get_http_handlers_create_queries(["a", "b"]),
         call.drop_http_handler("a"),
         call.drop_http_handler("b"),
         call.restore_http_handler(first),
@@ -159,3 +159,36 @@ def test_control_quotes_handler_name_when_dropping(ctl, name, expected):
         sensitive=True,
         should_retry=False,
     )
+
+
+@pytest.mark.parametrize("masked_name", ["unrelated", "test"])
+def test_restore_validates_only_selected_handlers(manager, context, ctl, masked_name):
+    context.backup_meta.add_http_handler("test")
+    context.ch_ctl = ctl
+    ctl._ch_version = "26.8"
+    masked = {
+        "name": masked_name,
+        "create_query": "CREATE HANDLER masked AS SELECT '[HIDDEN]'",
+    }
+
+    def query(statement, **_kwargs):
+        if statement.startswith("CHECK GRANT"):
+            return {"data": [{"result": 1}]}
+        if statement.startswith("SELECT"):
+            selected = "WHERE name IN (unhex('74657374'))" in statement
+            return {"data": [masked] if not selected or masked_name == "test" else []}
+        return {}
+
+    ctl._ch_client.query.side_effect = query
+    if masked_name == "test":
+        with pytest.raises(ClickhouseBackupError, match="hidden secrets"):
+            manager.restore(context)
+        assert not any(
+            item.args[0].startswith(("DROP", "CREATE"))
+            for item in ctl._ch_client.query.call_args_list
+        )
+    else:
+        manager.restore(context)
+        assert ctl._ch_client.query.call_args == call(
+            STATEMENT, sensitive=True, should_retry=False
+        )

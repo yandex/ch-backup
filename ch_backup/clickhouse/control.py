@@ -1630,8 +1630,19 @@ class ClickhouseCTL:
         resp = self._ch_client.query(GET_UDF_QUERY_SQL)
         return {row["name"]: row["create_query"] for row in resp.get("data", [])}
 
-    def get_http_handlers_create_queries(self) -> dict[str, str]:
-        """Read handlers without silently losing inaccessible objects or secrets."""
+    def get_http_handlers_create_queries(
+        self, names: Sequence[str] | None = None
+    ) -> dict[str, str]:
+        """Read selected handlers, or all handlers when names is None, with secrets."""
+        if names is not None and not names:
+            return {}
+        condition = ""
+        if names is not None:
+            # Hex encoding preserves quotes and backslashes in handler names.
+            values = ", ".join(
+                f"unhex('{name.encode('utf-8').hex()}')" for name in names
+            )
+            condition = f"WHERE name IN ({values})"
         # Request JSON via HTTP because CHECK GRANT rejects a SQL FORMAT clause.
         grant = self._ch_client.query(
             "CHECK GRANT SHOW HANDLERS ON *.*", settings={"default_format": "JSON"}
@@ -1641,7 +1652,8 @@ class ClickhouseCTL:
                 "HTTP handler backup/restore requires SHOW HANDLERS"
             )
         response = self._ch_client.query(
-            "SELECT name, create_query FROM system.handlers ORDER BY name FORMAT JSON",
+            "SELECT name, create_query FROM system.handlers "  # noqa: S608 - names are hex-encoded
+            f"{condition} ORDER BY name FORMAT JSON",
             settings={"format_display_secrets_in_show_and_select": 1},
             sensitive=True,
         )
