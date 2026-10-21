@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -19,6 +20,7 @@ from ch_backup import logging
 from tests.integration.diagnostics import (
     annotate,
     print_process_failure,
+    print_untrusted,
 )
 from tests.integration.feature_queue import Feature, FeatureQueue, load_features
 from tests.integration.parallel_runtime import (
@@ -364,14 +366,16 @@ class ParallelRun:
         if not success:
             failure = self.report["features"][running.feature.path].get("failure")
             indent = " " * (len(total) * 2 + 20)
+            details = []
             if failure:
-                print(
+                details.append(
                     f"{indent}{failure['scenario']} — {failure['step']} "
-                    f"({failure['filename']}:{failure['line']})",
-                    flush=True,
+                    f"({failure['filename']}:{failure['line']})"
                 )
             if outcome.get("message"):
-                print(f"{indent}{outcome['message']}", flush=True)
+                details.append(f"{indent}{outcome['message']}")
+            if details:
+                print_untrusted("\n".join(details))
             print_process_failure(
                 f"{running.worker.path.name}: {running.feature.path}: "
                 f"exit {running.process.returncode}; "
@@ -430,11 +434,10 @@ class ParallelRun:
     def _counts(self) -> str:
         statuses = [f["status"] for f in self.report["features"].values()]
         counts = {
-            "passed": sum(s in ("passed", "skipped") for s in statuses),
+            "passed": statuses.count("passed"),
             "failed": statuses.count("failed"),
-            "did not run": sum(
-                s not in ("passed", "skipped", "failed") for s in statuses
-            ),
+            "skipped": statuses.count("skipped"),
+            "did not run": sum(s not in FINISHED for s in statuses),
         }
         return ", ".join(f"{count} {name}" for name, count in counts.items())
 
@@ -453,18 +456,18 @@ class ParallelRun:
             f"## {icon} Integration tests {self.report['status']}",
             "",
             f"{self._counts()} in {_duration(time.monotonic() - self.started)}. "
-            f"{_cell(', '.join(sorted(versions)))}, {self.queue.jobs} slots.",
+            f"{_text(', '.join(sorted(versions)))}, {self.queue.jobs} slots.",
         ]
         if failed or self.report["errors"]:
             lines += ["", "### Failures", ""]
             lines += [_failure_line(*item) for item in failed]
-            lines += [f"- {_cell(error)}" for error in self.report["errors"]]
+            lines += [f"- {_text(error)}" for error in self.report["errors"]]
         lines += [
             "",
             "### Features",
             "",
-            "| | Feature | Passed | Failed | Skipped | Time |",
-            "|---|---|--:|--:|--:|--:|",
+            "| | Feature | Passed | Failed | Skipped | Not run | Time |",
+            "|---|---|--:|--:|--:|--:|--:|",
             *(_feature_row(*item) for item in sorted(features.items(), key=_row_order)),
             "",
             "The logs of behave and of the containers, the JUnit reports and "
@@ -523,32 +526,40 @@ def _row_order(item: tuple[str, dict]) -> tuple[int, str]:
 def _failure_line(feature_path: str, outcome: dict) -> str:
     failure = outcome.get("failure")
     where = (
-        f"{_cell(failure['scenario'])}: `{_cell(failure['step'])}` "
-        f"(`{failure['filename']}:{failure['line']}`)"
+        f"{_text(failure['scenario'])}: `{_code(failure['step'])}` "
+        f"(`{_code(failure['filename'])}:{int(failure['line'])}`)"
         if failure
-        else _cell(outcome.get("error", "a hook of the environment failed"))
+        else _text(outcome.get("error", "a hook of the environment failed"))
     )
-    message = f"<br>`{_cell(outcome['message'])}`" if outcome.get("message") else ""
-    return f"- **{_cell(Path(feature_path).stem)}** · {where}{message}"
+    message = f"<br>`{_code(outcome['message'])}`" if outcome.get("message") else ""
+    return f"- **{_text(Path(feature_path).stem)}** · {where}{message}"
 
 
 def _feature_row(feature_path: str, outcome: dict) -> str:
-    name = _cell(Path(feature_path).stem)
+    name = _text(Path(feature_path).stem)
     if outcome["status"] not in FINISHED:
-        return f"| ⏸️ | {name} | | | | did not run |"
+        return f"| ⏸️ | {name} | | | | | did not run |"
     scenarios = outcome.get("scenarios", {})
     passed = scenarios.get("passed", 0)
-    skipped = scenarios.get("skipped", 0) + scenarios.get("untested", 0)
-    failed = sum(scenarios.values()) - passed - skipped
+    skipped = scenarios.get("skipped", 0)
+    # Behave did not get to them: the feature stopped at a failure.
+    untested = scenarios.get("untested", 0)
+    failed = sum(scenarios.values()) - passed - skipped - untested
     mark = "❌" if outcome["status"] == "failed" else "✅"
     return (
-        f"| {mark} | {name} | {passed} | {failed} | {skipped} "
+        f"| {mark} | {name} | {passed} | {failed} | {skipped} | {untested} "
         f"| {_duration(outcome.get('seconds', 0))} |"
     )
 
 
-def _cell(text: str) -> str:
-    return text.replace("|", "\\|").replace("`", "'").replace("\n", " ")
+def _text(text: str) -> str:
+    """Text of tests renders as is: no links, images, HTML or cells of its own."""
+    return re.sub(r"([\\`*_{}\[\]()<>#+\-.!|~@:&])", r"\\\1", " ".join(text.split()))
+
+
+def _code(text: str) -> str:
+    """Text of tests in a code span: it cannot close the span or the cell."""
+    return " ".join(text.split()).replace("`", "'").replace("|", "\\|")
 
 
 def cli_main() -> None:

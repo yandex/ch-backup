@@ -2,6 +2,7 @@
 
 import json
 import os
+import uuid
 from pathlib import Path
 
 from behave.model import Step
@@ -54,9 +55,29 @@ def annotate(title: str, filename: str | None = None, line: int | None = None) -
     """Show a failure on the page of a GitHub Actions run, at its line when known."""
     if os.getenv("GITHUB_ACTIONS") != "true":
         return
-    message = title.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-    location = f" file={filename},line={line}" if filename and line else ""
-    print(f"::error{location}::{message}", flush=True)
+    location = (
+        f" file={_command_value(filename, prop=True)},line={int(line)}"
+        if filename and line
+        else ""
+    )
+    print(f"::error{location}::{_command_value(title)}", flush=True)
+
+
+def _command_value(text: str, *, prop: bool = False) -> str:
+    """Values of workflow commands must not end the command or start another one."""
+    text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    return text.replace(":", "%3A").replace(",", "%2C") if prop else text
+
+
+def print_untrusted(text: str) -> None:
+    """Print output of tests: on GitHub Actions its lines cannot run workflow commands."""
+    github = os.getenv("GITHUB_ACTIONS") == "true"
+    token = uuid.uuid4().hex
+    if github:
+        print(f"::stop-commands::{token}", flush=True)
+    print(text, flush=True)
+    if github:
+        print(f"::{token}::", flush=True)
 
 
 def print_failure(
@@ -65,12 +86,11 @@ def print_failure(
     """Keep the complete traceback available and emit a concise Actions annotation."""
     if annotate_failure:
         annotate(title)
-    # Prefix untrusted process output so it cannot emit Actions workflow commands.
     heading = "\n".join("ERROR: " + line for line in title.splitlines())
     fold = fold and os.getenv("GITHUB_ACTIONS") == "true"
     # A folded group keeps a long log out of the way; its title is the heading.
     print(f"::group::{heading}" if fold else heading, flush=True)
-    print("\n".join("  " + line for line in details.splitlines()), flush=True)
+    print_untrusted("\n".join("  " + line for line in details.splitlines()))
     if fold:
         print("::endgroup::", flush=True)
 
