@@ -890,8 +890,10 @@ def _exec(
     """
     Run a command and return its output lines.
 
-    clickhouse-disks may report a failed command with zero exit code, writing
-    only a line starting with "Error: " to stderr, so such a line fails the call.
+    clickhouse-disks may exit successfully after printing an exception to stderr.
+    Older versions, including 24.8, omit the "Error: " prefix. These commands
+    emit errors to stderr, so any nonempty diagnostic must fail the call before
+    a partially copied part can be marked as downloaded.
     """
     proc_logger = logging.getLogger("clickhouse-disks").bind(tag=routine_tag)
     args = [
@@ -911,7 +913,7 @@ def _exec(
         for line in stderr.splitlines():
             message = line.decode("utf-8").strip()
             proc_logger.info(message)
-            if message.startswith("Error: "):
+            if message:
                 errors.append(message)
         if proc.returncode != 0 or errors:
             raise ClickHouseDisksException(

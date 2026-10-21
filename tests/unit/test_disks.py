@@ -8,7 +8,9 @@ Unit tests disks module.
 import copy
 import io
 import os
+import shlex
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -31,12 +33,34 @@ from ch_backup.clickhouse.disks import (
     ClickHouseDisksException,
     ClickHouseTemporaryDisks,
     _ch_disks_remove,
+    _exec,
     _open_config_file,
     _render_disks_config,
 )
 from ch_backup.clickhouse.models import Disk, FrozenPart, Table
 from ch_backup.config import DEFAULT_CONFIG, Config
 from tests.unit.utils import assert_equal, parametrize
+
+
+@pytest.mark.parametrize(
+    "exitcode,stderr",
+    [
+        (0, "The specified key does not exist\n"),
+        (0, "Error: Code: 499. DB::Exception: The specified key does not exist\n"),
+        (1, ""),
+    ],
+    ids=["unprefixed-error-24.8", "prefixed-error-25.8", "nonzero-exit"],
+)
+def test_disk_command_rejects_errors_even_with_zero_exit_code(exitcode, stderr):
+    script = f"import sys; sys.stderr.write({stderr!r}); sys.exit({exitcode})"
+    with pytest.raises(ClickHouseDisksException, match="call failed with exitcode"):
+        _exec("part", sys.executable, ["-c", shlex.quote(script)])
+
+
+@pytest.mark.parametrize("stderr", ["", " \n\t\n"])
+def test_disk_command_returns_stdout_without_errors(stderr):
+    script = f"import sys; sys.stderr.write({stderr!r}); print('result')"
+    assert _exec("part", sys.executable, ["-c", shlex.quote(script)]) == ["result\n"]
 
 
 @parametrize(
