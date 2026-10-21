@@ -13,9 +13,11 @@ env:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted", "yc-ci"]') || 'ubuntu-latest' }}
     steps:
     - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
     - uses: astral-sh/setup-uv@v7
     - name: "lint: isort"
       run: make isort
@@ -39,31 +41,46 @@ jobs:
         include:
         - python: "3.10"
           clickhouse: "23.3.22.3"
+          runner: yc
         - python: "3.10"
           clickhouse: "23.8.16.40"
+          runner: yc
         - python: "3.10"
           clickhouse: "24.3.18.7"
+          runner: yc
         - python: "3.10"
           clickhouse: "24.8.14.39"
+          runner: yc
         - python: "3.10"
           clickhouse: "25.3.12.8"
+          runner: yc
         - python: "3.10"
           clickhouse: "25.8.23.13"
+          runner: yc
         - python: "3.10"
           clickhouse: "26.3.12.3"
+          runner: yc
         - python: "3.10"
           clickhouse: "latest"
+          runner: yc
         - python: "3.11"
           clickhouse: "latest"
+          runner: github
         - python: "3.12"
           clickhouse: "latest"
+          runner: github
         - python: "3.13"
           clickhouse: "latest"
+          runner: github
         - python: "3.14"
           clickhouse: "latest"
-    runs-on: ubuntu-22.04
+          runner: github
+    # With the repository variable SELF_HOSTED_RUNNERS = false, every job runs on GitHub-hosted runners.
+    runs-on: ${{ matrix.runner == 'yc' && vars.SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted", "yc-ci"]') || 'ubuntu-22.04' }}
     steps:
     - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
     - uses: astral-sh/setup-uv@v7
       with:
         python-version: ${{ matrix.python }}
@@ -71,8 +88,8 @@ jobs:
       run: make test-unit
     - name: run integration tests
       run: make test-integration-parallel
+      # Self-hosted runners set INTEGRATION_JOBS for the size of their VM, GitHub-hosted ones take 3 from the Makefile.
       env:
-        INTEGRATION_JOBS: '3'
         CLICKHOUSE_VERSION: ${{ matrix.clickhouse == 'latest' && env.LATEST_CLICKHOUSE_VERSION || matrix.clickhouse }}
     - uses: actions/upload-artifact@v7
       if: ${{ always() }}
