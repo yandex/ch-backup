@@ -233,6 +233,37 @@ How it works:
   Restore preserves the HTTP/HTTPS scheme of the stored endpoint. Its `--cloud-storage-source-endpoint`
   option accepts a full HTTP(S) URL or `host[:port]`; the latter uses the original disk's scheme.
 
+### Backup targets in configuration
+
+What the `backup` command saves can be set in the configuration file instead of command
+options, so the command line does not need to change when the set of targets does:
+
+```yaml
+backup:
+  sources:            # empty (default) means all sources
+    schema: true
+    data: true        # implies schema
+    access: true
+    udf: true
+    named_collections: true
+    workload_entities: true
+  detached_parts:
+    enabled: true
+    disks: [object_storage]
+    reasons: null     # all reasons
+```
+
+Command options take precedence per group. Any of `--schema`, `--data`, `--access`, `--udf`,
+`--nc`, `--workload` or `--schema-only` replaces `backup.sources` entirely.
+`--detached-parts` enables detached parts regardless of the configuration, and
+`--detached-parts-disks` and `--detached-parts-reasons` replace the configured lists.
+An unknown key in `backup.sources` (a typo, or a source added in a newer version) makes a full
+backup with a warning, so a configuration written for newer versions still works with older
+ones and never misses data. Values must be booleans: a quoted `"false"` fails the backup.
+`--config-parameter` merges dictionaries key by key, so to drop configured sources for one
+run, pass `--config-parameter backup.sources null`. The `restore` command does not use these
+settings.
+
 ### Detached parts
 
 Detached MergeTree parts can be included explicitly with `--detached-parts`.
@@ -248,8 +279,8 @@ ch-backup backup --detached-parts --tables db.table \
     --detached-parts-reasons ''
 ```
 
-The feature is CLI-only and remains disabled unless `--detached-parts` is
-passed. Disk names select their actual table directories; the value reported
+The feature remains disabled unless `--detached-parts` is passed or
+`backup.detached_parts.enabled` is set in the configuration. Disk names select their actual table directories; the value reported
 by `system.detached_parts` is not used, so cache-disk naming differences
 between ClickHouse versions do not affect selection.
 
