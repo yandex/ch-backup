@@ -1,6 +1,6 @@
 """Adapt storage policy and table TTL clauses in ClickHouse-generated DDL.
 
-The two rewrites leave expressions, column definitions and SELECT queries intact.
+The rewrites leave expressions, column definitions and SELECT queries intact.
 Regular expressions search a copy with quoted text, comments and bracket contents
 blanked out; replacements use the corresponding spans of the original SQL.
 """
@@ -28,6 +28,7 @@ _POLICY_SETTING = re.compile(
     r"""(?:\bstorage_policy\b|`storage_policy`|"storage_policy")\s*(?P<equals>=)\s*""",
     re.IGNORECASE,
 )
+_DISK_SETTING = re.compile(r"""(?:disk|`disk`|"disk")\s*=\s*""", re.IGNORECASE)
 _TTL_MOVE = re.compile(
     r"\bTO\s+(?P<kind>DISK|VOLUME)(?:\s+IF\s+EXISTS)?\b", re.IGNORECASE
 )
@@ -79,17 +80,22 @@ class StorageSchemaChange:
     policy: StoragePolicy
     previous_policy: str
     removed_ttls: tuple[str, ...]
+    removed_disk: str | None = None
 
     @property
     def changed(self) -> bool:
         """Whether policy placement or TTL semantics changed."""
-        return self.previous_policy != self.policy.name or len(self.removed_ttls) > 0
+        return (
+            self.removed_disk is not None
+            or self.previous_policy != self.policy.name
+            or len(self.removed_ttls) > 0
+        )
 
 
 def adapt_storage_schema(
     statement: str, policies: dict[str, StoragePolicy], default_policy: str = "default"
 ) -> StorageSchemaChange | None:
-    """Replace a missing policy, then remove MOVE rules unavailable in that policy."""
+    """Remove an explicit disk, resolve the policy, then adapt MOVE destinations."""
     engine = find_merge_tree_engine(statement)
     if engine is None:
         return None
@@ -105,6 +111,9 @@ def adapt_storage_schema(
         len(statement),
     )
     storage = statement[start:end]
+    # An explicit disk bypasses the target server's default policy. Drop it before
+    # resolving placement so TTL checks and restored parts use the same policy.
+    storage, removed_disk = _remove_disk_setting(storage)
     # Resolve the target policy first: a TTL destination must belong to that
     # policy, even if a disk with the same name exists elsewhere on the server.
     storage, policy, previous = _replace_missing_policy(
@@ -112,8 +121,61 @@ def adapt_storage_schema(
     )
     storage, removed = _rewrite_table_ttl(storage, policy)
     return StorageSchemaChange(
-        statement[:start] + storage + statement[end:], policy, previous, removed
+        statement[:start] + storage + statement[end:],
+        policy,
+        previous,
+        removed,
+        removed_disk,
     )
+
+
+def _remove_disk_setting(storage: str) -> tuple[str, str | None]:
+    """Remove a named disk from table SETTINGS, preserving other assignments."""
+    settings = next(
+        (
+            (start, end)
+            for name, start, end in _storage_clauses(storage)
+            if name == "SETTINGS"
+        ),
+        None,
+    )
+    if settings is None:
+        return storage, None
+    start, values_start = settings
+    values = storage[values_start:]
+    surface = _top_level_sql(values)
+    # Only top-level commas separate settings: quoted names and nested values can
+    # contain commas too. Rejoin retained fragments to handle first/last entries.
+    ends = [comma.start() for comma in re.finditer(",", surface)] + [len(values)]
+    kept = []
+    removed = None
+    has_policy = False
+    begin = 0
+    for end in ends:
+        fragment = values[begin:end]
+        begin = end + 1
+        setting = _without_comments(fragment).strip()
+        has_policy = has_policy or _POLICY_SETTING.match(setting) is not None
+        disk = _DISK_SETTING.match(setting)
+        if disk is None:
+            kept.append(fragment)
+            continue
+        value = _STRING.fullmatch(setting[disk.end() :].strip())
+        if value is None:
+            raise StorageSchemaError("disk must be a string literal")
+        removed = _unquote_sql_string(value.group())
+    if removed is None:
+        return storage, None
+    if has_policy:
+        raise StorageSchemaError("disk and storage_policy cannot be specified together")
+    if not kept:
+        return storage[:start], removed
+    rewritten = storage[:values_start] + " " + ",".join(kept).lstrip()
+    # Keep a newline terminating a line comment; also separate the next clause
+    # when the removed last setting supplied the original trailing whitespace.
+    if not rewritten[-1].isspace():
+        rewritten += " "
+    return rewritten, removed
 
 
 def _replace_missing_policy(

@@ -24,6 +24,11 @@ cloud parts, including detached parts. It also adapts MergeTree schemas and
 materialized views with their own storage to the target server:
 
 - A policy missing from `system.storage_policies` is replaced with `default`.
+- An explicit named `disk` setting is removed, even if that disk exists on the
+  target. The table uses the target server's default MergeTree storage policy
+  (including a `replicated_merge_tree` override), which must contain a local disk.
+  Dynamic `disk(...)` expressions and target engine defaults specifying `disk`
+  instead of a policy are not supported by this adaptation.
 - TTL MOVE rules referencing disks or volumes absent from the resulting policy
   are removed as whole rules. DELETE, conditional DELETE, RECOMPRESS, GROUP BY,
   column TTLs and available MOVE rules are preserved.
@@ -48,7 +53,7 @@ creation. Direct ZooKeeper access, using the same root as ClickHouse, is require
 only when the replicated table TTL is changed; unchanged schemas and policy-only
 changes retain the ordinary restore requirements.
 
-Policy replacements and removed TTL rules are logged. With `--keep-going`,
+Removed disk settings, policy replacements and removed TTL rules are logged. With `--keep-going`,
 independent tables continue after a schema adaptation or creation failure, but
 the command reports those failures with a nonzero exit status. A shared Keeper
 metadata conflict stops the restore immediately. The behavior without

@@ -139,6 +139,206 @@ def test_non_mergetree_storage_is_ignored(statement):
     assert adapt_storage_schema(statement, POLICIES) is None
 
 
+@pytest.mark.parametrize(
+    "settings, expected",
+    [
+        ("disk = 'archive'", ""),
+        ("disk = 'default'", ""),
+        ("disk = 'hdd'", ""),
+        ("disk='archive',index_granularity=8192", "SETTINGS index_granularity=8192"),
+        ("index_granularity=8192,disk='archive'", "SETTINGS index_granularity=8192"),
+        (
+            "index_granularity=8192,disk='archive',min_bytes_for_wide_part=0",
+            "SETTINGS index_granularity=8192,min_bytes_for_wide_part=0",
+        ),
+        ("`disk` /* name */ = /* value */ 'archive'", ""),
+        ("\"disk\" = 'archive'", ""),
+        (r"disk = 'it\'s,archive'", ""),
+        ("disk = 'it''s,archive'", ""),
+        (
+            "index_granularity=8192, -- separator\n disk='archive'",
+            "SETTINGS index_granularity=8192",
+        ),
+        (
+            "disk='archive', -- keep this comment\n index_granularity=8192",
+            "SETTINGS -- keep this comment\n index_granularity=8192",
+        ),
+        (
+            "index_granularity=8192 -- keep newline\n,disk='archive'",
+            "SETTINGS index_granularity=8192 -- keep newline\n",
+        ),
+    ],
+)
+def test_remove_named_disk_setting(settings, expected):
+    prefix = "CREATE TABLE t (d DateTime) ENGINE = MergeTree ORDER BY d "
+    suffix = "COMMENT 'saved'"
+    change = adapt_storage_schema(
+        prefix + "SETTINGS " + settings + " " + suffix, POLICIES
+    )
+    assert change is not None
+    separator = "" if expected.endswith("\n") else " "
+    assert (
+        change.statement == prefix + (expected + separator if expected else "") + suffix
+    )
+    assert change.policy == POLICIES["default"]
+    assert change.changed
+    repeated = adapt_storage_schema(change.statement, POLICIES)
+    assert repeated is not None
+    assert repeated.statement == change.statement
+    assert not repeated.changed
+
+
+@pytest.mark.parametrize(
+    "engine",
+    [
+        "MergeTree",
+        "MergeTree()",
+        "ReplicatedMergeTree",
+        "ReplicatedMergeTree()",
+        "ReplacingMergeTree(version)",
+        "SummingMergeTree",
+        "AggregatingMergeTree",
+        "CollapsingMergeTree(sign)",
+        "GraphiteMergeTree('rollup')",
+        "ReplicatedGraphiteMergeTree('/t', 'r', 'rollup')",
+    ],
+)
+def test_disk_removal_preserves_engine_arguments(engine):
+    statement = f"CREATE TABLE t (d DateTime) ENGINE = {engine} ORDER BY d"
+    change = adapt_storage_schema(statement + " SETTINGS disk = 'archive'", POLICIES)
+    assert change is not None
+    assert change.statement.rstrip() == statement
+
+
+@pytest.mark.parametrize(
+    "engine",
+    [
+        "Log",
+        "TinyLog",
+        "StripeLog",
+        "Kafka",
+        "Distributed('c', 'd', 't')",
+        "S3('https://example.invalid')",
+        "DeltaLake('https://example.invalid')",
+        "IcebergS3('https://example.invalid')",
+        "File(CSV)",
+        "Memory",
+    ],
+)
+def test_disk_removal_does_not_apply_to_other_engines(engine):
+    # Even a matching setting must never enter the MergeTree storage rewrite.
+    statement = (
+        f"CREATE TABLE t (d DateTime) ENGINE = {engine} SETTINGS disk = 'archive'"
+    )
+    assert adapt_storage_schema(statement, POLICIES) is None
+
+
+def test_disk_removal_preserves_nested_sql_and_view_select():
+    prefix = "CREATE MATERIALIZED VIEW v (d DateTime, s String DEFAULT 'disk = archive') ENGINE = MergeTree ORDER BY d"
+    suffix = " AS SELECT d, 'disk = archive' AS s FROM t SETTINGS max_threads=1"
+    change = adapt_storage_schema(
+        prefix + " SETTINGS disk = 'archive'" + suffix, POLICIES
+    )
+    assert change is not None
+    assert change.statement == prefix + suffix
+    statement = (
+        prefix
+        + " SETTINGS comment = 'disk = archive', custom = f(disk = 'archive')"
+        + suffix
+    )
+    unchanged = adapt_storage_schema(statement, POLICIES)
+    assert unchanged is not None
+    assert unchanged.statement == statement
+    assert not unchanged.changed
+
+
+@pytest.mark.parametrize("default_policy", ["local", "missing"])
+def test_disk_removal_uses_target_policy_for_ttl(default_policy):
+    statement = (
+        "CREATE TABLE t (d DateTime) ENGINE = MergeTree ORDER BY d "
+        "TTL d TO DISK 'hdd', d TO VOLUME 'warm', d TO VOLUME '_volume_archive', d + 10 DELETE "
+        "SETTINGS disk = 'archive'"
+    )
+    change = adapt_storage_schema(statement, POLICIES, default_policy)
+    assert change is not None
+    assert (
+        change.policy == POLICIES["local" if default_policy == "local" else "default"]
+    )
+    assert "disk =" not in change.statement
+    assert "d + 10 DELETE" in change.statement
+    assert ("TO DISK 'hdd'" in change.statement) == (default_policy == "local")
+    assert ("TO VOLUME 'warm'" in change.statement) == (default_policy == "local")
+    assert "_volume_archive" not in change.statement
+    if default_policy == "missing":
+        assert "storage_policy = 'default'" in change.statement
+
+
+@pytest.mark.parametrize(
+    "value", ["disk(type = 'local', path = '/tmp/')", "getSetting('x')"]
+)
+def test_disk_expressions_are_not_silently_removed(value):
+    with pytest.raises(StorageSchemaError, match="disk must be a string literal"):
+        adapt_storage_schema(
+            "CREATE TABLE t (d DateTime) ENGINE = MergeTree ORDER BY d SETTINGS disk = "
+            + value,
+            POLICIES,
+        )
+
+
+def test_disk_and_policy_settings_are_rejected():
+    with pytest.raises(StorageSchemaError, match="disk and storage_policy"):
+        adapt_storage_schema(
+            "CREATE TABLE t (d DateTime) ENGINE = MergeTree ORDER BY d "
+            "SETTINGS disk = 'archive', storage_policy = 'local'",
+            POLICIES,
+        )
+
+
+@pytest.mark.parametrize("invalid_default", ["disk", "remote_policy"])
+def test_disk_removal_rejects_unusable_target_defaults_before_changing_table(
+    invalid_default,
+):
+    restore, table, _ = _restore()
+    changes = dict(restore.changes)
+    table.create_statement = "CREATE TABLE db.t (d DateTime) ENGINE = MergeTree ORDER BY d SETTINGS disk = 'archive'"
+    statement = table.create_statement
+    if invalid_default == "disk":
+        restore.ch_config["merge_tree"] = {"disk": "hdd"}
+        message = "target MergeTree defaults specify disk"
+    else:
+        restore.policies = {
+            "default": StoragePolicy("default", ("remote",), ("s3",), ())
+        }
+        message = "No local disk in target policy"
+    with pytest.raises(StorageSchemaError, match=message):
+        restore.adapt(table)
+    assert table.create_statement == statement
+    assert restore.changes == changes
+
+
+@pytest.mark.parametrize("replicated", [False, True])
+def test_disk_removal_records_placement_and_schema_change_without_keeper(replicated):
+    restore, table, client = _restore()
+    restore.ch_config.update(
+        {
+            "merge_tree": {"storage_policy": "local"},
+            "replicated_merge_tree": {"storage_policy": "default"},
+        }
+    )
+    table.engine = "ReplicatedMergeTree" if replicated else "MergeTree"
+    table.create_statement = f"CREATE TABLE db.t (d DateTime) ENGINE = {table.engine} ORDER BY d SETTINGS disk = 'hdd'"
+    restore.context.zk_config = {"hosts": []}
+    restore.adapt(table)
+    assert restore.changed(table)
+    expected = ("default",) if replicated else ("default", "hdd")
+    assert restore.storage_disks[("db", "t")] == expected
+    assert restore_disk_name(table, "archive", restore.storage_disks) == "default"
+    with ExitStack() as stack:
+        restore.lock_tables([table], stack)
+    client.Lock.assert_not_called()
+    client.get.assert_not_called()
+
+
 def test_implicit_policy_uses_server_default():
     statement = "CREATE TABLE _ (d DateTime) ENGINE = MergeTree ORDER BY d TTL d TO VOLUME 'warm'"
     existing = adapt_storage_schema(statement, POLICIES, "local")
@@ -342,10 +542,15 @@ def test_storage_policies_snapshot_uses_volume_order():
 
 @pytest.mark.parametrize("replica_filter", ["disabled", "replica-1", None])
 @pytest.mark.parametrize("keep_going", [False, True])
+@pytest.mark.parametrize("storage_setting", ["storage_policy", "disk"])
 def test_keeper_conflict_precedes_local_drops_and_every_cleanup_mode(
-    replica_filter, keep_going
+    replica_filter, keep_going, storage_setting
 ):
     restore, _, client = _restore()
+    table = _table()
+    table.create_statement = table.create_statement.replace(
+        "storage_policy", storage_setting
+    )
     context = restore.context
     cleaner = None if replica_filter == "disabled" else MagicMock()
     if cleaner is not None:
@@ -354,7 +559,7 @@ def test_keeper_conflict_precedes_local_drops_and_every_cleanup_mode(
     manager = TableBackup()
     with (
         patch.object(manager, "_filter_duplicate_uuid", return_value=([], 0)),
-        patch.object(manager, "_get_tables_from_meta", return_value=([_table()], 0)),
+        patch.object(manager, "_get_tables_from_meta", return_value=([table], 0)),
         patch.object(manager, "_rewrite_table_schema"),
         patch.object(manager, "_preprocess_tables_to_restore") as preprocess,
         patch.object(manager, "_restore_tables") as create_tables,
@@ -407,7 +612,7 @@ def test_default_replicated_engine_converts_before_storage_adaptation(
     assert change.removed_ttls == ("d TO DISK 's3'",)
 
 
-@pytest.mark.parametrize("failure_stage", ["adapt", "preprocess", "create"])
+@pytest.mark.parametrize("failure_stage", ["adapt", "disk", "preprocess", "create"])
 def test_keep_going_restores_independent_schema_then_reports_error(failure_stage):
     context = MagicMock()
     context.ch_ctl.get_storage_policies.return_value = POLICIES
@@ -421,6 +626,8 @@ def test_keep_going_restores_independent_schema_then_reports_error(failure_stage
         )
     if failure_stage == "adapt":
         bad.create_statement += " TTL d TO DISK dynamic_disk"
+    if failure_stage == "disk":
+        bad.create_statement += " SETTINGS disk = disk(type = 'local', path = '/tmp/')"
     context.backup_meta.get_tables.return_value = [
         MagicMock(database="db", name="bad"),
         MagicMock(database="db", name="good"),

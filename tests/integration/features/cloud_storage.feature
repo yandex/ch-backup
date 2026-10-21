@@ -436,6 +436,102 @@ Feature: Backup & Clean & Restore
     default	1
     """
 
+  Scenario Outline: Restore named disk tables using the target default policy
+    Given a working clickhouse on clickhouse02
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (d DateTime, p UInt32, id UInt64)
+    ENGINE = MergeTree PARTITION BY p ORDER BY id
+    TTL d + INTERVAL 1 DAY TO DISK 'hdd2', d + INTERVAL 100 DAY DELETE
+    SETTINGS disk = 'hdd2', index_granularity = 4096;
+    CREATE MATERIALIZED VIEW storage_restore.mv ENGINE = MergeTree ORDER BY id
+    SETTINGS disk = 'hdd2' AS SELECT d, id FROM storage_restore.t;
+    CREATE VIEW storage_restore.v AS SELECT id FROM storage_restore.t;
+    CREATE TABLE storage_restore.log (id UInt64) ENGINE = Log SETTINGS disk = 'default';
+    CREATE TABLE storage_restore.remote (id UInt64) ENGINE = MergeTree ORDER BY id SETTINGS disk = 's3';
+    INSERT INTO storage_restore.remote VALUES (30);
+    INSERT INTO storage_restore.t VALUES ('2099-01-01', 0, 10), ('2099-01-01', 1, 20);
+    ALTER TABLE storage_restore.t DETACH PARTITION 1;
+    """
+    And we create clickhouse01 clickhouse backup
+    """
+    detached_parts: true
+    detached_parts_disks:
+      - hdd2
+    """
+    And we replace config file storage_configuration.xml in favor of <config> on clickhouse02 with restart
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    skip_cloud_storage: true
+    restore_detached_parts: true
+    keep_going: <keep_going>
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT (SELECT id FROM storage_restore.v), (SELECT count() FROM storage_restore.mv), (SELECT count() FROM storage_restore.remote)
+    """
+    Then we get response
+    """
+    10	2	0
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT storage_policy, position(create_table_query, 'disk =') = 0, position(create_table_query, 'TO DISK') = 0, position(create_table_query, 'toIntervalDay(100)') > 0, position(create_table_query, 'index_granularity = 4096') > 0 FROM system.tables WHERE database = 'storage_restore' AND name = 't'
+    """
+    Then we get response
+    """
+    <policy>	1	1	1	1
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT disk_name, count() FROM system.parts WHERE database = 'storage_restore' AND table = 't' AND active GROUP BY disk_name
+    """
+    Then we get response
+    """
+    <disk>	1
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT disk, count() FROM system.detached_parts WHERE database = 'storage_restore' AND table = 't' GROUP BY disk
+    """
+    Then we get response
+    """
+    <disk>	1
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT position(create_table_query, 'disk =') > 0 FROM system.tables WHERE database = 'storage_restore' AND name = 'log'
+    """
+    Then we get response
+    """
+    1
+    """
+
+    Examples:
+      | config                        | policy  | disk    | keep_going |
+      | no_storage_configuration.xml  | default | default | false      |
+      | local_storage_defaults.xml    | local   | hdd1    | true       |
+
+  Scenario: Keep a named disk when restoring without skip cloud storage
+    Given a working clickhouse on clickhouse02
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (id UInt64) ENGINE = MergeTree ORDER BY id SETTINGS disk = 'hdd2';
+    INSERT INTO storage_restore.t VALUES (42);
+    """
+    And we create clickhouse01 clickhouse backup
+    And we restore clickhouse backup #0 to clickhouse02
+    And we execute query on clickhouse02
+    """
+    SELECT disk_name, (SELECT id FROM storage_restore.t) FROM system.parts WHERE database = 'storage_restore' AND table = 't' AND active
+    """
+    Then we get response
+    """
+    hdd2	42
+    """
+
   Scenario: Restore adapted schemas into fresh Keeper state and join a second replica using backup parts
     Given a working clickhouse on clickhouse02
     When we execute queries on clickhouse01

@@ -40,21 +40,36 @@ class StorageSchemaRestore:
         """Adapt a rewritten table, recording placement and diagnostic details."""
         # ReplicatedMergeTree can override the common MergeTree storage default.
         # This matters when the saved CREATE has no explicit storage_policy.
-        default = (self.ch_config.get("merge_tree") or {}).get(
-            "storage_policy", "default"
-        )
+        defaults = dict(self.ch_config.get("merge_tree") or {})
         if table.is_replicated():
-            default = (self.ch_config.get("replicated_merge_tree") or {}).get(
-                "storage_policy", default
-            )
+            defaults.update(self.ch_config.get("replicated_merge_tree") or {})
+        default = defaults.get("storage_policy", "default")
         change = adapt_storage_schema(table.create_statement, self.policies, default)
         if change is None:
             return
+        if change.removed_disk is not None:
+            # Removing the table setting must actually select a policy. An
+            # inherited disk would bypass it and invalidate our part placement.
+            if "disk" in defaults:
+                raise StorageSchemaError(
+                    "Cannot remove table disk: target MergeTree defaults specify disk instead of a storage policy"
+                )
+            if not change.policy.local_disks:
+                raise StorageSchemaError(
+                    f"No local disk in target policy {change.policy.name!r} after removing table disk"
+                )
         # Modify the table prepared for restore, keeping the selected policy even
         # for unchanged DDL: the target policy may use different physical disks.
         key = (table.database, table.name)
         self.changes[key] = change
         table.create_statement = change.statement
+        if change.removed_disk is not None:
+            logging.warning(
+                "Removing {}.{} disk setting: {}; using target storage policy {}",
+                *key,
+                change.removed_disk,
+                change.policy.name,
+            )
         if change.previous_policy != change.policy.name:
             logging.warning(
                 "Adapting {}.{} storage policy: {} -> {}",
