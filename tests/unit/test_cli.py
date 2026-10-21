@@ -643,7 +643,9 @@ def test_config_parameter_null_clears_config_sources(tmp_path: Path) -> None:
 
     config.merge({"backup": {"sources": None}})
 
-    assert BackupSources.from_config(config["backup"]["sources"]) == BackupSources()
+    assert BackupSources.from_config(config["backup"]["sources"]) == BackupSources(
+        http_handlers=True
+    )
 
 
 def test_http_handlers_from_config() -> None:

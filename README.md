@@ -223,7 +223,8 @@ Behavior and limitations:
   `display_secrets_in_show_and_select=1` plus grant `displaySecretsInShowAndSelect` if you have any secrets.
   In the latter case, any `[HIDDEN]`, including literals, is rejected.
   Restore requires `CREATE HANDLER` and `DROP HANDLER` for replacements.
-  Identical definitions are skipped; changed definitions use non-atomic `DROP/CREATE`
+  Identical definitions are skipped; changed definitions use non-atomic `DROP/CREATE`.
+  Concurrent handler DDL is unsupported. Stop other changes to the selected handlers during restore.
 - Workload and resource restore skips identical definitions and uses `CREATE OR REPLACE`
   for changes, preserving dependencies. Entities absent from the backup remain; XML-defined
   target entities are skipped. Parents omitted from the backup must already exist. Replacing

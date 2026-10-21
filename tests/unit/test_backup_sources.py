@@ -32,6 +32,7 @@ from ch_backup.exceptions import ConfigurationError
                 udf=True,
                 named_collections=True,
                 workload_entities=True,
+                http_handlers=True,
             ),
         ),
         # schema-only
@@ -50,6 +51,7 @@ from ch_backup.exceptions import ConfigurationError
                 udf=True,
                 named_collections=True,
                 workload_entities=True,
+                http_handlers=True,
             ),
         ),
         # only access
@@ -405,6 +407,7 @@ def test_sources_for_backup(
                 udf=True,
                 named_collections=True,
                 workload_entities=True,
+                http_handlers=True,
             ),
         ),
         # schema-only
@@ -423,6 +426,7 @@ def test_sources_for_backup(
                 udf=True,
                 named_collections=True,
                 workload_entities=True,
+                http_handlers=True,
             ),
         ),
         # only access
@@ -753,7 +757,7 @@ def test_sources_for_restore(
 @pytest.mark.parametrize(
     ["config", "expected"],
     [
-        ({}, BackupSources()),
+        ({}, BackupSources(http_handlers=True)),
         (
             {"schema": True},
             BackupSources(
@@ -778,9 +782,9 @@ def test_sources_for_restore(
                 http_handlers=False,
             ),
         ),
-        (None, BackupSources()),
-        ({"schema": True, "future_source": True}, BackupSources()),
-        ({"schema": True, "dat": True}, BackupSources()),
+        (None, BackupSources(http_handlers=True)),
+        ({"schema": True, "future_source": True}, BackupSources(http_handlers=True)),
+        ({"schema": True, "dat": True}, BackupSources(http_handlers=True)),
     ],
 )
 def test_sources_from_config(config: dict | None, expected: BackupSources) -> None:
@@ -790,3 +794,7 @@ def test_sources_from_config(config: dict | None, expected: BackupSources) -> No
 def test_sources_from_config_rejects_non_boolean_values() -> None:
     with pytest.raises(ConfigurationError):
         BackupSources.from_config({"schema": True, "data": "false"})
+
+
+def test_direct_partial_sources_do_not_select_http_handlers():
+    assert not BackupSources(data=False).http_handlers

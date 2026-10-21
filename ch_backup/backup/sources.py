@@ -27,7 +27,7 @@ class BackupSources:
     # Perform operation for workload entities (WORKLOADs and RESOURCEs)
     workload_entities: bool = True
     # Perform operation for SQL-defined HTTP handlers
-    http_handlers: bool = True
+    http_handlers: bool = False
 
     @classmethod
     # pylint: disable=too-many-positional-arguments
