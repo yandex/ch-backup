@@ -97,6 +97,22 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "retain_count": None,
         # User data including into backup metadata.
         "labels": {},
+        # Backup sources used when none of the source options is passed to the backup
+        # command. Empty means all sources. Possible keys (bool):
+        #   schema - databases and tables schemas (--schema),
+        #   data - tables data, implies schema (--data),
+        #   access - access control entities (--access),
+        #   udf - user defined functions (--udf),
+        #   named_collections - named collections (--nc),
+        #   workload_entities - workloads and resources (--workload).
+        # An unknown key selects all sources with a warning.
+        "sources": {},
+        # Backup of detached parts. Options of the backup command take precedence.
+        "detached_parts": {
+            "enabled": False,
+            "disks": ["object_storage"],
+            "reasons": None,
+        },
         "keep_freezed_data_on_failure": True,
         "override_replica_name": "{replica}",
         "force_non_replicated": False,

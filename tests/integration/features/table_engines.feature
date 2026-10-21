@@ -91,6 +91,42 @@ Feature: Backup of tables with different engines and configurations
     And we got same clickhouse data at clickhouse01 clickhouse02
 
   @merge_tree
+  Scenario: Backup and restore legacy MergeTree parts with and without mutations
+    Given ClickHouse settings
+    """
+    {% if ch_version_ge('22.7') %}
+    allow_deprecated_syntax_for_merge_tree: 1
+    {% endif %}
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_01 (date Date, n Int32)
+    ENGINE = MergeTree(date, date, 8192);
+    INSERT INTO test_db.table_01 VALUES ('2023-01-01', 1), ('2023-01-22', 2);
+    ALTER TABLE test_db.table_01 UPDATE n = n + 10 WHERE 1 SETTINGS mutations_sync = 1;
+    INSERT INTO test_db.table_01 VALUES ('2023-02-01', 3), ('2023-02-22', 4);
+    """
+    When we execute query on clickhouse01
+    """
+    -- Legacy names have 5 fields; mutations add a sixth field.
+    SELECT arraySort(groupArray(length(splitByChar('_', name))))
+    FROM system.parts
+    WHERE database = 'test_db' AND table = 'table_01' AND active
+    """
+    Then we get response
+    """
+    [5, 6]
+    """
+    When we create clickhouse01 clickhouse backup
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 2          | 0          |
+    When we restore clickhouse backup #0 to clickhouse02
+    Then clickhouse02 has same schema as clickhouse01
+    And we got same clickhouse data at clickhouse01 clickhouse02
+
+  @merge_tree
   Scenario: Create backup containing merge tree tables with new style configuration
     Given we have executed queries on clickhouse01
     """
