@@ -13,9 +13,11 @@ env:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted", "yc-ci"]') || 'ubuntu-latest' }}
     steps:
     - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
     - uses: astral-sh/setup-uv@v7
     - name: "lint: isort"
       run: make isort
