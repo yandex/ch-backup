@@ -3,17 +3,7 @@ Interfaces for storage engines.
 """
 
 from abc import ABCMeta, abstractmethod
-from enum import Enum
 from typing import Sequence
-
-
-class StorageOperation(str, Enum):
-    """Logical storage operation used to select a retry policy."""
-
-    DEFAULT = "default"
-    BACKUP_LISTING = "backup_listing"
-    READ = "read"
-    WRITE = "write"
 
 
 class StorageEngine(metaclass=ABCMeta):

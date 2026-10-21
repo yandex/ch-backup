@@ -31,6 +31,7 @@ from cloup.constraints import constraint, mutually_exclusive
 from humanfriendly import format_timespan
 from tabulate import tabulate
 
+from ch_backup.command_context import command_context
 from ch_backup.exceptions import TerminatingSignal
 
 from . import logging
@@ -193,7 +194,9 @@ def command(*args, **kwargs):
                     ctx.args,
                     get_version(),
                 )
-                result = ctx.invoke(f, ctx, ctx.obj["backup"], *args, **kwargs)
+                ch_backup = ctx.obj["backup"]
+                with command_context(ctx.command.name):
+                    result = ctx.invoke(f, ctx, ch_backup, *args, **kwargs)
                 logging.info("Command '{}' completed", ctx.command.name)
                 return result
             except (Exception, TerminatingSignal):

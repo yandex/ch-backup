@@ -8,11 +8,7 @@ from typing import Any, BinaryIO, Callable, Sequence
 
 from ch_backup.storage.async_pipeline.pipeline_executor import PipelineExecutor
 from ch_backup.storage.async_pipeline.pipelines import decrypt_data_pipeline
-from ch_backup.storage.engine import (
-    PipeLineCompatibleStorageEngine,
-    StorageOperation,
-    get_storage_engine,
-)
+from ch_backup.storage.engine import PipeLineCompatibleStorageEngine, get_storage_engine
 from ch_backup.storage.object_copy import CopyEntry
 
 
@@ -27,17 +23,13 @@ class StorageLoader:
 
     def __init__(self, config):
         self._config = config
-        self._engines: dict[StorageOperation, PipeLineCompatibleStorageEngine] = {}
+        self._engine: PipeLineCompatibleStorageEngine | None = None
         self._ploader = PipelineExecutor(config)
 
-    def _get_engine(
-        self, operation: StorageOperation = StorageOperation.READ
-    ) -> PipeLineCompatibleStorageEngine:
-        if operation not in self._engines:
-            self._engines[operation] = get_storage_engine(
-                self._config["storage"], operation=operation
-            )
-        return self._engines[operation]
+    def _get_engine(self) -> PipeLineCompatibleStorageEngine:
+        if self._engine is None:
+            self._engine = get_storage_engine(self._config["storage"])
+        return self._engine
 
     # pylint: disable=too-many-positional-arguments
     def upload_data(
@@ -184,7 +176,6 @@ class StorageLoader:
         is_async: bool = False,
         encryption: bool = False,
         encoding: str | None = "utf-8",
-        operation: StorageOperation = StorageOperation.READ,
     ) -> Any:
         """
         Download file from storage and return its content.
@@ -197,7 +188,6 @@ class StorageLoader:
             remote_path,
             is_async=is_async,
             encryption=encryption,
-            operation=operation,
         )
         return data.decode(encoding) if encoding else data
 
@@ -303,12 +293,11 @@ class StorageLoader:
         remote_path: str,
         recursive: bool = False,
         absolute: bool = False,
-        operation: StorageOperation = StorageOperation.READ,
     ) -> Sequence[str]:
         """
         Return list of entries in a remote path.
         """
-        return self._get_engine(operation).list_dir(
+        return self._get_engine().list_dir(
             remote_path, recursive=recursive, absolute=absolute
         )
 
@@ -316,12 +305,11 @@ class StorageLoader:
         self,
         remote_path: str,
         is_dir: bool = False,
-        operation: StorageOperation = StorageOperation.READ,
     ) -> bool:
         """
         Check whether a remote path exists or not.
         """
-        return self._get_engine(operation).path_exists(remote_path, is_dir)
+        return self._get_engine().path_exists(remote_path, is_dir)
 
     def get_file_size(self, remote_path: str) -> int:
         """

@@ -12,6 +12,10 @@ from typing import (
     Sequence,
 )
 
+from ch_backup.command_context import (
+    get_current_command,
+    run_with_command_context,
+)
 from ch_backup.exceptions import TerminatingSignal
 from ch_backup.profile import profile
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
@@ -31,7 +35,6 @@ from ch_backup.storage.async_pipeline.pipelines import (
     upload_files_tarball_scan_pipeline,
 )
 from ch_backup.storage.async_pipeline.suppress_exceptions import suppress_exceptions
-from ch_backup.storage.engine import StorageOperation
 from ch_backup.storage.object_copy import CopyEntry
 from ch_backup.util import current_func_name
 
@@ -191,14 +194,13 @@ class PipelineExecutor:
         remote_path: str,
         is_async: bool,
         encryption: bool,
-        operation: StorageOperation = StorageOperation.READ,
     ) -> bytes:
         """
         Download file from storage and return its content as a string.
         """
         job_id = self._make_job_id(current_func_name(), remote_path)
         pipeline = partial(
-            download_data_pipeline, self._config, remote_path, encryption, operation
+            download_data_pipeline, self._config, remote_path, encryption
         )
 
         return self._exec_pipeline(job_id, pipeline, is_async)
@@ -321,6 +323,7 @@ class PipelineExecutor:
         """
         Run pipeline inplace or schedule for exec in process pool
         """
+        pipeline = partial(run_with_command_context, get_current_command(), pipeline)
 
         try:
             if is_async and self._exec_pool:

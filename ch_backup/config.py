@@ -175,17 +175,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "retry_max_attempts": 10,
         # Base upper bound of the randomized exponential pause, in seconds.
         "retry_max_interval": 60,
-        # Policy fields below override the base values above.
+        # Command-specific fields below override the base values above.
         "retry": {
-            # Listing backup names and checking/reading their light metadata.
-            "backup_listing": {
+            # All S3 requests made by the list command, including metadata reads.
+            "list": {
                 "max_attempts": 5,
                 "max_interval": 10,
             },
-            # Reading selected backup metadata and objects, including ranged downloads.
-            "read": {},
-            # Uploading and copying objects, including all multipart upload operations.
-            "write": {
+            # All S3 requests made while creating or copying a backup.
+            "backup": {
+                "max_attempts": 60,
+            },
+            # All S3 requests made while restoring a backup.
+            "restore": {
                 "max_attempts": 60,
             },
         },
