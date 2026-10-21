@@ -31,7 +31,7 @@ from cloup.constraints import constraint, mutually_exclusive
 from humanfriendly import format_timespan
 from tabulate import tabulate
 
-from ch_backup.exceptions import TerminatingSignal
+from ch_backup.exceptions import ConfigurationError, TerminatingSignal
 
 from . import logging
 from .backup.copy_report import CopyReport, print_copy_report
@@ -371,7 +371,7 @@ def show_command(
         option(
             "-d",
             "--databases",
-            type=List(regexp=r"\w+"),
+            type=List(regexp=r".+"),
             help="Comma-separated list of databases to backup.",
         ),
         option(
@@ -407,23 +407,21 @@ def show_command(
     option(
         "--detached-parts",
         is_flag=True,
-        help="Also backup detached parts of selected tables.",
+        help="Also backup detached parts of selected tables. Overrides backup.detached_parts.enabled.",
     ),
     option(
         "--detached-parts-disk",
         "--detached-parts-disks",
         "detached_parts_disks",
         type=List(),
-        default="object_storage",
-        show_default=True,
-        help="Comma-separated disk names whose detached directories are backed up.",
+        help="Comma-separated disk names whose detached directories are backed up. Overrides backup.detached_parts.disks (default: object_storage).",
     ),
     option(
         "--detached-parts-reason",
         "--detached-parts-reasons",
         "detached_parts_reasons",
         type=List(),
-        help="Comma-separated detach reasons. By default all reasons are included; pass an empty value to select user-detached parts.",
+        help="Comma-separated detach reasons. By default all reasons are included; pass an empty value to select user-detached parts. Overrides backup.detached_parts.reasons.",
     ),
 )
 @option_group(
@@ -505,7 +503,7 @@ def backup_command(
     workload: bool,
     copy_cloud_storage_data: bool,
     detached_parts: bool,
-    detached_parts_disks: list[str],
+    detached_parts_disks: list[str] | None,
     detached_parts_reasons: list[str] | None,
 ) -> None:
     """Perform backup."""
@@ -527,9 +525,22 @@ def backup_command(
         value = key_value.pop() if key_value else None
         labels[key] = value
 
-    sources = BackupSources.for_backup(
-        access, data, schema, udf, nc, workload, schema_only
-    )
+    backup_config = ch_backup.config["backup"]
+    if any([access, data, schema, udf, nc, workload, schema_only]):
+        sources = BackupSources.for_backup(
+            access, data, schema, udf, nc, workload, schema_only
+        )
+    else:
+        sources = BackupSources.from_config(backup_config["sources"])
+
+    detached_parts_config = backup_config["detached_parts"]
+    if not isinstance(detached_parts_config["enabled"], bool):
+        raise ConfigurationError("backup.detached_parts.enabled must be a boolean")
+    if detached_parts_disks is None:
+        detached_parts_disks = detached_parts_config["disks"]
+    if detached_parts_reasons is None:
+        detached_parts_reasons = detached_parts_config["reasons"]
+
     name, msg = ch_backup.backup(
         sources,
         name,
@@ -537,7 +548,7 @@ def backup_command(
         tables=tables,
         force=force,
         labels=labels,
-        include_detached_parts=detached_parts,
+        include_detached_parts=detached_parts or detached_parts_config["enabled"],
         detached_parts_disks=detached_parts_disks,
         detached_parts_reasons=detached_parts_reasons,
     )
@@ -557,12 +568,12 @@ def backup_command(
         option(
             "-d",
             "--databases",
-            type=List(regexp=r"\w+"),
+            type=List(regexp=r".+"),
             help="Comma-separated list of databases to restore. Other databases will be skipped.",
         ),
         option(
             "--exclude-databases",
-            type=List(regexp=r"\w+"),
+            type=List(regexp=r".+"),
             help="Comma-separated list of databases to exclude for restore. Other databases will be restored.",
         ),
     ),
