@@ -3,6 +3,7 @@
 import json
 import shutil
 import xml.etree.ElementTree as ET
+from collections import Counter
 from contextlib import closing
 from pathlib import Path
 
@@ -130,11 +131,18 @@ def read_outcome(destination: Path, returncode: int, expected: int) -> dict:
                 f"JUnit report has {len(cases)} scenarios, expected {expected}"
             )
         statuses = [case.get("status") for case in cases]
-        complete = all(status in ("passed", "skipped") for status in statuses)
-        junit_failed = any(
-            case.find("failure") is not None or case.find("error") is not None
+        outcome["scenarios"] = dict(Counter(statuses))
+        problems = [
+            problem
             for case in cases
-        )
+            for problem in (case.find("failure"), case.find("error"))
+            if problem is not None
+        ]
+        if problems:
+            message = problems[0].get("message") or problems[0].get("type") or ""
+            outcome["message"] = " ".join(message.split())[:300]
+        complete = all(status in ("passed", "skipped") for status in statuses)
+        junit_failed = bool(problems)
         stage_failures_path = destination / "stage-failures.jsonl"
         stage_failures = (
             [
