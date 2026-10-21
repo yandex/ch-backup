@@ -4,11 +4,12 @@ remote path on existence, etc.).
 """
 
 from pathlib import Path
-from typing import Any, BinaryIO, Callable, Sequence
+from typing import BinaryIO, Callable, Sequence
 
 from ch_backup.storage.async_pipeline.pipeline_executor import PipelineExecutor
 from ch_backup.storage.async_pipeline.pipelines import decrypt_data_pipeline
-from ch_backup.storage.engine import PipeLineCompatibleStorageEngine, get_storage_engine
+from ch_backup.storage.engine import get_storage_engine
+from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
 from ch_backup.storage.object_copy import CopyEntry
 
 
@@ -171,12 +172,8 @@ class StorageLoader:
         return remote_path
 
     def download_data(
-        self,
-        remote_path: str,
-        is_async: bool = False,
-        encryption: bool = False,
-        encoding: str | None = "utf-8",
-    ) -> Any:
+        self, remote_path, is_async=False, encryption=False, encoding="utf-8"
+    ):
         """
         Download file from storage and return its content.
 
@@ -185,9 +182,7 @@ class StorageLoader:
         """
         # pylint: disable=no-member
         data = self._ploader.download_data(
-            remote_path,
-            is_async=is_async,
-            encryption=encryption,
+            remote_path, is_async=is_async, encryption=encryption
         )
         return data.decode(encoding) if encoding else data
 
@@ -289,10 +284,7 @@ class StorageLoader:
         self._ploader.wait(keep_going)
 
     def list_dir(
-        self,
-        remote_path: str,
-        recursive: bool = False,
-        absolute: bool = False,
+        self, remote_path: str, recursive: bool = False, absolute: bool = False
     ) -> Sequence[str]:
         """
         Return list of entries in a remote path.
@@ -301,11 +293,7 @@ class StorageLoader:
             remote_path, recursive=recursive, absolute=absolute
         )
 
-    def path_exists(
-        self,
-        remote_path: str,
-        is_dir: bool = False,
-    ) -> bool:
+    def path_exists(self, remote_path: str, is_dir: bool = False) -> bool:
         """
         Check whether a remote path exists or not.
         """

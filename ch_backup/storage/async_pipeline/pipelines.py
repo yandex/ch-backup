@@ -186,11 +186,7 @@ def decrypt_data_pipeline(config: dict, data: bytes) -> bytes:
     return run_and_return_first(builder.pipeline())
 
 
-def download_data_pipeline(
-    config: dict,
-    remote_path: str,
-    decrypt: bool,
-) -> bytes:
+def download_data_pipeline(config: dict, remote_path: str, decrypt: bool) -> bytes:
     """
     Entrypoint of download data pipeline.
     """
@@ -284,8 +280,7 @@ def copy_object_pipeline(config: dict, entry: CopyEntry) -> None:
     builder = PipelineBuilder(config)
 
     builder.build_download_storage_stage(
-        entry.src_path,
-        storage_config=entry.src_storage,
+        entry.src_path, storage_config=entry.src_storage
     )
     builder.build_uploading_stage(
         entry.dst_path, entry.size, storage_config=entry.dst_storage

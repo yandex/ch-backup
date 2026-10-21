@@ -12,10 +12,7 @@ from typing import (
     Sequence,
 )
 
-from ch_backup.command_context import (
-    get_current_command,
-    run_with_command_context,
-)
+from ch_backup.command_context import get_current_command, run_with_command_context
 from ch_backup.exceptions import TerminatingSignal
 from ch_backup.profile import profile
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
@@ -190,10 +187,7 @@ class PipelineExecutor:
         self._exec_pipeline(job_id, pipeline, is_async, callback, on_error)
 
     def download_data(
-        self,
-        remote_path: str,
-        is_async: bool,
-        encryption: bool,
+        self, remote_path: str, is_async: bool, encryption: bool
     ) -> bytes:
         """
         Download file from storage and return its content as a string.

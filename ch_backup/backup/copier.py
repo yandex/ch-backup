@@ -45,7 +45,8 @@ from ch_backup.exceptions import (
     TerminatingSignal,
     is_broken_executor,
 )
-from ch_backup.storage.engine import PipeLineCompatibleStorageEngine, get_storage_engine
+from ch_backup.storage.engine import get_storage_engine
+from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
 from ch_backup.storage.object_copy import (
     CopyEntry,
     server_side_copy_possible,
@@ -1244,10 +1245,7 @@ class BackupCopier:
     def _list(self, storage: dict, prefix: str) -> dict[str, int]:
         return self._engine(storage).list_dir_with_sizes(prefix)
 
-    def _engine(
-        self,
-        storage: dict,
-    ) -> PipeLineCompatibleStorageEngine:
+    def _engine(self, storage: dict) -> PipeLineCompatibleStorageEngine:
         key = _storage_cache_key(storage)
         if key not in self._engines:
             self._engines[key] = get_storage_engine(storage)

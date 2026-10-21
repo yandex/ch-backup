@@ -298,9 +298,7 @@ class PipelineBuilder:
         return self
 
     def build_download_storage_stage(
-        self,
-        remote_path: str,
-        storage_config: dict | None = None,
+        self, remote_path: str, storage_config: dict | None = None
     ) -> "PipelineBuilder":
         """
         Build downloading from storage stage.

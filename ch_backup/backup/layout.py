@@ -471,15 +471,11 @@ class BackupLayout:
         Get names of existing backups.
         """
         return self._storage_loader.list_dir(
-            self._config["path_root"],
-            recursive=False,
-            absolute=False,
+            self._config["path_root"], recursive=False, absolute=False
         )
 
     def _load_metadata(
-        self,
-        path: str,
-        allow_legacy_encryption: bool,
+        self, path: str, allow_legacy_encryption: bool
     ) -> BackupMetadata:
         try:
             data = self._storage_loader.download_data(path, encoding=None)
