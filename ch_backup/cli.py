@@ -42,7 +42,13 @@ from .config import DEFAULT_CONFIG, Config
 from .logic.partial_restore import PartialRestoreFilter
 from .params import JsonParamType, KeyValues, List, String, TimeSpan
 from .profile import profile
-from .util import chown_dir_contents, drop_privileges, setup_environment, utcnow
+from .util import (
+    chown_dir_contents,
+    drop_privileges,
+    raise_nofile_limit,
+    setup_environment,
+    utcnow,
+)
 from .version import get_version
 
 TIMESTAMP = utcnow().strftime("%Y%m%dT%H%M%S")
@@ -166,6 +172,7 @@ def cli(
 
     # Creating logger as not privileged user is required to copy logger to child processes
     logging.configure(cfg["loguru"])
+    raise_nofile_limit()
 
     ch_backup = ClickhouseBackup(cfg)
 
