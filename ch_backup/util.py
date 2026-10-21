@@ -8,6 +8,7 @@ import grp
 import os
 import pwd
 import re
+import resource
 import shutil
 import time
 from contextlib import contextmanager
@@ -138,6 +139,20 @@ def dir_is_empty(dir_path: str, exclude_file_names: list[str] | None = None) -> 
         return True
     except FileNotFoundError:
         return True
+
+
+def raise_nofile_limit() -> None:
+    """Raise the soft open-file limit for this process and its future children."""
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft != hard:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+        except (OSError, ValueError) as error:
+            raise ClickhouseBackupError(
+                f"Cannot raise soft NOFILE limit from {soft} to hard limit {hard}: {error}"
+            ) from error
+
+    logging.info("NOFILE limits: soft {} -> {}, hard {}", soft, hard, hard)
 
 
 def setup_environment(config: dict) -> None:
