@@ -513,6 +513,118 @@ Feature: Backup & Clean & Restore
       | no_storage_configuration.xml  | default | default | false      |
       | local_storage_defaults.xml    | local   | hdd1    | true       |
 
+  Scenario: Preserve an existing named cloud disk table when storage adaptation would replace it
+    Given a working clickhouse on clickhouse02
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (id UInt64) ENGINE = MergeTree ORDER BY id SETTINGS disk = 's3';
+    INSERT INTO storage_restore.t VALUES (10);
+    """
+    And we create clickhouse01 clickhouse backup
+    And we execute queries on clickhouse02
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (id UInt64) ENGINE = MergeTree ORDER BY id SETTINGS disk = 's3';
+    INSERT INTO storage_restore.t VALUES (99);
+    """
+    And we try to execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore --skip-cloud-storage --keep-going LAST
+    """
+    Then command exits with code 1
+    And we get response contains
+    """
+    Cannot remove disk setting for existing table storage_restore.t
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT id FROM storage_restore.t
+    """
+    Then we get response
+    """
+    99
+    """
+
+  @require_version_24.4
+  Scenario: Preserve materialized view security while removing a named disk
+    Given a working clickhouse on clickhouse02
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (id UInt64) ENGINE = MergeTree ORDER BY id;
+    CREATE MATERIALIZED VIEW storage_restore.mv ENGINE = MergeTree ORDER BY id
+    SETTINGS index_granularity = 4096, disk = 'hdd2'
+    DEFINER = default SQL SECURITY DEFINER AS SELECT id FROM storage_restore.t;
+    INSERT INTO storage_restore.t VALUES (42);
+    """
+    And we create clickhouse01 clickhouse backup
+    And we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse02 with restart
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    skip_cloud_storage: true
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT id FROM storage_restore.mv
+    """
+    Then we get response
+    """
+    42
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT position(create_table_query, 'SQL SECURITY DEFINER') > 0, position(create_table_query, 'disk =') = 0 FROM system.tables WHERE database = 'storage_restore' AND name = 'mv'
+    """
+    Then we get response
+    """
+    1	1
+    """
+
+  @require_version_24.9
+  Scenario: Reject incompatible Keeper metadata before replacing an Atomic database with Replicated
+    Given a working clickhouse on clickhouse02
+    And we have enabled shared zookeeper for clickhouse01
+    And we have enabled shared zookeeper for clickhouse02
+    And ClickHouse settings
+    """
+    allow_experimental_database_replicated: 1
+    """
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore ENGINE = Replicated('/storage_restore_db', '{shard}', '{replica}');
+    CREATE TABLE storage_restore.t (d DateTime, id UInt64)
+    ENGINE = ReplicatedMergeTree ORDER BY id
+    TTL d + INTERVAL 1 DAY TO VOLUME 'external'
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.t VALUES ('2099-01-01', 10);
+    """
+    And we create clickhouse01 clickhouse backup
+    And we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse02 with restart
+    And we execute queries on clickhouse02
+    """
+    CREATE DATABASE storage_restore ENGINE = Atomic;
+    CREATE TABLE storage_restore.t (id UInt64) ENGINE = MergeTree ORDER BY id;
+    INSERT INTO storage_restore.t VALUES (99);
+    """
+    And we try to execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore --skip-cloud-storage --keep-going --restore-tables-in-replicated-database --clean-zookeeper-mode all-replicas LAST
+    """
+    Then command exits with code 1
+    And we get response contains
+    """
+    contains TTL MOVE destinations unavailable in target policy
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT engine, (SELECT id FROM storage_restore.t) FROM system.databases WHERE name = 'storage_restore'
+    """
+    Then we get response
+    """
+    Atomic	99
+    """
+
   Scenario: Keep a named disk when restoring without skip cloud storage
     Given a working clickhouse on clickhouse02
     When we execute queries on clickhouse01

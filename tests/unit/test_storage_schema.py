@@ -6,8 +6,10 @@ from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
 
 import pytest
-from kazoo.exceptions import NoNodeError
+from kazoo.exceptions import LockTimeout, NoNodeError
 
+from ch_backup.backup.sources import BackupSources
+from ch_backup.ch_backup import CleanZooKeeperMode, ClickhouseBackup
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.models import Database, Disk, Table
 from ch_backup.clickhouse.schema import rewrite_table_schema
@@ -18,6 +20,7 @@ from ch_backup.clickhouse.storage_schema import (
     remove_unavailable_move_ttls,
     replicated_engine_path,
 )
+from ch_backup.logic.database import DatabaseBackup
 from ch_backup.logic.storage_schema_restore import (
     StorageSchemaKeeperError,
     StorageSchemaRestore,
@@ -739,6 +742,207 @@ def test_case_column_before_storage_policy(column, multiline):
     assert change.previous_policy == "s3_cold"
     assert change.policy == POLICIES["default"]
     assert change.statement == statement.replace("'s3_cold'", "'default'")
+
+
+@pytest.mark.parametrize(
+    "security", ["DEFINER = default SQL SECURITY DEFINER", "SQL SECURITY NONE"]
+)
+@pytest.mark.parametrize("setting", ["disk = 'default'", "storage_policy = 's3'"])
+def test_materialized_view_security_is_preserved(security, setting):
+    prefix = "CREATE MATERIALIZED VIEW db.mv (d Date) ENGINE = MergeTree ORDER BY d "
+    suffix = f"{security} AS SELECT d FROM db.src"
+    statement = prefix + f"SETTINGS index_granularity = 8192, {setting} " + suffix
+    change = adapt_storage_schema(statement, POLICIES)
+    assert change is not None
+    expected_settings = (
+        "SETTINGS index_granularity = 8192, storage_policy = 'default' "
+        if setting.startswith("storage_policy")
+        else "SETTINGS index_granularity = 8192 "
+    )
+    assert change.statement == prefix + expected_settings + suffix
+
+
+def test_keeper_lock_timeout_is_reported_and_previous_locks_released():
+    restore, first, client = _restore()
+    second = _table()
+    second.name = "t2"
+    second.create_statement = second.create_statement.replace("/t'", "/t2'")
+    restore.adapt(second)
+    acquired, timed_out = MagicMock(), MagicMock()
+    timed_out.acquire.side_effect = LockTimeout("busy")
+    client.Lock.side_effect = [acquired, timed_out]
+    with (
+        ExitStack() as stack,
+        pytest.raises(
+            StorageSchemaKeeperError, match="lock.*?/root/tables/s/t2"
+        ) as error,
+    ):
+        restore.lock_tables([first, second], stack)
+    assert isinstance(error.value.__cause__, LockTimeout)
+    acquired.release.assert_called_once()
+    client.get.assert_not_called()
+
+
+@pytest.mark.parametrize("keep_going", [False, True])
+@pytest.mark.parametrize("detached", [False, True])
+def test_disk_adaptation_never_drops_an_existing_table(keep_going, detached):
+    restore, _, _ = _restore()
+    context = restore.context
+    table = _table()
+    table.engine = "MergeTree"
+    table.create_statement = "CREATE TABLE db.t (d DateTime) ENGINE = MergeTree ORDER BY d SETTINGS disk = 's3'"
+    existing = _table()
+    existing.engine = table.engine
+    existing.create_statement = table.create_statement
+    context.ch_ctl.get_tables.return_value = [] if detached else [existing]
+    context.ch_ctl.get_detached_tables.return_value = [existing] if detached else []
+    context.ch_ctl.get_replicas.return_value = []
+    context.config_root = {"restore": {"max_table_name": 255}}
+    context.backup_meta.get_tables.return_value = [MagicMock(database="db", name="t")]
+    manager = TableBackup()
+    with (
+        patch.object(manager, "_filter_duplicate_uuid", return_value=([], 0)),
+        patch.object(manager, "_get_tables_from_meta", return_value=([table], 0)),
+        patch.object(manager, "_rewrite_table_schema"),
+        pytest.raises(StorageSchemaError, match="existing table.*?db.t"),
+    ):
+        manager.restore(
+            context=context,
+            databases={"db": Database("db", "Atomic", None, None, None)},
+            schema_only=True,
+            tables=[],
+            metadata_cleaner=None,
+            cloud_storage_source_bucket=None,
+            cloud_storage_source_path=None,
+            cloud_storage_source_endpoint=None,
+            skip_cloud_storage=True,
+            restore_detached_parts=False,
+            keep_going=keep_going,
+            restore_tables_in_replicated_database=False,
+        )
+    context.ch_ctl.drop_table_if_exists.assert_not_called()
+    context.ch_ctl.attach_table.assert_not_called()
+
+
+@pytest.mark.parametrize("same_schema", [False, True])
+def test_disk_adaptation_checks_uuid_collisions_and_allows_adapted_schema(same_schema):
+    restore, table, _ = _restore()
+    table.engine = "MergeTree"
+    table.create_statement = "CREATE TABLE db.t (d DateTime) ENGINE = MergeTree ORDER BY d SETTINGS disk = 's3'"
+    restore.adapt(table)
+    existing = _table()
+    existing.name = "t" if same_schema else "renamed"
+    existing.create_statement = (
+        table.create_statement
+        if same_schema
+        else "CREATE TABLE db.renamed (d DateTime) ENGINE = MergeTree ORDER BY d"
+    )
+    restore.context.ch_ctl.get_tables.return_value = [existing]
+    restore.context.ch_ctl.get_detached_tables.return_value = []
+    if same_schema:
+        restore.check_existing_tables([table])
+    else:
+        with pytest.raises(StorageSchemaError, match="existing table db.renamed"):
+            restore.check_existing_tables([table])
+
+
+def test_prepared_schemas_hold_locks_through_create_but_not_data_loading():
+    restore, _, client = _restore(metadata=b"ttl: d + 10 DELETE\n")
+    context = restore.context
+    table = _table()
+    context.backup_meta.get_tables.return_value = [MagicMock(database="db", name="t")]
+    databases = {"db": Database("db", "Atomic", None, None, None)}
+    manager = TableBackup()
+
+    def create_tables(*_args):
+        client.Lock.return_value.release.assert_not_called()
+        return []
+
+    def restore_data(*_args, **_kwargs):
+        client.Lock.return_value.release.assert_called_once()
+
+    with (
+        ExitStack() as stack,
+        patch.object(manager, "_filter_duplicate_uuid", return_value=([], 0)),
+        patch.object(
+            manager, "_get_tables_from_meta", return_value=([table], 0)
+        ) as read_schemas,
+        patch.object(manager, "_rewrite_table_schema"),
+        patch.object(
+            manager, "_preprocess_tables_to_restore", return_value=([table], 0, set())
+        ),
+        patch.object(manager, "_restore_tables", side_effect=create_tables),
+        patch.object(manager, "_restore_data", side_effect=restore_data),
+        patch("ch_backup.logic.table.ClickHouseTemporaryDisks"),
+    ):
+        prepared = manager.prepare_restore(
+            context, databases, [], False, True, False, stack
+        )
+        client.Lock.return_value.release.assert_not_called()
+        manager.restore(
+            context=context,
+            databases=databases,
+            schema_only=False,
+            tables=[],
+            metadata_cleaner=None,
+            cloud_storage_source_bucket=None,
+            cloud_storage_source_path=None,
+            cloud_storage_source_endpoint=None,
+            skip_cloud_storage=True,
+            restore_detached_parts=False,
+            keep_going=False,
+            restore_tables_in_replicated_database=False,
+            prepared_restore=prepared,
+        )
+        read_schemas.assert_called_once()
+        client.Lock.assert_called_once()
+    client.Lock.return_value.release.assert_called_once()
+
+
+@pytest.mark.parametrize("keep_going", [False, True])
+@pytest.mark.parametrize("cleanup_mode", list(CleanZooKeeperMode))
+def test_keeper_conflict_precedes_database_drop(keep_going, cleanup_mode):
+    restore, _, client = _restore()
+    context = restore.context
+    table = _table()
+    source_db = Database("db", "Replicated", None, None, None)
+    context.backup_meta.get_database.return_value = source_db
+    context.backup_meta.get_tables.return_value = [MagicMock(database="db", name="t")]
+    context.ch_ctl.get_databases.return_value = [
+        Database("db", "Atomic", None, None, None)
+    ]
+    context.config = {"force_non_replicated": False, "override_replica_name": None}
+    context.backup_layout.get_database_create_statements.return_value = [
+        ("db", "CREATE DATABASE db ENGINE = Replicated('/db', 's', 'r')")
+    ]
+    backup = object.__new__(ClickhouseBackup)
+    backup._context = context
+    backup._config = MagicMock()
+    backup._config["multiprocessing"]["drop_replica_threads"] = 1
+    backup._database_backup_manager = DatabaseBackup()
+    manager = TableBackup()
+    backup._table_backup_manager = manager
+    with (
+        patch.object(manager, "_filter_duplicate_uuid", return_value=([], 0)),
+        patch.object(manager, "_get_tables_from_meta", return_value=([table], 0)),
+        patch.object(manager, "_rewrite_table_schema"),
+        patch("ch_backup.ch_backup.wait_sync_replicated_databases", return_value={}),
+        patch("ch_backup.ch_backup.MetadataCleaner") as cleaner,
+        pytest.raises(StorageSchemaKeeperError, match="Keeper metadata"),
+    ):
+        backup._restore(
+            BackupSources.for_restore(schema=True),
+            ["db"],
+            [],
+            skip_cloud_storage=True,
+            restore_tables_in_replicated_database=True,
+            keep_going=keep_going,
+            clean_zookeeper_mode=cleanup_mode,
+        )
+    context.ch_ctl.drop_database_if_exists.assert_not_called()
+    context.ch_ctl.restore_database.assert_not_called()
+    cleaner.return_value.clean_database_metadata.assert_not_called()
+    client.Lock.return_value.release.assert_called_once()
 
 
 @pytest.mark.parametrize(

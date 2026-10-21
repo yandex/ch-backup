@@ -56,6 +56,7 @@ _EXPRESSION_OPERATORS = {
 # leaves a column named case unquoted. Treat that identifier as a complete operand.
 _PREFIX_OPERATORS = {"NOT", "INTERVAL", "WHEN", "THEN", "ELSE"}
 _SYMBOL_OPERATORS = set(",.=+-*/%<>!|&^?:")
+_STORAGE_END_CLAUSES = {"AS", "COMMENT", "EMPTY", "DEFINER", "SQL", ";"}
 
 
 class StorageSchemaError(ClickhouseBackupError):
@@ -106,7 +107,7 @@ def adapt_storage_schema(
         (
             start + begin
             for name, begin, _ in _storage_clauses(statement[start:])
-            if name in {"AS", "COMMENT", "EMPTY", ";"}
+            if name in _STORAGE_END_CLAUSES
         ),
         len(statement),
     )
@@ -256,7 +257,7 @@ def _storage_clauses(sql: str) -> list[tuple[str, int, int]]:
         width = 0 if expect_operand else _clause_width(word, following)
         if width > 0:
             clauses.append((word, token.start(), tokens[index + width - 1].end()))
-            if word in {"AS", "COMMENT", "EMPTY", ";"}:
+            if word in _STORAGE_END_CLAUSES:
                 break
             expect_operand = True
             index += width
@@ -278,16 +279,19 @@ def _clause_width(word: str, following: list[str]) -> int:
         ("SAMPLE", "BY"),
         ("PRIMARY", "KEY"),
         ("UNIQUE", "KEY"),
+        ("SQL", "SECURITY"),
     }:
         return 2
     if word == "SETTINGS":
         return 1 if len(following) == 2 and following[1] == "=" else 0
-    if word == "COMMENT":
-        return 1 if following[:1] == [_ATOM] else 0
+    # View security follows the engine's SETTINGS and must remain outside the
+    # final setting value, even when that value is the disk being removed.
+    if word in {"COMMENT", "DEFINER"}:
+        return 1 if following[:1] == ([_ATOM] if word == "COMMENT" else ["="]) else 0
     if word == "AS":
         return 1 if len(following) > 0 and following[0] in {"SELECT", "WITH"} else 0
     if word == "EMPTY":
-        return 1 if len(following) == 0 or following[0] in {"AS", ";"} else 0
+        return 1 if len(following) == 0 or following[0] in _STORAGE_END_CLAUSES else 0
     return 1 if word in {"TTL", ";"} else 0
 
 

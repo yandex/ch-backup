@@ -5,7 +5,7 @@ import re
 from contextlib import ExitStack
 from hashlib import sha256
 
-from kazoo.exceptions import NoNodeError
+from kazoo.exceptions import LockTimeout, NoNodeError
 
 from ch_backup import logging
 from ch_backup.backup_context import BackupContext
@@ -18,7 +18,7 @@ from ch_backup.clickhouse.storage_schema import (
     replicated_engine_path,
 )
 from ch_backup.exceptions import ClickhouseBackupError
-from ch_backup.util import replace_macros
+from ch_backup.util import compare_schema, replace_macros
 
 
 class StorageSchemaKeeperError(ClickhouseBackupError):
@@ -134,11 +134,16 @@ class StorageSchemaRestore:
         # A fixed order prevents concurrent restores from taking locks in opposite
         # orders. Locks live outside table metadata and are held through creation.
         for path in sorted(set(paths.values())):
-            lock_path = (
-                root + "/ch-backup/storage-schema/" + sha256(path.encode()).hexdigest()
+            lock = client.Lock(
+                root + "/ch-backup/storage-schema/" + sha256(path.encode()).hexdigest(),
+                identifier="restore --skip-cloud-storage",
             )
-            lock = client.Lock(lock_path, identifier="restore --skip-cloud-storage")
-            acquired = lock.acquire(timeout=self.context.lock_conf["lock_timeout"])
+            try:
+                acquired = lock.acquire(timeout=self.context.lock_conf["lock_timeout"])
+            except LockTimeout as error:
+                raise StorageSchemaKeeperError(
+                    f"Cannot acquire storage schema lock for {root + path}"
+                ) from error
             if not acquired:
                 raise StorageSchemaKeeperError(
                     f"Cannot acquire storage schema lock for {root + path}"
@@ -172,6 +177,42 @@ class StorageSchemaRestore:
                     f"unavailable in target policy {self.changes[(table.database, table.name)].policy.name!r}. "
                     "Existing replica metadata was not changed. Restore to a separate "
                     "Keeper table path or resolve the metadata conflict before retrying."
+                )
+
+    def check_existing_tables(self, tables: list[Table]) -> None:
+        """Do not turn disk removal into destructive replacement of a live table."""
+        rewritten = [
+            table
+            for table in tables
+            if (change := self.changes.get((table.database, table.name))) is not None
+            and change.removed_disk is not None
+        ]
+        if len(rewritten) == 0:
+            return
+        existing = [
+            *self.context.ch_ctl.get_tables(short_query=True),
+            *self.context.ch_ctl.get_detached_tables(),
+        ]
+        by_name = {(table.database, table.name): table for table in rewritten}
+        by_uuid = {
+            table.uuid: table
+            for table in rewritten
+            if table.uuid is not None and table.uuid != ""
+        }
+        for current in existing:
+            table = by_name.get((current.database, current.name))
+            if table is None and current.uuid is not None and current.uuid != "":
+                table = by_uuid.get(current.uuid)
+            if table is not None and not compare_schema(
+                current.create_statement, table.create_statement
+            ):
+                # Cloud parts are intentionally skipped, so DROP could discard
+                # data that this restore will never replace. Abort the whole
+                # preflight, also with keep-going, before database-level drops.
+                raise StorageSchemaError(
+                    f"Cannot remove disk setting for existing table {current.database}.{current.name}: "
+                    "storage adaptation would require dropping the table while cloud parts are skipped. "
+                    "Restore to an empty destination or remove the existing table explicitly before retrying."
                 )
 
     def raise_errors(self) -> None:

@@ -59,6 +59,19 @@ class TableMetadataChangeTime:
     ctime_ns: int  # Time of most recent filesystem metadata(hardlinks) change expressed in nanoseconds.
 
 
+@dataclass
+class PreparedTableRestore:
+    """Selected schemas and held locks shared by database and table restore."""
+
+    tables_meta: list[TableMetadata]
+    filtered_tables_meta: list[TableMetadata]
+    tables: list[Table]
+    duplicate_uuid_skipped: int
+    missing_create_statement_skipped: int
+    storage_restore: StorageSchemaRestore | None
+    schema_locks: ExitStack
+
+
 class TableBackup(BackupManager):
     """
     Table backup class
@@ -609,25 +622,18 @@ class TableBackup(BackupManager):
             )
             context.backup_meta.cloud_storage.add_disk(disk.name)
 
-    # pylint: disable=too-many-arguments,too-many-locals,too-many-positional-arguments
-    def restore(
+    # pylint: disable=too-many-positional-arguments,too-many-arguments
+    def prepare_restore(
         self,
         context: BackupContext,
         databases: dict[str, Database],
-        schema_only: bool,
         tables: list[TableMetadata],
-        metadata_cleaner: MetadataCleaner | None,
-        cloud_storage_source_bucket: str | None,
-        cloud_storage_source_path: str | None,
-        cloud_storage_source_endpoint: str | None,
-        skip_cloud_storage: bool,
-        restore_detached_parts: bool,
         keep_going: bool,
+        skip_cloud_storage: bool,
         restore_tables_in_replicated_database: bool,
-    ) -> None:
-        """
-        Restore tables and MergeTree data.
-        """
+        schema_locks: ExitStack,
+    ) -> PreparedTableRestore:
+        """Prepare and check schemas before any database or table can be dropped."""
         logging.debug("Retrieving tables metadata")
         tables_meta: list[TableMetadata] = list(
             chain(
@@ -674,7 +680,7 @@ class TableBackup(BackupManager):
                 logging.warning(
                     "No tables remain to restore after filtering missing required tables"
                 )
-                return
+                return PreparedTableRestore([], [], [], 0, 0, None, schema_locks)
 
         filtered_tables_meta, duplicate_uuid_skipped = self._filter_duplicate_uuid(
             tables_meta, keep_going
@@ -686,20 +692,69 @@ class TableBackup(BackupManager):
             missing_create_statement_skipped,
         ) = self._get_tables_from_meta(context, filtered_tables_meta, keep_going)
         storage_restore = StorageSchemaRestore(context) if skip_cloud_storage else None
-        # Adapt DDL before comparing it with existing tables. Hold Keeper locks
-        # across compatibility checks and creation of the new DDL. Conflicting
-        # Keeper metadata must fail before preprocessing can drop any table.
+        if storage_restore is not None:
+            tables_to_preprocess = self._adapt_storage_schemas(
+                context,
+                databases,
+                tables_to_preprocess,
+                storage_restore,
+                keep_going,
+                restore_tables_in_replicated_database,
+            )
+            storage_restore.lock_tables(tables_to_preprocess, schema_locks)
+            storage_restore.check_existing_tables(tables_to_preprocess)
+        return PreparedTableRestore(
+            tables_meta,
+            filtered_tables_meta,
+            tables_to_preprocess,
+            duplicate_uuid_skipped,
+            missing_create_statement_skipped,
+            storage_restore,
+            schema_locks,
+        )
+
+    # pylint: disable=too-many-arguments,too-many-locals,too-many-positional-arguments
+    def restore(
+        self,
+        context: BackupContext,
+        databases: dict[str, Database],
+        schema_only: bool,
+        tables: list[TableMetadata],
+        metadata_cleaner: MetadataCleaner | None,
+        cloud_storage_source_bucket: str | None,
+        cloud_storage_source_path: str | None,
+        cloud_storage_source_endpoint: str | None,
+        skip_cloud_storage: bool,
+        restore_detached_parts: bool,
+        keep_going: bool,
+        restore_tables_in_replicated_database: bool,
+        prepared_restore: PreparedTableRestore | None = None,
+    ) -> None:
+        """
+        Restore tables and MergeTree data.
+        """
         with ExitStack() as schema_locks:
-            if storage_restore is not None:
-                tables_to_preprocess = self._adapt_storage_schemas(
+            prepared = prepared_restore
+            if prepared is None:
+                prepared = self.prepare_restore(
                     context,
                     databases,
-                    tables_to_preprocess,
-                    storage_restore,
+                    tables,
                     keep_going,
+                    skip_cloud_storage,
                     restore_tables_in_replicated_database,
+                    schema_locks,
                 )
-                storage_restore.lock_tables(tables_to_preprocess, schema_locks)
+            else:
+                # The caller acquired these locks before database restore. Release
+                # them after CREATE, without holding up other replicas during data loading.
+                schema_locks.enter_context(prepared.schema_locks)
+            if len(prepared.tables_meta) == 0:
+                return
+            tables_meta = prepared.tables_meta
+            filtered_tables_meta = prepared.filtered_tables_meta
+            tables_to_preprocess = prepared.tables
+            storage_restore = prepared.storage_restore
             (
                 tables_to_restore,
                 preprocessing_failed_skipped,
@@ -714,8 +769,8 @@ class TableBackup(BackupManager):
                 storage_restore=storage_restore,
             )
             self._log_restore_preprocess_summary(
-                duplicate_uuid_skipped=duplicate_uuid_skipped,
-                missing_create_statement_skipped=missing_create_statement_skipped,
+                duplicate_uuid_skipped=prepared.duplicate_uuid_skipped,
+                missing_create_statement_skipped=prepared.missing_create_statement_skipped,
                 preprocessing_failed_skipped=preprocessing_failed_skipped,
             )
 

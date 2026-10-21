@@ -29,6 +29,11 @@ materialized views with their own storage to the target server:
   (including a `replicated_merge_tree` override), which must contain a local disk.
   Dynamic `disk(...)` expressions and target engine defaults specifying `disk`
   instead of a policy are not supported by this adaptation.
+  If removing `disk` would require replacing an existing table (including a
+  detached table or a table with the same UUID), restore stops before deleting
+  any database or table, even with `--keep-going`. Cloud parts would not be
+  restored after that deletion. Use an empty destination, or explicitly remove
+  the existing table after deciding that its data can be discarded.
 - TTL MOVE rules referencing disks or volumes absent from the resulting policy
   are removed as whole rules. DELETE, conditional DELETE, RECOMPRESS, GROUP BY,
   column TTLs and available MOVE rules are preserved.
@@ -45,7 +50,7 @@ parts into `detached/`, verifies their file checksums, then runs
 requires restore without ordinary data loading, so `--schema-only` is still
 needed. Restore non-replicated tables separately with their data.
 If adapting a replicated table's TTL conflicts with existing Keeper metadata,
-restore fails before dropping local tables or cleaning replica metadata, including
+restore fails before dropping local databases or tables or cleaning replica metadata, including
 with `--keep-going` and any `--clean-zookeeper-mode`. It never resets shared Keeper
 metadata automatically. Restore to a separate Keeper table path or resolve the
 conflict before retrying. A per-table Keeper lock covers the check and table
