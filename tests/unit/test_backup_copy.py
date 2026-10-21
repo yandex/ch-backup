@@ -27,7 +27,6 @@ from ch_backup.exceptions import (
     StorageError,
     TerminatingSignal,
 )
-from ch_backup.storage.engine import StorageOperation
 from ch_backup.storage.object_copy import CopyEntry, storage_id
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S %z"
@@ -66,10 +65,7 @@ class FakeStore:
         self.probes: list[tuple] = []
         self.server_side_copy_available = True
 
-    def engine(
-        self, storage: dict, operation: StorageOperation = StorageOperation.READ
-    ) -> FakeEngine:
-        del operation
+    def engine(self, storage: dict) -> FakeEngine:
         return FakeEngine(self, storage)
 
     def bucket(self, bucket: str, endpoint: str = ENDPOINT) -> dict[str, int]:
@@ -461,16 +457,14 @@ def test_copy_mode_cache_isolates_credentials(
     if reverse:
         entries = entries[2:] + entries[:2]
     engines = []
-    operations = []
 
-    def make_engine(storage: dict, operation: StorageOperation) -> MagicMock:
+    def make_engine(storage: dict) -> MagicMock:
         engine = MagicMock()
         engine.try_copy_object.return_value = (
             storage["credentials"][credential] != "different-credential"
             or second_mode == "available"
         )
         engines.append(engine)
-        operations.append(operation)
         return engine
 
     with (
@@ -486,7 +480,6 @@ def test_copy_mode_cache_isolates_credentials(
     assert {e.dst_path: e.server_side for e in copied} == expected
     assert len(engines) == (1 if second_mode == "ineligible" else 2)
     assert all(engine.try_copy_object.call_count == 1 for engine in engines)
-    assert operations == [StorageOperation.WRITE] * len(engines)
     assert "different-credential" not in str(logging.mock_calls)
 
 

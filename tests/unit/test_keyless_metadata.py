@@ -30,7 +30,6 @@ from ch_backup.storage.async_pipeline.pipelines import decrypt_data_pipeline
 from ch_backup.storage.async_pipeline.stages.filesystem.read_files_tarball_stage import (
     ReadFilesTarballScanStage,
 )
-from ch_backup.storage.engine import StorageOperation
 
 KEY = "a" * 32
 
@@ -70,10 +69,7 @@ def test_read_plaintext_without_initializing_crypto():
     assert loaded.name == backup.name
     loader.download_data.assert_called_once()
     loader.decrypt_data.assert_not_called()
-    assert loader.download_data.call_args.kwargs == {
-        "encoding": None,
-        "operation": StorageOperation.READ,
-    }
+    assert loader.download_data.call_args.kwargs == {"encoding": None}
 
 
 def test_upload_public_metadata_preserves_data_encryption():

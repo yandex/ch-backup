@@ -20,8 +20,11 @@ from urllib3.util.ssl_match_hostname import CertificateError as Urllib3Certifica
 
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import ConfigurationError
-from ch_backup.storage.engine import StorageOperation
-from ch_backup.storage.engine.s3 import S3RetryingError, S3StorageEngine
+from ch_backup.storage.engine.s3 import (
+    S3RetryingError,
+    S3RetryPolicy,
+    S3StorageEngine,
+)
 from ch_backup.storage.engine.s3.s3_client_factory import (
     S3BalancerUnknownHost,
     S3ClientCachedFactory,
@@ -29,12 +32,12 @@ from ch_backup.storage.engine.s3.s3_client_factory import (
 
 
 def _engine(
-    operation: StorageOperation = StorageOperation.DEFAULT, **storage: Any
+    retry_policy: S3RetryPolicy = S3RetryPolicy.DEFAULT, **storage: Any
 ) -> S3StorageEngine:
     """Build an engine on the default storage config with the given overrides."""
     config: dict = {**DEFAULT_CONFIG["storage"], **storage}  # type: ignore[dict-item]
     config["credentials"] = {**config["credentials"], "bucket": "bucket"}
-    return S3StorageEngine(config, operation=operation)
+    return S3StorageEngine(config, retry_policy=retry_policy)
 
 
 @pytest.mark.parametrize("max_attempts", [1, 3])
@@ -65,80 +68,29 @@ def test_retry_max_attempts_from_config(max_attempts: int) -> None:
     assert all(call.args[0] <= 1.5 for call in sleep.call_args_list)
 
 
-@pytest.mark.parametrize(
-    "operation,max_attempts,max_interval",
-    [
-        (StorageOperation.BACKUP_LISTING, 2, 3),
-        (StorageOperation.READ, 4, 5),
-        (StorageOperation.WRITE, 6, 7),
-    ],
-)
-def test_retry_policy_is_selected_by_operation(
-    operation: StorageOperation, max_attempts: int, max_interval: float
-) -> None:
-    engine = _engine(
-        operation,
-        retry={
-            StorageOperation.BACKUP_LISTING.value: {
-                "max_attempts": 2,
-                "max_interval": 3,
-            },
-            StorageOperation.READ.value: {
-                "max_attempts": 4,
-                "max_interval": 5,
-            },
-            StorageOperation.WRITE.value: {
-                "max_attempts": 6,
-                "max_interval": 7,
-            },
-        },
-    )
+def test_retry_policy_overrides_base_limits() -> None:
+    retry_config = {
+        S3RetryPolicy.LIST.value: {"max_attempts": 2},
+        S3RetryPolicy.BACKUP.value: {"max_interval": 3},
+    }
+    expected_by_policy = {
+        S3RetryPolicy.LIST: (2, 20),
+        S3RetryPolicy.BACKUP: (10, 3),
+        S3RetryPolicy.RESTORE: (10, 20),
+        S3RetryPolicy.DEFAULT: (10, 20),
+    }
 
-    retry = getattr(engine, "_retry")
-    assert retry.max_attempts == max_attempts
-    assert retry.max_interval == max_interval
-
-
-@pytest.mark.parametrize(
-    "operation,max_attempts,max_interval",
-    [
-        (StorageOperation.BACKUP_LISTING, 5, 10),
-        (StorageOperation.READ, 10, 60),
-        (StorageOperation.WRITE, 60, 60),
-    ],
-)
-def test_default_retry_policy(
-    operation: StorageOperation, max_attempts: int, max_interval: float
-) -> None:
-    retry = getattr(_engine(operation), "_retry")
-
-    assert retry.max_attempts == max_attempts
-    assert retry.max_interval == max_interval
-
-
-@pytest.mark.parametrize(
-    "operation,max_attempts,max_interval",
-    [
-        (StorageOperation.BACKUP_LISTING, 5, 10),
-        (StorageOperation.READ, 10, 60),
-        (StorageOperation.WRITE, 60, 60),
-        (StorageOperation.DEFAULT, 10, 60),
-    ],
-)
-def test_legacy_retry_limits_are_the_base_policy(
-    operation: StorageOperation, max_attempts: int, max_interval: float
-) -> None:
-    retry = getattr(
-        _engine(
-            operation,
-            retry_max_attempts=10,
-            retry_max_interval=60,
-        ),
-        "_retry",
-    )
-
-    assert retry.max_attempts == max_attempts
-    assert retry.max_interval == max_interval
+    for retry_policy, expected in expected_by_policy.items():
+        retry = getattr(
+            _engine(
+                retry_policy,
+                retry_max_attempts=10,
+                retry_max_interval=20,
+                retry=retry_config,
+            ),
+            "_retry",
+        )
+        assert (retry.max_attempts, retry.max_interval) == expected
 
 
 @pytest.mark.parametrize(
@@ -153,14 +105,6 @@ def test_invalid_retry_limits_are_rejected(storage: dict) -> None:
     """Retry limits that would end retries without an error or crash sleep are rejected."""
     with pytest.raises(ConfigurationError, match="storage.retry_max_attempts"):
         _engine(**storage)
-
-
-def test_invalid_operation_retry_limits_are_rejected() -> None:
-    with pytest.raises(ConfigurationError, match=r"storage\.retry\.write"):
-        _engine(
-            StorageOperation.WRITE,
-            retry={StorageOperation.WRITE.value: {"max_attempts": 0}},
-        )
 
 
 def _response(status: int = 200, text: str = "proxy.example\n") -> requests.Response:

@@ -1151,7 +1151,6 @@ class TestUniqueKeyTables:
         Restore leaves a marked table empty instead of looking up its parts.
         """
         context = self._make_context()
-        context.restore_context = MagicMock()
         context.ch_ctl.get_table.return_value = self._table()  # type: ignore[attr-defined]
         table_meta = TableMetadata(
             self._DB, self._TABLE, "MergeTree", UUID, "unique_key"
