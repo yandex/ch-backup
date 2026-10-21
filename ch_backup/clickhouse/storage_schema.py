@@ -51,7 +51,9 @@ _EXPRESSION_OPERATORS = {
     "SET",
     "TO",
 }
-_PREFIX_OPERATORS = {"NOT", "INTERVAL", "CASE", "WHEN", "THEN", "ELSE"}
+# ClickHouse formats CASE expressions as multiIf/caseWithExpression calls, but
+# leaves a column named case unquoted. Treat that identifier as a complete operand.
+_PREFIX_OPERATORS = {"NOT", "INTERVAL", "WHEN", "THEN", "ELSE"}
 _SYMBOL_OPERATORS = set(",.=+-*/%<>!|&^?:")
 
 
@@ -88,7 +90,7 @@ def adapt_storage_schema(
     statement: str, policies: dict[str, StoragePolicy], default_policy: str = "default"
 ) -> StorageSchemaChange | None:
     """Replace a missing policy, then remove MOVE rules unavailable in that policy."""
-    engine = _find_merge_tree_engine(statement)
+    engine = find_merge_tree_engine(statement)
     if engine is None:
         return None
 
@@ -261,7 +263,7 @@ def remove_unavailable_move_ttls(
 
 def replicated_engine_path(statement: str) -> str | None:
     """Read an explicit Keeper path, or return None for default engine arguments."""
-    engine = _find_merge_tree_engine(statement)
+    engine = find_merge_tree_engine(statement)
     if engine is None or not engine["engine"].lower().startswith("replicated"):
         raise StorageSchemaError("Cannot find a replicated MergeTree engine")
     # Only an explicit first string argument supplies the path here. The restore
@@ -274,7 +276,7 @@ def replicated_engine_path(statement: str) -> str | None:
     return _unquote_sql_string(path[1]) if path is not None else None
 
 
-def _find_merge_tree_engine(statement: str) -> re.Match[str] | None:
+def find_merge_tree_engine(statement: str) -> re.Match[str] | None:
     """Locate the table engine, ignoring column expressions and a view's SELECT."""
     before_select = re.split(
         r"\bAS\s+(?:SELECT|WITH)\b",

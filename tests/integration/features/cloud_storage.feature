@@ -594,6 +594,15 @@ Feature: Backup & Clean & Restore
     TTL settings + INTERVAL 1 DAY TO VOLUME 'external', settings + INTERVAL 100 DAY DELETE
     SETTINGS storage_policy = 's3_cold';
     INSERT INTO storage_restore.settings VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.case_ttl (`case` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY case
+    TTL case + INTERVAL 1 DAY TO VOLUME 'external', case + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.case_ttl VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.case_policy (`CASE` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY CASE
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.case_policy VALUES ('2099-01-01', 42);
     """
     And we create clickhouse01 clickhouse backup
     And we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse02 with restart
@@ -604,10 +613,12 @@ Feature: Backup & Clean & Restore
     """
     And we execute query on clickhouse02
     """
-    SELECT _table, id FROM merge('storage_restore', '^(ttl|comment|empty|settings)$') ORDER BY _table
+    SELECT _table, id FROM merge('storage_restore', '^(ttl|comment|empty|settings|case_ttl|case_policy)$') ORDER BY _table
     """
     Then we get response
     """
+    case_policy	42
+    case_ttl	42
     comment	42
     empty	42
     settings	42
@@ -619,7 +630,7 @@ Feature: Backup & Clean & Restore
     """
     Then we get response
     """
-    4	4	4	4
+    6	6	6	5
     """
 
     Examples:

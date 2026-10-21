@@ -381,12 +381,27 @@ def test_keeper_conflict_precedes_local_drops_and_every_cleanup_mode(
         cleaner.clean_tables_metadata.assert_not_called()
 
 
-def test_default_replicated_engine_converts_before_storage_adaptation():
+@pytest.mark.parametrize(
+    "engine",
+    [
+        "ReplicatedMergeTree",
+        "ReplicatedReplacingMergeTree",
+        "ReplicatedSummingMergeTree",
+    ],
+)
+@pytest.mark.parametrize("arguments", ["", "()"])
+def test_default_replicated_engine_converts_before_storage_adaptation(
+    engine, arguments
+):
     table = _table()
-    table.create_statement = "CREATE TABLE db.t (d DateTime) ENGINE = ReplicatedMergeTree() ORDER BY d TTL d TO DISK 's3'"
+    table.engine = engine
+    prefix = "CREATE TABLE db.t (d DateTime, s String DEFAULT 'ENGINE = ReplicatedMergeTree()') ENGINE = "
+    suffix = " ORDER BY d TTL d TO DISK 's3'"
+    table.create_statement = prefix + engine + arguments + suffix
     rewrite_table_schema(table, force_non_replicated_engine=True)
     assert not table.is_replicated()
-    assert "ReplicatedMergeTree" not in table.create_statement
+    assert table.engine == engine.removeprefix("Replicated")
+    assert table.create_statement == prefix + table.engine + suffix
     change = adapt_storage_schema(table.create_statement, POLICIES)
     assert change is not None
     assert change.removed_ttls == ("d TO DISK 's3'",)
@@ -477,6 +492,8 @@ def test_keeper_invalid_path_never_acquires_lock_or_mutates(path):
         "sample",
         "unique",
         "as",
+        "case",
+        "CASE",
     ],
 )
 @pytest.mark.parametrize("multiline", [False, True])
@@ -497,6 +514,24 @@ def test_storage_clause_keywords_are_valid_column_references(column, multiline):
     assert repeated is not None
     assert not repeated.changed
     assert repeated.statement == change.statement
+
+
+@pytest.mark.parametrize("column", ["case", "CASE"])
+@pytest.mark.parametrize("multiline", [False, True])
+def test_case_column_before_storage_policy(column, multiline):
+    separator = "\n" if multiline else " "
+    statement = separator.join(
+        [
+            f"CREATE TABLE _ (`{column}` DateTime) ENGINE = MergeTree ORDER BY {column}",
+            "SETTINGS storage_policy = 's3_cold', index_granularity = 8192",
+        ]
+    )
+    change = adapt_storage_schema(statement, POLICIES)
+    assert change is not None
+    assert change.changed
+    assert change.previous_policy == "s3_cold"
+    assert change.policy == POLICIES["default"]
+    assert change.statement == statement.replace("'s3_cold'", "'default'")
 
 
 @pytest.mark.parametrize(
