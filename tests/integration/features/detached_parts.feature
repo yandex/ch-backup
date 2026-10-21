@@ -348,7 +348,7 @@ Feature: Detached parts backup and restore
     [1, 2]
     """
 
-  @require_version_22.8
+  @require_version_24.1
   Scenario: Full cloud backup keeps detached S3 parts metadata-only
     Given we have executed queries on clickhouse01
     """
