@@ -1,6 +1,9 @@
 """Faults that must run inside the ClickHouse container."""
 
 import argparse
+import shutil
+import subprocess
+from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
@@ -9,6 +12,19 @@ from click import Command
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupState
 from ch_backup.cli import cli
+from ch_backup.clickhouse.disks import (
+    ClickHouseDisksException,
+    ClickHouseTemporaryDisks,
+)
+from ch_backup.clickhouse.object_storage_metadata import parse_object_storage_metadata
+
+
+def _run_patched_cli(arguments: list[str]) -> None:
+    # Keep storage work in this process: spawned workers cannot import the
+    # test module after CLI setup changes its working directory.
+    cast(Command, cli).main(
+        ["--config-parameter", "multiprocessing.workers", "0", *arguments]
+    )
 
 
 def corrupt_file(path: str, action: str) -> None:
@@ -34,11 +50,47 @@ def fail_backup_publication(backup_name: str, arguments: list[str]) -> None:
             raise RuntimeError("injected owner publication failure")
         return upload(layout, backup, *args, **kwargs)
 
-    # The patch must live in the CLI process; workers=0 keeps uploads there too.
     with patch.object(BackupLayout, "upload_backup_metadata", fail_owner):
-        cast(Command, cli).main(
-            ["--config-parameter", "multiprocessing.workers", "0", *arguments]
+        _run_patched_cli(arguments)
+
+
+def drop_frozen_table(database: str, table_name: str, arguments: list[str]) -> None:
+    """Remove the original table after FREEZE, before its metadata is uploaded."""
+    upload = BackupLayout.upload_cloud_storage_metadata
+
+    def upload_after_drop(layout, backup, disk, table, *args, **kwargs):
+        if (table.database, table.name) == (database, table_name):
+            subprocess.run(
+                [
+                    "clickhouse-client",
+                    "--query",
+                    f"DROP TABLE IF EXISTS `{database}`.`{table_name}` SYNC",
+                ],
+                check=True,
+            )
+        return upload(layout, backup, disk, table, *args, **kwargs)
+
+    with patch.object(BackupLayout, "upload_cloud_storage_metadata", upload_after_drop):
+        _run_patched_cli(arguments)
+
+
+def interrupt_inplace_copy(filename: str, arguments: list[str]) -> None:
+    """Leave one real metadata file, then fail before the part is DOWNLOADED."""
+
+    # pylint: disable=too-many-positional-arguments
+    def interrupted_copy(manager, from_disk, from_path, to_disk, to_path, _tag):
+        # pylint: disable=protected-access
+        source = Path(manager._ch_ctl.get_disk(from_disk).path) / from_path / filename
+        target = Path(manager._ch_ctl.get_disk(to_disk).path) / to_path
+        target.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target / filename)
+        metadata = parse_object_storage_metadata(source.read_bytes())
+        raise ClickHouseDisksException(
+            f"injected inplace copy interruption; ref_count={metadata.ref_count}"
         )
+
+    with patch.object(ClickHouseTemporaryDisks, "_os_copy", interrupted_copy):
+        _run_patched_cli(arguments)
 
 
 if __name__ == "__main__":
@@ -50,8 +102,19 @@ if __name__ == "__main__":
     publication = subparsers.add_parser("fail-backup-publication")
     publication.add_argument("backup_name")
     publication.add_argument("arguments", nargs=argparse.REMAINDER)
+    drop_table = subparsers.add_parser("drop-frozen-table")
+    drop_table.add_argument("database")
+    drop_table.add_argument("table")
+    drop_table.add_argument("arguments", nargs=argparse.REMAINDER)
+    inplace = subparsers.add_parser("interrupt-inplace-copy")
+    inplace.add_argument("filename")
+    inplace.add_argument("arguments", nargs=argparse.REMAINDER)
     options = parser.parse_args()
     if options.fault == "corrupt-file":
         corrupt_file(options.path, options.action)
-    else:
+    elif options.fault == "fail-backup-publication":
         fail_backup_publication(options.backup_name, options.arguments)
+    elif options.fault == "drop-frozen-table":
+        drop_frozen_table(options.database, options.table, options.arguments)
+    else:
+        interrupt_inplace_copy(options.filename, options.arguments)

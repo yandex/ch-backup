@@ -9,6 +9,7 @@ import threading
 from collections import defaultdict
 from contextlib import contextmanager, suppress
 from functools import partial
+from pathlib import Path
 from subprocess import PIPE, Popen
 from types import TracebackType
 from typing import IO, Any, Callable, Iterator, Literal, Sequence
@@ -416,7 +417,6 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
                     target_part_path = target_path
                 else:
                     target_part_path = os.path.join(target_path, source_part_name)
-                self._remove_incomplete_part(target_disk, target_part_path, routine_tag)
                 source_path = os.path.join(
                     "shadow",
                     sanitize_backup_name(source_backup_name),
@@ -424,33 +424,50 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
                     source_part_name,
                     "",
                 )
-                self._copy_dir(
-                    source_disk.name,
-                    source_path,
-                    target_disk.name,
-                    target_path,
-                    routine_tag,
-                )
+                with self._prepare_part_copy(
+                    target_disk, target_part_path, routine_tag
+                ):
+                    self._copy_dir(
+                        source_disk.name,
+                        source_path,
+                        target_disk.name,
+                        target_path,
+                        routine_tag,
+                    )
                 return
 
         raise RuntimeError(
             f'Disk "{target_disk.name}" path not found for table `{table.database}`.`{table.name}`'
         )
 
-    def _remove_incomplete_part(self, disk: Disk, path: str, routine_tag: str) -> None:
-        full_path = os.path.join(disk.path, path)
-        if not os.path.exists(full_path):
-            return
+    @contextmanager
+    def _prepare_part_copy(
+        self, disk: Disk, path: str, routine_tag: str
+    ) -> Iterator[None]:
+        full_path = Path(disk.path) / path
+        mode_file = full_path.with_name(f".{full_path.name}.ch-backup-copy-mode")
+        previous_mode = None
+        if mode_file.exists():
+            previous_mode = mode_file.read_text(encoding="utf-8")
 
-        # A failed copy can leave a partial directory. Copying into it again
-        # would nest the source directory instead of completing the part.
-        logging.info("Removing incomplete part {} from disk {}", path, disk.name)
-        if self._use_local_copy:
-            # Inplace restore copies metadata referring to the source objects;
-            # deleting through the S3 disk would delete those objects as well.
-            shutil.rmtree(full_path)
-        else:
-            _ch_disks_remove(self._ch_ctl, disk.name, path, routine_tag)
+        if full_path.exists():
+            # The directory may come from an earlier inplace restore, even if
+            # this invocation copies objects. Only a recorded object copy owns
+            # its S3 objects; unknown/legacy directories get metadata-only cleanup.
+            logging.info("Removing incomplete part {} from disk {}", path, disk.name)
+            if previous_mode == "copy":
+                _ch_disks_remove(self._ch_ctl, disk.name, path, routine_tag)
+            else:
+                shutil.rmtree(full_path)
+
+        mode_file.parent.mkdir(parents=True, exist_ok=True)
+        # Record the mode before creating any part files. Keep it on failure,
+        # but remove it on success so a later detached part cannot inherit it.
+        mode_file.write_text(
+            "inplace" if self._use_local_copy else "copy", encoding="utf-8"
+        )
+        yield
+        mode_file.unlink()
 
     # pylint: disable=too-many-positional-arguments
     def _copy_dir(

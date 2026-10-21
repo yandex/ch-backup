@@ -1034,7 +1034,7 @@ def test_restore_downloads_metadata_of_the_backup_holding_data():
     ],
     ids=["same name", "renamed by a mutation"],
 )
-def test_restore_copies_a_deduplicated_part_from_its_own_backup(part):
+def test_restore_copies_a_deduplicated_part_from_its_own_backup(part, tmp_path):
     """
     A part is copied from the temporary disk of the backup holding its data,
     under the name it has there: a mutation renames a part, but its data stays
@@ -1047,9 +1047,7 @@ def test_restore_copies_a_deduplicated_part_from_its_own_backup(part):
         source_bucket=None,
         parts=[part],
     )
-    target_disk = Disk(
-        "object_storage", "/var/lib/clickhouse/disks/object_storage/", "s3"
-    )
+    target_disk = Disk("object_storage", str(tmp_path / "target"), "s3")
     source_disk_name = f"object_storage_source_{LINKED_BACKUP_NAME}"
     # pylint: disable=protected-access
     disk_manager._ch_availible_disks = {
@@ -1117,7 +1115,10 @@ def fixture_part_copy(tmp_path):
 
 @pytest.mark.parametrize("version", ["23.3", "23.9", "24.7"])
 @pytest.mark.parametrize("inplace", [False, True])
-def test_restore_replaces_incomplete_part_without_nesting(part_copy, version, inplace):
+@pytest.mark.parametrize("previous_mode", ["copy", "inplace", None, "incomplete"])
+def test_restore_replaces_incomplete_part_without_nesting(
+    part_copy, version, inplace, previous_mode
+):
     manager, table, part, source, detached = part_copy
     # pylint: disable=protected-access
     manager._ch_ctl.ch_version_ge.side_effect = lambda minimum: version >= minimum
@@ -1128,6 +1129,9 @@ def test_restore_replaces_incomplete_part_without_nesting(part_copy, version, in
     # Include a nested directory left by a retry before MDB-51258 was fixed.
     (target / part.deduplicated_part_name).mkdir(parents=True)
     (target / "stale.bin").write_text("incomplete part")
+    mode_file = target.with_name(f".{target.name}.ch-backup-copy-mode")
+    if previous_mode is not None:
+        mode_file.write_text(previous_mode)
 
     def remove_objects(_ctl, disk, path, _tag):
         shutil.rmtree(Path(manager._ch_availible_disks[disk].path) / path)
@@ -1154,13 +1158,39 @@ def test_restore_replaces_incomplete_part_without_nesting(part_copy, version, in
     assert sorted(path.name for path in target.iterdir()) == ["id.bin"]
     assert (detached / "all_2_2_0").is_dir()
     assert (source / "id.bin").read_text() == "complete part"
-    assert remove.call_count == (0 if inplace else 1)
+    assert remove.call_count == (1 if previous_mode == "copy" else 0)
     assert copy_command.call_count == (0 if inplace else 1)
+    assert not mode_file.exists()
+
+
+@pytest.mark.parametrize("inplace", [False, True])
+def test_restore_records_copy_mode_before_writing_a_part_and_keeps_it_on_failure(
+    part_copy, inplace
+):
+    manager, table, part, _, detached = part_copy
+    target = detached / part.name
+    mode_file = detached / f".{part.name}.ch-backup-copy-mode"
+    # pylint: disable=protected-access
+    manager._use_local_copy = inplace
+
+    def interrupted_copy(*_args):
+        assert mode_file.read_text() == ("inplace" if inplace else "copy")
+        target.mkdir()
+        (target / "id.bin").write_text("partial metadata")
+        raise ClickHouseDisksException("interrupted copy")
+
+    with unittest.mock.patch.object(manager, "_copy_dir", side_effect=interrupted_copy):
+        with pytest.raises(ClickHouseDisksException, match="interrupted copy"):
+            manager._run_copy_command(manager._backup_meta, table, part)
+
+    assert mode_file.read_text() == ("inplace" if inplace else "copy")
 
 
 def test_restore_does_not_copy_or_mark_downloaded_when_cleanup_fails(part_copy):
     manager, table, part, _, detached = part_copy
     (detached / part.name).mkdir()
+    mode_file = detached / f".{part.name}.ch-backup-copy-mode"
+    mode_file.write_text("copy")
     callback = unittest.mock.Mock()
     with (
         unittest.mock.patch(
@@ -1179,6 +1209,7 @@ def test_restore_does_not_copy_or_mark_downloaded_when_cleanup_fails(part_copy):
 
     copy_command.assert_not_called()
     callback.assert_not_called()
+    assert mode_file.read_text() == "copy"
 
 
 @pytest.mark.parametrize("modern_cli", [False, True])
