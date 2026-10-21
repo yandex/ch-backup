@@ -3,6 +3,7 @@ Unit tests for layout module.
 """
 
 import json
+import tracemalloc
 from datetime import datetime
 
 import pytest
@@ -468,6 +469,29 @@ class TestSplitPartName:
     @pytest.mark.parametrize(
         ("part_name", "expected"),
         [
+            # Legacy names encode two dates and use monthly partition IDs.
+            (
+                "20230101_20230122_19234_19448_5",
+                PartInfo("202301", 19234, 19448, 5, 0),
+            ),
+            (
+                "20230101_20230122_19234_19448_5_20538",
+                PartInfo("202301", 19234, 19448, 5, 20538),
+            ),
+            # A date-like partition and block number can belong to modern parts.
+            (
+                "20230101_20230122_20230123_0",
+                PartInfo("20230101", 20230122, 20230123, 0, 0),
+            ),
+            (
+                "20230101_20230122_20230123_0_20538",
+                PartInfo("20230101", 20230122, 20230123, 0, 20538),
+            ),
+            # When both layouts have valid block ranges, prefer modern fields.
+            (
+                "20230101_20230122_20230123_20230124_5",
+                PartInfo("20230101", 20230122, 20230123, 20230124, 5),
+            ),
             # Standard format without mutation: partition_min_max_level
             (
                 "all_1_1_0",
@@ -513,12 +537,12 @@ class TestSplitPartName:
                 ),
             ),
             # Legacy MergeTree names contain min/max dates before block numbers.
-            # Keeping their five numeric chunks sortable is required by restore.
+            # Dates identify a monthly partition, not block numbers.
             (
                 "20261015_20261015_0_0_0",
                 PartInfo(
-                    partition_id="20261015",
-                    min_block_num=20261015,
+                    partition_id="202610",
+                    min_block_num=0,
                     max_block_num=0,
                     level=0,
                     mutation=0,
@@ -603,6 +627,44 @@ class TestSplitPartName:
         """
         result = split_part_name("all_1_1_0")
         assert isinstance(result, PartInfo)
+
+    @pytest.mark.parametrize(
+        "dates",
+        ["２０２３０１０１_20230122", "20230101_２０２３０１２２"],
+    )
+    @pytest.mark.parametrize("mutation", ["", "_20538"])
+    def test_non_ascii_dates_raise(self, dates: str, mutation: str) -> None:
+        """Legacy dates must use ASCII digits, with or without a mutation."""
+        with pytest.raises(ValueError, match="Invalid part name format"):
+            split_part_name(f"{dates}_19234_19448_5{mutation}")
+
+    @pytest.mark.parametrize(
+        "part_name",
+        [
+            "all_2_1_0",
+            "all_2_1_0_7",
+            "20230101_20230122_19448_19234_5",
+            "20230101_20230122_19448_19234_5_20538",
+        ],
+    )
+    def test_inverted_block_range_raises(self, part_name: str) -> None:
+        """Both formats require the minimum block not to exceed the maximum."""
+        with pytest.raises(ValueError, match="Invalid part name format"):
+            split_part_name(part_name)
+
+    def test_excess_separators_do_not_allocate_per_field(self) -> None:
+        """Reject long malformed names without a list entry per separator."""
+        part = "all_1_1_0_" + "_" * 100_000
+        tracemalloc.start()
+        try:
+            with pytest.raises(ValueError, match="Invalid part name format"):
+                split_part_name(part)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        # Allow copies of the suffix and error message plus allocation overhead.
+        # An unbounded split needs over eight times the input size for its list.
+        assert peak < 4 * len(part)
 
     def test_mutation_zero_when_absent(self) -> None:
         """

@@ -2,7 +2,10 @@
 Management of partial backup or restore sources.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+
+from ch_backup import logging
+from ch_backup.exceptions import ConfigurationError
 
 
 @dataclass(frozen=True)
@@ -61,6 +64,27 @@ class BackupSources:
             named_collections=named_collections,
             workload_entities=workload_entities,
         )
+
+    @classmethod
+    def from_config(cls, config: dict | None) -> "BackupSources":
+        """
+        Setting up sources for backup from the `backup.sources` config section.
+
+        An unknown key, a typo or a source added in a newer version, selects all sources
+        with a warning: a larger backup is safer than one that silently misses data.
+        A non-boolean value of a known key, e.g. the quoted YAML string "false", fails.
+        """
+        config = config or {}
+        known = {field.name for field in fields(cls)}
+        if any(not isinstance(config[key], bool) for key in config.keys() & known):
+            raise ConfigurationError(
+                f"backup.sources values must be booleans: {config}"
+            )
+        unknown = sorted(config.keys() - known)
+        if unknown:
+            logging.warning(f"Unknown backup sources {unknown}, backing up all sources")
+            return cls.for_backup()
+        return cls.for_backup(**config)
 
     @classmethod
     # pylint: disable=too-many-positional-arguments
