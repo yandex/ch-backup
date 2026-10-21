@@ -392,6 +392,9 @@ class BackupCopier:
             try:
                 self._target_layout.upload_backup_metadata(target_meta)
             except (Exception, TerminatingSignal) as metadata_error:
+                logging.exception(
+                    "Saving FAILED metadata for backup {} failed", backup.name
+                )
                 result.add_error(metadata_error, "metadata")
                 if not isinstance(metadata_error, Exception):
                     raise

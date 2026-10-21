@@ -66,6 +66,45 @@ def test_run_restores_pipeline_error(runner: Callable[[Any], Any]) -> None:
         runner(_pipeline_with_masked_error())
 
 
+@pytest.mark.parametrize(
+    "runner, expected",
+    [(run, None), (run_and_return_first, "result"), (run_and_collect_all, ["result"])],
+)
+def test_run_ignores_cleanup_error_in_exception_handler(
+    runner: Callable[[Any], Any], expected: Any
+) -> None:
+    # Saving FAILED metadata runs while the copy error is still being handled.
+    try:
+        raise RuntimeError("previous copy failed")
+    except RuntimeError:
+        assert runner(_pipeline_with_cleanup_error()) == expected
+
+
+@pytest.mark.parametrize("runner", [run, run_and_return_first, run_and_collect_all])
+@pytest.mark.parametrize("reuse_outer_error", [False, True])
+def test_run_preserves_pipeline_error_in_exception_handler(
+    runner: Callable[[Any], Any], reuse_outer_error: bool
+) -> None:
+    outer_error = RuntimeError("previous copy failed")
+    pipeline_error = (
+        outer_error if reuse_outer_error else RuntimeError("pipeline failed")
+    )
+
+    def pipeline() -> Iterator[str]:
+        yield "result"
+        try:
+            raise pipeline_error
+        except RuntimeError:
+            raise ValueError("Invalid thread ID 123")
+
+    try:
+        raise outer_error
+    except RuntimeError:
+        with pytest.raises(RuntimeError) as raised:
+            runner(pipeline())
+        assert raised.value is pipeline_error
+
+
 def test_run_ignores_cleanup_error() -> None:
     run(_pipeline_with_cleanup_error())
 
