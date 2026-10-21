@@ -3,11 +3,12 @@ Cli unit tests.
 """
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from click import Command, Context, Group
+from click import BadParameter, Command, Context, Group
 from click.testing import CliRunner, Result
 
 from ch_backup import cli
@@ -16,7 +17,8 @@ from ch_backup.backup.metadata import BackupMetadata, BackupState, TableMetadata
 from ch_backup.backup.metadata.table_metadata import DataSkippedReason
 from ch_backup.backup.sources import BackupSources
 from ch_backup.clickhouse.models import Database
-from ch_backup.exceptions import StorageError, TerminatingSignal
+from ch_backup.config import DEFAULT_CONFIG, Config
+from ch_backup.exceptions import ConfigurationError, StorageError, TerminatingSignal
 from tests.unit.test_backup_copy import CopyTestContext, _backup
 from tests.unit.utils import parametrize
 
@@ -240,13 +242,17 @@ def test_build_cli_cfg_from_config_parameters(values, expected):
     assert cli._build_cli_cfg_from_config_parameters(values) == expected
 
 
-def _invoke_backup_command(args: list) -> MagicMock:
+def _invoke_backup_command(args: list, backup_config: dict | None = None) -> MagicMock:
     """
     Run backup_command with a mocked ClickhouseBackup and return that mock.
 
-    Its config is a mock as well, pylint infers the dict it replaces.
+    Its config is a mock as well, pylint infers the dict it replaces. Indexing it
+    returns the default config with backup_config merged into the backup section.
     """
+    config = deepcopy(DEFAULT_CONFIG)
+    config["backup"].update(backup_config or {})  # type: ignore[union-attr]
     backup_mock = MagicMock()
+    backup_mock.config.__getitem__.side_effect = config.__getitem__
     backup_mock.backup.return_value = ("20181017T210300", None)
 
     parent_ctx = Context(cli.cli)
@@ -352,6 +358,49 @@ def test_restore_command_passes_detached_parts_option(
 
     backup.restore.assert_called_once()
     assert backup.restore.call_args.kwargs["restore_detached_parts"] is expected
+
+
+@pytest.mark.parametrize(
+    ("option", "kwarg"),
+    [("--databases", "databases"), ("--exclude-databases", "exclude_databases")],
+)
+def test_restore_command_accepts_quoted_database_names(option: str, kwarg: str) -> None:
+    """
+    ClickHouse allows any characters in a quoted database name, so the CLI must
+    pass names with a hyphen through as they are.
+    """
+    backup = MagicMock()
+    backup.list.return_value = [MagicMock()]
+    backup.list.return_value[0].name = "backup1"
+    parent = Context(cli.cli)
+    parent.obj = {"backup": backup}
+    with cli.restore_command.make_context(
+        "restore", ["backup1", option, "db-one, db_two"], parent=parent
+    ) as ctx:
+        cli.restore_command.invoke(ctx)
+
+    assert backup.restore.call_args.kwargs[kwarg] == ["db-one", "db_two"]
+
+
+def test_backup_command_accepts_quoted_database_names() -> None:
+    """
+    Database names with a hyphen must reach the backup logic as they are.
+    """
+    backup_mock = _invoke_backup_command(["--databases", "db-one,db_two"])
+
+    assert backup_mock.backup.call_args.kwargs["db_names"] == ["db-one", "db_two"]
+
+
+def test_restore_command_rejects_empty_database_name() -> None:
+    """
+    An empty item in the list is a typo and must fail instead of being passed on.
+    """
+    parent = Context(cli.cli)
+    parent.obj = {"backup": MagicMock()}
+    with pytest.raises(BadParameter):
+        cli.restore_command.make_context(
+            "restore", ["backup1", "--exclude-databases", "db1,,db2"], parent=parent
+        )
 
 
 def _invoke(command: Command, args: list[str], backup: MagicMock) -> Result:
@@ -520,3 +569,86 @@ def test_detached_filter_without_opt_in_does_not_enable_backup() -> None:
 
     assert backup_mock.backup.call_args.kwargs["include_detached_parts"] is False
     assert backup_mock.backup.call_args.kwargs["detached_parts_disks"] == ["default"]
+
+
+@parametrize(
+    {
+        "id": "config sources without options",
+        "args": {
+            "options": [],
+            "expected": BackupSources.for_backup(schema=True),
+        },
+    },
+    {
+        "id": "options replace config sources",
+        "args": {
+            "options": ["--access"],
+            "expected": BackupSources.for_backup(access=True),
+        },
+    },
+    {
+        "id": "http handlers replace config sources",
+        "args": {
+            "options": ["--http-handlers"],
+            "expected": BackupSources.for_backup(http_handlers=True),
+        },
+    },
+    {
+        "id": "schema-only replaces config sources",
+        "args": {
+            "options": ["--schema-only"],
+            "expected": BackupSources.for_backup(schema_only=True),
+        },
+    },
+)
+def test_backup_sources_from_config(options: list, expected: BackupSources) -> None:
+    backup_mock = _invoke_backup_command(options, {"sources": {"schema": True}})
+
+    assert backup_mock.backup.call_args.args[0] == expected
+
+
+def test_detached_parts_from_config() -> None:
+    backup_mock = _invoke_backup_command(
+        [],
+        {"detached_parts": {"enabled": True, "disks": ["default"], "reasons": [""]}},
+    )
+
+    kwargs = backup_mock.backup.call_args.kwargs
+    assert kwargs["include_detached_parts"] is True
+    assert kwargs["detached_parts_disks"] == ["default"]
+    assert kwargs["detached_parts_reasons"] == [""]
+
+
+def test_detached_parts_options_override_config() -> None:
+    backup_mock = _invoke_backup_command(
+        ["--detached-parts-disk", "archive", "--detached-parts-reason", "broken"],
+        {"detached_parts": {"enabled": True, "disks": ["default"], "reasons": [""]}},
+    )
+
+    kwargs = backup_mock.backup.call_args.kwargs
+    assert kwargs["include_detached_parts"] is True
+    assert kwargs["detached_parts_disks"] == ["archive"]
+    assert kwargs["detached_parts_reasons"] == ["broken"]
+
+
+def test_detached_parts_enabled_must_be_boolean() -> None:
+    with pytest.raises(ConfigurationError):
+        _invoke_backup_command([], {"detached_parts": {"enabled": "false"}})
+
+
+def test_config_parameter_null_clears_config_sources(tmp_path: Path) -> None:
+    config_path = tmp_path / "ch-backup.conf"
+    config_path.write_text("backup: {sources: {schema: true}}")
+    config = Config(str(config_path))
+
+    config.merge({"backup": {"sources": None}})
+
+    assert BackupSources.from_config(config["backup"]["sources"]) == BackupSources()
+
+
+def test_http_handlers_from_config() -> None:
+    backup_mock = _invoke_backup_command([], {"sources": {"http_handlers": True}})
+
+    assert backup_mock.backup.call_args.args[0] == BackupSources.for_backup(
+        http_handlers=True
+    )
