@@ -88,8 +88,8 @@ jobs:
       run: make test-unit
     - name: run integration tests
       run: make test-integration-parallel
+      # Self-hosted runners set INTEGRATION_JOBS for the size of their VM, GitHub-hosted ones take 3 from the Makefile.
       env:
-        INTEGRATION_JOBS: '3'
         CLICKHOUSE_VERSION: ${{ matrix.clickhouse == 'latest' && env.LATEST_CLICKHOUSE_VERSION || matrix.clickhouse }}
     - uses: actions/upload-artifact@v7
       if: ${{ always() }}
