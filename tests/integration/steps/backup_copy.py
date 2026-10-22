@@ -1,11 +1,11 @@
 """Shared copy fault injection and report assertions."""
 
 import json
-import shlex
 
 from behave import then, when
 
 from tests.integration.modules.docker import get_container
+from tests.integration.modules.faults import run_fault
 from tests.integration.modules.steps import get_step_data
 
 
@@ -13,20 +13,7 @@ from tests.integration.modules.steps import get_step_data
     'we try to execute ch-backup on {node:w} with publication of "{backup_name}" failing'
 )
 def step_fail_backup_publication(context, node, backup_name):
-    arguments = [
-        "python3",
-        "-m",
-        "tests.integration.modules.fault_injection",
-        "fail-backup-publication",
-        backup_name,
-        *shlex.split(context.text),
-    ]
-    context.command = shlex.join(arguments)
-    result = get_container(context, node).exec_run(
-        arguments, user="root", workdir="/code"
-    )
-    context.response = result.output.decode().strip()
-    context.exit_code = result.exit_code
+    run_fault(context, node, "fail-backup-publication", backup_name)
 
 
 @then('failed copy report "{path}" on {node:w} has results')

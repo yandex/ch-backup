@@ -12,6 +12,7 @@ from click import Command
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupState
 from ch_backup.cli import cli
+from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.disks import (
     ClickHouseDisksException,
     ClickHouseTemporaryDisks,
@@ -93,6 +94,19 @@ def interrupt_inplace_copy(filename: str, arguments: list[str]) -> None:
         _run_patched_cli(arguments)
 
 
+def fail_part_attach(database: str, table_name: str, arguments: list[str]) -> None:
+    """Let copying finish, then fail before ATTACH consumes the detached part."""
+    attach = ClickhouseCTL.attach_part
+
+    def fail_attach(controller, table, part_name):
+        if (table.database, table.name) == (database, table_name):
+            raise RuntimeError("injected ATTACH failure after copying")
+        return attach(controller, table, part_name)
+
+    with patch.object(ClickhouseCTL, "attach_part", fail_attach):
+        _run_patched_cli(arguments)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="fault", required=True)
@@ -109,6 +123,10 @@ if __name__ == "__main__":
     inplace = subparsers.add_parser("interrupt-inplace-copy")
     inplace.add_argument("filename")
     inplace.add_argument("arguments", nargs=argparse.REMAINDER)
+    attach_part = subparsers.add_parser("fail-part-attach")
+    attach_part.add_argument("database")
+    attach_part.add_argument("table")
+    attach_part.add_argument("arguments", nargs=argparse.REMAINDER)
     options = parser.parse_args()
     if options.fault == "corrupt-file":
         corrupt_file(options.path, options.action)
@@ -116,5 +134,7 @@ if __name__ == "__main__":
         fail_backup_publication(options.backup_name, options.arguments)
     elif options.fault == "drop-frozen-table":
         drop_frozen_table(options.database, options.table, options.arguments)
-    else:
+    elif options.fault == "interrupt-inplace-copy":
         interrupt_inplace_copy(options.filename, options.arguments)
+    else:
+        fail_part_attach(options.database, options.table, options.arguments)

@@ -24,7 +24,8 @@ import pytest
 import xmltodict
 
 from ch_backup.backup.layout import BackupLayout
-from ch_backup.backup.metadata import PartMetadata
+from ch_backup.backup.metadata import PartMetadata, TableMetadata
+from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.disks import (
@@ -39,6 +40,7 @@ from ch_backup.clickhouse.disks import (
 )
 from ch_backup.clickhouse.models import Disk, FrozenPart, Table
 from ch_backup.config import DEFAULT_CONFIG, Config
+from ch_backup.logic.table import TableBackup
 from tests.unit.utils import assert_equal, parametrize
 
 
@@ -1134,6 +1136,9 @@ def fixture_part_copy(tmp_path):
     detached = Path(target_disk.path) / "store/abc/abcdef/detached"
     detached.mkdir(parents=True)
     (detached / "all_2_2_0").mkdir()
+    manager._ch_ctl.get_detached_part_path.side_effect = (  # type: ignore[attr-defined]
+        lambda _table, _disk, name: str(detached / name)
+    )
     return manager, table, part, source, detached
 
 
@@ -1184,6 +1189,8 @@ def test_restore_replaces_incomplete_part_without_nesting(
     assert (source / "id.bin").read_text() == "complete part"
     assert remove.call_count == (1 if previous_mode == "copy" else 0)
     assert copy_command.call_count == (0 if inplace else 1)
+    assert mode_file.read_text() == ("inplace" if inplace else "copy")
+    manager.remove_part_copy_marker(table, part)
     assert not mode_file.exists()
 
 
@@ -1234,6 +1241,81 @@ def test_restore_does_not_copy_or_mark_downloaded_when_cleanup_fails(part_copy):
     copy_command.assert_not_called()
     callback.assert_not_called()
     assert mode_file.read_text() == "copy"
+
+
+@pytest.mark.parametrize("inplace", [False, True])
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+# pylint: disable=protected-access,too-many-locals,too-many-statements
+def test_restore_keeps_copy_ownership_until_attach_succeeds(
+    part_copy, tmp_path, inplace, cleanup_fails
+):
+    manager, table, part, source, detached = part_copy
+    manager._use_local_copy = inplace
+    manager._backup_meta.cloud_storage.disks = [part.disk_name]
+    manager._ch_ctl.get_table.return_value = table
+    target = detached / part.name
+    mode_file = detached / f".{part.name}.ch-backup-copy-mode"
+    config = _make_backup_storage_config()
+    config["backup"]["restore_context_path"] = str(tmp_path / "restore-state.json")
+    config["multiprocessing"]["cloud_storage_restore_workers"] = 1
+    context = BackupContext(config)  # type: ignore[arg-type]
+    context.ch_ctl = manager._ch_ctl
+    context.backup_meta = manager._backup_meta
+    context.backup_layout = unittest.mock.Mock()
+    table_meta = TableMetadata(part.database, part.table, "MergeTree", None)
+    table_meta.add_part(part)
+
+    def copy_objects(*_args):
+        shutil.copytree(source, target)
+
+    def remove_objects(*_args):
+        shutil.rmtree(target)
+
+    def attach(_table, _name):
+        if manager._ch_ctl.attach_part.call_count == 1:
+            raise RuntimeError("injected ATTACH failure")
+        target.rename(tmp_path / "active-part")
+
+    manager._ch_ctl.attach_part.side_effect = attach
+    with (
+        unittest.mock.patch(
+            "ch_backup.clickhouse.disks._ch_disks_copy", side_effect=copy_objects
+        ),
+        unittest.mock.patch(
+            "ch_backup.clickhouse.disks._ch_disks_remove", side_effect=remove_objects
+        ) as remove,
+    ):
+        TableBackup._restore_data(context, [table_meta], manager, False, False)
+        assert context.restore_context.has_failed_parts()
+        assert not context.restore_context.part_downloaded(part)
+        assert (target / "id.bin").read_text() == "complete part"
+        assert mode_file.read_text() == ("inplace" if inplace else "copy")
+
+        # A separate CLI invocation loads INVALID from disk and copies again.
+        context.restore_context = RestoreContext(config["backup"])
+        if cleanup_fails:
+            with unittest.mock.patch.object(
+                manager,
+                "remove_part_copy_marker",
+                side_effect=OSError("cleanup failed"),
+            ):
+                with pytest.raises(OSError, match="cleanup failed"):
+                    TableBackup._restore_data(
+                        context, [table_meta], manager, False, False
+                    )
+            assert context.restore_context.part_restored(part)
+            assert not context.restore_context.has_failed_parts()
+            assert mode_file.exists()
+            context.restore_context = RestoreContext(config["backup"])
+        TableBackup._restore_data(context, [table_meta], manager, False, False)
+
+    assert remove.call_count == (0 if inplace else 1)
+    assert manager._ch_ctl.attach_part.call_count == 2
+    assert context.restore_context.part_restored(part)
+    assert not context.restore_context.has_failed_parts()
+    assert (tmp_path / "active-part/id.bin").read_text() == "complete part"
+    assert (source / "id.bin").read_text() == "complete part"
+    assert not mode_file.exists()
 
 
 @pytest.mark.parametrize("modern_cli", [False, True])

@@ -1,39 +1,20 @@
 """Reusable faults for ClickHouse part files and their copies."""
 
-import shlex
 from uuid import uuid4
 
 from behave import given, when
 
 from tests.integration.modules.clickhouse import get_part_path
 from tests.integration.modules.docker import get_container
+from tests.integration.modules.faults import FAULT_MODULE, run_fault
 from tests.integration.modules.steps import get_step_data
-
-FAULT_MODULE = "tests.integration.modules.fault_injection"
-
-
-def _run_fault(context, node, fault, *parameters):
-    arguments = [
-        "python3",
-        "-m",
-        FAULT_MODULE,
-        fault,
-        *parameters,
-        *shlex.split(context.text),
-    ]
-    context.command = shlex.join(arguments)
-    result = get_container(context, node).exec_run(
-        arguments, user="root", workdir="/code"
-    )
-    context.response = result.output.decode().strip()
-    context.exit_code = result.exit_code
 
 
 @when(
     "we execute ch-backup on {node:w} with frozen table {database:w}.{table:w} dropped before metadata upload"
 )
 def step_backup_dropped_frozen_table(context, node, database, table):
-    _run_fault(context, node, "drop-frozen-table", database, table)
+    run_fault(context, node, "drop-frozen-table", database, table)
     assert context.exit_code == 0, context.response
 
 
@@ -41,7 +22,14 @@ def step_backup_dropped_frozen_table(context, node, database, table):
     'we try to execute ch-backup on {node:w} with inplace copy interrupted after "{filename}"'
 )
 def step_interrupt_inplace_copy(context, node, filename):
-    _run_fault(context, node, "interrupt-inplace-copy", filename)
+    run_fault(context, node, "interrupt-inplace-copy", filename)
+
+
+@when(
+    "we try to execute ch-backup on {node:w} with ATTACH failing for {database:w}.{table:w}"
+)
+def step_fail_part_attach(context, node, database, table):
+    run_fault(context, node, "fail-part-attach", database, table)
 
 
 @given("we save and corrupt a data part file on {node:w}")

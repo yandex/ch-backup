@@ -400,6 +400,85 @@ Feature: Backup & Clean & Restore
     And data part checksums equal to saved ones on clickhouse02
 
   @require_version_24.7
+  Scenario: Restore retry removes copied S3 objects after ATTACH fails
+    Given a working clickhouse on clickhouse02
+    And ch-backup configuration on clickhouse02
+    """
+    backup:
+        restore_fail_on_attach_error: true
+    multiprocessing:
+        cloud_storage_restore_workers: 1
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    CREATE TABLE test_db.restore_attach_retry (id UInt64, payload String)
+    ENGINE = MergeTree ORDER BY id
+    SETTINGS storage_policy = 'multiple_s3', min_bytes_for_wide_part = 0;
+    INSERT INTO test_db.restore_attach_retry SELECT number, toString(number) FROM numbers(100);
+    """
+    When we save all user's data in context on clickhouse01
+    And we save data part checksums in context on clickhouse01
+    And we create clickhouse01 clickhouse backup
+    """
+    name: restore_attach_retry
+    """
+    Then s3 bucket cloud-storage-02 contains 0 objects
+    When we try to execute ch-backup on clickhouse02 with ATTACH failing for test_db.restore_attach_retry
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf restore restore_attach_retry
+        --cloud-storage-source-bucket cloud-storage-01
+        --cloud-storage-source-path data
+    """
+    Then command exits with code 1
+    And we get response contains
+    """
+    Some parts are failed to attach
+    """
+    When we execute command on clickhouse02
+    """
+    grep -F 'injected ATTACH failure after copying' /var/log/ch-backup/ch-backup.log
+    """
+    Then we get response contains
+    """
+    injected ATTACH failure after copying
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM test_db.restore_attach_retry;
+    """
+    Then we get response
+    """
+    0
+    """
+    # These objects belong to the complete copy left by the failed ATTACH.
+    When we save S3 object keys of a detached data part on clickhouse02
+    """
+    database: test_db
+    table: restore_attach_retry
+    part: all_1_1_0
+    bucket: cloud-storage-02
+    path: data
+    """
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    cloud_storage_source_bucket: cloud-storage-01
+    cloud_storage_source_path: data
+    """
+    Then saved S3 object keys are absent
+    And the user's data equal to saved one on clickhouse02
+    And data part checksums equal to saved ones on clickhouse02
+    And the user's data equal to saved one on clickhouse01
+    When we execute command on clickhouse02
+    """
+    find /var/lib/clickhouse/disks -name '*.ch-backup-copy-mode' | wc -l
+    """
+    Then we get response
+    """
+    0
+    """
+
+  @require_version_24.7
   Scenario: Switching an interrupted inplace restore to copying preserves source objects
     Given a working clickhouse on clickhouse02
     And we use the same object storage bucket for clickhouse02 as on clickhouse01

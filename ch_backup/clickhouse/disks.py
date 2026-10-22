@@ -424,26 +424,21 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
                     source_part_name,
                     "",
                 )
-                with self._prepare_part_copy(
-                    target_disk, target_part_path, routine_tag
-                ):
-                    self._copy_dir(
-                        source_disk.name,
-                        source_path,
-                        target_disk.name,
-                        target_path,
-                        routine_tag,
-                    )
+                self._prepare_part_copy(target_disk, target_part_path, routine_tag)
+                self._copy_dir(
+                    source_disk.name,
+                    source_path,
+                    target_disk.name,
+                    target_path,
+                    routine_tag,
+                )
                 return
 
         raise RuntimeError(
             f'Disk "{target_disk.name}" path not found for table `{table.database}`.`{table.name}`'
         )
 
-    @contextmanager
-    def _prepare_part_copy(
-        self, disk: Disk, path: str, routine_tag: str
-    ) -> Iterator[None]:
+    def _prepare_part_copy(self, disk: Disk, path: str, routine_tag: str) -> None:
         full_path = Path(disk.path) / path
         mode_file = full_path.with_name(f".{full_path.name}.ch-backup-copy-mode")
         previous_mode = None
@@ -461,13 +456,24 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
                 shutil.rmtree(full_path)
 
         mode_file.parent.mkdir(parents=True, exist_ok=True)
-        # Record the mode before creating any part files. Keep it on failure,
-        # but remove it on success so a later detached part cannot inherit it.
+        # ATTACH can fail after copying succeeds. Keep ownership until ATTACH
+        # succeeds so a retry can remove copied objects, not just their metadata.
         mode_file.write_text(
             "inplace" if self._use_local_copy else "copy", encoding="utf-8"
         )
-        yield
-        mode_file.unlink()
+
+    def remove_part_copy_marker(self, table: Table, part: PartMetadata) -> None:
+        """Forget ownership after ATTACH so later detached parts cannot inherit it."""
+        part_name = (
+            part.name
+            if self._ch_ctl.ch_version_ge("23.7")
+            else part.deduplicated_part_name
+        )
+        full_path = Path(
+            self._ch_ctl.get_detached_part_path(table, part.disk_name, part_name)
+        )
+        mode_file = full_path.with_name(f".{full_path.name}.ch-backup-copy-mode")
+        mode_file.unlink(missing_ok=True)
 
     # pylint: disable=too-many-positional-arguments
     def _copy_dir(

@@ -66,6 +66,39 @@ def step_cloud_storage_bucket_has_no_prefix(context, bucket, prefix):
     )
 
 
+@when("we save S3 object keys of a detached data part on {node:w}")
+def step_save_detached_part_object_keys(context, node):
+    conf = get_step_data(context)
+    table_paths = (
+        ClickhouseClient(context, node)
+        .get_response(
+            f"SELECT arrayJoin(data_paths) FROM system.tables "
+            f"WHERE database = '{conf['database']}' AND name = '{conf['table']}' "
+            "FORMAT TSVRaw"
+        )
+        .splitlines()
+    )
+    container = get_container(context, node)
+    paths = []
+    for table_path in table_paths:
+        path = f"{table_path.rstrip('/')}/detached/{conf['part']}"
+        if container.exec_run(["test", "-d", path], user="root").exit_code == 0:
+            paths.append(path)
+    assert len(paths) == 1, f"Expected one detached part, found paths: {paths}"
+    # Table-level objects such as format_version.txt survive part replacement.
+    context.saved_s3_object_keys = (
+        conf["bucket"],
+        _read_part_object_keys(container, paths[0], conf["path"]),
+    )
+
+
+@then("saved S3 object keys are absent")
+def step_saved_s3_object_keys_absent(context):
+    bucket, keys = context.saved_s3_object_keys
+    remaining = keys.intersection(s3.S3Client(context, bucket).list_objects(""))
+    assert not remaining, f"Orphaned copied objects in {bucket}: {sorted(remaining)}"
+
+
 @when("we delete all objects in s3 bucket {bucket}")
 def step_delete_all_objects_in_bucket(context, bucket):
     s3_client = s3.S3Client(context, bucket)
@@ -111,6 +144,21 @@ def _read_object_keys(container, path, prefix):
         )
         for obj in metadata.objects
     ]
+
+
+def _read_part_object_keys(container, path, prefix):
+    result = container.exec_run(
+        ["find", path, "-maxdepth", "1", "-type", "f"], user="root"
+    )
+    assert result.exit_code == 0, result.output
+    keys = {
+        key
+        for filename in result.output.decode().splitlines()
+        if filename.rsplit("/", 1)[-1] not in CLOUD_STORAGE_EXCLUDE_FILE_NAMES
+        for key in _read_object_keys(container, filename, prefix)
+    }
+    assert keys, f"No objects referenced by {path}"
+    return keys
 
 
 @when("we save and delete the S3 objects of a data part file on {node:w}")
@@ -174,17 +222,7 @@ def step_save_frozen_part_objects(context, node):
     paths = result.output.decode().splitlines()
     assert len(paths) == 1, f"Expected one frozen part, found paths: {paths}"
     path = paths[0]
-    result = container.exec_run(
-        ["find", path, "-maxdepth", "1", "-type", "f"], user="root"
-    )
-    assert result.exit_code == 0, result.output
-    keys = {
-        key
-        for filename in result.output.decode().splitlines()
-        if filename.rsplit("/", 1)[-1] not in CLOUD_STORAGE_EXCLUDE_FILE_NAMES
-        for key in _read_object_keys(container, filename, conf["path"])
-    }
-    assert keys, f"No source objects referenced by {path}"
+    keys = _read_part_object_keys(container, path, conf["path"])
     client = s3.S3Client(context, conf["bucket"])
     context.s3_object_snapshot = {
         (conf["bucket"], key): client.download_data(key) for key in keys
