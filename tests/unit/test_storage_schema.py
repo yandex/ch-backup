@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from kazoo.exceptions import LockTimeout, NoNodeError
 
+from ch_backup.backup.metadata import TableMetadata
 from ch_backup.backup.sources import BackupSources
 from ch_backup.ch_backup import CleanZooKeeperMode, ClickhouseBackup
 from ch_backup.clickhouse.control import ClickhouseCTL
@@ -558,7 +559,9 @@ def test_keeper_conflict_precedes_local_drops_and_every_cleanup_mode(
     cleaner = None if replica_filter == "disabled" else MagicMock()
     if cleaner is not None:
         cleaner._replica_to_drop = replica_filter
-    context.backup_meta.get_tables.return_value = [MagicMock(database="db", name="t")]
+    context.backup_meta.get_tables.return_value = [
+        TableMetadata("db", "t", table.engine, table.uuid)
+    ]
     manager = TableBackup()
     with (
         patch.object(manager, "_filter_duplicate_uuid", return_value=([], 0)),
@@ -632,8 +635,8 @@ def test_keep_going_restores_independent_schema_then_reports_error(failure_stage
     if failure_stage == "disk":
         bad.create_statement += " SETTINGS disk = disk(type = 'local', path = '/tmp/')"
     context.backup_meta.get_tables.return_value = [
-        MagicMock(database="db", name="bad"),
-        MagicMock(database="db", name="good"),
+        TableMetadata("db", table.name, table.engine, table.uuid)
+        for table in (bad, good)
     ]
     manager = TableBackup()
     # Keep the real restore orchestration, but isolate storage adaptation from
@@ -798,7 +801,9 @@ def test_disk_adaptation_never_drops_an_existing_table(keep_going, detached):
     context.ch_ctl.get_detached_tables.return_value = [existing] if detached else []
     context.ch_ctl.get_replicas.return_value = []
     context.config_root = {"restore": {"max_table_name": 255}}
-    context.backup_meta.get_tables.return_value = [MagicMock(database="db", name="t")]
+    context.backup_meta.get_tables.return_value = [
+        TableMetadata("db", "t", table.engine, table.uuid)
+    ]
     manager = TableBackup()
     with (
         patch.object(manager, "_filter_duplicate_uuid", return_value=([], 0)),
@@ -850,7 +855,9 @@ def test_prepared_schemas_hold_locks_through_create_but_not_data_loading():
     restore, _, client = _restore(metadata=b"ttl: d + 10 DELETE\n")
     context = restore.context
     table = _table()
-    context.backup_meta.get_tables.return_value = [MagicMock(database="db", name="t")]
+    context.backup_meta.get_tables.return_value = [
+        TableMetadata("db", "t", table.engine, table.uuid)
+    ]
     databases = {"db": Database("db", "Atomic", None, None, None)}
     manager = TableBackup()
 
@@ -907,7 +914,9 @@ def test_keeper_conflict_precedes_database_drop(keep_going, cleanup_mode):
     table = _table()
     source_db = Database("db", "Replicated", None, None, None)
     context.backup_meta.get_database.return_value = source_db
-    context.backup_meta.get_tables.return_value = [MagicMock(database="db", name="t")]
+    context.backup_meta.get_tables.return_value = [
+        TableMetadata("db", "t", table.engine, table.uuid)
+    ]
     context.ch_ctl.get_databases.return_value = [
         Database("db", "Atomic", None, None, None)
     ]
