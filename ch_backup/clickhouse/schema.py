@@ -80,9 +80,11 @@ def rewrite_table_schema(
     if add_uuid:
         _add_uuid(table, inner_uuid)
 
+    # A replacement string would interpret the SQL backslash escapes a second
+    # time. Return the quoted identifiers verbatim from the replacement callback.
     table.create_statement = re.sub(
         f"(?P<create>CREATE|ATTACH)\\s+(?P<type>TABLE|(\\S+\\s+)?VIEW|DICTIONARY)\\s+(_|`?{escape(table.name, regex=True)}`?)\\s+",
-        f"\\g<create> \\g<type> `{escape(table.database)}`.`{escape(table.name)}` ",
+        lambda match: f"{match['create']} {match['type']} `{escape(table.database)}`.`{escape(table.name)}` ",
         table.create_statement,
     )
     logging.info(f"Resulting table schema: {table.create_statement!r}")
@@ -113,7 +115,9 @@ def rewrite_database_schema(
             db_sql = f"{db_sql[:start]}'{override_replica_name}'{db_sql[end:]}"
 
     return re.sub(
-        r"CREATE\s+DATABASE\s+_\s", f"CREATE DATABASE `{escape(db.name)}` ", db_sql
+        r"CREATE\s+DATABASE\s+_\s",
+        lambda _: f"CREATE DATABASE `{escape(db.name)}` ",
+        db_sql,
     )
 
 

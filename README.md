@@ -25,7 +25,9 @@ applies to schema-only restores and restores without `--skip-cloud-storage`.
 Invalid syntax, failed trial creation, or failed cleanup abort this phase even
 with `--keep-going`.
 If table schemas were skipped because they could not be loaded or prepared,
-preflight also refuses to replace a database with a different engine.
+preflight also refuses to replace their database with a different engine. With
+`--keep-going`, that database's tables and data remain untouched, independent
+databases continue, and the command finishes with a nonzero exit status.
 
 ClickHouse first parses the DDL with `EXPLAIN AST`. Local tables and views whose
 dependencies can be isolated are then created in uniquely named
@@ -40,6 +42,10 @@ original Keeper paths. This checks local schema creation, not replica registrati
 or compatibility with shared Keeper metadata; the checks described below still
 apply. Replicated and external database engines receive syntax checks only.
 
+MergeTree tables using a remote or mixed storage policy, a remote disk, or a
+dynamic disk expression receive syntax checks only. This includes engine defaults
+and materialized views with their own storage: even an empty MergeTree can write
+metadata to object storage. Unknown static disk/policy names fail preflight.
 External engines, dictionaries, Distributed/Buffer tables, active views, and
 queries using external functions or dependencies outside the isolated set receive
 syntax checks only. Creating them could start consumers or contact external
@@ -53,6 +59,8 @@ create the checked objects. Preflight adds DDL work proportional to the number o
 schemas, plus retries for dependencies. Cleanup errors report the temporary
 database names; a killed process or an ambiguous network failure may also leave
 temporary databases for manual inspection and removal.
+Probe CREATE/DROP queries are not retried after connection errors, since a lost
+response does not establish whether the server committed the operation.
 
 ## Restore without cloud storage
 

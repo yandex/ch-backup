@@ -3,13 +3,14 @@
 import re
 from uuid import uuid4
 
-from ch_backup.clickhouse.models import Table
+from ch_backup.clickhouse.models import Disk, Table
 from ch_backup.clickhouse.schema import rewrite_table_schema
 from ch_backup.clickhouse.storage_schema import (
-    _POLICY_SETTING,
     _QUOTED_OR_COMMENT,
+    StoragePolicy,
     _storage_clauses,
     find_merge_tree_engine,
+    merge_tree_storage_settings,
 )
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.util import escape
@@ -109,6 +110,40 @@ def can_create_probe(
     return not table.is_view() or _view_is_isolated(table, ast, names)
 
 
+def has_local_probe_storage(
+    table: Table,
+    policies: dict[str, StoragePolicy],
+    disks: dict[str, Disk],
+    config: dict,
+) -> bool:
+    """Only create MergeTree copies when every effective disk is known to be local."""
+    engine = find_merge_tree_engine(table.create_statement)
+    if engine is None:
+        return True
+    settings = dict(config.get("merge_tree") or {})
+    if engine["engine"].startswith("Replicated"):
+        settings.update(config.get("replicated_merge_tree") or {})
+    settings.update(merge_tree_storage_settings(table.create_statement))
+    if "disk" in settings:
+        name = settings["disk"]
+        if name is None:
+            return False
+        if name not in disks:
+            raise ClickhouseBackupError(
+                f"Schema preflight for {table.database}.{table.name}: unknown disk {name!r}"
+            )
+        return disks[name].type == "local"
+    name = settings.get("storage_policy", "default")
+    if name is None:
+        return False
+    if name not in policies:
+        raise ClickhouseBackupError(
+            f"Schema preflight for {table.database}.{table.name}: unknown storage policy {name!r}"
+        )
+    policy = policies[name]
+    return len(policy.disks) > 0 and set(policy.disks) <= set(policy.local_disks)
+
+
 def _view_is_isolated(table: Table, ast: str, names: set[str]) -> bool:
     # Do not confuse a table alias with a database qualifier when rewriting
     # SELECT. Ambiguous queries still receive the server's syntax check.
@@ -135,6 +170,8 @@ def probe_table(
     databases: dict[str, str],
     names: set[tuple[str, str]],
     replicated_policy: str | None = None,
+    *,
+    replicated_disk: str | None = None,
 ) -> Table:
     """Change identities, never literals or the original metadata object."""
     # pylint: disable=too-many-locals
@@ -183,15 +220,25 @@ def probe_table(
     engine = find_merge_tree_engine(sql)
     replicated = engine is not None and engine["engine"].startswith("Replicated")
     rewrite_table_schema(probe, force_non_replicated_engine=True)
-    if replicated and replicated_policy is not None:
-        probe.create_statement = _with_default_policy(
-            probe.create_statement, replicated_policy
-        )
+    if replicated:
+        # Replicated defaults disappear with the engine prefix. In particular,
+        # losing a local disk override could expose a remote MergeTree default.
+        if replicated_disk is not None:
+            probe.create_statement = _with_default_storage(
+                probe.create_statement, "disk", replicated_disk
+            )
+        elif replicated_policy is not None:
+            probe.create_statement = _with_default_storage(
+                probe.create_statement, "storage_policy", replicated_policy
+            )
     return probe
 
 
-def _with_default_policy(statement: str, policy: str) -> str:
-    """Retain a ReplicatedMergeTree default after removing replication."""
+def _with_default_storage(statement: str, setting: str, value: str) -> str:
+    """Retain replicated placement defaults after removing replication."""
+    explicit = merge_tree_storage_settings(statement)
+    if setting in explicit or "disk" in explicit:
+        return statement
     engine = find_merge_tree_engine(statement)
     assert engine is not None
     clauses = list(_storage_clauses(statement[engine.end() :]))
@@ -203,8 +250,6 @@ def _with_default_policy(statement: str, policy: str) -> str:
         ),
         len(statement),
     )
-    if _POLICY_SETTING.search(statement[engine.end() : end]):
-        return statement
     separator = (
         ", "
         if any(
@@ -216,8 +261,9 @@ def _with_default_policy(statement: str, policy: str) -> str:
     return (
         statement[:end].rstrip()
         + separator
-        + "storage_policy = '"
-        + policy.replace("\\", "\\\\").replace("'", "\\'")
+        + setting
+        + " = '"
+        + value.replace("\\", "\\\\").replace("'", "\\'")
         + "' "
         + statement[end:]
     )

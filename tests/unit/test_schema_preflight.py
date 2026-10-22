@@ -11,12 +11,13 @@ from ch_backup.backup.metadata import TableMetadata
 from ch_backup.backup.sources import BackupSources
 from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.clickhouse.client import ClickhouseError
-from ch_backup.clickhouse.models import Database, Table
+from ch_backup.clickhouse.models import Database, Disk, Table
 from ch_backup.clickhouse.schema_probe import (
     can_create_probe,
     probe_database,
     probe_table,
 )
+from ch_backup.clickhouse.storage_schema import StoragePolicy
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.logic.database import DatabaseBackup
 from ch_backup.logic.schema_preflight import (
@@ -69,10 +70,55 @@ def _table(name="t", engine="MergeTree", statement=None, database="db"):
 def _context():
     context = MagicMock()
     context.ch_config.config = {}
+    context.ch_ctl.get_disks.return_value = {
+        "default": Disk("default", "/data/", "local"),
+        "s3": Disk("s3", "/s3/", "s3"),
+    }
+    context.ch_ctl.get_storage_policies.return_value = {
+        "default": StoragePolicy("default", ("main",), ("default",), ("default",)),
+        "s3": StoragePolicy("s3", ("main",), ("s3",), ()),
+    }
     context.ch_ctl.explain_schema.return_value = (
         " Storage definition (children 1)\n  Function MergeTree"
     )
     return context
+
+
+@pytest.mark.parametrize(
+    "name,quoted",
+    [
+        (r"a\b", r"`a\\b`"),
+        (r"a\` (x UInt8) ENGINE=Memory -- ", r"`a\\\` (x UInt8) ENGINE=Memory -- `"),
+    ],
+)
+def test_probe_quotes_backslashes_in_metadata_names(name, quoted):
+    table = _table(
+        name=name, statement="CREATE TABLE db.t (x UInt64) ENGINE=MergeTree ORDER BY x"
+    )
+    probe = probe_table(table, {"db": "scratch"}, {("db", name)})
+    assert (
+        probe.create_statement
+        == f"CREATE TABLE `scratch`.{quoted} (x UInt64) ENGINE=MergeTree ORDER BY x"
+    )
+
+
+@pytest.mark.parametrize(
+    "setting",
+    [
+        "storage_policy='s3'",
+        "disk='s3'",
+        "disk=disk(type='s3', endpoint='https://example.invalid/')",
+    ],
+)
+def test_remote_storage_receives_only_syntax_checks(setting):
+    context = _context()
+    table = _table(
+        statement=f"CREATE TABLE db.t (x UInt64) ENGINE=MergeTree ORDER BY x SETTINGS {setting}"
+    )
+    validate_table_schemas(context, [table])
+    context.ch_ctl.explain_schema.assert_called_once_with(table.create_statement)
+    context.ch_ctl.create_schema_probe_database.assert_not_called()
+    context.ch_ctl.create_schema_probe.assert_not_called()
 
 
 def test_ordinary_preflight_does_not_rewrite_the_original_restore_objects():
@@ -375,22 +421,211 @@ def test_invalid_database_definition_never_drops_existing_database(keep_going):
     context.ch_ctl.drop_database_if_exists.assert_not_called()
 
 
-def test_incomplete_preflight_never_drops_a_database_with_keep_going():
+@pytest.mark.parametrize("keep_going", [False, True])
+def test_incomplete_preflight_never_drops_a_database(keep_going):
     context = _context()
     context.ch_ctl.get_databases.return_value = [
         Database("db", "Ordinary", None, None, None)
     ]
-    with pytest.raises(
-        ClickhouseBackupError, match="incomplete table schema preflight"
-    ):
-        DatabaseBackup.restore(
+
+    def restore():
+        return DatabaseBackup.restore(
             context,
             {"db": Database("db", "Atomic", None, None, None)},
-            True,
+            keep_going,
             None,
-            table_schemas_complete=False,
+            incomplete_table_databases={"db"},
         )
+
+    if keep_going:
+        result = restore()
+        assert result.skipped == {"db"}
+        assert len(result.restored) == 0
+    else:
+        with pytest.raises(
+            ClickhouseBackupError, match="incomplete table schema preflight"
+        ):
+            restore()
     context.ch_ctl.drop_database_if_exists.assert_not_called()
+
+
+@pytest.mark.parametrize("engine", ["MergeTree", "ReplicatedMergeTree"])
+@pytest.mark.parametrize("setting", ["disk", "storage_policy"])
+def test_remote_engine_defaults_are_syntax_only(engine, setting):
+    context = _context()
+    context.ch_config.config = {"merge_tree": {setting: "s3"}}
+    validate_table_schemas(context, [_table(engine=engine)])
+    context.ch_ctl.create_schema_probe.assert_not_called()
+
+
+def test_remote_replicated_override_and_dependent_views_are_syntax_only():
+    context = _context()
+    context.ch_config.config = {"replicated_merge_tree": {"storage_policy": "s3"}}
+    context.ch_ctl.explain_schema.side_effect = [
+        " Storage definition\n  Function ReplicatedMergeTree",
+        " SelectWithUnionQuery\n  TableIdentifier db.t",
+    ]
+    validate_table_schemas(
+        context,
+        [
+            _table(engine="ReplicatedMergeTree"),
+            _table("v", "View", "CREATE VIEW db.v AS SELECT * FROM db.t"),
+        ],
+    )
+    context.ch_ctl.create_schema_probe_database.assert_not_called()
+
+
+@pytest.mark.parametrize("setting", ["disk", "storage_policy"])
+def test_unknown_static_storage_is_fatal_before_any_probe(setting):
+    context = _context()
+    with pytest.raises(ClickhouseBackupError, match="unknown"):
+        validate_table_schemas(
+            context,
+            [
+                _table(
+                    statement=f"CREATE TABLE db.t (x UInt64) ENGINE=MergeTree ORDER BY x SETTINGS {setting}='absent'"
+                )
+            ],
+        )
+    context.ch_ctl.create_schema_probe_database.assert_not_called()
+
+
+def test_mixed_policy_is_not_local_even_when_its_first_disk_is_local():
+    context = _context()
+    context.ch_ctl.get_storage_policies.return_value["default"] = StoragePolicy(
+        "default", ("main",), ("default", "s3"), ("default",)
+    )
+    validate_table_schemas(context, [_table()])
+    context.ch_ctl.create_schema_probe.assert_not_called()
+
+
+def test_explicit_local_policy_overrides_remote_default():
+    context = _context()
+    context.ch_config.config = {"merge_tree": {"storage_policy": "s3"}}
+    validate_table_schemas(
+        context,
+        [
+            _table(
+                statement="CREATE TABLE db.t (x UInt64) ENGINE=MergeTree ORDER BY x SETTINGS storage_policy='default'"
+            )
+        ],
+    )
+    assert len(context.ch_ctl.create_schema_probe.call_args_list) == 1
+
+
+def test_replicated_local_disk_override_survives_engine_conversion():
+    context = _context()
+    context.ch_config.config = {
+        "merge_tree": {"disk": "s3"},
+        "replicated_merge_tree": {"disk": "default"},
+    }
+    validate_table_schemas(context, [_table(engine="ReplicatedMergeTree")])
+    probe = context.ch_ctl.create_schema_probe.call_args.args[0]
+    assert (
+        "ENGINE=MergeTree ORDER BY x SETTINGS disk = 'default'"
+        in probe.create_statement
+    )
+
+
+@pytest.mark.parametrize(
+    "statement,local",
+    [
+        (
+            "CREATE TABLE db.t (x UInt64, c String DEFAULT 'disk=evil, storage_policy=s3') ENGINE=MergeTree ORDER BY x",
+            True,
+        ),
+        (
+            "CREATE TABLE db.t (x UInt64) ENGINE=MergeTree ORDER BY x SETTINGS `storage_policy` /* policy */ = 's3' COMMENT 'disk=default'",
+            False,
+        ),
+        (
+            "CREATE TABLE db.t (x UInt64) ENGINE=MergeTree ORDER BY x SETTINGS disk='default', index_granularity=8192",
+            True,
+        ),
+        (
+            "CREATE TABLE db.t (x UInt64) ENGINE=MergeTree ORDER BY x SETTINGS disk=disk(type='cache', disk=disk(type='s3', endpoint='https://example.invalid/'))",
+            False,
+        ),
+        (
+            "CREATE MATERIALIZED VIEW db.t ENGINE=MergeTree ORDER BY x SETTINGS storage_policy='s3' AS SELECT 1 AS x",
+            False,
+        ),
+    ],
+)
+def test_storage_classification_uses_only_the_engine_settings(statement, local):
+    context = _context()
+    table = _table(
+        statement=statement,
+        engine="MaterializedView" if "VIEW" in statement else "MergeTree",
+    )
+    validate_table_schemas(context, [table])
+    assert context.ch_ctl.create_schema_probe.call_count == int(local)
+
+
+def test_incomplete_database_does_not_block_independent_replacement():
+    context = _context()
+    context.ch_ctl.get_databases.return_value = [
+        Database(name, "Ordinary", None, None, None) for name in ("bad", "good")
+    ]
+    databases = {
+        name: Database(name, "Atomic", None, None, None) for name in ("bad", "good")
+    }
+    with patch(
+        "ch_backup.logic.database.validate_database_schemas",
+        return_value={"good": "CREATE DATABASE good ENGINE=Atomic"},
+    ) as validate:
+        result = DatabaseBackup.restore(
+            context, databases, True, None, incomplete_table_databases={"bad"}
+        )
+    assert result.skipped == {"bad"}
+    assert result.restored == [databases["good"]]
+    assert set(validate.call_args.args[1]) == {"good"}
+    context.ch_ctl.drop_database_if_exists.assert_called_once_with("good")
+    context.ch_ctl.restore_database.assert_called_once_with(
+        "CREATE DATABASE good ENGINE=Atomic"
+    )
+    assert set(databases) == {"bad", "good"}
+
+
+@pytest.mark.parametrize(
+    "failure", ["missing_schema", "duplicate_uuid", "missing_requested"]
+)
+def test_preparation_tracks_incompleteness_per_database(failure):
+    context = _context()
+    context.config = {"force_non_replicated": False, "override_replica_name": None}
+    good = _table(database="good")
+    good_meta = TableMetadata(
+        "good", "t", "MergeTree", "shared" if failure == "duplicate_uuid" else None
+    )
+    bad_meta = TableMetadata("bad", "t", "MergeTree", good_meta.uuid)
+    context.backup_meta.get_tables.side_effect = lambda db: (
+        [good_meta]
+        if db == "good"
+        else ([] if failure == "missing_requested" else [bad_meta])
+    )
+    databases = {
+        name: Database(name, "Atomic", None, None, None) for name in ("good", "bad")
+    }
+    manager = TableBackup()
+    with (
+        ExitStack() as stack,
+        patch.object(
+            manager,
+            "_get_tables_from_meta",
+            return_value=([good], int(failure == "missing_schema")),
+        ),
+    ):
+        prepared = manager.prepare_restore(
+            context,
+            databases,
+            [good_meta, bad_meta] if failure == "missing_requested" else [],
+            True,
+            False,
+            False,
+            stack,
+        )
+    assert prepared.incomplete_databases == {"bad"}
+    assert prepared.tables == [good]
 
 
 def test_database_preflight_does_not_start_external_engine_from_metadata_mismatch():

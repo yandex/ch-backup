@@ -15,6 +15,7 @@ from ch_backup.clickhouse.schema import (
 )
 from ch_backup.clickhouse.schema_probe import (
     can_create_probe,
+    has_local_probe_storage,
     probe_database,
     probe_table,
     schema_engine,
@@ -82,7 +83,18 @@ def validate_table_schemas(context: BackupContext, tables: list[Table]) -> None:
             raise ClickhouseBackupError(
                 f"Schema preflight failed for {table.database}.{table.name}: {mask_sql_literals(str(error))}"
             ) from None
-    candidates = tables.copy()
+    # Empty MergeTree tables still write format_version.txt. A remote-backed
+    # policy (including a mixed policy or an engine default) is not isolated.
+    has_merge_tree = any(
+        (schema_engine(ast) or "").endswith("MergeTree") for ast in asts.values()
+    )
+    policies = context.ch_ctl.get_storage_policies() if has_merge_tree else {}
+    disks = context.ch_ctl.get_disks() if has_merge_tree else {}
+    candidates = [
+        table
+        for table in tables
+        if has_local_probe_storage(table, policies, disks, context.ch_config.config)
+    ]
     # Excluding an external object also excludes views which would access it.
     while True:
         names = {f"{table.database}.{table.name}" for table in candidates}
@@ -97,7 +109,7 @@ def validate_table_schemas(context: BackupContext, tables: list[Table]) -> None:
     for table in tables:
         if table not in candidates:
             logging.info(
-                "Schema preflight for {}.{}: syntax only (external engine, active query, or dependency outside the isolated schemas)",
+                "Schema preflight for {}.{}: syntax only (external engine/storage, active query, or dependency outside the isolated schemas)",
                 table.database,
                 table.name,
             )
@@ -108,8 +120,12 @@ def validate_table_schemas(context: BackupContext, tables: list[Table]) -> None:
     table_names = {(table.database, table.name) for table in candidates}
     defaults = context.ch_config.config.get("replicated_merge_tree")
     policy = defaults.get("storage_policy") if defaults is not None else None
+    disk = defaults.get("disk") if defaults is not None else None
     probes = [
-        (table, probe_table(table, databases, table_names, policy))
+        (
+            table,
+            probe_table(table, databases, table_names, policy, replicated_disk=disk),
+        )
         for table in candidates
     ]
     created = []

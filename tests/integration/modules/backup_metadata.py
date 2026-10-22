@@ -99,9 +99,9 @@ class BackupStorage:
         }
 
     def replace_table_schema(
-        self, backup_name: str, database: str, table: str, old: str, new: str
+        self, backup_name: str, database: str, table: str, old: str, new: str | None
     ) -> None:
-        """Change one saved definition using the normal encrypted layout writer."""
+        """Change one saved definition; new=None simulates an empty schema file."""
         backup = self.layout.get_backup(backup_name)
         assert backup is not None
         statements = self.layout.get_table_create_statements(
@@ -109,7 +109,14 @@ class BackupStorage:
         )
         assert any(name == table and old in sql for name, sql in statements)
         statements = [
-            (name, sql.replace(old, new) if name == table else sql)
+            (
+                name,
+                (
+                    ("" if new is None else sql.replace(old, new))
+                    if name == table
+                    else sql
+                ),
+            )
             for name, sql in statements
         ]
         self.layout.upload_create_statements(

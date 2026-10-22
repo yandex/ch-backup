@@ -970,25 +970,19 @@ class ClickhouseBackup:
                     schema_locks,
                 )
                 # Restore databases.
-                restored_databases = self._database_backup_manager.restore(
+                database_restore = self._database_backup_manager.restore(
                     self._context,
                     databases,
                     keep_going,
                     metadata_cleaner,
-                    table_schemas_complete=(
-                        prepared_restore.duplicate_uuid_skipped == 0
-                        and prepared_restore.missing_create_statement_skipped == 0
-                        and (
-                            prepared_restore.storage_restore is None
-                            or len(prepared_restore.storage_restore.errors) == 0
-                        )
-                        and {(table.database, table.name) for table in tables}
-                        <= {
-                            (table.database, table.name)
-                            for table in prepared_restore.tables
-                        }
-                    ),
+                    incomplete_table_databases=prepared_restore.incomplete_databases,
                 )
+                restored_databases = database_restore.restored
+                databases = {
+                    name: db
+                    for name, db in databases.items()
+                    if name not in database_restore.skipped
+                }
 
                 # Wait for replicated databases to sync by tracking log_ptr in ZooKeeper.
                 # Always use keep_going=True here: FAILED is an expected intermediate state
@@ -1036,6 +1030,11 @@ class ClickhouseBackup:
 
                 if self._context.config["restore_fail_on_attach_error"]:
                     raise ClickhouseBackupError(msg)
+            if database_restore.skipped:
+                raise ClickhouseBackupError(
+                    "Databases skipped because table schema preflight was incomplete: "
+                    + ", ".join(sorted(database_restore.skipped))
+                )
 
     def _get_parts_backup(
         self, sources: BackupSources, parts_backup_name: str | None

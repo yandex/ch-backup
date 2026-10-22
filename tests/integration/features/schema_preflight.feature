@@ -126,3 +126,120 @@ Feature: Validate restore schemas before deleting existing data
     """
     2	2
     """
+
+  Scenario: Preflight preserves a backslash and backtick in a table name
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE preflight_names;
+    CREATE TABLE preflight_names.`a\\\` (x UInt8) ENGINE=Memory -- ` (id UInt64) ENGINE=MergeTree ORDER BY id;
+    INSERT INTO preflight_names.`a\\\` (x UInt8) ENGINE=Memory -- ` VALUES (42);
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: preflight_names_backup
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    And we execute query on clickhouse02
+    """
+    SELECT engine, (SELECT id FROM preflight_names.`a\\\` (x UInt8) ENGINE=Memory -- `) FROM system.tables WHERE database = 'preflight_names'
+    """
+    Then we get response
+    """
+    MergeTree	42
+    """
+
+  Scenario: Preflight does not create copies using S3 storage
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE preflight_storage;
+    CREATE TABLE preflight_storage.remote_table (id UInt64) ENGINE=MergeTree ORDER BY id SETTINGS storage_policy='s3';
+    CREATE TABLE preflight_storage.bad (id UInt64) ENGINE=Memory;
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: preflight_storage_backup
+    """
+    And the schema in clickhouse01 backup "preflight_storage_backup" is changed with
+    """
+    database: preflight_storage
+    table: bad
+    old: UInt64
+    new: MissingPreflightType
+    """
+    When we try to execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore preflight_storage_backup
+    """
+    Then command exits with code 1
+    And we get response contains
+    """
+    Schema preflight failed: preflight_storage.bad:
+    """
+    When we execute queries on clickhouse02
+    """
+    SYSTEM FLUSH LOGS;
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT count() FROM system.query_log WHERE query_kind = 'Create' AND position(query, '_ch_backup_preflight_') > 0 AND position(query, 'remote_table') > 0
+    """
+    Then we get response
+    """
+    0
+    """
+
+  Scenario: Preflight keeps an incomplete database and restores an independent database
+    Given ClickHouse settings
+    """
+    allow_deprecated_database_ordinary: 1
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE preflight_bad ENGINE=Atomic;
+    CREATE DATABASE preflight_good ENGINE=Atomic;
+    CREATE TABLE preflight_bad.missing (id UInt64) ENGINE=MergeTree ORDER BY id;
+    CREATE TABLE preflight_bad.present (id UInt64) ENGINE=MergeTree ORDER BY id;
+    CREATE TABLE preflight_good.t (id UInt64) ENGINE=MergeTree ORDER BY id;
+    INSERT INTO preflight_bad.missing VALUES (10);
+    INSERT INTO preflight_bad.present VALUES (11);
+    INSERT INTO preflight_good.t VALUES (42);
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: preflight_independent
+    """
+    And the schema in clickhouse01 backup "preflight_independent" is changed with
+    """
+    database: preflight_bad
+    table: missing
+    old: UInt64
+    new: null
+    """
+    And we have executed queries on clickhouse02
+    """
+    CREATE DATABASE preflight_bad ENGINE=Ordinary;
+    CREATE DATABASE preflight_good ENGINE=Ordinary;
+    CREATE TABLE preflight_bad.missing (id UInt64) ENGINE=MergeTree ORDER BY id;
+    CREATE TABLE preflight_bad.present (id UInt64) ENGINE=MergeTree ORDER BY id;
+    CREATE TABLE preflight_good.t (id UInt64) ENGINE=MergeTree ORDER BY id;
+    INSERT INTO preflight_bad.missing VALUES (99);
+    INSERT INTO preflight_bad.present VALUES (98);
+    INSERT INTO preflight_good.t VALUES (97);
+    """
+    When we try to execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore --keep-going preflight_independent
+    """
+    Then command exits with code 1
+    And we get response contains
+    """
+    Databases skipped because table schema preflight was incomplete: preflight_bad
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT (SELECT engine FROM system.databases WHERE name='preflight_bad'), (SELECT id FROM preflight_bad.missing), (SELECT id FROM preflight_bad.present), (SELECT engine FROM system.databases WHERE name='preflight_good'), (SELECT id FROM preflight_good.t), (SELECT count() FROM system.databases WHERE startsWith(name, '_ch_backup_preflight_'))
+    """
+    Then we get response
+    """
+    Ordinary	99	98	Atomic	42	0
+    """

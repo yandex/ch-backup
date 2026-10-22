@@ -4,6 +4,7 @@ ClickHouse backup logic for databases.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Sequence
 
 from ch_backup import logging
@@ -19,6 +20,14 @@ from ch_backup.clickhouse.schema import (
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.logic.schema_preflight import validate_database_schemas
+
+
+@dataclass
+class DatabaseRestoreResult:
+    """Created databases and replacements refused before destructive work."""
+
+    restored: list[Database]
+    skipped: set[str]
 
 
 class DatabaseBackup(BackupManager):
@@ -65,26 +74,34 @@ class DatabaseBackup(BackupManager):
         keep_going: bool,
         metadata_cleaner: MetadataCleaner | None,
         *,
-        table_schemas_complete: bool = True,
-    ) -> list[Database]:
+        incomplete_table_databases: set[str] | None = None,
+    ) -> DatabaseRestoreResult:
         """
         Restore database objects.
         """
         # pylint: disable=too-many-branches
         logging.debug("Retrieving list of databases")
         present_databases = {db.name: db for db in context.ch_ctl.get_databases()}
-        if not table_schemas_complete:
-            replacements = [
-                name
-                for name, db in databases.items()
-                if name in present_databases
-                and db.engine != present_databases[name].engine
-            ]
-            if replacements:
-                raise ClickhouseBackupError(
-                    "Cannot replace databases with incomplete table schema preflight: "
-                    + ", ".join(replacements)
-                )
+        skipped = {
+            name
+            for name, db in databases.items()
+            if name in (incomplete_table_databases or set())
+            and name in present_databases
+            and db.engine != present_databases[name].engine
+        }
+        if skipped:
+            message = (
+                "Cannot replace databases with incomplete table schema preflight: "
+                + ", ".join(sorted(skipped))
+            )
+            if not keep_going:
+                raise ClickhouseBackupError(message)
+            logging.warning(
+                "{}; skipping their schemas and data due to --keep-going", message
+            )
+            databases = {
+                name: db for name, db in databases.items() if name not in skipped
+            }
         create_statements = validate_database_schemas(context, databases)
 
         databases_to_restore: dict[str, Database] = {}
@@ -144,4 +161,4 @@ class DatabaseBackup(BackupManager):
                     raise
 
         logging.info("All databases restored")
-        return list(databases_to_restore.values())
+        return DatabaseRestoreResult(list(databases_to_restore.values()), skipped)
