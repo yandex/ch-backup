@@ -957,27 +957,32 @@ class ClickhouseBackup:
                     self._config["multiprocessing"]["drop_replica_threads"],
                 )
 
-            # Validate adapted schemas before DatabaseBackup can drop an entire
+            # Validate schemas before DatabaseBackup can drop an entire
             # database. Reuse the prepared tables and locks through table CREATE.
             with ExitStack() as schema_locks:
-                prepared_restore = None
-                if skip_cloud_storage:
-                    prepared_restore = self._table_backup_manager.prepare_restore(
-                        self._context,
-                        databases,
-                        tables,
-                        keep_going,
-                        skip_cloud_storage,
-                        restore_tables_in_replicated_database,
-                        schema_locks,
-                    )
+                prepared_restore = self._table_backup_manager.prepare_restore(
+                    self._context,
+                    databases,
+                    tables,
+                    keep_going,
+                    skip_cloud_storage,
+                    restore_tables_in_replicated_database,
+                    schema_locks,
+                )
                 # Restore databases.
-                restored_databases = self._database_backup_manager.restore(
+                database_restore = self._database_backup_manager.restore(
                     self._context,
                     databases,
                     keep_going,
                     metadata_cleaner,
+                    incomplete_table_databases=prepared_restore.incomplete_databases,
                 )
+                restored_databases = database_restore.restored
+                databases = {
+                    name: db
+                    for name, db in databases.items()
+                    if name not in database_restore.skipped
+                }
 
                 # Wait for replicated databases to sync by tracking log_ptr in ZooKeeper.
                 # Always use keep_going=True here: FAILED is an expected intermediate state
@@ -1025,6 +1030,11 @@ class ClickhouseBackup:
 
                 if self._context.config["restore_fail_on_attach_error"]:
                     raise ClickhouseBackupError(msg)
+            if database_restore.skipped:
+                raise ClickhouseBackupError(
+                    "Databases skipped because table schema preflight was incomplete: "
+                    + ", ".join(sorted(database_restore.skipped))
+                )
 
     def _get_parts_backup(
         self, sources: BackupSources, parts_backup_name: str | None

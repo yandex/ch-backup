@@ -2189,6 +2189,9 @@ def test_restore_skips_unreadable_database_schemas(
     tables = {("db1", "existing"): existing}
     controller = MagicMock()
     controller.get_tables.return_value = [existing]
+    controller.explain_schema.return_value = (
+        " Storage definition (children 1)\n  Function MergeTree"
+    )
     controller.get_detached_tables.return_value = []
     controller.get_replicas.return_value = []
     controller.get_disks.return_value = {}

@@ -189,7 +189,7 @@ def escape(s: str, regex: bool = False) -> str:
     """
     Escaping special characters for SQL identifiers.
     """
-    escaped = r"\`".join(s.split("`"))
+    escaped = s.replace("\\", "\\\\").replace("`", "\\`")
 
     if regex:
         escaped = re.escape(escaped)

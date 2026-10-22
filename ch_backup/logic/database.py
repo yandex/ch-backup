@@ -4,6 +4,7 @@ ClickHouse backup logic for databases.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Sequence
 
 from ch_backup import logging
@@ -16,7 +17,17 @@ from ch_backup.clickhouse.schema import (
     to_attach_query,
     to_create_query,
 )
+from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.logic.backup_manager import BackupManager
+from ch_backup.logic.schema_preflight import validate_database_schemas
+
+
+@dataclass
+class DatabaseRestoreResult:
+    """Created databases and replacements refused before destructive work."""
+
+    restored: list[Database]
+    skipped: set[str]
 
 
 class DatabaseBackup(BackupManager):
@@ -62,13 +73,36 @@ class DatabaseBackup(BackupManager):
         databases: dict[str, Database],
         keep_going: bool,
         metadata_cleaner: MetadataCleaner | None,
-    ) -> list[Database]:
+        *,
+        incomplete_table_databases: set[str] | None = None,
+    ) -> DatabaseRestoreResult:
         """
         Restore database objects.
         """
         # pylint: disable=too-many-branches
         logging.debug("Retrieving list of databases")
         present_databases = {db.name: db for db in context.ch_ctl.get_databases()}
+        skipped = {
+            name
+            for name, db in databases.items()
+            if name in (incomplete_table_databases or set())
+            and name in present_databases
+            and db.engine != present_databases[name].engine
+        }
+        if skipped:
+            message = (
+                "Cannot replace databases with incomplete table schema preflight: "
+                + ", ".join(sorted(skipped))
+            )
+            if not keep_going:
+                raise ClickhouseBackupError(message)
+            logging.warning(
+                "{}; skipping their schemas and data due to --keep-going", message
+            )
+            databases = {
+                name: db for name, db in databases.items() if name not in skipped
+            }
+        create_statements = validate_database_schemas(context, databases)
 
         databases_to_restore: dict[str, Database] = {}
         for name, db in databases.items():
@@ -93,18 +127,6 @@ class DatabaseBackup(BackupManager):
                 if database.is_replicated_db_engine()
             ]
             metadata_cleaner.clean_database_metadata(replicated_databases)
-
-        logging.debug("Downloading database create statements")
-        databases_to_download = [
-            name
-            for name, db in databases_to_restore.items()
-            if not db.has_embedded_metadata()
-        ]
-        create_statements = dict(
-            context.backup_layout.get_database_create_statements(
-                context.backup_meta, databases_to_download
-            )
-        )
 
         logging.info("Restoring databases: {}", ", ".join(databases_to_restore.keys()))
         for db in databases_to_restore.values():
@@ -139,4 +161,4 @@ class DatabaseBackup(BackupManager):
                     raise
 
         logging.info("All databases restored")
-        return list(databases_to_restore.values())
+        return DatabaseRestoreResult(list(databases_to_restore.values()), skipped)

@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 
 import requests
+import tenacity
 
 from ch_backup import logging
 from ch_backup.clickhouse.masking import mask_named_collection, mask_sql_literals
@@ -28,6 +29,15 @@ class ClickhouseErrorRetriable(ClickhouseError):
     """
     ClickHouse interaction error.
     """
+
+
+class _QueryRetryAllowed(tenacity.retry_base):
+    """Apply the query's retry flag to transport errors as well as HTTP errors."""
+
+    def __call__(self, retry_state: tenacity.RetryCallState) -> bool:
+        # Keep positional callers compatible with query's original signature.
+        positional = retry_state.args[5] if len(retry_state.args) > 5 else True
+        return bool(retry_state.kwargs.get("should_retry", positional))
 
 
 class ClickhouseClient:
@@ -53,7 +63,12 @@ class ClickhouseClient:
         """
         return self._session.params
 
-    @retry((requests.exceptions.ConnectionError, ClickhouseErrorRetriable))
+    @retry(
+        (requests.exceptions.ConnectionError, ClickhouseErrorRetriable),
+        # Honor positional callers too. Replaying a committed CREATE/DROP after
+        # losing its response cannot establish ownership of a probe database.
+        retry_if=_QueryRetryAllowed(),
+    )
     # pylint: disable=too-many-positional-arguments
     def query(
         self,

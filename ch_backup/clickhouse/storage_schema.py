@@ -133,6 +133,42 @@ def adapt_storage_schema(
     )
 
 
+def merge_tree_storage_settings(statement: str) -> dict[str, str | None]:
+    """Read explicit placement without rewriting it; None denotes an expression."""
+    engine = find_merge_tree_engine(statement)
+    if engine is None:
+        return {}
+    storage = statement[engine.end() :]
+    clauses = list(_storage_clauses(storage))
+    result: dict[str, str | None] = {}
+    for index, (name, _, start) in enumerate(clauses):
+        if name in _STORAGE_END_CLAUSES:
+            break
+        if name != "SETTINGS":
+            continue
+        end = clauses[index + 1][1] if index + 1 < len(clauses) else len(storage)
+        values = _without_comments(storage[start:end])
+        begin = 0
+        for end in [m.start() for m in re.finditer(",", _top_level_sql(values))] + [
+            len(values)
+        ]:
+            fragment = values[begin:end].strip()
+            begin = end + 1
+            for key, pattern in (
+                ("disk", _DISK_SETTING),
+                ("storage_policy", _POLICY_SETTING),
+            ):
+                setting = pattern.match(fragment)
+                if setting is not None:
+                    literal = _STRING.fullmatch(fragment[setting.end() :].strip())
+                    result[key] = (
+                        _unquote_sql_string(literal[0])
+                        if literal is not None and key not in result
+                        else None
+                    )
+    return result
+
+
 def _remove_disk_setting(storage: str) -> tuple[str, str | None]:
     """Remove a named disk from table SETTINGS, preserving other assignments."""
     settings = next(
