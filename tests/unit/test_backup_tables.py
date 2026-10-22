@@ -10,12 +10,15 @@ from dataclasses import replace
 from pathlib import Path
 from tarfile import BLOCKSIZE
 from typing import Callable, Sequence
-from unittest.mock import MagicMock, Mock, call, patch
+from unittest.mock import ANY, MagicMock, Mock, call, patch
 
 import pytest
+from loguru import logger
 
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata, TableMetadata
+from ch_backup.backup.metadata.detached_part_metadata import DetachedPartMetadata
 from ch_backup.backup.metadata.table_metadata import DataSkippedReason
+from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.backup_context import BackupContext
 from ch_backup.calculators import calc_aligned_files_size, calc_tarball_size
 from ch_backup.clickhouse.client import ClickhouseError
@@ -25,6 +28,7 @@ from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import ClickhouseBackupError, StorageError, TerminatingSignal
 from ch_backup.logic.table import TableBackup, TableMetadataChangeTime
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
+from ch_backup.storage.engine.s3.s3_retry import S3RetryingError
 
 UUID = "fa8ff291-1922-4b7f-afa7-06633d5e16ae"
 BACKUP_NAME = "20181017T210300"
@@ -2120,3 +2124,145 @@ class TestDetachedPartsBackup:
         context.backup_layout.upload_detached_part.assert_called_once()
         assert len(context.backup_meta.get_detached_parts()) == 1
         assert "only local metadata files" in warning.call_args.args[0]
+
+
+@pytest.mark.parametrize("keep_going", [False, True])
+@pytest.mark.parametrize("all_failed", [False, True])
+# pylint: disable=too-many-locals,too-many-statements
+def test_restore_skips_unreadable_database_schemas(
+    keep_going: bool,
+    all_failed: bool,
+) -> None:
+    context = _make_backup_context()
+    context.restore_context = Mock(
+        spec=RestoreContext,
+        part_restored=Mock(return_value=False),
+        part_downloaded=Mock(return_value=False),
+    )
+    other_db = Database("db2", "Atomic", "/metadata/db2.sql", None, None)
+    context.backup_meta.add_database(other_db)
+    broken = TableMetadata("db1", "existing", "MergeTree", None)
+    healthy = TableMetadata("db2", "healthy", "MergeTree", None)
+    for table in (broken, healthy):
+        table.add_part(
+            PartMetadata(
+                table.database,
+                table.name,
+                "all_1_1_0",
+                "checksum",
+                512,
+                ["checksums.txt"],
+                True,
+            )
+        )
+        context.backup_meta.add_table(table)
+    broken.add_detached_part(
+        DetachedPartMetadata(
+            "db1",
+            "existing",
+            "all_2_2_0",
+            None,
+            "checksum",
+            512,
+            ["checksums.txt"],
+            True,
+            "default",
+        )
+    )
+    existing = Table(
+        "db1",
+        "existing",
+        "MergeTree",
+        [],
+        [],
+        "",
+        "",
+        "CREATE TABLE db1.existing (x UInt64) ENGINE=MergeTree ORDER BY x",
+    )
+    tables = {("db1", "existing"): existing}
+    controller = MagicMock()
+    controller.get_tables.return_value = [existing]
+    controller.get_detached_tables.return_value = []
+    controller.get_replicas.return_value = []
+    controller.get_disks.return_value = {}
+    controller.get_table.side_effect = lambda db, name, **_kwargs: tables.get(
+        (db, name)
+    )
+    controller.create_table.side_effect = lambda table: tables.__setitem__(
+        (table.database, table.name), table
+    )
+    controller.get_detached_part_path.side_effect = lambda table, disk, name: (
+        f"/data/{table.database}/{table.name}/detached/{name}"
+    )
+    context.ch_ctl = controller
+
+    def download_schema(_backup, database, _tables):
+        if database == "db1" or all_failed:
+            raise S3RetryingError("S3 GetObject failed")
+        return [
+            (
+                "healthy",
+                "CREATE TABLE db2.healthy (x UInt64) ENGINE=MergeTree ORDER BY x",
+            )
+        ]
+
+    layout = MagicMock(
+        get_table_create_statements=Mock(side_effect=download_schema),
+        download_data_part=Mock(
+            side_effect=lambda _backup, part, _path, callback: callback(part)
+        ),
+    )
+    context.backup_layout = layout
+    messages: list[str] = []
+    sink = logger.add(messages.append, format="{message}", level="WARNING")
+    try:
+
+        def restore():
+            TableBackup().restore(
+                context=context,
+                databases={"db1": DATABASE, "db2": other_db},
+                schema_only=False,
+                tables=[],
+                metadata_cleaner=None,
+                cloud_storage_source_bucket=None,
+                cloud_storage_source_path=None,
+                cloud_storage_source_endpoint=None,
+                skip_cloud_storage=False,
+                restore_detached_parts=True,
+                keep_going=keep_going,
+                restore_tables_in_replicated_database=False,
+            )
+
+        with patch("ch_backup.logic.table.ClickHouseTemporaryDisks"):
+            if keep_going:
+                restore()
+            else:
+                with pytest.raises(S3RetryingError, match="S3 GetObject failed"):
+                    restore()
+    finally:
+        logger.remove(sink)
+
+    assert tables[("db1", "existing")] is existing
+    controller.drop_table_if_exists.assert_not_called()
+    layout.download_detached_part.assert_not_called()
+    if keep_going and not all_failed:
+        restored = tables[("db2", "healthy")]
+        controller.create_table.assert_called_once_with(restored)
+        controller.attach_part.assert_called_once_with(restored, "all_1_1_0")
+        layout.download_data_part.assert_called_once_with(
+            context.backup_meta,
+            healthy.get_parts()[0],
+            "/data/db2/healthy/detached/all_1_1_0",
+            callback=ANY,
+        )
+    else:
+        assert ("db2", "healthy") not in tables
+        controller.create_table.assert_not_called()
+        controller.attach_part.assert_not_called()
+        layout.download_data_part.assert_not_called()
+    if keep_going:
+        assert any(
+            "db1" in message and "S3 GetObject failed" in message
+            for message in messages
+        )
+        assert any("schema and data" in message for message in messages)
