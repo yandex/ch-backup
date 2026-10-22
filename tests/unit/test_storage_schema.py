@@ -35,6 +35,7 @@ POLICIES = {
         "local", ("hot", "warm"), ("default", "hdd"), ("default", "hdd")
     ),
 }
+MERGE_TREE_AST = " Storage definition (children 1)\n  Function MergeTree"
 
 
 @pytest.mark.parametrize(
@@ -428,6 +429,7 @@ def _restore(metadata=b"ttl: d TO VOLUME 'cold', d + 10 DELETE\n"):
     # Model a target with local policies and an existing shared Keeper schema.
     # Vary metadata to represent either the first restore or a later replica.
     context = MagicMock()
+    context.ch_ctl.explain_schema.return_value = MERGE_TREE_AST
     context.ch_ctl.get_storage_policies.return_value = POLICIES
     context.ch_ctl.get_macros.return_value = {"shard": "s", "replica": "r"}
     context.ch_config.config = {"zookeeper": {"root": "/root"}}
@@ -621,6 +623,7 @@ def test_default_replicated_engine_converts_before_storage_adaptation(
 @pytest.mark.parametrize("failure_stage", ["adapt", "disk", "preprocess", "create"])
 def test_keep_going_restores_independent_schema_then_reports_error(failure_stage):
     context = MagicMock()
+    context.ch_ctl.explain_schema.return_value = MERGE_TREE_AST
     context.ch_ctl.get_storage_policies.return_value = POLICIES
     context.ch_config.config = {}
     bad, good = _table(), _table()

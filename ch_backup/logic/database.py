@@ -16,7 +16,9 @@ from ch_backup.clickhouse.schema import (
     to_attach_query,
     to_create_query,
 )
+from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.logic.backup_manager import BackupManager
+from ch_backup.logic.schema_preflight import validate_database_schemas
 
 
 class DatabaseBackup(BackupManager):
@@ -62,6 +64,8 @@ class DatabaseBackup(BackupManager):
         databases: dict[str, Database],
         keep_going: bool,
         metadata_cleaner: MetadataCleaner | None,
+        *,
+        table_schemas_complete: bool = True,
     ) -> list[Database]:
         """
         Restore database objects.
@@ -69,6 +73,19 @@ class DatabaseBackup(BackupManager):
         # pylint: disable=too-many-branches
         logging.debug("Retrieving list of databases")
         present_databases = {db.name: db for db in context.ch_ctl.get_databases()}
+        if not table_schemas_complete:
+            replacements = [
+                name
+                for name, db in databases.items()
+                if name in present_databases
+                and db.engine != present_databases[name].engine
+            ]
+            if replacements:
+                raise ClickhouseBackupError(
+                    "Cannot replace databases with incomplete table schema preflight: "
+                    + ", ".join(replacements)
+                )
+        create_statements = validate_database_schemas(context, databases)
 
         databases_to_restore: dict[str, Database] = {}
         for name, db in databases.items():
@@ -93,18 +110,6 @@ class DatabaseBackup(BackupManager):
                 if database.is_replicated_db_engine()
             ]
             metadata_cleaner.clean_database_metadata(replicated_databases)
-
-        logging.debug("Downloading database create statements")
-        databases_to_download = [
-            name
-            for name, db in databases_to_restore.items()
-            if not db.has_embedded_metadata()
-        ]
-        create_statements = dict(
-            context.backup_layout.get_database_create_statements(
-                context.backup_meta, databases_to_download
-            )
-        )
 
         logging.info("Restoring databases: {}", ", ".join(databases_to_restore.keys()))
         for db in databases_to_restore.values():

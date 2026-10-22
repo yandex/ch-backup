@@ -957,26 +957,37 @@ class ClickhouseBackup:
                     self._config["multiprocessing"]["drop_replica_threads"],
                 )
 
-            # Validate adapted schemas before DatabaseBackup can drop an entire
+            # Validate schemas before DatabaseBackup can drop an entire
             # database. Reuse the prepared tables and locks through table CREATE.
             with ExitStack() as schema_locks:
-                prepared_restore = None
-                if skip_cloud_storage:
-                    prepared_restore = self._table_backup_manager.prepare_restore(
-                        self._context,
-                        databases,
-                        tables,
-                        keep_going,
-                        skip_cloud_storage,
-                        restore_tables_in_replicated_database,
-                        schema_locks,
-                    )
+                prepared_restore = self._table_backup_manager.prepare_restore(
+                    self._context,
+                    databases,
+                    tables,
+                    keep_going,
+                    skip_cloud_storage,
+                    restore_tables_in_replicated_database,
+                    schema_locks,
+                )
                 # Restore databases.
                 restored_databases = self._database_backup_manager.restore(
                     self._context,
                     databases,
                     keep_going,
                     metadata_cleaner,
+                    table_schemas_complete=(
+                        prepared_restore.duplicate_uuid_skipped == 0
+                        and prepared_restore.missing_create_statement_skipped == 0
+                        and (
+                            prepared_restore.storage_restore is None
+                            or len(prepared_restore.storage_restore.errors) == 0
+                        )
+                        and {(table.database, table.name) for table in tables}
+                        <= {
+                            (table.database, table.name)
+                            for table in prepared_restore.tables
+                        }
+                    ),
                 )
 
                 # Wait for replicated databases to sync by tracking log_ptr in ZooKeeper.

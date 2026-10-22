@@ -8,6 +8,13 @@ from tests.integration.modules.backup_metadata import BackupStorage
 from tests.integration.modules.steps import get_step_data
 
 
+@given('the schema in {node:w} backup "{backup_name}" is changed with')
+def step_replace_table_schema(context, node, backup_name):
+    BackupStorage(context, node).replace_table_schema(
+        backup_name, **get_step_data(context)
+    )
+
+
 @given('a keyless copy configuration "{path}" on {node:w}')
 def step_keyless_copy_config(context, path, node):
     BackupStorage(context, node).create_keyless_config(path, **get_step_data(context))

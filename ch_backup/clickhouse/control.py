@@ -1177,6 +1177,53 @@ class ClickhouseCTL:
         )
         self._ch_client.query(table.create_statement, settings=settings)
 
+    def explain_schema(self, statement: str) -> str:
+        """Parse a schema without starting its engine or exposing SQL literals."""
+        return self._ch_client.query(
+            "EXPLAIN AST " + statement, should_retry=False, sensitive=True
+        )
+
+    def get_user_defined_function_names(self) -> set[str]:
+        """Functions whose bodies may access external systems during CREATE."""
+        response = self._ch_client.query(
+            "SELECT name FROM system.functions WHERE origin != 'System' FORMAT JSON"
+        )
+        return {row["name"] for row in response["data"]}
+
+    def create_schema_probe_database(
+        self, name: str, statement: str | None = None, ordinary: bool = False
+    ) -> None:
+        """Create an exclusively owned, disposable database."""
+        logging.info("Checking schemas in temporary database {}", name)
+        self._ch_client.query(
+            statement or f"CREATE DATABASE `{escape(name)}` ENGINE = Atomic",
+            # Ordinary backups are restored with ATTACH, which does not need
+            # the setting required for a fresh CREATE on recent servers.
+            settings={"allow_deprecated_database_ordinary": 1} if ordinary else None,
+            should_retry=False,
+            sensitive=True,
+        )
+
+    def create_schema_probe(self, table: Table) -> None:
+        """Create an isolated schema, resolving unqualified names inside its database."""
+        settings = {"database": table.database}
+        if table.has_unique_key():
+            settings["allow_experimental_unique_key"] = "1"
+        self._ch_client.query(
+            table.create_statement,
+            settings=settings,
+            should_retry=False,
+            sensitive=True,
+        )
+
+    def drop_schema_probe_database(self, name: str) -> None:
+        """Synchronously remove only a database created by schema preflight."""
+        self._ch_client.query(
+            f"DROP DATABASE `{escape(name)}` SYNC",
+            settings={"check_table_dependencies": 0},
+            should_retry=False,
+        )
+
     def restore_replica(self, table: Table) -> None:
         """
         Call SYSTEM RESTORE REPLICA for table.

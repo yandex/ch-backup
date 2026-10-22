@@ -35,6 +35,7 @@ from ch_backup.clickhouse.schema import (
 )
 from ch_backup.exceptions import ClickhouseBackupError, is_broken_executor
 from ch_backup.logic.backup_manager import BackupManager
+from ch_backup.logic.schema_preflight import validate_table_schemas
 from ch_backup.logic.storage_schema_restore import (
     StorageSchemaRestore,
     restore_disk_name,
@@ -723,6 +724,24 @@ class TableBackup(BackupManager):
             )
             storage_restore.lock_tables(tables_to_preprocess, schema_locks)
             storage_restore.check_existing_tables(tables_to_preprocess)
+            schemas_to_validate = tables_to_preprocess
+        else:
+            schemas_to_validate = []
+            for table in tables_to_preprocess:
+                # Keep the ordinary restore's rewrite at its original stage:
+                # an existing inner UUID may disappear when a database is replaced.
+                # Only a disposable copy is needed for the early server check.
+                schema = Table.make_dummy(table.database, table.name, table.uuid)
+                schema.engine = table.engine
+                schema.create_statement = table.create_statement
+                self._rewrite_table_schema(
+                    context,
+                    databases[table.database],
+                    schema,
+                    add_uuid_if_required=True,
+                )
+                schemas_to_validate.append(schema)
+        validate_table_schemas(context, schemas_to_validate)
         return PreparedTableRestore(
             tables_meta,
             filtered_tables_meta,

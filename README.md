@@ -17,6 +17,43 @@ The tool also supports deduplication at part-level granularity. It's set up
  set a start time to exclude earlier backups from deduplication.
 
 
+## Schema checks before restore
+
+Every restore that includes schemas checks the selected database, table, view
+and dictionary definitions before dropping a target database or table. This also
+applies to schema-only restores and restores without `--skip-cloud-storage`.
+Invalid syntax, failed trial creation, or failed cleanup abort this phase even
+with `--keep-going`.
+If table schemas were skipped because they could not be loaded or prepared,
+preflight also refuses to replace a database with a different engine.
+
+ClickHouse first parses the DDL with `EXPLAIN AST`. Local tables and views whose
+dependencies can be isolated are then created in uniquely named
+`_ch_backup_preflight_*` databases. The copies use fresh UUIDs and references to
+other copies. No backup data is loaded. Dependency failures are retried after
+other objects have been created. The temporary databases are dropped
+synchronously before target database/table restoration begins.
+
+ReplicatedMergeTree copies use the corresponding non-replicated engine and retain
+an explicitly configured default replicated storage policy. They never join the
+original Keeper paths. This checks local schema creation, not replica registration
+or compatibility with shared Keeper metadata; the checks described below still
+apply. Replicated and external database engines receive syntax checks only.
+
+External engines, dictionaries, Distributed/Buffer tables, active views, and
+queries using external functions or dependencies outside the isolated set receive
+syntax checks only. Creating them could start consumers or contact external
+systems. The log identifies these objects. Ambiguous view aliases also fall back
+to syntax checks. This phase does not validate external connectivity, data, all
+SELECT semantics, or permissions under the final object names. Access entities,
+UDFs, named collections and workloads retain their own restore procedures.
+
+The restoring user needs CREATE/DROP DATABASE and the privileges required to
+create the checked objects. Preflight adds DDL work proportional to the number of
+schemas, plus retries for dependencies. Cleanup errors report the temporary
+database names; a killed process or an ambiguous network failure may also leave
+temporary databases for manual inspection and removal.
+
 ## Restore without cloud storage
 
 `ch-backup restore --skip-cloud-storage BACKUP` restores local parts and skips
@@ -61,8 +98,7 @@ changes retain the ordinary restore requirements.
 Removed disk settings, policy replacements and removed TTL rules are logged. With `--keep-going`,
 independent tables continue after a schema adaptation or creation failure, but
 the command reports those failures with a nonzero exit status. A shared Keeper
-metadata conflict stops the restore immediately. The behavior without
-`--skip-cloud-storage` is unchanged.
+metadata conflict or schema preflight failure stops the restore immediately.
 
 ## Workload and resource restore
 

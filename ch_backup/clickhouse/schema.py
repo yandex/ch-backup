@@ -6,7 +6,7 @@ import re
 
 from ch_backup import logging
 from ch_backup.clickhouse.models import Database, Table
-from ch_backup.clickhouse.storage_schema import find_merge_tree_engine
+from ch_backup.clickhouse.storage_schema import _STRING, find_merge_tree_engine
 from ch_backup.util import escape
 
 
@@ -44,7 +44,7 @@ def rewrite_table_schema(
             # Locate ENGINE outside strings/expressions, then strip explicit replica
             # arguments before its prefix so the original offsets remain valid.
             params = re.match(
-                r"\s*\((?P<params>('[^']+', '[^']+'(,\s*|))|)",
+                rf"\s*\((?P<params>(?:{_STRING.pattern}\s*,\s*{_STRING.pattern}(?:\s*,\s*)?)?)",
                 create_statement[engine.end() :],
             )
             if params is not None:
