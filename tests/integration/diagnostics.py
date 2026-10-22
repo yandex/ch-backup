@@ -2,6 +2,7 @@
 
 import json
 import os
+import uuid
 from pathlib import Path
 
 from behave.model import Step
@@ -50,20 +51,53 @@ def write_failure(failure: dict) -> None:
         logging.warning("Cannot publish integration failure: {}", error)
 
 
-def print_failure(title: str, details: str, *, annotate: bool = True) -> None:
-    """Keep the complete traceback visible and emit a concise Actions annotation."""
-    if annotate and os.getenv("GITHUB_ACTIONS") == "true":
-        message = title.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-        print(f"::error::{message}", flush=True)
-    # Prefix untrusted process output so it cannot emit Actions workflow commands.
-    heading = "\n".join("ERROR: " + line for line in title.splitlines())
-    print(
-        heading + "\n" + "\n".join("  " + line for line in details.splitlines()),
-        flush=True,
+def annotate(title: str, filename: str | None = None, line: int | None = None) -> None:
+    """Show a failure on the page of a GitHub Actions run, at its line when known."""
+    if os.getenv("GITHUB_ACTIONS") != "true":
+        return
+    location = (
+        f" file={_command_value(filename, prop=True)},line={int(line)}"
+        if filename and line
+        else ""
     )
+    print(f"::error{location}::{_command_value(title)}", flush=True)
 
 
-def print_process_failure(title: str, path: Path) -> None:
+def _command_value(text: str, *, prop: bool = False) -> str:
+    """Values of workflow commands must not end the command or start another one."""
+    text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    return text.replace(":", "%3A").replace(",", "%2C") if prop else text
+
+
+def print_untrusted(text: str) -> None:
+    """Print output of tests: on GitHub Actions its lines cannot run workflow commands."""
+    github = os.getenv("GITHUB_ACTIONS") == "true"
+    token = uuid.uuid4().hex
+    if github:
+        print(f"::stop-commands::{token}", flush=True)
+    print(text, flush=True)
+    if github:
+        print(f"::{token}::", flush=True)
+
+
+def print_failure(
+    title: str, details: str, *, annotate_failure: bool = True, fold: bool = False
+) -> None:
+    """Keep the complete traceback available and emit a concise Actions annotation."""
+    if annotate_failure:
+        annotate(title)
+    heading = "\n".join("ERROR: " + line for line in title.splitlines())
+    fold = fold and os.getenv("GITHUB_ACTIONS") == "true"
+    # A folded group keeps a long log out of the way; its title is the heading.
+    print(f"::group::{heading}" if fold else heading, flush=True)
+    print_untrusted("\n".join("  " + line for line in details.splitlines()))
+    if fold:
+        print("::endgroup::", flush=True)
+
+
+def print_process_failure(
+    title: str, path: Path, *, annotate_failure: bool = True
+) -> None:
     """Show enough process output to diagnose setup, hooks and missing reports."""
     try:
         with path.open("rb") as source:
@@ -72,4 +106,9 @@ def print_process_failure(title: str, path: Path) -> None:
         details = "\n".join(tail.splitlines()[-120:])
     except OSError as error:
         details = f"Cannot read process log: {error}"
-    print_failure(title, f"Log: {path}\nLast output:\n{details}")
+    print_failure(
+        title,
+        f"Log: {path}\nLast output:\n{details}",
+        annotate_failure=annotate_failure,
+        fold=True,
+    )
