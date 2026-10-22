@@ -7,8 +7,8 @@ Unit tests disks module.
 
 import copy
 import io
+import json
 import os
-import shlex
 import shutil
 import sys
 import tempfile
@@ -56,13 +56,31 @@ from tests.unit.utils import assert_equal, parametrize
 def test_disk_command_rejects_errors_even_with_zero_exit_code(exitcode, stderr):
     script = f"import sys; sys.stderr.write({stderr!r}); sys.exit({exitcode})"
     with pytest.raises(ClickHouseDisksException, match="call failed with exitcode"):
-        _exec("part", sys.executable, ["-c", shlex.quote(script)])
+        _exec("part", sys.executable, ["-c", script])
 
 
 @pytest.mark.parametrize("stderr", ["", " \n\t\n"])
 def test_disk_command_returns_stdout_without_errors(stderr):
     script = f"import sys; sys.stderr.write({stderr!r}); print('result')"
-    assert _exec("part", sys.executable, ["-c", shlex.quote(script)]) == ["result\n"]
+    assert _exec("part", sys.executable, ["-c", script]) == ["result\n"]
+
+
+@pytest.mark.parametrize("error_type", [FileNotFoundError, PermissionError])
+def test_disk_command_wraps_launch_errors(tmp_path, error_type):
+    executable = tmp_path / "command"
+    if error_type is PermissionError:
+        executable.write_text("#!/bin/sh\nexit 0\n")
+    with pytest.raises(ClickHouseDisksException) as error:
+        _exec("part", str(executable), [])
+    assert isinstance(error.value.__cause__, error_type)
+    assert str(error.value.__cause__) in str(error.value)
+
+
+def test_disk_command_preserves_literal_arguments():
+    arguments = ["", "path with spaces\t\n", "'\"\\ $HOME $(printf expanded); * ?"]
+    script = "import json, sys; print(json.dumps(sys.argv[1:]))"
+    result = _exec("part", sys.executable, ["-c", script, *arguments])
+    assert json.loads("".join(result)) == arguments
 
 
 @parametrize(
@@ -1330,9 +1348,10 @@ def test_remove_part_uses_disk_and_version_specific_cli(modern_cli):
     execute.assert_called_once_with(
         "part",
         exe="/usr/bin/clickhouse-disks",
-        common_args=common_args + (["--query"] if modern_cli else []),
-        command="'remove" if modern_cli else "remove",
-        command_args=["--recursive", path, "'"] if modern_cli else [path],
+        common_args=common_args,
+        command="remove",
+        command_args=["--recursive", path] if modern_cli else [path],
+        query=modern_cli,
     )
 
 
