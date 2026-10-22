@@ -3,13 +3,16 @@ config module defines Config class and default values
 """
 
 import copy
+import math
 import socket
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import yaml
 from humanfriendly import parse_size, parse_timespan
 from loguru import logger
+
+from ch_backup.exceptions import ConfigurationError
 
 
 def _as_seconds(t: str) -> int:
@@ -33,6 +36,40 @@ def as_datetime(value: Any) -> datetime | None:
     if not isinstance(value, datetime) or value.utcoffset() is None:
         raise ValueError(error)
     return value.astimezone(timezone.utc)
+
+
+def copy_deduplication_cutoff(copy_config: dict, now: datetime) -> datetime | None:
+    """Validate the copy window and return its inclusive lower bound, or disable it."""
+    error = (
+        "copy.deduplication_age_limit must be a mapping of timedelta units to "
+        "finite nonnegative numbers, with a representable age"
+    )
+    if not isinstance(copy_config, dict):
+        raise ConfigurationError(error)
+    value = copy_config.get("deduplication_age_limit", {"days": 0})
+    units = {
+        "weeks",
+        "days",
+        "hours",
+        "minutes",
+        "seconds",
+        "milliseconds",
+        "microseconds",
+    }
+    try:
+        if not isinstance(value, dict) or any(
+            key not in units
+            or isinstance(amount, bool)
+            or not isinstance(amount, (int, float))
+            or not math.isfinite(amount)
+            or amount < 0
+            for key, amount in value.items()
+        ):
+            raise ValueError(error)
+        age = timedelta(**value)
+        return now - age if age != timedelta(0) else None
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise ConfigurationError(error) from exc
 
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -119,6 +156,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "kill_old_freeze_queries": True,
     },
     "copy": {
+        # Independent target window for local parts; zero preserves source-link reuse only.
+        "deduplication_age_limit": {"days": 0},
         # Copy objects on the server side if source and target buckets belong to the same S3 service
         # and are accessible with the same credentials.
         "server_side_copy": True,

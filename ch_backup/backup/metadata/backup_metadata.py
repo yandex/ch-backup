@@ -540,6 +540,16 @@ class BackupMetadata:
         raw_part["link_part_name"] = None
         self.real_size += part.size
 
+    def link_part(self, part: PartMetadata, backup_name: str, part_name: str) -> None:
+        """Reference a physical owner, preserving the logical size of this backup."""
+        raw_part = self._databases[part.database]["tables"][part.table]["parts"][
+            part.name
+        ]
+        if not raw_part.get("link"):
+            self.real_size -= part.size
+        raw_part["link"] = backup_name
+        raw_part["link_part_name"] = part_name if part_name != part.name else None
+
     def skip_table_data(self, db_name: str, table_name: str, reason: str) -> None:
         """
         Drop data parts of a table and record why its data was left out.

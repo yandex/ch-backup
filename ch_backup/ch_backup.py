@@ -37,7 +37,7 @@ from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner, select_replica_drop
 from ch_backup.clickhouse.models import Database, Table
 from ch_backup.clickhouse.part_checksums import CLICKHOUSE_BINARY
-from ch_backup.config import Config, as_datetime
+from ch_backup.config import Config, as_datetime, copy_deduplication_cutoff
 from ch_backup.exceptions import (
     BackupNotFound,
     ClickhouseBackupError,
@@ -89,6 +89,7 @@ class ClickhouseBackup:
 
     @staticmethod
     def _validate_config(config: Config) -> None:
+        copy_deduplication_cutoff(config["copy"], utcnow())
         start_time = as_datetime(config["backup"].get("deduplication_start_time"))
         if start_time is not None and start_time > utcnow():
             raise ValueError(
