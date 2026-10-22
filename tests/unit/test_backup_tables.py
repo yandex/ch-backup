@@ -25,6 +25,7 @@ from ch_backup.calculators import calc_aligned_files_size, calc_tarball_size
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseDisksException
 from ch_backup.clickhouse.models import Database, DetachedPart, Disk, FrozenPart, Table
+from ch_backup.clickhouse.storage_schema import StoragePolicy
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import ClickhouseBackupError, StorageError, TerminatingSignal
 from ch_backup.logic.table import TableBackup, TableMetadataChangeTime
@@ -2130,11 +2131,13 @@ class TestDetachedPartsBackup:
 @pytest.mark.parametrize("keep_going", [False, True])
 @pytest.mark.parametrize("all_failed", [False, True])
 @pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("skip_cloud_storage", [False, True])
 # pylint: disable=too-many-locals,too-many-statements
 def test_restore_skips_unreadable_database_schemas(
     keep_going: bool,
     all_failed: bool,
     legacy: bool,
+    skip_cloud_storage: bool,
 ) -> None:
     context = _make_backup_context()
     context.restore_context = Mock(
@@ -2189,6 +2192,9 @@ def test_restore_skips_unreadable_database_schemas(
     controller.get_detached_tables.return_value = []
     controller.get_replicas.return_value = []
     controller.get_disks.return_value = {}
+    controller.get_storage_policies.return_value = {
+        "default": StoragePolicy("default", ("default",), ("default",), ("default",))
+    }
     controller.get_table.side_effect = lambda db, name, **_kwargs: tables.get(
         (db, name)
     )
@@ -2244,7 +2250,7 @@ def test_restore_skips_unreadable_database_schemas(
                 cloud_storage_source_bucket=None,
                 cloud_storage_source_path=None,
                 cloud_storage_source_endpoint=None,
-                skip_cloud_storage=False,
+                skip_cloud_storage=skip_cloud_storage,
                 restore_detached_parts=True,
                 keep_going=keep_going,
                 restore_tables_in_replicated_database=False,

@@ -7,6 +7,7 @@ Clickhouse backup logic
 import builtins
 import os
 from collections import defaultdict
+from contextlib import ExitStack
 from copy import copy
 from datetime import timedelta
 from enum import Enum
@@ -956,36 +957,51 @@ class ClickhouseBackup:
                     self._config["multiprocessing"]["drop_replica_threads"],
                 )
 
-            # Restore databases.
-            restored_databases = self._database_backup_manager.restore(
-                self._context,
-                databases,
-                keep_going,
-                metadata_cleaner,
-            )
+            # Validate adapted schemas before DatabaseBackup can drop an entire
+            # database. Reuse the prepared tables and locks through table CREATE.
+            with ExitStack() as schema_locks:
+                prepared_restore = None
+                if skip_cloud_storage:
+                    prepared_restore = self._table_backup_manager.prepare_restore(
+                        self._context,
+                        databases,
+                        tables,
+                        keep_going,
+                        skip_cloud_storage,
+                        restore_tables_in_replicated_database,
+                        schema_locks,
+                    )
+                # Restore databases.
+                restored_databases = self._database_backup_manager.restore(
+                    self._context,
+                    databases,
+                    keep_going,
+                    metadata_cleaner,
+                )
 
-            # Wait for replicated databases to sync by tracking log_ptr in ZooKeeper.
-            # Always use keep_going=True here: FAILED is an expected intermediate state
-            # that will be retried after table restore below.
-            sync_results = wait_sync_replicated_databases(
-                self._context, restored_databases, keep_going=True
-            )
+                # Wait for replicated databases to sync by tracking log_ptr in ZooKeeper.
+                # Always use keep_going=True here: FAILED is an expected intermediate state
+                # that will be retried after table restore below.
+                sync_results = wait_sync_replicated_databases(
+                    self._context, restored_databases, keep_going=True
+                )
 
-            # Restore tables and data stored on local disks.
-            self._table_backup_manager.restore(
-                context=self._context,
-                databases=databases,
-                schema_only=sources.schema_only,
-                tables=tables,
-                metadata_cleaner=metadata_cleaner,
-                cloud_storage_source_bucket=cloud_storage_source_bucket,
-                cloud_storage_source_path=cloud_storage_source_path,
-                cloud_storage_source_endpoint=cloud_storage_source_endpoint,
-                skip_cloud_storage=skip_cloud_storage,
-                restore_detached_parts=restore_detached_parts,
-                keep_going=keep_going,
-                restore_tables_in_replicated_database=restore_tables_in_replicated_database,
-            )
+                # Restore tables and data stored on local disks.
+                self._table_backup_manager.restore(
+                    context=self._context,
+                    databases=databases,
+                    schema_only=sources.schema_only,
+                    tables=tables,
+                    metadata_cleaner=metadata_cleaner,
+                    cloud_storage_source_bucket=cloud_storage_source_bucket,
+                    cloud_storage_source_path=cloud_storage_source_path,
+                    cloud_storage_source_endpoint=cloud_storage_source_endpoint,
+                    skip_cloud_storage=skip_cloud_storage,
+                    restore_detached_parts=restore_detached_parts,
+                    keep_going=keep_going,
+                    restore_tables_in_replicated_database=restore_tables_in_replicated_database,
+                    prepared_restore=prepared_restore,
+                )
 
             # Retry sync for databases that failed during initial sync.
             # After table restore, broken tables should be fixed and DDL worker
