@@ -694,20 +694,10 @@ def test_keeper_invalid_path_never_acquires_lock_or_mutates(path):
 
 @pytest.mark.parametrize(
     "column",
-    [
-        "ttl",
-        "comment",
-        "empty",
-        "settings",
-        "partition",
-        "order",
-        "primary",
-        "sample",
-        "unique",
-        "as",
-        "case",
-        "CASE",
-    ],
+    (
+        "ttl comment empty settings partition order primary sample unique as case CASE "
+        "interval INTERVAL when WHEN then THEN else ELSE"
+    ).split(),
 )
 @pytest.mark.parametrize("multiline", [False, True])
 def test_storage_clause_keywords_are_valid_column_references(column, multiline):
@@ -729,22 +719,44 @@ def test_storage_clause_keywords_are_valid_column_references(column, multiline):
     assert repeated.statement == change.statement
 
 
-@pytest.mark.parametrize("column", ["case", "CASE"])
+@pytest.mark.parametrize(
+    "column",
+    "case CASE interval INTERVAL when WHEN then THEN else ELSE".split(),
+)
 @pytest.mark.parametrize("multiline", [False, True])
-def test_case_column_before_storage_policy(column, multiline):
+@pytest.mark.parametrize(
+    "setting, expected_setting",
+    [
+        ("storage_policy = 's3_cold', ", "storage_policy = 'default', "),
+        ("disk = 'archive', ", ""),
+    ],
+)
+def test_keyword_column_before_storage_settings(
+    column, multiline, setting, expected_setting
+):
     separator = "\n" if multiline else " "
-    statement = separator.join(
-        [
-            f"CREATE TABLE _ (`{column}` DateTime) ENGINE = MergeTree ORDER BY {column}",
-            "SETTINGS storage_policy = 's3_cold', index_granularity = 8192",
-        ]
+    prefix = (
+        f"CREATE TABLE _ (`{column}` DateTime) ENGINE = MergeTree ORDER BY {column}"
+        + separator
+        + "SETTINGS "
     )
-    change = adapt_storage_schema(statement, POLICIES)
+    change = adapt_storage_schema(
+        prefix + setting + "index_granularity = 8192", POLICIES
+    )
     assert change is not None
     assert change.changed
-    assert change.previous_policy == "s3_cold"
     assert change.policy == POLICIES["default"]
-    assert change.statement == statement.replace("'s3_cold'", "'default'")
+    assert (
+        change.statement.rstrip()
+        == prefix + expected_setting + "index_granularity = 8192"
+    )
+    removes_disk = setting.startswith("disk")
+    assert change.previous_policy == ("default" if removes_disk else "s3_cold")
+    assert change.removed_disk == ("archive" if removes_disk else None)
+    repeated = adapt_storage_schema(change.statement, POLICIES)
+    assert repeated is not None
+    assert repeated.statement == change.statement
+    assert not repeated.changed
 
 
 @pytest.mark.parametrize(
@@ -963,11 +975,16 @@ def test_keeper_conflict_precedes_database_drop(keep_going, cleanup_mode):
         "empty(s)",
         "x.settings",
         "if(empty(s), ttl, settings)",
+        "NOT empty",
+        "NOT (ttl = settings)",
+        "ttl + toIntervalDay(1)",
+        "multiIf(empty(s), ttl, settings)",
+        "caseWithExpression(s, '', ttl, settings)",
     ],
 )
 def test_expression_operands_do_not_end_storage_clauses(expression):
     statement = (
-        "CREATE TABLE _ (ttl DateTime, settings DateTime, comment DateTime, s String, x Tuple(settings UInt64)) "
+        "CREATE TABLE _ (ttl DateTime, settings DateTime, comment DateTime, empty UInt8, s String, x Tuple(settings UInt64)) "
         f"ENGINE = MergeTree ORDER BY {expression} "
         "TTL ttl TO VOLUME 'cold', settings DELETE WHERE comment < ttl "
         "SETTINGS storage_policy = 's3' COMMENT 'saved comment'"

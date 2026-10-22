@@ -52,9 +52,12 @@ _EXPRESSION_OPERATORS = {
     "SET",
     "TO",
 }
-# ClickHouse formats CASE expressions as multiIf/caseWithExpression calls, but
-# leaves a column named case unquoted. Treat that identifier as a complete operand.
-_PREFIX_OPERATORS = {"NOT", "INTERVAL", "WHEN", "THEN", "ELSE"}
+# ClickHouse formats INTERVAL and CASE expressions as toInterval*/multiIf/
+# caseWithExpression calls, but can leave references to columns named interval,
+# case, when, then or else unquoted. Those names complete an operand; treating
+# them as prefixes would hide the following TTL or SETTINGS clause. NOT remains
+# an operator in formatted SQL and still needs its operand.
+_PREFIX_OPERATORS = {"NOT"}
 _SYMBOL_OPERATORS = set(",.=+-*/%<>!|&^?:")
 _STORAGE_END_CLAUSES = {"AS", "COMMENT", "EMPTY", "DEFINER", "SQL", ";"}
 

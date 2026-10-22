@@ -811,6 +811,37 @@ Feature: Backup & Clean & Restore
     ENGINE = MergeTree ORDER BY CASE
     SETTINGS storage_policy = 's3_cold';
     INSERT INTO storage_restore.case_policy VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.interval_ttl (`interval` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY interval
+    TTL interval + INTERVAL 1 DAY TO VOLUME 'external', interval + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.interval_ttl VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.interval_policy (`INTERVAL` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY INTERVAL
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.interval_policy VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.interval_disk (`interval` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY interval
+    SETTINGS disk = 'hdd2';
+    INSERT INTO storage_restore.interval_disk VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.when_ttl (`when` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY when
+    TTL when + INTERVAL 1 DAY TO VOLUME 'external', when + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.when_ttl VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.then_policy (`then` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY then
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.then_policy VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.else_disk (`else` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY else
+    SETTINGS disk = 'hdd2';
+    INSERT INTO storage_restore.else_disk VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.not_expression (d DateTime, empty UInt8, id UInt64)
+    ENGINE = MergeTree ORDER BY NOT empty
+    TTL d + INTERVAL 1 DAY TO VOLUME 'external', d + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.not_expression VALUES ('2099-01-01', 0, 42);
     """
     And we create clickhouse01 clickhouse backup
     And we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse02 with restart
@@ -821,24 +852,39 @@ Feature: Backup & Clean & Restore
     """
     And we execute query on clickhouse02
     """
-    SELECT _table, id FROM merge('storage_restore', '^(ttl|comment|empty|settings|case_ttl|case_policy)$') ORDER BY _table
+    SELECT _table, id FROM merge('storage_restore', '.*') ORDER BY _table
     """
     Then we get response
     """
     case_policy	42
     case_ttl	42
     comment	42
+    else_disk	42
     empty	42
+    interval_disk	42
+    interval_policy	42
+    interval_ttl	42
+    not_expression	42
     settings	42
+    then_policy	42
     ttl	42
+    when_ttl	42
     """
     When we execute query on clickhouse02
     """
-    SELECT count(), countIf(storage_policy = 'default'), countIf(position(create_table_query, 'TO VOLUME') = 0), countIf(position(create_table_query, 'toIntervalDay(100)') > 0) FROM system.tables WHERE database = 'storage_restore'
+    SELECT count(), countIf(storage_policy = 'default'), countIf(position(create_table_query, 'disk =') = 0), countIf(position(create_table_query, 'TO VOLUME') = 0), countIf(position(create_table_query, 'toIntervalDay(100)') > 0) FROM system.tables WHERE database = 'storage_restore'
     """
     Then we get response
     """
-    6	6	6	5
+    13	13	13	13	8
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT disk_name, count() FROM system.parts WHERE database = 'storage_restore' AND active GROUP BY disk_name
+    """
+    Then we get response
+    """
+    default	13
     """
 
     Examples:
