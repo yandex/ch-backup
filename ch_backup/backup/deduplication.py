@@ -18,7 +18,7 @@ from ch_backup.backup.metadata import (
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.models import Database, FrozenPart, Table
 from ch_backup.config import as_datetime
-from ch_backup.util import Slotted, utcnow
+from ch_backup.util import Slotted, sql_string, utcnow
 
 
 # pylint: disable=too-many-instance-attributes
@@ -75,9 +75,21 @@ class PartDedupInfo(Slotted):
         """
         Convert to string to use it in insert query
         """
-        files_array = "[" + ",".join(f"'{file}'" for file in self.files) + "]"
-        link_part_name = self.link_part_name or ""
-        return f"('{self.database}','{self.table}','{self.name}','{self.backup_name}','{link_part_name}','{self.checksum}',{self.size},{files_array},{int(self.tarball)},'{self.disk_name}',{int(self.verified)}, {int(self.encrypted)})"
+        values = [
+            sql_string(self.database),
+            sql_string(self.table),
+            sql_string(self.name),
+            sql_string(self.backup_name),
+            sql_string(self.link_part_name or ""),
+            sql_string(self.checksum),
+            str(self.size),
+            "[" + ",".join(sql_string(file) for file in self.files) + "]",
+            str(int(self.tarball)),
+            sql_string(self.disk_name),
+            str(int(self.verified)),
+            str(int(self.encrypted)),
+        ]
+        return "(" + ",".join(values) + ")"
 
 
 TableDedupReferences = set[str]

@@ -31,21 +31,35 @@ from tests.unit.utils import parametrize
         "id": "single-item list",
         "args": {
             "value": ["value"],
-            "result": "['value']",
+            "result": "[unhex('76616c7565')]",
         },
     },
     {
         "id": "multi-item list",
         "args": {
             "value": ["value1", "value2"],
-            "result": "['value1','value2']",
+            "result": "[unhex('76616c756531'),unhex('76616c756532')]",
         },
     },
     {
         "id": "escaping",
         "args": {
             "value": ["`for`.bar"],
-            "result": r"['\`for\`.bar']",
+            "result": "[unhex('60666f72602e626172')]",
+        },
+    },
+    {
+        "id": "apostrophes and backslashes",
+        "args": {
+            "value": ["report'view%'", "a\\n", "a\\"],
+            "result": "[unhex('7265706f727427766965772527'),unhex('615c6e'),unhex('615c')]",
+        },
+    },
+    {
+        "id": "unicode and empty string",
+        "args": {
+            "value": ["表", "ТАБЛИЦА", ""],
+            "result": "[unhex('e8a1a8'),unhex('d0a2d090d091d09bd098d0a6d090'),unhex('')]",
         },
     },
 )
