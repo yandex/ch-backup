@@ -633,7 +633,12 @@ class BackupLayout:
         return data.decode("utf-8", errors="surrogateescape")
 
     def get_table_create_statements(
-        self, backup_meta: BackupMetadata, db_name: str, table_names: list[str]
+        self,
+        backup_meta: BackupMetadata,
+        db_name: str,
+        table_names: list[str],
+        *,
+        keep_going: bool = False,
     ) -> list[tuple[str, str]]:
         """
         Download and return table create statements.
@@ -645,13 +650,25 @@ class BackupLayout:
             logging.debug(
                 f"File {remote_path} doesn't exist, fallback to old metadata style"
             )
-            return [
-                (
-                    table_name,
-                    self.get_table_create_statement(backup_meta, db_name, table_name),
-                )
-                for table_name in table_names
-            ]
+            statements = []
+            for table_name in table_names:
+                try:
+                    statement = self.get_table_create_statement(
+                        backup_meta, db_name, table_name
+                    )
+                except Exception as error:
+                    if not keep_going:
+                        raise
+                    logging.warning(
+                        "Failed to load schema for table {}.{}: {}. "
+                        "Skipping schema and data restore due to --keep-going flag",
+                        db_name,
+                        table_name,
+                        repr(error),
+                    )
+                    continue
+                statements.append((table_name, statement))
+            return statements
 
         data: list[tuple[str, Any]] = self._storage_loader.download_data_tarball(
             remote_path,
