@@ -38,7 +38,7 @@ from ch_backup.util import (
     list_dir_files,
     retry,
     scan_dir_files,
-    sql_string,
+    sql_string_literal,
     strip_query,
 )
 from ch_backup.zookeeper.zookeeper import ZookeeperCTL
@@ -734,7 +734,9 @@ class ClickhouseCTL:
         Collect all freeze queries from prev backup and kill them all.
         """
         self._ch_client.query(
-            KILL_RUNNING_FREEZE_SQL.format(user=sql_string(self._ch_ctl_config["user"]))
+            KILL_RUNNING_FREEZE_SQL.format(
+                user=sql_string_literal(self._ch_ctl_config["user"])
+            )
         )
 
     # pylint: disable=too-many-positional-arguments
@@ -819,8 +821,8 @@ class ClickhouseCTL:
         Get list of active partitions for table.
         """
         query_sql = GET_PARTITIONS.format(
-            db_name=sql_string(table.database),
-            table_name=sql_string(table.name),
+            db_name=sql_string_literal(table.database),
+            table_name=sql_string_literal(table.name),
         )
         result = self._ch_client.query(query_sql, should_retry=False)["data"]
         return [partition[0] for partition in result]
@@ -830,8 +832,8 @@ class ClickhouseCTL:
         Get names of active parts of table.
         """
         query_sql = GET_ACTIVE_PARTS_SQL.format(
-            db_name=sql_string(table.database),
-            table_name=sql_string(table.name),
+            db_name=sql_string_literal(table.database),
+            table_name=sql_string_literal(table.name),
         )
         result = self._ch_client.query(query_sql, should_retry=False)["data"]
         return {part[0] for part in result}
@@ -888,7 +890,7 @@ class ClickhouseCTL:
             exclude_dbs = []
 
         result: list[Database] = []
-        system_database = sql_string(self._backup_config["system_database"])
+        system_database = sql_string_literal(self._backup_config["system_database"])
 
         query = (
             GET_DATABASES_SQL.format(system_db=system_database)
@@ -923,7 +925,7 @@ class ClickhouseCTL:
         """
         Return database engine.
         """
-        query_sql = GET_DATABASE_ENGINE.format(db_name=sql_string(db_name))
+        query_sql = GET_DATABASE_ENGINE.format(db_name=sql_string_literal(db_name))
         return self._ch_client.query(query_sql)
 
     def get_tables(
@@ -938,7 +940,7 @@ class ClickhouseCTL:
         A short query does not access the source of table if it was built from an external source.
         Example: CREATE ... AS postgresql() or CREATE ... AS s3().
         """
-        db_condition = f"database = {sql_string(db_name)}" if db_name else "1"
+        db_condition = f"database = {sql_string_literal(db_name)}" if db_name else "1"
         tables_condition = (
             f"has(cast({_format_string_array(tables)}, 'Array(String)'), name)"
             if tables
@@ -1026,7 +1028,7 @@ class ClickhouseCTL:
         """
         Get table replicas from system.replicas
         """
-        db_condition = f"database = {sql_string(db_name)}" if db_name else "1"
+        db_condition = f"database = {sql_string_literal(db_name)}" if db_name else "1"
         tables_condition = (
             f"has(cast({_format_string_array(tables)}, 'Array(String)'), table)"
             if tables
@@ -1049,7 +1051,8 @@ class ClickhouseCTL:
         Return True if the specified table exists.
         """
         query_sql = CHECK_TABLE_SQL.format(
-            db_name=sql_string(db_name), table_name=sql_string(table_name)
+            db_name=sql_string_literal(db_name),
+            table_name=sql_string_literal(table_name),
         )
         return bool(int(self._ch_client.query(query_sql)))
 
@@ -1281,7 +1284,7 @@ class ClickhouseCTL:
         """
         try:
             result = self._ch_client.query(
-                GET_DDL_QUEUE_STATUS_SQL.format(db_name=sql_string(db_name))
+                GET_DDL_QUEUE_STATUS_SQL.format(db_name=sql_string_literal(db_name))
             )
             return result.get("data", [])
         except Exception as e:
@@ -1295,7 +1298,7 @@ class ClickhouseCTL:
         Get filesystem absolute path to database metadata.
         """
         data = self._ch_client.query(
-            GET_DATABASE_METADATA_PATH.format(db_name=sql_string(database))
+            GET_DATABASE_METADATA_PATH.format(db_name=sql_string_literal(database))
         )["data"]
         assert len(data) == 1
         return data[0]["metadata_path"]
@@ -1648,8 +1651,10 @@ class ClickhouseCTL:
         """
         Canonicalize SQL using the server parser without changing literal values.
         """
+        # Hex encoding preserves quotes, backslashes and whitespace in the input.
+        query_hex = query.encode("utf-8").hex()
         resp = self._ch_client.query(
-            f"SELECT formatQuerySingleLine({sql_string(query)}) AS query FORMAT JSON"
+            f"SELECT formatQuerySingleLine(unhex('{query_hex}')) AS query FORMAT JSON"
         )
         return resp["data"][0]["query"]
 
@@ -1686,11 +1691,11 @@ class ClickhouseCTL:
         """
         if self.ch_version_ge("24.3"):
             resp = resp = self._ch_client.query(
-                GET_DISK_SQL_24_3.format(disk_name=sql_string(disk_name))
+                GET_DISK_SQL_24_3.format(disk_name=sql_string_literal(disk_name))
             ).get("data")
         else:
             resp = self._ch_client.query(
-                GET_DISK_SQL.format(disk_name=sql_string(disk_name))
+                GET_DISK_SQL.format(disk_name=sql_string_literal(disk_name))
             ).get("data")
 
         assert resp, f"disk '{disk_name}' not found"
@@ -1843,7 +1848,7 @@ class ClickhouseCTL:
         )
 
         batch = [
-            f"({sql_string(part.name)},{sql_string(part.checksum)})"
+            f"({sql_string_literal(part.name)},{sql_string_literal(part.checksum)})"
             for part in frozen_parts.values()
         ]
         self._ch_client.query(
@@ -1856,8 +1861,8 @@ class ClickhouseCTL:
         result_json = self._ch_client.query(
             GET_DEDUPLICATED_PARTS_SQL.format(
                 system_db=escape(self._backup_config["system_database"]),
-                database=sql_string(database),
-                table=sql_string(table),
+                database=sql_string_literal(database),
+                table=sql_string_literal(table),
             )
         )
 
@@ -2042,7 +2047,7 @@ def _quote_or_any(name: str) -> str:
 
 
 def _format_string_array(value: Sequence[str]) -> str:
-    return "[" + ",".join(sql_string(v) for v in value) + "]"
+    return "[" + ",".join(sql_string_literal(v) for v in value) + "]"
 
 
 def _parse_version(version: str) -> list[int]:

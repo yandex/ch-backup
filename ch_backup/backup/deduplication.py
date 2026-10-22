@@ -18,7 +18,7 @@ from ch_backup.backup.metadata import (
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.models import Database, FrozenPart, Table
 from ch_backup.config import as_datetime
-from ch_backup.util import Slotted, sql_string, utcnow
+from ch_backup.util import Slotted, sql_string_literal, utcnow
 
 
 # pylint: disable=too-many-instance-attributes
@@ -76,16 +76,16 @@ class PartDedupInfo(Slotted):
         Convert to string to use it in insert query
         """
         values = [
-            sql_string(self.database),
-            sql_string(self.table),
-            sql_string(self.name),
-            sql_string(self.backup_name),
-            sql_string(self.link_part_name or ""),
-            sql_string(self.checksum),
+            sql_string_literal(self.database),
+            sql_string_literal(self.table),
+            sql_string_literal(self.name),
+            sql_string_literal(self.backup_name),
+            sql_string_literal(self.link_part_name or ""),
+            sql_string_literal(self.checksum),
             str(self.size),
-            "[" + ",".join(sql_string(file) for file in self.files) + "]",
+            "[" + ",".join(sql_string_literal(file) for file in self.files) + "]",
             str(int(self.tarball)),
-            sql_string(self.disk_name),
+            sql_string_literal(self.disk_name),
             str(int(self.verified)),
             str(int(self.encrypted)),
         ]

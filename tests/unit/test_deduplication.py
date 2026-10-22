@@ -26,12 +26,6 @@ from ch_backup.config import DEFAULT_CONFIG
 DEDUP_BACKUP_NAME = "20181016T210300"
 
 
-def _dedup_row_string(row: str, column: int) -> str:
-    """Decode one hex-encoded string column from a deduplication VALUES row."""
-    value = row.split(",")[column].removeprefix("unhex('").removesuffix("')")
-    return bytes.fromhex(value).decode("utf-8")
-
-
 @pytest.fixture(name="window_backups")
 def fixture_window_backups():
     database = Database("db1", "Atomic", "/metadata/db1.sql", None, None)
@@ -104,9 +98,7 @@ def test_collect_dedup_info_window(
         for call in window_context.ch_ctl.insert_deduplication_info.call_args_list
         for row in call.args[0]
     ]
-    assert [_dedup_row_string(row, 3) for row in rows] == [
-        f"day-{day}" for day in expected
-    ]
+    assert [row.split(",")[3] for row in rows] == [f"'day-{day}'" for day in expected]
     clock.assert_called_once_with()
 
 
@@ -184,11 +176,11 @@ def test_collect_dedup_info_excludes_links_to_before_start(
         for call in window_context.ch_ctl.insert_deduplication_info.call_args_list
         for row in call.args[0]
     ]
-    assert [_dedup_row_string(row, 3) for row in rows] == [
-        "day-3",
-        "day-2",
-        "day-1",
-        "day-0",
+    assert [row.split(",")[3] for row in rows] == [
+        "'day-3'",
+        "'day-2'",
+        "'day-1'",
+        "'day-0'",
     ]
 
 
@@ -231,9 +223,9 @@ def test_collect_dedup_info_completed_backup_links_and_early_exit(
         for call in window_context.ch_ctl.insert_deduplication_info.call_args_list
         for row in call.args[0]
     ]
-    assert {(_dedup_row_string(row, 2), _dedup_row_string(row, 3)) for row in rows} == {
-        ("all_12_12_0", "day-4"),
-        ("all_8_8_0", "day-0"),
+    assert {(row.split(",")[2], row.split(",")[3]) for row in rows} == {
+        ("'all_12_12_0'", "'day-4'"),
+        ("'all_8_8_0'", "'day-0'"),
     }
     window_context.backup_layout.reload_backup.assert_called_once_with(
         newest, use_light_meta=False
@@ -419,7 +411,7 @@ def test_table_is_listed_once_for_all_batches():
 
 
 @pytest.mark.parametrize("link_part_name", [None, "a'\\表"])
-def test_part_dedup_info_encodes_all_string_values(link_part_name):
+def test_part_dedup_info_quotes_all_string_values(link_part_name):
     info = PartDedupInfo(
         database="a'\\表",
         table="a'\\表",
@@ -434,10 +426,10 @@ def test_part_dedup_info_encodes_all_string_values(link_part_name):
         encrypted=True,
         link_part_name=link_part_name,
     )
-    encoded = "unhex('61275ce8a1a8')"
-    encoded_link = "unhex('')" if link_part_name is None else encoded
+    literal = "'a\\'\\\\表'"
+    literal_link = "''" if link_part_name is None else literal
 
     assert info.to_sql() == (
-        f"({encoded},{encoded},{encoded},{encoded},{encoded_link},{encoded},"
-        f"42,[{encoded},unhex('')],1,{encoded},0,1)"
+        f"({literal},{literal},{literal},{literal},{literal_link},{literal},"
+        f"42,[{literal},''],1,{literal},0,1)"
     )

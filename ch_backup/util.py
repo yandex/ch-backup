@@ -197,9 +197,10 @@ def escape(s: str, regex: bool = False) -> str:
     return escaped
 
 
-def sql_string(value: str) -> str:
-    """Return a ClickHouse string expression that preserves the UTF-8 bytes."""
-    return f"unhex('{value.encode('utf-8').hex()}')"
+def sql_string_literal(value: str) -> str:
+    """Return a quoted ClickHouse string without requiring expression parsing."""
+    escaped = value.replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{escaped}'"
 
 
 def demote_user_group(new_user: str, new_group: str) -> None:
