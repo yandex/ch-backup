@@ -117,7 +117,12 @@ class ReplicaLayout(BackupLayout):
         return [(name, self._database_statements[name]) for name in db_names]
 
     def get_table_create_statements(
-        self, backup_meta: BackupMetadata, db_name: str, table_names: list[str]
+        self,
+        backup_meta: BackupMetadata,
+        db_name: str,
+        table_names: list[str],
+        *,
+        keep_going: bool = False,
     ) -> list[tuple[str, str]]:
         """
         Return create statements of tables.

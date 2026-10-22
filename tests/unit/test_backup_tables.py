@@ -15,6 +15,7 @@ from unittest.mock import ANY, MagicMock, Mock, call, patch
 import pytest
 from loguru import logger
 
+from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata, TableMetadata
 from ch_backup.backup.metadata.detached_part_metadata import DetachedPartMetadata
 from ch_backup.backup.metadata.table_metadata import DataSkippedReason
@@ -2128,10 +2129,12 @@ class TestDetachedPartsBackup:
 
 @pytest.mark.parametrize("keep_going", [False, True])
 @pytest.mark.parametrize("all_failed", [False, True])
+@pytest.mark.parametrize("legacy", [False, True])
 # pylint: disable=too-many-locals,too-many-statements
 def test_restore_skips_unreadable_database_schemas(
     keep_going: bool,
     all_failed: bool,
+    legacy: bool,
 ) -> None:
     context = _make_backup_context()
     context.restore_context = Mock(
@@ -2142,7 +2145,8 @@ def test_restore_skips_unreadable_database_schemas(
     other_db = Database("db2", "Atomic", "/metadata/db2.sql", None, None)
     context.backup_meta.add_database(other_db)
     broken = TableMetadata("db1", "existing", "MergeTree", None)
-    healthy = TableMetadata("db2", "healthy", "MergeTree", None)
+    healthy_db = "db1" if legacy else "db2"
+    healthy = TableMetadata(healthy_db, "healthy", "MergeTree", None)
     for table in (broken, healthy):
         table.add_part(
             PartMetadata(
@@ -2196,7 +2200,7 @@ def test_restore_skips_unreadable_database_schemas(
     )
     context.ch_ctl = controller
 
-    def download_schema(_backup, database, _tables):
+    def download_schema(_backup, database, _tables, **_kwargs):
         if database == "db1" or all_failed:
             raise S3RetryingError("S3 GetObject failed")
         return [
@@ -2212,6 +2216,19 @@ def test_restore_skips_unreadable_database_schemas(
             side_effect=lambda _backup, part, _path, callback: callback(part)
         ),
     )
+    if legacy:
+        context.config["path_root"] = "ch_backup"
+
+        def download_legacy_schema(path, **_kwargs):
+            if path.endswith("/existing.sql") or all_failed:
+                raise S3RetryingError("S3 GetObject failed")
+            return b"CREATE TABLE db1.healthy (x UInt64) ENGINE=MergeTree ORDER BY x"
+
+        with patch("ch_backup.backup.layout.StorageLoader") as loader:
+            loader.return_value.path_exists.return_value = False
+            loader.return_value.download_data.side_effect = download_legacy_schema
+            schema_layout = BackupLayout(context.config_root)
+        layout.get_table_create_statements = schema_layout.get_table_create_statements
     context.backup_layout = layout
     messages: list[str] = []
     sink = logger.add(messages.append, format="{message}", level="WARNING")
@@ -2246,17 +2263,17 @@ def test_restore_skips_unreadable_database_schemas(
     controller.drop_table_if_exists.assert_not_called()
     layout.download_detached_part.assert_not_called()
     if keep_going and not all_failed:
-        restored = tables[("db2", "healthy")]
+        restored = tables[(healthy_db, "healthy")]
         controller.create_table.assert_called_once_with(restored)
         controller.attach_part.assert_called_once_with(restored, "all_1_1_0")
         layout.download_data_part.assert_called_once_with(
             context.backup_meta,
             healthy.get_parts()[0],
-            "/data/db2/healthy/detached/all_1_1_0",
+            f"/data/{healthy_db}/healthy/detached/all_1_1_0",
             callback=ANY,
         )
     else:
-        assert ("db2", "healthy") not in tables
+        assert (healthy_db, "healthy") not in tables
         controller.create_table.assert_not_called()
         controller.attach_part.assert_not_called()
         layout.download_data_part.assert_not_called()

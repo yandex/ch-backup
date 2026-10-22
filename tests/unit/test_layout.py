@@ -477,3 +477,27 @@ class TestTableDataFiles:
         storage.get_file_size.assert_called_once_with(
             "ch_backup/b1/data/db1/t1/all_1_1_0/all_1_1_0.tar"
         )
+
+
+@pytest.mark.parametrize("keep_going", [False, True])
+@pytest.mark.parametrize("table_names", [["broken", "good"], ["good", "broken"]])
+def test_legacy_table_schema_failure_is_isolated(keep_going, table_names):
+    layout = make_layout()
+    storage = getattr(layout, "_storage_loader")
+    storage.path_exists.return_value = False
+    backup = BackupMetadata("backup", "2", "26.6", "%Y-%m-%d")
+    statement = "CREATE TABLE db.good (x UInt64) ENGINE=MergeTree ORDER BY x"
+
+    def download(path, **_kwargs):
+        if path.endswith("/broken.sql"):
+            raise S3RetryingError("S3 GetObject failed")
+        return statement.encode()
+
+    storage.download_data.side_effect = download
+    if keep_going:
+        assert layout.get_table_create_statements(
+            backup, "db", table_names, keep_going=True
+        ) == [("good", statement)]
+    else:
+        with pytest.raises(S3RetryingError, match="S3 GetObject failed"):
+            layout.get_table_create_statements(backup, "db", table_names)

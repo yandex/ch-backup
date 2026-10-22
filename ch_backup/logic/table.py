@@ -1446,6 +1446,7 @@ class TableBackup(BackupManager):
                     context.backup_meta,
                     database,
                     [table.name for table in tables_meta if table.database == database],
+                    keep_going=keep_going,
                 )
             except Exception as error:
                 if not keep_going:
