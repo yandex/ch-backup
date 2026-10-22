@@ -4,6 +4,7 @@ Clickhouse-disks controls temporary cloud storage disks management.
 
 import copy
 import os
+import shlex
 import shutil
 import threading
 from collections import defaultdict
@@ -803,11 +804,7 @@ def _ch_disks_copy(
             to_disk,
             from_path,
             to_path,
-            "'",
         ]
-        common_args.append("--query")
-        # Changes in disks interface require passing command with args in quotes
-        command = "'" + command
     elif ch_ctl.ch_version_ge("23.9"):
         command_args = [
             "--disk-from",
@@ -833,6 +830,7 @@ def _ch_disks_copy(
         common_args=common_args,
         command=command,
         command_args=command_args,
+        query=ch_ctl.ch_version_ge("24.7"),
     )
     logging.info(f"clickhouse-disks copy result for {routine_tag}: {result}")
 
@@ -845,9 +843,7 @@ def _ch_disks_remove(
     common_args = ["--config", CH_DISK_CONFIG_PATH, "--disk", disk]
     command_args = [path]
     if ch_ctl.ch_version_ge("24.7"):
-        common_args.append("--query")
-        command = "'" + command
-        command_args = ["--recursive", path, "'"]
+        command_args = ["--recursive", path]
 
     result = _exec(
         routine_tag,
@@ -855,6 +851,7 @@ def _ch_disks_remove(
         common_args=common_args,
         command=command,
         command_args=command_args,
+        query=ch_ctl.ch_version_ge("24.7"),
     )
     logging.info("clickhouse-disks remove result for {}: {}", routine_tag, result)
 
@@ -886,12 +883,24 @@ def _get_backup_disk_name(disk_name: str) -> str:
     return f"{disk_name}_backup"
 
 
+def _quote_query_argument(argument: str) -> str:
+    """Quote for clickhouse-disks' command parser, not for a shell."""
+    # Boost split_unix escapes both quote types and backslashes, even inside
+    # quotes. Newer ClickHouse first splits on unquoted semicolons, preserving
+    # backslashes only inside single quotes. After a literal apostrophe, reopen
+    # that single-quoted region; the double quote balances Boost's quote state.
+    escaped = argument.replace("\\", "\\\\").replace('"', '\\"').replace("'", "\\''\"")
+    return "'" + escaped + "'"
+
+
 def _exec(
     routine_tag: str,
     exe: str,
     common_args: list[str],
     command: str | None = None,
     command_args: list[str] | None = None,
+    *,
+    query: bool = False,
 ) -> Any:
     """
     Run a command and return its output lines.
@@ -908,12 +917,14 @@ def _exec(
     ]
     if command:
         command_with_args = [command, *command_args] if command_args else [command]
-        args += command_with_args  # type: ignore
+        if query:
+            args += ["--query", " ".join(map(_quote_query_argument, command_with_args))]
+        else:
+            args += command_with_args
 
-    args = " ".join(args)  # type: ignore
-    logging.debug(f'Executing "{args}"')
+    logging.debug("Executing {}", shlex.join(args))
 
-    with Popen(args, stdout=PIPE, stderr=PIPE, shell=True) as proc:  # nosec
+    with Popen(args, stdout=PIPE, stderr=PIPE, shell=False) as proc:  # noqa: S603
         stdout, stderr = proc.communicate()
         errors = []
         for line in stderr.splitlines():

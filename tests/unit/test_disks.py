@@ -7,8 +7,8 @@ Unit tests disks module.
 
 import copy
 import io
+import json
 import os
-import shlex
 import shutil
 import sys
 import tempfile
@@ -33,6 +33,7 @@ from ch_backup.clickhouse.disks import (
     ClickHouseBackupDisks,
     ClickHouseDisksException,
     ClickHouseTemporaryDisks,
+    _ch_disks_copy,
     _ch_disks_remove,
     _exec,
     _open_config_file,
@@ -56,13 +57,88 @@ from tests.unit.utils import assert_equal, parametrize
 def test_disk_command_rejects_errors_even_with_zero_exit_code(exitcode, stderr):
     script = f"import sys; sys.stderr.write({stderr!r}); sys.exit({exitcode})"
     with pytest.raises(ClickHouseDisksException, match="call failed with exitcode"):
-        _exec("part", sys.executable, ["-c", shlex.quote(script)])
+        _exec("part", sys.executable, ["-c", script])
 
 
 @pytest.mark.parametrize("stderr", ["", " \n\t\n"])
 def test_disk_command_returns_stdout_without_errors(stderr):
     script = f"import sys; sys.stderr.write({stderr!r}); print('result')"
-    assert _exec("part", sys.executable, ["-c", shlex.quote(script)]) == ["result\n"]
+    assert _exec("part", sys.executable, ["-c", script]) == ["result\n"]
+
+
+@pytest.mark.parametrize(
+    "argument",
+    [
+        "",
+        "path with spaces",
+        "tab\tand\nnewline",
+        "single' and double\" quotes",
+        r"back\slash\n",
+        "$(printf expanded)",
+        "`printf expanded`",
+        "; printf expanded",
+        "$HOME * ? [abc] {a,b} & | < > ~",
+    ],
+)
+def test_disk_command_preserves_literal_arguments(tmp_path, argument):
+    script = tmp_path / "argv.py"
+    script.write_text("import json, sys; print(json.dumps(sys.argv[1:]))")
+    result = _exec("part", sys.executable, [str(script), argument])
+    assert json.loads("".join(result)) == [argument]
+
+
+def test_disk_command_preserves_executable_path(tmp_path):
+    executable = tmp_path / "python with spaces"
+    executable.symlink_to(sys.executable)
+    assert _exec("part", str(executable), ["-c", "print('result')"]) == ["result\n"]
+
+
+@pytest.mark.parametrize("version", ["23.3", "23.9", "24.8", "25.8"])
+@pytest.mark.parametrize("command", ["copy", "remove"])
+def test_disk_commands_pass_version_specific_argv(version, command):
+    ch_ctl = unittest.mock.Mock()
+    ch_ctl.ch_version_ge.side_effect = lambda minimum: version >= minimum
+    source = "path with spaces/$(printf expanded);file"
+    destination = "destination path/"
+    with unittest.mock.patch("ch_backup.clickhouse.disks.Popen") as popen:
+        process = popen.return_value.__enter__.return_value
+        process.communicate.return_value = (b"", b"")
+        process.returncode = 0
+        if command == "copy":
+            _ch_disks_copy(ch_ctl, "source", source, "target", destination, "part")
+        else:
+            _ch_disks_remove(ch_ctl, "target", source, "part")
+
+    expected = ["/usr/bin/clickhouse-disks", "--config", CH_DISK_CONFIG_PATH]
+    if command == "remove":
+        expected += ["--disk", "target"]
+    if version >= "24.7":
+        query = "'" + command + "' '--recursive' "
+        if command == "copy":
+            query += "'--disk-from' 'source' '--disk-to' 'target' "
+        query += "'" + source + "'"
+        if command == "copy":
+            query += " '" + destination + "'"
+        expected += ["--query", query]
+    elif command == "copy":
+        flags = (
+            ("--disk-from", "--disk-to")
+            if version >= "23.9"
+            else ("--diskFrom", "--diskTo")
+        )
+        expected += [
+            command,
+            flags[0],
+            "source",
+            flags[1],
+            "target",
+            source,
+            destination,
+        ]
+    else:
+        expected += [command, source]
+    assert popen.call_args.args == (expected,)
+    assert popen.call_args.kwargs["shell"] is False
 
 
 @parametrize(
@@ -1330,9 +1406,10 @@ def test_remove_part_uses_disk_and_version_specific_cli(modern_cli):
     execute.assert_called_once_with(
         "part",
         exe="/usr/bin/clickhouse-disks",
-        common_args=common_args + (["--query"] if modern_cli else []),
-        command="'remove" if modern_cli else "remove",
-        command_args=["--recursive", path, "'"] if modern_cli else [path],
+        common_args=common_args,
+        command="remove",
+        command_args=["--recursive", path] if modern_cli else [path],
+        query=modern_cli,
     )
 
 
