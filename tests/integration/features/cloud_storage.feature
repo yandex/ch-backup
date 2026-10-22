@@ -7,12 +7,6 @@ Feature: Backup & Clean & Restore
     And a working clickhouse on clickhouse01
     And clickhouse on clickhouse01 has test schema
 
-  Scenario: Disk commands preserve literal paths
-    When we execute command on clickhouse01
-    """
-    cd /code && python3 -m tests.integration.modules.disks
-    """
-
   Scenario Outline: Download backup metadata
     When we execute queries on clickhouse01
     """

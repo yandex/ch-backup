@@ -924,7 +924,12 @@ def _exec(
 
     logging.debug("Executing {}", shlex.join(args))
 
-    with Popen(args, stdout=PIPE, stderr=PIPE, shell=False) as proc:  # noqa: S603
+    try:
+        proc = Popen(args, stdout=PIPE, stderr=PIPE, shell=False)  # noqa: S603
+    except OSError as e:
+        raise ClickHouseDisksException(f"Failed to start {exe}: {e}") from e
+
+    with proc:
         stdout, stderr = proc.communicate()
         errors = []
         for line in stderr.splitlines():
