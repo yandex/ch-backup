@@ -193,6 +193,9 @@ How it works:
   objects. Other objects are overwritten. If the target listing or a context file cannot be read, the
   affected objects are copied again. `objects_skipped` in the report counts skipped objects. Before
   copying, resuming holds the listing of the target backup in memory, comparable to the object plan.
+  `--no-resume` (or `copy.resume: false`) ignores records of previous runs and overwrites all objects;
+  the run still records confirmed copies, so an interrupted run should be repeated with `--no-resume`
+  to overwrite every object.
   The context is not copied with the backup and is deleted together with it.
   Completed backups are skipped.
   When a linked part has already been materialized in a successfully copied backup, subsequent

@@ -2583,6 +2583,18 @@ def test_resume_recopies_objects_if_target_listing_fails() -> None:
     assert len(ctx.copied_paths()) == 2
 
 
+def test_copy_without_resume_recopies_confirmed_objects() -> None:
+    ctx = _interrupted_copy()
+    ctx.target_config["copy"]["resume"] = False
+    report = CopyReport()
+
+    ctx.copy(["b1"], report=report)
+
+    assert len(ctx.copied_paths()) == 2
+    assert report.backups[0].objects_skipped == 0
+    assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
+
+
 def test_resume_skips_object_copied_by_server_side_probe() -> None:
     ctx = CopyTestContext([_backup("b1")])
     ctx.target_layout.store = ctx.store

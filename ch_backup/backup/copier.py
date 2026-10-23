@@ -331,7 +331,11 @@ class BackupCopier:
                 )
                 return False
             logging.info(
-                'Resuming copying of backup {} (state in target storage: "{}")',
+                (
+                    'Resuming copying of backup {} (state in target storage: "{}")'
+                    if self._copy_config["resume"]
+                    else 'Restarting copying of all objects of backup {} (state in target storage: "{}")'
+                ),
                 backup_name,
                 target_backup.state.value,
             )
@@ -343,7 +347,7 @@ class BackupCopier:
             self._target_layout.get_backup_path(backup.name),
             backup,
         )
-        if target_backup:
+        if target_backup and self._copy_config["resume"]:
             self._copy_context.load()
 
         target_meta = self._make_target_metadata(backup)
