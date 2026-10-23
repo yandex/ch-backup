@@ -26,6 +26,7 @@ from ch_backup.backup.sources import BackupSources
 from ch_backup.ch_backup import (
     CleanZooKeeperMode,
     ClickhouseBackup,
+    DeleteSettings,
     _zookeeper_roots_differ,
 )
 from ch_backup.clickhouse.client import ClickhouseError
@@ -474,6 +475,7 @@ def test_delete_without_references_uses_light_metadata() -> None:
     context.locker = MagicMock()
     light_metadata = Mock(name="old", state=BackupState.CREATED)
     light_metadata.name = "old"
+    light_metadata.cloud_storage.source = None
     context.backup_layout.get_backups.return_value = [light_metadata]
     context.backup_layout.get_backup.return_value = None
 
@@ -481,7 +483,7 @@ def test_delete_without_references_uses_light_metadata() -> None:
         "ch_backup.ch_backup.collect_dedup_references_for_batch_backup_deletion",
         return_value={"old": {}},
     ):
-        assert backup.delete("old", purge_partial=False) == ("old", None)
+        assert backup.delete("old", settings=DeleteSettings()) == ("old", None)
 
     context.backup_layout.delete_backup.assert_called_once()
     context.backup_layout.upload_backup_metadata.assert_called_once_with(
@@ -509,6 +511,7 @@ def test_delete_failure_persists_failed_state(referenced: bool) -> None:
     backup, context = _backup_with_context()
     light_metadata = Mock(name="old", state=BackupState.CREATED)
     light_metadata.name = "old"
+    light_metadata.cloud_storage.source = None
     light_metadata.exception = None
     full_metadata = Mock(name="old", state=BackupState.CREATED, exception=None)
     full_metadata.name = "old"
@@ -616,7 +619,7 @@ def _purge(
         patch.object(
             ClickhouseBackup,
             "_delete",
-            side_effect=lambda meta, _refs: (meta.name, None),
+            side_effect=lambda meta, _refs, _settings: (meta.name, None),
         ),
     ):
         deleted, _ = backup.purge()
@@ -748,7 +751,7 @@ def test_delete_fails_on_unreadable_metadata_of_another_backup() -> None:
     )
 
     with pytest.raises(StorageError, match="broken"):
-        backup.delete("old", purge_partial=False)
+        backup.delete("old", settings=DeleteSettings())
 
     context.backup_layout.delete_backup.assert_not_called()
     context.backup_layout.upload_backup_metadata.assert_not_called()
@@ -775,7 +778,7 @@ def test_delete_unreadable_backup_without_references() -> None:
     context.backup_layout.get_backups.side_effect = _get_backups_with_unreadable(other)
     context.backup_layout.reload_backup.return_value = other
 
-    deleted_name, msg = backup.delete("broken", purge_partial=False)
+    deleted_name, msg = backup.delete("broken", settings=DeleteSettings())
 
     assert deleted_name == "broken"
     assert msg and "SYSTEM UNFREEZE WITH NAME 'broken'" in msg
@@ -803,7 +806,10 @@ def test_delete_unreadable_backup_purges_partial_backups() -> None:
     context.backup_layout.reload_backup.side_effect = lambda meta, **_: meta
 
     with patch.object(backup, "_delete", return_value=("partial", None)) as delete:
-        assert backup.delete("broken", purge_partial=True)[0] == "broken"
+        assert (
+            backup.delete("broken", settings=DeleteSettings(purge_partial=True))[0]
+            == "broken"
+        )
 
     delete.assert_called_once()
     assert delete.call_args.args[0] is partial
@@ -823,7 +829,7 @@ def test_failed_partial_delete_keeps_unreadable_backup() -> None:
 
     with patch.object(backup, "_delete", side_effect=StorageError("deletion failed")):
         with pytest.raises(StorageError, match="deletion failed"):
-            backup.delete("broken", purge_partial=True)
+            backup.delete("broken", settings=DeleteSettings(purge_partial=True))
 
     context.backup_layout.delete_backup.assert_not_called()
 
@@ -837,7 +843,7 @@ def test_delete_unreadable_backup_with_references_fails() -> None:
     context.backup_layout.reload_backup.return_value = other
 
     with pytest.raises(ClickhouseBackupError, match="referenced by other backups"):
-        backup.delete("broken", purge_partial=False)
+        backup.delete("broken", settings=DeleteSettings())
 
     context.backup_layout.delete_backup.assert_not_called()
 
