@@ -38,6 +38,7 @@ from ch_backup.util import (
     list_dir_files,
     retry,
     scan_dir_files,
+    sql_string_literal,
     strip_query,
 )
 from ch_backup.zookeeper.zookeeper import ZookeeperCTL
@@ -182,7 +183,7 @@ CHECK_TABLE_SQL = strip_query(
     """
     SELECT count()
     FROM system.tables
-    WHERE database = '{db_name}' AND name = '{table_name}'
+    WHERE database = {db_name} AND name = {table_name}
     FORMAT TSVRaw
 """
 )
@@ -228,7 +229,7 @@ SYSTEM_UNFREEZE_SQL = strip_query(
 
 KILL_RUNNING_FREEZE_SQL = strip_query(
     """
-    KILL QUERY WHERE query_kind='Alter' AND user='{user}' AND query ilike '%ALTER TABLE%FREEZE%'
+    KILL QUERY WHERE query_kind='Alter' AND user={user} AND query ilike '%ALTER TABLE%FREEZE%'
 """
 )
 
@@ -295,7 +296,7 @@ GET_DDL_QUEUE_STATUS_SQL = strip_query(
         exception_code,
         exception_text
     FROM system.distributed_ddl_queue
-    WHERE cluster = '{db_name}'
+    WHERE cluster = {db_name}
       AND status != 'Finished'
     ORDER BY entry
     FORMAT JSON
@@ -313,7 +314,7 @@ GET_DATABASES_SQL = strip_query(
     FROM system.databases
     WHERE
         engine = 'Replicated' AND
-        name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', '{system_db}')
+        name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', {system_db})
     UNION ALL
     SELECT
         name,
@@ -324,7 +325,7 @@ GET_DATABASES_SQL = strip_query(
     FROM system.databases
     WHERE
         engine != 'Replicated' AND
-        name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', '{system_db}')
+        name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', {system_db})
     FORMAT JSON
 """
 )
@@ -337,7 +338,7 @@ GET_DATABASES_SQL_22_8 = strip_query(
         metadata_path,
         uuid
     FROM system.databases
-    WHERE name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', '{system_db}')
+    WHERE name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', {system_db})
     FORMAT JSON
 """
 )
@@ -388,7 +389,7 @@ GET_DEDUPLICATED_PARTS_SQL = strip_query(
     FROM `{system_db}`._deduplication_info
     JOIN `{system_db}`._deduplication_info_current
     ON _deduplication_info.checksum = _deduplication_info_current.checksum
-    WHERE database='{database}' AND table='{table}'
+    WHERE database={database} AND table={table}
     ORDER BY _deduplication_info.backup_name DESC
     LIMIT 1 BY current_name
     FORMAT JSON
@@ -404,14 +405,14 @@ SHOW_CREATE_DATABASE_SQL = strip_query(
 
 GET_DATABASE_ENGINE = strip_query(
     """
-    SELECT engine FROM system.databases WHERE name='{db_name}'
+    SELECT engine FROM system.databases WHERE name={db_name}
     FORMAT TSVRaw
 """
 )
 
 GET_DATABASE_METADATA_PATH = strip_query(
     """
-    SELECT metadata_path FROM system.databases WHERE name='{db_name}'
+    SELECT metadata_path FROM system.databases WHERE name={db_name}
     FORMAT JSON
 """
 )
@@ -442,7 +443,7 @@ GET_ACCESS_CONTROL_OBJECTS_SQL = strip_query(
 GET_DISK_SQL = strip_query(
     """
     SELECT name, path, type, cache_path FROM system.disks
-    WHERE name = '{disk_name}'
+    WHERE name = {disk_name}
     FORMAT JSON
 """
 )
@@ -450,7 +451,7 @@ GET_DISK_SQL = strip_query(
 GET_DISK_SQL_24_3 = strip_query(
     """
     SELECT name, path, type, object_storage_type, metadata_type, cache_path FROM system.disks
-    WHERE name = '{disk_name}'
+    WHERE name = {disk_name}
     FORMAT JSON
 """
 )
@@ -590,7 +591,7 @@ GET_PARTITIONS = strip_query(
     """
     SELECT DISTINCT partition_id
     FROM system.parts
-    WHERE database = '{db_name}' AND table = '{table_name}' AND active = 1
+    WHERE database = {db_name} AND table = {table_name} AND active = 1
     FORMAT JSONCompact
 """
 )
@@ -599,7 +600,7 @@ GET_ACTIVE_PARTS_SQL = strip_query(
     """
     SELECT name
     FROM system.parts
-    WHERE database = '{db_name}' AND table = '{table_name}' AND active = 1
+    WHERE database = {db_name} AND table = {table_name} AND active = 1
     FORMAT JSONCompact
 """
 )
@@ -733,7 +734,9 @@ class ClickhouseCTL:
         Collect all freeze queries from prev backup and kill them all.
         """
         self._ch_client.query(
-            KILL_RUNNING_FREEZE_SQL.format(user=self._ch_ctl_config["user"])
+            KILL_RUNNING_FREEZE_SQL.format(
+                user=sql_string_literal(self._ch_ctl_config["user"])
+            )
         )
 
     # pylint: disable=too-many-positional-arguments
@@ -818,8 +821,8 @@ class ClickhouseCTL:
         Get list of active partitions for table.
         """
         query_sql = GET_PARTITIONS.format(
-            db_name=escape(table.database),
-            table_name=escape(table.name),
+            db_name=sql_string_literal(table.database),
+            table_name=sql_string_literal(table.name),
         )
         result = self._ch_client.query(query_sql, should_retry=False)["data"]
         return [partition[0] for partition in result]
@@ -829,8 +832,8 @@ class ClickhouseCTL:
         Get names of active parts of table.
         """
         query_sql = GET_ACTIVE_PARTS_SQL.format(
-            db_name=escape(table.database),
-            table_name=escape(table.name),
+            db_name=sql_string_literal(table.database),
+            table_name=sql_string_literal(table.name),
         )
         result = self._ch_client.query(query_sql, should_retry=False)["data"]
         return {part[0] for part in result}
@@ -887,7 +890,7 @@ class ClickhouseCTL:
             exclude_dbs = []
 
         result: list[Database] = []
-        system_database = self._backup_config["system_database"]
+        system_database = sql_string_literal(self._backup_config["system_database"])
 
         query = (
             GET_DATABASES_SQL.format(system_db=system_database)
@@ -922,7 +925,7 @@ class ClickhouseCTL:
         """
         Return database engine.
         """
-        query_sql = GET_DATABASE_ENGINE.format(db_name=escape(db_name))
+        query_sql = GET_DATABASE_ENGINE.format(db_name=sql_string_literal(db_name))
         return self._ch_client.query(query_sql)
 
     def get_tables(
@@ -937,7 +940,7 @@ class ClickhouseCTL:
         A short query does not access the source of table if it was built from an external source.
         Example: CREATE ... AS postgresql() or CREATE ... AS s3().
         """
-        db_condition = f"database = '{escape(db_name)}'" if db_name else "1"
+        db_condition = f"database = {sql_string_literal(db_name)}" if db_name else "1"
         tables_condition = (
             f"has(cast({_format_string_array(tables)}, 'Array(String)'), name)"
             if tables
@@ -1025,7 +1028,7 @@ class ClickhouseCTL:
         """
         Get table replicas from system.replicas
         """
-        db_condition = f"database = '{escape(db_name)}'" if db_name else "1"
+        db_condition = f"database = {sql_string_literal(db_name)}" if db_name else "1"
         tables_condition = (
             f"has(cast({_format_string_array(tables)}, 'Array(String)'), table)"
             if tables
@@ -1048,7 +1051,8 @@ class ClickhouseCTL:
         Return True if the specified table exists.
         """
         query_sql = CHECK_TABLE_SQL.format(
-            db_name=escape(db_name), table_name=escape(table_name)
+            db_name=sql_string_literal(db_name),
+            table_name=sql_string_literal(table_name),
         )
         return bool(int(self._ch_client.query(query_sql)))
 
@@ -1280,7 +1284,7 @@ class ClickhouseCTL:
         """
         try:
             result = self._ch_client.query(
-                GET_DDL_QUEUE_STATUS_SQL.format(db_name=escape(db_name))
+                GET_DDL_QUEUE_STATUS_SQL.format(db_name=sql_string_literal(db_name))
             )
             return result.get("data", [])
         except Exception as e:
@@ -1294,7 +1298,7 @@ class ClickhouseCTL:
         Get filesystem absolute path to database metadata.
         """
         data = self._ch_client.query(
-            GET_DATABASE_METADATA_PATH.format(db_name=database)
+            GET_DATABASE_METADATA_PATH.format(db_name=sql_string_literal(database))
         )["data"]
         assert len(data) == 1
         return data[0]["metadata_path"]
@@ -1687,12 +1691,12 @@ class ClickhouseCTL:
         """
         if self.ch_version_ge("24.3"):
             resp = resp = self._ch_client.query(
-                GET_DISK_SQL_24_3.format(disk_name=disk_name)
+                GET_DISK_SQL_24_3.format(disk_name=sql_string_literal(disk_name))
             ).get("data")
         else:
-            resp = self._ch_client.query(GET_DISK_SQL.format(disk_name=disk_name)).get(
-                "data"
-            )
+            resp = self._ch_client.query(
+                GET_DISK_SQL.format(disk_name=sql_string_literal(disk_name))
+            ).get("data")
 
         assert resp, f"disk '{disk_name}' not found"
         resp = resp[0]
@@ -1843,7 +1847,10 @@ class ClickhouseCTL:
             )
         )
 
-        batch = [f"('{part.name}','{part.checksum}')" for part in frozen_parts.values()]
+        batch = [
+            f"({sql_string_literal(part.name)},{sql_string_literal(part.checksum)})"
+            for part in frozen_parts.values()
+        ]
         self._ch_client.query(
             INSERT_DEDUP_INFO_BATCH_SQL.format(
                 system_db=escape(self._backup_config["system_database"]),
@@ -1854,8 +1861,8 @@ class ClickhouseCTL:
         result_json = self._ch_client.query(
             GET_DEDUPLICATED_PARTS_SQL.format(
                 system_db=escape(self._backup_config["system_database"]),
-                database=escape(database),
-                table=escape(table),
+                database=sql_string_literal(database),
+                table=sql_string_literal(table),
             )
         )
 
@@ -2040,7 +2047,7 @@ def _quote_or_any(name: str) -> str:
 
 
 def _format_string_array(value: Sequence[str]) -> str:
-    return "[" + ",".join(f"'{escape(v)}'" for v in value) + "]"
+    return "[" + ",".join(sql_string_literal(v) for v in value) + "]"
 
 
 def _parse_version(version: str) -> list[int]:
