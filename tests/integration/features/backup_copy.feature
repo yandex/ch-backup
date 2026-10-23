@@ -675,7 +675,7 @@ Feature: Copy backups to another storage
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
   @require_version_22.8
-  Scenario: Deleting copy of backup with data on S3 disk doesn't affect the source backup
+  Scenario Outline: Deleting an S3 disk copy with cloud cleanup <cleanup> preserves the original
     Given ch-backup configuration on clickhouse02
     """
     storage:
@@ -708,13 +708,23 @@ Feature: Copy backups to another storage
         --target-cloud-storage-bucket cloud-storage-02 \
         --target-cloud-storage-path copy
     """
+    Then s3 bucket cloud-storage-02 contains objects with prefix "copy/12345678T123456/"
+    When we save S3 object keys in bucket cloud-storage-02 with prefix "copy/12345678T123456/"
+    And we put object in S3
+    """
+    bucket: cloud-storage-02
+    path: copy/12345678T123456-neighbor/keep
+    data: keep
+    """
     And we execute command on clickhouse01
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf \
         --config-parameter storage.credentials.bucket '"ch-backup-copy"' \
-        delete 12345678T123456
+        delete 12345678T123456 <delete_option>
     """
     Then s3 bucket ch-backup-copy contains no objects with prefix "ch_backup/12345678T123456/"
+    And s3 bucket cloud-storage-02 contains <cloud_objects> with prefix "copy/12345678T123456/"
+    And s3 bucket cloud-storage-02 contains objects with prefix "copy/12345678T123456-neighbor/"
     And we got the following backups on clickhouse02
       | num | name            | state   |
       | 0   | 12345678T123456  | created |
@@ -736,6 +746,11 @@ Feature: Copy backups to another storage
     """
     20
     """
+
+    Examples:
+      | cleanup  | delete_option               | cloud_objects     |
+      | disabled |                             | the saved objects |
+      | enabled  | --delete-cloud-storage-data | no objects        |
 
   Scenario Outline: Copy respects the <held_lock> storage lock
     Given clickhouse on clickhouse01 has test schema
@@ -887,3 +902,111 @@ Feature: Copy backups to another storage
     Then clickhouse02 has same schema as clickhouse01
     And we got same clickhouse data at clickhouse01 clickhouse02
     And clickhouse01 has same named collections as clickhouse02
+
+  @require_version_24.1
+  Scenario: Copy S3 disk parts with shared ownership and partial cleanup
+    Given ch-backup configuration on clickhouse02
+    """
+    storage:
+        credentials:
+            bucket: ch-backup-copy
+    backup:
+        retain_count: 0
+        retain_time: {}
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_s3 (p UInt32, n UInt32)
+    ENGINE = MergeTree() PARTITION BY p ORDER BY n
+    SETTINGS storage_policy = 's3';
+    INSERT INTO test_db.table_s3 SELECT 0, number FROM numbers(10);
+    INSERT INTO test_db.table_s3 SELECT 1, number FROM numbers(10);
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: dedup-base
+    """
+    And we have executed queries on clickhouse01
+    """
+    ALTER TABLE test_db.table_s3 DROP PARTITION 1;
+    INSERT INTO test_db.table_s3 SELECT 2, number FROM numbers(10);
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: dedup-next
+    """
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy dedup-base \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-cloud-storage-bucket cloud-storage-02 \
+        --target-cloud-storage-path copy
+    """
+    And we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy dedup-next \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-cloud-storage-bucket cloud-storage-02 \
+        --target-cloud-storage-path copy
+    """
+    Then we got the following backups on clickhouse02
+      | num | name       | state   | data_count | link_count |
+      | 0   | dedup-next | created | 1          | 1          |
+      | 1   | dedup-base | created | 2          | 0          |
+    When we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy dedup-next \
+        --target-config-parameter backup.path_root '"third/"' \
+        --target-cloud-storage-bucket cloud-storage-02 \
+        --target-cloud-storage-path third
+    """
+    And we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf delete dedup-base --delete-cloud-storage-data
+    """
+    Then we got the following backups on clickhouse02
+      | num | name       | state             | data_count | link_count |
+      | 0   | dedup-next | created           | 1          | 1          |
+      | 1   | dedup-base | partially_deleted | 1          | 0          |
+    When we execute query on clickhouse01
+    """
+    DROP DATABASE test_db SYNC
+    """
+    And we delete all objects in s3 bucket cloud-storage-01
+    And we restore clickhouse backup "dedup-next" to clickhouse02
+    And we execute query on clickhouse02
+    """
+    SELECT count(), sum(n) FROM test_db.table_s3
+    """
+    Then we get response
+    """
+    20	90
+    """
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf \
+        --config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --config-parameter backup.path_root '"third/"' \
+        restore dedup-next --data
+    """
+    And we execute query on clickhouse01
+    """
+    SELECT count(), sum(n) FROM test_db.table_s3
+    """
+    Then we get response
+    """
+    20	90
+    """
+    When we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf purge --delete-cloud-storage-data
+    """
+    And we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf \
+        --config-parameter backup.path_root '"third/"' \
+        purge --delete-cloud-storage-data
+    """
+    Then s3 bucket ch-backup-copy contains 0 objects
+    And s3 bucket cloud-storage-02 contains 0 objects
