@@ -423,10 +423,12 @@ BACKUP_DISK_CONFIG_PATH = (
 def _make_backup_disks(
     clickhouse_config_xml: str,
     storage_config: dict | None = None,
+    clickhouse_disks_config: dict | None = None,
 ) -> tuple[ClickHouseBackupDisks, unittest.mock.MagicMock]:
     """Helper: build ClickHouseBackupDisks with mocked dependencies."""
     config = _make_backup_storage_config()
     config["storage"].update(storage_config or {})
+    config["clickhouse_disks"].update(clickhouse_disks_config or {})
     context = _make_context(config, clickhouse_config_xml)
     context.ch_ctl.get_disk.return_value = Disk(  # type: ignore[attr-defined]
         "object_storage_backup", BACKUP_DISK_PATH, "s3"
@@ -632,6 +634,40 @@ def test_backup_disk_is_added_to_clickhouse_disks_config():
     )["clickhouse"]["storage_configuration"]["disks"]
 
     assert sorted(disks) == ["object_storage", "object_storage_backup"]
+
+
+@pytest.mark.parametrize("version_supported", [False, True])
+def test_clickhouse_disks_s3_retries_are_added_since_clickhouse_25_9(
+    version_supported: bool,
+) -> None:
+    """Unsupported clickhouse-disks versions must not receive unknown settings."""
+    retry_config = {
+        "s3_retry_attempts": 60,
+        "s3_retry_initial_delay_ms": 25,
+        "s3_retry_max_delay_ms": 5000,
+        "s3_slow_all_threads_after_network_error": False,
+    }
+    disk_manager, ch_ctl = _make_backup_disks(
+        BACKUP_DISK_CLICKHOUSE_CONFIG,
+        clickhouse_disks_config=retry_config,
+    )
+    ch_ctl.ch_version_ge.return_value = version_supported
+
+    with _capture_config_files() as (written, _):
+        with disk_manager:
+            disk_manager.create_disk("object_storage")
+
+    disks = xmltodict.parse(written[CH_DISK_CONFIG_PATH], disable_entities=False)[
+        "clickhouse"
+    ]["storage_configuration"]["disks"]
+    for disk_name in ("object_storage", "object_storage_backup"):
+        for key, value in retry_config.items():
+            if version_supported:
+                assert_equal(disks[disk_name][key], str(value).lower())
+            else:
+                assert key not in disks[disk_name]
+
+    ch_ctl.ch_version_ge.assert_any_call("25.9")
 
 
 def test_backup_disk_source_disk_is_not_modified():
