@@ -681,6 +681,18 @@ class TableBackup(BackupManager):
             tables_to_preprocess,
             missing_create_statement_skipped,
         ) = self._get_tables_from_meta(context, filtered_tables_meta, keep_going)
+        tables_with_create_statements = {
+            (table.database, table.name) for table in tables_to_preprocess
+        }
+        tables_meta = [
+            table
+            for table in tables_meta
+            if (table.database, table.name) in tables_with_create_statements
+        ]
+        if not tables_meta:
+            logging.warning("No tables remain to restore after loading table schemas")
+            return
+
         (
             tables_to_restore,
             preprocessing_failed_skipped,
@@ -720,9 +732,6 @@ class TableBackup(BackupManager):
             )
         )
 
-        tables_with_create_statements = {
-            (table.database, table.name) for table in tables_to_preprocess
-        }
         tables_to_restore_detached = [
             table
             for table in filtered_tables_meta
@@ -1432,11 +1441,23 @@ class TableBackup(BackupManager):
 
         for database in databases_to_download:
             logging.debug(f"Downloading create statements for database {database}")
-            statements = context.backup_layout.get_table_create_statements(
-                context.backup_meta,
-                database,
-                [table.name for table in tables_meta if table.database == database],
-            )
+            try:
+                statements = context.backup_layout.get_table_create_statements(
+                    context.backup_meta,
+                    database,
+                    [table.name for table in tables_meta if table.database == database],
+                    keep_going=keep_going,
+                )
+            except Exception as error:
+                if not keep_going:
+                    raise
+                logging.warning(
+                    "Failed to load table schemas for database {}: {}. "
+                    "Skipping schema and data restore for its selected tables due to --keep-going flag",
+                    database,
+                    repr(error),
+                )
+                continue
             for table_name, create_statement in statements:
                 if (database, table_name) in tables:
                     tables[(database, table_name)].create_statement = create_statement
@@ -1455,7 +1476,7 @@ class TableBackup(BackupManager):
 
             missing_create_statement_skipped += 1
             logging.warning(
-                "Create statement for table {}.{} is missing in backup layout, skipping due to --keep-going flag",
+                "Create statement for table {}.{} is unavailable, skipping schema and data restore due to --keep-going flag",
                 table.database,
                 table.name,
             )
@@ -1626,6 +1647,10 @@ class TableBackup(BackupManager):
                 attach_parts = []
                 for part in table_meta.get_parts():
                     if context.restore_context.part_restored(part):
+                        if part.disk_name in context.backup_meta.cloud_storage.disks:
+                            # Retry marker cleanup if the previous invocation stopped
+                            # after persisting RESTORED but before removing the marker.
+                            disks.remove_part_copy_marker(table, part)
                         logging.debug(
                             f"{table.database}.{table.name} part {part.name} already restored, skipping it"
                         )
@@ -1706,9 +1731,6 @@ class TableBackup(BackupManager):
                     )
                     try:
                         context.ch_ctl.attach_part(table, part.name)
-                        context.restore_context.change_part_state(
-                            PartState.RESTORED, part
-                        )
                     except Exception as e:
                         logging.warning(
                             'Attaching "{}.{}" part {} failed: {}',
@@ -1722,6 +1744,14 @@ class TableBackup(BackupManager):
                         context.restore_context.change_part_state(
                             PartState.INVALID, part
                         )
+                    else:
+                        context.restore_context.change_part_state(
+                            PartState.RESTORED, part
+                        )
+                        if part.disk_name in context.backup_meta.cloud_storage.disks:
+                            # A marker cleanup failure must not mark an attached part
+                            # INVALID and cause it to be copied again.
+                            disks.remove_part_copy_marker(table, part)
             finally:
                 context.restore_context.dump_state()
 

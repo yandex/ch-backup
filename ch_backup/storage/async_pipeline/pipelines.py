@@ -2,13 +2,16 @@
 Free functions that create and run pipelines. Can be started in multiprocessing pool.
 """
 
+import sys
 from pathlib import Path
 from tarfile import BLOCKSIZE
+from types import TracebackType
 from typing import (
     Any,
     AnyStr,
     BinaryIO,
     Callable,
+    Iterable,
     Iterator,
     Sequence,
 )
@@ -23,10 +26,7 @@ from ch_backup.calculators import (
     calc_tarball_size_scan,
 )
 from ch_backup.encryption import get_encryption
-from ch_backup.storage.async_pipeline.pipeline_builder import (
-    PipelineBuilder,
-    PypelnStage,
-)
+from ch_backup.storage.async_pipeline.pipeline_builder import PipelineBuilder
 from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.object_copy import CopyEntry
 from ch_backup.util import exhaust_iterator
@@ -300,22 +300,24 @@ def delete_multiple_storage_pipeline(config: dict, remote_paths: Sequence[str]) 
     run(builder.pipeline())
 
 
-def run(pipeline: PypelnStage) -> None:
+def run(pipeline: Iterable[Any]) -> None:
     """
     Run pipeline until it is complete.
     """
+    _, outer_error, outer_traceback = sys.exc_info()
     try:
         itr = iter(pipeline)
         exhaust_iterator(itr)
     except ValueError as e:
-        if not _ignore_invalid_thread_id_error(e):
+        if not _ignore_invalid_thread_id_error(e, outer_error, outer_traceback):
             raise
 
 
-def run_and_return_first(pipeline: PypelnStage) -> Any:
+def run_and_return_first(pipeline: Iterable[Any]) -> Any:
     """
     Run pipeline until it is complete and return first its result.
     """
+    _, outer_error, outer_traceback = sys.exc_info()
     itr = iter(pipeline)
     result_fetched = False
 
@@ -324,16 +326,20 @@ def run_and_return_first(pipeline: PypelnStage) -> Any:
         result_fetched = True
         exhaust_iterator(itr)
     except ValueError as e:
-        if not _ignore_invalid_thread_id_error(e) or not result_fetched:
+        if (
+            not _ignore_invalid_thread_id_error(e, outer_error, outer_traceback)
+            or not result_fetched
+        ):
             raise
 
     return result
 
 
-def run_and_collect_all(pipeline: PypelnStage) -> list[Any]:
+def run_and_collect_all(pipeline: Iterable[Any]) -> list[Any]:
     """
     Run pipeline until it is complete and collect all results.
     """
+    _, outer_error, outer_traceback = sys.exc_info()
     itr = iter(pipeline)
     results: list = []
 
@@ -344,13 +350,17 @@ def run_and_collect_all(pipeline: PypelnStage) -> list[Any]:
             else:
                 results.append(item)
     except ValueError as e:
-        if not _ignore_invalid_thread_id_error(e):
+        if not _ignore_invalid_thread_id_error(e, outer_error, outer_traceback):
             raise
 
     return results
 
 
-def _ignore_invalid_thread_id_error(error: ValueError) -> bool:
+def _ignore_invalid_thread_id_error(
+    error: ValueError,
+    outer_error: BaseException | None,
+    outer_traceback: TracebackType | None,
+) -> bool:
     # The library "stopit" (dependency of "pypeln") as of version 1.1.2
     # incorrectly handles a timeout exception sent to an already terminated
     # thread as an internal error.
@@ -358,9 +368,15 @@ def _ignore_invalid_thread_id_error(error: ValueError) -> bool:
     if "Invalid thread ID" not in str(error):
         return False
 
-    # stopit may fail during cleanup and mask the original pipeline exception.
-    if error.__context__ is not None:
-        raise error.__context__ from None
+    # A cleanup error also inherits the caller's active exception when a pipeline
+    # runs inside an except block (e.g. saving FAILED metadata). Only restore an
+    # error raised by this pipeline; a re-raised outer error has a new traceback.
+    pipeline_error = error.__context__
+    if pipeline_error is not None and (
+        pipeline_error is not outer_error
+        or pipeline_error.__traceback__ is not outer_traceback
+    ):
+        raise pipeline_error from None
 
     logging.warning(
         "Thread ID error due to incorrect handling of thread termination in stopit library, skipping",

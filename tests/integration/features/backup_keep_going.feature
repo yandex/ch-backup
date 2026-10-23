@@ -22,14 +22,12 @@ Feature: Backup of a table with an unreadable data part
     CREATE TABLE test_db.intact_table (n Int32) ENGINE = MergeTree() ORDER BY n;
     INSERT INTO test_db.intact_table SELECT number FROM system.numbers LIMIT 100;
     """
-    And we have executed command on clickhouse01
+    And data part files on clickhouse01 are unreadable by ClickHouse
     """
-    set -e
-    part=/var/lib/clickhouse/data/test_db/test_table/1_2_2_0
-    for file in "$part"/*.bin; do
-        chmod 000 "$file"
-        if runuser -u clickhouse -- cat "$file" > /dev/null 2>&1; then exit 1; fi
-    done
+    database: test_db
+    table: test_table
+    part: "1_2_2_0"
+    pattern: "*.bin"
     """
 
   Scenario: Unreadable data part is left out of the backup with keep_going

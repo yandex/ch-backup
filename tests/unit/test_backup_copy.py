@@ -12,6 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from ch_backup import logging as ch_logging
 from ch_backup.backup.copier import BackupCopier
 from ch_backup.backup.copy_report import CopyReport, print_copy_report
 from ch_backup.backup.layout import BackupLayout
@@ -2347,17 +2348,33 @@ def test_failed_metadata_save_preserves_copy_error_and_clears_cache() -> None:
 
     def upload(backup):
         if backup.state == BackupState.FAILED:
-            raise StorageError("failed to save FAILED")
+            try:
+                raise OSError("metadata write failed")
+            except OSError as error:
+                raise StorageError("failed to save FAILED") from error
         original(backup)
 
-    with patch(
-        "ch_backup.backup.copier.get_storage_engine", side_effect=ctx.store.engine
-    ):
-        with patch.object(
-            ctx.target_layout, "upload_backup_metadata", side_effect=upload
+    messages: list[str] = []
+    sink = ch_logging.logger.add(
+        messages.append, format="{message}", diagnose=False, backtrace=False
+    )
+    try:
+        with (
+            patch(
+                "ch_backup.backup.copier.get_storage_engine",
+                side_effect=ctx.store.engine,
+            ),
+            patch.object(
+                ctx.target_layout, "upload_backup_metadata", side_effect=upload
+            ),
         ):
             with pytest.raises(RuntimeError, match="primary copy error"):
                 copier.copy(report=report)
+    finally:
+        ch_logging.logger.remove(sink)
+    log = "".join(messages)
+    assert "OSError: metadata write failed" in log
+    assert "StorageError: failed to save FAILED" in log
     assert [e["message"] for e in report.backups[0].errors] == [
         "RuntimeError: primary copy error",
         "StorageError: failed to save FAILED",

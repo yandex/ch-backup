@@ -31,6 +31,7 @@ from cloup.constraints import constraint, mutually_exclusive
 from humanfriendly import format_timespan
 from tabulate import tabulate
 
+from ch_backup.command_context import command_context
 from ch_backup.exceptions import ConfigurationError, TerminatingSignal
 
 from . import logging
@@ -200,7 +201,9 @@ def command(*args, **kwargs):
                     ctx.args,
                     get_version(),
                 )
-                result = ctx.invoke(f, ctx, ctx.obj["backup"], *args, **kwargs)
+                ch_backup = ctx.obj["backup"]
+                with command_context(ctx.command.name):
+                    result = ctx.invoke(f, ctx, ch_backup, *args, **kwargs)
                 logging.info("Command '{}' completed", ctx.command.name)
                 return result
             except (Exception, TerminatingSignal):
@@ -409,6 +412,11 @@ def show_command(
     ),
     option("--nc", is_flag=True, help="Perform partial backup of named collections."),
     option(
+        "--http-handlers",
+        is_flag=True,
+        help="Perform partial backup of SQL-defined HTTP handlers.",
+    ),
+    option(
         "--workload", is_flag=True, help="Perform partial backup of workload entities."
     ),
     option(
@@ -489,6 +497,7 @@ def show_command(
 @constraint(mutually_exclusive, ["schema_only", "udf"])
 @constraint(mutually_exclusive, ["schema_only", "nc"])
 @constraint(mutually_exclusive, ["schema_only", "workload"])
+@constraint(mutually_exclusive, ["schema_only", "http_handlers"])
 @constraint(mutually_exclusive, ["data", "schema"])
 # pylint: disable=too-many-positional-arguments
 def backup_command(
@@ -509,6 +518,7 @@ def backup_command(
     nc: bool,
     workload: bool,
     copy_cloud_storage_data: bool,
+    http_handlers: bool,
     detached_parts: bool,
     detached_parts_disks: list[str] | None,
     detached_parts_reasons: list[str] | None,
@@ -533,9 +543,16 @@ def backup_command(
         labels[key] = value
 
     backup_config = ch_backup.config["backup"]
-    if any([access, data, schema, udf, nc, workload, schema_only]):
+    if any([access, data, schema, udf, nc, workload, schema_only, http_handlers]):
         sources = BackupSources.for_backup(
-            access, data, schema, udf, nc, workload, schema_only
+            access,
+            data,
+            schema,
+            udf,
+            nc,
+            workload,
+            schema_only,
+            http_handlers=http_handlers,
         )
     else:
         sources = BackupSources.from_config(backup_config["sources"])
@@ -684,6 +701,11 @@ def backup_command(
     ),
     option("--nc", is_flag=True, help="Perform partial restore of named collections."),
     option(
+        "--http-handlers",
+        is_flag=True,
+        help="Perform partial restore of SQL-defined HTTP handlers.",
+    ),
+    option(
         "--workload", is_flag=True, help="Perform partial restore of workload entities."
     ),
 )
@@ -709,6 +731,7 @@ def backup_command(
 @constraint(mutually_exclusive, ["schema_only", "udf"])
 @constraint(mutually_exclusive, ["schema_only", "nc"])
 @constraint(mutually_exclusive, ["schema_only", "workload"])
+@constraint(mutually_exclusive, ["schema_only", "http_handlers"])
 @constraint(mutually_exclusive, ["data", "schema"])
 # pylint: disable=too-many-positional-arguments
 def restore_command(
@@ -738,6 +761,7 @@ def restore_command(
     table_excluded_patterns: list[str] | None = None,
     nc: bool = False,
     workload: bool = False,
+    http_handlers: bool = False,
 ) -> None:
     """Restore data from a particular backup."""
     # pylint: disable=too-many-arguments,too-many-locals
@@ -754,7 +778,14 @@ def restore_command(
         matcher = PartialRestoreFilter(inverted=True, patterns=table_excluded_patterns)
 
     sources = BackupSources.for_restore(
-        access, data, schema, udf, nc, workload, schema_only
+        access,
+        data,
+        schema,
+        udf,
+        nc,
+        workload,
+        schema_only,
+        http_handlers=http_handlers,
     )
     if parts_from_backup:
         parts_from_backup = _validate_and_resolve_name(
@@ -815,7 +846,7 @@ def restore_from_replica_command(
     workload: bool = False,
 ) -> None:
     """Restore from a live replica of the shard instead of a backup. All without options."""
-    sources = BackupSources(data=False)
+    sources = BackupSources(data=False, http_handlers=False)
     if any([schema, access, udf, nc, workload]):
         sources = BackupSources(
             access=access,
@@ -824,6 +855,7 @@ def restore_from_replica_command(
             udf=udf,
             named_collections=nc,
             workload_entities=workload,
+            http_handlers=False,
         )
     ch_backup.restore_from_replica(source_host, sources, replica_name)
 
