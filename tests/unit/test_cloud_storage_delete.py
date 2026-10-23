@@ -169,6 +169,28 @@ def test_delete_cloud_copy_rejects_untrusted_endpoint(cloud_copy):
     context.backup_layout.delete_backup.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("backup_root", "cloud_path"),
+    [
+        ("ch_backup", "ch_backup/backup1/payload/backup1"),
+        ("ch_backup/backup1", "ch_backup/backup1"),
+    ],
+)
+def test_delete_cloud_copy_rejects_overlapping_backup_prefix(
+    cloud_copy, backup_root, cloud_path
+):
+    backup, meta, _context, _s3, configs = cloud_copy
+    backup.config["backup"]["path_root"] = backup_root
+    meta.cloud_storage.source.update({"bucket": "backups", "path": cloud_path})
+
+    with pytest.raises(ConfigurationError, match="overlaps backup metadata"):
+        backup._get_external_cloud_storage(
+            meta, DeleteSettings(delete_cloud_storage_data=True)
+        )
+
+    assert not configs
+
+
 def test_delete_cloud_copy_uses_explicit_target_credentials(cloud_copy):
     backup, meta, _context, s3, configs = cloud_copy
     backup.config["copy"]["cloud_storage"]["target"].update(
@@ -378,11 +400,28 @@ def test_delete_cloud_copy_can_use_light_metadata(cloud_copy, unreadable):
     _list_objects(s3, ["copies/backup1/a"])
     _delete_objects(s3, ["copies/backup1/a"])
 
+    published_sources = []
+    context.backup_layout.upload_backup_metadata.side_effect = (
+        lambda metadata, **_kwargs: published_sources.append(
+            deepcopy(metadata.cloud_storage.source)
+        )
+    )
+
+    def remove_backup(_name, unfreeze):
+        assert published_sources[-1] is None
+        unfreeze()
+
+    context.backup_layout.delete_backup.side_effect = remove_backup
+
     assert backup._delete(
         meta, {}, settings=DeleteSettings(delete_cloud_storage_data=True)
     ) == ("backup1", None)
 
     assert meta.cloud_storage.source is None
+    assert len(published_sources) == 2
+    assert published_sources[0]["path"] == "copies/backup1"
+    assert published_sources[1] is None
+    context.backup_layout.delete_backup.assert_called_once()
     assert all(
         call.kwargs == {"light_only": True}
         for call in context.backup_layout.upload_backup_metadata.call_args_list

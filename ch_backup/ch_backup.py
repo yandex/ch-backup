@@ -1006,7 +1006,9 @@ class ClickhouseBackup:
                 for name in (backup.name, sanitize_backup_name(backup.name))
             ]
             if path != backup_prefixes[0] and any(
-                prefix == path or prefix.startswith(path + "/")
+                prefix == path
+                or prefix.startswith(path + "/")
+                or path.startswith(prefix + "/")
                 for prefix in backup_prefixes
             ):
                 raise ConfigurationError(

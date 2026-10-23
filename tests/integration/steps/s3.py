@@ -66,6 +66,21 @@ def step_cloud_storage_bucket_has_no_prefix(context, bucket, prefix):
     )
 
 
+@when('we save S3 object keys in bucket {bucket} with prefix "{prefix}"')
+def step_save_s3_prefix_keys(context, bucket, prefix):
+    keys = set(s3.S3Client(context, bucket).list_objects(prefix))
+    assert keys, f"No objects with prefix {prefix} in bucket {bucket}"
+    context.s3_prefix_keys = (bucket, prefix, keys)
+
+
+@then('s3 bucket {bucket} contains the saved objects with prefix "{prefix}"')
+def step_cloud_storage_bucket_has_saved_keys(context, bucket, prefix):
+    saved_bucket, saved_prefix, saved_keys = context.s3_prefix_keys
+    assert (bucket, prefix) == (saved_bucket, saved_prefix)
+    keys = set(s3.S3Client(context, bucket).list_objects(prefix))
+    assert keys == saved_keys, f"Object keys changed in bucket {bucket} under {prefix}"
+
+
 @when("we save S3 object keys of a detached data part on {node:w}")
 def step_save_detached_part_object_keys(context, node):
     conf = get_step_data(context)

@@ -854,7 +854,8 @@ Feature: Copy backups to another storage
         --target-cloud-storage-path copy
     """
     Then s3 bucket cloud-storage-02 contains objects with prefix "copy/12345678T123456/"
-    When we put object in S3
+    When we save S3 object keys in bucket cloud-storage-02 with prefix "copy/12345678T123456/"
+    And we put object in S3
     """
     bucket: cloud-storage-02
     path: copy/12345678T123456-neighbor/keep
@@ -892,9 +893,9 @@ Feature: Copy backups to another storage
     """
 
     Examples:
-      | cleanup  | delete_option               | cloud_objects |
-      | disabled |                             | objects       |
-      | enabled  | --delete-cloud-storage-data | no objects    |
+      | cleanup  | delete_option               | cloud_objects     |
+      | disabled |                             | the saved objects |
+      | enabled  | --delete-cloud-storage-data | no objects        |
 
   Scenario Outline: Copy respects the <held_lock> storage lock
     Given clickhouse on clickhouse01 has test schema
