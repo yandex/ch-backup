@@ -39,7 +39,7 @@ from .backup.copy_report import CopyReport, print_copy_report
 from .backup.metadata import BackupState, TableMetadata
 from .backup.sources import BackupSources
 from .ch_backup import CleanZooKeeperMode, ClickhouseBackup
-from .config import DEFAULT_CONFIG, Config
+from .config import DEFAULT_CONFIG, Config, copy_deduplication_cutoff
 from .logic.partial_restore import PartialRestoreFilter
 from .params import JsonParamType, KeyValues, List, String, TimeSpan
 from .profile import profile
@@ -994,14 +994,6 @@ def copy_command(
         if bool(name) == all_:
             ctx.fail("Either BACKUP or --all must be specified.")
 
-        backup_names = None
-        if name:
-            if name == "LAST":
-                name = _validate_and_resolve_name(
-                    ctx, ch_backup, name, BackupState.CREATED
-                )
-            backup_names = [name]
-
         copy_config: dict = {"cloud_storage": {"source": {}, "target": {}}}
         if server_side_copy is not None:
             copy_config["server_side_copy"] = server_side_copy
@@ -1019,6 +1011,15 @@ def copy_command(
             _build_cli_cfg_from_config_parameters(target_config_parameters),
         )
         target_cfg.merge({"copy": copy_config})
+        # Validate before resolving LAST, which already lists the source storage.
+        copy_deduplication_cutoff(target_cfg["copy"], utcnow())
+        backup_names = None
+        if name:
+            if name == "LAST":
+                name = _validate_and_resolve_name(
+                    ctx, ch_backup, name, BackupState.CREATED
+                )
+            backup_names = [name]
         ch_backup.copy(target_cfg, backup_names, keep_going=keep_going, report=report)
     except BaseException as e:
         report.error = f"{type(e).__name__}: {e}"

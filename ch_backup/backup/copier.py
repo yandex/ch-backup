@@ -10,10 +10,12 @@ import re
 from contextlib import contextmanager
 from functools import partial
 from itertools import chain
+from pathlib import PurePosixPath
 from typing import Iterator, Sequence
 from urllib.parse import quote, urlparse
 
 from ch_backup import logging
+from ch_backup.backup.copy_deduplication import CopyDeduplication
 from ch_backup.backup.copy_report import BackupCopyResult, CopyReport
 from ch_backup.backup.layout import (
     BACKUP_LIGHT_META_FNAME,
@@ -37,7 +39,7 @@ from ch_backup.clickhouse.object_storage_metadata import (
     parse_object_storage_metadata,
     replace_object_keys,
 )
-from ch_backup.config import Config
+from ch_backup.config import Config, copy_deduplication_cutoff
 from ch_backup.exceptions import (
     BackupNotFound,
     ClickhouseBackupError,
@@ -52,6 +54,7 @@ from ch_backup.storage.object_copy import (
     server_side_copy_possible,
     storage_id,
 )
+from ch_backup.util import utcnow
 
 FROZEN_METADATA_FNAME = "frozen_metadata.txt"
 
@@ -106,6 +109,7 @@ class BackupCopier:
         self._source_backup_files: dict[str, dict[str, int]] = {}
         # Original part identity -> successfully materialized target owner and name.
         self._materialized_parts: dict[tuple, tuple[str, str]] = {}
+        self._target_deduplication: CopyDeduplication | None = None
         # Availability of server-side copy for bucket pairs with particular credentials.
         self._server_side_copy: dict[tuple, bool] = {}
         self._keep_going = False
@@ -201,6 +205,7 @@ class BackupCopier:
     ) -> dict[str, str]:
         """Reserve unreadable target names without blocking independent backups."""
         names = {}
+        candidates = []
         for name in self._target_layout.get_backup_names():
             try:
                 backup = self._target_layout.get_backup(name, use_light_meta=True)
@@ -211,6 +216,11 @@ class BackupCopier:
                         f'Target backup metadata name does not match "{name}"'
                     )
                 names[backup.get_sanitized_name()] = name
+                if (
+                    self._target_deduplication is not None
+                    and self._target_deduplication.eligible(backup)
+                ):
+                    candidates.append(backup)
             except Exception as e:
                 if name not in results:
                     results[name] = BackupCopyResult(name)
@@ -219,6 +229,8 @@ class BackupCopier:
                 if not self._keep_going or is_broken_executor(e):
                     raise
                 names[sanitize_backup_name(name)] = name
+        if self._target_deduplication is not None:
+            self._target_deduplication.load(candidates)
         return names
 
     @contextmanager
@@ -232,6 +244,16 @@ class BackupCopier:
             result.add_error(e, "planning", source=source)
 
     def _validate_configs(self) -> None:
+        cutoff = copy_deduplication_cutoff(self._copy_config, utcnow())
+        self._target_deduplication = (
+            CopyDeduplication(self._target_layout, cutoff)
+            if cutoff is not None
+            else None
+        )
+        if cutoff is not None:
+            logging.info(
+                "Copy target deduplication window lower bound: {}", cutoff.isoformat()
+            )
         if storage_id(self._storage) == storage_id(self._target_storage) and _key(
             self._config["backup"]["path_root"]
         ).rstrip("/") == _key(self._target_config["backup"]["path_root"]).rstrip("/"):
@@ -318,7 +340,14 @@ class BackupCopier:
                     f"Backup {backup_name} already exists in target storage and it is not a copy of the source backup"
                 )
             if target_backup.state == BackupState.CREATED:
-                if any(part.link for part in backup.get_parts()):
+                if any(
+                    part.link
+                    and (
+                        self._target_deduplication is None
+                        or part.disk_name in backup.cloud_storage.disks
+                    )
+                    for part in backup.get_parts()
+                ):
                     existing = self._target_layout.get_backup(backup_name)
                     if existing:
                         self._remember_materialized_parts(backup, existing)
@@ -335,6 +364,10 @@ class BackupCopier:
         else:
             logging.info("Copying backup {}", backup_name)
 
+        if self._target_deduplication is not None:
+            # A PARTIALLY_DELETED owner may be retried. If it fails, later backups
+            # must not reuse the old index entry after its state changes to FAILED.
+            self._target_deduplication.discard_backup(backup.name)
         target_meta = self._make_target_metadata(backup)
         plan = _CopyPlan()
         self._plan_backup_files(backup, plan, result)
@@ -383,6 +416,8 @@ class BackupCopier:
             target_meta.state = BackupState.CREATED
             self._target_layout.upload_backup_metadata(target_meta)
             self._remember_materialized_parts(backup, target_meta)
+            if self._target_deduplication is not None:
+                self._target_deduplication.add_backup(target_meta, published=True)
         except (Exception, TerminatingSignal) as e:
             logging.critical("Copying of backup {} failed", backup.name, exc_info=True)
             if stage == "metadata" or not result.errors:
@@ -509,21 +544,43 @@ class BackupCopier:
         result: BackupCopyResult,
     ) -> None:
         """
-        Plan copying of deduplicated data parts stored in other backups.
+        Resolve local parts against the independent target window when enabled.
 
-        Links are kept if the backup containing the part is already present in the target storage.
-        Otherwise, data parts are copied into the backup directory.
+        Without a target window, keep usable source links. Materialize unresolved links
+        from source and omit files of newly linked own parts from the copy plan.
         """
+        excluded_dirs = set()
         for part in backup.get_parts():
             if part.disk_name in backup.cloud_storage.disks:
                 # Cloud storage links refer to disk metadata, not local part tarballs.
                 continue
-            if not part.link:
-                continue
             with self._planning_step(
-                result, f"{part.link}/{part.database}/{part.table}/{part.name}"
+                result,
+                f"{part.link or backup.name}/{part.database}/{part.table}/{part.name}",
             ):
-                self._plan_linked_part(backup, target_meta, plan, part, result)
+                if self._target_deduplication is not None:
+                    owner = self._target_deduplication.find_part(part, backup.name)
+                    if owner is not None:
+                        target_meta.link_part(part, owner.backup_name, owner.part_name)
+                        if part.link is None:
+                            excluded_dirs.update(get_data_part_relative_dirs(part))
+                        continue
+                if part.link is not None:
+                    self._plan_linked_part(backup, target_meta, plan, part, result)
+        if excluded_dirs:
+            # Drop only the matched local part directories, preserving schema, detached and cloud data.
+            prefix = _key(self._layout.get_backup_path(backup.name)).rstrip("/") + "/"
+            plan.entries = [
+                entry
+                for entry in plan.entries
+                if not entry.src_path.startswith(prefix)
+                or not any(
+                    str(parent) in excluded_dirs
+                    for parent in PurePosixPath(
+                        entry.src_path.removeprefix(prefix)
+                    ).parents
+                )
+            ]
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     def _plan_linked_part(
@@ -535,8 +592,9 @@ class BackupCopier:
         result: BackupCopyResult,
     ) -> None:
         """Materialize one local part when its target link is unusable."""
-        if self._is_link_valid_in_target(part) or self._reuse_materialized_part(
-            part, target_meta
+        if self._target_deduplication is None and (
+            self._is_link_valid_in_target(part)
+            or self._reuse_materialized_part(part, target_meta)
         ):
             return
         assert part.link
@@ -623,6 +681,11 @@ class BackupCopier:
         for part in source.get_parts():
             if not part.link:
                 continue
+            if (
+                self._target_deduplication is not None
+                and part.disk_name not in source.cloud_storage.disks
+            ):
+                continue
             if part.disk_name in source.cloud_storage.disks and not (
                 source.cloud_storage.data_copied and target.cloud_storage.data_copied
             ):
@@ -647,11 +710,7 @@ class BackupCopier:
         if owner is None:
             return False
         name, part_name = owner
-        raw_part = target.get_table(part.database, part.table).raw_metadata["parts"][
-            part.name
-        ]
-        raw_part["link"] = name
-        raw_part["link_part_name"] = part_name if part_name != part.name else None
+        target.link_part(part, name, part_name)
         return True
 
     def _is_link_valid_in_target(self, part: PartMetadata) -> bool:

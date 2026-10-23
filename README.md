@@ -192,9 +192,30 @@ How it works:
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
   and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.
   Locking remains optional; the local file lock retains its shared semantics.
-- Deduplicated data parts of the backup are stored in older backups. If such a backup is already
+- By default, deduplicated data parts of the backup are stored in older backups. If such a backup is already
   present in the target storage, the deduplication link is kept. Otherwise, the data part is copied
   into the copied backup. `--all` copies older backups first, so deduplication is kept in the target storage.
+- Set `copy.deduplication_age_limit: {days: 90}` in the target configuration to enable an
+  independent deduplication window for active parts on local disks. The default `{days: 0}`
+  disables this additional lookup; a zero duration keeps the existing source-link behavior.
+  The value accepts the same units as a Python `timedelta` (weeks through microseconds),
+  with finite nonnegative numbers. Target command-line configuration overrides the target file,
+  which overrides the main configuration, following the usual recursive merge rules.
+  When enabled, copy matches parts by database, table, name (allowing mutation suffix changes),
+  checksum, disk, size, file list, layout and encryption, even if source stores the part anew
+  or links to a different owner. The newest matching physical owner with available files is used.
+  Its original backup `start_time` must be within the period before the start of the copy command;
+  copying preserves that timestamp. A recent reference does not extend an old owner's window.
+  This applies to source links too: without an eligible target owner, the part is copied from source.
+  The window is independent of `backup.deduplication_age_limit`, `deduplication_start_time`
+  and `deduplicate_parts`; historical backups copied with `--all` use the same current-time bound.
+  Reading full metadata and listing part files in eligible target backups costs additional S3
+  requests. Each candidate's full metadata is read once for the index, file listings are grouped
+  by table, and index memory grows with the number of physical local parts in the window.
+  Existing completed copies are skipped and existing duplicates are not compacted.
+  Cloud-storage and detached parts retain their existing behavior. Restore uses the existing
+  link format; delete and purge preserve referenced parts in partially deleted owners until
+  the references are removed, even when an owner is outside the deduplication window.
 - Full cloud-storage backups created with `--copy-cloud-storage-data` keep their data in the backup
   bucket. Copying them moves that data into the target backup bucket, including linked parts when
   their owning backup is absent there. No ClickHouse disk credentials or `--target-cloud-storage-bucket`

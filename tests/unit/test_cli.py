@@ -23,13 +23,20 @@ from tests.unit.test_backup_copy import CopyTestContext, _backup
 from tests.unit.utils import parametrize
 
 
+@pytest.fixture(name="copy_backup")
+def copy_backup_fixture(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("")
+    return MagicMock(config=Config(str(path)))
+
+
 @pytest.mark.parametrize(
     "failure", [None, RuntimeError("copy failed"), TerminatingSignal("interrupted")]
 )
 def test_copy_command_writes_report_on_success_error_and_signal(
-    tmp_path: Path, failure: BaseException | None
+    tmp_path: Path, failure: BaseException | None, copy_backup: MagicMock
 ) -> None:
-    backup = MagicMock()
+    backup = copy_backup
     report_path = tmp_path / "report.json"
 
     def copy(_target, _names, *, keep_going, report):
@@ -76,9 +83,9 @@ def test_copy_command_writes_report_on_success_error_and_signal(
 
 @pytest.mark.parametrize("copy_failed", [False, True])
 def test_copy_report_write_failure_preserves_original_exception(
-    tmp_path: Path, copy_failed: bool
+    tmp_path: Path, copy_failed: bool, copy_backup: MagicMock
 ) -> None:
-    backup = MagicMock()
+    backup = copy_backup
     failure = RuntimeError("primary error")
     if copy_failed:
         backup.copy.side_effect = failure
@@ -113,10 +120,10 @@ def test_copy_reports_configuration_failure(tmp_path: Path) -> None:
 @pytest.mark.parametrize("state", [None, BackupState.FAILED])
 @pytest.mark.parametrize("keep_going", [False, True])
 def test_copy_named_validation_failure_has_report_row(
-    tmp_path: Path, state: BackupState | None, keep_going: bool
+    tmp_path: Path, state: BackupState | None, keep_going: bool, copy_backup: MagicMock
 ) -> None:
     ctx = CopyTestContext([_backup("requested", state=state)] if state else [])
-    backup = MagicMock()
+    backup = copy_backup
 
     def copy(_target, names, *, keep_going, report):
         return ctx.copy(names, keep_going=keep_going, report=report)
@@ -136,6 +143,33 @@ def test_copy_named_validation_failure_has_report_row(
     ]
     assert report["backups"][0]["errors"][0]["stage"] == "selection"
     backup.list.assert_not_called()
+
+
+@pytest.mark.parametrize("days", [-1, 90])
+def test_copy_window_cli_override_before_last_lookup(copy_backup, days):
+    copy_backup.config["copy"]["deduplication_age_limit"] = {"days": 7}
+    copy_backup.list.return_value = [_backup("selected")]
+    result = CliRunner().invoke(
+        Group(commands=[cli.copy_command]),
+        [
+            "copy",
+            "LAST",
+            "--target-config-parameter",
+            "copy.deduplication_age_limit.days",
+            str(days),
+        ],
+        obj={"backup": copy_backup},
+    )
+    if days < 0:
+        assert isinstance(result.exception, ConfigurationError)
+        copy_backup.list.assert_not_called()
+        copy_backup.copy.assert_not_called()
+    else:
+        assert result.exit_code == 0, result.output
+        config, names = copy_backup.copy.call_args.args
+        assert names == ["selected"]
+        assert config["copy"]["deduplication_age_limit"] == {"days": days}
+        assert copy_backup.config["copy"]["deduplication_age_limit"] == {"days": 7}
 
 
 @parametrize(
