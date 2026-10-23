@@ -2827,6 +2827,26 @@ def test_completed_stage_with_deleted_rewritten_metadata_is_copied_again() -> No
     assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
 
 
+def test_resume_skips_confirmed_rewritten_metadata() -> None:
+    ctx = _staged_context(version=5)
+    tarball = "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
+    ctx.target_layout.object_errors["data/xyz/aaa"] = StorageError("SlowDown")
+    with pytest.raises(ClickhouseBackupError):
+        ctx.copy(["b1"], keep_going=True)
+    assert tarball in ctx.target_layout.cloud_storage_files
+    ctx.target_layout.object_errors.clear()
+    ctx.target_layout.copied.clear()
+    del ctx.target_layout.cloud_storage_files[tarball]
+    report = CopyReport()
+
+    ctx.copy(["b1"], stages=["cloud_storage"], report=report)
+
+    assert tarball not in ctx.target_layout.cloud_storage_files
+    assert set(ctx.copied_paths().values()) == {"copies/b1/xyz/aaa"}
+    assert report.backups[0].objects_skipped == 1
+    assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
+
+
 @pytest.mark.parametrize("keep_going", [False, True])
 def test_cloud_storage_planning_failure_does_not_fail_backup_stage(
     keep_going: bool,
