@@ -239,6 +239,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         self._source_endpoint: str = source_endpoint or ""
         if (
             backup_meta.cloud_storage.requires_source_bucket
+            and backup_meta.get_owned_cloud_storage_disks()
             and source_bucket is None
             and not skip_cloud_storage
         ):
@@ -252,7 +253,12 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
     def __enter__(self):
         self._read_configured_disks()
         if not self._skip_cloud_storage:
-            for disk_name in self._backup_meta.cloud_storage.disks:
+            own_disks = (
+                self._backup_meta.cloud_storage.disks
+                if self._backup_meta.cloud_storage.data_copied
+                else self._backup_meta.get_owned_cloud_storage_disks()
+            )
+            for disk_name in own_disks:
                 self._create_temporary_disk(
                     self._backup_meta,
                     disk_name,
@@ -303,7 +309,10 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
             backup_meta = self._backup_layout.get_backup(
                 backup_name, use_light_meta=True
             )
-            if backup_meta is None or not backup_meta.cloud_storage.data_copied:
+            if backup_meta is None or not (
+                backup_meta.cloud_storage.data_copied
+                or backup_meta.cloud_storage.source
+            ):
                 raise ClickHouseDisksException(
                     f'Backup "{backup_name}" holding data of deduplicated parts'
                     " is missing or holds no copied data"
@@ -334,7 +343,9 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         relative to the disk endpoint. Objects copied into the backup are not
         reachable from the original disk, so such backups are refused.
         """
-        if self._use_local_copy and backup_meta.cloud_storage.data_copied:
+        if self._use_local_copy and (
+            backup_meta.cloud_storage.data_copied or backup_meta.cloud_storage.source
+        ):
             raise ClickHouseDisksException(
                 f'Backup "{backup_meta.name}" holds a copy of cloud storage data,'
                 " it cannot be restored with use_inplace_cloud_restore."
@@ -381,11 +392,26 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
 
         disk_config = copy.copy(self._disks[disk_name])
         endpoint = urlparse(disk_config["endpoint"])
-        if self._source_endpoint:
+        source_bucket, source_path, source_endpoint_url = (
+            self._source_bucket,
+            self._source_path,
+            self._source_endpoint,
+        )
+        if (
+            backup_meta.name != self._backup_meta.name
+            and backup_meta.cloud_storage.source
+        ):
+            source = backup_meta.cloud_storage.source
+            source_bucket, source_path, source_endpoint_url = (
+                source["bucket"],
+                source["path"],
+                source["endpoint_url"],
+            )
+        if source_endpoint_url:
             source_endpoint = urlparse(
-                self._source_endpoint
-                if "://" in self._source_endpoint
-                else f"//{self._source_endpoint}"
+                source_endpoint_url
+                if "://" in source_endpoint_url
+                else f"//{source_endpoint_url}"
             )
             endpoint = endpoint._replace(
                 scheme=source_endpoint.scheme or endpoint.scheme,
@@ -393,8 +419,8 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
             )
         disk_config["endpoint"] = os.path.join(
             f"{endpoint.scheme}://{endpoint.netloc}",
-            self._source_bucket,
-            self._source_path,
+            source_bucket,
+            source_path,
             "",
         )
         return disk_config

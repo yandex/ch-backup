@@ -214,8 +214,15 @@ Behavior and limitations:
   prefix from stored source metadata or disk configuration. Copy fails before writing if that prefix
   is unknown or a key is outside it. Without a path override, full keys are read as stored.
   Restore of the copy uses the copied objects by default; they must be accessible with credentials of the
-  object storage disk of the host where the backup is restored. Each copied backup stores these objects
-  separately. By default, deleting a copy retains its external cloud storage objects.
+  object storage disk of the host where the backup is restored.
+  Copies reuse unchanged whole parts from completed backups in the same target cloud bucket and path.
+  Copy compares archived object references because ClickHouse can change metadata checksums on each freeze.
+  Each copied part stores a fingerprint derived from the original object namespace and references.
+  Later copies preserve that identity when objects move to another destination.
+  Older destination copies without this fingerprint remain readable but cannot supply deduplication owners.
+  Backup metadata records each part's owning backup. Restore reads each part from its owner's location.
+  Copying a backup without its owner at the destination materializes the linked part in the new copy.
+  By default, deleting a copy retains its external cloud storage objects.
   Use `ch-backup delete BACKUP --delete-cloud-storage-data` to remove them too.
   `ch-backup purge --delete-cloud-storage-data` applies the same cleanup to backups selected by retention,
   and `delete BACKUP --purge-partial --delete-cloud-storage-data` also cleans additional partially deleted backups.
@@ -226,7 +233,9 @@ Behavior and limitations:
   A configured `copy.cloud_storage.target.bucket` must also match the recorded bucket.
   Cleanup trusts the recorded bucket and prefix. Only trusted users and processes should have write
   access to backup metadata. Altered metadata can redirect deletion within the credentials' permissions.
-  Cleanup retains cloud data referenced by surviving backups. An S3 failure keeps backup metadata in
+  Partial cleanup removes unreferenced parts and their archived disk metadata. Parts referenced by
+  surviving backups retain both their objects and disk metadata. Objects shared with retained parts also remain.
+  An S3 failure keeps backup metadata in
   the `failed` state so the operation can be retried. Deletion with this option requires readable
   full or light metadata. When cloud objects share the backup directory, cleanup identifies them from
   saved disk metadata. Encrypted disk metadata requires its original key. Partial deletion retains these
