@@ -5,10 +5,12 @@ Pipeline builder.
 from functools import reduce
 from math import ceil
 from pathlib import Path
-from typing import Any, BinaryIO, Callable, Iterable, Sequence, Union
+from typing import Any, BinaryIO, Callable, Iterable, Iterator, Sequence, Union
 
 from pypeln import utils as pypeln_utils
 from pypeln.thread.api.from_iterable import from_iterable
+from pypeln.thread.queue import IterableQueue
+from pypeln.thread.supervisor import Supervisor
 
 from ch_backup.compression import get_compression
 from ch_backup.encryption import get_encryption
@@ -385,7 +387,7 @@ class PipelineBuilder:
         for stage in stages:
             self._stages.append(stage)
 
-    def pipeline(self) -> PypelnStage:
+    def pipeline(self) -> Iterator[Any]:
         """
         Return built pipeline.
         """
@@ -402,4 +404,19 @@ class PipelineBuilder:
             self._stages = [dummy_stage, *self._stages]
 
         # pipeline = stage1 | stage2 | ... | stageN
-        return reduce(lambda pipeline, stage: pipeline | stage, self._stages)
+        stage = reduce(lambda pipeline, stage: pipeline | stage, self._stages)
+        return self._iterate(stage)
+
+    @staticmethod
+    def _iterate(stage: PypelnStage) -> Iterator[Any]:
+        main_queue = IterableQueue(maxsize=stage.maxsize, total_sources=stage.workers)
+        workers = list(stage.build({}, main_queue, main_queue))
+
+        with Supervisor(workers=workers, main_queue=main_queue):
+            for element in main_queue:
+                yield element.value
+
+            # After successful exhaustion, join before the supervisor force-stops workers.
+            # A late `StopThreadException` can otherwise interrupt Python's thread teardown.
+            for worker in workers:
+                worker.process.join()

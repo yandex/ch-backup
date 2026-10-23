@@ -99,6 +99,12 @@ class ClickhouseClient:
                 )
 
             response.raise_for_status()
+        except requests.exceptions.ConnectionError as e:
+            if should_retry:
+                raise
+            raise ClickhouseErrorNotRetriable(
+                "ClickHouse connection failed; query was not retried"
+            ) from e
         except requests.exceptions.HTTPError as e:
             error_text = e.response.text.strip()
             if sensitive:

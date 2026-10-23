@@ -19,7 +19,7 @@ from .typing import ContextT
 class BackupStorage:
     """Use a node's backup configuration through the exposed test S3 endpoint."""
 
-    def __init__(self, context: ContextT, node: str) -> None:
+    def __init__(self, context: ContextT, node: str, bucket: str | None = None) -> None:
         self.container = docker.get_container(context, node)
         result = self.container.exec_run(["cat", CH_BACKUP_CONF_PATH], user="root")
         assert result.exit_code == 0, "Cannot read ch-backup configuration"
@@ -33,6 +33,8 @@ class BackupStorage:
         self.config["storage"]["credentials"]["endpoint_url"] = f"http://{host}:{port}"
         self.config["storage"]["proxy_resolver"]["uri"] = None
         self.config["multiprocessing"]["workers"] = 0
+        if bucket is not None:
+            self.config["storage"]["credentials"]["bucket"] = bucket
         self.layout = BackupLayout(self.config)
         self.loader = StorageLoader(self.config)
         self.engine = get_storage_engine(self.config["storage"])

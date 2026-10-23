@@ -16,6 +16,7 @@ from ch_backup.util import (
     replace_macros,
     retry,
     scan_dir_files,
+    sql_string_literal,
     strip_query,
 )
 
@@ -354,3 +355,15 @@ def test_compare_s3_endpoints():
     endpoint_1 = "https://cloud-storage-1234QWERTYU.s3.yandexcloud.net/cloud_storage/qwerty1234/invalid-shard-1/"
     endpoint_2 = "https://s3.yandexcloud.net/cloud-storage-qwerty1234/cloud_storage/qwerty1234/invalid-shard-1/"
     assert not is_equal_s3_endpoints(endpoint_1, endpoint_2)
+
+
+@parametrize(
+    {"id": "macro", "args": {"value": "{replica}", "result": "'{replica}'"}},
+    {"id": "apostrophe", "args": {"value": "r'1", "result": "'r\\'1'"}},
+    {"id": "backslash", "args": {"value": "r\\n", "result": "'r\\\\n'"}},
+    {"id": "trailing backslash", "args": {"value": "r\\", "result": "'r\\\\'"}},
+    {"id": "combined escapes", "args": {"value": "r\\'1", "result": "'r\\\\\\'1'"}},
+    {"id": "unicode", "args": {"value": "РЕПЛИКА", "result": "'РЕПЛИКА'"}},
+)
+def test_sql_string_literal(value, result):
+    assert sql_string_literal(value) == result

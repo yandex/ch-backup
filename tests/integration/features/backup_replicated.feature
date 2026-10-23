@@ -1429,18 +1429,16 @@ Feature: Backup replicated merge tree table
     INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10;
     INSERT INTO test_db.table_01 SELECT number FROM system.numbers LIMIT 10, 10;
     """
-    And we have executed command on clickhouse01
+    And we save and corrupt a data part file on clickhouse01
     """
-    part=$(clickhouse-client -q "SELECT path FROM system.parts WHERE database = 'test_db' AND table = 'table_01' AND name = 'all_0_0_0'")
-    cp "$part/<file>" /tmp/<file>.orig
-    <corrupt> "$part/<file>"
+    database: test_db
+    table: table_01
+    part: all_0_0_0
+    file: <file>
+    action: <action>
     """
     And we have created clickhouse01 clickhouse backup
-    And we have executed command on clickhouse01
-    """
-    part=$(clickhouse-client -q "SELECT path FROM system.parts WHERE database = 'test_db' AND table = 'table_01' AND name = 'all_0_0_0'")
-    cp /tmp/<file>.orig "$part/<file>"
-    """
+    And we restore saved data part files
     And we have created clickhouse01 clickhouse backup
     """
     schema_only: True
@@ -1487,11 +1485,11 @@ Feature: Backup replicated merge tree table
     """
 
     Examples:
-      | case      | file          | corrupt                                                                                                     |
-      | data      | data.bin      | python3 -c 'import sys; f = open(sys.argv[1], "r+b"); b = f.read(1); f.seek(0); f.write(bytes([b[0] ^ 8]))' |
-      | count     | count.txt     | python3 -c 'import sys; f = open(sys.argv[1], "r+b"); b = f.read(1); f.seek(0); f.write(bytes([b[0] ^ 8]))' |
-      | checksums | checksums.txt | python3 -c 'import sys; f = open(sys.argv[1], "r+b"); b = f.read(1); f.seek(0); f.write(bytes([b[0] ^ 8]))' |
-      | truncated | data.bin      | truncate -s -1                                                                                              |
+      | case      | file          | action    |
+      | data      | data.bin      | flip_byte |
+      | count     | count.txt     | flip_byte |
+      | checksums | checksums.txt | flip_byte |
+      | truncated | data.bin      | truncate  |
 
   @require_version_23.3
   Scenario: Restore replica with parts from another backup while the source replica merges
