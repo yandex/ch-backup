@@ -104,7 +104,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         #   access - access control entities (--access),
         #   udf - user defined functions (--udf),
         #   named_collections - named collections (--nc),
-        #   workload_entities - workloads and resources (--workload).
+        #   workload_entities - workloads and resources (--workload),
+        #   http_handlers - SQL-defined HTTP handlers (--http-handlers).
         # An unknown key selects all sources with a warning.
         "sources": {},
         # Backup of detached parts. Options of the backup command take precedence.

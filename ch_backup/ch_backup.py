@@ -48,6 +48,7 @@ from ch_backup.exceptions import (
 from ch_backup.logic.access import AccessBackup
 from ch_backup.logic.database import DatabaseBackup
 from ch_backup.logic.database_sync import SyncStatus, wait_sync_replicated_databases
+from ch_backup.logic.http_handlers import HTTPHandlersBackup
 from ch_backup.logic.lock_manager import storage_locks
 from ch_backup.logic.named_collections import NamedCollectionsBackup
 from ch_backup.logic.partial_restore import PartialRestoreFilter
@@ -84,6 +85,7 @@ class ClickhouseBackup:
         self._access_backup_manager = AccessBackup()
         self._database_backup_manager = DatabaseBackup()
         self._table_backup_manager = TableBackup()
+        self._http_handlers_backup_manager = HTTPHandlersBackup()
         self._udf_backup_manager = UDFBackup()
         self._nc_backup_manager = NamedCollectionsBackup()
         self._we_backup_manager = WorkloadEntitiesBackup()
@@ -252,6 +254,8 @@ class ClickhouseBackup:
                     self._nc_backup_manager.backup(self._context)
                 if sources.workload_entities:
                     self._we_backup_manager.backup(self._context)
+                if sources.http_handlers:
+                    self._http_handlers_backup_manager.backup(self._context)
                 if sources.schemas_included():
                     databases = self._database_backup_manager.backup(
                         self._context, databases
@@ -933,6 +937,9 @@ class ClickhouseBackup:
         if sources.workload_entities:
             # Restore workload entities
             self._we_backup_manager.restore(self._context)
+
+        if sources.http_handlers:
+            self._http_handlers_backup_manager.restore(self._context)
 
         if sources.schemas_included():
             databases: dict[str, Database] = {

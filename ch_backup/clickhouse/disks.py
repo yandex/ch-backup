@@ -601,9 +601,8 @@ class ClickHouseBackupDisks(ClickHouseDiskManager):
         """
         Copy frozen table data from a given disk into the backup bucket.
 
-        clickhouse-disks creates the last directory of the destination itself,
-        fails if the rest is missing and nests the copy one level deeper if
-        that directory already exists.
+        Before 23.7, clickhouse-disks appends the source directory name to the
+        destination. Newer versions require the full destination path.
         """
         assert table.path_on_disk, f"Table {table} doesn't store data on disk"
 
@@ -616,12 +615,15 @@ class ClickHouseBackupDisks(ClickHouseDiskManager):
         )
         target_path = os.path.join(backup_disk.path, shadow_path)
         os.makedirs(os.path.dirname(target_path.rstrip("/")), exist_ok=True)
+        destination = shadow_path
+        if not self._ch_ctl.ch_version_ge("23.7"):
+            destination = os.path.dirname(shadow_path.rstrip("/"))
         _ch_disks_copy(
             self._ch_ctl,
             disk_name,
             shadow_path,
             backup_disk.name,
-            shadow_path,
+            destination,
             f"Backup of {table.database}.{table.name} on disk {disk_name}",
         )
         return backup_disk

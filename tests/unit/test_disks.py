@@ -807,12 +807,14 @@ def test_backup_disk_cleanup_on_error_keeps_local_data_only():
     ch_ctl.reload_config.assert_called_once()
 
 
-def test_copy_table_data_copies_frozen_shadow_directory():
+@pytest.mark.parametrize("modern_copy", [False, True], ids=["pre-23.7", "23.7+"])
+def test_copy_table_data_copies_frozen_shadow_directory(modern_copy):
     """
     Data must be copied from the shadow directory of the source disk to the
     same path on the backup disk, so that uploaded metadata keeps its layout.
     """
-    disk_manager, _ = _make_backup_disks(BACKUP_DISK_CLICKHOUSE_CONFIG)
+    disk_manager, ch_ctl = _make_backup_disks(BACKUP_DISK_CLICKHOUSE_CONFIG)
+    ch_ctl.ch_version_ge.return_value = modern_copy
     source_disk = Disk("object_storage", "/var/lib/clickhouse/disks/s3/", "s3")
     table = Table(
         "db1",
@@ -836,9 +838,11 @@ def test_copy_table_data_copies_frozen_shadow_directory():
     command_args = exec_mock.call_args.kwargs["command_args"]
     assert "object_storage" in command_args
     assert "object_storage_backup" in command_args
-    assert (
-        command_args.count("shadow/20260101T000000/store/abc/abcdef/") == 2
-    ), command_args
+    shadow_path = "shadow/20260101T000000/store/abc/abcdef/"
+    target_path = (
+        shadow_path if modern_copy else os.path.dirname(shadow_path.rstrip("/"))
+    )
+    assert command_args[command_args.index(shadow_path) + 1] == target_path
     # The last directory is left to clickhouse-disks, see copy_table_data
     makedirs_mock.assert_called_once_with(
         os.path.join(BACKUP_DISK_PATH, "shadow/20260101T000000/store/abc"),
