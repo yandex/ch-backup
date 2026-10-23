@@ -1,5 +1,8 @@
 """Deletion of external cloud objects owned by copied backups."""
 
+# These tests exercise internal deletion and install a stubbed S3 client.
+# pylint: disable=protected-access
+
 from collections import defaultdict
 from copy import deepcopy
 from unittest.mock import MagicMock
@@ -7,19 +10,22 @@ from unittest.mock import MagicMock
 import pytest
 from botocore.stub import Stubber
 
+from ch_backup.backup.deduplication import DedupReferences
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupState, PartMetadata, TableMetadata
 from ch_backup.ch_backup import ClickhouseBackup, DeleteSettings
 from ch_backup.clickhouse.models import Database
-from ch_backup.config import DEFAULT_CONFIG
+from ch_backup.config import Config
 from ch_backup.exceptions import ConfigurationError, InvalidBackupStruct, StorageError
-from ch_backup.storage.engine import get_storage_engine
+from ch_backup.storage.engine.s3 import S3StorageEngine
 from tests.unit.test_ch_backup import _backup_metadata
 
 
-@pytest.fixture
-def cloud_copy(monkeypatch):
-    config = deepcopy(DEFAULT_CONFIG)
+@pytest.fixture(name="cloud_copy")
+def fixture_cloud_copy(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("", encoding="utf-8")
+    config = Config(str(config_path))
     config["storage"]["credentials"] = {
         "endpoint_url": "https://s3.example.test",
         "bucket": "backups",
@@ -56,18 +62,18 @@ def cloud_copy(monkeypatch):
     storage_configs = []
     storage = deepcopy(config["storage"])
     storage["credentials"]["bucket"] = "disk-copy"
-    engine = get_storage_engine(storage)
+    engine = S3StorageEngine(storage)
 
     def make_engine(storage):
         storage_configs.append(storage)
-        configured_engine = get_storage_engine(storage)
+        configured_engine = S3StorageEngine(storage)
         configured_engine._s3_client_factory = engine._s3_client_factory
         return configured_engine
 
     monkeypatch.setattr(
         "ch_backup.ch_backup.get_storage_engine", make_engine, raising=False
     )
-    with Stubber(engine._s3_client) as s3:
+    with Stubber(engine.get_client()) as s3:
         yield backup, meta, context, s3, storage_configs
         s3.assert_no_pending_responses()
 
@@ -232,7 +238,7 @@ def test_partial_delete_keeps_referenced_cloud_data(cloud_copy, shared_disk):
         )
     )
     meta.add_table(table)
-    refs = defaultdict(lambda: defaultdict(set))
+    refs: DedupReferences = defaultdict(lambda: defaultdict(set))
     refs["db"]["table"].add("all_1_1_0")
     if shared_disk != "s3":
         _list_objects(s3, ["copies/backup1/a"])
@@ -334,7 +340,7 @@ def test_partial_delete_shared_directory_keeps_local_parts_and_metadata(cloud_co
         {},
         {"Bucket": "backups", "Delete": {"Objects": [{"Key": cloud_object}]}},
     )
-    refs = defaultdict(lambda: defaultdict(set))
+    refs: DedupReferences = defaultdict(lambda: defaultdict(set))
     refs["db"]["table"].add("all_1_1_0")
 
     published_sources = []
@@ -386,7 +392,7 @@ def test_delete_cloud_copy_can_use_light_metadata(cloud_copy, unreadable):
 def test_delete_cloud_copy_refuses_unreadable_light_metadata(cloud_copy):
     backup, _meta, context, _s3, configs = cloud_copy
 
-    def list_backups(*, use_light_meta, unreadable):
+    def list_backups(*, unreadable, **_kwargs):
         unreadable["backup1"] = "unreadable light metadata"
         return []
 
