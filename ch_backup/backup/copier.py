@@ -39,6 +39,10 @@ from ch_backup.clickhouse.object_storage_metadata import (
     replace_object_keys,
 )
 from ch_backup.config import Config
+from ch_backup.encryption import (
+    get_cloud_storage_data_encryption_config,
+    get_encryption,
+)
 from ch_backup.exceptions import (
     BackupNotFound,
     ClickhouseBackupError,
@@ -76,11 +80,12 @@ class BackupCopier:
     """
     Copies backups from one storage to another.
 
-    Backup data is copied as is (without decryption), so both storages must use the same
-    encryption settings. Backup metadata is uploaded to the target storage before data with
-    the state "creating" and after with the state "created", so the copy becomes valid only
-    when all its data is in place. Interrupted copying is resumed by the next run, which skips
-    objects confirmed by the copy context and still present in the target storage.
+    Backup data is copied as is (without decryption), except that ClickHouse object storage
+    data can optionally be encrypted in transit. Backup metadata is uploaded to the target
+    storage before data with the state "creating" and after with the state "created", so the
+    copy becomes valid only when all its data is in place. Interrupted copying is resumed by
+    the next run, which skips objects confirmed by the copy context and still present in the
+    target storage.
     """
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -100,6 +105,14 @@ class BackupCopier:
         self._storage: dict = config["storage"]
         self._target_storage: dict = target_config["storage"]
         self._copy_config: dict = target_config["copy"]
+        self._encrypt_cloud_storage_data = bool(
+            self._copy_config["cloud_storage"].get("encrypt_data")
+        )
+        self._cloud_storage_data_encryption = (
+            get_cloud_storage_data_encryption_config(target_config)
+            if self._encrypt_cloud_storage_data
+            else None
+        )
 
         self._engines: dict[tuple, PipeLineCompatibleStorageEngine] = {}
         # Metadata of backups in target storage used to resolve deduplication links.
@@ -253,6 +266,21 @@ class BackupCopier:
                         f'Config option "{section}.{key}" must be the same for source and target storages'
                     )
 
+        if (
+            self._cloud_storage_data_encryption is not None
+            and not self._cloud_storage_data_encryption.get("key")
+        ):
+            raise ConfigurationError(
+                "cloud_storage.data_encryption.key or encryption.key is required "
+                "when copy.cloud_storage.encrypt_data is enabled"
+            )
+
+        if self._cloud_storage_data_encryption is not None:
+            get_encryption(
+                self._cloud_storage_data_encryption["type"],
+                self._cloud_storage_data_encryption,
+            )
+
     def _select_backups(
         self, backup_names: Sequence[str] | None
     ) -> list[BackupMetadata]:
@@ -310,6 +338,10 @@ class BackupCopier:
         _validate_relative_key(backup.name)
         for disk_name in backup.cloud_storage.disks:
             _validate_relative_key(disk_name)
+        if self._encrypt_cloud_storage_data and backup.cloud_storage.data_encrypted:
+            raise ClickhouseBackupError(
+                f'Cloud storage data of backup "{backup.name}" is already encrypted'
+            )
 
         target_backup = self._target_layout.get_backup(backup_name, use_light_meta=True)
         if target_backup:
@@ -469,6 +501,11 @@ class BackupCopier:
         }
         target_meta.state = BackupState.CREATING
         target_meta.exception = None
+        if self._cloud_storage_data_encryption and backup.cloud_storage.enabled:
+            target_meta.cloud_storage.data_encryption = {
+                "type": self._cloud_storage_data_encryption["type"],
+                "chunk_size": self._cloud_storage_data_encryption["chunk_size"],
+            }
         return target_meta
 
     def _plan_backup_files(
@@ -904,6 +941,7 @@ class BackupCopier:
                     dst_prefix,
                     obj,
                     metadata.full_object_keys,
+                    encrypt=self._encrypt_cloud_storage_data,
                     src_path_override=src_path_override,
                 )
                 _add_cloud_storage_copy_entry(entries, entry)
@@ -1260,8 +1298,11 @@ class BackupCopier:
         Availability of server-side copy is checked by copying the first object of each pair
         of source and target buckets with the same credentials. Such objects are excluded from the result.
         """
-        if not self._copy_config["server_side_copy"]:
-            yield from entries
+        if (
+            not self._copy_config["server_side_copy"]
+            or self._encrypt_cloud_storage_data
+        ):
+            yield from (entry._replace(server_side=False) for entry in entries)
             return
 
         for entry in entries:
@@ -1373,6 +1414,7 @@ def _cloud_storage_copy_entry(
     obj: StorageObject,
     full_object_key: bool,
     *,
+    encrypt: bool = False,
     src_path_override: str | None = None,
 ) -> CopyEntry:
     """
@@ -1417,6 +1459,7 @@ def _cloud_storage_copy_entry(
         src_path,
         destination,
         obj.size,
+        encrypt=encrypt,
     )
 
 

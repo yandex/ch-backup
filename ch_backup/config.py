@@ -133,6 +133,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "resume": True,
         # Copying of data stored on object storage (S3) disks.
         "cloud_storage": {
+            # Encrypt data objects copied from ClickHouse object storage disks.
+            # Encryption settings inherit values from the top-level "encryption"
+            # section, allowing either the backup key or a dedicated override.
+            "encrypt_data": False,
             # Location of the source disk objects. If not set, it's taken from backup metadata
             # (for backups that were already copied) or from ClickHouse disk configuration.
             # A stored endpoint must match a configured storage/disk endpoint unless explicitly overridden.
@@ -236,6 +240,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "encryption": False,
         "compression": True,
         "copy_data": False,
+        # Overrides of the top-level "encryption" section used for data objects
+        # encrypted by the copy command. Empty means use the main backup key.
+        "data_encryption": {},
     },
     "compression": {
         "type": "gzip",
