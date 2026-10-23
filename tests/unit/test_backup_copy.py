@@ -100,7 +100,7 @@ class FakeLayout:
         self.copied: list[CopyEntry] = []
         self.cloud_storage_files: dict[str, list[tuple[str, bytes]]] = {}
         self.copy_error: Exception | None = None
-        self.object_errors: dict[str, Exception] = {}
+        self.object_errors: dict[str, BaseException] = {}
         self.metadata_errors: dict[str, Exception] = {}
         self.store: FakeStore | None = None
 

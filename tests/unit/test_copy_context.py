@@ -2,6 +2,7 @@
 Unit tests for the journal of copied objects.
 """
 
+from typing import Any
 from unittest.mock import patch
 
 from ch_backup.backup.copy_context import CopyContext
@@ -42,7 +43,7 @@ def _entry(name: str, size: int = 1) -> CopyEntry:
     return CopyEntry(STORAGE, STORAGE, f"src/{name}", f"dst/{name}", size)
 
 
-def _context(engine: MemoryEngine, **kwargs) -> CopyContext:
+def _context(engine: MemoryEngine, **kwargs: Any) -> CopyContext:
     return CopyContext(engine, "/backups/b1", _backup("b1"), **kwargs)  # type: ignore[arg-type]
 
 
