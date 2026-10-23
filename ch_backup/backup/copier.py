@@ -410,11 +410,7 @@ class BackupCopier:
             or _key(entry.dst_path) not in rewritten_paths
         ]
         if not planned[CLOUD_STORAGE_STAGE]:
-            disks_dir = _key(
-                os.path.join(
-                    self._target_layout.get_cloud_storage_path(backup.name), "disks", ""
-                )
-            )
+            disks_dir = self._disks_dir(backup)
             plan.entries = [
                 entry
                 for entry in plan.entries
@@ -508,11 +504,12 @@ class BackupCopier:
             for copy_stage in COPY_STAGES:
                 if copy_stage in self._stages:
                     statuses[copy_stage] = STAGE_FAILED
-                    if (
-                        self._copy_stage(
-                            copy_stage, backup, pending[copy_stage], result
-                        )
-                        and planned[copy_stage]
+                    if self._copy_stage(
+                        copy_stage,
+                        backup,
+                        pending[copy_stage],
+                        planned[copy_stage],
+                        result,
                     ):
                         statuses[copy_stage] = STAGE_COMPLETED
             if result.errors:
@@ -600,6 +597,14 @@ class BackupCopier:
             storage, path = self._get_target_cloud_storage()
             prefixes.append((storage, os.path.join(path, backup.name)))
         return prefixes
+
+    def _disks_dir(self, backup: BackupMetadata) -> str:
+        """Return the target key prefix of disk metadata tarballs of the backup."""
+        return _key(
+            os.path.join(
+                self._target_layout.get_cloud_storage_path(backup.name), "disks", ""
+            )
+        )
 
     def _validate_destinations(self, backup: BackupMetadata, plan: _CopyPlan) -> None:
         """Check the entire plan before publishing metadata or copying any objects."""
@@ -1337,9 +1342,11 @@ class BackupCopier:
                 [
                     (path, files)
                     for path, files in archives
-                    if (target_id, _key(path)) not in listing
-                    or not context.is_archive_recorded(
-                        self._target_storage, path, files
+                    if not context.is_archive_recorded(
+                        self._target_storage,
+                        path,
+                        files,
+                        listing.get((target_id, _key(path))),
                     )
                 ],
             )
@@ -1366,10 +1373,11 @@ class BackupCopier:
         stage: str,
         backup: BackupMetadata,
         objects: StageObjects,
+        planned: bool,
         result: BackupCopyResult,
     ) -> bool:
         """
-        Copy objects of the stage. Return False if some of them failed with keep_going.
+        Copy objects of the stage. Return True if the stage is planned and copied completely.
 
         Objects of the "cloud_storage" stage that failed to copy are listed in the copy context.
         The list is replaced when objects fail and removed only once the stage succeeds.
@@ -1386,9 +1394,13 @@ class BackupCopier:
             if not self._keep_going or is_broken_executor(e):
                 raise
         finally:
-            if stage == CLOUD_STORAGE_STAGE and any(objects) and (failures or copied):
+            if (
+                stage == CLOUD_STORAGE_STAGE
+                and any(objects)
+                and (failures or copied and planned)
+            ):
                 context.save_failures(failures)
-        return len(result.errors) == errors
+        return planned and len(result.errors) == errors
 
     # pylint: disable=too-many-locals
     def _copy_objects(
@@ -1432,11 +1444,12 @@ class BackupCopier:
             )
             failures.append((entry, f"{type(error).__name__}: {error}"))
 
+        uploaded_archives: list[tuple[str, list[tuple[str, bytes]]]] = []
+
         def uploaded(remote_path: str, files: list[tuple[str, bytes]]) -> None:
-            """Count the uploaded tarball and record it in the copy context."""
+            """Count the uploaded tarball and keep it to be recorded in the copy context."""
             result.completed()
-            context.record_archive(self._target_storage, remote_path, files)
-            context.flush()
+            uploaded_archives.append((remote_path, files))
 
         try:
             self._target_layout.copy_objects(
@@ -1493,6 +1506,7 @@ class BackupCopier:
             raise
         try:
             self._target_layout.wait(keep_going=self._keep_going)
+            self._record_archives(backup, uploaded_archives)
         finally:
             context.flush(force=True)
         if len(result.errors) > errors:
@@ -1500,6 +1514,37 @@ class BackupCopier:
                 f"Failed to copy backup {backup.name}: {len(result.errors)} error(s), "
                 f"{result.objects_failed} object transfer(s) failed"
             )
+
+    def _record_archives(
+        self,
+        backup: BackupMetadata,
+        archives: list[tuple[str, list[tuple[str, bytes]]]],
+    ) -> None:
+        """
+        Record uploaded rewritten metadata tarballs in the copy context with their sizes in the target storage.
+
+        Tarballs missing in the listing or uploaded when the listing fails are not recorded,
+        so the next run uploads them again.
+        """
+        context = self._copy_context
+        assert context is not None
+        if not archives:
+            return
+        try:
+            sizes = self._list(
+                self._target_storage, self._disks_dir(backup).rstrip("/")
+            )
+        except Exception as e:
+            if is_broken_executor(e):
+                raise
+            logging.warning(
+                "Failed to list disk metadata of backup {}: {}", backup.name, e
+            )
+            return
+        for path, files in archives:
+            size = sizes.get(_key(path))
+            if size is not None:
+                context.record_archive(self._target_storage, path, files, size)
 
     def _resolve_copy_mode(
         self, entries: list[CopyEntry], copy_result: BackupCopyResult | None = None

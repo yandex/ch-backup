@@ -83,10 +83,10 @@ class CopyContext:
         return _digest(_record(entry)) in self._recorded
 
     def is_archive_recorded(
-        self, storage: dict, path: str, files: list[tuple[str, bytes]]
+        self, storage: dict, path: str, files: list[tuple[str, bytes]], size: int | None
     ) -> bool:
-        """Check that upload of the rewritten metadata tarball was confirmed by a previous run."""
-        return _digest(_archive_record(storage, path, files)) in self._recorded
+        """Check that upload of the rewritten metadata tarball of this size was confirmed by a previous run."""
+        return _digest(_archive_record(storage, path, files, size)) in self._recorded
 
     def forget(self) -> None:
         """Drop records of previous runs once the plan is checked against them."""
@@ -97,10 +97,10 @@ class CopyContext:
         self._buffer.append(_record(entry).decode())
 
     def record_archive(
-        self, storage: dict, path: str, files: list[tuple[str, bytes]]
+        self, storage: dict, path: str, files: list[tuple[str, bytes]], size: int
     ) -> None:
         """Remember the confirmed upload of the rewritten metadata tarball until the next flush."""
-        self._buffer.append(_archive_record(storage, path, files).decode())
+        self._buffer.append(_archive_record(storage, path, files, size).decode())
 
     def save_failures(self, failures: list[tuple[CopyEntry, str]]) -> None:
         """Replace the list of objects that failed to copy, removing it if there are none."""
@@ -166,13 +166,15 @@ def _record(entry: CopyEntry) -> bytes:
     ).encode()
 
 
-def _archive_record(storage: dict, path: str, files: list[tuple[str, bytes]]) -> bytes:
-    """Serialize target location and content of the rewritten metadata tarball."""
+def _archive_record(
+    storage: dict, path: str, files: list[tuple[str, bytes]], size: int | None
+) -> bytes:
+    """Serialize target location, size and content of the rewritten metadata tarball."""
     content = hashlib.blake2b(digest_size=16)
     for name, data in files:
         content.update(json.dumps([name, len(data)]).encode())
         content.update(data)
-    return json.dumps([storage_id(storage), path, content.hexdigest()]).encode()
+    return json.dumps([storage_id(storage), path, size, content.hexdigest()]).encode()
 
 
 def _digest(record: bytes) -> bytes:

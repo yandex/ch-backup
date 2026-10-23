@@ -2789,8 +2789,9 @@ def _failed_objects(ctx: CopyTestContext) -> bytes | None:
 
 def test_completed_stage_with_deleted_objects_is_copied_again() -> None:
     ctx = _staged_context()
+    tarball = "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
     ctx.copy(["b1"], stages=["backup"])
-    del ctx.dst_objects["ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"]
+    size = ctx.dst_objects.pop(tarball)
 
     ctx.copy(["b1"], stages=["cloud_storage"])
 
@@ -2800,19 +2801,25 @@ def test_completed_stage_with_deleted_objects_is_copied_again() -> None:
 
     ctx.copy(["b1"], stages=["backup"])
 
+    assert ctx.dst_objects[tarball] == size
     assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
 
 
-def test_completed_stage_with_deleted_rewritten_metadata_is_copied_again() -> None:
+@pytest.mark.parametrize("replaced", [False, True])
+def test_completed_stage_with_changed_rewritten_metadata_is_copied_again(
+    replaced: bool,
+) -> None:
     ctx = _staged_context(version=5)
     tarball = "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
     ctx.copy(["b1"], stages=["cloud_storage"])
-    assert tarball in ctx.target_layout.cloud_storage_files
     assert ctx.target_layout.backups["b1"].copy_stages == {
         "backup": "pending",
         "cloud_storage": "completed",
     }
-    del ctx.dst_objects[tarball]
+    uploaded = ctx.target_layout.cloud_storage_files.pop(tarball)
+    size = ctx.dst_objects.pop(tarball)
+    if replaced:
+        ctx.dst_objects[tarball] = size - 1
 
     ctx.copy(["b1"], stages=["backup"])
 
@@ -2824,6 +2831,8 @@ def test_completed_stage_with_deleted_rewritten_metadata_is_copied_again() -> No
     ctx.copy(["b1"], stages=["cloud_storage"])
 
     assert not ctx.target_layout.copied
+    assert ctx.target_layout.cloud_storage_files[tarball] == uploaded
+    assert ctx.dst_objects[tarball] == size
     assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
 
 
@@ -2883,6 +2892,33 @@ def test_interrupted_cloud_storage_stage_keeps_failed_objects() -> None:
         with pytest.raises(TerminatingSignal):
             ctx.copy(["b1"], stages=["cloud_storage"])
 
+    assert _failed_objects(ctx) == failed
+    assert ctx.target_layout.backups["b1"].copy_stages == {
+        "backup": "completed",
+        "cloud_storage": "failed",
+    }
+
+
+def test_incomplete_cloud_storage_planning_keeps_failed_objects() -> None:
+    ctx = _staged_context()
+    ctx.target_layout.object_errors["data/xyz/bbb"] = StorageError("SlowDown")
+    with pytest.raises(ClickhouseBackupError):
+        ctx.copy(["b1"], keep_going=True)
+    failed = _failed_objects(ctx)
+    ctx.target_layout.object_errors.clear()
+    ctx.target_layout.copied.clear()
+    # pylint: disable-next=protected-access
+    plan_objects = BackupCopier._plan_cloud_storage_objects
+
+    def incomplete(self, backup, target_meta, plan, result):
+        plan_objects(self, backup, target_meta, plan, result)
+        result.add_error(StorageError("SlowDown"), "planning")
+
+    with patch.object(BackupCopier, "_plan_cloud_storage_objects", incomplete):
+        with pytest.raises(ClickhouseBackupError):
+            ctx.copy(["b1"], stages=["cloud_storage"], keep_going=True)
+
+    assert set(ctx.copied_paths().values()) == {"copies/b1/xyz/bbb"}
     assert _failed_objects(ctx) == failed
     assert ctx.target_layout.backups["b1"].copy_stages == {
         "backup": "completed",

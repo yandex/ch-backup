@@ -193,8 +193,9 @@ Behavior and limitations:
 - Copying consists of two stages: `backup` copies files of the backup, `cloud_storage` copies data
   of object storage disks and uploads disk metadata rewritten to reference it. `--stage` (can be
   given multiple times) runs only the specified stages, all of them by default. Each run chooses
-  its own copy mode with `--[no-]server-side-copy`. Statuses of the stages (`pending`, `completed`,
-  `failed`) are saved in `meta.copy` of the copy, for example
+  its own copy mode with `--[no-]server-side-copy`. Every run plans the whole backup, so it needs the
+  same target settings, including the target location of object storage data. Statuses of the
+  stages (`pending`, `completed`, `failed`) are saved in `meta.copy` of the copy, for example
   `state: creating, copy: {backup: completed, cloud_storage: pending}`. A backup without data on
   object storage disks has the stage `cloud_storage` completed right away. The copy becomes `created`
   once every stage is completed. Saved statuses are not trusted: a stage that is not run is

@@ -161,17 +161,19 @@ def test_unreadable_file_is_skipped() -> None:
     assert resumed.is_recorded(_entry("b"))
 
 
-def test_archive_records_depend_on_content() -> None:
+def test_archive_records_depend_on_content_and_size() -> None:
     engine = MemoryEngine()
     context = _context(engine)
-    context.record_archive(STORAGE, "dst/t1.tar", [("a", b"1")])
+    context.record_archive(STORAGE, "dst/t1.tar", [("a", b"1")], 10)
     context.flush(force=True)
 
     resumed = _context(engine)
     resumed.load()
 
-    assert resumed.is_archive_recorded(STORAGE, "dst/t1.tar", [("a", b"1")])
-    assert not resumed.is_archive_recorded(STORAGE, "dst/t1.tar", [("a", b"2")])
+    assert resumed.is_archive_recorded(STORAGE, "dst/t1.tar", [("a", b"1")], 10)
+    assert not resumed.is_archive_recorded(STORAGE, "dst/t1.tar", [("a", b"2")], 10)
+    assert not resumed.is_archive_recorded(STORAGE, "dst/t1.tar", [("a", b"1")], 9)
+    assert not resumed.is_archive_recorded(STORAGE, "dst/t1.tar", [("a", b"1")], None)
 
 
 def test_failed_objects_are_not_records() -> None:
