@@ -675,6 +675,84 @@ Feature: Copy backups to another storage
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
   @require_version_22.8
+  Scenario: Copy encrypts S3 disk data with a dedicated key
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    CREATE TABLE test_db.encrypted_copy_restore_feature (
+        CounterID UInt32,
+        UserID UInt32
+    )
+    ENGINE = MergeTree()
+    PARTITION BY CounterID % 3
+    ORDER BY UserID
+    SETTINGS storage_policy = 's3';
+
+    INSERT INTO test_db.encrypted_copy_restore_feature SELECT 0, number FROM system.numbers LIMIT 10;
+    INSERT INTO test_db.encrypted_copy_restore_feature SELECT 1, number FROM system.numbers LIMIT 10;
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: 87654321T123456
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    storage:
+        credentials:
+            bucket: ch-backup-copy
+    """
+    And a keyless copy configuration "/tmp/keyless-cloud.conf" on clickhouse01
+    """
+    backup_name: 87654321T123456
+    disk: s3
+    source:
+      bucket: cloud-storage-01
+      path: data
+    """
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /tmp/keyless-cloud.conf copy 87654321T123456 \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-config-parameter copy.cloud_storage.encrypt_data true \
+        --target-config-parameter cloud_storage.data_encryption.type '"nacl"' \
+        --target-config-parameter cloud_storage.data_encryption.key '"cccccccccccccccccccccccccccccccc"' \
+        --target-config-parameter cloud_storage.data_encryption.chunk_size 64 \
+        --target-cloud-storage-bucket cloud-storage-02 \
+        --target-cloud-storage-path copy
+    """
+    Then we get response contains
+    """
+    87654321T123456: copied
+    """
+    When we execute query on clickhouse01
+    """
+    DROP TABLE test_db.encrypted_copy_restore_feature
+    """
+    And we delete clickhouse01 clickhouse backup #0
+    Then s3 bucket cloud-storage-01 contains 0 objects
+    When we decrypt copied S3 objects
+    """
+    source_bucket: cloud-storage-02
+    source_prefix: copy/87654321T123456
+    target_bucket: cloud-storage-01
+    key: cccccccccccccccccccccccccccccccc
+    chunk_size: 64
+    """
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    cloud_storage_source_bucket: cloud-storage-01
+    cloud_storage_source_path: copy/87654321T123456
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT (count(), sum(UserID)) FROM test_db.encrypted_copy_restore_feature
+    """
+    Then we get response
+    """
+    (20,90)
+    """
+
+  @require_version_22.8
   Scenario: Deleting copy of backup with data on S3 disk doesn't affect the source backup
     Given ch-backup configuration on clickhouse02
     """

@@ -10,7 +10,7 @@ class CopyEntry(NamedTuple):
     Object to copy from one storage to another.
 
     Storages are described by dicts with the same structure as the "storage"
-    config section. Object data is copied as is, without decryption or decompression.
+    config section. Object data is copied as is unless ``encrypt`` is set.
     """
 
     src_storage: dict
@@ -19,6 +19,7 @@ class CopyEntry(NamedTuple):
     dst_path: str
     size: int
     server_side: bool = False
+    encrypt: bool = False
 
 
 def storage_id(storage: dict) -> tuple:

@@ -980,6 +980,47 @@ def test_cloud_storage(backup_name: str) -> None:
     }
 
 
+def test_cloud_storage_data_encryption() -> None:
+    ctx = _cloud_storage_context()
+    ctx.target_config["copy"]["server_side_copy"] = True
+    ctx.target_config["copy"]["cloud_storage"]["encrypt_data"] = True
+
+    assert ctx.copy(["b1"]) == (["b1"], [])
+
+    entries = ctx.target_layout.copied
+    disk_entries = [
+        entry
+        for entry in entries
+        if entry.dst_storage["credentials"]["bucket"] == "disk-copy"
+    ]
+    assert disk_entries
+    assert all(entry.encrypt for entry in disk_entries)
+    assert all(
+        not entry.encrypt
+        for entry in entries
+        if entry.dst_storage["credentials"]["bucket"] != "disk-copy"
+    )
+    assert all(not entry.server_side for entry in entries)
+    assert not ctx.store.probes
+    assert ctx.target_layout.backups["b1"].cloud_storage.data_encryption == {
+        "type": "nacl",
+        "chunk_size": 8 * 1024 * 1024,
+    }
+    assert ctx.layout.backups["b1"].cloud_storage.data_encryption is None
+
+
+def test_cloud_storage_data_encryption_requires_key() -> None:
+    ctx = _cloud_storage_context()
+    ctx.target_config["copy"]["cloud_storage"]["encrypt_data"] = True
+    ctx.config["encryption"]["key"] = None
+    ctx.target_config["encryption"]["key"] = None
+
+    with pytest.raises(ConfigurationError, match="data_encryption.key"):
+        ctx.copy(["b1"])
+
+    assert not ctx.target_layout.uploaded
+
+
 def test_copy_skips_sanitized_disk_prefix_folder_marker() -> None:
     ctx = _cloud_storage_context("backup-1")
     _with_files(ctx, "backup_1", {"disks/": 0})
