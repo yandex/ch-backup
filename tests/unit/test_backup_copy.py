@@ -7,6 +7,7 @@ Unit tests for copying of backups between storages.
 import copy
 import os
 from concurrent.futures import BrokenExecutor
+from functools import partial
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -14,6 +15,7 @@ import pytest
 
 from ch_backup import logging as ch_logging
 from ch_backup.backup.copier import BackupCopier
+from ch_backup.backup.copy_context import CopyContext
 from ch_backup.backup.copy_report import CopyReport, print_copy_report
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import (
@@ -43,11 +45,22 @@ class FakeEngine:
 
     def __init__(self, store: "FakeStore", storage: dict) -> None:
         self._store = store
-        self._objects = store.buckets.setdefault(storage_id(storage), {})
+        self._id = storage_id(storage)
+        self._objects = store.buckets.setdefault(self._id, {})
 
     def list_dir_with_sizes(self, remote_path: str) -> dict[str, int]:
         prefix = remote_path.strip("/") + "/"
+        if prefix in self._store.list_errors:
+            raise StorageError(f"Failed to list {prefix}")
         return {k: v for k, v in self._objects.items() if k.startswith(prefix)}
+
+    def upload_data(self, data: bytes, remote_path: str) -> str:
+        self._objects[remote_path] = len(data)
+        self._store.data[(self._id, remote_path)] = data
+        return remote_path
+
+    def download_data(self, remote_path: str) -> bytes:
+        return self._store.data[(self._id, remote_path)]
 
     def try_copy_object(
         self, source_bucket: str, source_path: str, remote_path: str
@@ -65,6 +78,8 @@ class FakeStore:
         self.buckets: dict[tuple, dict[str, int]] = {}
         self.probes: list[tuple] = []
         self.server_side_copy_available = True
+        self.data: dict[tuple, bytes] = {}
+        self.list_errors: set[str] = set()
 
     def engine(self, storage: dict) -> FakeEngine:
         return FakeEngine(self, storage)
@@ -86,8 +101,9 @@ class FakeLayout:
         self.copied: list[CopyEntry] = []
         self.cloud_storage_files: dict[str, list[tuple[str, bytes]]] = {}
         self.copy_error: Exception | None = None
-        self.object_errors: dict[str, Exception] = {}
+        self.object_errors: dict[str, BaseException] = {}
         self.metadata_errors: dict[str, Exception] = {}
+        self.store: FakeStore | None = None
 
     def get_backup_names(self):
         return list(self.backups)
@@ -128,6 +144,10 @@ class FakeLayout:
                     raise error
             else:
                 self.copied.append(entry)
+                if self.store:
+                    self.store.buckets.setdefault(storage_id(entry.dst_storage), {})[
+                        entry.dst_path
+                    ] = entry.size
                 if callback:
                     callback(entry)
 
@@ -2482,3 +2502,163 @@ def test_copy_continues_other_rewritten_metadata_uploads() -> None:
         1,
     )
     assert result.known_bytes_copied == 2000
+
+
+def _interrupted_copy(
+    error: BaseException = StorageError("network error"), keep_going: bool = False
+) -> CopyTestContext:
+    """Copy one object of two before the other one fails."""
+    ctx = CopyTestContext([_backup("b1")])
+    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_layout.store = ctx.store
+    _with_files(ctx, "b1", {"metadata/a.tar": 1, "metadata/b.tar": 2})
+    ctx.target_layout.object_errors["ch_backup/b1/metadata/b.tar"] = error
+    with pytest.raises((type(error), ClickhouseBackupError)):
+        ctx.copy(["b1"], keep_going=keep_going)
+    ctx.target_layout.object_errors.clear()
+    ctx.target_layout.copied.clear()
+    return ctx
+
+
+@pytest.mark.parametrize(
+    "error,keep_going",
+    [
+        (StorageError("network error"), False),
+        (StorageError("network error"), True),
+        (TerminatingSignal("interrupted"), False),
+    ],
+)
+def test_resume_skips_confirmed_objects(error: BaseException, keep_going: bool) -> None:
+    ctx = _interrupted_copy(error, keep_going)
+    assert ctx.target_layout.backups["b1"].state == BackupState.FAILED
+
+    report = CopyReport()
+    assert ctx.copy(["b1"], report=report) == (["b1"], [])
+
+    assert set(ctx.copied_paths()) == {"ch_backup/b1/metadata/b.tar"}
+    result = report.backups[0]
+    assert (result.objects_total, result.objects_copied, result.objects_skipped) == (
+        2,
+        1,
+        1,
+    )
+    assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
+
+
+def test_resume_after_kill_uses_periodic_saves() -> None:
+    flush = CopyContext.flush
+    with (
+        patch(
+            "ch_backup.backup.copier.CopyContext", partial(CopyContext, flush_size=1)
+        ),
+        patch.object(
+            CopyContext, "flush", lambda self, force=False: force or flush(self)
+        ),
+    ):
+        ctx = _interrupted_copy()
+
+    ctx.copy(["b1"])
+
+    assert set(ctx.copied_paths()) == {"ch_backup/b1/metadata/b.tar"}
+
+
+@pytest.mark.parametrize("size", [None, 2])
+@pytest.mark.parametrize("state", [BackupState.FAILED, BackupState.PARTIALLY_DELETED])
+def test_resume_recopies_objects_missing_in_target(
+    size: int | None, state: BackupState
+) -> None:
+    ctx = _interrupted_copy()
+    ctx.target_layout.backups["b1"].state = state
+    if size is None:
+        del ctx.dst_objects["ch_backup_copy/b1/metadata/a.tar"]
+    else:
+        ctx.dst_objects["ch_backup_copy/b1/metadata/a.tar"] = size
+
+    ctx.copy(["b1"])
+
+    assert set(ctx.copied_paths()) == {
+        "ch_backup/b1/metadata/a.tar",
+        "ch_backup/b1/metadata/b.tar",
+    }
+
+
+def test_resume_without_target_metadata_ignores_copy_context() -> None:
+    ctx = _interrupted_copy()
+    del ctx.target_layout.backups["b1"]
+
+    ctx.copy(["b1"])
+
+    assert len(ctx.copied_paths()) == 2
+
+
+def test_resume_recopies_objects_if_target_listing_fails() -> None:
+    ctx = _interrupted_copy()
+    ctx.store.list_errors.add("ch_backup_copy/b1/")
+
+    ctx.copy(["b1"])
+
+    assert len(ctx.copied_paths()) == 2
+
+
+def test_copy_without_resume_recopies_confirmed_objects() -> None:
+    ctx = _interrupted_copy()
+    ctx.target_config["copy"]["resume"] = False
+    report = CopyReport()
+
+    ctx.copy(["b1"], report=report)
+
+    assert len(ctx.copied_paths()) == 2
+    assert report.backups[0].objects_skipped == 0
+    assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
+
+
+def test_resume_skips_object_copied_by_server_side_probe() -> None:
+    ctx = CopyTestContext([_backup("b1")])
+    ctx.target_layout.store = ctx.store
+    _with_files(ctx, "b1", {"metadata/a.tar": 1, "metadata/b.tar": 2})
+    ctx.target_layout.object_errors["ch_backup/b1/metadata/b.tar"] = StorageError(
+        "network error"
+    )
+    with pytest.raises(StorageError):
+        ctx.copy(["b1"])
+    assert ctx.store.probes == [
+        (SRC_BUCKET, "ch_backup/b1/metadata/a.tar", "ch_backup_copy/b1/metadata/a.tar")
+    ]
+    ctx.dst_objects["ch_backup_copy/b1/metadata/a.tar"] = 1
+    ctx.target_layout.object_errors.clear()
+    ctx.target_layout.copied.clear()
+    ctx.store.probes.clear()
+
+    ctx.copy(["b1"])
+
+    copied = {dst for _, _, dst in ctx.store.probes}
+    copied.update(e.dst_path for e in ctx.target_layout.copied)
+    assert copied == {"ch_backup_copy/b1/metadata/b.tar"}
+
+
+def test_resume_skips_confirmed_cloud_storage_objects() -> None:
+    ctx = _cloud_storage_context()
+    ctx.target_layout.store = ctx.store
+    ctx.target_layout.object_errors["data/xyz/bbb"] = StorageError("SlowDown")
+    with pytest.raises(StorageError):
+        ctx.copy(["b1"])
+    ctx.target_layout.object_errors.clear()
+    ctx.target_layout.copied.clear()
+
+    ctx.copy(["b1"])
+
+    assert {e.dst_path for e in ctx.target_layout.copied} == {"copies/b1/xyz/bbb"}
+
+
+def test_copy_does_not_copy_copy_context_of_source() -> None:
+    ctx = CopyTestContext([_backup("b1")])
+    ctx.target_config["copy"]["server_side_copy"] = False
+    _with_files(
+        ctx,
+        "b1",
+        {"metadata/a.tar": 1, "copy_context/0123456789abcdef/x.jsonl.gz": 10},
+    )
+
+    ctx.copy(["b1"])
+
+    assert set(ctx.copied_paths()) == {"ch_backup/b1/metadata/a.tar"}

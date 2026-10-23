@@ -110,6 +110,22 @@ def test_copy_reports_configuration_failure(tmp_path: Path) -> None:
     backup.copy.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "args,resume", [([], None), (["--resume"], True), (["--no-resume"], False)]
+)
+def test_copy_command_passes_resume(args: list[str], resume: bool | None) -> None:
+    backup = MagicMock()
+    group = Group()
+    group.add_command(cli.copy_command)
+
+    result = CliRunner().invoke(group, ["copy", "--all", *args], obj={"backup": backup})
+
+    assert result.exit_code == 0
+    # pylint: disable-next=no-member
+    merged = backup.config.derive.return_value.merge.call_args.args[0]
+    assert merged["copy"].get("resume") == resume
+
+
 @pytest.mark.parametrize("state", [None, BackupState.FAILED])
 @pytest.mark.parametrize("keep_going", [False, True])
 def test_copy_named_validation_failure_has_report_row(

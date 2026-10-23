@@ -130,6 +130,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # Copy objects on the server side if source and target buckets belong to the same S3 service
         # and are accessible with the same credentials.
         "server_side_copy": True,
+        "resume": True,
         # Copying of data stored on object storage (S3) disks.
         "cloud_storage": {
             # Location of the source disk objects. If not set, it's taken from backup metadata

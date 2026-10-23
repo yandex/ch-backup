@@ -549,13 +549,25 @@ Feature: Copy backups to another storage
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy cloud --keep-going \
         --no-server-side-copy \
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
-        --target-cloud-storage-bucket cloud-storage-02
+        --target-cloud-storage-bucket cloud-storage-02 \
+        --report-path /tmp/copy-retry-report.json
     """
     Then we get response contains
     """
     cloud: copied
     """
-    When we restore clickhouse backup #0 to clickhouse02
+    When we execute command on clickhouse01
+    """
+    python3 - <<'PY'
+    import json
+    with open('/tmp/copy-retry-report.json') as f:
+        result = json.load(f)['backups'][0]
+    assert result['objects_skipped'] > 0
+    assert result['objects_failed'] == 0
+    assert result['objects_copied'] + result['objects_skipped'] == result['objects_total']
+    PY
+    """
+    And we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
   @require_version_22.8
