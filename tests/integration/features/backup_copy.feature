@@ -775,7 +775,7 @@ Feature: Copy backups to another storage
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
   @require_version_22.8
-  Scenario: Deleting copy of backup with data on S3 disk doesn't affect the source backup
+  Scenario Outline: Deleting an S3 disk copy with cloud cleanup <cleanup> preserves the original
     Given ch-backup configuration on clickhouse02
     """
     storage:
@@ -808,13 +808,22 @@ Feature: Copy backups to another storage
         --target-cloud-storage-bucket cloud-storage-02 \
         --target-cloud-storage-path copy
     """
+    Then s3 bucket cloud-storage-02 contains objects with prefix "copy/12345678T123456/"
+    When we put object in S3
+    """
+    bucket: cloud-storage-02
+    path: copy/12345678T123456-neighbor/keep
+    data: keep
+    """
     And we execute command on clickhouse01
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf \
         --config-parameter storage.credentials.bucket '"ch-backup-copy"' \
-        delete 12345678T123456
+        delete 12345678T123456 <delete_option>
     """
     Then s3 bucket ch-backup-copy contains no objects with prefix "ch_backup/12345678T123456/"
+    And s3 bucket cloud-storage-02 contains <cloud_objects> with prefix "copy/12345678T123456/"
+    And s3 bucket cloud-storage-02 contains objects with prefix "copy/12345678T123456-neighbor/"
     And we got the following backups on clickhouse02
       | num | name            | state   |
       | 0   | 12345678T123456  | created |
@@ -836,6 +845,11 @@ Feature: Copy backups to another storage
     """
     20
     """
+
+    Examples:
+      | cleanup  | delete_option               | cloud_objects |
+      | disabled |                             | objects       |
+      | enabled  | --delete-cloud-storage-data | no objects    |
 
   Scenario Outline: Copy respects the <held_lock> storage lock
     Given clickhouse on clickhouse01 has test schema

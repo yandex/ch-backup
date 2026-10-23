@@ -16,6 +16,7 @@ from ch_backup.backup.copy_report import BackupCopyResult
 from ch_backup.backup.metadata import BackupMetadata, BackupState, TableMetadata
 from ch_backup.backup.metadata.table_metadata import DataSkippedReason
 from ch_backup.backup.sources import BackupSources
+from ch_backup.ch_backup import DeleteSettings
 from ch_backup.clickhouse.models import Database
 from ch_backup.config import DEFAULT_CONFIG, Config
 from ch_backup.exceptions import ConfigurationError, StorageError, TerminatingSignal
@@ -525,7 +526,7 @@ def test_delete_command_accepts_unreadable_backup():
     backup.delete.return_value = ("broken", None)
     result = _invoke(cli.delete_command, ["delete", "broken"], backup)
     assert result.exit_code == 0, result.output
-    backup.delete.assert_called_once_with("broken", False)
+    backup.delete.assert_called_once_with("broken", DeleteSettings())
 
 
 def test_backup_help_lists_detached_parts_filters() -> None:
