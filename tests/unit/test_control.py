@@ -551,7 +551,7 @@ def test_scan_detached_parts_reads_reason_from_directory_name(
                 disk_names=["object_storage_cache", "default"],
                 reasons=[""],
             )
-    )
+        )
 
     assert len(parts) == 1
     warning.assert_called_once_with(
