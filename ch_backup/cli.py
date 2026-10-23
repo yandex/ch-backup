@@ -989,6 +989,12 @@ def delete_command(
         help="Copy objects on the server side if source and target buckets belong to the same "
         "S3 service and are accessible with the same credentials. Enabled by default.",
     ),
+    option(
+        "--resume/--no-resume",
+        default=None,
+        help="Skip objects confirmed by previous runs of copying and still present in the target "
+        "storage. Enabled by default. With --no-resume, all objects are copied again.",
+    ),
 )
 @option_group(
     "Cloud storage options",
@@ -1024,6 +1030,7 @@ def copy_command(
     target_config: str | None,
     target_config_parameters: Iterable[tuple[str, dict]],
     server_side_copy: bool | None,
+    resume: bool | None,
     target_cloud_storage_bucket: str | None,
     target_cloud_storage_path: str | None,
     cloud_storage_source_bucket: str | None,
@@ -1048,6 +1055,8 @@ def copy_command(
         copy_config: dict = {"cloud_storage": {"source": {}, "target": {}}}
         if server_side_copy is not None:
             copy_config["server_side_copy"] = server_side_copy
+        if resume is not None:
+            copy_config["resume"] = resume
         for section, key, value in (
             ("target", "bucket", target_cloud_storage_bucket),
             ("target", "path", target_cloud_storage_path),
