@@ -2847,6 +2847,58 @@ def test_resume_skips_confirmed_rewritten_metadata() -> None:
     assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
 
 
+def test_failed_cloud_storage_planning_keeps_rewritten_metadata() -> None:
+    ctx = _staged_context(version=5)
+    tarball = "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
+    disks = ctx.ch_config.config
+    ctx.copy(["b1"], stages=["cloud_storage"])
+    ctx.ch_config.config = {"storage_configuration": {"disks": {}}}
+    ctx.target_layout.copied.clear()
+
+    ctx.copy(["b1"], stages=["backup"])
+
+    assert tarball not in ctx.copied_paths().values()
+    assert ctx.target_layout.backups["b1"].copy_stages == {
+        "backup": "completed",
+        "cloud_storage": "pending",
+    }
+    ctx.ch_config.config = disks
+
+    ctx.copy(["b1"], stages=["cloud_storage"])
+
+    assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
+
+
+def test_interrupted_cloud_storage_stage_keeps_failed_objects() -> None:
+    ctx = _staged_context()
+    ctx.target_layout.object_errors["data/xyz/bbb"] = StorageError("SlowDown")
+    with pytest.raises(ClickhouseBackupError):
+        ctx.copy(["b1"], keep_going=True)
+    failed = _failed_objects(ctx)
+    assert failed is not None
+
+    with patch.object(
+        ctx.target_layout, "copy_objects", side_effect=TerminatingSignal()
+    ):
+        with pytest.raises(TerminatingSignal):
+            ctx.copy(["b1"], stages=["cloud_storage"])
+
+    assert _failed_objects(ctx) == failed
+    assert ctx.target_layout.backups["b1"].copy_stages == {
+        "backup": "completed",
+        "cloud_storage": "failed",
+    }
+
+
+def test_repeated_stage_is_copied_and_counted_once() -> None:
+    ctx = _staged_context()
+    report = CopyReport()
+
+    ctx.copy(["b1"], stages=["backup", "backup"], report=report)
+
+    assert report.backups[0].objects_total == report.backups[0].objects_copied == 2
+
+
 @pytest.mark.parametrize("keep_going", [False, True])
 def test_cloud_storage_planning_failure_does_not_fail_backup_stage(
     keep_going: bool,

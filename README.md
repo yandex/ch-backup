@@ -204,7 +204,9 @@ Behavior and limitations:
   incomplete backup. With `--keep-going`, objects of the stage `cloud_storage` that failed to copy
   are listed in `<backup>/copy_context/<id>/failed.jsonl.gz` (source and target keys, size and error)
   and the stage becomes `failed`; the next run of the stage copies only unconfirmed objects. The list
-  is rewritten by each run of the stage and removed once no object fails. Run stages of one backup
+  is rewritten by each run of the stage in which objects fail and removed once the stage completes.
+  If data of object storage disks cannot be planned, the run does not copy disk metadata, so it
+  never overwrites rewritten disk metadata; a later run copies it. Run stages of one backup
   one after another: the local lock serializes runs on one host, runs on different hosts require
   `lock.zk_flock`.
 - Copy acquires the configured source and target locks through completion, including retries and

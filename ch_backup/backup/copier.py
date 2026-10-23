@@ -150,7 +150,7 @@ class BackupCopier:
         Only the specified stages are copied, all of them by default.
         """
         self._keep_going = keep_going
-        self._stages = stages or COPY_STAGES
+        self._stages = tuple(dict.fromkeys(stages or COPY_STAGES))
         self._report = report if report is not None else CopyReport()
         self._report.error = None
         self._report.backups.clear()
@@ -324,6 +324,9 @@ class BackupCopier:
     def _copy_backup(self, backup_name: str, result: BackupCopyResult) -> bool:
         """
         Copy backup. Return False if the backup is already present in the target storage.
+
+        Disk metadata is not copied as is when planning of the "cloud_storage" stage fails:
+        it could overwrite rewritten disk metadata uploaded by an earlier run.
         """
         self._source_backup_files.clear()
         self._target_backups.clear()
@@ -404,6 +407,17 @@ class BackupCopier:
             if storage_id(entry.dst_storage) != storage_id(self._target_storage)
             or _key(entry.dst_path) not in rewritten_paths
         ]
+        if not planned[CLOUD_STORAGE_STAGE]:
+            disks_dir = _key(
+                os.path.join(
+                    self._target_layout.get_cloud_storage_path(backup.name), "disks", ""
+                )
+            )
+            plan.entries = [
+                entry
+                for entry in plan.entries
+                if not _key(entry.dst_path).startswith(disks_dir)
+            ]
         result.objects_total = sum(
             len(entries) + len(archives)
             for entries, archives in map(plan.stage_objects, self._stages)
@@ -1354,18 +1368,21 @@ class BackupCopier:
         Copy objects of the stage. Return False if some of them failed with keep_going.
 
         Objects of the "cloud_storage" stage that failed to copy are listed in the copy context.
+        The list is replaced when objects fail and removed only once the stage succeeds.
         """
         context = self._copy_context
         assert context is not None
         failures: list[tuple[CopyEntry, str]] = []
         errors = len(result.errors)
+        copied = False
         try:
             self._copy_objects(backup, *objects, result, failures)
+            copied = True
         except Exception as e:
             if not self._keep_going or is_broken_executor(e):
                 raise
         finally:
-            if stage == CLOUD_STORAGE_STAGE and any(objects):
+            if stage == CLOUD_STORAGE_STAGE and any(objects) and (failures or copied):
                 context.save_failures(failures)
         return len(result.errors) == errors
 
