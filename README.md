@@ -377,7 +377,10 @@ Behavior and limitations:
   full or light metadata. When cloud objects share the backup directory, cleanup identifies them from
   saved disk metadata. Encrypted disk metadata requires its original key. Partial deletion retains these
   records while retaining external objects. Missing disk metadata stops cleanup of a shared directory.
-  It leaves the original backup's frozen data intact.
+  Archives read into memory have a 1 GiB size limit after decompression, including TAR headers and padding.
+  Set `filesystem.max_in_memory_tarball_size` to a larger positive integer in bytes if needed.
+  This limit also applies when copy reads disk metadata. It does not limit archives extracted directly to disk.
+  Deleting a copy leaves the original backup's frozen data intact.
   Restore preserves the HTTP/HTTPS scheme of the stored endpoint. Its `--cloud-storage-source-endpoint`
   option accepts a full HTTP(S) URL or `host[:port]`; the latter uses the original disk's scheme.
 - ClickHouse 26.8+ SQL-defined HTTP handlers are included in full backups; use `--http-handlers` with backup
