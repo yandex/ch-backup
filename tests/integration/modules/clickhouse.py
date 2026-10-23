@@ -47,6 +47,23 @@ FORMAT JSON
 """
 
 
+def get_part_path(
+    context: ContextT, node: str, database: str, table: str, part: str
+) -> str:
+    """Find exactly one active part before injecting a file or object fault."""
+    paths = (
+        ClickhouseClient(context, node)
+        .get_response(
+            f"SELECT path FROM system.parts WHERE active "
+            f"AND database = '{database}' AND table = '{table}' "
+            f"AND name = '{part}' FORMAT TSVRaw"
+        )
+        .splitlines()
+    )
+    assert len(paths) == 1, f"Expected one active part, found paths: {paths}"
+    return paths[0].rstrip("/")
+
+
 class ClickhouseClient:
     """
     ClickHouse Client.

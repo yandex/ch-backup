@@ -4,11 +4,13 @@ Clickhouse-disks controls temporary cloud storage disks management.
 
 import copy
 import os
+import shlex
 import shutil
 import threading
 from collections import defaultdict
 from contextlib import contextmanager, suppress
 from functools import partial
+from pathlib import Path
 from subprocess import PIPE, Popen
 from types import TracebackType
 from typing import IO, Any, Callable, Iterator, Literal, Sequence
@@ -449,6 +451,9 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
                 target_path = os.path.join(table_path, "detached")
                 if self._ch_ctl.ch_version_ge("23.7"):
                     target_path = os.path.join(target_path, part.name, "")
+                    target_part_path = target_path
+                else:
+                    target_part_path = os.path.join(target_path, source_part_name)
                 source_path = os.path.join(
                     "shadow",
                     sanitize_backup_name(source_backup_name),
@@ -456,6 +461,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
                     source_part_name,
                     "",
                 )
+                self._prepare_part_copy(target_disk, target_part_path, routine_tag)
                 self._copy_dir(
                     source_disk.name,
                     source_path,
@@ -468,6 +474,43 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         raise RuntimeError(
             f'Disk "{target_disk.name}" path not found for table `{table.database}`.`{table.name}`'
         )
+
+    def _prepare_part_copy(self, disk: Disk, path: str, routine_tag: str) -> None:
+        full_path = Path(disk.path) / path
+        mode_file = full_path.with_name(f".{full_path.name}.ch-backup-copy-mode")
+        previous_mode = None
+        if mode_file.exists():
+            previous_mode = mode_file.read_text(encoding="utf-8")
+
+        if full_path.exists():
+            # The directory may come from an earlier inplace restore, even if
+            # this invocation copies objects. Only a recorded object copy owns
+            # its S3 objects; unknown/legacy directories get metadata-only cleanup.
+            logging.info("Removing incomplete part {} from disk {}", path, disk.name)
+            if previous_mode == "copy":
+                _ch_disks_remove(self._ch_ctl, disk.name, path, routine_tag)
+            else:
+                shutil.rmtree(full_path)
+
+        mode_file.parent.mkdir(parents=True, exist_ok=True)
+        # ATTACH can fail after copying succeeds. Keep ownership until ATTACH
+        # succeeds so a retry can remove copied objects, not just their metadata.
+        mode_file.write_text(
+            "inplace" if self._use_local_copy else "copy", encoding="utf-8"
+        )
+
+    def remove_part_copy_marker(self, table: Table, part: PartMetadata) -> None:
+        """Forget ownership after ATTACH so later detached parts cannot inherit it."""
+        part_name = (
+            part.name
+            if self._ch_ctl.ch_version_ge("23.7")
+            else part.deduplicated_part_name
+        )
+        full_path = Path(
+            self._ch_ctl.get_detached_part_path(table, part.disk_name, part_name)
+        )
+        mode_file = full_path.with_name(f".{full_path.name}.ch-backup-copy-mode")
+        mode_file.unlink(missing_ok=True)
 
     # pylint: disable=too-many-positional-arguments
     def _copy_dir(
@@ -784,11 +827,7 @@ def _ch_disks_copy(
             to_disk,
             from_path,
             to_path,
-            "'",
         ]
-        common_args.append("--query")
-        # Changes in disks interface require passing command with args in quotes
-        command = "'" + command
     elif ch_ctl.ch_version_ge("23.9"):
         command_args = [
             "--disk-from",
@@ -814,8 +853,30 @@ def _ch_disks_copy(
         common_args=common_args,
         command=command,
         command_args=command_args,
+        query=ch_ctl.ch_version_ge("24.7"),
     )
     logging.info(f"clickhouse-disks copy result for {routine_tag}: {result}")
+
+
+def _ch_disks_remove(
+    ch_ctl: ClickhouseCTL, disk: str, path: str, routine_tag: str
+) -> None:
+    """Remove a directory and its objects through the ClickHouse disk."""
+    command = "remove"
+    common_args = ["--config", CH_DISK_CONFIG_PATH, "--disk", disk]
+    command_args = [path]
+    if ch_ctl.ch_version_ge("24.7"):
+        command_args = ["--recursive", path]
+
+    result = _exec(
+        routine_tag,
+        exe="/usr/bin/clickhouse-disks",
+        common_args=common_args,
+        command=command,
+        command_args=command_args,
+        query=ch_ctl.ch_version_ge("24.7"),
+    )
+    logging.info("clickhouse-disks remove result for {}: {}", routine_tag, result)
 
 
 def _get_config_path(config_dir: str, disk_name: str) -> str:
@@ -845,18 +906,32 @@ def _get_backup_disk_name(disk_name: str) -> str:
     return f"{disk_name}_backup"
 
 
+def _quote_query_argument(argument: str) -> str:
+    """Quote for clickhouse-disks' command parser, not for a shell."""
+    # Boost split_unix escapes both quote types and backslashes, even inside
+    # quotes. Newer ClickHouse first splits on unquoted semicolons, preserving
+    # backslashes only inside single quotes. After a literal apostrophe, reopen
+    # that single-quoted region; the double quote balances Boost's quote state.
+    escaped = argument.replace("\\", "\\\\").replace('"', '\\"').replace("'", "\\''\"")
+    return "'" + escaped + "'"
+
+
 def _exec(
     routine_tag: str,
     exe: str,
     common_args: list[str],
     command: str | None = None,
     command_args: list[str] | None = None,
+    *,
+    query: bool = False,
 ) -> Any:
     """
     Run a command and return its output lines.
 
-    clickhouse-disks may report a failed command with zero exit code, writing
-    only a line starting with "Error: " to stderr, so such a line fails the call.
+    clickhouse-disks may exit successfully after printing an exception to stderr.
+    Older versions, including 24.8, omit the "Error: " prefix. These commands
+    emit errors to stderr, so any nonempty diagnostic must fail the call before
+    a partially copied part can be marked as downloaded.
     """
     proc_logger = logging.getLogger("clickhouse-disks").bind(tag=routine_tag)
     args = [
@@ -865,18 +940,25 @@ def _exec(
     ]
     if command:
         command_with_args = [command, *command_args] if command_args else [command]
-        args += command_with_args  # type: ignore
+        if query:
+            args += ["--query", " ".join(map(_quote_query_argument, command_with_args))]
+        else:
+            args += command_with_args
 
-    args = " ".join(args)  # type: ignore
-    logging.debug(f'Executing "{args}"')
+    logging.debug("Executing {}", shlex.join(args))
 
-    with Popen(args, stdout=PIPE, stderr=PIPE, shell=True) as proc:  # nosec
+    try:
+        proc = Popen(args, stdout=PIPE, stderr=PIPE, shell=False)  # noqa: S603
+    except OSError as e:
+        raise ClickHouseDisksException(f"Failed to start {exe}: {e}") from e
+
+    with proc:
         stdout, stderr = proc.communicate()
         errors = []
         for line in stderr.splitlines():
             message = line.decode("utf-8").strip()
             proc_logger.info(message)
-            if message.startswith("Error: "):
+            if message:
                 errors.append(message)
         if proc.returncode != 0 or errors:
             raise ClickHouseDisksException(
