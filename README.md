@@ -117,6 +117,11 @@ ch-backup copy --all --target-config /etc/yandex/ch-backup/dr.conf
 # Continue after errors and save confirmed results, including on failure.
 ch-backup copy --all --keep-going --target-config /etc/yandex/ch-backup/dr.conf \
     --report-path /tmp/ch-backup-copy-report.json
+
+# Copy files of the backup on the server side first, then stream data of object storage disks.
+ch-backup copy LAST --stage backup --server-side-copy --target-config /etc/yandex/ch-backup/dr.conf
+ch-backup copy LAST --stage cloud_storage --keep-going --no-server-side-copy \
+    --target-config /etc/yandex/ch-backup/dr.conf
 ```
 
 ```yaml
@@ -185,6 +190,23 @@ Behavior and limitations:
   Completed backups are skipped.
   When a linked part has already been materialized in a successfully copied backup, subsequent
   backups reuse that copy, including mutation-renamed parts and full cloud-storage backups.
+- Copying consists of two stages: `backup` copies files of the backup, `cloud_storage` copies data
+  of object storage disks and uploads disk metadata rewritten to reference it. `--stage` (can be
+  given multiple times) runs only the specified stages, all of them by default. Each run chooses
+  its own copy mode with `--[no-]server-side-copy`. Statuses of the stages (`pending`, `completed`,
+  `failed`) are saved in `meta.copy` of the copy, for example
+  `state: creating, copy: {backup: completed, cloud_storage: pending}`. A backup without data on
+  object storage disks has the stage `cloud_storage` completed right away. The copy becomes `created`
+  once every stage is completed. Saved statuses are not trusted: a stage that is not run is
+  completed only if the copy context and the target listing confirm all its objects, otherwise it
+  becomes `pending` again, e.g. after a failed delete. Between stages, the copy is in the state
+  `creating`, and `purge` and `delete --purge-partial` on the target storage treat it as any other
+  incomplete backup. With `--keep-going`, objects of the stage `cloud_storage` that failed to copy
+  are listed in `<backup>/copy_context/<id>/failed.jsonl.gz` (source and target keys, size and error)
+  and the stage becomes `failed`; the next run of the stage copies only unconfirmed objects. The list
+  is rewritten by each run of the stage and removed once no object fails. Run stages of one backup
+  one after another: the local lock serializes runs on one host, runs on different hosts require
+  `lock.zk_flock`.
 - Copy acquires the configured source and target locks through completion, including retries and
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
   and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.

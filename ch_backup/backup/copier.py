@@ -10,7 +10,7 @@ import re
 from contextlib import contextmanager
 from functools import partial
 from itertools import chain
-from typing import Iterator, Sequence
+from typing import Callable, Iterator, Sequence
 from urllib.parse import quote, urlparse
 
 from ch_backup import logging
@@ -55,6 +55,14 @@ from ch_backup.storage.object_copy import (
 )
 
 FROZEN_METADATA_FNAME = "frozen_metadata.txt"
+BACKUP_STAGE = "backup"
+CLOUD_STORAGE_STAGE = "cloud_storage"
+COPY_STAGES = (BACKUP_STAGE, CLOUD_STORAGE_STAGE)
+STAGE_PENDING = "pending"
+STAGE_COMPLETED = "completed"
+STAGE_FAILED = "failed"
+
+StageObjects = tuple[list[CopyEntry], list[tuple[str, list[tuple[str, bytes]]]]]
 
 
 class _CopyPlan:
@@ -64,11 +72,18 @@ class _CopyPlan:
 
     def __init__(self) -> None:
         self.entries: list[CopyEntry] = []
+        self.cloud_storage_entries: list[CopyEntry] = []
         # Tarballs with cloud storage metadata that are uploaded with modified content
         # instead of copying as is: (target path, files).
         self.rewritten_cloud_storage_metadata: list[
             tuple[str, list[tuple[str, bytes]]]
         ] = []
+
+    def stage_objects(self, stage: str) -> StageObjects:
+        """Return objects and rewritten metadata tarballs of the copy stage."""
+        if stage == CLOUD_STORAGE_STAGE:
+            return self.cloud_storage_entries, self.rewritten_cloud_storage_metadata
+        return self.entries, []
 
 
 # pylint: disable=too-many-instance-attributes
@@ -81,6 +96,10 @@ class BackupCopier:
     the state "creating" and after with the state "created", so the copy becomes valid only
     when all its data is in place. Interrupted copying is resumed by the next run, which skips
     objects confirmed by the copy context and still present in the target storage.
+
+    Copying is split into stages: "backup" copies files of the backup, "cloud_storage" copies
+    data of object storage disks. Stages may be run separately, and the copy becomes "created"
+    once every stage is confirmed.
     """
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -112,6 +131,7 @@ class BackupCopier:
         self._server_side_copy: dict[tuple, bool] = {}
         self._copy_context: CopyContext | None = None
         self._keep_going = False
+        self._stages: Sequence[str] = COPY_STAGES
         self._report = CopyReport()
 
     def copy(
@@ -120,19 +140,27 @@ class BackupCopier:
         *,
         keep_going: bool = False,
         report: CopyReport | None = None,
+        stages: Sequence[str] | None = None,
     ) -> tuple[list[str], list[str]]:
         """
         Copy specified backups or all backups in the state "created" if names are not specified.
 
         Return names of copied backups and names of backups skipped as already copied.
         With keep_going, attempt every viable backup before raising an aggregate error.
+        Only the specified stages are copied, all of them by default.
         """
         self._keep_going = keep_going
+        self._stages = stages or COPY_STAGES
         self._report = report if report is not None else CopyReport()
         self._report.error = None
         self._report.backups.clear()
         self._materialized_parts.clear()
         try:
+            unknown_stages = set(self._stages) - set(COPY_STAGES)
+            if unknown_stages:
+                raise ConfigurationError(
+                    f"Unknown copy stages: {', '.join(sorted(unknown_stages))}"
+                )
             self._validate_configs()
             backups = self._select_backups(backup_names)
             results = {result.name: result for result in self._report.backups}
@@ -352,13 +380,15 @@ class BackupCopier:
 
         target_meta = self._make_target_metadata(backup)
         plan = _CopyPlan()
-        self._plan_backup_files(backup, plan, result)
-        self._plan_linked_parts(backup, target_meta, plan, result)
-        if backup.cloud_storage.data_copied:
-            self._plan_full_cloud_storage_objects(backup, target_meta, plan, result)
-        elif backup.cloud_storage.enabled:
-            with self._planning_step(result, backup.name):
-                self._plan_cloud_storage_objects(backup, target_meta, plan, result)
+        planned = {
+            stage: self._plan_stage(
+                stage, result, partial(planner, backup, target_meta, plan)
+            )
+            for stage, planner in (
+                (BACKUP_STAGE, self._plan_backup_stage),
+                (CLOUD_STORAGE_STAGE, self._plan_cloud_storage_stage),
+            )
+        }
         try:
             self._validate_destinations(backup, plan)
         except Exception as e:
@@ -374,30 +404,119 @@ class BackupCopier:
             if storage_id(entry.dst_storage) != storage_id(self._target_storage)
             or _key(entry.dst_path) not in rewritten_paths
         ]
-        result.objects_total = len(plan.entries) + len(
-            plan.rewritten_cloud_storage_metadata
+        result.objects_total = sum(
+            len(entries) + len(archives)
+            for entries, archives in map(plan.stage_objects, self._stages)
         )
-        self._transfer_backup(backup, target_meta, plan, result)
-        logging.info("Backup {} is copied", backup_name)
+        previous = (target_backup.copy_stages if target_backup else None) or {}
+        self._transfer_backup(backup, target_meta, plan, planned, previous, result)
         return True
 
-    def _transfer_backup(
+    def _plan_stage(
+        self, stage: str, result: BackupCopyResult, planner: Callable
+    ) -> bool:
+        """
+        Plan objects of the copy stage. Return False if planning failed.
+
+        Failures of a stage that is not copied by this run are only logged:
+        the stage is not confirmed then, so the copy is not published.
+        """
+        if stage in self._stages:
+            errors = len(result.errors)
+            planner(result)
+            return len(result.errors) == errors
+        stage_result = BackupCopyResult(result.name)
+        try:
+            planner(stage_result)
+        except Exception as e:
+            if is_broken_executor(e):
+                raise
+            stage_result.add_error(e, "planning")
+        for error in stage_result.errors:
+            logging.warning(
+                "Failed to check stage {} of copying of backup {}: {}",
+                stage,
+                result.name,
+                error["message"],
+            )
+        return not stage_result.errors
+
+    def _plan_backup_stage(
         self,
         backup: BackupMetadata,
         target_meta: BackupMetadata,
         plan: _CopyPlan,
         result: BackupCopyResult,
     ) -> None:
-        """Publish CREATED only after transfer succeeds, preserving failures during cleanup."""
+        """Plan copying of files of the backup and its deduplicated data parts."""
+        self._plan_backup_files(backup, plan, result)
+        self._plan_linked_parts(backup, target_meta, plan, result)
+
+    def _plan_cloud_storage_stage(
+        self,
+        backup: BackupMetadata,
+        target_meta: BackupMetadata,
+        plan: _CopyPlan,
+        result: BackupCopyResult,
+    ) -> None:
+        """Plan copying of data of object storage disks."""
+        if backup.cloud_storage.data_copied:
+            self._plan_full_cloud_storage_objects(backup, target_meta, plan, result)
+        elif backup.cloud_storage.enabled:
+            with self._planning_step(result, backup.name):
+                self._plan_cloud_storage_objects(backup, target_meta, plan, result)
+
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
+    def _transfer_backup(
+        self,
+        backup: BackupMetadata,
+        target_meta: BackupMetadata,
+        plan: _CopyPlan,
+        planned: dict[str, bool],
+        previous: dict[str, str],
+        result: BackupCopyResult,
+    ) -> None:
+        """
+        Copy selected stages, publishing CREATED only when every stage is confirmed.
+
+        Statuses of stages saved by previous runs are not trusted. Failures during cleanup
+        are preserved.
+        """
+        pending = self._pending_objects(backup, plan, result)
+        statuses = self._stage_statuses(backup.name, planned, previous, pending)
+        target_meta.copy_stages = result.stages = statuses
         stage = "metadata"
         try:
             self._target_layout.upload_backup_metadata(target_meta)
             stage = "copy"
-            self._copy_objects(backup, plan, result)
+            for copy_stage in COPY_STAGES:
+                if copy_stage in self._stages:
+                    statuses[copy_stage] = STAGE_FAILED
+                    if (
+                        self._copy_stage(
+                            copy_stage, backup, pending[copy_stage], result
+                        )
+                        and planned[copy_stage]
+                    ):
+                        statuses[copy_stage] = STAGE_COMPLETED
+            if result.errors:
+                raise ClickhouseBackupError(
+                    f"Failed to copy backup {backup.name}: {len(result.errors)} error(s), "
+                    f"{result.objects_failed} object transfer(s) failed"
+                )
             stage = "metadata"
-            target_meta.state = BackupState.CREATED
+            if all(status == STAGE_COMPLETED for status in statuses.values()):
+                target_meta.state = BackupState.CREATED
             self._target_layout.upload_backup_metadata(target_meta)
             self._remember_materialized_parts(backup, target_meta)
+            if target_meta.state == BackupState.CREATED:
+                logging.info("Backup {} is copied", backup.name)
+            else:
+                logging.info(
+                    "Stages {} of backup {} are copied, other stages are pending",
+                    ", ".join(self._stages),
+                    backup.name,
+                )
         except (Exception, TerminatingSignal) as e:
             logging.critical("Copying of backup {} failed", backup.name, exc_info=True)
             if stage == "metadata" or not result.errors:
@@ -419,6 +538,39 @@ class BackupCopier:
         finally:
             self._target_backups.pop(backup.name, None)
 
+    def _stage_statuses(
+        self,
+        backup_name: str,
+        planned: dict[str, bool],
+        previous: dict[str, str],
+        pending: dict[str, StageObjects],
+    ) -> dict[str, str]:
+        """
+        Return statuses of stages before copying.
+
+        A stage that is not copied by this run is completed only if all its objects are confirmed.
+        """
+        statuses = {}
+        for copy_stage in COPY_STAGES:
+            if copy_stage in self._stages:
+                statuses[copy_stage] = STAGE_PENDING
+            elif planned[copy_stage] and not any(pending[copy_stage]):
+                statuses[copy_stage] = STAGE_COMPLETED
+            else:
+                if previous.get(copy_stage) == STAGE_COMPLETED:
+                    logging.warning(
+                        "Completed stage {} of backup {} is not confirmed by the copy context "
+                        "and target storage, the stage must be copied again",
+                        copy_stage,
+                        backup_name,
+                    )
+                statuses[copy_stage] = (
+                    STAGE_FAILED
+                    if previous.get(copy_stage) == STAGE_FAILED
+                    else STAGE_PENDING
+                )
+        return statuses
+
     def _target_prefixes(self, backup: BackupMetadata) -> list[tuple[dict, str]]:
         """Return storages and paths that hold all objects of the copied backup."""
         prefixes = [
@@ -439,7 +591,10 @@ class BackupCopier:
         for _, prefix in prefixes:
             _validate_relative_key(_key(prefix).rstrip("/"))
         destinations = chain(
-            ((entry.dst_storage, entry.dst_path) for entry in plan.entries),
+            (
+                (entry.dst_storage, entry.dst_path)
+                for entry in chain(plan.entries, plan.cloud_storage_entries)
+            ),
             (
                 (self._target_storage, path)
                 for path, _ in plan.rewritten_cloud_storage_metadata
@@ -782,7 +937,7 @@ class BackupCopier:
                         plan.rewritten_cloud_storage_metadata.append(
                             (remote_path, files)
                         )
-        plan.entries.extend(entries.values())
+        plan.cloud_storage_entries.extend(entries.values())
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     def _full_cloud_storage_metadata(
@@ -977,7 +1132,7 @@ class BackupCopier:
                                 (self._get_target_path(remote_path), files)
                             )
 
-        plan.entries.extend(entries.values())
+        plan.cloud_storage_entries.extend(entries.values())
         target_meta.cloud_storage.source = {
             "endpoint_url": target_storage["credentials"]["endpoint_url"],
             "bucket": target_storage["credentials"]["bucket"],
@@ -1134,38 +1289,103 @@ class BackupCopier:
             return access_key_id, secret_access_key
         return None
 
-    def _copy_objects(
+    def _pending_objects(
         self, backup: BackupMetadata, plan: _CopyPlan, result: BackupCopyResult
-    ) -> None:
+    ) -> dict[str, StageObjects]:
         """
-        Copy objects of the plan, skipping ones copied by previous runs.
+        Return objects of each stage, leaving out ones copied by previous runs.
 
         A matching size alone does not prove that an existing object belongs to this copy,
         and a record of the copy context alone does not prove that the object was not
         deleted since then, e.g. by a failed or partial delete. Only objects with both
-        are skipped.
+        are left out.
+        """
+        pending = {stage: plan.stage_objects(stage) for stage in COPY_STAGES}
+        context = self._copy_context
+        assert context is not None
+        if not context.has_records():
+            return pending
+        listing = self._list_target_objects(backup)
+        target_id = storage_id(self._target_storage)
+        pending = {
+            stage: (
+                [
+                    entry
+                    for entry in entries
+                    if listing.get(
+                        (storage_id(entry.dst_storage), _key(entry.dst_path))
+                    )
+                    != entry.size
+                    or not context.is_recorded(entry)
+                ],
+                [
+                    (path, files)
+                    for path, files in archives
+                    if (target_id, _key(path)) not in listing
+                    or not context.is_archive_recorded(
+                        self._target_storage, path, files
+                    )
+                ],
+            )
+            for stage, (entries, archives) in pending.items()
+        }
+        del listing
+        context.forget()
+        total = result.objects_total or 0
+        result.objects_skipped = total - sum(
+            len(pending[stage][0]) + len(pending[stage][1]) for stage in self._stages
+        )
+        logging.info(
+            "Resuming copying of backup {}: {} of {} objects are confirmed and skipped",
+            backup.name,
+            result.objects_skipped,
+            total,
+        )
+        return pending
+
+    def _copy_stage(
+        self,
+        stage: str,
+        backup: BackupMetadata,
+        objects: StageObjects,
+        result: BackupCopyResult,
+    ) -> bool:
+        """
+        Copy objects of the stage. Return False if some of them failed with keep_going.
+
+        Objects of the "cloud_storage" stage that failed to copy are listed in the copy context.
         """
         context = self._copy_context
         assert context is not None
-        pending = plan.entries
-        if context.has_records():
-            listing = self._list_target_objects(backup)
-            pending = [
-                entry
-                for entry in plan.entries
-                if listing.get((storage_id(entry.dst_storage), _key(entry.dst_path)))
-                != entry.size
-                or not context.is_recorded(entry)
-            ]
-            del listing
-            context.forget()
-            result.objects_skipped = len(plan.entries) - len(pending)
-            logging.info(
-                "Resuming copying of backup {}: {} of {} objects are confirmed and skipped",
-                backup.name,
-                result.objects_skipped,
-                len(plan.entries),
-            )
+        failures: list[tuple[CopyEntry, str]] = []
+        errors = len(result.errors)
+        try:
+            self._copy_objects(backup, *objects, result, failures)
+        except Exception as e:
+            if not self._keep_going or is_broken_executor(e):
+                raise
+        finally:
+            if stage == CLOUD_STORAGE_STAGE and any(objects):
+                context.save_failures(failures)
+        return len(result.errors) == errors
+
+    # pylint: disable=too-many-locals
+    def _copy_objects(
+        self,
+        backup: BackupMetadata,
+        pending: list[CopyEntry],
+        archives: list[tuple[str, list[tuple[str, bytes]]]],
+        result: BackupCopyResult,
+        failures: list[tuple[CopyEntry, str]],
+    ) -> None:
+        """
+        Copy objects and upload rewritten metadata tarballs, recording them in the copy context.
+
+        Objects that failed to copy are added to failures.
+        """
+        context = self._copy_context
+        assert context is not None
+        errors = len(result.errors)
         entries = self._resolve_copy_mode(pending, result)
 
         logging.info(
@@ -1180,29 +1400,38 @@ class BackupCopier:
             context.record(entry)
             context.flush()
 
+        def failed(entry: CopyEntry, error: BaseException) -> None:
+            """Report the object that failed to copy."""
+            result.add_error(
+                error,
+                "copy",
+                source=entry.src_path,
+                target=entry.dst_path,
+                object_failed=True,
+            )
+            failures.append((entry, f"{type(error).__name__}: {error}"))
+
+        def uploaded(remote_path: str, files: list[tuple[str, bytes]]) -> None:
+            """Count the uploaded tarball and record it in the copy context."""
+            result.completed()
+            context.record_archive(self._target_storage, remote_path, files)
+            context.flush()
+
         try:
             self._target_layout.copy_objects(
                 entries,
                 keep_going=self._keep_going,
                 callback=completed,
-                on_error=lambda entry, error: result.add_error(
-                    error,
-                    "copy",
-                    source=entry.src_path,
-                    target=entry.dst_path,
-                    object_failed=True,
-                ),
+                on_error=failed,
             )
-            for index, (remote_path, files) in enumerate(
-                plan.rewritten_cloud_storage_metadata, 1
-            ):
+            for index, (remote_path, files) in enumerate(archives, 1):
                 errors_before_upload = len(result.errors)
                 try:
                     self._target_layout.upload_cloud_storage_metadata_files(
                         backup,
                         remote_path,
                         files,
-                        callback=result.completed,
+                        callback=partial(uploaded, remote_path, files),
                         on_error=partial(
                             result.add_error,
                             stage="copy_metadata",
@@ -1227,7 +1456,7 @@ class BackupCopier:
         except (Exception, TerminatingSignal) as e:
             # Submission can fail after other uploads have already started. Wait before
             # publishing FAILED and releasing the locks, preserving the original error.
-            if not result.errors:
+            if len(result.errors) == errors:
                 result.add_error(e, "copy")
             try:
                 self._target_layout.wait(keep_going=True)
@@ -1245,7 +1474,7 @@ class BackupCopier:
             self._target_layout.wait(keep_going=self._keep_going)
         finally:
             context.flush(force=True)
-        if result.errors:
+        if len(result.errors) > errors:
             raise ClickhouseBackupError(
                 f"Failed to copy backup {backup.name}: {len(result.errors)} error(s), "
                 f"{result.objects_failed} object transfer(s) failed"

@@ -35,6 +35,7 @@ from ch_backup.command_context import command_context
 from ch_backup.exceptions import ConfigurationError, TerminatingSignal
 
 from . import logging
+from .backup.copier import COPY_STAGES
 from .backup.copy_report import CopyReport, print_copy_report
 from .backup.metadata import BackupState, TableMetadata
 from .backup.sources import BackupSources
@@ -950,6 +951,15 @@ def delete_command(
         type=Path(dir_okay=False),
         help="Save the final copy report as JSON, including on failure.",
     ),
+    option(
+        "--stage",
+        "stages",
+        multiple=True,
+        type=Choice(COPY_STAGES),
+        help='Copy only the specified stage: "backup" for files of the backup, '
+        '"cloud_storage" for data of object storage disks. Can be specified multiple times, '
+        "all stages are copied by default. The copy is published once every stage is copied.",
+    ),
 )
 @option_group(
     "Target storage options",
@@ -1023,6 +1033,7 @@ def copy_command(
     cloud_storage_source_path: str | None,
     keep_going: bool = False,
     report_path: str | None = None,
+    stages: tuple[str, ...] = (),
 ) -> None:
     """Copy backup to another storage (another S3 bucket, endpoint or path)."""
     report = CopyReport()
@@ -1057,7 +1068,13 @@ def copy_command(
             _build_cli_cfg_from_config_parameters(target_config_parameters),
         )
         target_cfg.merge({"copy": copy_config})
-        ch_backup.copy(target_cfg, backup_names, keep_going=keep_going, report=report)
+        ch_backup.copy(
+            target_cfg,
+            backup_names,
+            keep_going=keep_going,
+            report=report,
+            stages=stages,
+        )
     except BaseException as e:
         report.error = f"{type(e).__name__}: {e}"
         raise
