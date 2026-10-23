@@ -199,7 +199,8 @@ Behavior and limitations:
   object storage disks has the stage `cloud_storage` completed right away. The copy becomes `created`
   once every stage is completed. Saved statuses are not trusted: a stage that is not run is
   completed only if the copy context and the target listing confirm all its objects, otherwise it
-  becomes `pending` again, e.g. after a failed delete. Between stages, the copy is in the state
+  becomes `pending` again, e.g. after a failed delete. `--no-resume` overwrites objects of the stages
+  that are run and still checks the other stages this way. Between stages, the copy is in the state
   `creating`, and `purge` and `delete --purge-partial` on the target storage treat it as any other
   incomplete backup. With `--keep-going`, objects of the stage `cloud_storage` that failed to copy
   are listed in `<backup>/copy_context/<id>/failed.jsonl.gz` (source and target keys, size and error)

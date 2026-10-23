@@ -2890,6 +2890,23 @@ def test_interrupted_cloud_storage_stage_keeps_failed_objects() -> None:
     }
 
 
+def test_stage_without_resume_recopies_its_objects_and_checks_others() -> None:
+    ctx = _staged_context()
+    ctx.target_layout.object_errors["data/xyz/bbb"] = StorageError("SlowDown")
+    with pytest.raises(ClickhouseBackupError):
+        ctx.copy(["b1"], keep_going=True)
+    ctx.target_layout.object_errors.clear()
+    ctx.target_layout.copied.clear()
+    ctx.target_config["copy"]["resume"] = False
+    report = CopyReport()
+
+    ctx.copy(["b1"], stages=["cloud_storage"], report=report)
+
+    assert _disk_objects(ctx) == {"copies/b1/xyz/aaa", "copies/b1/xyz/bbb"}
+    assert report.backups[0].objects_skipped == 0
+    assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
+
+
 def test_repeated_stage_is_copied_and_counted_once() -> None:
     ctx = _staged_context()
     report = CopyReport()

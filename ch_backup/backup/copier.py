@@ -378,7 +378,9 @@ class BackupCopier:
             self._target_layout.get_backup_path(backup.name),
             backup,
         )
-        if target_backup and self._copy_config["resume"]:
+        if target_backup and (
+            self._copy_config["resume"] or set(COPY_STAGES) - set(self._stages)
+        ):
             self._copy_context.load()
 
         target_meta = self._make_target_metadata(backup)
@@ -1312,7 +1314,7 @@ class BackupCopier:
         A matching size alone does not prove that an existing object belongs to this copy,
         and a record of the copy context alone does not prove that the object was not
         deleted since then, e.g. by a failed or partial delete. Only objects with both
-        are left out.
+        are left out. Without resuming, only stages that are not copied by this run are checked.
         """
         pending = {stage: plan.stage_objects(stage) for stage in COPY_STAGES}
         context = self._copy_context
@@ -1343,6 +1345,8 @@ class BackupCopier:
             )
             for stage, (entries, archives) in pending.items()
         }
+        if not self._copy_config["resume"]:
+            pending.update({stage: plan.stage_objects(stage) for stage in self._stages})
         del listing
         context.forget()
         total = result.objects_total or 0
