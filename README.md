@@ -189,6 +189,7 @@ Behavior and limitations:
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
   and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.
   Locking remains optional; the local file lock retains its shared semantics.
+  Without this coordination, do not run copy concurrently with delete or purge on the same storage.
 - Deduplicated data parts of the backup are stored in older backups. If such a backup is already
   present in the target storage, the deduplication link is kept. Otherwise, the data part is copied
   into the copied backup. `--all` copies older backups first, so deduplication is kept in the target storage.
@@ -225,8 +226,27 @@ Behavior and limitations:
   prefix from stored source metadata or disk configuration. Copy fails before writing if that prefix
   is unknown or a key is outside it. Without a path override, full keys are read as stored.
   Restore of the copy uses the copied objects by default; they must be accessible with credentials of the
-  object storage disk of the host where the backup is restored. Note that these objects are not removed
-  when the copy is deleted, and they're stored for each copied backup separately.
+  object storage disk of the host where the backup is restored. Each copied backup stores these objects
+  separately. By default, deleting a copy retains its external cloud storage objects.
+  Use `ch-backup delete BACKUP --delete-cloud-storage-data` to remove them too.
+  `ch-backup purge --delete-cloud-storage-data` applies the same cleanup to backups selected by retention,
+  and `delete BACKUP --purge-partial --delete-cloud-storage-data` also cleans additional partially deleted backups.
+  Cleanup uses the endpoint, bucket and backup-specific prefix recorded in backup metadata. Credentials
+  default to backup-storage credentials. Set `copy.cloud_storage.target.access_key_id` and
+  `copy.cloud_storage.target.secret_access_key` when the cloud bucket needs separate credentials.
+  For another endpoint, explicitly configure the matching `copy.cloud_storage.target.endpoint_url`.
+  A configured `copy.cloud_storage.target.bucket` must also match the recorded bucket.
+  Cleanup trusts the recorded bucket and prefix. Only trusted users and processes should have write
+  access to backup metadata. Altered metadata can redirect deletion within the credentials' permissions.
+  Cleanup retains cloud data referenced by surviving backups. An S3 failure keeps backup metadata in
+  the `failed` state so the operation can be retried. Deletion with this option requires readable
+  full or light metadata. When cloud objects share the backup directory, cleanup identifies them from
+  saved disk metadata. Encrypted disk metadata requires its original key. Partial deletion retains these
+  records while retaining external objects. Missing disk metadata stops cleanup of a shared directory.
+  Archives read into memory have a 1 GiB size limit after decompression, including TAR headers and padding.
+  Set `filesystem.max_in_memory_tarball_size` to a larger positive integer in bytes if needed.
+  This limit also applies when copy reads disk metadata. It does not limit archives extracted directly to disk.
+  Deleting a copy leaves the original backup's frozen data intact.
   Restore preserves the HTTP/HTTPS scheme of the stored endpoint. Its `--cloud-storage-source-endpoint`
   option accepts a full HTTP(S) URL or `host[:port]`; the latter uses the original disk's scheme.
 - ClickHouse 26.8+ SQL-defined HTTP handlers are included in full backups; use `--http-handlers` with backup

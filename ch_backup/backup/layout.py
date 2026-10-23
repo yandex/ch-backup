@@ -39,7 +39,12 @@ from ch_backup.clickhouse.object_storage_metadata import (
 )
 from ch_backup.config import Config
 from ch_backup.encryption import get_encryption_class
-from ch_backup.exceptions import ConfigurationError, StorageError, is_broken_executor
+from ch_backup.exceptions import (
+    ConfigurationError,
+    InvalidBackupStruct,
+    StorageError,
+    is_broken_executor,
+)
 from ch_backup.storage import StorageLoader
 from ch_backup.storage.engine.s3 import S3RetryingError
 from ch_backup.storage.object_copy import CopyEntry
@@ -1054,6 +1059,43 @@ class BackupLayout:
         except Exception as e:
             msg = f'Failed to download tarball file "{remote_path}"'
             raise StorageError(msg) from e
+
+    def get_cloud_storage_object_keys(
+        self, backup_meta: BackupMetadata, prefix: str
+    ) -> list[str]:
+        """Read copied object keys without including the archives that describe them."""
+        objects: set[str] = set()
+        for disk in backup_meta.cloud_storage.disks:
+            archives = self.get_cloud_storage_metadata_remote_paths(
+                backup_meta.get_sanitized_name(),
+                disk,
+                backup_meta.cloud_storage.compressed,
+                "all",
+            )
+            if not archives:
+                raise InvalidBackupStruct(
+                    f'Cannot identify copied cloud objects: disk metadata for "{disk}" is missing'
+                )
+            for archive in archives:
+                files = self.get_cloud_storage_metadata_files(backup_meta, archive)
+                for name, data in files:
+                    if os.path.basename(name) in CLOUD_STORAGE_EXCLUDE_FILE_NAMES:
+                        continue
+                    metadata = parse_object_storage_metadata(data)
+                    for obj in metadata.objects:
+                        key = (
+                            obj.key
+                            if metadata.full_object_keys
+                            else os.path.join(prefix, obj.key)
+                        )
+                        if not key.startswith(prefix + "/") or any(
+                            component in (".", "..") for component in key.split("/")
+                        ):
+                            raise ConfigurationError(
+                                "Cloud object in disk metadata is outside the copied backup prefix"
+                            )
+                        objects.add(key)
+        return sorted(objects)
 
     def upload_cloud_storage_metadata_files(
         self,
