@@ -155,7 +155,7 @@ def test_copy_holds_source_and_target_locks_until_copier_returns(failed):
         finally:
             events.append("exit")
 
-    def do_copy(names, *, keep_going=False, report=None):
+    def do_copy(names, *, keep_going=False, report=None, **_):
         assert not keep_going
         assert report is None
         assert names == ["b1"]

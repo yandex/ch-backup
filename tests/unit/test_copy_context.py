@@ -38,6 +38,9 @@ class MemoryEngine:
     def download_data(self, remote_path: str) -> bytes:
         return self.objects[remote_path]
 
+    def delete_file(self, remote_path: str) -> None:
+        self.objects.pop(remote_path, None)
+
 
 def _entry(name: str, size: int = 1) -> CopyEntry:
     return CopyEntry(STORAGE, STORAGE, f"src/{name}", f"dst/{name}", size)
@@ -156,3 +159,32 @@ def test_unreadable_file_is_skipped() -> None:
 
     assert not resumed.is_recorded(_entry("a"))
     assert resumed.is_recorded(_entry("b"))
+
+
+def test_archive_records_depend_on_content_and_size() -> None:
+    engine = MemoryEngine()
+    context = _context(engine)
+    context.record_archive(STORAGE, "dst/t1.tar", [("a", b"1")], 10)
+    context.flush(force=True)
+
+    resumed = _context(engine)
+    resumed.load()
+
+    assert resumed.is_archive_recorded(STORAGE, "dst/t1.tar", [("a", b"1")], 10)
+    assert not resumed.is_archive_recorded(STORAGE, "dst/t1.tar", [("a", b"2")], 10)
+    assert not resumed.is_archive_recorded(STORAGE, "dst/t1.tar", [("a", b"1")], 9)
+    assert not resumed.is_archive_recorded(STORAGE, "dst/t1.tar", [("a", b"1")], None)
+
+
+def test_failed_objects_are_not_records() -> None:
+    engine = MemoryEngine()
+    context = _context(engine)
+    context.save_failures([(_entry("a"), "StorageError: SlowDown")])
+    assert any(path.endswith("/failed.jsonl.gz") for path in engine.objects)
+
+    resumed = _context(engine)
+    resumed.load()
+    assert not resumed.has_records()
+
+    resumed.save_failures([])
+    assert not engine.objects

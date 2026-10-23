@@ -15,6 +15,7 @@ from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
 from ch_backup.storage.object_copy import CopyEntry, storage_id
 
 COPY_CONTEXT_DIR = "copy_context"
+FAILED_OBJECTS_FNAME = "failed.jsonl.gz"
 
 
 class CopyContext:
@@ -25,7 +26,8 @@ class CopyContext:
     "<backup path>/copy_context/<fingerprint>/". Every file is written once under a
     unique name, so an interrupted run never damages records of earlier runs.
     The fingerprint identifies the source backup; a record identifies source and
-    target locations and size of the object.
+    target locations and size of the object. Objects that failed to copy are listed
+    in a separate file, which is not part of the journal.
     """
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -64,6 +66,8 @@ class CopyContext:
             logging.warning("Failed to list copy context {}: {}", self._path, e)
             return
         for path in paths:
+            if os.path.basename(path) == FAILED_OBJECTS_FNAME:
+                continue
             try:
                 lines = gzip.decompress(self._engine.download_data(path)).splitlines()
             except Exception as e:
@@ -78,6 +82,12 @@ class CopyContext:
         """Check that copying of the object was confirmed by a previous run."""
         return _digest(_record(entry)) in self._recorded
 
+    def is_archive_recorded(
+        self, storage: dict, path: str, files: list[tuple[str, bytes]], size: int | None
+    ) -> bool:
+        """Check that upload of the rewritten metadata tarball of this size was confirmed by a previous run."""
+        return _digest(_archive_record(storage, path, files, size)) in self._recorded
+
     def forget(self) -> None:
         """Drop records of previous runs once the plan is checked against them."""
         self._recorded.clear()
@@ -85,6 +95,36 @@ class CopyContext:
     def record(self, entry: CopyEntry) -> None:
         """Remember the confirmed copy until the next flush."""
         self._buffer.append(_record(entry).decode())
+
+    def record_archive(
+        self, storage: dict, path: str, files: list[tuple[str, bytes]], size: int
+    ) -> None:
+        """Remember the confirmed upload of the rewritten metadata tarball until the next flush."""
+        self._buffer.append(_archive_record(storage, path, files, size).decode())
+
+    def save_failures(self, failures: list[tuple[CopyEntry, str]]) -> None:
+        """Replace the list of objects that failed to copy, removing it if there are none."""
+        path = os.path.join(self._path, FAILED_OBJECTS_FNAME)
+        lines = [
+            json.dumps(
+                {
+                    "src": entry.src_path,
+                    "dst": entry.dst_path,
+                    "size": entry.size,
+                    "error": error,
+                }
+            )
+            for entry, error in failures
+        ]
+        try:
+            if lines:
+                self._engine.upload_data(
+                    gzip.compress(("\n".join(lines) + "\n").encode()), path
+                )
+            else:
+                self._engine.delete_file(path)
+        except Exception as e:
+            logging.warning("Failed to save list of failed objects {}: {}", path, e)
 
     def flush(self, force: bool = False) -> None:
         """
@@ -124,6 +164,17 @@ def _record(entry: CopyEntry) -> bytes:
             entry.size,
         ]
     ).encode()
+
+
+def _archive_record(
+    storage: dict, path: str, files: list[tuple[str, bytes]], size: int | None
+) -> bytes:
+    """Serialize target location, size and content of the rewritten metadata tarball."""
+    content = hashlib.blake2b(digest_size=16)
+    for name, data in files:
+        content.update(json.dumps([name, len(data)]).encode())
+        content.update(data)
+    return json.dumps([storage_id(storage), path, size, content.hexdigest()]).encode()
 
 
 def _digest(record: bytes) -> bytes:

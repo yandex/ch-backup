@@ -64,6 +64,7 @@ class BackupCopyResult:
     objects_failed: int = 0
     objects_skipped: int = 0
     known_bytes_copied: int = 0
+    stages: dict[str, str] | None = None
     errors: CopyErrors = field(default_factory=CopyErrors)
 
     def completed(self, size: int = 0) -> None:
@@ -138,6 +139,13 @@ def print_copy_report(report: CopyReport, report_path: str | None) -> None:
                     else ""
                 )
                 + f"{result.objects_failed} failed; known bytes copied: {result.known_bytes_copied}"
+            )
+        if result.stages and set(result.stages.values()) != {"completed"}:
+            print(
+                "  stages: "
+                + ", ".join(
+                    f"{name} {status}" for name, status in result.stages.items()
+                )
             )
         for error in result.errors:
             path = error.get("target", error.get("source", ""))

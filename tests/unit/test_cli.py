@@ -32,7 +32,7 @@ def test_copy_command_writes_report_on_success_error_and_signal(
     backup = MagicMock()
     report_path = tmp_path / "report.json"
 
-    def copy(_target, _names, *, keep_going, report):
+    def copy(_target, _names, *, keep_going, report, **_):
         assert keep_going
         report.backups.append(
             BackupCopyResult(
@@ -126,6 +126,54 @@ def test_copy_command_passes_resume(args: list[str], resume: bool | None) -> Non
     assert merged["copy"].get("resume") == resume
 
 
+@pytest.mark.parametrize(
+    "args,stages",
+    [
+        ([], ()),
+        (["--stage", "backup"], ("backup",)),
+        (
+            ["--stage", "cloud_storage", "--stage", "backup"],
+            ("cloud_storage", "backup"),
+        ),
+    ],
+)
+def test_copy_command_passes_stages(args: list[str], stages: tuple) -> None:
+    backup = MagicMock()
+
+    def copy(_target, _names, *, report, **_):
+        report.backups.append(
+            BackupCopyResult(
+                "b1",
+                status="copied",
+                stages={"backup": "completed", "cloud_storage": "pending"},
+            )
+        )
+        return ["b1"], []
+
+    backup.copy.side_effect = copy
+    group = Group()
+    group.add_command(cli.copy_command)
+
+    result = CliRunner().invoke(group, ["copy", "--all", *args], obj={"backup": backup})
+
+    assert result.exit_code == 0
+    assert backup.copy.call_args.kwargs["stages"] == stages
+    assert "stages: backup completed, cloud_storage pending" in result.output
+
+
+def test_copy_command_rejects_unknown_stage() -> None:
+    backup = MagicMock()
+    group = Group()
+    group.add_command(cli.copy_command)
+
+    result = CliRunner().invoke(
+        group, ["copy", "--all", "--stage", "data"], obj={"backup": backup}
+    )
+
+    assert result.exit_code == 2
+    backup.copy.assert_not_called()
+
+
 @pytest.mark.parametrize("state", [None, BackupState.FAILED])
 @pytest.mark.parametrize("keep_going", [False, True])
 def test_copy_named_validation_failure_has_report_row(
@@ -134,7 +182,7 @@ def test_copy_named_validation_failure_has_report_row(
     ctx = CopyTestContext([_backup("requested", state=state)] if state else [])
     backup = MagicMock()
 
-    def copy(_target, names, *, keep_going, report):
+    def copy(_target, names, *, keep_going, report, **_):
         return ctx.copy(names, keep_going=keep_going, report=report)
 
     backup.copy.side_effect = copy
