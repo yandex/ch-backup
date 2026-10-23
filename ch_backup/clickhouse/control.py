@@ -646,6 +646,7 @@ class ClickhouseCTL:
         self._ch_client = ClickhouseClient(self._ch_ctl_config)
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
         self._disks = self.get_disks()
+        self._missing_detached_disks_warned: set[str] = set()
         if settings is None:
             settings = {
                 "allow_deprecated_database_ordinary": 1,
@@ -1349,7 +1350,13 @@ class ClickhouseCTL:
             for disk_name in dict.fromkeys(disk_names):
                 disk = self._disks.get(disk_name)
                 if disk is None:
-                    raise RuntimeError(f"Disk not found: {disk_name}")
+                    if disk_name not in self._missing_detached_disks_warned:
+                        logging.warning(
+                            'Detached-parts disk "{}" is not reported by system.disks; skipping it',
+                            disk_name,
+                        )
+                        self._missing_detached_disks_warned.add(disk_name)
+                    continue
                 selected.extend(
                     (disk_name, disk, data_path)
                     for data_path, table_disk in table.paths_with_disks
