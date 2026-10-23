@@ -294,6 +294,7 @@ Behavior and limitations:
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
   and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.
   Locking remains optional; the local file lock retains its shared semantics.
+  Without this coordination, do not run copy concurrently with delete or purge on the same storage.
 - By default, deduplicated data parts of the backup are stored in older backups. If such a backup is already
   present in the target storage, the deduplication link is kept. A link to a local part is also kept
   if the copy of that backup is not completed but already holds files of the part, e.g. after its
