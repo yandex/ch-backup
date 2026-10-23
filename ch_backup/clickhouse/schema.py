@@ -6,7 +6,7 @@ import re
 
 from ch_backup import logging
 from ch_backup.clickhouse.models import Database, Table
-from ch_backup.util import escape
+from ch_backup.util import escape, sql_string_literal
 
 
 def to_attach_query(create_query: str) -> str:
@@ -52,6 +52,7 @@ def rewrite_table_schema(
             if table.is_replicated():
                 table.engine = table.engine.replace("Replicated", "")
 
+    # ReplicaLayout validates the {replica} macro in quoted engine arguments.
     if override_replica_name:
         create_statement = table.create_statement
         match = re.search(
@@ -61,7 +62,7 @@ def rewrite_table_schema(
         if match:
             start, end = match.span("replica")
             table.create_statement = (
-                f"{create_statement[:start]}'{override_replica_name}'"
+                f"{create_statement[:start]}{sql_string_literal(override_replica_name)}"
                 f"{create_statement[end:]}"
             )
 
@@ -92,13 +93,14 @@ def rewrite_database_schema(
             db_sql,
         )
 
+    # ReplicaLayout validates the {replica} macro in quoted engine arguments.
     if override_replica_name:
         match = re.search(
             r"Replicated\('[^']*'\s*,\s*'[^']*'\s*,\s*(?P<replica>'[^']*'\s*)\)", db_sql
         )
         if match:
             start, end = match.span("replica")
-            db_sql = f"{db_sql[:start]}'{override_replica_name}'{db_sql[end:]}"
+            db_sql = f"{db_sql[:start]}{sql_string_literal(override_replica_name)}{db_sql[end:]}"
 
     return re.sub(
         r"CREATE\s+DATABASE\s+_\s", f"CREATE DATABASE `{escape(db.name)}` ", db_sql

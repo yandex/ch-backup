@@ -26,6 +26,8 @@ class BackupSources:
     named_collections: bool = True
     # Perform operation for workload entities (WORKLOADs and RESOURCEs)
     workload_entities: bool = True
+    # Perform operation for SQL-defined HTTP handlers
+    http_handlers: bool = False
 
     @classmethod
     # pylint: disable=too-many-positional-arguments
@@ -38,16 +40,28 @@ class BackupSources:
         named_collections: bool = False,
         workload_entities: bool = False,
         schema_only: bool = False,
+        http_handlers: bool = False,
     ) -> "BackupSources":
         """
         Setting up sources ready for backup.
 
         @todo: `schema_only` is deprecated and will be replaced soon.
         """
-        if any([access, data, schema, udf, named_collections, workload_entities]):
+        if any(
+            [
+                access,
+                data,
+                schema,
+                udf,
+                named_collections,
+                workload_entities,
+                http_handlers,
+            ]
+        ):
             schema = data or schema
         else:
-            access, schema, udf, named_collections, workload_entities = (
+            access, schema, udf, named_collections, workload_entities, http_handlers = (
+                True,
                 True,
                 True,
                 True,
@@ -63,6 +77,7 @@ class BackupSources:
             udf=udf,
             named_collections=named_collections,
             workload_entities=workload_entities,
+            http_handlers=http_handlers,
         )
 
     @classmethod
@@ -97,6 +112,7 @@ class BackupSources:
         named_collections: bool = False,
         workload_entities: bool = False,
         schema_only: bool = False,
+        http_handlers: bool = False,
     ) -> "BackupSources":
         """
         Setting up sources ready for restore.
@@ -104,11 +120,22 @@ class BackupSources:
         @todo: method will be merged with `for_backup` when they'll have similar logic
         @todo: `schema_only` is deprecated and will be replaced soon.
         """
-        if any([access, data, schema, udf, named_collections, workload_entities]):
+        if any(
+            [
+                access,
+                data,
+                schema,
+                udf,
+                named_collections,
+                workload_entities,
+                http_handlers,
+            ]
+        ):
             schema = data or schema
         else:
-            access, schema, udf, named_collections, workload_entities = (
+            access, schema, udf, named_collections, workload_entities, http_handlers = (
                 False,
+                True,
                 True,
                 True,
                 True,
@@ -123,6 +150,7 @@ class BackupSources:
             udf=udf,
             named_collections=named_collections,
             workload_entities=workload_entities,
+            http_handlers=http_handlers,
         )
 
     def schemas_included(self) -> bool:

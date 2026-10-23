@@ -11,7 +11,7 @@ import requests
 from botocore.exceptions import ClientError
 
 from ch_backup import logging
-from ch_backup.exceptions import ConfigurationError, StorageError
+from ch_backup.exceptions import StorageError
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
 from ch_backup.storage.engine.s3.s3_client_factory import (
     S3ClientCachedFactory,
@@ -22,6 +22,8 @@ from ch_backup.storage.engine.s3.s3_retry import (
     RetryExponential,
     S3RetryingError,
     S3RetryMeta,
+    S3RetryPolicy,
+    resolve_s3_retry_config,
 )
 from ch_backup.type_hints.boto3.s3 import S3Client
 
@@ -33,7 +35,8 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
 
     DEFAULT_DOWNLOAD_PART_LEN = 128 * 1024 * 1024
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, retry_policy: S3RetryPolicy | None = None) -> None:
+        max_attempts, max_interval = resolve_s3_retry_config(config, retry_policy)
         self._s3_client_factory = S3ClientCachedFactory(S3ClientFactory(config))
         self._s3_bucket_name = config["credentials"]["bucket"]
 
@@ -47,13 +50,6 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
 
         self._bulk_delete_enabled = config.get("bulk_delete_enabled", True)
 
-        max_attempts = config.get("retry_max_attempts", 30)
-        max_interval = config.get("retry_max_interval", 180)
-        if not isinstance(max_attempts, int) or max_attempts < 1 or max_interval < 0:
-            raise ConfigurationError(
-                "storage.retry_max_attempts must be an integer of at least 1 "
-                "and storage.retry_max_interval must not be negative"
-            )
         self._retry = RetryExponential(
             S3RetryingError, max_attempts=max_attempts, max_interval=max_interval
         )

@@ -323,3 +323,223 @@ Feature: Backup & Clean & Restore
     """
     missing from ClickHouse storage_configuration
     """
+
+  @require_version_24.7
+  Scenario: Restore retries a partially copied S3 part into its original directory
+    # MDB-51258: copy into an existing detached/<part>/ must not create
+    # detached/<part>/<part>/. A missing data object leaves an incomplete
+    # destination on the first attempt; retry must restore the complete part.
+    Given a working clickhouse on clickhouse02
+    And ch-backup configuration on clickhouse02
+    """
+    backup:
+        restore_fail_on_attach_error: true
+    multiprocessing:
+        cloud_storage_restore_workers: 1
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    CREATE TABLE test_db.restore_retry (id UInt64, payload String)
+    ENGINE = MergeTree ORDER BY id
+    SETTINGS storage_policy = 'multiple_s3', min_bytes_for_wide_part = 0;
+    INSERT INTO test_db.restore_retry SELECT number, toString(number) FROM numbers(100);
+    """
+    When we execute query on clickhouse01
+    """
+    SELECT name, disk_name, part_type FROM system.parts
+    WHERE database = 'test_db' AND table = 'restore_retry' AND active;
+    """
+    Then we get response
+    """
+    all_1_1_0	s3	Wide
+    """
+    When we save all user's data in context on clickhouse01
+    And we save data part checksums in context on clickhouse01
+    And we create clickhouse01 clickhouse backup
+    """
+    name: restore_retry
+    """
+    # id.bin is required to attach a Wide part; columns.txt can be regenerated.
+    And we save and delete the S3 objects of a data part file on clickhouse01
+    """
+    database: test_db
+    table: restore_retry
+    part: all_1_1_0
+    file: id.bin
+    bucket: cloud-storage-01
+    path: data
+    """
+    And we try to execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore restore_retry \
+        --cloud-storage-source-bucket cloud-storage-01 \
+        --cloud-storage-source-path data
+    """
+    Then command exits with code 1
+    And we get response contains
+    """
+    clickhouse-disks call failed
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM test_db.restore_retry;
+    """
+    Then we get response
+    """
+    0
+    """
+    # Leave the destination and restore state intact. Only repair the source.
+    When we restore saved S3 objects
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    cloud_storage_source_bucket: cloud-storage-01
+    cloud_storage_source_path: data
+    """
+    Then the user's data equal to saved one on clickhouse02
+    And data part checksums equal to saved ones on clickhouse02
+
+  @require_version_24.7
+  Scenario: Restore retry removes copied S3 objects after ATTACH fails
+    Given a working clickhouse on clickhouse02
+    And ch-backup configuration on clickhouse02
+    """
+    backup:
+        restore_fail_on_attach_error: true
+    multiprocessing:
+        cloud_storage_restore_workers: 1
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    CREATE TABLE test_db.restore_attach_retry (id UInt64, payload String)
+    ENGINE = MergeTree ORDER BY id
+    SETTINGS storage_policy = 'multiple_s3', min_bytes_for_wide_part = 0;
+    INSERT INTO test_db.restore_attach_retry SELECT number, toString(number) FROM numbers(100);
+    """
+    When we save all user's data in context on clickhouse01
+    And we save data part checksums in context on clickhouse01
+    And we create clickhouse01 clickhouse backup
+    """
+    name: restore_attach_retry
+    """
+    Then s3 bucket cloud-storage-02 contains 0 objects
+    When we try to execute ch-backup on clickhouse02 with ATTACH failing for test_db.restore_attach_retry
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf restore restore_attach_retry
+        --cloud-storage-source-bucket cloud-storage-01
+        --cloud-storage-source-path data
+    """
+    Then command exits with code 1
+    And we get response contains
+    """
+    Some parts are failed to attach
+    """
+    When we execute command on clickhouse02
+    """
+    grep -F 'injected ATTACH failure after copying' /var/log/ch-backup/ch-backup.log
+    """
+    Then we get response contains
+    """
+    injected ATTACH failure after copying
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM test_db.restore_attach_retry;
+    """
+    Then we get response
+    """
+    0
+    """
+    # These objects belong to the complete copy left by the failed ATTACH.
+    When we save S3 object keys of a detached data part on clickhouse02
+    """
+    database: test_db
+    table: restore_attach_retry
+    part: all_1_1_0
+    bucket: cloud-storage-02
+    path: data
+    """
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    cloud_storage_source_bucket: cloud-storage-01
+    cloud_storage_source_path: data
+    """
+    Then saved S3 object keys are absent
+    And the user's data equal to saved one on clickhouse02
+    And data part checksums equal to saved ones on clickhouse02
+    And the user's data equal to saved one on clickhouse01
+    When we execute command on clickhouse02
+    """
+    find /var/lib/clickhouse/disks -name '*.ch-backup-copy-mode' | wc -l
+    """
+    Then we get response
+    """
+    0
+    """
+
+  @require_version_24.7
+  Scenario: Switching an interrupted inplace restore to copying preserves source objects
+    Given a working clickhouse on clickhouse02
+    And we use the same object storage bucket for clickhouse02 as on clickhouse01
+    And ch-backup configuration on clickhouse02
+    """
+    backup:
+        restore_fail_on_attach_error: true
+    restore:
+        use_inplace_cloud_restore: true
+    multiprocessing:
+        cloud_storage_restore_workers: 1
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    CREATE TABLE test_db.restore_switch (id UInt64, payload String)
+    ENGINE = MergeTree ORDER BY id
+    SETTINGS storage_policy = 'multiple_s3', min_bytes_for_wide_part = 0;
+    INSERT INTO test_db.restore_switch SELECT number, toString(number) FROM numbers(100);
+    """
+    When we save all user's data in context on clickhouse01
+    And we save data part checksums in context on clickhouse01
+    # Removing the original after FREEZE leaves valid frozen metadata with
+    # ref_count=0. No synthetic edits to metadata or S3 objects are needed.
+    And we execute ch-backup on clickhouse01 with frozen table test_db.restore_switch dropped before metadata upload
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf backup --name restore_switch
+    """
+    And we save the S3 objects of a frozen data part on clickhouse01
+    """
+    disk: s3
+    backup: restore_switch
+    part: all_1_1_0
+    bucket: cloud-storage-01
+    path: data
+    """
+    And we try to execute ch-backup on clickhouse02 with inplace copy interrupted after "id.bin"
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf restore restore_switch
+        --cloud-storage-source-bucket cloud-storage-01
+        --cloud-storage-source-path data
+    """
+    Then command exits with code 1
+    And we get response contains
+    """
+    injected inplace copy interruption; ref_count=0
+    """
+    And saved S3 objects are unchanged
+    Given ch-backup configuration on clickhouse02
+    """
+    restore:
+        use_inplace_cloud_restore: false
+    """
+    # Preserve the incomplete directory and restore context across the switch.
+    When we try to execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore restore_switch \
+        --cloud-storage-source-bucket cloud-storage-01 \
+        --cloud-storage-source-path data
+    """
+    Then saved S3 objects are unchanged
+    And command exits with code 0
+    And the user's data equal to saved one on clickhouse02
+    And data part checksums equal to saved ones on clickhouse02
