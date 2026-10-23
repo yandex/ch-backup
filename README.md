@@ -184,8 +184,17 @@ How it works:
   disabled with `--no-server-side-copy`.
 - The copy becomes valid (gets the state `created`) only after all its data is copied. If copying is
   interrupted, the copy remains in the state `creating` or `failed`, and the next run of the command
-  retries copying all objects. Existing objects are overwritten even when their sizes match, since
-  size alone does not establish that their contents are correct. Completed backups are skipped.
+  resumes it. Confirmed copies are recorded in the copy context, a journal kept in the target storage
+  under `<backup>/copy_context/`. It is saved when 10000 confirmations accumulate or the first
+  confirmation arrives 60 seconds after the previous save, and when copying fails or is interrupted by
+  a signal. The next run skips an object only if the context records it with the
+  same source, target and size and the target storage still holds it with that size: size alone does not
+  establish that the contents are correct, and a failed or partial delete may have removed recorded
+  objects. Other objects are overwritten. If the target listing or a context file cannot be read, the
+  affected objects are copied again. `objects_skipped` in the report counts skipped objects. Before
+  copying, resuming holds the listing of the target backup in memory, comparable to the object plan.
+  The context is not copied with the backup and is deleted together with it.
+  Completed backups are skipped.
   When a linked part has already been materialized in a successfully copied backup, subsequent
   backups reuse that copy, including mutation-renamed parts and full cloud-storage backups.
 - Copy acquires the configured source and target locks through completion, including retries and

@@ -14,6 +14,7 @@ from typing import Iterator, Sequence
 from urllib.parse import quote, urlparse
 
 from ch_backup import logging
+from ch_backup.backup.copy_context import COPY_CONTEXT_DIR, CopyContext
 from ch_backup.backup.copy_report import BackupCopyResult, CopyReport
 from ch_backup.backup.layout import (
     BACKUP_LIGHT_META_FNAME,
@@ -78,7 +79,8 @@ class BackupCopier:
     Backup data is copied as is (without decryption), so both storages must use the same
     encryption settings. Backup metadata is uploaded to the target storage before data with
     the state "creating" and after with the state "created", so the copy becomes valid only
-    when all its data is in place. Interrupted copying is resumed by the next run.
+    when all its data is in place. Interrupted copying is resumed by the next run, which skips
+    objects confirmed by the copy context and still present in the target storage.
     """
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -108,6 +110,7 @@ class BackupCopier:
         self._materialized_parts: dict[tuple, tuple[str, str]] = {}
         # Availability of server-side copy for bucket pairs with particular credentials.
         self._server_side_copy: dict[tuple, bool] = {}
+        self._copy_context: CopyContext | None = None
         self._keep_going = False
         self._report = CopyReport()
 
@@ -328,12 +331,20 @@ class BackupCopier:
                 )
                 return False
             logging.info(
-                'Restarting copying of all objects of backup {} (state in target storage: "{}")',
+                'Resuming copying of backup {} (state in target storage: "{}")',
                 backup_name,
                 target_backup.state.value,
             )
         else:
             logging.info("Copying backup {}", backup_name)
+
+        self._copy_context = CopyContext(
+            self._engine(self._target_storage),
+            self._target_layout.get_backup_path(backup.name),
+            backup,
+        )
+        if target_backup:
+            self._copy_context.load()
 
         target_meta = self._make_target_metadata(backup)
         plan = _CopyPlan()
@@ -401,8 +412,8 @@ class BackupCopier:
         finally:
             self._target_backups.pop(backup.name, None)
 
-    def _validate_destinations(self, backup: BackupMetadata, plan: _CopyPlan) -> None:
-        """Check the entire plan before publishing metadata or copying any objects."""
+    def _target_prefixes(self, backup: BackupMetadata) -> list[tuple[dict, str]]:
+        """Return storages and paths that hold all objects of the copied backup."""
         prefixes = [
             (self._target_storage, self._target_layout.get_backup_path(backup.name)),
             (
@@ -413,6 +424,11 @@ class BackupCopier:
         if backup.cloud_storage.requires_source_bucket:
             storage, path = self._get_target_cloud_storage()
             prefixes.append((storage, os.path.join(path, backup.name)))
+        return prefixes
+
+    def _validate_destinations(self, backup: BackupMetadata, plan: _CopyPlan) -> None:
+        """Check the entire plan before publishing metadata or copying any objects."""
+        prefixes = self._target_prefixes(backup)
         for _, prefix in prefixes:
             _validate_relative_key(_key(prefix).rstrip("/"))
         destinations = chain(
@@ -454,7 +470,7 @@ class BackupCopier:
         """
         Plan copying of all files from the backup directory except metadata files.
         """
-        exclude = {BACKUP_META_FNAME, BACKUP_LIGHT_META_FNAME}
+        exclude = {BACKUP_META_FNAME, BACKUP_LIGHT_META_FNAME, COPY_CONTEXT_DIR}
         if backup.cloud_storage.data_copied:
             # Plan these from disk metadata, including objects held by older backups.
             exclude.update({"disks", "cloud_storage"})
@@ -1114,20 +1130,54 @@ class BackupCopier:
     def _copy_objects(
         self, backup: BackupMetadata, plan: _CopyPlan, result: BackupCopyResult
     ) -> None:
-        # A matching size does not prove that an existing object belongs to this copy.
-        # Recopy every object when retrying an unfinished backup.
-        entries = self._resolve_copy_mode(plan.entries, result)
+        """
+        Copy objects of the plan, skipping ones copied by previous runs.
+
+        A matching size alone does not prove that an existing object belongs to this copy,
+        and a record of the copy context alone does not prove that the object was not
+        deleted since then, e.g. by a failed or partial delete. Only objects with both
+        are skipped.
+        """
+        context = self._copy_context
+        assert context is not None
+        pending = plan.entries
+        if context.has_records():
+            listing = self._list_target_objects(backup)
+            pending = [
+                entry
+                for entry in plan.entries
+                if listing.get((storage_id(entry.dst_storage), _key(entry.dst_path)))
+                != entry.size
+                or not context.is_recorded(entry)
+            ]
+            del listing
+            context.forget()
+            result.objects_skipped = len(plan.entries) - len(pending)
+            logging.info(
+                "Resuming copying of backup {}: {} of {} objects are confirmed and skipped",
+                backup.name,
+                result.objects_skipped,
+                len(plan.entries),
+            )
+        entries = self._resolve_copy_mode(pending, result)
 
         logging.info(
             "Copying {} objects ({} bytes)",
-            len(plan.entries),
-            sum(entry.size for entry in plan.entries),
+            len(pending),
+            sum(entry.size for entry in pending),
         )
+
+        def completed(entry: CopyEntry) -> None:
+            """Count the copied object and record it in the copy context."""
+            result.completed(entry.size)
+            context.record(entry)
+            context.flush()
+
         try:
             self._target_layout.copy_objects(
                 entries,
                 keep_going=self._keep_going,
-                callback=lambda entry: result.completed(entry.size),
+                callback=completed,
                 on_error=lambda entry, error: result.add_error(
                     error,
                     "copy",
@@ -1181,8 +1231,13 @@ class BackupCopier:
                     raise
                 if is_broken_executor(drain_error):
                     raise e from drain_error
+            finally:
+                context.flush(force=True)
             raise
-        self._target_layout.wait(keep_going=self._keep_going)
+        try:
+            self._target_layout.wait(keep_going=self._keep_going)
+        finally:
+            context.flush(force=True)
         if result.errors:
             raise ClickhouseBackupError(
                 f"Failed to copy backup {backup.name}: {len(result.errors)} error(s), "
@@ -1230,6 +1285,8 @@ class BackupCopier:
                 if available:
                     if copy_result is not None:
                         copy_result.completed(entry.size)
+                    if self._copy_context is not None:
+                        self._copy_context.record(entry)
                     logging.info(
                         "Objects are copied on the server side from {} to {}",
                         *pair,
@@ -1241,6 +1298,33 @@ class BackupCopier:
                 )
 
             yield entry._replace(server_side=self._server_side_copy[cache_key])
+
+    def _list_target_objects(self, backup: BackupMetadata) -> dict[tuple, int]:
+        """
+        Return sizes of objects of the copied backup in target storages.
+
+        On failure nothing is returned, so all objects are copied again.
+        """
+        listing: dict[tuple, int] = {}
+        listed = set()
+        try:
+            for storage, prefix in self._target_prefixes(backup):
+                key = (storage_id(storage), _key(prefix).rstrip("/"))
+                if key in listed:
+                    continue
+                listed.add(key)
+                for path, size in self._list(storage, key[1]).items():
+                    listing[(key[0], path)] = size
+        except Exception as e:
+            if is_broken_executor(e):
+                raise
+            logging.warning(
+                "Failed to list copied objects of backup {}, copying all objects: {}",
+                backup.name,
+                e,
+            )
+            return {}
+        return listing
 
     def _list(self, storage: dict, prefix: str) -> dict[str, int]:
         return self._engine(storage).list_dir_with_sizes(prefix)
