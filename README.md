@@ -360,12 +360,21 @@ Behavior and limitations:
   prefix from stored source metadata or disk configuration. Copy fails before writing if that prefix
   is unknown or a key is outside it. Without a path override, full keys are read as stored.
   Restore of the copy uses the copied objects by default; they must be accessible with credentials of the
-  object storage disk of the host where the backup is restored. Each copied backup stores these objects
-  separately. Deleting a copy retains external objects by default. Add `--delete-cloud-storage-data` to
+  object storage disk of the host where the backup is restored.
+  Copies reuse unchanged whole parts from completed backups in the same target cloud bucket and path.
+  Copy compares archived object references because ClickHouse can change metadata checksums on each freeze.
+  Each copied part stores a fingerprint derived from the original object namespace and references.
+  Later copies preserve that identity when objects move to another destination.
+  Older destination copies without this fingerprint remain readable but cannot supply deduplication owners.
+  Backup metadata records each part's owning backup. Restore reads each part from its owner's location.
+  Copying a backup without its owner at the destination materializes the linked part in the new copy.
+  Deleting a copy retains external objects by default. Add `--delete-cloud-storage-data` to
   `delete` or `purge` to remove copied objects that surviving backups do not reference. Original backup data is preserved.
   Cleanup selects objects from saved disk metadata and uses backup-storage credentials by default. Configure
   `copy.cloud_storage.target` for separate credentials or a different endpoint.
   Metadata must be trusted and readable. Encrypted disk metadata requires its original key.
+  Partial cleanup removes unreferenced parts and their archived disk metadata. Parts referenced by
+  surviving backups retain both their objects and disk metadata. Objects shared with retained parts also remain.
   Batch cleanup validates all selected backups before deletion. Failed cleanup can be retried.
   In-memory archives have a 1 GiB limit, adjustable in bytes with `filesystem.max_in_memory_tarball_size`.
   Restore preserves the HTTP/HTTPS scheme of the stored endpoint. Its `--cloud-storage-source-endpoint`

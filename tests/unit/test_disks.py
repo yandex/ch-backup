@@ -24,7 +24,7 @@ import pytest
 import xmltodict
 
 from ch_backup.backup.layout import BackupLayout
-from ch_backup.backup.metadata import PartMetadata, TableMetadata
+from ch_backup.backup.metadata import BackupMetadata, PartMetadata, TableMetadata
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.config import ClickhouseConfig
@@ -312,6 +312,7 @@ def _make_linked_backup_meta(backup_name: str) -> unittest.mock.MagicMock:
     backup_meta.name = backup_name
     backup_meta.get_sanitized_name.return_value = backup_name
     backup_meta.cloud_storage.data_copied = True
+    backup_meta.cloud_storage.source = None
     return backup_meta
 
 
@@ -333,6 +334,11 @@ def _make_temporary_disks(
     context.backup_meta.cloud_storage.disks = cloud_storage_disks or []  # type: ignore[misc]
     context.backup_meta.cloud_storage.enabled = bool(cloud_storage_disks)  # type: ignore[misc]
     context.backup_meta.cloud_storage.data_copied = data_copied  # type: ignore[misc]
+    context.backup_meta.cloud_storage.source = None
+    context.backup_meta.get_parts.return_value = list(parts)  # type: ignore[attr-defined]
+    context.backup_meta.get_owned_cloud_storage_disks.side_effect = (  # type: ignore[attr-defined]
+        lambda: BackupMetadata.get_owned_cloud_storage_disks(context.backup_meta)
+    )
     context.backup_meta.cloud_storage.requires_source_bucket = (  # type: ignore[misc]
         bool(cloud_storage_disks) and not data_copied
     )
@@ -1428,3 +1434,81 @@ def test_restore_fails_when_the_backup_holding_data_is_gone():
             assert False, "Expected ClickHouseDisksException was not raised"
         except ClickHouseDisksException as exc:
             assert LINKED_BACKUP_NAME in str(exc)
+
+
+def test_restore_linked_external_part_uses_its_owners_location():
+    disk_manager = _make_temporary_disks(
+        BACKUP_DISK_CLICKHOUSE_CONFIG,
+        cloud_storage_disks=["object_storage"],
+        source_bucket="current-bucket",
+        parts=[
+            _make_linked_part(),
+            PartMetadata(
+                "db1",
+                "table1",
+                "all_2_2_0",
+                "other",
+                1,
+                [],
+                False,
+                disk_name="object_storage",
+            ),
+        ],
+    )
+    owner = _make_linked_backup_meta(LINKED_BACKUP_NAME)
+    owner.cloud_storage.data_copied = False
+    owner.cloud_storage.source = {
+        "endpoint_url": "https://owner.example.test:9000",
+        "bucket": "owner-bucket",
+        "path": "copies/owner",
+    }
+    # pylint: disable=protected-access
+    disk_manager._source_path = "copies/current"
+    disk_manager._backup_layout.get_backup.side_effect = lambda *_args, **_kwargs: owner  # type: ignore[attr-defined]
+
+    with _capture_config_files() as (written, _removed):
+        with disk_manager:
+            pass
+
+    disks = xmltodict.parse(written[CH_DISK_CONFIG_PATH], disable_entities=False)[
+        "clickhouse"
+    ]["storage_configuration"]["disks"]
+    assert (
+        disks["object_storage_source"]["endpoint"]
+        == "https://localhost/current-bucket/copies/current/"
+    )
+    assert (
+        disks[f"object_storage_source_{LINKED_BACKUP_NAME}"]["endpoint"]
+        == "https://owner.example.test:9000/owner-bucket/copies/owner/"
+    )
+
+
+def test_restore_all_linked_external_parts_needs_no_current_source_bucket():
+    disk_manager = _make_temporary_disks(
+        BACKUP_DISK_CLICKHOUSE_CONFIG,
+        cloud_storage_disks=["object_storage"],
+        source_bucket=None,
+        parts=[_make_linked_part()],
+    )
+    owner = _make_linked_backup_meta(LINKED_BACKUP_NAME)
+    owner.cloud_storage.data_copied = False
+    owner.cloud_storage.source = {
+        "endpoint_url": "https://owner.example.test",
+        "bucket": "owner",
+        "path": "copies/owner",
+    }
+    # pylint: disable=protected-access
+    disk_manager._backup_layout.get_backup.side_effect = lambda *_args, **_kwargs: owner  # type: ignore[attr-defined]
+
+    with _capture_config_files() as (written, _removed):
+        with disk_manager:
+            pass
+
+    disks = xmltodict.parse(written[CH_DISK_CONFIG_PATH], disable_entities=False)[
+        "clickhouse"
+    ]["storage_configuration"]["disks"]
+    assert "object_storage_source" not in disks
+    assert (
+        disks[f"object_storage_source_{LINKED_BACKUP_NAME}"]["endpoint"]
+        == "https://owner.example.test/owner/copies/owner/"
+    )

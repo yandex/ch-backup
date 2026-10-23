@@ -387,7 +387,10 @@ class ClickhouseBackup:
             and sources.data
             and not skip_cloud_storage
         ):
-            if self._context.backup_meta.cloud_storage.requires_source_bucket:
+            if (
+                self._context.backup_meta.cloud_storage.requires_source_bucket
+                and self._context.backup_meta.get_owned_cloud_storage_disks()
+            ):
                 raise ClickhouseBackupError(
                     "Cloud storage source bucket must be set if backup has data on S3 disks"
                 )
@@ -901,6 +904,10 @@ class ClickhouseBackup:
                 )
                 return backup.name, None
 
+            self._delete_unreferenced_cloud_storage_parts(
+                backup, dedup_references, settings
+            )
+
             logging.info("Removing non-shared backup data parts")
             for db_name in backup.get_databases():
                 db_dedup_references = dedup_references[db_name]
@@ -969,6 +976,32 @@ class ClickhouseBackup:
             f"SYSTEM UNFREEZE WITH NAME '{backup_name}' on the hosts that created it.",
         )
 
+    def _delete_unreferenced_cloud_storage_parts(
+        self,
+        backup: BackupMetadata,
+        references: DedupReferences,
+        settings: DeleteSettings,
+    ) -> None:
+        if not backup.cloud_storage.enabled or not self._cloud_storage_data_is_shared(
+            backup, references
+        ):
+            return
+        if backup.cloud_storage.data_copied:
+            storage = self._config["storage"]
+        elif location := self._get_external_cloud_storage(backup, settings):
+            storage, _prefix = location
+        else:
+            return
+        retained = {
+            (database, table, name)
+            for database, tables in references.items()
+            for table, names in tables.items()
+            for name in names
+        }
+        self._context.backup_layout.delete_cloud_storage_parts(
+            backup, retained, storage
+        )
+
     @staticmethod
     def _cloud_storage_data_is_shared(
         backup: BackupMetadata, dedup_references: DedupReferences
@@ -976,8 +1009,8 @@ class ClickhouseBackup:
         """
         Return True if parts of cloud storage disks of a backup are reused.
 
-        Keys of the objects are known only from the disk metadata inside the
-        backup, so its data is kept whole until the last reference is gone.
+        Referenced cloud parts retain their disk metadata and copied objects.
+        Unreferenced parts can be removed through their archived disk metadata.
         """
         return any(
             part.name in dedup_references[table.database][table.name]
@@ -1090,7 +1123,11 @@ class ClickhouseBackup:
         excluded_parts: set[str] = None,
     ) -> None:
         parts = table.get_parts(excluded_parts=excluded_parts)
-        own_parts = [part for part in parts if not part.link]
+        own_parts = [
+            part
+            for part in parts
+            if not part.link and part.disk_name not in backup.cloud_storage.disks
+        ]
         self._context.backup_layout.delete_data_parts(backup, own_parts)
         backup.remove_parts(table, parts)
 
