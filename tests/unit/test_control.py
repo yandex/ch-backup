@@ -537,10 +537,13 @@ def test_scan_detached_parts_reads_reason_from_directory_name(
                 disk_names=["object_storage_cache", "default"],
                 reasons=[""],
             )
-        )
+    )
 
     assert len(parts) == 1
-    warning.assert_called_once()
+    warning.assert_called_once_with(
+        'Detached-parts disk "{}" is not reported by system.disks; skipping it',
+        "object_storage_cache",
+    )
     assert parts[0].name == "all_1_1_0"
     assert parts[0].reason == ""
     assert parts[0].disk_name == "default"
