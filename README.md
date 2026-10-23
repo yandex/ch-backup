@@ -369,6 +369,8 @@ Behavior and limitations:
   `copy.cloud_storage.target.secret_access_key` when the cloud bucket needs separate credentials.
   For another endpoint, explicitly configure the matching `copy.cloud_storage.target.endpoint_url`.
   A configured `copy.cloud_storage.target.bucket` must also match the recorded bucket.
+  Cleanup trusts the recorded bucket and prefix. Only trusted users and processes should have write
+  access to backup metadata. Altered metadata can redirect deletion within the credentials' permissions.
   Cleanup retains cloud data referenced by surviving backups. An S3 failure keeps backup metadata in
   the `failed` state so the operation can be retried. Deletion with this option requires readable
   full or light metadata. When cloud objects share the backup directory, cleanup identifies them from
