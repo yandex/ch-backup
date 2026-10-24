@@ -486,16 +486,54 @@ Feature: Backup of tables with different engines and configurations
     And we got same clickhouse data at clickhouse01 clickhouse02
 
   @storage_proxy
-  Scenario: Create backup containing StorageProxy table
+  Scenario Outline: Backup and restore unreachable source with <loading> tables
     Given we have executed queries on clickhouse01
     """
-    CREATE DATABASE test_db;
-
-    CREATE TABLE test_db.table_01 (date Date, n Int32) AS url('http://127.0.0.1:12345/', CSV)
+    CREATE DATABASE test_db ENGINE = Atomic <settings>;
+    CREATE TABLE test_db.table_01 (date Date, n Int32) AS url('http://127.0.0.1:12345/', CSV);
+    CREATE TABLE test_db.table_02 (n Int32) ENGINE = MergeTree ORDER BY n;
+    INSERT INTO test_db.table_02 VALUES (1), (2), (3);
+    DETACH DATABASE test_db;
+    ATTACH DATABASE test_db;
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
       | num | state   | data_count | link_count |
-      | 0   | created | 0          | 0          |
+      | 0   | created | 1          | 0          |
     When we restore clickhouse backup #0 to clickhouse02
     Then clickhouse02 has same schema as clickhouse01
+
+    When we execute query on clickhouse02
+    """
+    SELECT n FROM test_db.table_02 ORDER BY n
+    """
+    Then we get response
+    """
+    1
+    2
+    3
+    """
+
+    Examples:
+      | loading | settings |
+      | eager   |          |
+
+    @require_version_26.2
+    Examples:
+      | loading | settings                      |
+      | lazy    | SETTINGS lazy_load_tables=1   |
+
+  @require_version_26.2
+  Scenario: Short discovery retains a table loaded between catalog scans
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db ENGINE = Atomic SETTINGS lazy_load_tables=1;
+    CREATE TABLE test_db.table_01 (n Int32) ENGINE = MergeTree ORDER BY n;
+    DETACH DATABASE test_db;
+    ATTACH DATABASE test_db;
+    """
+    When we discover short tables on clickhouse01 while test_db.table_01 loads
+    Then we get response
+    """
+    table_01: MergeTree
+    """
