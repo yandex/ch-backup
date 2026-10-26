@@ -143,6 +143,99 @@ Feature: Copy backups to another storage
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
+  @require_version_22.8
+  Scenario Outline: Copy target window survives source renewal and owner removal
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db1;
+    CREATE TABLE test_db1.test_table1 (n Int32) ENGINE = MergeTree ORDER BY n;
+    INSERT INTO test_db1.test_table1 SELECT number FROM numbers(100);
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: a_owner
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    storage:
+        credentials:
+            bucket: ch-backup-copy
+    backup:
+        retain_count: 1
+    """
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy a_owner <copy_mode> \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-config-parameter copy.deduplication_age_limit.days 90
+    """
+    And metadata of clickhouse01 backup "a_owner" was adjusted with
+    """
+    meta:
+        start_time: {{ backup.start_time | decrease_on('8 days') }}
+        end_time: {{ backup.end_time | decrease_on('8 days') }}
+    """
+    And metadata of clickhouse02 backup "a_owner" was adjusted with
+    """
+    meta:
+        start_time: {{ backup.start_time | decrease_on('8 days') }}
+        end_time: {{ backup.end_time | decrease_on('8 days') }}
+    """
+    And we create clickhouse01 clickhouse backup
+    """
+    name: b_renewed
+    """
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 1          | 0          |
+      | 1   | created | 1          | 0          |
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf --config-parameter encryption.key null copy b_renewed <copy_mode> \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-config-parameter copy.deduplication_age_limit.days 90
+    """
+    Then we got the following backups on clickhouse02
+      | num | state   | data_count | link_count |
+      | 0   | created | 0          | 1          |
+      | 1   | created | 1          | 0          |
+    And metadata of clickhouse02 backup "b_renewed" contains
+    """
+    real_bytes: 0
+    """
+    And s3 bucket ch-backup-copy contains no objects with prefix "ch_backup/b_renewed/data/"
+    And s3 bucket ch-backup-copy contains objects with prefix "ch_backup/a_owner/data/"
+    When we restore clickhouse backup "b_renewed" to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+    When we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf <remove_owner>
+    """
+    Then we got the following backups on clickhouse02
+      | num | state             | data_count | link_count |
+      | 0   | created           | 0          | 1          |
+      | 1   | partially_deleted | 1          | 0          |
+    # Start a new restore rather than resume the previously completed one.
+    Given ch-backup configuration on clickhouse02
+    """
+    backup:
+        restore_context_path: /tmp/copy-restore-after-delete.json
+    """
+    When we drop all databases at clickhouse02
+    And we restore clickhouse backup "b_renewed" to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+    When we delete clickhouse02 clickhouse backup "b_renewed"
+    And we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf --config-parameter backup.retain_count 0 purge
+    """
+    Then s3 bucket ch-backup-copy contains 0 objects
+
+    Examples:
+      | copy_mode             | remove_owner   |
+      | --server-side-copy    | delete a_owner |
+      | --no-server-side-copy | purge          |
+
   Scenario: Copy keeps links to parts of a copy that fails to be published
     Given we have executed queries on clickhouse01
     """
