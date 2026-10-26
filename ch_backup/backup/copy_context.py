@@ -154,7 +154,7 @@ class CopyContext:
         """Replace the list of objects of the scope that failed to copy, removing it if there are none."""
         path = os.path.join(self._path, FAILED_OBJECTS_DIR, f"{scope.value}.jsonl.gz")
         try:
-            if len(failures):
+            if failures:
                 self._engine.upload_file(failures.path(), path)
             else:
                 self._engine.delete_file(path)
@@ -163,20 +163,8 @@ class CopyContext:
 
     def save_manifest(self, scope: CopyScope, entries: list[CopyEntry]) -> None:
         """Save locations and sizes of all objects of the scope, without credentials."""
-        lines = [
-            json.dumps(
-                [
-                    list(storage_id(entry.src_storage)),
-                    entry.src_path,
-                    list(storage_id(entry.dst_storage)),
-                    entry.dst_path,
-                    entry.size,
-                ]
-            )
-            for entry in entries
-        ]
         self._engine.upload_data(
-            gzip.compress(("\n".join(lines) + "\n").encode()),
+            gzip.compress(b"".join(_record(entry) + b"\n" for entry in entries)),
             os.path.join(self._path, MANIFEST_DIR, f"{scope.value}.jsonl.gz"),
         )
 
@@ -186,12 +174,14 @@ class CopyContext:
             os.path.join(self._path, MANIFEST_DIR, f"{scope.value}.jsonl.gz")
         )
         entries = []
+        storages: dict[tuple, dict] = {}
         for line in gzip.decompress(data).splitlines():
             if line:
                 src, src_path, dst, dst_path, size = json.loads(line)
-                entries.append(
-                    CopyEntry(_storage(src), _storage(dst), src_path, dst_path, size)
+                src, dst = (
+                    storages.setdefault(tuple(i), _storage(i)) for i in (src, dst)
                 )
+                entries.append(CopyEntry(src, dst, src_path, dst_path, size))
         return entries
 
     def flush(self, force: bool = False) -> None:

@@ -21,6 +21,7 @@ from ch_backup.backup.copy_context import (
     source_dir,
 )
 from ch_backup.backup.copy_report import BackupCopyResult, CopyReport
+from ch_backup.backup.deduplication import _part_data_exists
 from ch_backup.backup.layout import (
     BACKUP_LIGHT_META_FNAME,
     BACKUP_META_FNAME,
@@ -125,7 +126,9 @@ class BackupCopier:
         # Metadata of backups in target storage used to resolve deduplication links.
         self._target_backups: dict[str, BackupMetadata | None] = {}
         # Files of tables of backups in target storage used to resolve deduplication links.
-        self._target_table_files: dict[tuple, dict[str, dict[str, int]]] = {}
+        self._target_table_files: dict[
+            tuple[str, str, str], dict[str, dict[str, int]]
+        ] = {}
         # Files of backups in source storage used to resolve deduplication links.
         self._source_backup_files: dict[str, dict[str, int]] = {}
         # Original part identity -> successfully materialized target owner and name.
@@ -158,6 +161,7 @@ class BackupCopier:
         self._report.error = None
         self._report.backups.clear()
         self._materialized_parts.clear()
+        self._target_table_files.clear()
         try:
             unknown_scopes = set(scopes or ()) - {scope.value for scope in CopyScope}
             if unknown_scopes:
@@ -365,7 +369,6 @@ class BackupCopier:
         """
         self._source_backup_files.clear()
         self._target_backups.clear()
-        self._target_table_files.clear()
         target_backup = self._target_layout.get_backup(backup_name, use_light_meta=True)
         backup = self._get_source_backup(backup_name, target_backup)
         _check_backup_state(backup)
@@ -452,6 +455,7 @@ class BackupCopier:
             )
 
         result.objects_total = sum(plan[scope].count() for scope in self._scopes)
+        self._source_backup_files.clear()
         self._transfer_backup(backup, target_meta, plan, previous, result)
         return True
 
@@ -471,12 +475,8 @@ class BackupCopier:
             return backup
         if target_backup and target_backup.state == BackupState.CREATED:
             return target_backup
-        backup = (
-            self._target_layout.get_backup(
-                os.path.join(backup_name, source_dir(target_backup))
-            )
-            if target_backup
-            else None
+        backup = target_backup and self._target_layout.get_backup(
+            os.path.join(backup_name, source_dir(target_backup))
         )
         if not backup:
             raise _files_scope_required(backup_name)
@@ -690,14 +690,6 @@ class BackupCopier:
             prefixes.append((storage, os.path.join(path, backup.name)))
         return prefixes
 
-    def _disks_dir(self, backup: BackupMetadata) -> str:
-        """Return the target key prefix of disk metadata tarballs of the backup."""
-        return _key(
-            os.path.join(
-                self._target_layout.get_cloud_storage_path(backup.name), "disks", ""
-            )
-        )
-
     def _validate_destinations(self, backup: BackupMetadata, plan: _CopyPlan) -> None:
         """Check the entire plan before publishing metadata or copying any objects."""
         prefixes = self._target_prefixes(backup, plan)
@@ -799,7 +791,7 @@ class BackupCopier:
         relative_path: str,
         plan: _ScopePlan,
         result: BackupCopyResult,
-        exclude: set[str] | None = None,
+        exclude: set[str],
     ) -> None:
         src_dir = _key(self._layout.get_backup_path(relative_path)).rstrip("/")
         dst_dir = self._target_layout.get_backup_path(relative_path)
@@ -808,7 +800,7 @@ class BackupCopier:
             # S3 consoles may create a zero-byte object for the directory itself.
             if not file_path and size == 0:
                 continue
-            if exclude and file_path.split("/", 1)[0] in exclude:
+            if file_path.split("/", 1)[0] in exclude:
                 continue
             path = f"{src_dir}/{file_path}"
             with self._planning_step(result, path):
@@ -1019,20 +1011,17 @@ class BackupCopier:
             target_part
             and not target_part.link
             and target_part.checksum == part.checksum
-            and (complete or self._is_part_stored_in_target(target_backup, target_part))
-        )
-
-    def _is_part_stored_in_target(
-        self, backup: BackupMetadata, part: PartMetadata
-    ) -> bool:
-        """Check that files of the part are stored in the backup in target storage."""
-        key = (backup.name, part.database, part.table)
-        if key not in self._target_table_files:
-            self._target_table_files[key] = self._target_layout.get_table_data_files(
-                *key
+            and (
+                complete
+                or _part_data_exists(
+                    self._target_layout,
+                    target_backup.name,
+                    target_part,
+                    False,
+                    {},
+                    self._target_table_files,
+                )
             )
-        return self._target_layout.check_data_part_files(
-            part, self._target_table_files[key].get(part.name, {})
         )
 
     def _get_source_backup_files(self, backup_name: str) -> dict[str, int]:
@@ -1543,7 +1532,7 @@ class BackupCopier:
                 if not self._keep_going or is_broken_executor(e):
                     raise
             finally:
-                if plan.count() and (len(failures) or copied and plan.planned):
+                if plan.count() and (failures or copied and plan.planned):
                     context.save_failures(scope, failures)
         return plan.planned and len(result.errors) == errors
 
@@ -1677,7 +1666,12 @@ class BackupCopier:
             return
         try:
             sizes = self._list(
-                self._target_storage, self._disks_dir(backup).rstrip("/")
+                self._target_storage,
+                _key(
+                    os.path.join(
+                        self._target_layout.get_cloud_storage_path(backup.name), "disks"
+                    )
+                ),
             )
         except Exception as e:
             if is_broken_executor(e):
