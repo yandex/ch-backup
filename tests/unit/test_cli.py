@@ -127,17 +127,17 @@ def test_copy_command_passes_resume(args: list[str], resume: bool | None) -> Non
 
 
 @pytest.mark.parametrize(
-    "args,stages",
+    "args,scopes",
     [
         ([], ()),
-        (["--stage", "backup"], ("backup",)),
+        (["--scope", "files"], ("files",)),
         (
-            ["--stage", "cloud_storage", "--stage", "backup"],
-            ("cloud_storage", "backup"),
+            ["--scope", "cloud_storage", "--scope", "files"],
+            ("cloud_storage", "files"),
         ),
     ],
 )
-def test_copy_command_passes_stages(args: list[str], stages: tuple) -> None:
+def test_copy_command_passes_scopes(args: list[str], scopes: tuple) -> None:
     backup = MagicMock()
 
     def copy(_target, _names, *, report, **_):
@@ -145,7 +145,7 @@ def test_copy_command_passes_stages(args: list[str], stages: tuple) -> None:
             BackupCopyResult(
                 "b1",
                 status="copied",
-                stages={"backup": "completed", "cloud_storage": "pending"},
+                scopes={"files": "completed", "cloud_storage": "pending"},
             )
         )
         return ["b1"], []
@@ -157,17 +157,17 @@ def test_copy_command_passes_stages(args: list[str], stages: tuple) -> None:
     result = CliRunner().invoke(group, ["copy", "--all", *args], obj={"backup": backup})
 
     assert result.exit_code == 0
-    assert backup.copy.call_args.kwargs["stages"] == stages
-    assert "stages: backup completed, cloud_storage pending" in result.output
+    assert backup.copy.call_args.kwargs["scopes"] == scopes
+    assert "scopes: files completed, cloud_storage pending" in result.output
 
 
-def test_copy_command_rejects_unknown_stage() -> None:
+def test_copy_command_rejects_unknown_scope() -> None:
     backup = MagicMock()
     group = Group()
     group.add_command(cli.copy_command)
 
     result = CliRunner().invoke(
-        group, ["copy", "--all", "--stage", "data"], obj={"backup": backup}
+        group, ["copy", "--all", "--scope", "data"], obj={"backup": backup}
     )
 
     assert result.exit_code == 2

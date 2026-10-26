@@ -296,14 +296,14 @@ class CopyTestContext:
         *,
         keep_going: bool = False,
         report: CopyReport | None = None,
-        stages: list[str] | None = None,
+        scopes: list[str] | None = None,
     ) -> tuple[list[str], list[str]]:
         copier = self.make_copier()
         with patch(
             "ch_backup.backup.copier.get_storage_engine", side_effect=self.store.engine
         ):
             return copier.copy(
-                backup_names, keep_going=keep_going, report=report, stages=stages
+                backup_names, keep_going=keep_going, report=report, scopes=scopes
             )
 
     def make_copier(self) -> BackupCopier:
@@ -2677,7 +2677,7 @@ def test_copy_does_not_copy_copy_context_of_source() -> None:
     assert set(ctx.copied_paths()) == {"ch_backup/b1/metadata/a.tar"}
 
 
-def _staged_context(version: int = 3) -> CopyTestContext:
+def _scoped_context(version: int = 3) -> CopyTestContext:
     """Backup with data of object storage disks copied into target storage tracked by the store."""
     ctx = _cloud_storage_context()
     ctx.target_layout.store = ctx.store
@@ -2692,6 +2692,12 @@ def _staged_context(version: int = 3) -> CopyTestContext:
     return ctx
 
 
+def _scopes(backup: BackupMetadata) -> dict[str, str]:
+    """Return statuses of scopes saved in metadata of the copy."""
+    assert backup.copy
+    return backup.copy["scopes"]
+
+
 def _disk_objects(ctx: CopyTestContext) -> set[str]:
     """Return target keys of copied objects of object storage disks."""
     return {
@@ -2701,50 +2707,50 @@ def _disk_objects(ctx: CopyTestContext) -> set[str]:
     }
 
 
-def test_copy_stages_separately() -> None:
-    ctx = _staged_context()
+def test_copy_scopes_separately() -> None:
+    ctx = _scoped_context()
     report = CopyReport()
 
-    assert ctx.copy(["b1"], stages=["backup"], report=report) == (["b1"], [])
+    assert ctx.copy(["b1"], scopes=["files"], report=report) == (["b1"], [])
 
     target = ctx.target_layout.backups["b1"]
     assert target.state == BackupState.CREATING
-    assert target.copy_stages == {"backup": "completed", "cloud_storage": "pending"}
-    assert report.backups[0].stages == target.copy_stages
+    assert _scopes(target) == {"files": "completed", "cloud_storage": "pending"}
+    assert report.backups[0].scopes == _scopes(target)
     assert not _disk_objects(ctx)
     ctx.target_layout.copied.clear()
 
-    assert ctx.copy(["b1"], stages=["cloud_storage"]) == (["b1"], [])
+    assert ctx.copy(["b1"], scopes=["cloud_storage"]) == (["b1"], [])
 
     target = ctx.target_layout.backups["b1"]
     assert target.state == BackupState.CREATED
-    assert target.copy_stages == {"backup": "completed", "cloud_storage": "completed"}
+    assert _scopes(target) == {"files": "completed", "cloud_storage": "completed"}
     assert set(ctx.copied_paths().values()) == _disk_objects(ctx) | {
         "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
     }
     assert _disk_objects(ctx) == {"copies/b1/xyz/aaa", "copies/b1/xyz/bbb"}
 
 
-def test_copy_stages_of_backup_without_cloud_storage() -> None:
+def test_copy_scopes_of_backup_without_cloud_storage() -> None:
     ctx = CopyTestContext([_backup("b1")])
     _with_files(ctx, "b1", {"metadata/a.tar": 1})
 
-    ctx.copy(["b1"], stages=["backup"])
+    ctx.copy(["b1"], scopes=["files"])
 
     target = ctx.target_layout.backups["b1"]
     assert target.state == BackupState.CREATED
-    assert target.copy_stages == {"backup": "completed", "cloud_storage": "completed"}
+    assert _scopes(target) == {"files": "completed", "cloud_storage": "completed"}
 
 
-def test_copy_rejects_unknown_stage() -> None:
+def test_copy_rejects_unknown_scope() -> None:
     ctx = CopyTestContext([_backup("b1")])
 
     with pytest.raises(ConfigurationError, match="data"):
-        ctx.copy(["b1"], stages=["data"])
+        ctx.copy(["b1"], scopes=["data"])
 
 
-def test_cloud_storage_stage_lists_failed_objects() -> None:
-    ctx = _staged_context()
+def test_cloud_storage_scope_lists_failed_objects() -> None:
+    ctx = _scoped_context()
     ctx.target_layout.object_errors["data/xyz/bbb"] = StorageError("SlowDown")
     report = CopyReport()
 
@@ -2753,7 +2759,7 @@ def test_cloud_storage_stage_lists_failed_objects() -> None:
 
     target = ctx.target_layout.backups["b1"]
     assert target.state == BackupState.FAILED
-    assert target.copy_stages == {"backup": "completed", "cloud_storage": "failed"}
+    assert _scopes(target) == {"files": "completed", "cloud_storage": "failed"}
     data = _failed_objects(ctx)
     assert data is not None
     failed = [json.loads(line) for line in gzip.decompress(data).decode().splitlines()]
@@ -2769,7 +2775,7 @@ def test_cloud_storage_stage_lists_failed_objects() -> None:
     ctx.target_layout.copied.clear()
     report = CopyReport()
 
-    ctx.copy(["b1"], stages=["cloud_storage"], report=report)
+    ctx.copy(["b1"], scopes=["cloud_storage"], report=report)
 
     assert set(ctx.copied_paths().values()) == {"copies/b1/xyz/bbb"}
     assert report.backups[0].objects_skipped == 2
@@ -2777,45 +2783,66 @@ def test_cloud_storage_stage_lists_failed_objects() -> None:
     assert _failed_objects(ctx) is None
 
 
-def _failed_objects(ctx: CopyTestContext) -> bytes | None:
-    """Return the saved list of objects that failed to copy."""
+def _failed_objects(ctx: CopyTestContext, scope: str = "cloud_storage") -> bytes | None:
+    """Return the saved list of objects of the scope that failed to copy."""
     return next(
         (
             data
             for (_, path), data in ctx.store.data.items()
-            if path.endswith("/failed.jsonl.gz")
+            if path.endswith(f"/failed/{scope}.jsonl.gz")
         ),
         None,
     )
 
 
-def test_completed_stage_with_deleted_objects_is_copied_again() -> None:
-    ctx = _staged_context()
+def test_files_scope_lists_failed_objects() -> None:
+    ctx = _scoped_context()
+    ctx.target_layout.object_errors["ch_backup/b1/metadata/a.tar"] = StorageError(
+        "SlowDown"
+    )
+
+    with pytest.raises(ClickhouseBackupError):
+        ctx.copy(["b1"], keep_going=True)
+
+    assert _scopes(ctx.target_layout.backups["b1"]) == {
+        "files": "failed",
+        "cloud_storage": "completed",
+    }
+    data = _failed_objects(ctx, "files")
+    assert data is not None
+    assert [json.loads(line)["src"] for line in gzip.decompress(data).splitlines()] == [
+        "ch_backup/b1/metadata/a.tar"
+    ]
+    assert _failed_objects(ctx) is None
+
+
+def test_completed_scope_with_deleted_objects_is_copied_again() -> None:
+    ctx = _scoped_context()
     path = "ch_backup_copy/b1/metadata/a.tar"
-    ctx.copy(["b1"], stages=["backup"])
+    ctx.copy(["b1"], scopes=["files"])
     size = ctx.dst_objects.pop(path)
 
-    ctx.copy(["b1"], stages=["cloud_storage"])
+    ctx.copy(["b1"], scopes=["cloud_storage"])
 
     target = ctx.target_layout.backups["b1"]
     assert target.state == BackupState.CREATING
-    assert target.copy_stages == {"backup": "pending", "cloud_storage": "completed"}
+    assert _scopes(target) == {"files": "pending", "cloud_storage": "completed"}
 
-    ctx.copy(["b1"], stages=["backup"])
+    ctx.copy(["b1"], scopes=["files"])
 
     assert ctx.dst_objects[path] == size
     assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
 
 
 @pytest.mark.parametrize("replaced", [False, True])
-def test_completed_stage_with_changed_rewritten_metadata_is_copied_again(
+def test_completed_scope_with_changed_rewritten_metadata_is_copied_again(
     replaced: bool,
 ) -> None:
-    ctx = _staged_context(version=5)
+    ctx = _scoped_context(version=5)
     tarball = "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
-    ctx.copy(["b1"], stages=["cloud_storage"])
-    assert ctx.target_layout.backups["b1"].copy_stages == {
-        "backup": "pending",
+    ctx.copy(["b1"], scopes=["cloud_storage"])
+    assert _scopes(ctx.target_layout.backups["b1"]) == {
+        "files": "pending",
         "cloud_storage": "completed",
     }
     uploaded = ctx.target_layout.cloud_storage_files.pop(tarball)
@@ -2823,14 +2850,14 @@ def test_completed_stage_with_changed_rewritten_metadata_is_copied_again(
     if replaced:
         ctx.dst_objects[tarball] = size - 1
 
-    ctx.copy(["b1"], stages=["backup"])
+    ctx.copy(["b1"], scopes=["files"])
 
     target = ctx.target_layout.backups["b1"]
     assert target.state == BackupState.CREATING
-    assert target.copy_stages == {"backup": "completed", "cloud_storage": "pending"}
+    assert _scopes(target) == {"files": "completed", "cloud_storage": "pending"}
     ctx.target_layout.copied.clear()
 
-    ctx.copy(["b1"], stages=["cloud_storage"])
+    ctx.copy(["b1"], scopes=["cloud_storage"])
 
     assert not ctx.target_layout.copied
     assert ctx.target_layout.cloud_storage_files[tarball] == uploaded
@@ -2839,7 +2866,7 @@ def test_completed_stage_with_changed_rewritten_metadata_is_copied_again(
 
 
 def test_resume_skips_confirmed_rewritten_metadata() -> None:
-    ctx = _staged_context(version=5)
+    ctx = _scoped_context(version=5)
     tarball = "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
     ctx.target_layout.object_errors["data/xyz/aaa"] = StorageError("SlowDown")
     with pytest.raises(ClickhouseBackupError):
@@ -2850,7 +2877,7 @@ def test_resume_skips_confirmed_rewritten_metadata() -> None:
     del ctx.target_layout.cloud_storage_files[tarball]
     report = CopyReport()
 
-    ctx.copy(["b1"], stages=["cloud_storage"], report=report)
+    ctx.copy(["b1"], scopes=["cloud_storage"], report=report)
 
     assert tarball not in ctx.target_layout.cloud_storage_files
     assert set(ctx.copied_paths().values()) == {"copies/b1/xyz/aaa"}
@@ -2859,41 +2886,41 @@ def test_resume_skips_confirmed_rewritten_metadata() -> None:
 
 
 def test_failed_cloud_storage_planning_keeps_rewritten_metadata() -> None:
-    ctx = _staged_context(version=5)
+    ctx = _scoped_context(version=5)
     tarball = "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
     disks = ctx.ch_config.config
-    ctx.copy(["b1"], stages=["cloud_storage"])
+    ctx.copy(["b1"], scopes=["cloud_storage"])
     ctx.ch_config.config = {"storage_configuration": {"disks": {}}}
     ctx.target_layout.copied.clear()
 
-    ctx.copy(["b1"], stages=["backup"])
+    ctx.copy(["b1"], scopes=["files"])
 
     assert tarball not in ctx.copied_paths().values()
-    assert ctx.target_layout.backups["b1"].copy_stages == {
-        "backup": "completed",
+    assert _scopes(ctx.target_layout.backups["b1"]) == {
+        "files": "completed",
         "cloud_storage": "pending",
     }
     ctx.ch_config.config = disks
 
-    ctx.copy(["b1"], stages=["cloud_storage"])
+    ctx.copy(["b1"], scopes=["cloud_storage"])
 
     assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
 
 
-def test_backup_stage_does_not_depend_on_cloud_storage_planning() -> None:
-    ctx = _staged_context()
+def test_backup_scope_does_not_depend_on_cloud_storage_planning() -> None:
+    ctx = _scoped_context()
     disks = ctx.ch_config.config
     ctx.ch_config.config = {"storage_configuration": {"disks": {}}}
-    ctx.copy(["b1"], stages=["backup"])
+    ctx.copy(["b1"], scopes=["files"])
     ctx.ch_config.config = disks
 
-    ctx.copy(["b1"], stages=["cloud_storage"])
+    ctx.copy(["b1"], scopes=["cloud_storage"])
 
     assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
 
 
-def test_backup_stage_needs_no_settings_of_object_storage() -> None:
-    ctx = _staged_context()
+def test_backup_scope_needs_no_settings_of_object_storage() -> None:
+    ctx = _scoped_context()
     target = ctx.target_config["copy"]["cloud_storage"]["target"]
     report = CopyReport()
 
@@ -2902,25 +2929,25 @@ def test_backup_stage_needs_no_settings_of_object_storage() -> None:
         "get_cloud_storage_metadata_files",
         wraps=ctx.layout.get_cloud_storage_metadata_files,
     ) as download:
-        ctx.copy(["b1"], stages=["backup"])
+        ctx.copy(["b1"], scopes=["files"])
         bucket, target["bucket"] = target["bucket"], None
-        ctx.copy(["b1"], stages=["backup"], report=report)
+        ctx.copy(["b1"], scopes=["files"], report=report)
 
     download.assert_not_called()
     assert report.backups[0].objects_skipped == 1
-    assert ctx.target_layout.backups["b1"].copy_stages == {
-        "backup": "completed",
+    assert _scopes(ctx.target_layout.backups["b1"]) == {
+        "files": "completed",
         "cloud_storage": "pending",
     }
     target["bucket"] = bucket
 
-    ctx.copy(["b1"], stages=["cloud_storage"])
+    ctx.copy(["b1"], scopes=["cloud_storage"])
 
     assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
 
 
 def test_disk_metadata_with_planning_errors_is_not_copied_as_is() -> None:
-    ctx = _staged_context()
+    ctx = _scoped_context()
     tarball = "ch_backup/b1/disks/s3/db1/t1.tar.gz"
     ctx.layout.cloud_storage_files[tarball].append(
         ("store/abc/uuid/all_1_1_0/broken.bin", b"garbage")
@@ -2933,8 +2960,8 @@ def test_disk_metadata_with_planning_errors_is_not_copied_as_is() -> None:
     assert _disk_objects(ctx) == {"copies/b1/xyz/aaa", "copies/b1/xyz/bbb"}
 
 
-def test_interrupted_cloud_storage_stage_keeps_failed_objects() -> None:
-    ctx = _staged_context()
+def test_interrupted_cloud_storage_scope_keeps_failed_objects() -> None:
+    ctx = _scoped_context()
     ctx.target_layout.object_errors["data/xyz/bbb"] = StorageError("SlowDown")
     with pytest.raises(ClickhouseBackupError):
         ctx.copy(["b1"], keep_going=True)
@@ -2945,17 +2972,17 @@ def test_interrupted_cloud_storage_stage_keeps_failed_objects() -> None:
         ctx.target_layout, "copy_objects", side_effect=TerminatingSignal()
     ):
         with pytest.raises(TerminatingSignal):
-            ctx.copy(["b1"], stages=["cloud_storage"])
+            ctx.copy(["b1"], scopes=["cloud_storage"])
 
     assert _failed_objects(ctx) == failed
-    assert ctx.target_layout.backups["b1"].copy_stages == {
-        "backup": "completed",
+    assert _scopes(ctx.target_layout.backups["b1"]) == {
+        "files": "completed",
         "cloud_storage": "failed",
     }
 
 
 def test_incomplete_cloud_storage_planning_keeps_failed_objects() -> None:
-    ctx = _staged_context()
+    ctx = _scoped_context()
     ctx.target_layout.object_errors["data/xyz/bbb"] = StorageError("SlowDown")
     with pytest.raises(ClickhouseBackupError):
         ctx.copy(["b1"], keep_going=True)
@@ -2971,18 +2998,18 @@ def test_incomplete_cloud_storage_planning_keeps_failed_objects() -> None:
 
     with patch.object(BackupCopier, "_plan_cloud_storage_objects", incomplete):
         with pytest.raises(ClickhouseBackupError):
-            ctx.copy(["b1"], stages=["cloud_storage"], keep_going=True)
+            ctx.copy(["b1"], scopes=["cloud_storage"], keep_going=True)
 
     assert set(ctx.copied_paths().values()) == {"copies/b1/xyz/bbb"}
     assert _failed_objects(ctx) == failed
-    assert ctx.target_layout.backups["b1"].copy_stages == {
-        "backup": "completed",
+    assert _scopes(ctx.target_layout.backups["b1"]) == {
+        "files": "completed",
         "cloud_storage": "failed",
     }
 
 
-def test_stage_without_resume_recopies_its_objects_and_checks_others() -> None:
-    ctx = _staged_context()
+def test_scope_without_resume_recopies_its_objects_and_checks_others() -> None:
+    ctx = _scoped_context()
     ctx.target_layout.object_errors["data/xyz/bbb"] = StorageError("SlowDown")
     with pytest.raises(ClickhouseBackupError):
         ctx.copy(["b1"], keep_going=True)
@@ -2991,41 +3018,41 @@ def test_stage_without_resume_recopies_its_objects_and_checks_others() -> None:
     ctx.target_config["copy"]["resume"] = False
     report = CopyReport()
 
-    ctx.copy(["b1"], stages=["cloud_storage"], report=report)
+    ctx.copy(["b1"], scopes=["cloud_storage"], report=report)
 
     assert _disk_objects(ctx) == {"copies/b1/xyz/aaa", "copies/b1/xyz/bbb"}
     assert report.backups[0].objects_skipped == 0
     assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
 
 
-def test_repeated_stage_is_copied_and_counted_once() -> None:
-    ctx = _staged_context()
+def test_repeated_scope_is_copied_and_counted_once() -> None:
+    ctx = _scoped_context()
     report = CopyReport()
 
-    ctx.copy(["b1"], stages=["backup", "backup"], report=report)
+    ctx.copy(["b1"], scopes=["files", "files"], report=report)
 
     assert report.backups[0].objects_total == report.backups[0].objects_copied == 1
 
 
 @pytest.mark.parametrize("keep_going", [False, True])
-def test_cloud_storage_planning_failure_does_not_fail_backup_stage(
+def test_cloud_storage_planning_failure_does_not_fail_backup_scope(
     keep_going: bool,
 ) -> None:
-    ctx = _staged_context()
+    ctx = _scoped_context()
     ctx.ch_config.config = {"storage_configuration": {"disks": {}}}
 
-    assert ctx.copy(["b1"], stages=["backup"], keep_going=keep_going) == (["b1"], [])
+    assert ctx.copy(["b1"], scopes=["files"], keep_going=keep_going) == (["b1"], [])
 
     target = ctx.target_layout.backups["b1"]
     assert target.state == BackupState.CREATING
-    assert target.copy_stages == {"backup": "completed", "cloud_storage": "pending"}
+    assert _scopes(target) == {"files": "completed", "cloud_storage": "pending"}
 
     with pytest.raises((ConfigurationError, ClickhouseBackupError)):
-        ctx.copy(["b1"], stages=["cloud_storage"], keep_going=keep_going)
+        ctx.copy(["b1"], scopes=["cloud_storage"], keep_going=keep_going)
 
     target = ctx.target_layout.backups["b1"]
     assert target.state == (BackupState.FAILED if keep_going else BackupState.CREATING)
-    assert target.copy_stages == {
-        "backup": "completed",
+    assert _scopes(target) == {
+        "files": "completed",
         "cloud_storage": "failed" if keep_going else "pending",
     }

@@ -8,6 +8,7 @@ from itertools import islice
 from tempfile import SpooledTemporaryFile
 from typing import Iterator, Literal, TextIO
 
+from ch_backup.backup.metadata import CopyScopeStatus
 from ch_backup.exceptions import ClickhouseBackupError
 
 
@@ -64,7 +65,7 @@ class BackupCopyResult:
     objects_failed: int = 0
     objects_skipped: int = 0
     known_bytes_copied: int = 0
-    stages: dict[str, str] | None = None
+    scopes: dict[str, str] | None = None
     errors: CopyErrors = field(default_factory=CopyErrors)
 
     def completed(self, size: int = 0) -> None:
@@ -140,11 +141,13 @@ def print_copy_report(report: CopyReport, report_path: str | None) -> None:
                 )
                 + f"{result.objects_failed} failed; known bytes copied: {result.known_bytes_copied}"
             )
-        if result.stages and set(result.stages.values()) != {"completed"}:
+        if result.scopes and set(result.scopes.values()) != {
+            CopyScopeStatus.COMPLETED.value
+        }:
             print(
-                "  stages: "
+                "  scopes: "
                 + ", ".join(
-                    f"{name} {status}" for name, status in result.stages.items()
+                    f"{name} {status}" for name, status in result.scopes.items()
                 )
             )
         for error in result.errors:

@@ -675,7 +675,7 @@ Feature: Copy backups to another storage
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
   @require_version_22.8
-  Scenario: Copy backup with data on S3 disk by stages
+  Scenario: Copy backup with data on S3 disk by scopes
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE IF NOT EXISTS test_db;
@@ -700,19 +700,19 @@ Feature: Copy backups to another storage
     """
     When we execute command on clickhouse01
     """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy LAST --stage backup --server-side-copy \
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy LAST --scope files --server-side-copy \
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
     """
     Then we get response contains
     """
-    stages: backup completed, cloud_storage pending
+    scopes: files completed, cloud_storage pending
     """
     And we got the following backups on clickhouse02
       | num | state    |
       | 0   | creating |
     When we execute command on clickhouse01
     """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy LAST --stage cloud_storage --keep-going \
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy LAST --scope cloud_storage --keep-going \
         --no-server-side-copy \
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
         --target-cloud-storage-bucket cloud-storage-02 \

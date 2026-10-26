@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import patch
 
 from ch_backup.backup.copy_context import CopyContext
+from ch_backup.backup.metadata import CopyScope
 from ch_backup.exceptions import StorageError
 from ch_backup.storage.object_copy import CopyEntry
 from tests.unit.test_backup_copy import _backup
@@ -179,12 +180,12 @@ def test_archive_records_depend_on_content_and_size() -> None:
 def test_failed_objects_are_not_records() -> None:
     engine = MemoryEngine()
     context = _context(engine)
-    context.save_failures([(_entry("a"), "StorageError: SlowDown")])
-    assert any(path.endswith("/failed.jsonl.gz") for path in engine.objects)
+    context.save_failures(CopyScope.FILES, [(_entry("a"), "StorageError: SlowDown")])
+    assert any(path.endswith("/failed/files.jsonl.gz") for path in engine.objects)
 
     resumed = _context(engine)
     resumed.load()
     assert not resumed.has_records()
 
-    resumed.save_failures([])
+    resumed.save_failures(CopyScope.FILES, [])
     assert not engine.objects

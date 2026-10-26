@@ -35,9 +35,8 @@ from ch_backup.command_context import command_context
 from ch_backup.exceptions import ConfigurationError, TerminatingSignal
 
 from . import logging
-from .backup.copier import COPY_STAGES
 from .backup.copy_report import CopyReport, print_copy_report
-from .backup.metadata import BackupState, TableMetadata
+from .backup.metadata import BackupState, CopyScope, TableMetadata
 from .backup.sources import BackupSources
 from .ch_backup import CleanZooKeeperMode, ClickhouseBackup
 from .config import DEFAULT_CONFIG, Config
@@ -952,13 +951,13 @@ def delete_command(
         help="Save the final copy report as JSON, including on failure.",
     ),
     option(
-        "--stage",
-        "stages",
+        "--scope",
+        "scopes",
         multiple=True,
-        type=Choice(COPY_STAGES),
-        help='Copy only the specified stage: "backup" for files of the backup, '
+        type=Choice([scope.value for scope in CopyScope]),
+        help='Copy only the specified scope: "files" for files of the backup, '
         '"cloud_storage" for data of object storage disks. Can be specified multiple times, '
-        "all stages are copied by default. The copy is published once every stage is copied.",
+        "all scopes are copied by default. The copy is published once every scope is copied.",
     ),
 )
 @option_group(
@@ -1033,7 +1032,7 @@ def copy_command(
     cloud_storage_source_path: str | None,
     keep_going: bool = False,
     report_path: str | None = None,
-    stages: tuple[str, ...] = (),
+    scopes: tuple[str, ...] = (),
 ) -> None:
     """Copy backup to another storage (another S3 bucket, endpoint or path)."""
     report = CopyReport()
@@ -1073,7 +1072,7 @@ def copy_command(
             backup_names,
             keep_going=keep_going,
             report=report,
-            stages=stages,
+            scopes=scopes,
         )
     except BaseException as e:
         report.error = f"{type(e).__name__}: {e}"

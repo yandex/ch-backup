@@ -42,6 +42,25 @@ class BackupState(Enum):
     FAILED = "failed"
 
 
+class CopyScope(Enum):
+    """
+    Parts of a backup copied by the "copy" command.
+    """
+
+    FILES = "files"
+    CLOUD_STORAGE = "cloud_storage"
+
+
+class CopyScopeStatus(Enum):
+    """
+    Statuses of copying of a scope saved in metadata of the copy.
+    """
+
+    PENDING = "pending"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 # pylint: disable=too-many-public-methods
 class BackupMetadata:
     """
@@ -89,7 +108,7 @@ class BackupMetadata:
         self.cloud_storage: CloudStorageMetadata = CloudStorageMetadata()
         # Location of the storage the backup was copied from (for backups created by "copy" command).
         self.copied_from: dict | None = None
-        self.copy_stages: dict[str, str] | None = None
+        self.copy: dict | None = None
         self._skipped_data_counts = (0, 0)
 
         self._state = BackupState.CREATING
@@ -166,8 +185,8 @@ class BackupMetadata:
         meta: dict[str, Any] = {}
         if self.copied_from:
             meta["copied_from"] = self.copied_from
-        if self.copy_stages:
-            meta["copy"] = self.copy_stages
+        if self.copy:
+            meta["copy"] = self.copy
         data_skipped_tables, incomplete_tables = self.count_skipped_data_tables()
         if data_skipped_tables:
             meta["data_skipped_tables"] = data_skipped_tables
@@ -352,7 +371,7 @@ class BackupMetadata:
             backup.encrypted = meta.get("encrypted", True)
             backup.metadata_encrypted = meta.get("metadata_encrypted")
             backup.copied_from = meta.get("copied_from")
-            backup.copy_stages = meta.get("copy")
+            backup.copy = meta.get("copy")
             backup._skipped_data_counts = (
                 meta.get("data_skipped_tables", 0),
                 meta.get("incomplete_tables", 0),

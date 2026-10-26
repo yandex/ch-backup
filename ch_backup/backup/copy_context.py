@@ -10,12 +10,12 @@ import time
 import uuid
 
 from ch_backup import logging
-from ch_backup.backup.metadata import BackupMetadata
+from ch_backup.backup.metadata import BackupMetadata, CopyScope
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
 from ch_backup.storage.object_copy import CopyEntry, storage_id
 
 COPY_CONTEXT_DIR = "copy_context"
-FAILED_OBJECTS_FNAME = "failed.jsonl.gz"
+FAILED_OBJECTS_DIR = "failed"
 
 
 class CopyContext:
@@ -27,7 +27,8 @@ class CopyContext:
     unique name, so an interrupted run never damages records of earlier runs.
     The fingerprint identifies the source backup; a record identifies source and
     target locations and size of the object. Objects that failed to copy are listed
-    in a separate file, which is not part of the journal.
+    in "failed/<scope>.jsonl.gz", which is not part of the journal: the journal is only
+    read from files directly under the fingerprint directory.
     """
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -66,7 +67,7 @@ class CopyContext:
             logging.warning("Failed to list copy context {}: {}", self._path, e)
             return
         for path in paths:
-            if os.path.basename(path) == FAILED_OBJECTS_FNAME:
+            if os.path.dirname(path) != self._path:
                 continue
             try:
                 lines = gzip.decompress(self._engine.download_data(path)).splitlines()
@@ -102,9 +103,11 @@ class CopyContext:
         """Remember the confirmed upload of the rewritten metadata tarball until the next flush."""
         self._buffer.append(_archive_record(storage, path, files, size).decode())
 
-    def save_failures(self, failures: list[tuple[CopyEntry, str]]) -> None:
-        """Replace the list of objects that failed to copy, removing it if there are none."""
-        path = os.path.join(self._path, FAILED_OBJECTS_FNAME)
+    def save_failures(
+        self, scope: CopyScope, failures: list[tuple[CopyEntry, str]]
+    ) -> None:
+        """Replace the list of objects of the scope that failed to copy, removing it if there are none."""
+        path = os.path.join(self._path, FAILED_OBJECTS_DIR, f"{scope.value}.jsonl.gz")
         lines = [
             json.dumps(
                 {

@@ -611,12 +611,12 @@ class ClickhouseBackup:
         *,
         keep_going: bool = False,
         report: CopyReport | None = None,
-        stages: Sequence[str] | None = None,
+        scopes: Sequence[str] | None = None,
     ) -> tuple[Sequence[str], Sequence[str]]:
         """
         Copy backups to the storage specified in the target config.
         If backup names are not specified, all backups in the state "created" are copied.
-        If stages are not specified, all of them are copied.
+        If scopes are not specified, all of them are copied.
 
         Return names of copied backups and names of backups skipped as already copied.
         The optional report also receives partial results when copying raises.
@@ -635,7 +635,7 @@ class ClickhouseBackup:
             )
             with storage_locks([self._config, target_config], operation="COPY"):
                 return copier.copy(
-                    backup_names, keep_going=keep_going, report=report, stages=stages
+                    backup_names, keep_going=keep_going, report=report, scopes=scopes
                 )
         except BaseException as e:
             if report is not None:
