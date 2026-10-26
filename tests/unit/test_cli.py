@@ -163,6 +163,21 @@ def test_copy_command_passes_scopes(args: list[str], scopes: tuple) -> None:
     assert "scopes: files completed, cloud_storage pending" in result.output
 
 
+def test_copy_command_takes_last_copy_from_target_without_files_scope() -> None:
+    backup = MagicMock()
+    backup.copy.return_value = (["b1"], [])
+    group = Group()
+    group.add_command(cli.copy_command)
+
+    result = CliRunner().invoke(
+        group, ["copy", "LAST", "--scope", "cloud_storage"], obj={"backup": backup}
+    )
+
+    assert result.exit_code == 0
+    backup.list.assert_not_called()
+    assert backup.copy.call_args.args[1] == ["LAST"]
+
+
 def test_copy_command_rejects_unknown_scope() -> None:
     backup = MagicMock()
     group = Group()
