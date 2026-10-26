@@ -193,24 +193,24 @@ Behavior and limitations:
 - Copying consists of two stages: `backup` copies files of the backup, `cloud_storage` copies data
   and metadata of object storage disks, rewriting the metadata to reference the copied data.
   `--stage` (can be given multiple times) runs only the specified stages, all of them by default.
-  Each run chooses its own copy mode with `--[no-]server-side-copy`. Every run plans the whole
-  backup, so it needs the same target settings, including the target location of object storage
-  data. Statuses of the
-  stages (`pending`, `completed`, `failed`) are saved in `meta.copy` of the copy, for example
-  `state: creating, copy: {backup: completed, cloud_storage: pending}`. A backup without data on
-  object storage disks has the stage `cloud_storage` completed right away. The copy becomes `created`
-  once every stage is completed. Saved statuses are not trusted: a stage that is not run is
-  completed only if the copy context and the target listing confirm all its objects, otherwise it
-  becomes `pending` again, e.g. after a failed delete. `--no-resume` overwrites objects of the stages
-  that are run and still checks the other stages this way. Between stages, the copy is in the state
-  `creating`, and `purge` and `delete --purge-partial` on the target storage treat it as any other
-  incomplete backup. With `--keep-going`, objects of the stage `cloud_storage` that failed to copy
-  are listed in `<backup>/copy_context/<id>/failed.jsonl.gz` (source and target keys, size and error)
-  and the stage becomes `failed`; the next run of the stage copies only unconfirmed objects. The list
-  is rewritten by each run of the stage in which objects fail and removed once the stage completes.
-  Disk metadata that cannot be planned is not copied, so it never overwrites rewritten disk
-  metadata; a later run copies it. Run stages of one backup
-  one after another: the local lock serializes runs on one host, runs on different hosts require
+  Each run chooses its own copy mode with `--[no-]server-side-copy`. A stage that is not run is
+  planned only if it is completed, to check it with the same settings as copying it, so running only
+  the stage `backup` needs no settings of object storage data while `cloud_storage` is not
+  completed. Statuses of the stages (`pending`, `completed`, `failed`) are saved in `meta.copy` of
+  the copy, for example `state: creating, copy: {backup: completed, cloud_storage: pending}`. A
+  backup without data on object storage disks has the stage `cloud_storage` completed right away.
+  The copy becomes `created` once every stage is completed. Saved statuses are not trusted: a stage
+  that is not run is completed only if the copy context and the target listing confirm all its
+  objects, otherwise it becomes `pending` again, e.g. after a failed delete. `--no-resume`
+  overwrites objects of the stages that are run and still checks the other stages this way. Between
+  stages, the copy is in the state `creating`, and `purge` and `delete --purge-partial` on the
+  target storage treat it as any other incomplete backup. With `--keep-going`, objects of the stage
+  `cloud_storage` that failed to copy are listed in `<backup>/copy_context/<id>/failed.jsonl.gz`
+  (source and target keys, size and error) and the stage becomes `failed`; the next run of the stage
+  copies only unconfirmed objects. The list is rewritten by each run of the stage in which objects
+  fail and removed once the stage completes. Disk metadata that cannot be planned is not copied, so
+  it never overwrites rewritten disk metadata; a later run copies it. Run stages of one backup one
+  after another: the local lock serializes runs on one host, runs on different hosts require
   `lock.zk_flock`.
 - Copy acquires the configured source and target locks through completion, including retries and
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`

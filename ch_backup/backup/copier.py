@@ -220,7 +220,10 @@ class BackupCopier:
                         f"Backup with name {backup.name} conflicts with backup {existing} "
                         "in target storage: their sanitized names are equal"
                     )
-                if backup.cloud_storage.requires_source_bucket:
+                if (
+                    backup.cloud_storage.requires_source_bucket
+                    and CLOUD_STORAGE_STAGE in self._stages
+                ):
                     self._get_target_cloud_storage()
             except Exception as e:
                 results[backup.name].add_error(e, "validation")
@@ -324,6 +327,10 @@ class BackupCopier:
     def _copy_backup(self, backup_name: str, result: BackupCopyResult) -> bool:
         """
         Copy backup. Return False if the backup is already present in the target storage.
+
+        A stage that is not run is planned only to check it once it is completed, so it needs no
+        settings or downloads before. Without data on object storage disks all stages are planned,
+        and the stage "cloud_storage" is completed right away.
         """
         self._source_backup_files.clear()
         self._target_backups.clear()
@@ -382,8 +389,14 @@ class BackupCopier:
 
         target_meta = self._make_target_metadata(backup)
         plan = _CopyPlan()
+        previous = (target_backup.copy_stages if target_backup else None) or {}
         planned = {
-            stage: self._plan_stage(
+            stage: (
+                stage in self._stages
+                or previous.get(stage) == STAGE_COMPLETED
+                or not backup.cloud_storage.enabled
+            )
+            and self._plan_stage(
                 stage, result, partial(planner, backup, target_meta, plan)
             )
             for stage, planner in (
@@ -401,7 +414,6 @@ class BackupCopier:
             len(entries) + len(archives)
             for entries, archives in map(plan.stage_objects, self._stages)
         )
-        previous = (target_backup.copy_stages if target_backup else None) or {}
         self._transfer_backup(backup, target_meta, plan, planned, previous, result)
         return True
 
@@ -565,8 +577,14 @@ class BackupCopier:
                 )
         return statuses
 
-    def _target_prefixes(self, backup: BackupMetadata) -> list[tuple[dict, str]]:
-        """Return storages and paths that hold all objects of the copied backup."""
+    def _target_prefixes(
+        self, backup: BackupMetadata, plan: _CopyPlan
+    ) -> list[tuple[dict, str]]:
+        """
+        Return storages and paths that hold all planned objects of the copied backup.
+
+        The target location of object storage data is needed only when its objects are planned.
+        """
         prefixes = [
             (self._target_storage, self._target_layout.get_backup_path(backup.name)),
             (
@@ -574,7 +592,7 @@ class BackupCopier:
                 self._target_layout.get_cloud_storage_path(backup.name),
             ),
         ]
-        if backup.cloud_storage.requires_source_bucket:
+        if backup.cloud_storage.requires_source_bucket and plan.cloud_storage_entries:
             storage, path = self._get_target_cloud_storage()
             prefixes.append((storage, os.path.join(path, backup.name)))
         return prefixes
@@ -589,7 +607,7 @@ class BackupCopier:
 
     def _validate_destinations(self, backup: BackupMetadata, plan: _CopyPlan) -> None:
         """Check the entire plan before publishing metadata or copying any objects."""
-        prefixes = self._target_prefixes(backup)
+        prefixes = self._target_prefixes(backup, plan)
         for _, prefix in prefixes:
             _validate_relative_key(_key(prefix).rstrip("/"))
         destinations = chain(
@@ -1320,7 +1338,7 @@ class BackupCopier:
         assert context is not None
         if not context.has_records():
             return pending
-        listing = self._list_target_objects(backup)
+        listing = self._list_target_objects(backup, plan)
         target_id = storage_id(self._target_storage)
         pending = {
             stage: (
@@ -1595,7 +1613,9 @@ class BackupCopier:
 
             yield entry._replace(server_side=self._server_side_copy[cache_key])
 
-    def _list_target_objects(self, backup: BackupMetadata) -> dict[tuple, int]:
+    def _list_target_objects(
+        self, backup: BackupMetadata, plan: _CopyPlan
+    ) -> dict[tuple, int]:
         """
         Return sizes of objects of the copied backup in target storages.
 
@@ -1604,7 +1624,7 @@ class BackupCopier:
         listing: dict[tuple, int] = {}
         listed = set()
         try:
-            for storage, prefix in self._target_prefixes(backup):
+            for storage, prefix in self._target_prefixes(backup, plan):
                 key = (storage_id(storage), _key(prefix).rstrip("/"))
                 if key in listed:
                     continue

@@ -2892,6 +2892,33 @@ def test_backup_stage_does_not_depend_on_cloud_storage_planning() -> None:
     assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
 
 
+def test_backup_stage_needs_no_settings_of_object_storage() -> None:
+    ctx = _staged_context()
+    target = ctx.target_config["copy"]["cloud_storage"]["target"]
+    report = CopyReport()
+
+    with patch.object(
+        ctx.layout,
+        "get_cloud_storage_metadata_files",
+        wraps=ctx.layout.get_cloud_storage_metadata_files,
+    ) as download:
+        ctx.copy(["b1"], stages=["backup"])
+        bucket, target["bucket"] = target["bucket"], None
+        ctx.copy(["b1"], stages=["backup"], report=report)
+
+    download.assert_not_called()
+    assert report.backups[0].objects_skipped == 1
+    assert ctx.target_layout.backups["b1"].copy_stages == {
+        "backup": "completed",
+        "cloud_storage": "pending",
+    }
+    target["bucket"] = bucket
+
+    ctx.copy(["b1"], stages=["cloud_storage"])
+
+    assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
+
+
 def test_disk_metadata_with_planning_errors_is_not_copied_as_is() -> None:
     ctx = _staged_context()
     tarball = "ch_backup/b1/disks/s3/db1/t1.tar.gz"

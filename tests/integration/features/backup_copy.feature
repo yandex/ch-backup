@@ -701,9 +701,7 @@ Feature: Copy backups to another storage
     When we execute command on clickhouse01
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy LAST --stage backup --server-side-copy \
-        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
-        --target-cloud-storage-bucket cloud-storage-02 \
-        --target-cloud-storage-path copy
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
     """
     Then we get response contains
     """
