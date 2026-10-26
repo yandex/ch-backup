@@ -698,6 +698,11 @@ class BackupMetadata:
             {**(self.copy or {}), "time_format": self.time_format}, "updated_at"
         )
 
+    @copy_updated_at.setter
+    def copy_updated_at(self, value: datetime) -> None:
+        """Save when the copy command last saved copying of this backup."""
+        self.copy = {**(self.copy or {}), "updated_at": self._format_time(value)}
+
     def get_sanitized_name(self) -> str:
         """
         ClickHouse will place shadow data under this directory.

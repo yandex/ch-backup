@@ -28,12 +28,14 @@ class FailedObjects:
     """
 
     def __init__(self) -> None:
+        """Create an empty compressed temporary file."""
         # pylint: disable-next=consider-using-with
         self._file = NamedTemporaryFile()
         self._gzip = gzip.GzipFile(fileobj=self._file, mode="wb")
         self._count = 0
 
     def __enter__(self) -> "FailedObjects":
+        """Return the list itself."""
         return self
 
     def __exit__(
@@ -42,10 +44,12 @@ class FailedObjects:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        """Remove the temporary file."""
         self._gzip.close()
         self._file.close()
 
     def __len__(self) -> int:
+        """Return the number of objects that failed to copy."""
         return self._count
 
     def append(self, entry: CopyEntry, error: str) -> None:

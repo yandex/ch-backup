@@ -2880,6 +2880,30 @@ def test_files_scope_lists_failed_objects() -> None:
     assert _failed_objects(ctx) is None
 
 
+def test_failed_objects_copied_by_interrupted_run_are_not_listed() -> None:
+    ctx = _scoped_context()
+    ctx.target_layout.object_errors["data/xyz/bbb"] = StorageError("SlowDown")
+    with pytest.raises(ClickhouseBackupError):
+        ctx.copy(["b1"], keep_going=True)
+    failed = {
+        key: data
+        for key, data in ctx.store.data.items()
+        if key[1].endswith("/failed/cloud_storage.jsonl.gz")
+    }
+    target = ctx.target_layout.backups["b1"]
+    ctx.target_layout.object_errors.clear()
+    ctx.copy(["b1"], scopes=["cloud_storage"])
+    ctx.store.data.update(failed)
+    ctx.target_layout.backups["b1"] = target
+    ctx.target_layout.copied.clear()
+
+    ctx.copy(["b1"], scopes=["cloud_storage"])
+
+    assert not ctx.target_layout.copied
+    assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
+    assert _failed_objects(ctx) is None
+
+
 def test_completed_scope_with_deleted_objects_is_copied_again() -> None:
     ctx = _scoped_context()
     path = "ch_backup_copy/b1/metadata/a.tar"
@@ -3081,6 +3105,37 @@ def test_cloud_storage_scope_selects_copies_in_target() -> None:
     assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
     assert ctx.target_layout.backups["b2"].state == BackupState.CREATED
     assert ctx.copy(scopes=["cloud_storage"]) == ([], [])
+
+
+def test_cloud_storage_scope_skips_backups_without_copied_files() -> None:
+    ctx = _scoped_context()
+    ctx.copy(["b1"], scopes=["files"])
+    ctx.target_layout.backups["b1"].state = BackupState.DELETING
+    ctx.target_layout.backups["b2"] = _backup(
+        "b2", state=BackupState.CREATING, cloud_storage_disks=["s3"]
+    )
+
+    assert ctx.copy(scopes=["cloud_storage"]) == ([], [])
+    assert ctx.copy(["LAST"], scopes=["cloud_storage"]) == ([], [])
+
+    assert not _disk_objects(ctx)
+
+
+def test_cloud_storage_scope_requires_completed_files_scope() -> None:
+    ctx = _scoped_context()
+    ctx.target_layout.object_errors["ch_backup/b1/metadata/a.tar"] = StorageError(
+        "SlowDown"
+    )
+    with pytest.raises(ClickhouseBackupError):
+        ctx.copy(["b1"], scopes=["files"], keep_going=True)
+    ctx.target_layout.object_errors.clear()
+
+    with pytest.raises(
+        ClickhouseBackupError, match='scope "files" must be copied first'
+    ):
+        ctx.copy(["b1"], scopes=["cloud_storage"])
+
+    assert not _disk_objects(ctx)
 
 
 def test_files_scope_copies_backup_with_copied_cloud_storage_data() -> None:

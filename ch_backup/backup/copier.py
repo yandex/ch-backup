@@ -125,7 +125,6 @@ class BackupCopier:
         self._engines: dict[tuple, PipeLineCompatibleStorageEngine] = {}
         # Metadata of backups in target storage used to resolve deduplication links.
         self._target_backups: dict[str, BackupMetadata | None] = {}
-        # Files of tables of backups in target storage used to resolve deduplication links.
         self._target_table_files: dict[
             tuple[str, str, str], dict[str, dict[str, int]]
         ] = {}
@@ -475,7 +474,9 @@ class BackupCopier:
             return backup
         if target_backup and target_backup.state == BackupState.CREATED:
             return target_backup
-        backup = target_backup and self._target_layout.get_backup(
+        if not target_backup or not _files_copied(target_backup):
+            raise _files_scope_required(backup_name)
+        backup = self._target_layout.get_backup(
             os.path.join(backup_name, source_dir(target_backup))
         )
         if not backup:
@@ -578,7 +579,13 @@ class BackupCopier:
             stage = "copy"
             for scope in self._scopes:
                 statuses[scope] = CopyScopeStatus.FAILED
-                if self._copy_scope(scope, backup, plan[scope], result):
+                if self._copy_scope(
+                    scope,
+                    backup,
+                    plan[scope],
+                    result,
+                    previous.get(scope) == CopyScopeStatus.FAILED,
+                ):
                     statuses[scope] = CopyScopeStatus.COMPLETED
             if result.errors:
                 raise ClickhouseBackupError(
@@ -627,10 +634,8 @@ class BackupCopier:
     ) -> None:
         """Upload metadata of the copy with statuses of scopes, reporting both."""
         scopes = {scope.value: status.value for scope, status in statuses.items()}
-        target_meta.copy = {
-            "scopes": scopes,
-            "updated_at": now().strftime(target_meta.time_format),
-        }
+        target_meta.copy = {"scopes": scopes}
+        target_meta.copy_updated_at = now()
         result.scopes = dict(scopes)
         self._target_layout.upload_backup_metadata(target_meta)
         result.backup_state = target_meta.state.value
@@ -1024,15 +1029,26 @@ class BackupCopier:
             )
         )
 
-    def _get_source_backup_files(self, backup_name: str) -> dict[str, int]:
+    def _get_source_backup_files(
+        self,
+        backup_name: str,
+        layout: BackupLayout | None = None,
+        storage: dict | None = None,
+    ) -> dict[str, int]:
         """
         Return sizes of files of the backup in source storage keyed by path relative to backup directory.
+
+        Files of another layout and storage, such as source metadata in the copy context, are
+        listed the same way.
         """
         if backup_name not in self._source_backup_files:
-            backup_dir = _key(self._layout.get_backup_path(backup_name)).rstrip("/")
+            layout = layout or self._layout
+            backup_dir = _key(layout.get_backup_path(backup_name)).rstrip("/")
             self._source_backup_files[backup_name] = {
                 path[len(backup_dir) + 1 :]: size
-                for path, size in self._list(self._storage, backup_dir).items()
+                for path, size in self._list(
+                    storage or self._storage, backup_dir
+                ).items()
             }
         return self._source_backup_files[backup_name]
 
@@ -1254,7 +1270,7 @@ class BackupCopier:
         dst_dir = os.path.join(
             self._target_layout.get_cloud_storage_path(backup.name), "disks"
         )
-        sizes = self._list(storage, disks_dir)
+        sizes = self._get_source_backup_files(name, layout, storage)
 
         entries: dict[str, CopyEntry] = {}
         for disk_name in backup.cloud_storage.disks:
@@ -1302,7 +1318,7 @@ class BackupCopier:
                                     self._target_storage,
                                     os.path.join(source_disks_dir, relative_path),
                                     dst_path,
-                                    sizes[_key(remote_path)],
+                                    sizes[f"disks/{relative_path}"],
                                 )
                             )
 
@@ -1511,12 +1527,14 @@ class BackupCopier:
         backup: BackupMetadata,
         plan: _ScopePlan,
         result: BackupCopyResult,
+        failed_before: bool,
     ) -> bool:
         """
         Copy objects of the scope. Return True if the scope is planned and copied completely.
 
         Objects that failed to copy are listed in the copy context. The list is replaced
-        when objects fail and removed only once the scope succeeds.
+        when objects fail and removed only once the scope succeeds, also when objects left
+        by the failed run are confirmed copied.
         """
         context = self._copy_context
         assert context is not None
@@ -1532,7 +1550,9 @@ class BackupCopier:
                 if not self._keep_going or is_broken_executor(e):
                     raise
             finally:
-                if plan.count() and (failures or copied and plan.planned):
+                if failures or (
+                    copied and plan.planned and (plan.count() or failed_before)
+                ):
                     context.save_failures(scope, failures)
         return plan.planned and len(result.errors) == errors
 
@@ -1914,10 +1934,18 @@ def _files_scope_required(backup_name: str) -> ClickhouseBackupError:
     )
 
 
+def _files_copied(backup: BackupMetadata) -> bool:
+    """Check that the backup is an incomplete copy with the scope "files" completed."""
+    return (
+        backup.state in (BackupState.CREATING, BackupState.FAILED)
+        and _saved_statuses(backup).get(CopyScope.FILES) == CopyScopeStatus.COMPLETED
+    )
+
+
 def _copies_cloud_storage_without_files(backup: BackupMetadata) -> bool:
     """Check that the scope "cloud_storage" of the copy is not completed and can be copied alone."""
     return (
-        backup.state != BackupState.CREATED
+        _files_copied(backup)
         and backup.cloud_storage.requires_source_bucket
         and _saved_statuses(backup).get(CopyScope.CLOUD_STORAGE)
         != CopyScopeStatus.COMPLETED
