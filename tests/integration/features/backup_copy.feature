@@ -1172,4 +1172,13 @@ Feature: Copy backups to another storage
         purge --delete-cloud-storage-data
     """
     Then s3 bucket ch-backup-copy contains 0 objects
-    And s3 bucket cloud-storage-02 contains 0 objects
+    And s3 bucket cloud-storage-02 contains no objects with prefix "copy/"
+    And s3 bucket cloud-storage-02 contains no objects with prefix "third/"
+    When we execute query on clickhouse02
+    """
+    SELECT count(), sum(n) FROM test_db.table_s3
+    """
+    Then we get response
+    """
+    20	90
+    """
