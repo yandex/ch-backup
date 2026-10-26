@@ -712,7 +712,9 @@ Feature: Copy backups to another storage
       | 0   | creating |
     When we execute command on clickhouse01
     """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy LAST --scope cloud_storage --keep-going \
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf \
+        --config-parameter storage.credentials.bucket '"missing-bucket"' \
+        copy LAST --scope cloud_storage --keep-going \
         --no-server-side-copy \
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
         --target-cloud-storage-bucket cloud-storage-02 \

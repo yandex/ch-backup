@@ -16,6 +16,8 @@ from ch_backup.storage.object_copy import CopyEntry, storage_id
 
 COPY_CONTEXT_DIR = "copy_context"
 FAILED_OBJECTS_DIR = "failed"
+MANIFEST_DIR = "manifest"
+SOURCE_DIR = "source"
 
 
 class CopyContext:
@@ -26,9 +28,10 @@ class CopyContext:
     "<backup path>/copy_context/<fingerprint>/". Every file is written once under a
     unique name, so an interrupted run never damages records of earlier runs.
     The fingerprint identifies the source backup; a record identifies source and
-    target locations and size of the object. Objects that failed to copy are listed
-    in "failed/<scope>.jsonl.gz", which is not part of the journal: the journal is only
-    read from files directly under the fingerprint directory.
+    target locations and size of the object. The journal is only read from files directly
+    under the fingerprint directory. Objects that failed to copy are listed in
+    "failed/<scope>.jsonl.gz", objects of a scope in "manifest/<scope>.jsonl.gz", and
+    "source/" holds source metadata of the backup laid out as in its directory.
     """
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -40,12 +43,10 @@ class CopyContext:
         flush_size: int = 10000,
         flush_interval: float = 60,
     ) -> None:
-        identity = json.dumps([backup.name, backup.start_time_str, backup.hostname])
-        fingerprint = hashlib.sha256(identity.encode()).hexdigest()[:16]
         self._engine = engine
-        self._path = os.path.join(backup_path, COPY_CONTEXT_DIR, fingerprint).lstrip(
-            "/"
-        )
+        self._path = os.path.join(
+            backup_path, COPY_CONTEXT_DIR, _fingerprint(backup)
+        ).lstrip("/")
         self._run_id = f"{time.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
         self._index = 0
         self._flush_size = flush_size
@@ -129,6 +130,39 @@ class CopyContext:
         except Exception as e:
             logging.warning("Failed to save list of failed objects {}: {}", path, e)
 
+    def save_manifest(self, scope: CopyScope, entries: list[CopyEntry]) -> None:
+        """Save locations and sizes of all objects of the scope, without credentials."""
+        lines = [
+            json.dumps(
+                [
+                    list(storage_id(entry.src_storage)),
+                    entry.src_path,
+                    list(storage_id(entry.dst_storage)),
+                    entry.dst_path,
+                    entry.size,
+                ]
+            )
+            for entry in entries
+        ]
+        self._engine.upload_data(
+            gzip.compress(("\n".join(lines) + "\n").encode()),
+            os.path.join(self._path, MANIFEST_DIR, f"{scope.value}.jsonl.gz"),
+        )
+
+    def load_manifest(self, scope: CopyScope) -> list[CopyEntry]:
+        """Return objects of the scope saved by a previous run, with storages identified only."""
+        data = self._engine.download_data(
+            os.path.join(self._path, MANIFEST_DIR, f"{scope.value}.jsonl.gz")
+        )
+        entries = []
+        for line in gzip.decompress(data).splitlines():
+            if line:
+                src, src_path, dst, dst_path, size = json.loads(line)
+                entries.append(
+                    CopyEntry(_storage(src), _storage(dst), src_path, dst_path, size)
+                )
+        return entries
+
     def flush(self, force: bool = False) -> None:
         """
         Save buffered records once enough of them or enough time has accumulated.
@@ -154,6 +188,26 @@ class CopyContext:
             return
         self._buffer.clear()
         self._flushed_size = 0
+
+
+def source_dir(backup: BackupMetadata) -> str:
+    """Return the directory with source metadata of the backup, relative to the backup directory."""
+    return os.path.join(COPY_CONTEXT_DIR, _fingerprint(backup), SOURCE_DIR)
+
+
+def _fingerprint(backup: BackupMetadata) -> str:
+    """Identify the source backup."""
+    identity = json.dumps([backup.name, backup.start_time_str, backup.hostname])
+    return hashlib.sha256(identity.encode()).hexdigest()[:16]
+
+
+def _storage(identity: list) -> dict:
+    """Describe the storage by its identifier, as returned by storage_id."""
+    storage_type, endpoint_url, bucket = identity
+    return {
+        "type": storage_type,
+        "credentials": {"endpoint_url": endpoint_url, "bucket": bucket},
+    }
 
 
 def _record(entry: CopyEntry) -> bytes:

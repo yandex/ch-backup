@@ -957,7 +957,9 @@ def delete_command(
         type=Choice([scope.value for scope in CopyScope]),
         help='Copy only the specified scope: "files" for files of the backup, '
         '"cloud_storage" for data of object storage disks. Can be specified multiple times, '
-        "all scopes are copied by default. The copy is published once every scope is copied.",
+        "all scopes are copied by default. The copy is published once every scope is copied. "
+        'Without "files", copies are taken from the target storage, so the source storage is '
+        'not accessed; --all and LAST select copies with "cloud_storage" not completed.',
     ),
 )
 @option_group(
@@ -1042,7 +1044,7 @@ def copy_command(
 
         backup_names = None
         if name:
-            if name == "LAST":
+            if name == "LAST" and (not scopes or CopyScope.FILES.value in scopes):
                 name = _validate_and_resolve_name(
                     ctx, ch_backup, name, BackupState.CREATED
                 )

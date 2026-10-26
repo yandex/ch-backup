@@ -2,13 +2,14 @@
 Unit tests for the journal of copied objects.
 """
 
+import gzip
 from typing import Any
 from unittest.mock import patch
 
 from ch_backup.backup.copy_context import CopyContext
 from ch_backup.backup.metadata import CopyScope
 from ch_backup.exceptions import StorageError
-from ch_backup.storage.object_copy import CopyEntry
+from ch_backup.storage.object_copy import CopyEntry, storage_id
 from tests.unit.test_backup_copy import _backup
 
 STORAGE = {
@@ -189,3 +190,27 @@ def test_failed_objects_are_not_records() -> None:
 
     resumed.save_failures(CopyScope.FILES, [])
     assert not engine.objects
+
+
+def test_manifest_keeps_locations_without_credentials() -> None:
+    engine = MemoryEngine()
+    context = _context(engine)
+    storage = {
+        "type": "s3",
+        "credentials": {
+            "endpoint_url": "http://s3.test:9000",
+            "bucket": "copy",
+            "secret": "x",
+        },
+    }
+    entry = CopyEntry(storage, STORAGE, "src/a", "dst/a", 3)
+    context.save_manifest(CopyScope.FILES, [entry])
+
+    resumed = _context(engine)
+    resumed.load()
+
+    assert not resumed.has_records()
+    assert b"secret" not in gzip.decompress(next(iter(engine.objects.values())))
+    loaded = resumed.load_manifest(CopyScope.FILES)
+    assert [(e.src_path, e.dst_path, e.size) for e in loaded] == [("src/a", "dst/a", 3)]
+    assert [storage_id(e.src_storage) for e in loaded] == [storage_id(storage)]

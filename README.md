@@ -118,7 +118,8 @@ ch-backup copy --all --target-config /etc/yandex/ch-backup/dr.conf
 ch-backup copy --all --keep-going --target-config /etc/yandex/ch-backup/dr.conf \
     --report-path /tmp/ch-backup-copy-report.json
 
-# Copy files of the backup on the server side first, then stream data of object storage disks.
+# Copy files of the backup on the server side first, then stream data of object storage disks,
+# possibly from another host without access to the source storage.
 ch-backup copy LAST --scope files --server-side-copy --target-config /etc/yandex/ch-backup/dr.conf
 ch-backup copy LAST --scope cloud_storage --keep-going --no-server-side-copy \
     --target-config /etc/yandex/ch-backup/dr.conf
@@ -191,27 +192,36 @@ Behavior and limitations:
   When a linked part has already been materialized in a successfully copied backup, subsequent
   backups reuse that copy, including mutation-renamed parts and full cloud-storage backups.
 - Copying consists of two scopes: `files` copies files of the backup, `cloud_storage` copies data
-  and metadata of object storage disks, rewriting the metadata to reference the copied data.
-  `--scope` (can be given multiple times) copies only the specified scopes, all of them by default.
-  Each run chooses its own copy mode with `--[no-]server-side-copy`. A scope that is not copied is
-  planned only if it is completed, to check it with the same settings as copying it, so copying only
-  the scope `files` needs no settings of object storage data while `cloud_storage` is not completed.
-  Statuses of the scopes (`pending`, `completed`, `failed`) are saved in `meta.copy` of the copy,
-  for example `state: creating, copy: {scopes: {files: completed, cloud_storage: pending}}`. A
-  backup without data on object storage disks has the scope `cloud_storage` completed right away.
-  The copy becomes `created` once every scope is completed. Saved statuses are not trusted: a scope
-  that is not copied is completed only if the copy context and the target listing confirm all its
-  objects, otherwise it becomes `pending` again, e.g. after a failed delete. `--no-resume`
-  overwrites objects of the scopes that are copied and still checks the other scopes this way.
-  Between scopes, the copy is in the state `creating`, and `purge` and `delete --purge-partial` on
-  the target storage treat it as any other incomplete backup. With `--keep-going`, objects of a
-  scope that failed to copy are listed in `<backup>/copy_context/<id>/failed/<scope>.jsonl.gz`
-  (source and target keys, size and error) and the scope becomes `failed`; the next run of the scope
-  copies only unconfirmed objects. The list is rewritten by each run of the scope in which objects
-  fail and removed once the scope completes. Disk metadata that cannot be planned is not copied, so
-  it never overwrites rewritten disk metadata; a later run copies it. Copy scopes of one backup one
-  after another: the local lock serializes runs on one host, runs on different hosts require
-  `lock.zk_flock`.
+  and metadata of object storage disks kept in their buckets, rewriting the metadata to reference
+  the copied data. Backups without such data, including ones created with
+  `--copy-cloud-storage-data`, are copied entirely by `files`, and their scope `cloud_storage` is
+  completed right away. `--scope` (can be given multiple times) copies only the specified scopes,
+  all of them by default. Each run chooses its own copy mode with `--[no-]server-side-copy`. `files`
+  also copies metadata of the backup and the original disk metadata into
+  `<backup>/copy_context/<id>/source/` and saves the list of its objects in
+  `<backup>/copy_context/<id>/manifest/files.jsonl.gz` (locations and sizes, without credentials). A
+  run without `files` does not access the source storage: it takes copies from the target storage
+  (the specified ones, or with `--all` every copy whose `cloud_storage` is not completed, or the
+  newest of them for `LAST`), reads metadata from `source/`, copies disk metadata that needs no
+  rewriting from there and checks `files` by the manifest. So `files` must be copied first, from a
+  host with access to the source storage; `cloud_storage` needs only access to the buckets of the
+  disks. A scope that is not copied is planned only if it is completed, to check it with the same
+  settings as copying it, so copying only the scope `files` needs no settings of object storage data
+  while `cloud_storage` is not completed. Statuses of the scopes (`pending`, `completed`, `failed`)
+  are saved in `meta.copy` of the copy, for example `state: creating, copy: {scopes: {files:
+  completed, cloud_storage: pending}}`. The copy becomes `created` once every scope is completed.
+  Saved statuses are not trusted: a scope that is not copied is completed only if the copy context
+  and the target listing confirm all its objects, otherwise it becomes `pending` again, e.g. after a
+  failed delete. `--no-resume` overwrites objects of the scopes that are copied and still checks the
+  other scopes this way. Between scopes, the copy is in the state `creating`, and `purge` and
+  `delete --purge-partial` on the target storage treat it as any other incomplete backup. With
+  `--keep-going`, objects of a scope that failed to copy are listed in
+  `<backup>/copy_context/<id>/failed/<scope>.jsonl.gz` (source and target keys, size and error) and
+  the scope becomes `failed`; the next run of the scope copies only unconfirmed objects. The list is
+  rewritten by each run of the scope in which objects fail and removed once the scope completes.
+  Disk metadata that cannot be planned is not copied, so it never overwrites rewritten disk
+  metadata; a later run copies it. Copy scopes of one backup one after another: the local lock
+  serializes runs on one host, runs on different hosts require `lock.zk_flock`.
 - Copy acquires the configured source and target locks through completion, including retries and
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
   and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.
