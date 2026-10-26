@@ -98,7 +98,7 @@ class BackupCopier:
     objects confirmed by the copy context and still present in the target storage.
 
     Copying is split into stages: "backup" copies files of the backup, "cloud_storage" copies
-    data of object storage disks. Stages may be run separately, and the copy becomes "created"
+    data and metadata of object storage disks. Stages may be run separately, and the copy becomes "created"
     once every stage is confirmed.
     """
 
@@ -324,9 +324,6 @@ class BackupCopier:
     def _copy_backup(self, backup_name: str, result: BackupCopyResult) -> bool:
         """
         Copy backup. Return False if the backup is already present in the target storage.
-
-        Disk metadata is not copied as is when planning of the "cloud_storage" stage fails:
-        it could overwrite rewritten disk metadata uploaded by an earlier run.
         """
         self._source_backup_files.clear()
         self._target_backups.clear()
@@ -400,22 +397,6 @@ class BackupCopier:
             result.add_error(e, "validation")
             raise
 
-        rewritten_paths = {
-            _key(path) for path, _ in plan.rewritten_cloud_storage_metadata
-        }
-        plan.entries = [
-            entry
-            for entry in plan.entries
-            if storage_id(entry.dst_storage) != storage_id(self._target_storage)
-            or _key(entry.dst_path) not in rewritten_paths
-        ]
-        if not planned[CLOUD_STORAGE_STAGE]:
-            disks_dir = self._disks_dir(backup)
-            plan.entries = [
-                entry
-                for entry in plan.entries
-                if not _key(entry.dst_path).startswith(disks_dir)
-            ]
         result.objects_total = sum(
             len(entries) + len(archives)
             for entries, archives in map(plan.stage_objects, self._stages)
@@ -652,24 +633,17 @@ class BackupCopier:
     ) -> None:
         """
         Plan copying of all files from the backup directory except metadata files.
+
+        Disk metadata is planned by the "cloud_storage" stage.
         """
         exclude = {BACKUP_META_FNAME, BACKUP_LIGHT_META_FNAME, COPY_CONTEXT_DIR}
         if backup.cloud_storage.data_copied:
             # Plan these from disk metadata, including objects held by older backups.
             exclude.update({"disks", "cloud_storage"})
+        elif backup.cloud_storage.enabled:
+            exclude.add("disks")
         with self._planning_step(result, backup.name):
             self._plan_directory(backup.name, plan, result, exclude=exclude)
-
-        sanitized_name = backup.get_sanitized_name()
-        if (
-            backup.cloud_storage.enabled
-            and not backup.cloud_storage.data_copied
-            and sanitized_name != backup.name
-        ):
-            # Cloud storage metadata is stored in the directory named after sanitized backup name.
-            relative_path = os.path.join(sanitized_name, "disks")
-            with self._planning_step(result, relative_path):
-                self._plan_directory(relative_path, plan, result)
 
     def _plan_directory(
         self,
@@ -1106,10 +1080,19 @@ class BackupCopier:
         Objects are referenced from metadata files of frozen parts saved in the backup.
         Objects of the backup are copied under "<target path>/<backup name>/" keeping keys relative
         to the disk key prefix. Metadata files with full object keys are rewritten to reference
-        the copied objects.
+        the copied objects. Other disk metadata is copied as is, unless it failed to be planned:
+        it could overwrite rewritten disk metadata uploaded by an earlier run.
         """
         target_storage, target_path = self._get_target_cloud_storage()
         dst_prefix = os.path.join(target_path, backup.name)
+        sizes = self._list(
+            self._storage,
+            _key(
+                os.path.join(
+                    self._layout.get_backup_path(backup.get_sanitized_name()), "disks"
+                )
+            ),
+        )
 
         entries: dict[str, CopyEntry] = {}
         for disk_name in backup.cloud_storage.disks:
@@ -1124,6 +1107,7 @@ class BackupCopier:
                     "all",
                 ):
                     with self._planning_step(result, remote_path):
+                        errors = len(result.errors)
                         files = self._layout.get_cloud_storage_metadata_files(
                             backup, remote_path
                         )
@@ -1151,6 +1135,16 @@ class BackupCopier:
                         if rewritten:
                             plan.rewritten_cloud_storage_metadata.append(
                                 (self._get_target_path(remote_path), files)
+                            )
+                        elif len(result.errors) == errors:
+                            plan.cloud_storage_entries.append(
+                                CopyEntry(
+                                    self._storage,
+                                    self._target_storage,
+                                    _key(remote_path),
+                                    self._get_target_path(remote_path),
+                                    sizes[_key(remote_path)],
+                                )
                             )
 
         plan.cloud_storage_entries.extend(entries.values())

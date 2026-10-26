@@ -191,10 +191,11 @@ Behavior and limitations:
   When a linked part has already been materialized in a successfully copied backup, subsequent
   backups reuse that copy, including mutation-renamed parts and full cloud-storage backups.
 - Copying consists of two stages: `backup` copies files of the backup, `cloud_storage` copies data
-  of object storage disks and uploads disk metadata rewritten to reference it. `--stage` (can be
-  given multiple times) runs only the specified stages, all of them by default. Each run chooses
-  its own copy mode with `--[no-]server-side-copy`. Every run plans the whole backup, so it needs the
-  same target settings, including the target location of object storage data. Statuses of the
+  and metadata of object storage disks, rewriting the metadata to reference the copied data.
+  `--stage` (can be given multiple times) runs only the specified stages, all of them by default.
+  Each run chooses its own copy mode with `--[no-]server-side-copy`. Every run plans the whole
+  backup, so it needs the same target settings, including the target location of object storage
+  data. Statuses of the
   stages (`pending`, `completed`, `failed`) are saved in `meta.copy` of the copy, for example
   `state: creating, copy: {backup: completed, cloud_storage: pending}`. A backup without data on
   object storage disks has the stage `cloud_storage` completed right away. The copy becomes `created`
@@ -207,8 +208,8 @@ Behavior and limitations:
   are listed in `<backup>/copy_context/<id>/failed.jsonl.gz` (source and target keys, size and error)
   and the stage becomes `failed`; the next run of the stage copies only unconfirmed objects. The list
   is rewritten by each run of the stage in which objects fail and removed once the stage completes.
-  If data of object storage disks cannot be planned, the run does not copy disk metadata, so it
-  never overwrites rewritten disk metadata; a later run copies it. Run stages of one backup
+  Disk metadata that cannot be planned is not copied, so it never overwrites rewritten disk
+  metadata; a later run copies it. Run stages of one backup
   one after another: the local lock serializes runs on one host, runs on different hosts require
   `lock.zk_flock`.
 - Copy acquires the configured source and target locks through completion, including retries and
