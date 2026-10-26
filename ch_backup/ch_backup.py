@@ -16,6 +16,7 @@ import requests
 
 from ch_backup import logging
 from ch_backup.backup.copier import BackupCopier
+from ch_backup.backup.copy_deduplication import copy_deduplication_cutoff
 from ch_backup.backup.copy_report import CopyReport
 from ch_backup.backup.deduplication import (
     DedupReferences,
@@ -37,7 +38,7 @@ from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner, select_replica_drop
 from ch_backup.clickhouse.models import Database, Table
 from ch_backup.clickhouse.part_checksums import CLICKHOUSE_BINARY
-from ch_backup.config import Config, as_datetime, copy_deduplication_cutoff
+from ch_backup.config import Config, as_datetime
 from ch_backup.exceptions import (
     BackupNotFound,
     ClickhouseBackupError,

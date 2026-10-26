@@ -1,7 +1,7 @@
 """Target-local part ownership for an independent backup-copy window."""
 
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from hashlib import blake2b
 from typing import NamedTuple
 
@@ -13,9 +13,32 @@ from ch_backup.backup.metadata import (
     PartMetadata,
     split_part_name,
 )
-from ch_backup.exceptions import is_broken_executor
+from ch_backup.exceptions import ConfigurationError, is_broken_executor
 
 PartsByTable = dict[tuple[str, str], list[tuple[tuple, PartMetadata]]]
+
+
+def copy_deduplication_cutoff(copy_config: dict, now: datetime) -> datetime | None:
+    """Validate the copy window and return its inclusive lower bound, or disable it."""
+    error = (
+        "copy.deduplication_age_limit must be a mapping of timedelta units to "
+        "finite nonnegative numbers, with a representable age"
+    )
+    if not isinstance(copy_config, dict):
+        raise ConfigurationError(error)
+    value = copy_config.get("deduplication_age_limit", {"days": 0})
+    try:
+        if not isinstance(value, dict) or any(
+            isinstance(amount, bool)
+            or not isinstance(amount, (int, float))
+            or amount < 0
+            for amount in value.values()
+        ):
+            raise ValueError(error)
+        age = timedelta(**value)
+        return now - age if age != timedelta(0) else None
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise ConfigurationError(error) from exc
 
 
 class _StoredPart(NamedTuple):

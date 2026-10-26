@@ -8,8 +8,9 @@ from unittest.mock import patch
 
 import pytest
 
+from ch_backup.backup.copy_deduplication import copy_deduplication_cutoff
 from ch_backup.ch_backup import ClickhouseBackup
-from ch_backup.config import Config, as_datetime, copy_deduplication_cutoff
+from ch_backup.config import Config, as_datetime
 from ch_backup.exceptions import ConfigurationError
 
 

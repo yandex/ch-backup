@@ -17,7 +17,10 @@ from urllib.parse import quote, urlparse
 
 from ch_backup import logging
 from ch_backup.backup.copy_context import COPY_CONTEXT_DIR, CopyContext
-from ch_backup.backup.copy_deduplication import CopyDeduplication
+from ch_backup.backup.copy_deduplication import (
+    CopyDeduplication,
+    copy_deduplication_cutoff,
+)
 from ch_backup.backup.copy_report import BackupCopyResult, CopyReport
 from ch_backup.backup.layout import (
     BACKUP_LIGHT_META_FNAME,
@@ -41,7 +44,7 @@ from ch_backup.clickhouse.object_storage_metadata import (
     parse_object_storage_metadata,
     replace_object_keys,
 )
-from ch_backup.config import Config, copy_deduplication_cutoff
+from ch_backup.config import Config
 from ch_backup.exceptions import (
     BackupNotFound,
     ClickhouseBackupError,

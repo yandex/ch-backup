@@ -35,11 +35,12 @@ from ch_backup.command_context import command_context
 from ch_backup.exceptions import ConfigurationError, TerminatingSignal
 
 from . import logging
+from .backup.copy_deduplication import copy_deduplication_cutoff
 from .backup.copy_report import CopyReport, print_copy_report
 from .backup.metadata import BackupState, TableMetadata
 from .backup.sources import BackupSources
 from .ch_backup import CleanZooKeeperMode, ClickhouseBackup
-from .config import DEFAULT_CONFIG, Config, copy_deduplication_cutoff
+from .config import DEFAULT_CONFIG, Config
 from .logic.partial_restore import PartialRestoreFilter
 from .params import JsonParamType, KeyValues, List, String, TimeSpan
 from .profile import profile
