@@ -33,6 +33,7 @@ from ch_backup.exceptions import (
     TerminatingSignal,
 )
 from ch_backup.storage.object_copy import CopyEntry, storage_id
+from ch_backup.util import now
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S %z"
 SRC_BUCKET = "backups"
@@ -2757,6 +2758,8 @@ def test_copy_scopes_separately() -> None:
     assert report.backups[0].scopes == _scopes(target)
     assert report.backups[0].status == "partial"
     assert report.backups[0].backup_state == "creating"
+    light = BackupMetadata.load_json(target.dump_json(light=True))
+    assert light.copy_updated_at and light.copy_updated_at <= now()
     assert not _disk_objects(ctx)
     ctx.target_layout.copied.clear()
 

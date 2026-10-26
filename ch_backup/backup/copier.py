@@ -60,6 +60,7 @@ from ch_backup.storage.object_copy import (
     server_side_copy_possible,
     storage_id,
 )
+from ch_backup.util import now
 
 FROZEN_METADATA_FNAME = "frozen_metadata.txt"
 
@@ -626,7 +627,10 @@ class BackupCopier:
     ) -> None:
         """Upload metadata of the copy with statuses of scopes, reporting both."""
         scopes = {scope.value: status.value for scope, status in statuses.items()}
-        target_meta.copy = {"scopes": scopes}
+        target_meta.copy = {
+            "scopes": scopes,
+            "updated_at": now().strftime(target_meta.time_format),
+        }
         result.scopes = dict(scopes)
         self._target_layout.upload_backup_metadata(target_meta)
         result.backup_state = target_meta.state.value
