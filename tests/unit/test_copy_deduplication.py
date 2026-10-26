@@ -1,5 +1,7 @@
 """Independent target deduplication in backup copy."""
 
+import gc
+import weakref
 from concurrent.futures import BrokenExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -7,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from ch_backup.backup.copy_deduplication import CopyDeduplication
 from ch_backup.backup.copy_report import CopyReport
 from ch_backup.backup.layout import (
     get_data_part_file_names,
@@ -144,6 +147,60 @@ def test_incompatible_part_is_copied(field, value):
     ctx.copy()
     assert ctx.target_layout.backups["new"].get_parts()[0].link is None
     assert ctx.target_layout.copied
+
+
+@pytest.mark.parametrize(
+    "files,expected_owner", [(["c", "ab"], "owner"), (["a", "bc"], None)]
+)
+def test_file_list_order_and_name_boundaries(files, expected_owner):
+    owner = _backup(
+        "owner",
+        start_time="2026-10-20 00:00:00 +0000",
+        parts={PART: {**_part(), "files": ["ab", "c"]}},
+    )
+    ctx = _context({**_part(), "files": files}, [owner])
+    ctx.copy()
+    assert ctx.target_layout.backups["new"].get_parts()[0].link == expected_owner
+    assert bool(ctx.target_layout.copied) == (expected_owner is None)
+
+
+def test_index_releases_file_names_and_duplicate_owner_keys():
+    class TrackedString(str):
+        pass
+
+    ctx = _context(owners=[])
+    index = CopyDeduplication(ctx.target_layout, NOW - timedelta(days=7), NOW)
+    file_refs = []
+    checksum_refs = []
+    for name in ("first", "second"):
+        checksum = TrackedString("shared checksum")
+        filename = TrackedString("data.bin")
+        owner = _backup(
+            name,
+            start_time="2026-10-20 00:00:00 +0000",
+            parts={
+                PART: {
+                    **_part(checksum=checksum),
+                    "files": [filename, "checksums.txt"],
+                }
+            },
+        )
+        file_refs.append(weakref.ref(filename))
+        checksum_refs.append(weakref.ref(checksum))
+        index.add_backup(owner, published=True)
+        del owner, checksum, filename
+    gc.collect()
+
+    assert all(reference() is None for reference in file_refs)
+    # Keep the canonical key, but release the duplicate key of a CREATED owner.
+    assert checksum_refs[0]() is not None
+    assert checksum_refs[1]() is None
+    part = _backup(
+        "source", parts={PART: _part(checksum="shared checksum")}
+    ).get_parts()[0]
+    match = index.find_part(part, "new")
+    assert match is not None
+    assert match.backup_name == "second"
 
 
 @pytest.mark.parametrize("state", list(BackupState))

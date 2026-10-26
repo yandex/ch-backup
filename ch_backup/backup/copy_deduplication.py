@@ -2,6 +2,7 @@
 
 from collections import defaultdict
 from datetime import datetime
+from hashlib import blake2b
 from typing import NamedTuple
 
 from ch_backup import logging
@@ -39,7 +40,9 @@ def _part_key(part: PartMetadata) -> tuple:
         part.size,
         part.tarball,
         part.encrypted,
-        tuple(sorted(part.files)),
+        # File names cannot contain NUL. Preserve file-list matching without
+        # retaining every name after the candidate metadata is released.
+        blake2b("\0".join(sorted(part.files)).encode(), digest_size=16).digest(),
     )
 
 
@@ -126,7 +129,10 @@ class CopyDeduplication:
                 ):
                     continue
                 candidates = self._parts[key]
-                self._backup_keys[backup.name].add(key)
+                # Only PARTIALLY_DELETED owners can be restarted in this command;
+                # existing CREATED targets and newly published owners are skipped.
+                if backup.state == BackupState.PARTIALLY_DELETED:
+                    self._backup_keys[backup.name].add(key)
                 candidates.append(
                     _StoredPart(backup.name, backup.start_time, part.name)
                 )

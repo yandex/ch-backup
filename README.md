@@ -213,6 +213,8 @@ Behavior and limitations:
   Reading full metadata and listing part files in eligible target backups costs additional S3
   requests. Each candidate's full metadata is read once for the index, file listings are grouped
   by table, and index memory grows with the number of physical local parts in the window.
+  The index retains a fixed-size fingerprint of each file list instead of its file names.
+  Loading a candidate still requires memory proportional to that backup's full metadata.
   Existing completed copies are skipped and existing duplicates are not compacted.
   Cloud-storage and detached parts retain their existing behavior. Restore uses the existing
   link format; delete and purge preserve referenced parts in partially deleted owners until
