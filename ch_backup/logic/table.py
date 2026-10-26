@@ -7,7 +7,7 @@ Clickhouse backup logic for tables
 import os
 import shutil
 from collections import deque
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager, ExitStack, nullcontext
 from dataclasses import dataclass
 from functools import partial
 from itertools import chain, count
@@ -35,6 +35,10 @@ from ch_backup.clickhouse.schema import (
 )
 from ch_backup.exceptions import ClickhouseBackupError, is_broken_executor
 from ch_backup.logic.backup_manager import BackupManager
+from ch_backup.logic.storage_schema_restore import (
+    StorageSchemaRestore,
+    restore_disk_name,
+)
 from ch_backup.logic.upload_part_observer import UploadPartObserver
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
     ThreadExecPool,
@@ -53,6 +57,19 @@ class TableMetadataChangeTime:
     metadata_path: str
     mtime_ns: int  # Time of most recent content modification expressed in nanoseconds.
     ctime_ns: int  # Time of most recent filesystem metadata(hardlinks) change expressed in nanoseconds.
+
+
+@dataclass
+class PreparedTableRestore:
+    """Selected schemas and held locks shared by database and table restore."""
+
+    tables_meta: list[TableMetadata]
+    filtered_tables_meta: list[TableMetadata]
+    tables: list[Table]
+    duplicate_uuid_skipped: int
+    missing_create_statement_skipped: int
+    storage_restore: StorageSchemaRestore | None
+    schema_locks: ExitStack
 
 
 class TableBackup(BackupManager):
@@ -605,25 +622,18 @@ class TableBackup(BackupManager):
             )
             context.backup_meta.cloud_storage.add_disk(disk.name)
 
-    # pylint: disable=too-many-arguments,too-many-locals,too-many-positional-arguments
-    def restore(
+    # pylint: disable=too-many-positional-arguments,too-many-arguments,too-many-locals
+    def prepare_restore(
         self,
         context: BackupContext,
         databases: dict[str, Database],
-        schema_only: bool,
         tables: list[TableMetadata],
-        metadata_cleaner: MetadataCleaner | None,
-        cloud_storage_source_bucket: str | None,
-        cloud_storage_source_path: str | None,
-        cloud_storage_source_endpoint: str | None,
-        skip_cloud_storage: bool,
-        restore_detached_parts: bool,
         keep_going: bool,
+        skip_cloud_storage: bool,
         restore_tables_in_replicated_database: bool,
-    ) -> None:
-        """
-        Restore tables and MergeTree data.
-        """
+        schema_locks: ExitStack,
+    ) -> PreparedTableRestore:
+        """Prepare and check schemas before any database or table can be dropped."""
         logging.debug("Retrieving tables metadata")
         tables_meta: list[TableMetadata] = list(
             chain(
@@ -670,7 +680,7 @@ class TableBackup(BackupManager):
                 logging.warning(
                     "No tables remain to restore after filtering missing required tables"
                 )
-                return
+                return PreparedTableRestore([], [], [], 0, 0, None, schema_locks)
 
         filtered_tables_meta, duplicate_uuid_skipped = self._filter_duplicate_uuid(
             tables_meta, keep_going
@@ -689,49 +699,143 @@ class TableBackup(BackupManager):
             for table in tables_meta
             if (table.database, table.name) in tables_with_create_statements
         ]
-        if not tables_meta:
+        if len(tables_meta) == 0:
             logging.warning("No tables remain to restore after loading table schemas")
-            return
+            return PreparedTableRestore(
+                [],
+                filtered_tables_meta,
+                [],
+                duplicate_uuid_skipped,
+                missing_create_statement_skipped,
+                None,
+                schema_locks,
+            )
 
-        (
-            tables_to_restore,
-            preprocessing_failed_skipped,
-            preprocessing_failed_tables,
-        ) = self._preprocess_tables_to_restore(
-            context,
-            databases,
+        storage_restore = StorageSchemaRestore(context) if skip_cloud_storage else None
+        if storage_restore is not None:
+            tables_to_preprocess = self._adapt_storage_schemas(
+                context,
+                databases,
+                tables_to_preprocess,
+                storage_restore,
+                keep_going,
+                restore_tables_in_replicated_database,
+            )
+            storage_restore.lock_tables(tables_to_preprocess, schema_locks)
+            storage_restore.check_existing_tables(tables_to_preprocess)
+        return PreparedTableRestore(
+            tables_meta,
+            filtered_tables_meta,
             tables_to_preprocess,
-            keep_going,
-            restore_tables_in_replicated_database,
-            metadata_cleaner,
-        )
-        self._log_restore_preprocess_summary(
-            duplicate_uuid_skipped=duplicate_uuid_skipped,
-            missing_create_statement_skipped=missing_create_statement_skipped,
-            preprocessing_failed_skipped=preprocessing_failed_skipped,
+            duplicate_uuid_skipped,
+            missing_create_statement_skipped,
+            storage_restore,
+            schema_locks,
         )
 
-        failed_tables = self._restore_tables(
-            context,
-            databases,
-            tables_to_restore,
-            keep_going,
-        )
+    # pylint: disable=too-many-arguments,too-many-locals,too-many-positional-arguments
+    def restore(
+        self,
+        context: BackupContext,
+        databases: dict[str, Database],
+        schema_only: bool,
+        tables: list[TableMetadata],
+        metadata_cleaner: MetadataCleaner | None,
+        cloud_storage_source_bucket: str | None,
+        cloud_storage_source_path: str | None,
+        cloud_storage_source_endpoint: str | None,
+        skip_cloud_storage: bool,
+        restore_detached_parts: bool,
+        keep_going: bool,
+        restore_tables_in_replicated_database: bool,
+        prepared_restore: PreparedTableRestore | None = None,
+    ) -> None:
+        """
+        Restore tables and MergeTree data.
+        """
+        with ExitStack() as schema_locks:
+            prepared = prepared_restore
+            if prepared is None:
+                prepared = self.prepare_restore(
+                    context,
+                    databases,
+                    tables,
+                    keep_going,
+                    skip_cloud_storage,
+                    restore_tables_in_replicated_database,
+                    schema_locks,
+                )
+            else:
+                # The caller acquired these locks before database restore. Release
+                # them after CREATE, without holding up other replicas during data loading.
+                schema_locks.enter_context(prepared.schema_locks)
+            if len(prepared.tables_meta) == 0:
+                return
+            tables_meta = prepared.tables_meta
+            filtered_tables_meta = prepared.filtered_tables_meta
+            tables_to_preprocess = prepared.tables
+            storage_restore = prepared.storage_restore
+            (
+                tables_to_restore,
+                preprocessing_failed_skipped,
+                preprocessing_failed_tables,
+            ) = self._preprocess_tables_to_restore(
+                context,
+                databases,
+                tables_to_preprocess,
+                keep_going,
+                restore_tables_in_replicated_database,
+                metadata_cleaner,
+                storage_restore=storage_restore,
+            )
+            self._log_restore_preprocess_summary(
+                duplicate_uuid_skipped=prepared.duplicate_uuid_skipped,
+                missing_create_statement_skipped=prepared.missing_create_statement_skipped,
+                preprocessing_failed_skipped=preprocessing_failed_skipped,
+            )
+
+            failed_tables = self._restore_tables(
+                context,
+                databases,
+                tables_to_restore,
+                keep_going,
+            )
+
+        if storage_restore is not None:
+            # A valid rewrite can still fail during preprocessing or CREATE. Do
+            # not report success with keep-going merely because parsing succeeded.
+            for key in preprocessing_failed_tables | {
+                (table.database, table.name) for table in failed_tables
+            }:
+                storage_restore.errors.setdefault(key, "Table schema restore failed")
 
         if schema_only:
             logging.debug(
                 "Skipping restoring of table data as --schema-only flag passed"
             )
+            if storage_restore is not None:
+                # Keep-going may have restored other schemas successfully; it
+                # must still report any deferred adaptation errors to the caller.
+                storage_restore.raise_errors()
             return
 
         failed_tables_names = [f"`{t.database}`.`{t.name}`" for t in failed_tables]
+        # Never load parts into a table whose schema preparation or creation failed.
         tables_to_restore_data = list(
             filter(
-                lambda t: f"`{t.database}`.`{t.name}`" not in failed_tables_names,
+                lambda t: f"`{t.database}`.`{t.name}`" not in failed_tables_names
+                and (t.database, t.name) not in preprocessing_failed_tables
+                and (
+                    storage_restore is None
+                    or (t.database, t.name) not in storage_restore.errors
+                ),
                 tables_meta,
             )
         )
 
+        tables_with_create_statements = {
+            (table.database, table.name) for table in tables_to_preprocess
+        }
         tables_to_restore_detached = [
             table
             for table in filtered_tables_meta
@@ -763,6 +867,11 @@ class TableBackup(BackupManager):
                 disks=disks,
                 skip_cloud_storage=skip_cloud_storage,
                 keep_going=keep_going,
+                storage_disks=(
+                    storage_restore.storage_disks
+                    if storage_restore is not None
+                    else None
+                ),
             )
 
         if restore_detached_parts and any(
@@ -773,7 +882,16 @@ class TableBackup(BackupManager):
                 tables=tables_to_restore_detached,
                 skip_cloud_storage=skip_cloud_storage,
                 keep_going=keep_going,
+                storage_disks=(
+                    storage_restore.storage_disks
+                    if storage_restore is not None
+                    else None
+                ),
             )
+        if storage_restore is not None:
+            # Report deferred errors only after independent tables and their parts
+            # have been restored, so keep-going preserves useful completed work.
+            storage_restore.raise_errors()
 
     @staticmethod
     def _check_metadata_change_time(
@@ -1163,6 +1281,50 @@ class TableBackup(BackupManager):
         context.ch_ctl.attach_table(detached_table)
         context.ch_ctl.drop_table_if_exists(detached_table)
 
+    # pylint: disable=too-many-positional-arguments
+    def _adapt_storage_schemas(
+        self,
+        context: BackupContext,
+        databases: dict[str, Database],
+        tables: list[Table],
+        storage_restore: StorageSchemaRestore,
+        keep_going: bool,
+        restore_tables_in_replicated_database: bool,
+    ) -> list[Table]:
+        result = []
+        for table in tables:
+            try:
+                # Resolve names, UUIDs and engine conversion before choosing the
+                # target policy or resolving a replicated table's Keeper path.
+                self._rewrite_table_schema(
+                    context, databases[table.database], table, add_uuid_if_required=True
+                )
+                # Replicated databases normally recreate tables themselves. Adapt
+                # only tables that this restore is allowed to create explicitly.
+                if (
+                    not databases[table.database].is_replicated_db_engine()
+                    or restore_tables_in_replicated_database
+                ):
+                    storage_restore.adapt(table)
+                result.append(table)
+            except (
+                ClickhouseBackupError,
+                ClickhouseError,
+                OSError,
+                ValueError,
+            ) as error:
+                if not keep_going:
+                    raise
+                # Exclude this table from subsequent schema/data restore, but save
+                # the error so independent work can finish before restore fails.
+                storage_restore.errors[(table.database, table.name)] = str(error)
+                logging.exception(
+                    "Cannot adapt storage schema of {}.{}; independent tables will be restored",
+                    table.database,
+                    table.name,
+                )
+        return result
+
     # pylint: disable=too-many-branches
     # pylint: disable=too-many-statements
     def _preprocess_tables_to_restore(
@@ -1173,6 +1335,7 @@ class TableBackup(BackupManager):
         keep_going: bool,
         restore_tables_in_replicated_database: bool,
         metadata_cleaner: MetadataCleaner | None,
+        storage_restore: StorageSchemaRestore | None = None,
     ) -> tuple[list[Table], int, set[tuple[str, str]]]:
         # Prepare table schema to restore.
 
@@ -1191,9 +1354,17 @@ class TableBackup(BackupManager):
             if table.uuid:
                 existing_tables_by_uuid[table.uuid] = table
 
+        # In-place replica repair reuses the old local schema. Tables with adapted
+        # DDL must instead go through drop and CREATE.
         existing_readonly_tables, readonly_cleaned_metadata = (
             self._get_remaining_readonly_tables_after_fix_attempt(
-                context, tables, metadata_cleaner
+                context,
+                [
+                    table
+                    for table in tables
+                    if storage_restore is None or not storage_restore.changed(table)
+                ],
+                metadata_cleaner,
             )
         )
 
@@ -1204,9 +1375,15 @@ class TableBackup(BackupManager):
         for table in tables:
             table_name_for_logs = f'"{table.database}"."{table.name}"'
             try:
-                self._rewrite_table_schema(
-                    context, databases[table.database], table, add_uuid_if_required=True
-                )
+                # Storage adaptation already rewrote names and UUIDs before locks
+                # were taken; repeating it here could change the resolved path.
+                if storage_restore is None:
+                    self._rewrite_table_schema(
+                        context,
+                        databases[table.database],
+                        table,
+                        add_uuid_if_required=True,
+                    )
 
                 detached_table = None
                 if table.uuid:
@@ -1595,6 +1772,7 @@ class TableBackup(BackupManager):
         disks: ClickHouseTemporaryDisks,
         skip_cloud_storage: bool,
         keep_going: bool,
+        storage_disks: dict[tuple[str, str], tuple[str, ...]] | None = None,
     ) -> None:
         # pylint: disable=too-many-branches
         logging.info("Restoring tables data")
@@ -1673,8 +1851,12 @@ class TableBackup(BackupManager):
                                 continue
                             cloud_storage_parts.append((table, part))
                         else:
+                            # Keep the backup part's identity for download; only
+                            # its local destination changes with the target policy.
                             fs_part_path = context.ch_ctl.get_detached_part_path(
-                                table, part.disk_name, part.name
+                                table,
+                                restore_disk_name(table, part.disk_name, storage_disks),
+                                part.name,
                             )
                             context.backup_layout.download_data_part(
                                 context.backup_meta,
@@ -1763,6 +1945,7 @@ class TableBackup(BackupManager):
         tables: Iterable[TableMetadata],
         skip_cloud_storage: bool,
         keep_going: bool,
+        storage_disks: dict[tuple[str, str], tuple[str, ...]] | None = None,
     ) -> None:
         """Restore backed-up detached parts without attaching them.
 
@@ -1787,7 +1970,7 @@ class TableBackup(BackupManager):
                 raise error
 
             scheduled_paths: list[str] = []
-            downloaded_parts: list[tuple[DetachedPartMetadata, str, str]] = []
+            downloaded_parts: list[tuple[DetachedPartMetadata, str, str, str]] = []
             disks_to_chown: set[str] = set()
             for part in detached_parts:
                 try:
@@ -1801,19 +1984,28 @@ class TableBackup(BackupManager):
                         )
                         continue
 
+                    # Apply the same local disk mapping as for active parts.
+                    # Object-storage metadata remains tied to its original disk.
+                    target_disk = (
+                        part.disk_name
+                        if part.object_storage
+                        else restore_disk_name(table, part.disk_name, storage_disks)
+                    )
                     destination = TableBackup._find_detached_restore_destination(
-                        context, table, part
+                        context, table, part, target_disk
                     )
                     if destination is None:
-                        disks_to_chown.add(part.disk_name)
+                        disks_to_chown.add(target_disk)
                         continue
                     restore_part, destination_path = destination
 
                     staging_path = TableBackup._detached_staging_path(destination_path)
                     scheduled_paths.append(staging_path)
+                    # Carry the target disk through the asynchronous download so
+                    # ownership is fixed where the part was actually restored.
                     callback = partial(
                         downloaded_parts.append,
-                        (restore_part, staging_path, destination_path),
+                        (restore_part, staging_path, destination_path, target_disk),
                     )
                     # The archive is stored under its original backup name. The
                     # possibly suffixed name applies only to the restore target.
@@ -1838,12 +2030,12 @@ class TableBackup(BackupManager):
             try:
                 context.backup_layout.wait(keep_going)
 
-                for part, staging_path, target_path in downloaded_parts:
+                for part, staging_path, target_path, target_disk in downloaded_parts:
                     try:
                         TableBackup._promote_detached_part(
                             context, part, staging_path, target_path
                         )
-                        disks_to_chown.add(part.disk_name)
+                        disks_to_chown.add(target_disk)
                     except Exception:
                         if keep_going:
                             logging.exception(
@@ -1868,6 +2060,7 @@ class TableBackup(BackupManager):
         context: BackupContext,
         table: Table,
         part: DetachedPartMetadata,
+        target_disk: str | None = None,
     ) -> tuple[DetachedPartMetadata, str] | None:
         """Find a free detached path, adding ClickHouse-style ``_tryN`` suffixes.
 
@@ -1889,7 +2082,7 @@ class TableBackup(BackupManager):
                 part if try_no == 0 else part.with_name(f"{part.name}_try{try_no}")
             )
             target_path = context.ch_ctl.get_detached_part_path(
-                table, restore_part.disk_name, restore_part.name
+                table, target_disk or restore_part.disk_name, restore_part.name
             )
             if os.path.exists(target_path):
                 if context.ch_ctl.detached_part_matches(part, target_path):
