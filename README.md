@@ -202,7 +202,11 @@ Behavior and limitations:
   checksum, disk, size, file list, layout and encryption, even if source stores the part anew
   or links to a different owner. The newest matching physical owner with available files is used.
   Its original backup `start_time` must be within the period before the start of the copy command;
-  copying preserves that timestamp. A recent reference does not extend an old owner's window.
+  both bounds are inclusive and fixed before resolving `LAST` or waiting for locks.
+  Owners without a timestamp or with a future timestamp are skipped. Copying preserves the
+  original timestamp. A recent reference does not extend an old owner's window.
+  This additional lookup reuses only TAR parts, whose stored archive size can be checked.
+  Legacy per-file parts are copied from source because their metadata has no individual file sizes.
   This applies to source links too: without an eligible target owner, the part is copied from source.
   The window is independent of `backup.deduplication_age_limit`, `deduplication_start_time`
   and `deduplicate_parts`; historical backups copied with `--all` use the same current-time bound.

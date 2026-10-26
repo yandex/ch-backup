@@ -8,6 +8,7 @@ import copy
 import os
 import re
 from contextlib import contextmanager
+from datetime import datetime
 from functools import partial
 from itertools import chain
 from pathlib import PurePosixPath
@@ -124,6 +125,7 @@ class BackupCopier:
         *,
         keep_going: bool = False,
         report: CopyReport | None = None,
+        command_start: datetime | None = None,
     ) -> tuple[list[str], list[str]]:
         """
         Copy specified backups or all backups in the state "created" if names are not specified.
@@ -137,7 +139,7 @@ class BackupCopier:
         self._report.backups.clear()
         self._materialized_parts.clear()
         try:
-            self._validate_configs()
+            self._validate_configs(utcnow() if command_start is None else command_start)
             backups = self._select_backups(backup_names)
             results = {result.name: result for result in self._report.backups}
             self._validate_backup_names(backups, results)
@@ -246,10 +248,10 @@ class BackupCopier:
                 raise
             result.add_error(e, "planning", source=source)
 
-    def _validate_configs(self) -> None:
-        cutoff = copy_deduplication_cutoff(self._copy_config, utcnow())
+    def _validate_configs(self, command_start: datetime) -> None:
+        cutoff = copy_deduplication_cutoff(self._copy_config, command_start)
         self._target_deduplication = (
-            CopyDeduplication(self._target_layout, cutoff)
+            CopyDeduplication(self._target_layout, cutoff, command_start)
             if cutoff is not None
             else None
         )

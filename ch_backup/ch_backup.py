@@ -8,7 +8,7 @@ import builtins
 import os
 from collections import defaultdict
 from copy import copy
-from datetime import timedelta
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Sequence
 
@@ -612,6 +612,7 @@ class ClickhouseBackup:
         *,
         keep_going: bool = False,
         report: CopyReport | None = None,
+        command_start: datetime | None = None,
     ) -> tuple[Sequence[str], Sequence[str]]:
         """
         Copy backups to the storage specified in the target config.
@@ -620,6 +621,9 @@ class ClickhouseBackup:
         Return names of copied backups and names of backups skipped as already copied.
         The optional report also receives partial results when copying raises.
         """
+        # Freeze both window bounds before storage setup and lock acquisition.
+        if command_start is None:
+            command_start = utcnow()
         if report is not None:
             report.error = None
             report.backups.clear()
@@ -633,7 +637,12 @@ class ClickhouseBackup:
                 ch_config=self._context.ch_config,
             )
             with storage_locks([self._config, target_config], operation="COPY"):
-                return copier.copy(backup_names, keep_going=keep_going, report=report)
+                return copier.copy(
+                    backup_names,
+                    keep_going=keep_going,
+                    report=report,
+                    command_start=command_start,
+                )
         except BaseException as e:
             if report is not None:
                 report.error = f"{type(e).__name__}: {e}"

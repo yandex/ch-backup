@@ -4,6 +4,7 @@ Cli unit tests.
 
 import json
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -39,8 +40,9 @@ def test_copy_command_writes_report_on_success_error_and_signal(
     backup = copy_backup
     report_path = tmp_path / "report.json"
 
-    def copy(_target, _names, *, keep_going, report):
+    def copy(_target, _names, *, keep_going, report, command_start):
         assert keep_going
+        assert command_start.tzinfo is not None
         report.backups.append(
             BackupCopyResult(
                 "b1",
@@ -118,19 +120,20 @@ def test_copy_reports_configuration_failure(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "args,resume", [([], None), (["--resume"], True), (["--no-resume"], False)]
+    "args,resume", [([], True), (["--resume"], True), (["--no-resume"], False)]
 )
-def test_copy_command_passes_resume(args: list[str], resume: bool | None) -> None:
-    backup = MagicMock()
+def test_copy_command_passes_resume(
+    args: list[str], resume: bool, copy_backup: MagicMock
+) -> None:
+    backup = copy_backup
     group = Group()
     group.add_command(cli.copy_command)
 
     result = CliRunner().invoke(group, ["copy", "--all", *args], obj={"backup": backup})
 
     assert result.exit_code == 0
-    # pylint: disable-next=no-member
-    merged = backup.config.derive.return_value.merge.call_args.args[0]
-    assert merged["copy"].get("resume") == resume
+    target_config = backup.copy.call_args.args[0]
+    assert target_config["copy"]["resume"] is resume
 
 
 @pytest.mark.parametrize("state", [None, BackupState.FAILED])
@@ -141,7 +144,8 @@ def test_copy_named_validation_failure_has_report_row(
     ctx = CopyTestContext([_backup("requested", state=state)] if state else [])
     backup = copy_backup
 
-    def copy(_target, names, *, keep_going, report):
+    def copy(_target, names, *, keep_going, report, command_start):
+        assert command_start.tzinfo is not None
         return ctx.copy(names, keep_going=keep_going, report=report)
 
     backup.copy.side_effect = copy
@@ -162,9 +166,17 @@ def test_copy_named_validation_failure_has_report_row(
 
 
 @pytest.mark.parametrize("days", [-1, 90])
-def test_copy_window_cli_override_before_last_lookup(copy_backup, days):
+def test_copy_window_cli_override_before_last_lookup(copy_backup, days, monkeypatch):
+    command_start = datetime(2026, 10, 22, tzinfo=timezone.utc)
+    clock = [command_start]
+    monkeypatch.setattr(cli, "utcnow", lambda: clock[0])
+
+    def list_backups(*_args, **_kwargs):
+        clock[0] += timedelta(seconds=30)
+        return [_backup("selected")]
+
     copy_backup.config["copy"]["deduplication_age_limit"] = {"days": 7}
-    copy_backup.list.return_value = [_backup("selected")]
+    copy_backup.list.side_effect = list_backups
     result = CliRunner().invoke(
         Group(commands=[cli.copy_command]),
         [
@@ -184,6 +196,7 @@ def test_copy_window_cli_override_before_last_lookup(copy_backup, days):
         assert result.exit_code == 0, result.output
         config, names = copy_backup.copy.call_args.args
         assert names == ["selected"]
+        assert copy_backup.copy.call_args.kwargs["command_start"] == command_start
         assert config["copy"]["deduplication_age_limit"] == {"days": days}
         assert copy_backup.config["copy"]["deduplication_age_limit"] == {"days": 7}
 

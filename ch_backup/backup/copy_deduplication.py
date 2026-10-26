@@ -47,7 +47,13 @@ def _local_parts(backup: BackupMetadata) -> PartsByTable:
     """Parse the entire candidate before indexing it or accessing its data objects."""
     parts: PartsByTable = defaultdict(list)
     for part in backup.get_parts():
-        if part.link is None and part.disk_name not in backup.cloud_storage.disks:
+        # Legacy per-file metadata has no individual sizes. Matching file names
+        # cannot verify an existing owner, so materialize those parts from source.
+        if (
+            part.tarball
+            and part.link is None
+            and part.disk_name not in backup.cloud_storage.disks
+        ):
             parts[(part.database, part.table)].append((_part_key(part), part))
     return parts
 
@@ -55,16 +61,20 @@ def _local_parts(backup: BackupMetadata) -> PartsByTable:
 class CopyDeduplication:
     """Index verified physical local parts, without retaining complete backup metadata."""
 
-    def __init__(self, layout: BackupLayout, cutoff: datetime) -> None:
+    def __init__(
+        self, layout: BackupLayout, cutoff: datetime, command_start: datetime
+    ) -> None:
         self._layout = layout
         self.cutoff = cutoff
+        self.command_start = command_start
         self._parts: dict[tuple, list[_StoredPart]] = defaultdict(list)
         self._backup_keys: dict[str, set[tuple]] = defaultdict(set)
 
     def eligible(self, backup: BackupMetadata) -> bool:
         """A fresh reference cannot extend the physical owner's window."""
         return (
-            backup.start_time >= self.cutoff
+            backup.start_time is not None
+            and self.cutoff <= backup.start_time <= self.command_start
             and backup.state in (BackupState.CREATED, BackupState.PARTIALLY_DELETED)
             and not backup.schema_only
         )

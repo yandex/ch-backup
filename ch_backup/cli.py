@@ -1025,6 +1025,7 @@ def copy_command(
     report_path: str | None = None,
 ) -> None:
     """Copy backup to another storage (another S3 bucket, endpoint or path)."""
+    command_start = utcnow()
     report = CopyReport()
     try:
         if bool(name) == all_:
@@ -1050,7 +1051,7 @@ def copy_command(
         )
         target_cfg.merge({"copy": copy_config})
         # Validate before resolving LAST, which already lists the source storage.
-        copy_deduplication_cutoff(target_cfg["copy"], utcnow())
+        copy_deduplication_cutoff(target_cfg["copy"], command_start)
         backup_names = None
         if name:
             if name == "LAST":
@@ -1058,7 +1059,13 @@ def copy_command(
                     ctx, ch_backup, name, BackupState.CREATED
                 )
             backup_names = [name]
-        ch_backup.copy(target_cfg, backup_names, keep_going=keep_going, report=report)
+        ch_backup.copy(
+            target_cfg,
+            backup_names,
+            keep_going=keep_going,
+            report=report,
+            command_start=command_start,
+        )
     except BaseException as e:
         report.error = f"{type(e).__name__}: {e}"
         raise

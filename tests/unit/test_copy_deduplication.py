@@ -1,8 +1,9 @@
 """Independent target deduplication in backup copy."""
 
 from concurrent.futures import BrokenExecutor
-from datetime import datetime, timezone
-from unittest.mock import patch
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -11,7 +12,8 @@ from ch_backup.backup.layout import (
     get_data_part_file_names,
     get_data_part_relative_dirs,
 )
-from ch_backup.backup.metadata import BackupState
+from ch_backup.backup.metadata import BackupMetadata, BackupState
+from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.exceptions import ClickhouseBackupError, StorageError
 from tests.unit.test_backup_copy import CopyTestContext, _backup, _part, _with_files
 
@@ -103,7 +105,12 @@ def test_window_is_opt_in_and_independent(age, linked, expected):
 
 @pytest.mark.parametrize(
     "date, expected",
-    [("2026-10-15 00:00:00 +0000", "owner"), ("2026-10-14 23:59:59 +0000", None)],
+    [
+        ("2026-10-15 00:00:00 +0000", "owner"),
+        ("2026-10-14 23:59:59 +0000", None),
+        ("2026-10-22 00:00:00 +0000", "owner"),
+        ("2026-10-22 00:00:01 +0000", None),
+    ],
 )
 @pytest.mark.parametrize("linked", [False, True])
 def test_physical_owner_must_be_in_window(date, expected, linked):
@@ -152,16 +159,15 @@ def test_only_completed_physical_owners_are_reused(state):
     assert ctx.target_layout.backups["new"].get_parts()[0].link == expected
 
 
-@pytest.mark.parametrize("tarball", [False, True])
 @pytest.mark.parametrize("renamed", [False, True])
-def test_newest_owner_legacy_paths_and_layouts(tarball, renamed):
+def test_newest_owner_legacy_paths(renamed):
     stored_name = "all_1_1_0_2" if renamed else PART
     owners = [
         _backup(
             name,
             start_time=date,
             database="db-1",
-            parts={stored_name: {**_part(), "tarball": tarball}},
+            parts={stored_name: _part()},
         )
         for name, date in [
             ("older", "2026-10-19 00:00:00 +0000"),
@@ -173,7 +179,7 @@ def test_newest_owner_legacy_paths_and_layouts(tarball, renamed):
         "new",
         start_time="2026-10-21 00:00:00 +0000",
         database="db-1",
-        parts={PART: {**_part(), "tarball": tarball}},
+        parts={PART: _part()},
     )
     ctx = _context(owners=owners)
     ctx.layout.backups = {"new": source}
@@ -195,6 +201,69 @@ def test_newest_owner_legacy_paths_and_layouts(tarball, renamed):
     assert not any("/data/" in e.dst_path for e in ctx.target_layout.copied)
     serialized = target.dump()["databases"]["db-1"]["tables"]["t1"]["parts"][PART]
     assert serialized["link"] == "ch_backup_copy/z"
+
+
+@pytest.mark.parametrize("encrypted", [False, True])
+@pytest.mark.parametrize("linked", [False, True])
+def test_per_file_owner_is_materialized_without_trusting_stored_file_sizes(
+    encrypted, linked
+):
+    part = {**_part(), "tarball": False, "encrypted": encrypted}
+    owner = _backup("owner", start_time="2026-10-20 00:00:00 +0000", parts={PART: part})
+    ctx = _context({**part, "link": "source-owner" if linked else None}, [owner])
+    # Both names exist, but the target files are truncated. Legacy metadata has
+    # no expected per-file sizes, so those owners cannot be verified by listing.
+    for path in ctx.src_objects:
+        ctx.src_objects[path] = 80 if path.endswith("data.bin") else 20
+    ctx.copy()
+    target = ctx.target_layout.backups["new"]
+    assert target.get_parts()[0].link is None
+    assert target.real_size == 100
+    assert sorted(entry.size for entry in ctx.target_layout.copied) == [20, 80]
+
+
+@pytest.mark.parametrize("keep_going", [False, True])
+def test_owner_without_start_time_is_skipped(keep_going):
+    ctx = _context()
+    raw = ctx.target_layout.backups["owner"].dump()
+    del raw["meta"]["start_time"]
+    ctx.target_layout.backups["owner"] = BackupMetadata.load(raw)
+    report = CopyReport()
+    assert ctx.copy(keep_going=keep_going, report=report) == (["new"], [])
+    assert ctx.target_layout.backups["new"].get_parts()[0].link is None
+    assert [(result.name, result.status) for result in report.backups] == [
+        ("new", "copied")
+    ]
+
+
+def test_copy_window_is_fixed_before_waiting_for_storage_locks(monkeypatch):
+    owner = _backup(
+        "owner", start_time="2026-10-15 00:00:10 +0000", parts={PART: _part()}
+    )
+    ctx = _context(owners=[owner])
+    clock = [NOW]
+    monkeypatch.setattr("ch_backup.ch_backup.utcnow", lambda: clock[0])
+    monkeypatch.setattr("ch_backup.backup.copier.utcnow", lambda: clock[0])
+
+    @contextmanager
+    def delayed_lock(*_args, **_kwargs):
+        clock[0] += timedelta(seconds=30)
+        yield
+
+    backup = ClickhouseBackup(ctx.config)
+    backup.__dict__["_context"] = MagicMock(
+        backup_layout=ctx.layout, ch_config=ctx.ch_config
+    )
+    with (
+        patch("ch_backup.ch_backup.storage_locks", side_effect=delayed_lock),
+        patch("ch_backup.ch_backup.BackupLayout", return_value=ctx.target_layout),
+        patch(
+            "ch_backup.backup.copier.get_storage_engine", side_effect=ctx.store.engine
+        ),
+    ):
+        backup.copy(ctx.target_config, ["new"])
+    assert ctx.target_layout.backups["new"].get_parts()[0].link == "owner"
+    assert not ctx.target_layout.copied
 
 
 @pytest.mark.parametrize("broken", ["missing", "size", "metadata"])
@@ -223,9 +292,14 @@ def test_bad_candidate_falls_back_to_older_owner(broken):
 
 
 @pytest.mark.parametrize("publication_fails", [False, True])
-def test_copy_all_indexes_only_published_owners(publication_fails):
+@pytest.mark.parametrize("tarball", [False, True])
+def test_copy_all_indexes_only_published_owners(publication_fails, tarball):
     backups = [
-        _backup(name, start_time=f"2026-10-{day} 00:00:00 +0000", parts={PART: _part()})
+        _backup(
+            name,
+            start_time=f"2026-10-{day} 00:00:00 +0000",
+            parts={PART: {**_part(), "tarball": tarball}},
+        )
         for name, day in [("a", 19), ("b", 20), ("c", 21)]
     ]
     ctx = _context(owners=[])
@@ -249,11 +323,11 @@ def test_copy_all_indexes_only_published_owners(publication_fails):
                 ctx.copy(keep_going=True)
         else:
             ctx.copy()
-    assert ctx.target_layout.backups["c"].get_parts()[0].link == (
-        "b" if publication_fails else "a"
-    )
-    assert ctx.target_layout.backups["c"].real_size == 0
-    assert len(ctx.target_layout.copied) == (2 if publication_fails else 1)
+    expected_owner = ("b" if publication_fails else "a") if tarball else None
+    assert ctx.target_layout.backups["c"].get_parts()[0].link == expected_owner
+    assert ctx.target_layout.backups["c"].real_size == (0 if tarball else 100)
+    expected_copies = (2 if publication_fails else 1) if tarball else 6
+    assert len(ctx.target_layout.copied) == expected_copies
 
 
 def test_retry_does_not_link_to_itself():
