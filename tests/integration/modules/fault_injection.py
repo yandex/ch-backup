@@ -163,13 +163,26 @@ def check_zookeeper_reconnect(config_file: str) -> None:
             assert connection._connection_routine is None
             assert connection.connection_closed.is_set()
             # close() must leave the wrapper reusable for a later context.
-            with wrapper as client:
-                assert client.get(path + "/data")[0] == b"recovered"
-                with client.Lock(path):
-                    client.set(path + "/data", b"reentered")
+            try:
+                with wrapper as client:
+                    assert client.get(path + "/data")[0] == b"recovered"
+                    with client.Lock(path):
+                        client.set(path + "/data", b"reentered")
+                    # stop() raises on the broken wake-up socket even after
+                    # its finally block has stopped the network thread.
+                    sockets = (connection._read_sock, connection._write_sock)
+                    connection._write_sock.shutdown(socket.SHUT_WR)
+            except RuntimeError as error:
+                assert isinstance(error.__cause__, BrokenPipeError)
+            else:
+                raise AssertionError("The broken wake-up socket did not fail stop()")
             assert observer.get(path + "/data")[0] == b"reentered"
-            assert connection._connection_routine is None
-            assert connection.connection_closed.is_set()
+            assert all(sock.fileno() == -1 for sock in sockets)
+            try:
+                with wrapper:
+                    raise AssertionError("A client with failed cleanup was reused")
+            except RuntimeError as error:
+                assert "cannot be reused" in str(error)
         observer.delete(path, recursive=True)
 
 

@@ -3,6 +3,7 @@ ZooKeeper-control classes module
 """
 
 import logging as py_logging
+from contextlib import suppress
 
 from kazoo.client import KazooClient
 from kazoo.exceptions import KazooException, NoNodeError
@@ -67,7 +68,14 @@ class ZookeeperClient:
         # If cleanup fails, neither Tenacity nor a later caller may restart it.
         self._cleanup_failed = True
         try:
-            self._client.stop()
+            try:
+                self._client.stop()
+            except BaseException:
+                # stop() may raise after stopping the thread. Release remaining
+                # resources if possible, without masking the original failure.
+                with suppress(Exception):
+                    self._client.close()
+                raise
             self._client.close()
         except Exception as error:
             if original_error is not None and not isinstance(original_error, Exception):
