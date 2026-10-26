@@ -17,6 +17,53 @@ The tool also supports deduplication at part-level granularity. It's set up
  set a start time to exclude earlier backups from deduplication.
 
 
+## Restore without cloud storage
+
+`ch-backup restore --skip-cloud-storage BACKUP` restores local parts and skips
+cloud parts, including detached parts. It also adapts MergeTree schemas and
+materialized views with their own storage to the target server:
+
+- A policy missing from `system.storage_policies` is replaced with `default`.
+- An explicit named `disk` setting is removed, even if that disk exists on the
+  target. The table uses the target server's default MergeTree storage policy
+  (including a `replicated_merge_tree` override), which must contain a local disk.
+  Dynamic `disk(...)` expressions and target engine defaults specifying `disk`
+  instead of a policy are not supported by this adaptation.
+  If removing `disk` would require replacing an existing table (including a
+  detached table or a table with the same UUID), restore stops before deleting
+  any database or table, even with `--keep-going`. Cloud parts would not be
+  restored after that deletion. Use an empty destination, or explicitly remove
+  the existing table after deciding that its data can be discarded.
+- TTL MOVE rules referencing disks or volumes absent from the resulting policy
+  are removed as whole rules. DELETE, conditional DELETE, RECOMPRESS, GROUP BY,
+  column TTLs and available MOVE rules are preserved.
+- Local parts whose original disk is outside the adapted policy go to its first
+  local disk, in volume priority and disk order.
+
+For replicated tables, use the same flag and storage configuration on every
+target replica.
+Restore each replicated shard's data on one replica. On its other replicas, use
+`--schema-only --skip-cloud-storage`, optionally with `--parts-from-backup BACKUP`
+to accelerate recovery. The existing `--parts-from-backup` mode downloads eligible
+parts into `detached/`, verifies their file checksums, then runs
+`SYSTEM RESTORE REPLICA`; replication fetches any remaining parts. This mode
+requires restore without ordinary data loading, so `--schema-only` is still
+needed. Restore non-replicated tables separately with their data.
+If adapting a replicated table's TTL conflicts with existing Keeper metadata,
+restore fails before dropping local databases or tables or cleaning replica metadata, including
+with `--keep-going` and any `--clean-zookeeper-mode`. It never resets shared Keeper
+metadata automatically. Restore to a separate Keeper table path or resolve the
+conflict before retrying. A per-table Keeper lock covers the check and table
+creation. Direct ZooKeeper access, using the same root as ClickHouse, is required
+only when the replicated table TTL is changed; unchanged schemas and policy-only
+changes retain the ordinary restore requirements.
+
+Removed disk settings, policy replacements and removed TTL rules are logged. With `--keep-going`,
+independent tables continue after a schema adaptation or creation failure, but
+the command reports those failures with a nonzero exit status. A shared Keeper
+metadata conflict stops the restore immediately. The behavior without
+`--skip-cloud-storage` is unchanged.
+
 ## Installation
 
 In order to get an up-to-date version of ch-backup, run `make build`. It will produce
