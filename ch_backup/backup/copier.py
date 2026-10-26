@@ -118,6 +118,8 @@ class BackupCopier:
         self._engines: dict[tuple, PipeLineCompatibleStorageEngine] = {}
         # Metadata of backups in target storage used to resolve deduplication links.
         self._target_backups: dict[str, BackupMetadata | None] = {}
+        # Files of tables of backups in target storage used to resolve deduplication links.
+        self._target_table_files: dict[tuple, dict[str, dict[str, int]]] = {}
         # Files of backups in source storage used to resolve deduplication links.
         self._source_backup_files: dict[str, dict[str, int]] = {}
         # Original part identity -> successfully materialized target owner and name.
@@ -351,6 +353,7 @@ class BackupCopier:
         """
         self._source_backup_files.clear()
         self._target_backups.clear()
+        self._target_table_files.clear()
         target_backup = self._target_layout.get_backup(backup_name, use_light_meta=True)
         backup = self._get_source_backup(backup_name, target_backup)
         _check_backup_state(backup)
@@ -829,9 +832,9 @@ class BackupCopier:
         result: BackupCopyResult,
     ) -> None:
         """Materialize one local part when its target link is unusable."""
-        if self._is_link_valid_in_target(part) or self._reuse_materialized_part(
-            part, target_meta
-        ):
+        if self._is_link_valid_in_target(
+            part, local=True
+        ) or self._reuse_materialized_part(part, target_meta):
             return
         assert part.link
         target_backup_path = self._target_layout.get_backup_path(backup.name)
@@ -948,9 +951,13 @@ class BackupCopier:
         raw_part["link_part_name"] = part_name if part_name != part.name else None
         return True
 
-    def _is_link_valid_in_target(self, part: PartMetadata) -> bool:
+    def _is_link_valid_in_target(self, part: PartMetadata, local: bool = False) -> bool:
         """
         Check that the backup containing deduplicated data part is present in target storage.
+
+        A local part is also valid in a copy that is not completed once files of the part are
+        stored there, as deduplication of new backups accepts: they are copied by its scope
+        "files", and delete and purge keep parts referenced by other backups.
         """
         assert part.link
         if part.link not in self._target_backups:
@@ -969,14 +976,14 @@ class BackupCopier:
                 self._target_backups[part.link] = None
 
         target_backup = self._target_backups[part.link]
-        if (
-            not target_backup
-            or target_backup.name != part.link
-            or target_backup.state
-            not in (
-                BackupState.CREATED,
-                BackupState.PARTIALLY_DELETED,
-            )
+        if not target_backup or target_backup.name != part.link:
+            return False
+        complete = target_backup.state in (
+            BackupState.CREATED,
+            BackupState.PARTIALLY_DELETED,
+        )
+        if not complete and not (
+            local and target_backup.state in (BackupState.CREATING, BackupState.FAILED)
         ):
             return False
 
@@ -987,6 +994,20 @@ class BackupCopier:
             target_part
             and not target_part.link
             and target_part.checksum == part.checksum
+            and (complete or self._is_part_stored_in_target(target_backup, target_part))
+        )
+
+    def _is_part_stored_in_target(
+        self, backup: BackupMetadata, part: PartMetadata
+    ) -> bool:
+        """Check that files of the part are stored in the backup in target storage."""
+        key = (backup.name, part.database, part.table)
+        if key not in self._target_table_files:
+            self._target_table_files[key] = self._target_layout.get_table_data_files(
+                *key
+            )
+        return self._target_layout.check_data_part_files(
+            part, self._target_table_files[key].get(part.name, {})
         )
 
     def _get_source_backup_files(self, backup_name: str) -> dict[str, int]:

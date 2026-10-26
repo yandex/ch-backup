@@ -187,6 +187,18 @@ class FakeLayout:
     def get_cloud_storage_metadata_files(self, backup_meta, remote_path):
         return list(self.metadata_files()[remote_path])
 
+    def get_table_data_files(self, backup_name, database, table):
+        prefix = f"{self.get_backup_path(backup_name)}/data/{database}/{table}/"
+        parts: dict[str, dict[str, int]] = {}
+        for key, size in (self.store.bucket(DST_BUCKET) if self.store else {}).items():
+            if key.startswith(prefix):
+                part_name, _, file_name = key[len(prefix) :].partition("/")
+                parts.setdefault(part_name, {})[file_name] = size
+        return parts
+
+    def check_data_part_files(self, part, files):
+        return f"{part.name}.tar" in files or set(part.files) <= set(files)
+
     def metadata_files(self) -> dict[str, list[tuple[str, bytes]]]:
         return {**self.copied_files, **self.cloud_storage_files}
 
@@ -3068,6 +3080,65 @@ def test_files_scope_copies_backup_with_copied_cloud_storage_data() -> None:
     assert ctx.copied_paths() == {
         "ch_backup/b1/cloud_storage/s3/xyz/data": "ch_backup_copy/b1/cloud_storage/s3/xyz/data"
     }
+
+
+@pytest.mark.parametrize("stored", [True, False])
+def test_links_to_local_parts_of_incomplete_copies(stored: bool) -> None:
+    ctx = _scoped_context()
+    ctx.layout.backups["b1"] = _backup(
+        "b1", parts={"all_1_1_0": _part()}, cloud_storage_disks=["s3"]
+    )
+    ctx.layout.backups["b2"] = _backup(
+        "b2",
+        start_time="2026-01-02 00:00:00 +0000",
+        parts={"all_1_1_0": _part(link="b1")},
+    )
+    part_file = "data/db1/t1/all_1_1_0/all_1_1_0.tar"
+    _with_files(ctx, "b1", {part_file: 101})
+    ctx.copy(["b1"], scopes=["files"])
+    if not stored:
+        ctx.dst_objects.pop(f"ch_backup_copy/b1/{part_file}")
+
+    ctx.copy(["b2"], scopes=["files"])
+
+    assert ctx.target_layout.backups["b1"].state == BackupState.CREATING
+    target = ctx.target_layout.backups["b2"]
+    assert target.state == BackupState.CREATED
+    assert target.get_parts()[0].link == ("b1" if stored else None)
+    assert (f"ch_backup_copy/b2/{part_file}" in ctx.copied_paths().values()) != stored
+
+
+def test_cloud_storage_parts_of_incomplete_copies_are_copied() -> None:
+    part = {**_part(), "disk_name": "s3"}
+    owner = _backup("base", parts={"all_1_1_0": part}, cloud_storage_disks=["s3"])
+    owner.cloud_storage.data_copied = True
+    backup = _backup(
+        "b2",
+        start_time="2026-01-02 00:00:00 +0000",
+        parts={"all_1_1_0": {**part, "link": "base"}},
+        cloud_storage_disks=["s3"],
+    )
+    backup.cloud_storage.data_copied = True
+    copied_owner = copy.deepcopy(owner)
+    copied_owner.state = BackupState.CREATING
+    ctx = CopyTestContext([owner, backup], target_backups=[copied_owner])
+    ctx.target_layout.store = ctx.store
+    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.layout.cloud_storage_files["ch_backup/base/disks/s3/db1/t1.tar.gz"] = [
+        (
+            "store/abc/uuid/all_1_1_0/data.bin",
+            _object_storage_metadata(("xyz/data", 100), version=3),
+        )
+    ]
+    _with_files(
+        ctx, "base", {"disks/s3/db1/t1.tar.gz": 50, "cloud_storage/s3/xyz/data": 100}
+    )
+    ctx.dst_objects["ch_backup_copy/base/data/db1/t1/all_1_1_0/all_1_1_0.tar"] = 100
+
+    assert ctx.copy(["b2"]) == (["b2"], [])
+
+    assert ctx.target_layout.backups["b2"].get_parts()[0].link is None
+    assert "ch_backup_copy/b2/cloud_storage/s3/xyz/data" in ctx.copied_paths().values()
 
 
 def test_disk_metadata_with_planning_errors_is_not_copied_as_is() -> None:
