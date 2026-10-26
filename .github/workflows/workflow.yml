@@ -97,11 +97,17 @@ jobs:
         mkdir -p staging/ci-diagnostics
         timeout 15 docker version > staging/ci-diagnostics/docker-version.txt 2>&1 || true
         timeout 15 docker info --format 'Server={{.ServerVersion}} Storage={{.Driver}} Cgroup={{.CgroupDriver}} CPUs={{.NCPU}} Memory={{.MemTotal}} Containers={{.Containers}} Running={{.ContainersRunning}}' > staging/ci-diagnostics/docker-info.txt 2>&1 || true
-        timeout 15 docker ps -a --filter label=ch-backup.integration.environment --no-trunc > staging/ci-diagnostics/containers.txt 2>&1 || true
-        timeout 15 df -h > staging/ci-diagnostics/disk-space.txt 2>&1 || true
-        timeout 15 df -i > staging/ci-diagnostics/inodes.txt 2>&1 || true
+        # Per-worker cleanup already saves owned container state/logs before removal.
+        # Avoid listing other environments on a shared Docker daemon here.
+        timeout 15 df -h . > staging/ci-diagnostics/disk-space.txt 2>&1 || true
+        timeout 15 df -i . > staging/ci-diagnostics/inodes.txt 2>&1 || true
         free -m > staging/ci-diagnostics/memory.txt 2>&1 || true
-        timeout 15 sudo -n journalctl -u docker.service -u containerd.service --since '-30 min' --lines 1000 --no-pager > staging/ci-diagnostics/container-runtime.txt 2>&1 || true
+        # Our GitHub-hosted jobs get a fresh VM; self-hosted daemons may be shared.
+        if [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ]; then
+          timeout 15 sudo -n journalctl -u docker.service -u containerd.service --since '-30 min' --lines 1000 --no-pager > staging/ci-diagnostics/container-runtime.txt 2>&1 || true
+        else
+          printf '%s\n' 'Host-wide runtime journal omitted on self-hosted or unknown runners. Per-worker container state and logs are in integration-test-results.' > staging/ci-diagnostics/container-runtime.txt
+        fi
     - uses: actions/upload-artifact@v7
       if: ${{ failure() }}
       with:
