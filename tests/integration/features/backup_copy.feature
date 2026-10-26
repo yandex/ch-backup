@@ -143,7 +143,7 @@ Feature: Copy backups to another storage
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
-  Scenario: Copy reuses a materialized part after its original owner fails
+  Scenario: Copy keeps links to parts of a copy that fails to be published
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE test_db1;
@@ -156,7 +156,7 @@ Feature: Copy backups to another storage
     """
     And we have created clickhouse01 clickhouse backup
     """
-    name: b_materialized
+    name: b_linked
     """
     And we have created clickhouse01 clickhouse backup
     """
@@ -178,9 +178,9 @@ Feature: Copy backups to another storage
     And we got the following backups on clickhouse02
       | num | state   | data_count | link_count |
       | 0   | created | 0          | 1          |
-      | 1   | created | 1          | 0          |
+      | 1   | created | 0          | 1          |
       | 2   | failed  | 1          | 0          |
-    And all parts in clickhouse02 backup "c_linked" link to "b_materialized"
+    And all parts in clickhouse02 backup "c_linked" link to "a_owner"
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
