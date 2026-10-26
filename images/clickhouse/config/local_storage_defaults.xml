@@ -1,0 +1,19 @@
+<yandex>
+    <storage_configuration>
+        <disks>
+            <hdd1><path>/hdd1/</path></hdd1>
+            <!-- Keep the source disk available, but outside the default policy. -->
+            <hdd2><path>/hdd2/</path></hdd2>
+        </disks>
+        <policies>
+            <local>
+                <volumes>
+                    <main><disk>hdd1</disk></main>
+                </volumes>
+            </local>
+        </policies>
+    </storage_configuration>
+    <merge_tree>
+        <storage_policy>local</storage_policy>
+    </merge_tree>
+</yandex>

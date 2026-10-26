@@ -116,7 +116,8 @@ def _write_report(report: CopyReport, report_file: TextIO) -> None:
         for error_index, error in enumerate(result.errors):
             if error_index:
                 report_file.write(",")
-            json.dump(error, report_file)
+            # Encode one error at a time without json.dump's per-call encoder cycles.
+            report_file.write(json.dumps(error))
         report_file.write("]}")
     report_file.write("\n]}\n")
 

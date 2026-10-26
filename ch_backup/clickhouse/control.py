@@ -28,6 +28,7 @@ from ch_backup.clickhouse.models import (
     Table,
     WorkloadEntityType,
 )
+from ch_backup.clickhouse.storage_schema import StoragePolicy
 from ch_backup.exceptions import ClickhouseBackupError, ConfigurationError
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.util import (
@@ -1795,6 +1796,39 @@ class ClickhouseCTL:
         return {
             row["name"]: Disk(row["name"], row["path"], row["type"])
             for row in disks_resp.get("data", [])
+        }
+
+    def get_storage_policies(self) -> dict[str, StoragePolicy]:
+        """Snapshot policies in volume priority and disk order."""
+        # Read effective server policies, including implicit defaults absent from
+        # XML. Their order defines the fallback disk for restored local parts.
+        rows = self._ch_client.query(
+            "SELECT policy_name, volume_name, disks FROM system.storage_policies "
+            "ORDER BY policy_name, volume_priority, volume_name FORMAT JSON"
+        ).get("data", [])
+        disks = self.get_disks()
+        volumes_by_policy: dict[str, list[str]] = {}
+        disks_by_policy: dict[str, list[str]] = {}
+        for row in rows:
+            name = row["policy_name"]
+            volumes_by_policy.setdefault(name, []).append(row["volume_name"])
+            disks_by_policy.setdefault(name, []).extend(row["disks"])
+        # All policy disks/volumes are valid TTL destinations. Part remapping uses
+        # only local disks; remove duplicates while preserving the server's order.
+        return {
+            name: StoragePolicy(
+                name,
+                tuple(volumes),
+                tuple(dict.fromkeys(disks_by_policy[name])),
+                tuple(
+                    dict.fromkeys(
+                        disk
+                        for disk in disks_by_policy[name]
+                        if disk in disks and disks[disk].type == "local"
+                    )
+                ),
+            )
+            for name, volumes in volumes_by_policy.items()
         }
 
     def _make_table(self, record: dict) -> Table:
