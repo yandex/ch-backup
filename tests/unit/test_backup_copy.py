@@ -24,6 +24,7 @@ from ch_backup.backup.metadata import (
     DetachedPartMetadata,
 )
 from ch_backup.config import DEFAULT_CONFIG
+from ch_backup.encryption import get_encryption_class
 from ch_backup.exceptions import (
     ClickhouseBackupError,
     ConfigurationError,
@@ -89,12 +90,19 @@ class FakeStore:
 
 
 # pylint: disable=unused-argument
+# pylint: disable=too-many-instance-attributes
 class FakeLayout:
     """
     Backup layout keeping backup metadata in memory.
     """
 
-    def __init__(self, path_root: str, backups: list[BackupMetadata]) -> None:
+    def __init__(
+        self,
+        path_root: str,
+        backups: list[BackupMetadata],
+        store: FakeStore,
+        config: dict,
+    ) -> None:
         self.path_root = path_root
         self.backups = {b.name: b for b in backups}
         self.uploaded: list[tuple[str, BackupState]] = []
@@ -103,10 +111,22 @@ class FakeLayout:
         self.copy_error: Exception | None = None
         self.object_errors: dict[str, BaseException] = {}
         self.metadata_errors: dict[str, Exception] = {}
+        self._storage_loader = store.engine(config["storage"])
+        self._encryption_chunk_size = config["encryption"]["chunk_size"]
+        self._encryption_metadata_size = get_encryption_class(
+            config["encryption"]["type"]
+        ).metadata_size()
         self.store: FakeStore | None = None
 
     def get_backup_names(self):
         return list(self.backups)
+
+    get_table_data_files = BackupLayout.get_table_data_files
+    check_data_part_files = BackupLayout.check_data_part_files
+    # Reuse the production tar/encryption size check with the in-memory storage.
+    # pylint: disable=protected-access
+    _target_part_size = BackupLayout._target_part_size
+    # pylint: enable=protected-access
 
     def get_backup_path(self, backup_name: str) -> str:
         return os.path.join(self.path_root, backup_name)
@@ -267,8 +287,10 @@ class CopyTestContext:
         self.store = FakeStore()
         self.config = _config(SRC_BUCKET, "ch_backup")
         self.target_config = _config(target_bucket, "ch_backup_copy")
-        self.layout = FakeLayout("ch_backup", source_backups)
-        self.target_layout = FakeLayout("ch_backup_copy", target_backups or [])
+        self.layout = FakeLayout("ch_backup", source_backups, self.store, self.config)
+        self.target_layout = FakeLayout(
+            "ch_backup_copy", target_backups or [], self.store, self.target_config
+        )
         self.ch_config = MagicMock()
         self.ch_config.config = {"storage_configuration": {"disks": {}}}
 

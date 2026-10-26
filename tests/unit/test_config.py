@@ -4,10 +4,71 @@ Unit tests for config module.
 
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from ch_backup.backup.copy_deduplication import copy_deduplication_cutoff
+from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.config import Config, as_datetime
+from ch_backup.exceptions import ConfigurationError
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        False,
+        "false",
+        7,
+        [],
+        {"months": 1},
+        {"days": -1},
+        {"days": True},
+        {"days": "7"},
+        {"days": float("inf")},
+        {"seconds": float("nan")},
+        {"days": 10**1000},
+        {"days": 999999999},
+    ],
+)
+def test_invalid_copy_deduplication_window(value):
+    with pytest.raises(ConfigurationError, match="copy.deduplication_age_limit"):
+        copy_deduplication_cutoff(
+            {"deduplication_age_limit": value},
+            datetime(2026, 10, 22, tzinfo=timezone.utc),
+        )
+
+
+@pytest.mark.parametrize(
+    "value,age",
+    [
+        ({}, None),
+        ({"days": 0}, None),
+        ({"days": 7}, timedelta(days=7)),
+        ({"hours": 1.5, "seconds": 2}, timedelta(hours=1.5, seconds=2)),
+    ],
+)
+def test_copy_deduplication_window(value, age):
+    now = datetime(2026, 10, 22, tzinfo=timezone.utc)
+    expected = now - age if age is not None else None
+    assert (
+        copy_deduplication_cutoff({"deduplication_age_limit": value}, now) == expected
+    )
+
+
+def test_copy_window_config_precedence(tmp_path):
+    main = tmp_path / "main.yaml"
+    target = tmp_path / "target.yaml"
+    main.write_text("copy:\n  deduplication_age_limit: {days: 7}\n")
+    target.write_text("copy:\n  deduplication_age_limit: {days: 30}\n")
+    config = Config(str(main))
+    derived = config.derive(
+        str(target), {"copy": {"deduplication_age_limit": {"days": 90}}}
+    )
+    assert config["copy"]["deduplication_age_limit"] == {"days": 7}
+    assert derived["copy"]["deduplication_age_limit"] == {"days": 90}
+    assert config.derive(str(target))["copy"]["deduplication_age_limit"] == {"days": 30}
 
 
 def test_as_datetime():
@@ -88,3 +149,26 @@ def test_derive_without_changes(tmp_path: Path) -> None:
     derived["backup"]["path_root"] = "changed"
 
     assert config["backup"]["path_root"] == "ch_backup"
+
+
+def test_copy_window_rejected_before_context_or_locks(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("")
+    config = Config(str(path))
+    backup = ClickhouseBackup(config)
+    invalid = config.derive(patch={"copy": {"deduplication_age_limit": {"days": -1}}})
+    with (
+        patch("ch_backup.ch_backup.BackupContext") as context,
+        patch("ch_backup.ch_backup.BackupLayout") as layout,
+        patch("ch_backup.ch_backup.storage_locks") as locks,
+    ):
+        with pytest.raises(ConfigurationError, match="copy.deduplication_age_limit"):
+            ClickhouseBackup(invalid)
+        with pytest.raises(ConfigurationError, match="copy.deduplication_age_limit"):
+            backup.reload_config(invalid)
+        with pytest.raises(ConfigurationError, match="copy.deduplication_age_limit"):
+            backup.copy(invalid, ["new"])
+        context.assert_not_called()
+        layout.assert_not_called()
+        locks.assert_not_called()
+        assert backup.config is config
