@@ -61,6 +61,10 @@ class FakeEngine:
         self._store.data[(self._id, remote_path)] = data
         return remote_path
 
+    def upload_file(self, local_path: str, remote_path: str) -> str:
+        with open(local_path, "rb") as file:
+            return self.upload_data(file.read(), remote_path)
+
     def download_data(self, remote_path: str) -> bytes:
         return self._store.data[(self._id, remote_path)]
 

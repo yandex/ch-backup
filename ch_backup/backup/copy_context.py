@@ -8,6 +8,8 @@ import json
 import os
 import time
 import uuid
+from tempfile import NamedTemporaryFile
+from types import TracebackType
 
 from ch_backup import logging
 from ch_backup.backup.metadata import BackupMetadata, CopyScope
@@ -18,6 +20,50 @@ COPY_CONTEXT_DIR = "copy_context"
 FAILED_OBJECTS_DIR = "failed"
 MANIFEST_DIR = "manifest"
 SOURCE_DIR = "source"
+
+
+class FailedObjects:
+    """
+    Objects that failed to copy, kept compressed in a temporary file instead of memory.
+    """
+
+    def __init__(self) -> None:
+        # pylint: disable-next=consider-using-with
+        self._file = NamedTemporaryFile()
+        self._gzip = gzip.GzipFile(fileobj=self._file, mode="wb")
+        self._count = 0
+
+    def __enter__(self) -> "FailedObjects":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self._gzip.close()
+        self._file.close()
+
+    def __len__(self) -> int:
+        return self._count
+
+    def append(self, entry: CopyEntry, error: str) -> None:
+        """Save the object that failed to copy with the error."""
+        line = {
+            "src": entry.src_path,
+            "dst": entry.dst_path,
+            "size": entry.size,
+            "error": error,
+        }
+        self._gzip.write((json.dumps(line) + "\n").encode())
+        self._count += 1
+
+    def path(self) -> str:
+        """Finish compression and return the path of the file."""
+        self._gzip.close()
+        self._file.flush()
+        return self._file.name
 
 
 class CopyContext:
@@ -104,27 +150,12 @@ class CopyContext:
         """Remember the confirmed upload of the rewritten metadata tarball until the next flush."""
         self._buffer.append(_archive_record(storage, path, files, size).decode())
 
-    def save_failures(
-        self, scope: CopyScope, failures: list[tuple[CopyEntry, str]]
-    ) -> None:
+    def save_failures(self, scope: CopyScope, failures: FailedObjects) -> None:
         """Replace the list of objects of the scope that failed to copy, removing it if there are none."""
         path = os.path.join(self._path, FAILED_OBJECTS_DIR, f"{scope.value}.jsonl.gz")
-        lines = [
-            json.dumps(
-                {
-                    "src": entry.src_path,
-                    "dst": entry.dst_path,
-                    "size": entry.size,
-                    "error": error,
-                }
-            )
-            for entry, error in failures
-        ]
         try:
-            if lines:
-                self._engine.upload_data(
-                    gzip.compress(("\n".join(lines) + "\n").encode()), path
-                )
+            if len(failures):
+                self._engine.upload_file(failures.path(), path)
             else:
                 self._engine.delete_file(path)
         except Exception as e:

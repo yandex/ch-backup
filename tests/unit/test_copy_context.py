@@ -3,10 +3,11 @@ Unit tests for the journal of copied objects.
 """
 
 import gzip
+import json
 from typing import Any
 from unittest.mock import patch
 
-from ch_backup.backup.copy_context import CopyContext
+from ch_backup.backup.copy_context import CopyContext, FailedObjects
 from ch_backup.backup.metadata import CopyScope
 from ch_backup.exceptions import StorageError
 from ch_backup.storage.object_copy import CopyEntry, storage_id
@@ -36,6 +37,10 @@ class MemoryEngine:
             raise self.upload_error
         self.objects[remote_path] = data
         return remote_path
+
+    def upload_file(self, local_path: str, remote_path: str) -> str:
+        with open(local_path, "rb") as file:
+            return self.upload_data(file.read(), remote_path)
 
     def download_data(self, remote_path: str) -> bytes:
         return self.objects[remote_path]
@@ -181,14 +186,26 @@ def test_archive_records_depend_on_content_and_size() -> None:
 def test_failed_objects_are_not_records() -> None:
     engine = MemoryEngine()
     context = _context(engine)
-    context.save_failures(CopyScope.FILES, [(_entry("a"), "StorageError: SlowDown")])
-    assert any(path.endswith("/failed/files.jsonl.gz") for path in engine.objects)
+    with FailedObjects() as failures:
+        failures.append(_entry("a"), "StorageError: SlowDown")
+        failures.append(_entry("b", size=2), "StorageError: SlowDown")
+        context.save_failures(CopyScope.FILES, failures)
+    path = next(
+        path for path in engine.objects if path.endswith("/failed/files.jsonl.gz")
+    )
+    assert [
+        json.loads(line) for line in gzip.decompress(engine.objects[path]).splitlines()
+    ] == [
+        {"src": "src/a", "dst": "dst/a", "size": 1, "error": "StorageError: SlowDown"},
+        {"src": "src/b", "dst": "dst/b", "size": 2, "error": "StorageError: SlowDown"},
+    ]
 
     resumed = _context(engine)
     resumed.load()
     assert not resumed.has_records()
 
-    resumed.save_failures(CopyScope.FILES, [])
+    with FailedObjects() as failures:
+        resumed.save_failures(CopyScope.FILES, failures)
     assert not engine.objects
 
 

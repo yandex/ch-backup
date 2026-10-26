@@ -14,7 +14,12 @@ from typing import Callable, Iterator, Sequence
 from urllib.parse import quote, urlparse
 
 from ch_backup import logging
-from ch_backup.backup.copy_context import COPY_CONTEXT_DIR, CopyContext, source_dir
+from ch_backup.backup.copy_context import (
+    COPY_CONTEXT_DIR,
+    CopyContext,
+    FailedObjects,
+    source_dir,
+)
 from ch_backup.backup.copy_report import BackupCopyResult, CopyReport
 from ch_backup.backup.layout import (
     BACKUP_LIGHT_META_FNAME,
@@ -1522,20 +1527,20 @@ class BackupCopier:
         """
         context = self._copy_context
         assert context is not None
-        failures: list[tuple[CopyEntry, str]] = []
         errors = len(result.errors)
         copied = False
-        try:
-            self._copy_objects(
-                backup, plan.entries, plan.rewritten_metadata, result, failures
-            )
-            copied = True
-        except Exception as e:
-            if not self._keep_going or is_broken_executor(e):
-                raise
-        finally:
-            if plan.count() and (failures or copied and plan.planned):
-                context.save_failures(scope, failures)
+        with FailedObjects() as failures:
+            try:
+                self._copy_objects(
+                    backup, plan.entries, plan.rewritten_metadata, result, failures
+                )
+                copied = True
+            except Exception as e:
+                if not self._keep_going or is_broken_executor(e):
+                    raise
+            finally:
+                if plan.count() and (len(failures) or copied and plan.planned):
+                    context.save_failures(scope, failures)
         return plan.planned and len(result.errors) == errors
 
     # pylint: disable=too-many-locals
@@ -1545,7 +1550,7 @@ class BackupCopier:
         pending: list[CopyEntry],
         archives: list[tuple[str, list[tuple[str, bytes]]]],
         result: BackupCopyResult,
-        failures: list[tuple[CopyEntry, str]],
+        failures: FailedObjects,
     ) -> None:
         """
         Copy objects and upload rewritten metadata tarballs, recording them in the copy context.
@@ -1578,7 +1583,7 @@ class BackupCopier:
                 target=entry.dst_path,
                 object_failed=True,
             )
-            failures.append((entry, f"{type(error).__name__}: {error}"))
+            failures.append(entry, f"{type(error).__name__}: {error}")
 
         uploaded_archives: list[tuple[str, list[tuple[str, bytes]]]] = []
 
