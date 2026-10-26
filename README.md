@@ -64,21 +64,6 @@ the command reports those failures with a nonzero exit status. A shared Keeper
 metadata conflict stops the restore immediately. The behavior without
 `--skip-cloud-storage` is unchanged.
 
-## Workload and resource restore
-
-Restore skips identical workload/resource definitions and uses `CREATE OR REPLACE`
-for changed definitions of the same type, preserving dependent entities. Entities
-absent from the backup remain on the server; replacing a shared parent or resource
-can change their effective limits. Restore does not synchronize the entire hierarchy.
-
-Parents omitted from the backup must already exist as workloads on the target,
-including parents defined in XML configuration. Entities defined in XML configuration
-of the target are skipped with a log message, even if the backup has another
-definition. Type conflicts and server restrictions (such as creating a second root
-workload) abort restore with the affected entity's name. Concurrent workload/resource
-DDL during restore is unsupported.
-
-
 ## Installation
 
 In order to get an up-to-date version of ch-backup, run `make build`. It will produce
@@ -191,7 +176,7 @@ storage:
         bucket: backups-dr
 ```
 
-How it works:
+Behavior and limitations:
 
 - A final text report lists copied, skipped, failed and unprocessed backups. `--report-path`
   also saves a JSON report (schema version 1) once the command finishes, including failures
@@ -231,8 +216,20 @@ How it works:
   disabled with `--no-server-side-copy`.
 - The copy becomes valid (gets the state `created`) only after all its data is copied. If copying is
   interrupted, the copy remains in the state `creating` or `failed`, and the next run of the command
-  retries copying all objects. Existing objects are overwritten even when their sizes match, since
-  size alone does not establish that their contents are correct. Completed backups are skipped.
+  resumes it. Confirmed copies are recorded in the copy context, a journal kept in the target storage
+  under `<backup>/copy_context/`. It is saved when 10000 confirmations accumulate or the first
+  confirmation arrives 60 seconds after the previous save, and when copying fails or is interrupted by
+  a signal. The next run skips an object only if the context records it with the
+  same source, target and size and the target storage still holds it with that size: size alone does not
+  establish that the contents are correct, and a failed or partial delete may have removed recorded
+  objects. Other objects are overwritten. If the target listing or a context file cannot be read, the
+  affected objects are copied again. `objects_skipped` in the report counts skipped objects. Before
+  copying, resuming holds the listing of the target backup in memory, comparable to the object plan.
+  `--no-resume` (or `copy.resume: false`) ignores records of previous runs and overwrites all objects;
+  the run still records confirmed copies, so an interrupted run should be repeated with `--no-resume`
+  to overwrite every object.
+  The context is not copied with the backup and is deleted together with it.
+  Completed backups are skipped.
   When a linked part has already been materialized in a successfully copied backup, subsequent
   backups reuse that copy, including mutation-renamed parts and full cloud-storage backups.
 - Copy acquires the configured source and target locks through completion, including retries and
@@ -279,6 +276,19 @@ How it works:
   when the copy is deleted, and they're stored for each copied backup separately.
   Restore preserves the HTTP/HTTPS scheme of the stored endpoint. Its `--cloud-storage-source-endpoint`
   option accepts a full HTTP(S) URL or `host[:port]`; the latter uses the original disk's scheme.
+- ClickHouse 26.8+ SQL-defined HTTP handlers are included in full backups; use `--http-handlers` with backup
+  or restore handlers only.
+  Export requires `SHOW HANDLERS`, `SELECT ... system.handlers`, and a server setting
+  `display_secrets_in_show_and_select=1` plus grant `displaySecretsInShowAndSelect` if you have any secrets.
+  In the latter case, any `[HIDDEN]`, including literals, is rejected.
+  Restore requires `CREATE HANDLER` and `DROP HANDLER` for replacements.
+  Identical definitions are skipped; changed definitions use non-atomic `DROP/CREATE`.
+  Concurrent handler DDL is unsupported. Stop other changes to the selected handlers during restore.
+- Workload and resource restore skips identical definitions and uses `CREATE OR REPLACE`
+  for changes, preserving dependencies. Entities absent from the backup remain; XML-defined
+  target entities are skipped. Parents omitted from the backup must already exist. Replacing
+  shared parents or resources can affect other entities. Type conflicts and server restrictions
+  abort restore; concurrent workload/resource DDL is unsupported.
 
 ### Backup targets in configuration
 

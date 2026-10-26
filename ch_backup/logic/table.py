@@ -1825,6 +1825,10 @@ class TableBackup(BackupManager):
                 attach_parts = []
                 for part in table_meta.get_parts():
                     if context.restore_context.part_restored(part):
+                        if part.disk_name in context.backup_meta.cloud_storage.disks:
+                            # Retry marker cleanup if the previous invocation stopped
+                            # after persisting RESTORED but before removing the marker.
+                            disks.remove_part_copy_marker(table, part)
                         logging.debug(
                             f"{table.database}.{table.name} part {part.name} already restored, skipping it"
                         )
@@ -1909,9 +1913,6 @@ class TableBackup(BackupManager):
                     )
                     try:
                         context.ch_ctl.attach_part(table, part.name)
-                        context.restore_context.change_part_state(
-                            PartState.RESTORED, part
-                        )
                     except Exception as e:
                         logging.warning(
                             'Attaching "{}.{}" part {} failed: {}',
@@ -1925,6 +1926,14 @@ class TableBackup(BackupManager):
                         context.restore_context.change_part_state(
                             PartState.INVALID, part
                         )
+                    else:
+                        context.restore_context.change_part_state(
+                            PartState.RESTORED, part
+                        )
+                        if part.disk_name in context.backup_meta.cloud_storage.disks:
+                            # A marker cleanup failure must not mark an attached part
+                            # INVALID and cause it to be copied again.
+                            disks.remove_part_copy_marker(table, part)
             finally:
                 context.restore_context.dump_state()
 

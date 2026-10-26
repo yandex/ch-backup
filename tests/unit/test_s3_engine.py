@@ -20,18 +20,24 @@ from urllib3.util.ssl_match_hostname import CertificateError as Urllib3Certifica
 
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import ConfigurationError
-from ch_backup.storage.engine.s3 import S3RetryingError, S3StorageEngine
+from ch_backup.storage.engine.s3 import (
+    S3RetryingError,
+    S3RetryPolicy,
+    S3StorageEngine,
+)
 from ch_backup.storage.engine.s3.s3_client_factory import (
     S3BalancerUnknownHost,
     S3ClientCachedFactory,
 )
 
 
-def _engine(**storage: Any) -> S3StorageEngine:
+def _engine(
+    retry_policy: S3RetryPolicy = S3RetryPolicy.DEFAULT, **storage: Any
+) -> S3StorageEngine:
     """Build an engine on the default storage config with the given overrides."""
     config: dict = {**DEFAULT_CONFIG["storage"], **storage}  # type: ignore[dict-item]
     config["credentials"] = {**config["credentials"], "bucket": "bucket"}
-    return S3StorageEngine(config)
+    return S3StorageEngine(config, retry_policy=retry_policy)
 
 
 @pytest.mark.parametrize("max_attempts", [1, 3])
@@ -62,6 +68,31 @@ def test_retry_max_attempts_from_config(max_attempts: int) -> None:
     assert all(call.args[0] <= 1.5 for call in sleep.call_args_list)
 
 
+def test_retry_policy_overrides_base_limits() -> None:
+    retry_config = {
+        S3RetryPolicy.LIST.value: {"max_attempts": 2},
+        S3RetryPolicy.BACKUP.value: {"max_interval": 3},
+    }
+    expected_by_policy = {
+        S3RetryPolicy.LIST: (2, 20),
+        S3RetryPolicy.BACKUP: (10, 3),
+        S3RetryPolicy.RESTORE: (10, 20),
+        S3RetryPolicy.DEFAULT: (10, 20),
+    }
+
+    for retry_policy, expected in expected_by_policy.items():
+        retry = getattr(
+            _engine(
+                retry_policy,
+                retry_max_attempts=10,
+                retry_max_interval=20,
+                retry=retry_config,
+            ),
+            "_retry",
+        )
+        assert (retry.max_attempts, retry.max_interval) == expected
+
+
 @pytest.mark.parametrize(
     "storage",
     [
@@ -72,7 +103,7 @@ def test_retry_max_attempts_from_config(max_attempts: int) -> None:
 )
 def test_invalid_retry_limits_are_rejected(storage: dict) -> None:
     """Retry limits that would end retries without an error or crash sleep are rejected."""
-    with pytest.raises(ConfigurationError, match="storage.retry_"):
+    with pytest.raises(ConfigurationError, match="storage.retry_max_attempts"):
         _engine(**storage)
 
 

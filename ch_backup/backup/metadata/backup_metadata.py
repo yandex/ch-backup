@@ -98,6 +98,7 @@ class BackupMetadata:
         self._user_defined_functions: list[str] = []
         self._named_collections: list[str] = []
         self._workload_entities: list[str] = []
+        self._http_handlers: list[str] = []
 
     def __str__(self) -> str:
         return self.dump_json()
@@ -178,6 +179,7 @@ class BackupMetadata:
             "user_defined_functions": self._user_defined_functions if not light else [],
             "named_collections": self._named_collections if not light else [],
             "workload_entities": self._workload_entities if not light else [],
+            "http_handlers": self._http_handlers if not light else [],
             "cloud_storage": self.cloud_storage.dump(),
             "meta": {
                 **meta,
@@ -362,6 +364,7 @@ class BackupMetadata:
             backup._workload_entities = data.get(
                 "workload_entities", meta.get("workload_entities", [])
             )
+            backup._http_handlers = data.get("http_handlers", [])
 
             return backup
 
@@ -503,6 +506,19 @@ class BackupMetadata:
         Get workload entities data.
         """
         return self._workload_entities
+
+    def add_http_handler(self, name: str) -> None:
+        """
+        Add a SQL-defined HTTP handler to the backup.
+        """
+        assert name not in self._http_handlers
+        self._http_handlers.append(name)
+
+    def get_http_handlers(self) -> list[str]:
+        """
+        Return names of SQL-defined HTTP handlers in the backup.
+        """
+        return self._http_handlers
 
     def find_part(
         self, db_name: str, table_name: str, part_name: str

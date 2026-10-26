@@ -4,11 +4,13 @@ Clickhouse-disks controls temporary cloud storage disks management.
 
 import copy
 import os
+import shlex
 import shutil
 import threading
 from collections import defaultdict
 from contextlib import contextmanager, suppress
 from functools import partial
+from pathlib import Path
 from subprocess import PIPE, Popen
 from types import TracebackType
 from typing import IO, Any, Callable, Iterator, Literal, Sequence
@@ -46,6 +48,13 @@ class ClickHouseDisksException(RuntimeError):
 CH_DISK_CONFIG_PATH = "/tmp/clickhouse-disks-config.xml"
 CH_DISK_HISTORY_FILE_PATH = "/tmp/.disks-file-history"
 CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS = 1 * 60 * 60 * 1000
+CH_DISKS_S3_RETRY_MIN_VERSION = "25.9"
+CH_DISKS_S3_RETRY_CONFIG_KEYS = (
+    "s3_retry_attempts",
+    "s3_retry_initial_delay_ms",
+    "s3_retry_max_delay_ms",
+    "s3_slow_all_threads_after_network_error",
+)
 BACKUP_DISK_CONFIG_KEYS = (
     "type",
     "object_storage_type",
@@ -72,6 +81,7 @@ class ClickHouseDiskManager:
         self._ch_ctl = ch_ctl
         self._backup_layout = backup_layout
         self._config_dir = config["clickhouse"]["config_dir"]
+        self._ch_disks_config = config.get("clickhouse_disks") or {}
         self._storage_config = config["storage"]
         self._backup_meta = backup_meta
         self._ch_config = ch_config
@@ -79,6 +89,34 @@ class ClickHouseDiskManager:
         self._disks: dict[str, dict] = {}
         self._created_disks: dict[str, Disk] = {}
         self._disks_lock = threading.Lock()
+
+    def _render_ch_disks_config(self) -> None:
+        """Write the utility config with supported S3 retry overrides."""
+        retry_config = {}
+        if self._ch_ctl.ch_version_ge(CH_DISKS_S3_RETRY_MIN_VERSION):
+            retry_config = {
+                key: self._ch_disks_config.get(key)
+                for key in CH_DISKS_S3_RETRY_CONFIG_KEYS
+                if self._ch_disks_config.get(key) is not None
+            }
+
+        _render_disks_config(
+            CH_DISK_CONFIG_PATH,
+            {
+                name: (
+                    {**conf, **retry_config}
+                    if conf
+                    and (
+                        conf.get("type") in {"s3", "s3_plain", "s3_plain_rewritable"}
+                        or conf.get("object_storage_type") == "s3"
+                    )
+                    else conf
+                )
+                for name, conf in self._disks.items()
+                if not conf or conf.get("type") != "cache"
+            },
+            history_file=CH_DISK_HISTORY_FILE_PATH,
+        )
 
     def _read_configured_disks(self) -> None:
         """
@@ -226,7 +264,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
                 )
         self._backup_layout.wait()
         self._ch_availible_disks = self._ch_ctl.get_disks()
-        _render_ch_disks_config(self._disks)
+        self._render_ch_disks_config()
         return self
 
     def __exit__(
@@ -413,6 +451,9 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
                 target_path = os.path.join(table_path, "detached")
                 if self._ch_ctl.ch_version_ge("23.7"):
                     target_path = os.path.join(target_path, part.name, "")
+                    target_part_path = target_path
+                else:
+                    target_part_path = os.path.join(target_path, source_part_name)
                 source_path = os.path.join(
                     "shadow",
                     sanitize_backup_name(source_backup_name),
@@ -420,6 +461,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
                     source_part_name,
                     "",
                 )
+                self._prepare_part_copy(target_disk, target_part_path, routine_tag)
                 self._copy_dir(
                     source_disk.name,
                     source_path,
@@ -432,6 +474,43 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         raise RuntimeError(
             f'Disk "{target_disk.name}" path not found for table `{table.database}`.`{table.name}`'
         )
+
+    def _prepare_part_copy(self, disk: Disk, path: str, routine_tag: str) -> None:
+        full_path = Path(disk.path) / path
+        mode_file = full_path.with_name(f".{full_path.name}.ch-backup-copy-mode")
+        previous_mode = None
+        if mode_file.exists():
+            previous_mode = mode_file.read_text(encoding="utf-8")
+
+        if full_path.exists():
+            # The directory may come from an earlier inplace restore, even if
+            # this invocation copies objects. Only a recorded object copy owns
+            # its S3 objects; unknown/legacy directories get metadata-only cleanup.
+            logging.info("Removing incomplete part {} from disk {}", path, disk.name)
+            if previous_mode == "copy":
+                _ch_disks_remove(self._ch_ctl, disk.name, path, routine_tag)
+            else:
+                shutil.rmtree(full_path)
+
+        mode_file.parent.mkdir(parents=True, exist_ok=True)
+        # ATTACH can fail after copying succeeds. Keep ownership until ATTACH
+        # succeeds so a retry can remove copied objects, not just their metadata.
+        mode_file.write_text(
+            "inplace" if self._use_local_copy else "copy", encoding="utf-8"
+        )
+
+    def remove_part_copy_marker(self, table: Table, part: PartMetadata) -> None:
+        """Forget ownership after ATTACH so later detached parts cannot inherit it."""
+        part_name = (
+            part.name
+            if self._ch_ctl.ch_version_ge("23.7")
+            else part.deduplicated_part_name
+        )
+        full_path = Path(
+            self._ch_ctl.get_detached_part_path(table, part.disk_name, part_name)
+        )
+        mode_file = full_path.with_name(f".{full_path.name}.ch-backup-copy-mode")
+        mode_file.unlink(missing_ok=True)
 
     # pylint: disable=too-many-positional-arguments
     def _copy_dir(
@@ -480,7 +559,7 @@ class ClickHouseBackupDisks(ClickHouseDiskManager):
 
     def __enter__(self) -> "ClickHouseBackupDisks":
         self._read_configured_disks()
-        _render_ch_disks_config(self._disks)
+        self._render_ch_disks_config()
         try:
             for disk in self._ch_ctl.get_disks().values():
                 if (
@@ -534,7 +613,7 @@ class ClickHouseBackupDisks(ClickHouseDiskManager):
                 tmp_disk_name,
                 self._backup_disk_config(self._backup_meta.name, disk_name),
             )
-            _render_ch_disks_config(self._disks)
+            self._render_ch_disks_config()
             return disk
 
     def exclude_frozen_parts(
@@ -565,9 +644,8 @@ class ClickHouseBackupDisks(ClickHouseDiskManager):
         """
         Copy frozen table data from a given disk into the backup bucket.
 
-        clickhouse-disks creates the last directory of the destination itself,
-        fails if the rest is missing and nests the copy one level deeper if
-        that directory already exists.
+        Before 23.7, clickhouse-disks appends the source directory name to the
+        destination. Newer versions require the full destination path.
         """
         assert table.path_on_disk, f"Table {table} doesn't store data on disk"
 
@@ -580,12 +658,15 @@ class ClickHouseBackupDisks(ClickHouseDiskManager):
         )
         target_path = os.path.join(backup_disk.path, shadow_path)
         os.makedirs(os.path.dirname(target_path.rstrip("/")), exist_ok=True)
+        destination = shadow_path
+        if not self._ch_ctl.ch_version_ge("23.7"):
+            destination = os.path.dirname(shadow_path.rstrip("/"))
         _ch_disks_copy(
             self._ch_ctl,
             disk_name,
             shadow_path,
             backup_disk.name,
-            shadow_path,
+            destination,
             f"Backup of {table.database}.{table.name} on disk {disk_name}",
         )
         return backup_disk
@@ -723,21 +804,6 @@ def _render_disks_config(
         )
 
 
-def _render_ch_disks_config(disks: dict[str, dict]) -> None:
-    """
-    Write configuration of the clickhouse-disks utility.
-    """
-    _render_disks_config(
-        CH_DISK_CONFIG_PATH,
-        {
-            name: conf
-            for name, conf in disks.items()
-            if not conf or conf.get("type") != "cache"
-        },
-        history_file=CH_DISK_HISTORY_FILE_PATH,
-    )
-
-
 # pylint: disable=too-many-positional-arguments
 def _ch_disks_copy(
     ch_ctl: ClickhouseCTL,
@@ -761,11 +827,7 @@ def _ch_disks_copy(
             to_disk,
             from_path,
             to_path,
-            "'",
         ]
-        common_args.append("--query")
-        # Changes in disks interface require passing command with args in quotes
-        command = "'" + command
     elif ch_ctl.ch_version_ge("23.9"):
         command_args = [
             "--disk-from",
@@ -791,8 +853,30 @@ def _ch_disks_copy(
         common_args=common_args,
         command=command,
         command_args=command_args,
+        query=ch_ctl.ch_version_ge("24.7"),
     )
     logging.info(f"clickhouse-disks copy result for {routine_tag}: {result}")
+
+
+def _ch_disks_remove(
+    ch_ctl: ClickhouseCTL, disk: str, path: str, routine_tag: str
+) -> None:
+    """Remove a directory and its objects through the ClickHouse disk."""
+    command = "remove"
+    common_args = ["--config", CH_DISK_CONFIG_PATH, "--disk", disk]
+    command_args = [path]
+    if ch_ctl.ch_version_ge("24.7"):
+        command_args = ["--recursive", path]
+
+    result = _exec(
+        routine_tag,
+        exe="/usr/bin/clickhouse-disks",
+        common_args=common_args,
+        command=command,
+        command_args=command_args,
+        query=ch_ctl.ch_version_ge("24.7"),
+    )
+    logging.info("clickhouse-disks remove result for {}: {}", routine_tag, result)
 
 
 def _get_config_path(config_dir: str, disk_name: str) -> str:
@@ -822,18 +906,32 @@ def _get_backup_disk_name(disk_name: str) -> str:
     return f"{disk_name}_backup"
 
 
+def _quote_query_argument(argument: str) -> str:
+    """Quote for clickhouse-disks' command parser, not for a shell."""
+    # Boost split_unix escapes both quote types and backslashes, even inside
+    # quotes. Newer ClickHouse first splits on unquoted semicolons, preserving
+    # backslashes only inside single quotes. After a literal apostrophe, reopen
+    # that single-quoted region; the double quote balances Boost's quote state.
+    escaped = argument.replace("\\", "\\\\").replace('"', '\\"').replace("'", "\\''\"")
+    return "'" + escaped + "'"
+
+
 def _exec(
     routine_tag: str,
     exe: str,
     common_args: list[str],
     command: str | None = None,
     command_args: list[str] | None = None,
+    *,
+    query: bool = False,
 ) -> Any:
     """
     Run a command and return its output lines.
 
-    clickhouse-disks may report a failed command with zero exit code, writing
-    only a line starting with "Error: " to stderr, so such a line fails the call.
+    clickhouse-disks may exit successfully after printing an exception to stderr.
+    Older versions, including 24.8, omit the "Error: " prefix. These commands
+    emit errors to stderr, so any nonempty diagnostic must fail the call before
+    a partially copied part can be marked as downloaded.
     """
     proc_logger = logging.getLogger("clickhouse-disks").bind(tag=routine_tag)
     args = [
@@ -842,18 +940,25 @@ def _exec(
     ]
     if command:
         command_with_args = [command, *command_args] if command_args else [command]
-        args += command_with_args  # type: ignore
+        if query:
+            args += ["--query", " ".join(map(_quote_query_argument, command_with_args))]
+        else:
+            args += command_with_args
 
-    args = " ".join(args)  # type: ignore
-    logging.debug(f'Executing "{args}"')
+    logging.debug("Executing {}", shlex.join(args))
 
-    with Popen(args, stdout=PIPE, stderr=PIPE, shell=True) as proc:  # nosec
+    try:
+        proc = Popen(args, stdout=PIPE, stderr=PIPE, shell=False)  # noqa: S603
+    except OSError as e:
+        raise ClickHouseDisksException(f"Failed to start {exe}: {e}") from e
+
+    with proc:
         stdout, stderr = proc.communicate()
         errors = []
         for line in stderr.splitlines():
             message = line.decode("utf-8").strip()
             proc_logger.info(message)
-            if message.startswith("Error: "):
+            if message:
                 errors.append(message)
         if proc.returncode != 0 or errors:
             raise ClickHouseDisksException(

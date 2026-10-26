@@ -47,6 +47,23 @@ FORMAT JSON
 """
 
 
+def get_part_path(
+    context: ContextT, node: str, database: str, table: str, part: str
+) -> str:
+    """Find exactly one active part before injecting a file or object fault."""
+    paths = (
+        ClickhouseClient(context, node)
+        .get_response(
+            f"SELECT path FROM system.parts WHERE active "
+            f"AND database = '{database}' AND table = '{table}' "
+            f"AND name = '{part}' FORMAT TSVRaw"
+        )
+        .splitlines()
+    )
+    assert len(paths) == 1, f"Expected one active part, found paths: {paths}"
+    return paths[0].rstrip("/")
+
+
 class ClickhouseClient:
     """
     ClickHouse Client.
@@ -265,6 +282,15 @@ class ClickhouseClient:
         """
         ncs = self._query("GET", query=NAMED_COLLECTIONS_QUERY)
         return {nc["name"]: nc["collection"] for nc in ncs.get("data", [])}
+
+    def get_all_http_handlers(self) -> dict[str, str]:
+        """Read full handler definitions, including credentials for comparison."""
+        response = self._query(
+            "GET",
+            "SELECT name, create_query FROM system.handlers "
+            "SETTINGS format_display_secrets_in_show_and_select = 1 FORMAT JSON",
+        )
+        return {row["name"]: row["create_query"] for row in response["data"]}
 
     def drop_all_access_objects(self) -> None:
         """

@@ -62,6 +62,7 @@ class BackupCopyResult:
     objects_total: int | None = None
     objects_copied: int = 0
     objects_failed: int = 0
+    objects_skipped: int = 0
     known_bytes_copied: int = 0
     errors: CopyErrors = field(default_factory=CopyErrors)
 
@@ -131,7 +132,12 @@ def print_copy_report(report: CopyReport, report_path: str | None) -> None:
         if result.objects_total is not None:
             print(
                 f"  objects: {result.objects_copied}/{result.objects_total} copied, "
-                f"{result.objects_failed} failed; known bytes copied: {result.known_bytes_copied}"
+                + (
+                    f"{result.objects_skipped} skipped as already copied, "
+                    if result.objects_skipped
+                    else ""
+                )
+                + f"{result.objects_failed} failed; known bytes copied: {result.known_bytes_copied}"
             )
         for error in result.errors:
             path = error.get("target", error.get("source", ""))
