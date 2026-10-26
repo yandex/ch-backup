@@ -239,6 +239,27 @@ class BackupLayout:
             msg = f'Failed to upload udf metadata "{remote_path}"'
             raise StorageError(msg) from e
 
+    def upload_http_handler(self, backup_name: str, name: str, statement: str) -> None:
+        """Upload a handler definition with metadata encryption enabled."""
+        remote_path = _http_handlers_data_path(self.get_backup_path(backup_name), name)
+        try:
+            self._storage_loader.upload_data(
+                data=statement, remote_path=remote_path, encryption=True
+            )
+        except Exception as e:
+            raise StorageError(
+                f'Failed to upload HTTP handler metadata "{remote_path}"'
+            ) from e
+
+    def get_http_handler_create_statement(
+        self, backup_meta: BackupMetadata, name: str
+    ) -> str:
+        """Download a SQL-defined HTTP handler definition."""
+        remote_path = _http_handlers_data_path(
+            self.get_backup_path(backup_meta.name), name
+        )
+        return self._storage_loader.download_data(remote_path, encryption=True)
+
     def upload_data_part(
         self,
         backup_meta: BackupMetadata,
@@ -633,7 +654,12 @@ class BackupLayout:
         return data.decode("utf-8", errors="surrogateescape")
 
     def get_table_create_statements(
-        self, backup_meta: BackupMetadata, db_name: str, table_names: list[str]
+        self,
+        backup_meta: BackupMetadata,
+        db_name: str,
+        table_names: list[str],
+        *,
+        keep_going: bool = False,
     ) -> list[tuple[str, str]]:
         """
         Download and return table create statements.
@@ -645,13 +671,25 @@ class BackupLayout:
             logging.debug(
                 f"File {remote_path} doesn't exist, fallback to old metadata style"
             )
-            return [
-                (
-                    table_name,
-                    self.get_table_create_statement(backup_meta, db_name, table_name),
-                )
-                for table_name in table_names
-            ]
+            statements = []
+            for table_name in table_names:
+                try:
+                    statement = self.get_table_create_statement(
+                        backup_meta, db_name, table_name
+                    )
+                except Exception as error:
+                    if not keep_going:
+                        raise
+                    logging.warning(
+                        "Failed to load schema for table {}.{}: {}. "
+                        "Skipping schema and data restore due to --keep-going flag",
+                        db_name,
+                        table_name,
+                        repr(error),
+                    )
+                    continue
+                statements.append((table_name, statement))
+            return statements
 
         data: list[tuple[str, Any]] = self._storage_loader.download_data_tarball(
             remote_path,
@@ -1437,6 +1475,11 @@ def _named_collections_data_path(backup_path: str, nc_name: str) -> str:
     Return S3 path to named collections.
     """
     return os.path.join(backup_path, "named_collections", _quote(nc_name) + ".sql")
+
+
+def _http_handlers_data_path(backup_path: str, name: str) -> str:
+    """Return the escaped object path for a SQL-defined HTTP handler."""
+    return os.path.join(backup_path, "http_handlers", _quote(name) + ".sql")
 
 
 def _workload_entities_data_path(backup_path: str, entity_name: str) -> str:

@@ -11,7 +11,6 @@ from docker.models.containers import ExecResult
 from requests import HTTPError, Session
 from tenacity import retry, stop_after_attempt, wait_fixed
 
-from ch_backup.clickhouse.control import GET_TABLES_SHORT_SQL
 from tests.integration.diagnostics import record_stage_failure
 
 from . import docker
@@ -46,6 +45,23 @@ FROM system.named_collections
 ORDER BY name
 FORMAT JSON
 """
+
+
+def get_part_path(
+    context: ContextT, node: str, database: str, table: str, part: str
+) -> str:
+    """Find exactly one active part before injecting a file or object fault."""
+    paths = (
+        ClickhouseClient(context, node)
+        .get_response(
+            f"SELECT path FROM system.parts WHERE active "
+            f"AND database = '{database}' AND table = '{table}' "
+            f"AND name = '{part}' FORMAT TSVRaw"
+        )
+        .splitlines()
+    )
+    assert len(paths) == 1, f"Expected one active part, found paths: {paths}"
+    return paths[0].rstrip("/")
 
 
 class ClickhouseClient:
@@ -101,20 +117,6 @@ class ClickhouseClient:
         Get ClickHouse version.
         """
         return self._query("GET", "SELECT version()")
-
-    def get_short_tables_during_load(self, database: str, table: str) -> list[dict]:
-        """Force a load between the short query's two catalog scans."""
-        condition = f"database = '{database}' AND name = '{table}'"
-        engine_query = f"SELECT engine FROM system.tables WHERE {condition}"
-        assert self.get_response(engine_query) == "TableProxy", "Table must be cold"
-        first, second = GET_TABLES_SHORT_SQL.format(
-            db_condition=f"database = '{database}'", tables_condition="1"
-        ).split("UNION ALL", 1)
-        rows = self._query("POST", first + " FORMAT JSON")["data"]
-        self.execute(f"SELECT data_paths FROM system.tables WHERE {condition}")
-        assert self.get_response(engine_query) != "TableProxy", "Table must be loaded"
-        rows.extend(self._query("POST", second)["data"])
-        return rows
 
     def ch_version_ge(self, comparing_version: str) -> bool:
         """
@@ -280,6 +282,15 @@ class ClickhouseClient:
         """
         ncs = self._query("GET", query=NAMED_COLLECTIONS_QUERY)
         return {nc["name"]: nc["collection"] for nc in ncs.get("data", [])}
+
+    def get_all_http_handlers(self) -> dict[str, str]:
+        """Read full handler definitions, including credentials for comparison."""
+        response = self._query(
+            "GET",
+            "SELECT name, create_query FROM system.handlers "
+            "SETTINGS format_display_secrets_in_show_and_select = 1 FORMAT JSON",
+        )
+        return {row["name"]: row["create_query"] for row in response["data"]}
 
     def drop_all_access_objects(self) -> None:
         """

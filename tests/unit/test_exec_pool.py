@@ -15,6 +15,7 @@ from unittest.mock import ANY, MagicMock, call
 import pytest
 
 from ch_backup import logging
+from ch_backup.command_context import command_context, get_current_command
 from ch_backup.exceptions import TerminatingSignal
 from ch_backup.storage.async_pipeline.base_pipeline import exec_pool
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
@@ -22,6 +23,10 @@ from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
     ThreadExecPool,
 )
 from ch_backup.storage.async_pipeline.pipeline_executor import PipelineExecutor
+
+
+def _assert_command_context(expected: str) -> None:
+    assert get_current_command() == expected
 
 
 @pytest.mark.parametrize("workers", [0, 2])
@@ -43,9 +48,13 @@ def test_pipeline_callbacks_collect_errors_and_allow_next_batch(
                 executor._exec_pipeline(
                     "bad", partial(int, "invalid"), True, on_error=errors.append
                 )
-        executor._exec_pipeline(
-            "good", partial(int, "1"), True, callback=lambda: completed.append("good")
-        )
+        with command_context("backup"):
+            executor._exec_pipeline(
+                "good",
+                partial(_assert_command_context, "backup"),
+                True,
+                callback=lambda: completed.append("good"),
+            )
         executor.wait(keep_going=True)
         executor._exec_pipeline(
             "next", partial(int, "2"), True, callback=lambda: completed.append("next")

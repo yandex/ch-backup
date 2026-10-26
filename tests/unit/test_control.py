@@ -19,34 +19,6 @@ from ch_backup.exceptions import ClickhouseBackupError
 from tests.unit.utils import parametrize
 
 
-@pytest.fixture(name="clickhouse_ctl")
-def fixture_clickhouse_ctl() -> tuple[ClickhouseCTL, mock.Mock]:
-    """Build a control object with ClickHouse mocked."""
-    with (
-        mock.patch("ch_backup.clickhouse.control.ClickhouseClient") as client_cls,
-        mock.patch.object(ClickhouseCTL, "get_disks") as get_disks,
-    ):
-        client = client_cls.return_value
-        client.query.return_value = "26.3.12.3"
-        get_disks.return_value = {
-            "default": Disk("default", "/var/lib/clickhouse/", "local")
-        }
-        ctl = ClickhouseCTL(
-            {
-                "data_path": "/var/lib/clickhouse/",
-                "timeout": 10,
-                "freeze_timeout": 10,
-                "unfreeze_timeout": 10,
-                "restore_replica_timeout": 10,
-                "drop_replica_timeout": 10,
-            },
-            {},
-            {},
-        )
-    client.query.reset_mock()
-    return ctl, client
-
-
 @pytest.fixture(name="cold_table_record")
 def fixture_cold_table_record() -> dict:
     """The first paths query can still report TableProxy for loaded storage."""
@@ -62,30 +34,38 @@ def fixture_cold_table_record() -> dict:
     }
 
 
+@pytest.mark.parametrize("short_query", [False, True])
 def test_first_discovery_uses_declared_engine_for_lazy_table(
-    clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock],
-    cold_table_record: dict,
+    cold_table_record: dict, short_query: bool
 ) -> None:
-    ctl, client = clickhouse_ctl
+    ctl, client = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    ctl._disks = {  # pylint: disable=protected-access
+        "default": Disk("default", "/var/lib/clickhouse/", "local")
+    }
+    if short_query:
+        cold_table_record.pop("data_paths")
+        cold_table_record.pop("metadata_path")
     client.query.return_value = {"data": [cold_table_record]}
 
-    table = ctl.get_table("db1", "table1")
+    table = ctl.get_table("db1", "table1", short_query=short_query)
 
     assert table is not None
     assert table.engine == "ReplicatedMergeTree"
     assert table.is_merge_tree()
     assert table.is_replicated()
-    assert table.paths_with_disks
+    assert bool(table.paths_with_disks) is (not short_query)
 
 
 @pytest.mark.parametrize("engine", ["MergeTree", "StorageProxy", "PostgreSQL"])
 def test_discovery_preserves_other_runtime_engines(
-    clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock],
     cold_table_record: dict,
     engine: str,
 ) -> None:
-    ctl, client = clickhouse_ctl
+    ctl, client = TestCreateTable._make_ctl()  # pylint: disable=protected-access
     cold_table_record["engine"] = engine
+    ctl._disks = {  # pylint: disable=protected-access
+        "default": Disk("default", "/var/lib/clickhouse/", "local")
+    }
     client.query.return_value = {"data": [cold_table_record]}
 
     table = ctl.get_table("db1", "table1")
@@ -97,11 +77,10 @@ def test_discovery_preserves_other_runtime_engines(
 
 @pytest.mark.parametrize("engine_full", [None, "(missing engine)"])
 def test_lazy_table_with_unknown_declared_engine_fails_discovery(
-    clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock],
     cold_table_record: dict,
     engine_full: str | None,
 ) -> None:
-    ctl, client = clickhouse_ctl
+    ctl, client = TestCreateTable._make_ctl()  # pylint: disable=protected-access
     cold_table_record["engine_full"] = engine_full
     client.query.return_value = {"data": [cold_table_record]}
 
@@ -135,7 +114,21 @@ def test_lazy_table_with_unknown_declared_engine_fails_discovery(
         "id": "escaping",
         "args": {
             "value": ["`for`.bar"],
-            "result": r"['\`for\`.bar']",
+            "result": "['`for`.bar']",
+        },
+    },
+    {
+        "id": "apostrophes and backslashes",
+        "args": {
+            "value": ["report'view%'", "a\\n", "a\\"],
+            "result": r"['report\'view%\'','a\\n','a\\']",
+        },
+    },
+    {
+        "id": "unicode and empty string",
+        "args": {
+            "value": ["表", "ТАБЛИЦА", ""],
+            "result": "['表','ТАБЛИЦА','']",
         },
     },
 )
@@ -323,6 +316,28 @@ class TestCreateTable:
     )
 
     @staticmethod
+    def _make_ctl() -> tuple[ClickhouseCTL, mock.Mock]:
+        """Helper: build a control object with ClickHouse mocked."""
+        config = {
+            "data_path": "/tmp",
+            "timeout": 10,
+            "freeze_timeout": 10,
+            "unfreeze_timeout": 10,
+            "restore_replica_timeout": 10,
+            "drop_replica_timeout": 10,
+        }
+        with (
+            mock.patch("ch_backup.clickhouse.control.ClickhouseClient") as client_cls,
+            mock.patch.object(ClickhouseCTL, "get_disks", return_value={}),
+        ):
+            client = client_cls.return_value
+            client.query.return_value = "26.5.1.1"
+            ch_ctl = ClickhouseCTL(config, {}, {})
+
+        client.query.reset_mock()
+        return ch_ctl, client
+
+    @staticmethod
     def _table(create_statement: str) -> Table:
         return Table("db1", "table1", "MergeTree", [], [], "", create_statement, None)
 
@@ -335,17 +350,14 @@ class TestCreateTable:
         ids=["unique key table", "plain table"],
     )
     def test_experimental_setting_is_sent_only_for_a_unique_key_table(
-        self,
-        clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock],
-        clause: str,
-        settings: dict | None,
+        self, clause: str, settings: dict | None
     ) -> None:
         """
         ClickHouse gates the clause on CREATE, which is how tables of a replicated
         database are restored. Other tables must not get the setting, as builds
         without the clause do not have it.
         """
-        ch_ctl, client = clickhouse_ctl
+        ch_ctl, client = self._make_ctl()
         statement = f"{self._PLAIN_STATEMENT}{clause}"
 
         ch_ctl.create_table(self._table(statement))
@@ -359,12 +371,9 @@ class TestGetPartsOfOtherReplicas:
     """
 
     @staticmethod
-    def _parts(
-        clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock],
-        zookeeper: dict[str, list[str]],
-    ) -> set[str]:
+    def _parts(zookeeper: dict[str, list[str]]) -> set[str]:
         """Helper: run the lookup against the given ZooKeeper children."""
-        ch_ctl, client = clickhouse_ctl
+        ch_ctl, client = TestCreateTable._make_ctl()  # pylint: disable=protected-access
         client.query.return_value = {
             "data": [{"zookeeper_path": "/zk/t1", "replica_name": "new"}]
         }
@@ -373,30 +382,24 @@ class TestGetPartsOfOtherReplicas:
         table = Table("db1", "table1", "ReplicatedMergeTree", [], [], "", "", None)
         return ch_ctl.get_parts_of_other_replicas(table, zk_ctl)
 
-    def test_parts_are_intersected_over_other_replicas(
-        self, clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock]
-    ) -> None:
+    def test_parts_are_intersected_over_other_replicas(self) -> None:
         """
         The own replica is ignored, a lagging replica narrows the result.
         """
         assert self._parts(
-            clickhouse_ctl,
             {
                 "/zk/t1/replicas": ["new", "r1", "r2"],
                 "/zk/t1/replicas/new/parts": ["all_9_9_0"],
                 "/zk/t1/replicas/r1/parts": ["all_1_1_0", "all_2_2_0", "all_3_3_0"],
                 "/zk/t1/replicas/r2/parts": ["all_2_2_0", "all_3_3_0", "all_4_4_0"],
-            },
+            }
         ) == {"all_2_2_0", "all_3_3_0"}
 
-    def test_covered_parts_are_dropped_before_intersection(
-        self, clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock]
-    ) -> None:
+    def test_covered_parts_are_dropped_before_intersection(self) -> None:
         """
         ZooKeeper keeps merged parts for a while, the clone takes only active ones.
         """
         assert self._parts(
-            clickhouse_ctl,
             {
                 "/zk/t1/replicas": ["new", "r1", "r2"],
                 "/zk/t1/replicas/r1/parts": [
@@ -413,44 +416,36 @@ class TestGetPartsOfOtherReplicas:
                     "all_1_1_0",
                     "all_2_2_0_3",
                 ],
-            },
+            }
         ) == {"1_0_9_1", "all_2_2_0_3"}
 
-    def test_mutated_date_partition_covers_unmutated_part(
-        self, clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock]
-    ) -> None:
+    def test_mutated_date_partition_covers_unmutated_part(self) -> None:
         """A modern date-like partition must keep its identity after mutation."""
         original = "20230101_20230122_20230123_0"
         mutated = original + "_20538"
         assert self._parts(
-            clickhouse_ctl,
             {
                 "/zk/t1/replicas": ["new", "r1"],
                 "/zk/t1/replicas/r1/parts": [original, mutated],
-            },
+            }
         ) == {mutated}
 
-    def test_parts_are_kept_if_a_name_does_not_parse(
-        self, clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock]
-    ) -> None:
+    def test_parts_are_kept_if_a_name_does_not_parse(self) -> None:
         """
         The filter only saves downloads, so it must not fail the restore.
         """
         assert self._parts(
-            clickhouse_ctl,
             {
                 "/zk/t1/replicas": ["new", "r1"],
                 "/zk/t1/replicas/r1/parts": ["all_0_0_0", "all_0_1_1", "bad"],
-            },
+            }
         ) == {"all_0_0_0", "all_0_1_1", "bad"}
 
-    def test_no_parts_without_other_replicas(
-        self, clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock]
-    ) -> None:
+    def test_no_parts_without_other_replicas(self) -> None:
         """
         The first replica gets nothing, as ClickHouse attaches all of detached/ then.
         """
-        assert not self._parts(clickhouse_ctl, {"/zk/t1/replicas": ["new"]})
+        assert not self._parts({"/zk/t1/replicas": ["new"]})
 
 
 class TestScanFrozenParts:
@@ -501,12 +496,10 @@ class TestGetLocalAccessStatements:
     Tests for reading access entities of local storages of a replica.
     """
 
-    @pytest.fixture(name="local_access_ctl")
-    def fixture_local_access_ctl(
-        self, clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock]
-    ) -> tuple[ClickhouseCTL, mock.Mock]:
-        """A control object over a replica with one entity of each type."""
-        ch_ctl, client = clickhouse_ctl
+    @staticmethod
+    def _ctl() -> tuple[ClickhouseCTL, mock.Mock]:
+        """Helper: a control object over a replica with one entity of each type."""
+        ch_ctl, client = TestCreateTable._make_ctl()  # pylint: disable=protected-access
         names = {
             "system.roles": ["r`1"],
             "system.settings_profiles": ["p1"],
@@ -537,14 +530,12 @@ class TestGetLocalAccessStatements:
         client.query.side_effect = query
         return ch_ctl, client
 
-    def test_bare_roles_and_profiles_go_first_and_are_altered_after_users(
-        self, local_access_ctl: tuple[ClickhouseCTL, mock.Mock]
-    ) -> None:
+    def test_bare_roles_and_profiles_go_first_and_are_altered_after_users(self) -> None:
         """
         Roles and users may refer to profiles and profiles to roles and users, and users
         may refer to each other through GRANTEES.
         """
-        ch_ctl, _ = local_access_ctl
+        ch_ctl, _ = self._ctl()
 
         assert ch_ctl.get_local_access_statements() == [
             "CREATE ROLE `r\\`1`",
@@ -559,13 +550,11 @@ class TestGetLocalAccessStatements:
             "GRANT r1 TO u1",
         ]
 
-    def test_only_local_storages_are_read_and_dropped(
-        self, local_access_ctl: tuple[ClickhouseCTL, mock.Mock]
-    ) -> None:
+    def test_only_local_storages_are_read_and_dropped(self) -> None:
         """
         Entities from users.xml or shared through ZooKeeper must stay as they are.
         """
-        ch_ctl, client = local_access_ctl
+        ch_ctl, client = self._ctl()
 
         ch_ctl.drop_local_access_entities()
 
@@ -585,14 +574,12 @@ class TestGetLocalAccessStatements:
         ]
 
 
-def test_only_named_collections_created_by_sql_are_read(
-    clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock],
-) -> None:
+def test_only_named_collections_created_by_sql_are_read() -> None:
     """
     A collection from the server config created by SQL elsewhere would clash with the
     config of that host.
     """
-    ch_ctl, client = clickhouse_ctl
+    ch_ctl, client = TestCreateTable._make_ctl()  # pylint: disable=protected-access
     client.query.return_value = {
         "data": [{"name": "nc1", "create_query": "CREATE ..."}]
     }
@@ -603,9 +590,8 @@ def test_only_named_collections_created_by_sql_are_read(
 
 def test_scan_detached_parts_reads_reason_from_directory_name(
     tmp_path: Path,
-    clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock],
 ) -> None:
-    ch_ctl, _ = clickhouse_ctl
+    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
     disk = Disk("default", str(tmp_path), "Local")
     ch_ctl._disks = {disk.name: disk}  # pylint: disable=protected-access
     table_path = tmp_path / "store" / "table"
@@ -627,11 +613,20 @@ def test_scan_detached_parts_reads_reason_from_directory_name(
         None,
     )
 
-    parts = list(
-        ch_ctl.scan_detached_parts(table, disk_names=["default"], reasons=[""])
-    )
+    with mock.patch("ch_backup.clickhouse.control.logging.warning") as warning:
+        parts = list(
+            ch_ctl.scan_detached_parts(
+                table,
+                disk_names=["object_storage_cache", "default"],
+                reasons=[""],
+            )
+        )
 
     assert len(parts) == 1
+    warning.assert_called_once_with(
+        'Detached-parts disk "{}" is not reported by system.disks; skipping it',
+        "object_storage_cache",
+    )
     assert parts[0].name == "all_1_1_0"
     assert parts[0].reason == ""
     assert parts[0].disk_name == "default"
@@ -657,13 +652,9 @@ def test_scan_detached_parts_reads_reason_from_directory_name(
     ids=["regular", "mutated", "try-suffix", "mutated-try-suffix"],
 )
 def test_scan_detached_parts_recognizes_clickhouse_reasons(
-    tmp_path: Path,
-    reason: str,
-    partition_id: str,
-    suffix: str,
-    clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock],
+    tmp_path: Path, reason: str, partition_id: str, suffix: str
 ) -> None:
-    ch_ctl, _ = clickhouse_ctl
+    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
     disk = Disk("default", str(tmp_path), "Local")
     ch_ctl._disks = {disk.name: disk}  # pylint: disable=protected-access
     table_path = tmp_path / "store" / "table"
@@ -699,11 +690,9 @@ def test_scan_detached_parts_recognizes_clickhouse_reasons(
     ],
 )
 def test_scan_detached_parts_skips_inaccessible_detached_directory(
-    tmp_path: Path,
-    error: OSError,
-    clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock],
+    tmp_path: Path, error: OSError
 ) -> None:
-    ch_ctl, _ = clickhouse_ctl
+    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
     disk = Disk("default", str(tmp_path), "Local")
     ch_ctl._disks = {disk.name: disk}  # pylint: disable=protected-access
     table = Table(
@@ -738,11 +727,9 @@ def test_scan_detached_parts_skips_inaccessible_detached_directory(
     ],
 )
 def test_scan_detached_parts_skips_inaccessible_part_directory(
-    tmp_path: Path,
-    error: OSError,
-    clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock],
+    tmp_path: Path, error: OSError
 ) -> None:
-    ch_ctl, _ = clickhouse_ctl
+    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
     disk = Disk("default", str(tmp_path), "Local")
     ch_ctl._disks = {disk.name: disk}  # pylint: disable=protected-access
     table_path = tmp_path / "store" / "table"
@@ -773,9 +760,8 @@ def test_scan_detached_parts_skips_inaccessible_part_directory(
 
 def test_scan_detached_parts_uses_selected_backing_disk_directory(
     tmp_path: Path,
-    clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock],
 ) -> None:
-    ch_ctl, _ = clickhouse_ctl
+    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
     storage_disk = Disk("object_storage", str(tmp_path), "ObjectStorage", "S3")
     cache_disk = Disk(
         "object_storage_cache",
@@ -865,9 +851,8 @@ def test_detached_part_matches_object_storage_metadata(tmp_path: Path) -> None:
 
 def test_detached_path_accepts_table_disk_with_same_storage_path(
     tmp_path: Path,
-    clickhouse_ctl: tuple[ClickhouseCTL, mock.Mock],
 ) -> None:
-    ch_ctl, _ = clickhouse_ctl
+    ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
     backing_disk = Disk("object_storage", str(tmp_path), "ObjectStorage", "S3")
     cache_disk = Disk(
         "object_storage_cache",

@@ -32,6 +32,7 @@ from ch_backup.exceptions import ConfigurationError
                 udf=True,
                 named_collections=True,
                 workload_entities=True,
+                http_handlers=True,
             ),
         ),
         # schema-only
@@ -50,6 +51,7 @@ from ch_backup.exceptions import ConfigurationError
                 udf=True,
                 named_collections=True,
                 workload_entities=True,
+                http_handlers=True,
             ),
         ),
         # only access
@@ -68,6 +70,7 @@ from ch_backup.exceptions import ConfigurationError
                 udf=False,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # only data
@@ -86,6 +89,7 @@ from ch_backup.exceptions import ConfigurationError
                 udf=False,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # only schema
@@ -104,6 +108,7 @@ from ch_backup.exceptions import ConfigurationError
                 udf=False,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # data & schema (like data)
@@ -122,6 +127,7 @@ from ch_backup.exceptions import ConfigurationError
                 udf=False,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # only udf
@@ -140,6 +146,7 @@ from ch_backup.exceptions import ConfigurationError
                 udf=True,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # only named_collections
@@ -158,6 +165,7 @@ from ch_backup.exceptions import ConfigurationError
                 udf=False,
                 named_collections=True,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # only workload_entities
@@ -176,6 +184,7 @@ from ch_backup.exceptions import ConfigurationError
                 udf=False,
                 named_collections=False,
                 workload_entities=True,
+                http_handlers=False,
             ),
         ),
         # (combinations) access & udf
@@ -194,6 +203,7 @@ from ch_backup.exceptions import ConfigurationError
                 udf=True,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # (combinations) access & udf & schema
@@ -212,6 +222,7 @@ from ch_backup.exceptions import ConfigurationError
                 udf=True,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # (combinations) udf & data
@@ -230,6 +241,7 @@ from ch_backup.exceptions import ConfigurationError
                 udf=True,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # (combinations) named_collections & data
@@ -248,6 +260,7 @@ from ch_backup.exceptions import ConfigurationError
                 udf=False,
                 named_collections=True,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # (combinations) workload_entities & data
@@ -266,6 +279,7 @@ from ch_backup.exceptions import ConfigurationError
                 udf=False,
                 named_collections=False,
                 workload_entities=True,
+                http_handlers=False,
             ),
         ),
         # all flags (like default)
@@ -284,6 +298,7 @@ from ch_backup.exceptions import ConfigurationError
                 udf=True,
                 named_collections=True,
                 workload_entities=True,
+                http_handlers=False,
             ),
         ),
         # schema-only with new args (ignoring)
@@ -302,6 +317,7 @@ from ch_backup.exceptions import ConfigurationError
                 udf=True,
                 named_collections=True,
                 workload_entities=True,
+                http_handlers=False,
             ),
         ),
         # schema-only with new args (ignoring)
@@ -320,6 +336,7 @@ from ch_backup.exceptions import ConfigurationError
                 udf=False,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # schema-only with new args (ignoring)
@@ -338,6 +355,7 @@ from ch_backup.exceptions import ConfigurationError
                 udf=False,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
     ],
@@ -389,6 +407,7 @@ def test_sources_for_backup(
                 udf=True,
                 named_collections=True,
                 workload_entities=True,
+                http_handlers=True,
             ),
         ),
         # schema-only
@@ -407,6 +426,7 @@ def test_sources_for_backup(
                 udf=True,
                 named_collections=True,
                 workload_entities=True,
+                http_handlers=True,
             ),
         ),
         # only access
@@ -425,6 +445,7 @@ def test_sources_for_backup(
                 udf=False,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # only data
@@ -443,6 +464,7 @@ def test_sources_for_backup(
                 udf=False,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # only schema
@@ -461,6 +483,7 @@ def test_sources_for_backup(
                 udf=False,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # data & schema (like data)
@@ -479,6 +502,7 @@ def test_sources_for_backup(
                 udf=False,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # only udf
@@ -497,6 +521,7 @@ def test_sources_for_backup(
                 udf=True,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # only named_collections
@@ -515,6 +540,7 @@ def test_sources_for_backup(
                 udf=False,
                 named_collections=True,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # only workload_entities
@@ -533,6 +559,7 @@ def test_sources_for_backup(
                 udf=False,
                 named_collections=False,
                 workload_entities=True,
+                http_handlers=False,
             ),
         ),
         # (combinations) access & udf
@@ -551,6 +578,7 @@ def test_sources_for_backup(
                 udf=True,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # (combinations) access & udf & schema
@@ -569,6 +597,7 @@ def test_sources_for_backup(
                 udf=True,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # (combinations) udf & data
@@ -587,6 +616,7 @@ def test_sources_for_backup(
                 udf=True,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # (combinations) named_collections & data
@@ -605,6 +635,7 @@ def test_sources_for_backup(
                 udf=False,
                 named_collections=True,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # (combinations) workload_entities & data
@@ -623,6 +654,7 @@ def test_sources_for_backup(
                 udf=False,
                 named_collections=False,
                 workload_entities=True,
+                http_handlers=False,
             ),
         ),
         # all flags (like default)
@@ -641,6 +673,7 @@ def test_sources_for_backup(
                 udf=True,
                 named_collections=True,
                 workload_entities=True,
+                http_handlers=False,
             ),
         ),
         # schema-only with new args (ignoring)
@@ -659,6 +692,7 @@ def test_sources_for_backup(
                 udf=True,
                 named_collections=True,
                 workload_entities=True,
+                http_handlers=False,
             ),
         ),
         # schema-only with new args (ignoring)
@@ -677,6 +711,7 @@ def test_sources_for_backup(
                 udf=False,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         # schema-only with new args (ignoring)
@@ -695,6 +730,7 @@ def test_sources_for_backup(
                 udf=False,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
     ],
@@ -721,7 +757,7 @@ def test_sources_for_restore(
 @pytest.mark.parametrize(
     ["config", "expected"],
     [
-        ({}, BackupSources()),
+        ({}, BackupSources(http_handlers=True)),
         (
             {"schema": True},
             BackupSources(
@@ -731,6 +767,7 @@ def test_sources_for_restore(
                 udf=False,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
         (
@@ -742,11 +779,12 @@ def test_sources_for_restore(
                 udf=False,
                 named_collections=False,
                 workload_entities=False,
+                http_handlers=False,
             ),
         ),
-        (None, BackupSources()),
-        ({"schema": True, "future_source": True}, BackupSources()),
-        ({"schema": True, "dat": True}, BackupSources()),
+        (None, BackupSources(http_handlers=True)),
+        ({"schema": True, "future_source": True}, BackupSources(http_handlers=True)),
+        ({"schema": True, "dat": True}, BackupSources(http_handlers=True)),
     ],
 )
 def test_sources_from_config(config: dict | None, expected: BackupSources) -> None:
@@ -756,3 +794,7 @@ def test_sources_from_config(config: dict | None, expected: BackupSources) -> No
 def test_sources_from_config_rejects_non_boolean_values() -> None:
     with pytest.raises(ConfigurationError):
         BackupSources.from_config({"schema": True, "data": "false"})
+
+
+def test_direct_partial_sources_do_not_select_http_handlers():
+    assert not BackupSources(data=False).http_handlers

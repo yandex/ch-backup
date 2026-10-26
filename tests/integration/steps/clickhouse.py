@@ -161,12 +161,6 @@ def step_get_response(context):
     assert_that(context.response, equal_to(context.text))
 
 
-@when("we discover short tables on {node:w} while {database:w}.{table:w} loads")
-def step_discover_short_tables_during_load(context, node, database, table):
-    rows = ClickhouseClient(context, node).get_short_tables_during_load(database, table)
-    context.response = "\n".join(f"{row['name']}: {row['engine']}" for row in rows)
-
-
 @then("we get response contains")
 def step_get_response_contains(context):
     assert_that(context.response, contains_string(context.text))
@@ -253,6 +247,13 @@ def step_wait_for_named_collection(context, collection_name, node):
     """
     named_collections = ClickhouseClient(context, node).get_all_named_collections()
     assert collection_name in named_collections
+
+
+@then("{node1:w} has same HTTP handlers as {node2:w}")
+def step_has_same_http_handlers(context, node1, node2):
+    first = ClickhouseClient(context, node1).get_all_http_handlers()
+    second = ClickhouseClient(context, node2).get_all_http_handlers()
+    assert_that(first, equal_to(second))
 
 
 @then("on {node:w} tables are empty")

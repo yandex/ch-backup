@@ -4,6 +4,7 @@ S3 retry helper metaclass.
 
 import ssl
 from abc import ABCMeta
+from enum import Enum
 from functools import wraps
 from http.client import HTTPException
 from inspect import isfunction
@@ -17,6 +18,8 @@ from urllib3.exceptions import HTTPError
 from urllib3.util.ssl_match_hostname import CertificateError as Urllib3CertificateError
 
 from ch_backup import logging
+from ch_backup.command_context import get_current_command
+from ch_backup.exceptions import ConfigurationError
 from ch_backup.storage.engine.s3.s3_client_factory import S3BalancerUnknownHost
 
 if TYPE_CHECKING:
@@ -25,6 +28,85 @@ if TYPE_CHECKING:
     )
 
 RT = TypeVar("RT")
+
+
+class S3RetryPolicy(str, Enum):
+    """S3 retry configuration selected for a ch-backup command."""
+
+    DEFAULT = "default"
+    LIST = "list"
+    BACKUP = "backup"
+    RESTORE = "restore"
+
+
+_COMMAND_RETRY_POLICIES = {
+    "list": S3RetryPolicy.LIST,
+    "show": S3RetryPolicy.LIST,
+    "backup": S3RetryPolicy.BACKUP,
+    "copy": S3RetryPolicy.BACKUP,
+    "restore": S3RetryPolicy.RESTORE,
+    "restore-from-replica": S3RetryPolicy.RESTORE,
+    "restore-access-control": S3RetryPolicy.RESTORE,
+    "get-cloud-storage-metadata": S3RetryPolicy.RESTORE,
+}
+
+
+def get_s3_retry_policy() -> S3RetryPolicy:
+    """Select an S3 retry policy for the current command."""
+    command = get_current_command()
+    if command is None:
+        return S3RetryPolicy.DEFAULT
+    return _COMMAND_RETRY_POLICIES.get(command, S3RetryPolicy.DEFAULT)
+
+
+def resolve_s3_retry_config(
+    config: dict, retry_policy: S3RetryPolicy | None = None
+) -> tuple[int, float]:
+    """Resolve and validate an S3 retry policy with legacy value fallbacks."""
+    retry_policy = retry_policy or get_s3_retry_policy()
+    retry_config = config.get("retry", {})
+    if not isinstance(retry_config, dict):
+        raise ConfigurationError("storage.retry must be a mapping")
+
+    policy_config = retry_config.get(retry_policy.value, {})
+    if not isinstance(policy_config, dict):
+        raise ConfigurationError(
+            f"storage.retry.{retry_policy.value} must be a mapping"
+        )
+
+    max_attempts = policy_config.get(
+        "max_attempts", config.get("retry_max_attempts", 10)
+    )
+    max_interval = policy_config.get(
+        "max_interval", config.get("retry_max_interval", 60)
+    )
+    attempts_valid = (
+        isinstance(max_attempts, int)
+        and not isinstance(max_attempts, bool)
+        and max_attempts >= 1
+    )
+    interval_valid = (
+        isinstance(max_interval, (int, float))
+        and not isinstance(max_interval, bool)
+        and max_interval >= 0
+    )
+    if not attempts_valid or not interval_valid:
+        if retry_policy == S3RetryPolicy.DEFAULT:
+            raise ConfigurationError(
+                "storage.retry_max_attempts must be an integer of at least 1 "
+                "and storage.retry_max_interval must not be negative"
+            )
+        raise ConfigurationError(
+            f"storage.retry.{retry_policy.value}: max_attempts must be "
+            "an integer of at least 1 and max_interval must not be negative"
+        )
+    return max_attempts, max_interval
+
+
+def validate_s3_retry_config(config: dict) -> None:
+    """Validate base values and every command-specific S3 retry policy."""
+    for retry_policy in S3RetryPolicy:
+        resolve_s3_retry_config(config, retry_policy)
 
 
 def is_retryable_s3_error(error: ClientError) -> bool:

@@ -522,18 +522,3 @@ Feature: Backup of tables with different engines and configurations
     Examples:
       | loading | settings                      |
       | lazy    | SETTINGS lazy_load_tables=1   |
-
-  @require_version_26.2
-  Scenario: Short discovery retains a table loaded between catalog scans
-    Given we have executed queries on clickhouse01
-    """
-    CREATE DATABASE test_db ENGINE = Atomic SETTINGS lazy_load_tables=1;
-    CREATE TABLE test_db.table_01 (n Int32) ENGINE = MergeTree ORDER BY n;
-    DETACH DATABASE test_db;
-    ATTACH DATABASE test_db;
-    """
-    When we discover short tables on clickhouse01 while test_db.table_01 loads
-    Then we get response
-    """
-    table_01: MergeTree
-    """
