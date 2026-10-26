@@ -408,3 +408,28 @@ def test_table_is_listed_once_for_all_batches():
         {"all_1_1_0.tar": 1},
         {"all_2_2_0.tar": 2},
     ]
+
+
+@pytest.mark.parametrize("link_part_name", [None, "a'\\表"])
+def test_part_dedup_info_quotes_all_string_values(link_part_name):
+    info = PartDedupInfo(
+        database="a'\\表",
+        table="a'\\表",
+        name="a'\\表",
+        backup_name="a'\\表",
+        checksum="a'\\表",
+        size=42,
+        files=["a'\\表", ""],
+        tarball=True,
+        disk_name="a'\\表",
+        verified=False,
+        encrypted=True,
+        link_part_name=link_part_name,
+    )
+    literal = "'a\\'\\\\表'"
+    literal_link = "''" if link_part_name is None else literal
+
+    assert info.to_sql() == (
+        f"({literal},{literal},{literal},{literal},{literal_link},{literal},"
+        f"42,[{literal},''],1,{literal},0,1)"
+    )

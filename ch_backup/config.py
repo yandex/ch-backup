@@ -100,6 +100,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "clickhouse_user": None,
         "clickhouse_password": None,
     },
+    "clickhouse_disks": {
+        # Supported for ClickHouse 25.9+. None keeps the ClickHouse defaults.
+        "s3_retry_attempts": None,
+        "s3_retry_initial_delay_ms": None,
+        "s3_retry_max_delay_ms": None,
+        "s3_slow_all_threads_after_network_error": None,
+    },
     "backup": {
         "system_database": "_system",
         "exclude_dbs": [],
@@ -134,7 +141,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         #   access - access control entities (--access),
         #   udf - user defined functions (--udf),
         #   named_collections - named collections (--nc),
-        #   workload_entities - workloads and resources (--workload).
+        #   workload_entities - workloads and resources (--workload),
+        #   http_handlers - SQL-defined HTTP handlers (--http-handlers).
         # An unknown key selects all sources with a warning.
         "sources": {},
         # Backup of detached parts. Options of the backup command take precedence.
@@ -161,6 +169,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # Copy objects on the server side if source and target buckets belong to the same S3 service
         # and are accessible with the same credentials.
         "server_side_copy": True,
+        "resume": True,
         # Copying of data stored on object storage (S3) disks.
         "cloud_storage": {
             # Location of the source disk objects. If not set, it's taken from backup metadata
@@ -219,10 +228,26 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # chunk_size will be multiplied on a required number of times
         # to satisfy the limit.
         "max_chunk_count": 10000,
-        # Attempts per S3 operation, including proxy resolution; 1 disables retries
-        "retry_max_attempts": 30,
-        # Upper bound of the randomized exponential pause between attempts, in seconds
-        "retry_max_interval": 180,
+        # Base S3 retry policy; 1 attempt disables retries.
+        "retry_max_attempts": 10,
+        # Base upper bound of the randomized exponential pause, in seconds.
+        "retry_max_interval": 60,
+        # Command-specific fields below override the base values above.
+        "retry": {
+            # All S3 requests made by the list command, including metadata reads.
+            "list": {
+                "max_attempts": 5,
+                "max_interval": 10,
+            },
+            # All S3 requests made while creating or copying a backup.
+            "backup": {
+                "max_attempts": 60,
+            },
+            # All S3 requests made while restoring a backup.
+            "restore": {
+                "max_attempts": 60,
+            },
+        },
         # Enable bulk delete (DeleteObjects in S3 API)
         "bulk_delete_enabled": True,
         # How many files we can delete by bulk delete operation in one call

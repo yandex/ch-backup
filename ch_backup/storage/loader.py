@@ -9,6 +9,7 @@ from typing import BinaryIO, Callable, Sequence
 from ch_backup.storage.async_pipeline.pipeline_executor import PipelineExecutor
 from ch_backup.storage.async_pipeline.pipelines import decrypt_data_pipeline
 from ch_backup.storage.engine import get_storage_engine
+from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
 from ch_backup.storage.object_copy import CopyEntry
 
 
@@ -23,8 +24,13 @@ class StorageLoader:
 
     def __init__(self, config):
         self._config = config
-        self._engine = get_storage_engine(config["storage"])
+        self._engine: PipeLineCompatibleStorageEngine | None = None
         self._ploader = PipelineExecutor(config)
+
+    def _get_engine(self) -> PipeLineCompatibleStorageEngine:
+        if self._engine is None:
+            self._engine = get_storage_engine(self._config["storage"])
+        return self._engine
 
     # pylint: disable=too-many-positional-arguments
     def upload_data(
@@ -283,7 +289,7 @@ class StorageLoader:
         """
         Return list of entries in a remote path.
         """
-        return self._engine.list_dir(
+        return self._get_engine().list_dir(
             remote_path, recursive=recursive, absolute=absolute
         )
 
@@ -291,16 +297,16 @@ class StorageLoader:
         """
         Check whether a remote path exists or not.
         """
-        return self._engine.path_exists(remote_path, is_dir)
+        return self._get_engine().path_exists(remote_path, is_dir)
 
     def get_file_size(self, remote_path: str) -> int:
         """
         Return actual size of the remote file in bytes.
         """
-        return self._engine.get_object_size(remote_path)
+        return self._get_engine().get_object_size(remote_path)
 
     def list_dir_with_sizes(self, remote_path: str) -> dict[str, int]:
         """
         Return sizes of all objects under the remote path (recursively) keyed by object key.
         """
-        return self._engine.list_dir_with_sizes(remote_path)
+        return self._get_engine().list_dir_with_sizes(remote_path)

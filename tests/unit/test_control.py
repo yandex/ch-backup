@@ -45,7 +45,21 @@ from tests.unit.utils import parametrize
         "id": "escaping",
         "args": {
             "value": ["`for`.bar"],
-            "result": r"['\`for\`.bar']",
+            "result": "['`for`.bar']",
+        },
+    },
+    {
+        "id": "apostrophes and backslashes",
+        "args": {
+            "value": ["report'view%'", "a\\n", "a\\"],
+            "result": r"['report\'view%\'','a\\n','a\\']",
+        },
+    },
+    {
+        "id": "unicode and empty string",
+        "args": {
+            "value": ["表", "ТАБЛИЦА", ""],
+            "result": "['表','ТАБЛИЦА','']",
         },
     },
 )
@@ -530,11 +544,20 @@ def test_scan_detached_parts_reads_reason_from_directory_name(
         None,
     )
 
-    parts = list(
-        ch_ctl.scan_detached_parts(table, disk_names=["default"], reasons=[""])
-    )
+    with mock.patch("ch_backup.clickhouse.control.logging.warning") as warning:
+        parts = list(
+            ch_ctl.scan_detached_parts(
+                table,
+                disk_names=["object_storage_cache", "default"],
+                reasons=[""],
+            )
+        )
 
     assert len(parts) == 1
+    warning.assert_called_once_with(
+        'Detached-parts disk "{}" is not reported by system.disks; skipping it',
+        "object_storage_cache",
+    )
     assert parts[0].name == "all_1_1_0"
     assert parts[0].reason == ""
     assert parts[0].disk_name == "default"

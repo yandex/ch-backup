@@ -117,6 +117,22 @@ def test_copy_reports_configuration_failure(tmp_path: Path) -> None:
     backup.copy.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "args,resume", [([], None), (["--resume"], True), (["--no-resume"], False)]
+)
+def test_copy_command_passes_resume(args: list[str], resume: bool | None) -> None:
+    backup = MagicMock()
+    group = Group()
+    group.add_command(cli.copy_command)
+
+    result = CliRunner().invoke(group, ["copy", "--all", *args], obj={"backup": backup})
+
+    assert result.exit_code == 0
+    # pylint: disable-next=no-member
+    merged = backup.config.derive.return_value.merge.call_args.args[0]
+    assert merged["copy"].get("resume") == resume
+
+
 @pytest.mark.parametrize("state", [None, BackupState.FAILED])
 @pytest.mark.parametrize("keep_going", [False, True])
 def test_copy_named_validation_failure_has_report_row(
@@ -621,6 +637,13 @@ def test_detached_filter_without_opt_in_does_not_enable_backup() -> None:
         },
     },
     {
+        "id": "http handlers replace config sources",
+        "args": {
+            "options": ["--http-handlers"],
+            "expected": BackupSources.for_backup(http_handlers=True),
+        },
+    },
+    {
         "id": "schema-only replaces config sources",
         "args": {
             "options": ["--schema-only"],
@@ -670,4 +693,14 @@ def test_config_parameter_null_clears_config_sources(tmp_path: Path) -> None:
 
     config.merge({"backup": {"sources": None}})
 
-    assert BackupSources.from_config(config["backup"]["sources"]) == BackupSources()
+    assert BackupSources.from_config(config["backup"]["sources"]) == BackupSources(
+        http_handlers=True
+    )
+
+
+def test_http_handlers_from_config() -> None:
+    backup_mock = _invoke_backup_command([], {"sources": {"http_handlers": True}})
+
+    assert backup_mock.backup.call_args.args[0] == BackupSources.for_backup(
+        http_handlers=True
+    )

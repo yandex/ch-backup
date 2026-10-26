@@ -1,13 +1,16 @@
 import copy
+import threading
 from collections.abc import Callable, Iterator
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pypeln.thread import Worker
 
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.encryption import get_encryption
 from ch_backup.storage import StorageLoader
+from ch_backup.storage.async_pipeline.pipeline_builder import PipelineBuilder
 from ch_backup.storage.async_pipeline.pipelines import (
     download_data_pipeline,
     run,
@@ -66,6 +69,45 @@ def test_run_restores_pipeline_error(runner: Callable[[Any], Any]) -> None:
         runner(_pipeline_with_masked_error())
 
 
+@pytest.mark.parametrize(
+    "runner, expected",
+    [(run, None), (run_and_return_first, "result"), (run_and_collect_all, ["result"])],
+)
+def test_run_ignores_cleanup_error_in_exception_handler(
+    runner: Callable[[Any], Any], expected: Any
+) -> None:
+    # Saving FAILED metadata runs while the copy error is still being handled.
+    try:
+        raise RuntimeError("previous copy failed")
+    except RuntimeError:
+        assert runner(_pipeline_with_cleanup_error()) == expected
+
+
+@pytest.mark.parametrize("runner", [run, run_and_return_first, run_and_collect_all])
+@pytest.mark.parametrize("reuse_outer_error", [False, True])
+def test_run_preserves_pipeline_error_in_exception_handler(
+    runner: Callable[[Any], Any], reuse_outer_error: bool
+) -> None:
+    outer_error = RuntimeError("previous copy failed")
+    pipeline_error = (
+        outer_error if reuse_outer_error else RuntimeError("pipeline failed")
+    )
+
+    def pipeline() -> Iterator[str]:
+        yield "result"
+        try:
+            raise pipeline_error
+        except RuntimeError:
+            raise ValueError("Invalid thread ID 123")
+
+    try:
+        raise outer_error
+    except RuntimeError:
+        with pytest.raises(RuntimeError) as raised:
+            runner(pipeline())
+        assert raised.value is pipeline_error
+
+
 def test_run_ignores_cleanup_error() -> None:
     run(_pipeline_with_cleanup_error())
 
@@ -85,3 +127,80 @@ def test_run_and_return_first_does_not_ignore_error_before_result() -> None:
 
     with pytest.raises(ValueError, match="Invalid thread ID"):
         run_and_return_first(pipeline())
+
+
+@pytest.fixture(name="worker_exit_errors")
+def fixture_worker_exit_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[list[BaseException]]:
+    """Hold a real worker after its exception handler exits to expose late cancellation."""
+    ready = threading.Event()
+    release = threading.Event()
+    errors: list[BaseException] = []
+    threads: list[threading.Thread] = []
+    original_call = Worker.__call__
+    original_stop = Worker.stop
+    original_join = threading.Thread.join
+
+    def delayed_exit(worker: Worker) -> None:
+        threads.append(threading.current_thread())
+        original_call(worker)
+        ready.set()
+        if not release.wait(5):
+            raise TimeoutError("Worker exit was not released")
+
+    def stop(worker: Worker) -> None:
+        assert ready.wait(5), "Worker did not finish its task"
+        try:
+            original_stop(worker)
+        finally:
+            release.set()
+
+    def join(thread: threading.Thread, timeout: float | None = None) -> None:
+        release.set()
+        original_join(thread, timeout)
+
+    monkeypatch.setattr(Worker, "__call__", delayed_exit)
+    monkeypatch.setattr(Worker, "stop", stop)
+    monkeypatch.setattr(threading.Thread, "join", join)
+    monkeypatch.setattr(
+        threading, "excepthook", lambda args: errors.append(args.exc_value)
+    )
+    try:
+        yield errors
+    finally:
+        release.set()
+        for thread in threads:
+            original_join(thread, 5)
+
+
+@pytest.mark.parametrize(
+    ("runner", "expected"),
+    [(run, None), (run_and_return_first, "result"), (run_and_collect_all, ["result"])],
+)
+def test_completed_pipeline_does_not_interrupt_worker_exit(
+    worker_exit_errors: list[BaseException], runner: Callable[[Any], Any], expected: Any
+) -> None:
+    builder = PipelineBuilder(DEFAULT_CONFIG).build_iterable_stage(["result"])
+
+    assert runner(builder.pipeline()) == expected
+    assert worker_exit_errors == []
+
+
+@pytest.mark.parametrize("runner", [run, run_and_return_first, run_and_collect_all])
+def test_pipeline_propagates_worker_error(runner: Callable[[Any], Any]) -> None:
+    def source() -> Iterator[bytes]:
+        yield b"data"
+        raise RuntimeError("source failed")
+
+    builder = PipelineBuilder(DEFAULT_CONFIG)
+    builder.build_iterable_stage(source()).build_collect_data_stage()
+
+    with pytest.raises(RuntimeError, match="source failed"):
+        runner(builder.pipeline())
+
+
+def test_empty_pipeline_finishes() -> None:
+    builder = PipelineBuilder(DEFAULT_CONFIG).build_iterable_stage([])
+
+    assert not run_and_collect_all(builder.pipeline())
