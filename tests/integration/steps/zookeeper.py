@@ -6,6 +6,9 @@ from behave import given, step, then, when
 from hamcrest import assert_that, has_length
 from tenacity import retry, stop_after_attempt, wait_fixed
 
+from tests.integration.modules.ch_backup_cli import CH_BACKUP_CONF_PATH
+from tests.integration.modules.docker import get_container
+from tests.integration.modules.faults import FAULT_MODULE
 from tests.integration.modules.steps import get_step_data
 from tests.integration.modules.zookeeper import (
     delete_znode,
@@ -72,3 +75,26 @@ def step_release_zookeeper_lock(context, node, zk_lock_path):
 def step_zk_node_not_exists(context, node):
     data = get_step_data(context)
     assert not znode_exists(context, node, data["zookeeper_path"])
+
+
+@then(
+    "the ZooKeeper client on {node:w} recovers from a disconnect during authentication"
+)
+def step_check_zookeeper_reconnect(context, node):
+    # Bound a regression in Kazoo's unbounded Thread.join independently of the
+    # client timeout, and keep any stuck network threads out of the runner.
+    result = get_container(context, node).exec_run(
+        [
+            "timeout",
+            "--signal=KILL",
+            "30s",
+            "python3",
+            "-m",
+            FAULT_MODULE,
+            "check-zookeeper-reconnect",
+            CH_BACKUP_CONF_PATH,
+        ],
+        user="root",
+        workdir="/code",
+    )
+    assert result.exit_code == 0, result.output.decode()

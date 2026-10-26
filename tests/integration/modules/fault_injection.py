@@ -2,12 +2,16 @@
 
 import argparse
 import shutil
+import socket
 import subprocess
 from pathlib import Path
+from threading import Event
 from typing import cast
 from unittest.mock import patch
+from uuid import uuid4
 
 from click import Command
+from kazoo.protocol.serialization import Auth
 
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupState
@@ -18,6 +22,8 @@ from ch_backup.clickhouse.disks import (
     ClickHouseTemporaryDisks,
 )
 from ch_backup.clickhouse.object_storage_metadata import parse_object_storage_metadata
+from ch_backup.config import Config
+from ch_backup.zookeeper.zookeeper import ZookeeperClient
 
 
 def _run_patched_cli(arguments: list[str]) -> None:
@@ -107,6 +113,66 @@ def fail_part_attach(database: str, table_name: str, arguments: list[str]) -> No
         _run_patched_cli(arguments)
 
 
+def check_zookeeper_reconnect(config_file: str) -> None:
+    """Drop a real auth connection and check recovery, nested locks and cleanup."""
+    # Kazoo internals are used only to place the disconnect precisely: the
+    # real socket, network thread, reconnect loop and public client API run.
+    # pylint: disable=protected-access
+    config = Config(config_file)["zookeeper"]
+    wrapper = ZookeeperClient(config)
+    connection = wrapper._client._connection
+    send_request = connection._send_request
+    connect = connection._connect
+    dropped = Event()
+    path = f"/ch-backup-reconnect-{uuid4().hex}"
+
+    def drop_auth(read_timeout, connect_timeout):
+        if connection.client._queue:
+            request, _ = connection.client._queue[0]
+            if isinstance(request, Auth) and not dropped.is_set():
+                dropped.set()
+                connection._socket.shutdown(socket.SHUT_RDWR)
+        return send_request(read_timeout, connect_timeout)
+
+    def delayed_connect(*args):
+        if dropped.is_set():
+            # Let the outer retry run while Kazoo is still reconnecting.
+            # Correct cleanup interrupts this wait through Kazoo's stop flag.
+            connection.client._stopped.wait(1)
+        return connect(*args)
+
+    with ZookeeperClient(config) as observer:
+        with (
+            patch.object(connection, "_send_request", drop_auth),
+            patch.object(connection, "_connect", delayed_connect),
+        ):
+            with wrapper as client:
+                assert dropped.is_set(), "The auth connection was not interrupted"
+                session = client.client_id
+                with client.Lock(path):
+                    with wrapper as nested:
+                        assert nested is client
+                        nested.create(path + "/data", b"recovered")
+                    assert client.client_id == session
+                    contender = observer.Lock(path)
+                    assert not contender.acquire(
+                        blocking=False
+                    ), "Nested exit released the lock"
+                    assert observer.get(path + "/data")[0] == b"recovered"
+            assert not client.connected
+            assert connection._connection_routine is None
+            assert connection.connection_closed.is_set()
+            # close() must leave the wrapper reusable for a later context.
+            with wrapper as client:
+                assert client.get(path + "/data")[0] == b"recovered"
+                with client.Lock(path):
+                    client.set(path + "/data", b"reentered")
+            assert observer.get(path + "/data")[0] == b"reentered"
+            assert connection._connection_routine is None
+            assert connection.connection_closed.is_set()
+        observer.delete(path, recursive=True)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="fault", required=True)
@@ -127,6 +193,8 @@ if __name__ == "__main__":
     attach_part.add_argument("database")
     attach_part.add_argument("table")
     attach_part.add_argument("arguments", nargs=argparse.REMAINDER)
+    reconnect = subparsers.add_parser("check-zookeeper-reconnect")
+    reconnect.add_argument("config_file")
     options = parser.parse_args()
     if options.fault == "corrupt-file":
         corrupt_file(options.path, options.action)
@@ -136,5 +204,7 @@ if __name__ == "__main__":
         drop_frozen_table(options.database, options.table, options.arguments)
     elif options.fault == "interrupt-inplace-copy":
         interrupt_inplace_copy(options.filename, options.arguments)
+    elif options.fault == "check-zookeeper-reconnect":
+        check_zookeeper_reconnect(options.config_file)
     else:
         fail_part_attach(options.database, options.table, options.arguments)
