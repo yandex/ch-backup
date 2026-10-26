@@ -2,6 +2,8 @@
 Clickhouse-disks controls temporary cloud storage disks management.
 """
 
+# pylint: disable=too-many-lines
+
 import copy
 import os
 import shlex
@@ -234,6 +236,20 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         super().__init__(ch_ctl, backup_layout, config, backup_meta, ch_config)
         self._use_local_copy = use_local_copy
         self._skip_cloud_storage = skip_cloud_storage
+        # Metadata defaults must not become explicit authorization of an endpoint.
+        self._metadata_source_endpoint: str | None = None
+        source = backup_meta.cloud_storage.source
+        if source_bucket is None and source:
+            source_bucket = source["bucket"]
+            source_path = source_path or source["path"]
+            self._metadata_source_endpoint = (
+                source["endpoint_url"] or "https://s3.amazonaws.com"
+            )
+            logging.info(
+                "Using cloud storage data location from backup metadata: bucket {}, path {}",
+                source_bucket,
+                source_path,
+            )
         self._source_bucket: str = source_bucket or ""
         self._source_path: str = source_path or ""
         self._source_endpoint: str = source_endpoint or ""
@@ -395,7 +411,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         source_bucket, source_path, source_endpoint_url = (
             self._source_bucket,
             self._source_path,
-            self._source_endpoint,
+            self._source_endpoint or self._metadata_source_endpoint,
         )
         if (
             backup_meta.name != self._backup_meta.name
@@ -405,7 +421,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
             source_bucket, source_path, source_endpoint_url = (
                 source["bucket"],
                 source["path"],
-                source["endpoint_url"],
+                source["endpoint_url"] or "https://s3.amazonaws.com",
             )
         if source_endpoint_url:
             source_endpoint = urlparse(
@@ -413,8 +429,36 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
                 if "://" in source_endpoint_url
                 else f"//{source_endpoint_url}"
             )
+            trusted_endpoints = [
+                disk_config["endpoint"],
+                self._storage_config["credentials"]["endpoint_url"]
+                or "https://s3.amazonaws.com",
+            ]
+            if self._source_endpoint:
+                trusted_endpoints.append(self._source_endpoint)
+            trusted_origins = set()
+            for value in trusted_endpoints:
+                parsed = urlparse(value if "://" in value else f"//{value}")
+                trusted_origins.add(
+                    (parsed.scheme or endpoint.scheme, parsed.netloc.lower())
+                )
+            origin = (
+                source_endpoint.scheme or endpoint.scheme,
+                source_endpoint.netloc.lower(),
+            )
+            if (
+                origin not in trusted_origins
+                or origin[0] not in ("http", "https")
+                or not source_endpoint.hostname
+                or source_endpoint.username is not None
+                or source_endpoint.password is not None
+            ):
+                raise ClickHouseDisksException(
+                    f'Cloud storage source endpoint in backup "{backup_meta.name}" does not match '
+                    "a configured endpoint. Set --cloud-storage-source-endpoint explicitly"
+                )
             endpoint = endpoint._replace(
-                scheme=source_endpoint.scheme or endpoint.scheme,
+                scheme=origin[0],
                 netloc=source_endpoint.netloc,
             )
         disk_config["endpoint"] = os.path.join(

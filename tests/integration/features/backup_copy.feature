@@ -1074,7 +1074,8 @@ Feature: Copy backups to another storage
             bucket: ch-backup-copy
     backup:
         retain_count: 0
-        retain_time: {}
+        retain_time:
+            days: 0
     """
     And we have executed queries on clickhouse01
     """

@@ -28,6 +28,7 @@ from ch_backup.backup.metadata import (
     DetachedPartMetadata,
     PartMetadata,
 )
+from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageSource
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.encryption import get_encryption_class
 from ch_backup.exceptions import (
@@ -1100,7 +1101,7 @@ def test_cloud_source_overrides_are_independent(
     version: int, virtual_host: bool, stored_source: bool, overrides: dict
 ) -> None:
     ctx = _cloud_storage_context()
-    base = {
+    base: CloudStorageSource = {
         "endpoint_url": "http://minio:9000",
         "bucket": "cloud-storage",
         "path": "data",
@@ -1272,11 +1273,18 @@ def test_copy_rejects_unconfigured_stored_endpoint_before_requests() -> None:
 
 
 @pytest.mark.parametrize("endpoint_override", [None, "http://other-s3:9000"])
-def test_cloud_storage_of_copied_backup(endpoint_override: str | None) -> None:
+@pytest.mark.parametrize("default_endpoint", [False, True])
+def test_cloud_storage_of_copied_backup(
+    endpoint_override: str | None, default_endpoint: bool
+) -> None:
     ctx = _cloud_storage_context()
     ctx.ch_config.config = {}
+    configured_endpoint = None if default_endpoint else ENDPOINT
+    ctx.config["storage"]["credentials"]["endpoint_url"] = configured_endpoint
+    ctx.target_config["storage"]["credentials"]["endpoint_url"] = configured_endpoint
+    source_endpoint = endpoint_override or configured_endpoint
     ctx.layout.backups["b1"].cloud_storage.source = {
-        "endpoint_url": (endpoint_override or ENDPOINT) + "/",
+        "endpoint_url": source_endpoint + "/" if source_endpoint else None,
         "bucket": "copied-disk-data",
         "path": "prev/b1",
     }
@@ -1295,8 +1303,8 @@ def test_cloud_storage_of_copied_backup(endpoint_override: str | None) -> None:
         for e in ctx.target_layout.copied
         if e.dst_storage["credentials"]["bucket"] == "disk-copy"
     } == {
-        (endpoint_override or ENDPOINT, "copied-disk-data", "prev/b1/xyz/aaa"),
-        (endpoint_override or ENDPOINT, "copied-disk-data", "prev/b1/xyz/bbb"),
+        (source_endpoint, "copied-disk-data", "prev/b1/xyz/aaa"),
+        (source_endpoint, "copied-disk-data", "prev/b1/xyz/bbb"),
     }
 
 
@@ -3711,6 +3719,14 @@ def test_cloud_copy_keeps_owned_metadata_when_materializing_a_link() -> None:
     assert all(
         part.link is None for part in ctx.target_layout.backups["child"].get_parts()
     )
+    assert {
+        (entry.src_path, entry.dst_path)
+        for entry in ctx.target_layout.copied
+        if entry.dst_storage["credentials"]["bucket"] == "third-disk"
+    } == {
+        ("copies/owner/xyz/data", "copies/child/xyz/data"),
+        ("copies/child/xyz/owned", "copies/child/xyz/owned"),
+    }
 
 
 @pytest.mark.parametrize("namespace", ["bucket", "prefix"])

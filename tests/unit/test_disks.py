@@ -1436,7 +1436,8 @@ def test_restore_fails_when_the_backup_holding_data_is_gone():
             assert LINKED_BACKUP_NAME in str(exc)
 
 
-def test_restore_linked_external_part_uses_its_owners_location():
+@pytest.mark.parametrize("trusted", [False, True])
+def test_restore_linked_external_part_uses_its_owners_location(trusted):
     disk_manager = _make_temporary_disks(
         BACKUP_DISK_CLICKHOUSE_CONFIG,
         cloud_storage_disks=["object_storage"],
@@ -1464,7 +1465,19 @@ def test_restore_linked_external_part_uses_its_owners_location():
     }
     # pylint: disable=protected-access
     disk_manager._source_path = "copies/current"
+    if trusted:
+        disk_manager._storage_config["credentials"]["endpoint_url"] = (
+            owner.cloud_storage.source["endpoint_url"]
+        )
     disk_manager._backup_layout.get_backup.side_effect = lambda *_args, **_kwargs: owner  # type: ignore[attr-defined]
+
+    if not trusted:
+        with _capture_config_files() as (written, _removed):
+            with pytest.raises(ClickHouseDisksException, match="endpoint"):
+                with disk_manager:
+                    pass
+        assert all("owner.example.test" not in content for content in written.values())
+        return
 
     with _capture_config_files() as (written, _removed):
         with disk_manager:
@@ -1498,6 +1511,9 @@ def test_restore_all_linked_external_parts_needs_no_current_source_bucket():
         "path": "copies/owner",
     }
     # pylint: disable=protected-access
+    disk_manager._storage_config["credentials"]["endpoint_url"] = (
+        owner.cloud_storage.source["endpoint_url"]
+    )
     disk_manager._backup_layout.get_backup.side_effect = lambda *_args, **_kwargs: owner  # type: ignore[attr-defined]
 
     with _capture_config_files() as (written, _removed):

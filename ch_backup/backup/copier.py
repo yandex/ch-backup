@@ -1772,16 +1772,12 @@ class BackupCopier:
                 trusted_endpoints = [self._storage["credentials"]["endpoint_url"]]
                 if disk_location:
                     trusted_endpoints.append(disk_location[0])
-                stored_endpoint = source.get("endpoint_url", "").rstrip("/")
-                endpoint_url = next(
-                    (
-                        endpoint
-                        for endpoint in trusted_endpoints
-                        if endpoint and endpoint.rstrip("/") == stored_endpoint
-                    ),
-                    None,
-                )
-                if not endpoint_url:
+                stored_endpoint = (source.get("endpoint_url") or "").rstrip("/")
+                for endpoint in trusted_endpoints:
+                    if (endpoint or "").rstrip("/") == stored_endpoint:
+                        endpoint_url = endpoint
+                        break
+                else:
                     raise ConfigurationError(
                         "Cloud storage source endpoint in backup metadata does not match "
                         "a configured storage or disk endpoint; set "

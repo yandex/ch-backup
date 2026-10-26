@@ -650,9 +650,16 @@ def test_partial_delete_removes_unreferenced_parts_and_keeps_shared_objects(
     context.backup_layout.get_cloud_storage_metadata_files.side_effect = (
         lambda _meta, path: list(manifests[path])
     )
+    pending: dict[str, list[tuple[str, bytes]]] = {}
     context.backup_layout.upload_cloud_storage_metadata_files.side_effect = (
-        lambda _meta, path, files: manifests.__setitem__(path, files)
+        lambda _meta, path, files: pending.__setitem__(path, files)
     )
+
+    def commit_uploads():
+        manifests.update(pending)
+        pending.clear()
+
+    context.backup_layout.wait.side_effect = commit_uploads
     refs: DedupReferences = defaultdict(lambda: defaultdict(set))
     refs["db"]["table"].add("all_1_1_0")
     if retain_first:
@@ -688,12 +695,12 @@ def test_partial_delete_removes_unreferenced_parts_and_keeps_shared_objects(
         assert meta.state == BackupState.FAILED
         assert len(meta.get_parts()) == (1 if retain_first else 2)
         if failure == "archive":
-            # A failed upload can leave either archive version in storage.
-            context.backup_layout.wait.side_effect = None
+            assert len(manifests[archive]) == 3
+            pending.clear()
+            context.backup_layout.wait.side_effect = commit_uploads
         else:
             assert len(manifests[archive]) == 3
-    if failure != "archive":
-        s3.add_response("delete_objects", {}, request)
+    s3.add_response("delete_objects", {}, request)
 
     deleted, message = backup._delete(
         meta, refs, DeleteSettings(delete_cloud_storage_data=True)
@@ -704,6 +711,9 @@ def test_partial_delete_removes_unreferenced_parts_and_keeps_shared_objects(
     assert [part.name for part in meta.get_parts()] == ["all_1_1_0"]
     assert meta.real_size == 100
     assert [name for name, _data in manifests[archive]] == [kept_name]
+    assert context.backup_layout.upload_cloud_storage_metadata_files.call_count == (
+        2 if failure == "archive" else 1
+    )
     assert meta.cloud_storage.source["path"] == "copies/backup1"
     backup._delete(meta, refs, DeleteSettings(delete_cloud_storage_data=True))
     assert [name for name, _data in manifests[archive]] == [kept_name]

@@ -367,21 +367,6 @@ class ClickhouseBackup:
         )
 
         cloud_storage_source = self._context.backup_meta.cloud_storage.source
-        if cloud_storage_source_bucket is None and cloud_storage_source:
-            # Cloud storage data was copied out of the source disk along with the backup.
-            cloud_storage_source_bucket = cloud_storage_source["bucket"]
-            cloud_storage_source_path = (
-                cloud_storage_source_path or cloud_storage_source["path"]
-            )
-            cloud_storage_source_endpoint = (
-                cloud_storage_source_endpoint or cloud_storage_source["endpoint_url"]
-            )
-            logging.info(
-                "Using cloud storage data location from backup metadata: bucket {}, path {}",
-                cloud_storage_source_bucket,
-                cloud_storage_source_path,
-            )
-
         if (
             cloud_storage_source_bucket is None
             and sources.data
@@ -390,6 +375,7 @@ class ClickhouseBackup:
             if (
                 self._context.backup_meta.cloud_storage.requires_source_bucket
                 and self._context.backup_meta.get_owned_cloud_storage_disks()
+                and not cloud_storage_source
             ):
                 raise ClickhouseBackupError(
                     "Cloud storage source bucket must be set if backup has data on S3 disks"

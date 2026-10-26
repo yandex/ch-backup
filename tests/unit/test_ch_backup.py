@@ -6,6 +6,7 @@ ClickhouseBackup unit tests.
 
 from collections import defaultdict
 from contextlib import AbstractContextManager, nullcontext
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Sequence, cast
 from unittest.mock import MagicMock, Mock, patch
@@ -22,6 +23,7 @@ from ch_backup.backup.metadata import (
     PartMetadata,
     TableMetadata,
 )
+from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageSource
 from ch_backup.backup.sources import BackupSources
 from ch_backup.ch_backup import (
     CleanZooKeeperMode,
@@ -30,7 +32,10 @@ from ch_backup.ch_backup import (
     _zookeeper_roots_differ,
 )
 from ch_backup.clickhouse.client import ClickhouseError
-from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
+from ch_backup.clickhouse.disks import (
+    ClickHouseDisksException,
+    ClickHouseTemporaryDisks,
+)
 from ch_backup.clickhouse.models import Database
 from ch_backup.config import DEFAULT_CONFIG, Config
 from ch_backup.exceptions import (
@@ -882,7 +887,8 @@ def test_delete_with_unreadable_full_metadata_and_references_fails() -> None:
 
 
 def _backup_metadata(
-    copied_from: dict | None = None, cloud_storage_source: dict | None = None
+    copied_from: dict | None = None,
+    cloud_storage_source: CloudStorageSource | None = None,
 ) -> BackupMetadata:
     meta = BackupMetadata(
         name="backup1",
@@ -943,9 +949,10 @@ def test_delete_unfreezes_only_own_backups(
         "explicit.example:8443",
     ],
 )
+@pytest.mark.parametrize("trusted", [False, True])
 # pylint: disable=protected-access
 def test_restore_keeps_stored_endpoint_scheme(
-    original_scheme: str, stored_scheme: str, override: str | None
+    original_scheme: str, stored_scheme: str, override: str | None, trusted: bool
 ) -> None:
     meta = _backup_metadata(
         cloud_storage_source={
@@ -980,6 +987,15 @@ def test_restore_keeps_stored_endpoint_scheme(
     disks._disks = {
         "s3": {"endpoint": f"{original_scheme}://original.example/original/data/"}
     }
+    if trusted:
+        disks._storage_config = deepcopy(DEFAULT_CONFIG["storage"])
+        disks._storage_config["credentials"][
+            "endpoint_url"
+        ] = f"{stored_scheme}://copied.example:8443"
+    if not override and not trusted:
+        with pytest.raises(ClickHouseDisksException, match="endpoint"):
+            disks._source_disk_config(meta, "s3")
+        return
     expected = override or f"{stored_scheme}://copied.example:8443"
     if "://" not in expected:
         expected = f"{original_scheme}://{expected}"
@@ -1006,3 +1022,28 @@ def test_nothing_is_reported_when_all_data_is_backed_up() -> None:
     context.backup_meta.count_skipped_data_tables.return_value = (0, 0)
 
     assert backup._skipped_data_message() is None  # pylint: disable=protected-access
+
+
+# pylint: disable=protected-access
+def test_restore_copied_data_uses_default_aws_endpoint():
+    meta = _backup_metadata(
+        cloud_storage_source={
+            "endpoint_url": None,
+            "bucket": "copied-disk",
+            "path": "copies/backup1",
+        }
+    )
+    disks = ClickHouseTemporaryDisks(
+        MagicMock(),
+        MagicMock(),
+        DEFAULT_CONFIG,  # type: ignore[arg-type]
+        meta,
+        None,
+        None,
+        None,
+        MagicMock(),
+    )
+    disks._disks = {"s3": {"endpoint": "http://localhost/original/data/"}}
+    assert disks._source_disk_config(meta, "s3")["endpoint"] == (
+        "https://s3.amazonaws.com/copied-disk/copies/backup1/"
+    )

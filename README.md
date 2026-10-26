@@ -373,10 +373,13 @@ Behavior and limitations:
   Cleanup selects objects from saved disk metadata and uses backup-storage credentials by default. Configure
   `copy.cloud_storage.target` for separate credentials or a different endpoint.
   Metadata must be trusted and readable. Encrypted disk metadata requires its original key.
+  Part links and persisted source fingerprints also trust backup metadata. Fingerprints identify data but do not authenticate metadata.
   Partial cleanup removes unreferenced parts and their archived disk metadata. Parts referenced by
   surviving backups retain both their objects and disk metadata. Objects shared with retained parts also remain.
   Batch cleanup validates all selected backups before deletion. Failed cleanup can be retried.
   In-memory archives have a 1 GiB limit, adjustable in bytes with `filesystem.max_in_memory_tarball_size`.
+  Restore accepts stored endpoints only when their HTTP(S) origin matches a configured disk or backup-storage endpoint.
+  Use `--cloud-storage-source-endpoint` to explicitly authorize another endpoint for restore.
   Restore preserves the HTTP/HTTPS scheme of the stored endpoint. Its `--cloud-storage-source-endpoint`
   option accepts a full HTTP(S) URL or `host[:port]`; the latter uses the original disk's scheme.
 - ClickHouse 26.8+ SQL-defined HTTP handlers are included in full backups; use `--http-handlers` with backup

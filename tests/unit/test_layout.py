@@ -599,7 +599,12 @@ class TestTableDataFiles:
 
 
 @pytest.mark.parametrize("legacy", [False, True])
-def test_cloud_manifest_part_identity_distinguishes_tables(legacy):
+@pytest.mark.parametrize(
+    "table_name,table_uuid", [("table-one", "uuid-one"), ("table.two", "uuid-two")]
+)
+def test_cloud_manifest_part_identity_distinguishes_tables(
+    legacy, table_name, table_uuid
+):
     backup = BackupMetadata("backup", "2", "26.8", "%Y-%m-%d")
     backup.add_database(Database("db-name", "Atomic", None, None, None))
     for name, uuid in [("table-one", "uuid-one"), ("table.two", "uuid-two")]:
@@ -613,17 +618,17 @@ def test_cloud_manifest_part_identity_distinguishes_tables(legacy):
     archive = get_cloud_storage_metadata_path(
         "ch_backup/backup",
         None if legacy else "db-name",
-        None if legacy else "table-one",
+        None if legacy else table_name,
         "s3",
         True,
     )
     name = (
-        "store/abc/uuid-one/all_1_1_0/projection.proj/data.bin"
+        f"store/abc/{table_uuid}/all_1_1_0/projection.proj/data.bin"
         if legacy
         else "all_1_1_0/data.bin"
     )
     assert get_cloud_storage_part_identity(backup, "s3", archive, name) == (
         "db-name",
-        "table-one",
+        table_name,
         "all_1_1_0",
     )
