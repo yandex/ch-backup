@@ -210,17 +210,18 @@ Behavior and limitations:
   while `cloud_storage` is not completed. Statuses of the scopes (`pending`, `completed`, `failed`)
   are saved in `meta.copy` of the copy, for example `state: creating, copy: {scopes: {files:
   completed, cloud_storage: pending}}`. The copy becomes `created` once every scope is completed.
-  Saved statuses are not trusted: a scope that is not copied is completed only if the copy context
-  and the target listing confirm all its objects, otherwise it becomes `pending` again, e.g. after a
-  failed delete. `--no-resume` overwrites objects of the scopes that are copied and still checks the
-  other scopes this way. Between scopes, the copy is in the state `creating`, and `purge` and
-  `delete --purge-partial` on the target storage treat it as any other incomplete backup. With
-  `--keep-going`, objects of a scope that failed to copy are listed in
-  `<backup>/copy_context/<id>/failed/<scope>.jsonl.gz` (source and target keys, size and error) and
-  the scope becomes `failed`; the next run of the scope copies only unconfirmed objects. The list is
-  rewritten by each run of the scope in which objects fail and removed once the scope completes.
-  Disk metadata that cannot be planned is not copied, so it never overwrites rewritten disk
-  metadata; a later run copies it. Copy scopes of one backup one after another: the local lock
+  Until then the report shows the backup as `partial` with `backup_state: creating`, and the command
+  exits with 0 if the copied scopes succeed. Saved statuses are not trusted: a scope that is not
+  copied is completed only if the copy context and the target listing confirm all its objects,
+  otherwise it becomes `pending` again, e.g. after a failed delete. `--no-resume` overwrites objects
+  of the scopes that are copied and still checks the other scopes this way. Between scopes, the copy
+  is in the state `creating`, and `purge` and `delete --purge-partial` on the target storage treat
+  it as any other incomplete backup. With `--keep-going`, objects of a scope that failed to copy are
+  listed in `<backup>/copy_context/<id>/failed/<scope>.jsonl.gz` (source and target keys, size and
+  error) and the scope becomes `failed`; the next run of the scope copies only unconfirmed objects.
+  The list is rewritten by each run of the scope in which objects fail and removed once the scope
+  completes. Disk metadata that cannot be planned is not copied, so it never overwrites rewritten
+  disk metadata; a later run copies it. Copy scopes of one backup one after another: the local lock
   serializes runs on one host, runs on different hosts require `lock.zk_flock`.
 - Copy acquires the configured source and target locks through completion, including retries and
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`

@@ -144,7 +144,8 @@ def test_copy_command_passes_scopes(args: list[str], scopes: tuple) -> None:
         report.backups.append(
             BackupCopyResult(
                 "b1",
-                status="copied",
+                status="partial",
+                backup_state="creating",
                 scopes={"files": "completed", "cloud_storage": "pending"},
             )
         )
@@ -158,6 +159,7 @@ def test_copy_command_passes_scopes(args: list[str], scopes: tuple) -> None:
 
     assert result.exit_code == 0
     assert backup.copy.call_args.kwargs["scopes"] == scopes
+    assert "b1: partial, the copy is creating in target storage" in result.output
     assert "scopes: files completed, cloud_storage pending" in result.output
 
 

@@ -2751,6 +2751,8 @@ def test_copy_scopes_separately() -> None:
     assert target.state == BackupState.CREATING
     assert _scopes(target) == {"files": "completed", "cloud_storage": "pending"}
     assert report.backups[0].scopes == _scopes(target)
+    assert report.backups[0].status == "partial"
+    assert report.backups[0].backup_state == "creating"
     assert not _disk_objects(ctx)
     ctx.target_layout.copied.clear()
 
@@ -2763,6 +2765,27 @@ def test_copy_scopes_separately() -> None:
         "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
     }
     assert _disk_objects(ctx) == {"copies/b1/xyz/aaa", "copies/b1/xyz/bbb"}
+
+
+def test_report_of_partial_copy(capsys: pytest.CaptureFixture) -> None:
+    ctx = _scoped_context()
+    report = CopyReport()
+    ctx.copy(["b1"], scopes=["files"], report=report)
+
+    print_copy_report(report, None)
+
+    out = capsys.readouterr().out
+    assert "b1: partial, the copy is creating in target storage" in out
+    assert "scopes: files completed, cloud_storage pending" in out
+    assert "Copy summary: copied: 0, partial: 1," in out
+    report = CopyReport()
+
+    ctx.copy(["b1"], scopes=["cloud_storage"], report=report)
+
+    assert (report.backups[0].status, report.backups[0].backup_state) == (
+        "copied",
+        "created",
+    )
 
 
 def test_copy_scopes_of_backup_without_cloud_storage() -> None:

@@ -143,6 +143,7 @@ class BackupCopier:
         Copy specified backups or all backups in the state "created" if names are not specified.
 
         Return names of copied backups and names of backups skipped as already copied.
+        A copy with scopes left to copy is reported as partial and stays "creating".
         With keep_going, attempt every viable backup before raising an aggregate error.
         Only the specified scopes are copied, all of them by default.
         """
@@ -172,10 +173,15 @@ class BackupCopier:
                     continue
                 try:
                     if self._copy_backup(backup.name, result):
-                        result.status = "copied"
+                        result.status = (
+                            "copied"
+                            if result.backup_state == BackupState.CREATED.value
+                            else "partial"
+                        )
                         copied.append(backup.name)
                     else:
                         result.status = "skipped"
+                        result.backup_state = BackupState.CREATED.value
                         skipped.append(backup.name)
                 except (Exception, TerminatingSignal) as e:
                     if not result.errors:
@@ -562,8 +568,7 @@ class BackupCopier:
         statuses = self._scope_statuses(backup.name, plan, previous)
         stage = "metadata"
         try:
-            _save_statuses(target_meta, result, statuses)
-            self._target_layout.upload_backup_metadata(target_meta)
+            self._upload_target_metadata(target_meta, result, statuses)
             stage = "copy"
             for scope in self._scopes:
                 statuses[scope] = CopyScopeStatus.FAILED
@@ -577,8 +582,7 @@ class BackupCopier:
             stage = "metadata"
             if all(status == CopyScopeStatus.COMPLETED for status in statuses.values()):
                 target_meta.state = BackupState.CREATED
-            _save_statuses(target_meta, result, statuses)
-            self._target_layout.upload_backup_metadata(target_meta)
+            self._upload_target_metadata(target_meta, result, statuses)
             self._remember_materialized_parts(backup, target_meta)
             if target_meta.state == BackupState.CREATED:
                 logging.info("Backup {} is copied", backup.name)
@@ -594,9 +598,8 @@ class BackupCopier:
                 result.add_error(e, stage)
             target_meta.state = BackupState.FAILED
             target_meta.exception = result.errors[0]["message"]
-            _save_statuses(target_meta, result, statuses)
             try:
-                self._target_layout.upload_backup_metadata(target_meta)
+                self._upload_target_metadata(target_meta, result, statuses)
             except (Exception, TerminatingSignal) as metadata_error:
                 logging.exception(
                     "Saving FAILED metadata for backup {} failed", backup.name
@@ -609,6 +612,19 @@ class BackupCopier:
             raise
         finally:
             self._target_backups.pop(backup.name, None)
+
+    def _upload_target_metadata(
+        self,
+        target_meta: BackupMetadata,
+        result: BackupCopyResult,
+        statuses: dict[CopyScope, CopyScopeStatus],
+    ) -> None:
+        """Upload metadata of the copy with statuses of scopes, reporting both."""
+        scopes = {scope.value: status.value for scope, status in statuses.items()}
+        target_meta.copy = {"scopes": scopes}
+        result.scopes = dict(scopes)
+        self._target_layout.upload_backup_metadata(target_meta)
+        result.backup_state = target_meta.state.value
 
     def _scope_statuses(
         self,
@@ -1915,17 +1931,6 @@ def _saved_statuses(
         with suppress(ValueError):
             statuses[scope] = CopyScopeStatus(saved.get(scope.value))
     return statuses
-
-
-def _save_statuses(
-    target_meta: BackupMetadata,
-    result: BackupCopyResult,
-    statuses: dict[CopyScope, CopyScopeStatus],
-) -> None:
-    """Put statuses of scopes into metadata of the copy and the report."""
-    scopes = {scope.value: status.value for scope, status in statuses.items()}
-    target_meta.copy = {"scopes": scopes}
-    result.scopes = dict(scopes)
 
 
 def _key(path: str | None) -> str:
