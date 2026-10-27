@@ -6,10 +6,6 @@ Feature: Lock
     And a working zookeeper on zookeeper01
     And a working clickhouse on clickhouse01
 
-  @require_version_23.3
-  Scenario: ZooKeeper reconnect during authentication preserves nested locks
-    Then the ZooKeeper client on clickhouse01 recovers from a disconnect during authentication
-
   Scenario: Skip lock while creating "schema-only" backup
     Given ch-backup configuration on clickhouse01
     """

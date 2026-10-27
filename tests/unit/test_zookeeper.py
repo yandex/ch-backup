@@ -4,9 +4,12 @@ ZooKeeper control unit tests.
 
 from unittest import mock
 
-from kazoo.exceptions import NoNodeError
+import pytest
+from kazoo.exceptions import ConnectionLoss, NoNodeError
+from tenacity import wait_none
 
-from ch_backup.zookeeper.zookeeper import ZookeeperCTL
+from ch_backup.exceptions import TerminatingSignal
+from ch_backup.zookeeper.zookeeper import ZookeeperClient, ZookeeperCTL
 
 
 def _zk_ctl(children: dict[str, list[str]]) -> ZookeeperCTL:
@@ -39,3 +42,82 @@ def test_get_children_of_missing_path_is_empty() -> None:
     zk_ctl = _zk_ctl({})
 
     assert not zk_ctl.get_children("/zk/t1/replicas")
+
+
+@pytest.fixture(name="client_context")
+def _client_context():
+    with (
+        mock.patch(
+            "ch_backup.zookeeper.zookeeper.KazooClient", autospec=True
+        ) as factory,
+        mock.patch.object(ZookeeperClient.__enter__.retry, "wait", wait_none()),
+    ):
+        yield ZookeeperClient(
+            {"hosts": ["zk"], "user": "u", "password": "p", "connect_timeout": 10}
+        ), factory.return_value
+
+
+def test_nested_and_repeated_contexts(client_context):
+    wrapper, client = client_context
+    for _ in range(2):
+        client.reset_mock()
+        with wrapper as outer:
+            with wrapper as inner:
+                assert inner is outer is client
+            client.stop.assert_not_called()
+            client.close.assert_not_called()
+        assert client.mock_calls == [
+            mock.call.start(10),
+            mock.call.add_auth("digest", "u:p"),
+            mock.call.stop(),
+            mock.call.close(),
+        ]
+
+
+@pytest.mark.parametrize("operation", ["start", "add_auth"])
+def test_failed_connection_is_closed_before_retry(client_context, operation):
+    wrapper, client = client_context
+    getattr(client, operation).side_effect = [ConnectionLoss(), None]
+    with wrapper as connected:
+        assert connected is client
+    first_attempt = [mock.call.start(10)]
+    if operation == "add_auth":
+        first_attempt.append(mock.call.add_auth("digest", "u:p"))
+    assert client.mock_calls == first_attempt + [
+        mock.call.stop(),
+        mock.call.close(),
+        mock.call.start(10),
+        mock.call.add_auth("digest", "u:p"),
+        mock.call.stop(),
+        mock.call.close(),
+    ]
+
+
+@pytest.mark.parametrize(
+    "stop_error,close_error,original_error",
+    [
+        (ConnectionLoss("stop"), None, None),
+        (ConnectionLoss("stop"), OSError("close"), None),
+        (None, OSError("close"), None),
+        (ConnectionLoss("stop"), OSError("close"), TerminatingSignal()),
+    ],
+)
+def test_cleanup_failure_preserves_error_and_prevents_reuse(
+    client_context, stop_error, close_error, original_error
+):
+    wrapper, client = client_context
+    client.stop.side_effect = stop_error
+    client.close.side_effect = close_error
+    expected = type(original_error) if original_error is not None else RuntimeError
+    with pytest.raises(expected) as raised:
+        with wrapper:
+            if original_error is not None:
+                raise original_error
+    assert raised.value.__cause__ is (stop_error or close_error)
+    if original_error is not None:
+        assert raised.value is original_error
+    assert client.mock_calls[-2:] == [mock.call.stop(), mock.call.close()]
+    with pytest.raises(RuntimeError, match="cannot be reused"):
+        with wrapper:
+            pytest.fail("A client with failed cleanup must not be restarted")
+    client.start.assert_called_once_with(10)
