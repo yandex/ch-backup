@@ -508,11 +508,13 @@ optional `INTEGRATION_FEATURESET` selects a different list of files under `tests
 files are indivisible, including `@dependent-scenarios` features: their scenarios
 retain their original order and environment hooks.
 
-The scheduler starts features with more selected scenarios first and gives free
-workers the next eligible feature. Features tagged `@parallel_heavy` reserve two
-slots (one when `INTEGRATION_JOBS=1`); `@parallel_exclusive` reserves every slot
-and waits for the active features to finish. The initial heavy features are
-`backup_restore` and `freeze_parallel`.
+The scheduler prioritizes features that reserve more slots, then those with more
+selected scenarios, and gives free workers the next eligible feature. Features
+tagged `@parallel_heavy` reserve two slots (one when `INTEGRATION_JOBS=1`);
+`@parallel_exclusive` reserves every slot. Starting heavy features early avoids
+leaving them until the end with no other work to fill spare slots. The initial
+heavy features are `backup_restore` and `freeze_parallel`. Features with equal
+priority retain their order in the featureset; scenario order is unchanged.
 
 After a failure, no new features start; active features finish. `--stop` also
 remains enabled within each feature. Failed steps print their feature, scenario
@@ -535,5 +537,18 @@ Results are printed at startup under `staging/parallel/<run-id>/results/`:
   failed runs. Exit codes, report completeness and stage failures determine the
   result; unfinished scenarios cannot turn a run green.
 
-All twelve existing CI combinations use three slots. JUnit and diagnostics are
-uploaded on both success and failure with run-attempt-specific artifact names.
+GitHub-hosted CI jobs use three slots; self-hosted runners can set
+`INTEGRATION_JOBS` for their VM size. The actual budget is in `summary.json`.
+JUnit and diagnostics are uploaded on both success and failure with
+run-attempt-specific artifact names.
+
+The `runner-diagnostics` artifact contains snapshots before and after integration:
+CPU model/topology and affinity, memory and filesystem information, CPU/disk/VM
+counters, Linux pressure counters, visible cgroup v2 limits and throttling
+counters (including ancestors), and Python/package/Docker versions. Compare the
+timestamped counter deltas to assess CPU steal, I/O waits and throttling during a
+run. Host counters can include other jobs on shared runners; cgroup counters
+describe the runner process's groups, which may differ from Docker containers'
+groups. Worker image IDs and ClickHouse versions remain in
+`integration-test-results`. The collector does not enumerate neighboring
+containers or export arbitrary environment variables.

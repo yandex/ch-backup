@@ -86,11 +86,31 @@ jobs:
         python-version: ${{ matrix.python }}
     - name: run unit tests
       run: make test-unit
+    - name: collect runner diagnostics before integration
+      if: ${{ always() }}
+      continue-on-error: true
+      timeout-minutes: 3
+      run: bash .github/scripts/runner-diagnostics.sh staging/ci-diagnostics/before
+      env:
+        CLICKHOUSE_VERSION: ${{ matrix.clickhouse == 'latest' && env.LATEST_CLICKHOUSE_VERSION || matrix.clickhouse }}
     - name: run integration tests
       run: make test-integration-parallel
       # Self-hosted runners set INTEGRATION_JOBS for the size of their VM, GitHub-hosted ones take 3 from the Makefile.
       env:
         CLICKHOUSE_VERSION: ${{ matrix.clickhouse == 'latest' && env.LATEST_CLICKHOUSE_VERSION || matrix.clickhouse }}
+    - name: collect runner diagnostics after integration
+      if: ${{ always() }}
+      continue-on-error: true
+      timeout-minutes: 3
+      run: bash .github/scripts/runner-diagnostics.sh staging/ci-diagnostics/after
+      env:
+        CLICKHOUSE_VERSION: ${{ matrix.clickhouse == 'latest' && env.LATEST_CLICKHOUSE_VERSION || matrix.clickhouse }}
+    - uses: actions/upload-artifact@v7
+      if: ${{ always() }}
+      with:
+        name: runner-diagnostics-py${{ matrix.python }}-clickhouse-${{ matrix.clickhouse }}-attempt-${{ github.run_attempt }}
+        path: staging/ci-diagnostics/
+        if-no-files-found: ignore
     - uses: actions/upload-artifact@v7
       if: ${{ always() }}
       with:

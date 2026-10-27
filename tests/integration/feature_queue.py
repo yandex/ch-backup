@@ -66,7 +66,11 @@ class FeatureQueue:
         if jobs < 1:
             raise ValueError("INTEGRATION_JOBS must be positive")
         self.jobs = jobs
-        self.pending = sorted(features, key=lambda feature: -feature.scenarios)
+        # Admit multi-slot features first: single-slot backfill otherwise keeps
+        # them waiting until the end, when there is no work for the spare slots.
+        self.pending = sorted(
+            features, key=lambda feature: (-feature.slots(jobs), -feature.scenarios)
+        )
         self.active: dict[str, Feature] = {}
         self.stopped = False
 
