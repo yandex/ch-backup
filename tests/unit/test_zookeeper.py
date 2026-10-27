@@ -75,9 +75,14 @@ def test_nested_and_repeated_contexts(client_context):
 
 
 @pytest.mark.parametrize("operation", ["start", "add_auth"])
-def test_failed_connection_is_closed_before_retry(client_context, operation):
+@pytest.mark.parametrize("stop_fails", [False, True])
+def test_failed_connection_is_closed_before_retry(
+    client_context, operation, stop_fails
+):
     wrapper, client = client_context
     getattr(client, operation).side_effect = [ConnectionLoss(), None]
+    if stop_fails:
+        client.stop.side_effect = [BrokenPipeError("stop failed"), None]
     with wrapper as connected:
         assert connected is client
     first_attempt = [mock.call.start(10)]
@@ -94,30 +99,50 @@ def test_failed_connection_is_closed_before_retry(client_context, operation):
 
 
 @pytest.mark.parametrize(
-    "stop_error,close_error,original_error",
+    "failure_at,original_error",
     [
-        (ConnectionLoss("stop"), None, None),
-        (ConnectionLoss("stop"), OSError("close"), None),
-        (None, OSError("close"), None),
-        (ConnectionLoss("stop"), OSError("close"), TerminatingSignal()),
+        pytest.param("start", OSError(24, "Too many open files"), id="start-emfile"),
+        pytest.param("start", TerminatingSignal(), id="start-signal"),
+        pytest.param("body", ValueError("operation failed"), id="body-error"),
+        pytest.param("body", TerminatingSignal(), id="body-signal"),
+        pytest.param("body", None, id="exit"),
     ],
 )
-def test_cleanup_failure_preserves_error_and_prevents_reuse(
-    client_context, stop_error, close_error, original_error
+@pytest.mark.parametrize("stop_fails", [False, True], ids=["close", "stop-and-close"])
+def test_cleanup_failure_preserves_errors_and_allows_reuse(
+    client_context, failure_at, original_error, stop_fails
 ):
     wrapper, client = client_context
-    client.stop.side_effect = stop_error
+    stop_error = (
+        AttributeError("socket unavailable")
+        if failure_at == "start"
+        else BrokenPipeError("stop failed")
+    )
+    close_error = OSError("close failed")
+    if stop_fails:
+        client.stop.side_effect = stop_error
     client.close.side_effect = close_error
-    expected = type(original_error) if original_error is not None else RuntimeError
-    with pytest.raises(expected) as raised:
+    if failure_at == "start":
+        client.start.side_effect = original_error
+    expected = (
+        original_error
+        if failure_at == "start" or isinstance(original_error, TerminatingSignal)
+        else stop_error if stop_fails else close_error
+    )
+    with pytest.raises(type(expected)) as raised:
         with wrapper:
+            assert failure_at != "start", "A failed start must not enter the context"
             if original_error is not None:
                 raise original_error
-    assert raised.value.__cause__ is (stop_error or close_error)
-    if original_error is not None:
-        assert raised.value is original_error
+    assert raised.value is expected
+    if failure_at == "body" and isinstance(original_error, Exception):
+        assert raised.value.__context__ is original_error
+        assert not raised.value.__suppress_context__
     assert client.mock_calls[-2:] == [mock.call.stop(), mock.call.close()]
-    with pytest.raises(RuntimeError, match="cannot be reused"):
-        with wrapper:
-            pytest.fail("A client with failed cleanup must not be restarted")
+
+    client.reset_mock(side_effect=True)
+    with wrapper as connected:
+        assert connected is client
     client.start.assert_called_once_with(10)
+    client.stop.assert_called_once_with()
+    client.close.assert_called_once_with()

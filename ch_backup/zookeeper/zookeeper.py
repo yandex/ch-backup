@@ -36,12 +36,9 @@ class ZookeeperClient:
         self._zk_password = config.get("password")
         self._connect_timeout = config.get("connect_timeout")
         self._entered = 0
-        self._cleanup_failed = False
 
     @KAZOO_RETRIES
     def __enter__(self) -> KazooClient:
-        if self._cleanup_failed:
-            raise RuntimeError("ZooKeeper client cannot be reused after failed cleanup")
         if self._entered == 0:
             try:
                 self._client.start(self._connect_timeout)
@@ -49,11 +46,12 @@ class ZookeeperClient:
                     self._client.add_auth(
                         "digest", f"{self._zk_user}:{self._zk_password}"
                     )
-            except BaseException as error:
+            except BaseException:
                 # A failed __enter__ has no matching __exit__. Stop Kazoo's
                 # reconnect loop before retrying start(), which otherwise joins
                 # that still-running loop without asking it to stop.
-                self._close(error)
+                with suppress(Exception):
+                    self._close()
                 raise
         self._entered += 1
         return self._client
@@ -61,30 +59,24 @@ class ZookeeperClient:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self._entered -= 1
         if self._entered == 0:
-            self._close(exc_val)
-
-    def _close(self, original_error: BaseException | None = None) -> None:
-        # Keep nested contexts (including Keeper locks) in the same session.
-        # If cleanup fails, neither Tenacity nor a later caller may restart it.
-        self._cleanup_failed = True
-        try:
             try:
-                self._client.stop()
-            except BaseException:
-                # stop() may raise after stopping the thread. Release remaining
-                # resources if possible, without masking the original failure.
-                with suppress(Exception):
-                    self._client.close()
+                self._close()
+            except Exception as error:
+                if exc_val is not None and not isinstance(exc_val, Exception):
+                    # Cleanup must not turn termination into a keep-going error.
+                    raise exc_val from error
                 raise
-            self._client.close()
-        except Exception as error:
-            if original_error is not None and not isinstance(original_error, Exception):
-                # Termination must not become an ordinary, catchable failure.
-                raise original_error from error
-            raise RuntimeError(
-                f"Failed to close ZooKeeper client ({type(error).__name__})"
-            ) from (original_error if original_error is not None else error)
-        self._cleanup_failed = False
+
+    def _close(self) -> None:
+        try:
+            self._client.stop()
+        except BaseException:
+            # stop() may raise after stopping the thread. Release remaining
+            # resources if possible, without masking the original failure.
+            with suppress(Exception):
+                self._client.close()
+            raise
+        self._client.close()
 
 
 class ZookeeperCTL:
