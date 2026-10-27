@@ -363,10 +363,10 @@ Behavior and limitations:
   object storage disk of the host where the backup is restored. Each copied backup stores these objects
   separately. Deleting a copy retains external objects by default. Add `--delete-cloud-storage-data` to
   `delete` or `purge` to remove copied objects that surviving backups do not reference. Original backup data is preserved.
-  Cleanup uses the recorded location and backup-storage credentials by default. Configure
+  Cleanup selects objects from saved disk metadata and uses backup-storage credentials by default. Configure
   `copy.cloud_storage.target` for separate credentials or a different endpoint.
   Metadata must be trusted and readable. Encrypted disk metadata requires its original key.
-  Failed cleanup can be retried.
+  Batch cleanup validates all selected backups before deletion. Failed cleanup can be retried.
   In-memory archives have a 1 GiB limit, adjustable in bytes with `filesystem.max_in_memory_tarball_size`.
   Restore preserves the HTTP/HTTPS scheme of the stored endpoint. Its `--cloud-storage-source-endpoint`
   option accepts a full HTTP(S) URL or `host[:port]`; the latter uses the original disk's scheme.

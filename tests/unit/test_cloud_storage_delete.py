@@ -78,12 +78,16 @@ def fixture_cloud_copy(monkeypatch, tmp_path):
         s3.assert_no_pending_responses()
 
 
-def _list_objects(s3, keys):
-    s3.add_response(
-        "list_objects",
-        {"Contents": [{"Key": key} for key in keys]},
-        {"Bucket": "disk-copy", "Prefix": "copies/backup1/"},
-    )
+def _saved_objects(context, keys):
+    context.backup_layout.get_cloud_storage_metadata_remote_paths.return_value = [
+        "disks/s3/table.tar"
+    ]
+    data = f"5\n{len(keys)}\t{len(keys)}\n"
+    data += "".join(f"1\t{key}\n" for key in keys)
+    data += "1\n0\n\n"
+    context.backup_layout.get_cloud_storage_metadata_files.return_value = [
+        ("data.bin", data.encode())
+    ]
 
 
 def _delete_objects(s3, keys):
@@ -94,10 +98,33 @@ def _delete_objects(s3, keys):
     )
 
 
+@pytest.mark.parametrize(
+    "data",
+    [
+        b"3\n1\t1\n1\tcluster-a\n1\n0\n",
+        b"5\n1\t1\n1\tcopies/backup1/cluster-a\n1\n0\n\n",
+    ],
+)
+def test_delete_external_copy_uses_only_recorded_objects(cloud_copy, data):
+    backup, meta, context, s3, _configs = cloud_copy
+    context.backup_layout.get_cloud_storage_metadata_remote_paths.return_value = [
+        "disks/s3/table.tar"
+    ]
+    context.backup_layout.get_cloud_storage_metadata_files.return_value = [
+        ("data.bin", data)
+    ]
+    _delete_objects(s3, ["copies/backup1/cluster-a"])
+
+    assert backup._delete(meta, {}, DeleteSettings(delete_cloud_storage_data=True)) == (
+        "backup1",
+        None,
+    )
+
+
 def test_delete_cloud_copy_removes_only_its_prefix_in_batches(cloud_copy):
     backup, meta, context, s3, configs = cloud_copy
     keys = ["copies/backup1/a", "copies/backup1/b", "copies/backup1/c"]
-    _list_objects(s3, keys)
+    _saved_objects(context, keys)
     _delete_objects(s3, keys[:2])
     _delete_objects(s3, keys[2:])
 
@@ -118,7 +145,7 @@ def test_delete_cloud_copy_removes_only_its_prefix_in_batches(cloud_copy):
 def test_delete_cloud_copy_failure_preserves_metadata_and_can_retry(cloud_copy):
     backup, meta, context, s3, _configs = cloud_copy
     key = "copies/backup1/a"
-    _list_objects(s3, [key])
+    _saved_objects(context, [key])
     s3.add_response(
         "delete_objects",
         {"Errors": [{"Key": key, "Code": "AccessDenied"}]},
@@ -133,7 +160,7 @@ def test_delete_cloud_copy_failure_preserves_metadata_and_can_retry(cloud_copy):
     assert meta.state == BackupState.FAILED
     context.backup_layout.delete_backup.assert_not_called()
     assert "AccessDenied" in meta.exception
-    _list_objects(s3, [key])
+    _saved_objects(context, [key])
     _delete_objects(s3, [key])
     assert backup._delete(
         meta, {}, settings=DeleteSettings(delete_cloud_storage_data=True)
@@ -192,7 +219,7 @@ def test_delete_cloud_copy_rejects_overlapping_backup_prefix(
 
 
 def test_delete_cloud_copy_uses_explicit_target_credentials(cloud_copy):
-    backup, meta, _context, s3, configs = cloud_copy
+    backup, meta, context, _s3, configs = cloud_copy
     backup.config["copy"]["cloud_storage"]["target"].update(
         {
             "endpoint_url": "https://external.example.test",
@@ -202,7 +229,7 @@ def test_delete_cloud_copy_uses_explicit_target_credentials(cloud_copy):
         }
     )
     meta.cloud_storage.source["endpoint_url"] = "https://external.example.test/"
-    _list_objects(s3, [])
+    _saved_objects(context, [])
 
     assert backup._delete(
         meta, {}, settings=DeleteSettings(delete_cloud_storage_data=True)
@@ -231,9 +258,9 @@ def test_delete_cloud_copy_requires_copy_marker(cloud_copy):
 
 @pytest.mark.parametrize("operation", ["delete", "purge"])
 def test_public_delete_operations_clean_external_objects(cloud_copy, operation):
-    backup, meta, _context, s3, _configs = cloud_copy
+    backup, meta, context, s3, _configs = cloud_copy
     backup.config["backup"].update({"retain_count": 0, "retain_time": {}})
-    _list_objects(s3, ["copies/backup1/a"])
+    _saved_objects(context, ["copies/backup1/a"])
     _delete_objects(s3, ["copies/backup1/a"])
 
     if operation == "delete":
@@ -251,7 +278,7 @@ def test_public_delete_operations_clean_external_objects(cloud_copy, operation):
 
 @pytest.mark.parametrize("shared_disk", ["s3", "default"])
 def test_partial_delete_keeps_referenced_cloud_data(cloud_copy, shared_disk):
-    backup, meta, _context, s3, configs = cloud_copy
+    backup, meta, context, s3, configs = cloud_copy
     meta.add_database(Database("db", "Atomic", None, None, None))
     table = TableMetadata("db", "table", "MergeTree", None)
     table.add_part(
@@ -263,7 +290,7 @@ def test_partial_delete_keeps_referenced_cloud_data(cloud_copy, shared_disk):
     refs: DedupReferences = defaultdict(lambda: defaultdict(set))
     refs["db"]["table"].add("all_1_1_0")
     if shared_disk != "s3":
-        _list_objects(s3, ["copies/backup1/a"])
+        _saved_objects(context, ["copies/backup1/a"])
         _delete_objects(s3, ["copies/backup1/a"])
 
     deleted, message = backup._delete(
@@ -312,7 +339,7 @@ def test_delete_cloud_copy_inside_backup_preserves_metadata(cloud_copy, data):
 
 @pytest.mark.parametrize("explicit_target", [False, True])
 def test_delete_cloud_copy_with_default_aws_endpoint(cloud_copy, explicit_target):
-    backup, meta, _context, s3, configs = cloud_copy
+    backup, meta, context, _s3, configs = cloud_copy
     backup.config["storage"]["credentials"]["endpoint_url"] = None
     if explicit_target:
         backup.config["copy"]["cloud_storage"]["target"][
@@ -320,7 +347,7 @@ def test_delete_cloud_copy_with_default_aws_endpoint(cloud_copy, explicit_target
         ] = "https://s3.example.test"
     else:
         meta.cloud_storage.source["endpoint_url"] = None
-    _list_objects(s3, [])
+    _saved_objects(context, [])
 
     assert backup._delete(
         meta, {}, settings=DeleteSettings(delete_cloud_storage_data=True)
@@ -397,7 +424,7 @@ def test_delete_cloud_copy_can_use_light_metadata(cloud_copy, unreadable):
         )
     else:
         context.backup_layout.get_backup.return_value = None
-    _list_objects(s3, ["copies/backup1/a"])
+    _saved_objects(context, ["copies/backup1/a"])
     _delete_objects(s3, ["copies/backup1/a"])
 
     published_sources = []
@@ -460,12 +487,92 @@ def test_delete_shared_directory_rejects_objects_outside_backup(cloud_copy):
     context.backup_layout.delete_backup.assert_not_called()
 
 
-def test_shared_directory_cleanup_requires_saved_disk_metadata(cloud_copy):
+@pytest.mark.parametrize(
+    ("bucket", "path"),
+    [("backups", "ch_backup/backup1"), ("disk-copy", "copies/backup1")],
+)
+def test_cleanup_requires_saved_disk_metadata(cloud_copy, bucket, path):
     backup, meta, context, _s3, _configs = cloud_copy
-    meta.cloud_storage.source.update({"bucket": "backups", "path": "ch_backup/backup1"})
+    meta.cloud_storage.source.update({"bucket": bucket, "path": path})
     context.backup_layout.get_cloud_storage_metadata_remote_paths.return_value = []
 
     with pytest.raises(InvalidBackupStruct, match="disk metadata"):
         backup._delete(meta, {}, DeleteSettings(delete_cloud_storage_data=True))
 
     context.backup_layout.delete_backup.assert_not_called()
+
+
+@pytest.mark.parametrize("operation", ["delete", "purge"])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("endpoint_url", "https://wrong.example.test"),
+        ("bucket", "wrong-bucket"),
+        ("path", "copies/another-backup"),
+    ],
+)
+def test_batch_validation_precedes_all_changes(cloud_copy, operation, field, value):
+    backup, meta, context, _s3, _configs = cloud_copy
+    meta.state = BackupState.CREATED
+    other = deepcopy(meta)
+    other.name = "backup2"
+    other.state = BackupState.FAILED
+    other.cloud_storage.source["path"] = "copies/backup2"
+    full_other = deepcopy(other)
+    full_other.cloud_storage.source[field] = value
+    backup.config["copy"]["cloud_storage"]["target"]["bucket"] = "disk-copy"
+    backup.config["backup"].update({"retain_count": 0, "retain_time": {}})
+    context.backup_layout.get_backups.return_value = [meta, other]
+    context.backup_layout.get_backup.side_effect = {
+        meta.name: meta,
+        other.name: full_other,
+    }.get
+    _saved_objects(context, [])
+
+    with pytest.raises(ConfigurationError):
+        if operation == "delete":
+            backup.delete(
+                meta.name,
+                DeleteSettings(purge_partial=True, delete_cloud_storage_data=True),
+            )
+        else:
+            backup.purge(DeleteSettings(delete_cloud_storage_data=True))
+
+    context.backup_layout.upload_backup_metadata.assert_not_called()
+    context.backup_layout.delete_backup.assert_not_called()
+    assert meta.state == BackupState.CREATED
+    assert other.state == full_other.state == BackupState.FAILED
+
+
+@pytest.mark.parametrize("operation", ["delete", "purge"])
+def test_batch_missing_disk_metadata_precedes_all_changes(cloud_copy, operation):
+    backup, meta, context, _s3, _configs = cloud_copy
+    meta.state = BackupState.CREATED
+    other = deepcopy(meta)
+    other.name = "backup2"
+    other.state = BackupState.FAILED
+    other.cloud_storage.source["path"] = "copies/backup2"
+    backup.config["backup"].update({"retain_count": 0, "retain_time": {}})
+    context.backup_layout.get_backups.return_value = [meta, other]
+    context.backup_layout.get_backup.side_effect = {
+        meta.name: meta,
+        other.name: other,
+    }.get
+    _saved_objects(context, [])
+    context.backup_layout.get_cloud_storage_metadata_remote_paths.side_effect = (
+        lambda name, *_args: (["archive"] if name == meta.name else [])
+    )
+
+    with pytest.raises(InvalidBackupStruct, match="disk metadata"):
+        if operation == "delete":
+            backup.delete(
+                meta.name,
+                DeleteSettings(purge_partial=True, delete_cloud_storage_data=True),
+            )
+        else:
+            backup.purge(DeleteSettings(delete_cloud_storage_data=True))
+
+    context.backup_layout.upload_backup_metadata.assert_not_called()
+    context.backup_layout.delete_backup.assert_not_called()
+    assert meta.state == BackupState.CREATED
+    assert other.state == BackupState.FAILED

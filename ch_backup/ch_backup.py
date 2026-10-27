@@ -623,6 +623,9 @@ class ClickhouseBackup:
                     "by other backups"
                 )
 
+            self._validate_cloud_storage_deletion(
+                deleting_backups, dedup_references, settings
+            )
             result: tuple[str | None, str | None] = (None, None)
             for backup in deleting_backups:
                 deleted_name, msg = self._delete(
@@ -763,6 +766,9 @@ class ClickhouseBackup:
                 deleting_backup_names={b.name for b in deleting_backups},
             )
 
+            self._validate_cloud_storage_deletion(
+                deleting_backups, dedup_references, settings
+            )
             for backup in deleting_backups:
                 backup_name, _ = self._delete(
                     backup,
@@ -815,6 +821,45 @@ class ClickhouseBackup:
         retain_time = self._context.config.get("retain_incomplete_copy_time")
         return now() - timedelta(**retain_time) if retain_time else None
 
+    def _get_backup_for_deletion(
+        self, backup_light_meta: BackupMetadata, dedup_references: DedupReferences
+    ) -> tuple[BackupMetadata, bool]:
+        """Load full metadata or use light metadata when no backup references it."""
+        try:
+            backup = self._context.backup_layout.get_backup(backup_light_meta.name)
+        except StorageError:
+            if dedup_references:
+                raise
+            logging.exception(
+                "Full metadata of backup {} is unreadable, deleting it by light metadata",
+                backup_light_meta.name,
+            )
+            backup = None
+        if backup is None and dedup_references:
+            raise InvalidBackupStruct(
+                f"Full metadata is missing for referenced backup {backup_light_meta.name}"
+            )
+        return backup or backup_light_meta, backup is None
+
+    def _validate_cloud_storage_deletion(
+        self,
+        backups: Sequence[BackupMetadata],
+        dedup_references: dict[str, DedupReferences],
+        settings: DeleteSettings,
+    ) -> None:
+        """Reject invalid cleanup targets before any backup in the batch changes."""
+        if not settings.delete_cloud_storage_data:
+            return
+        for light_meta in backups:
+            references = dedup_references[light_meta.name]
+            backup, _light_only = self._get_backup_for_deletion(light_meta, references)
+            if references and self._cloud_storage_data_is_shared(backup, references):
+                continue
+            if location := self._get_external_cloud_storage(backup, settings):
+                self._context.backup_layout.get_cloud_storage_object_keys(
+                    backup, location[1]
+                )
+
     def _delete(
         self,
         backup_light_meta: BackupMetadata,
@@ -833,22 +878,9 @@ class ClickhouseBackup:
             backup_light_meta.state,
         )
 
-        try:
-            backup = self._context.backup_layout.get_backup(backup_light_meta.name)
-        except StorageError:
-            if dedup_references:
-                raise
-            logging.exception(
-                "Full metadata of backup {} is unreadable, deleting it by light metadata",
-                backup_light_meta.name,
-            )
-            backup = None
-        if backup is None and dedup_references:
-            raise InvalidBackupStruct(
-                f"Full metadata is missing for referenced backup {backup_light_meta.name}"
-            )
-        light_only = backup is None
-        backup = backup or backup_light_meta
+        backup, light_only = self._get_backup_for_deletion(
+            backup_light_meta, dedup_references
+        )
         backup.state = BackupState.DELETING
         backup.exception = None
 
@@ -1028,22 +1060,10 @@ class ClickhouseBackup:
     ) -> None:
         """Delete copied objects, leaving archives and backup files to layout cleanup."""
         credentials = storage["credentials"]
-        backup_credentials = self._config["storage"]["credentials"]
-        backup_path = os.path.join(
-            self._config["backup"]["path_root"], backup.name
-        ).strip("/")
+        objects = self._context.backup_layout.get_cloud_storage_object_keys(
+            backup, path
+        )
         engine = get_storage_engine(storage)
-        if (
-            (credentials["endpoint_url"] or "").rstrip("/")
-            == (backup_credentials["endpoint_url"] or "").rstrip("/")
-            and credentials["bucket"] == backup_credentials["bucket"]
-            and path == backup_path
-        ):
-            objects = self._context.backup_layout.get_cloud_storage_object_keys(
-                backup, path
-            )
-        else:
-            objects = engine.list_dir(path, recursive=True, absolute=True)
 
         logging.info(
             "Deleting copied cloud storage data in bucket {} under {}",

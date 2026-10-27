@@ -861,11 +861,28 @@ Feature: Copy backups to another storage
     path: copy/12345678T123456-neighbor/keep
     data: keep
     """
+    And we put object in S3
+    """
+    bucket: cloud-storage-02
+    path: copy/12345678T123456/other-cluster/keep
+    data: other-cluster
+    """
     And we execute command on clickhouse01
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf \
         --config-parameter storage.credentials.bucket '"ch-backup-copy"' \
         delete 12345678T123456 <delete_option>
+    """
+    Then an object in S3 contains
+    """
+    bucket: cloud-storage-02
+    path: copy/12345678T123456/other-cluster/keep
+    data: other-cluster
+    """
+    When we delete object in S3
+    """
+    bucket: cloud-storage-02
+    path: copy/12345678T123456/other-cluster/keep
     """
     Then s3 bucket ch-backup-copy contains no objects with prefix "ch_backup/12345678T123456/"
     And s3 bucket cloud-storage-02 contains <cloud_objects> with prefix "copy/12345678T123456/"
