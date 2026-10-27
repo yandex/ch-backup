@@ -1086,7 +1086,7 @@ class BackupLayout:
     ) -> list[str]:
         """Read copied object keys without including the archives that describe them."""
         objects: set[str] = set()
-        for disk in backup_meta.cloud_storage.disks:
+        for disk in backup_meta.get_owned_cloud_storage_disks():
             archives = self.get_cloud_storage_metadata_remote_paths(
                 backup_meta.get_sanitized_name(),
                 disk,

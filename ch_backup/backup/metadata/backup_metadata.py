@@ -597,14 +597,6 @@ class BackupMetadata:
             if disk in owned or disk not in linked
         ]
 
-    def link_part(self, part: PartMetadata, backup_name: str, part_name: str) -> None:
-        """Reuse an owning backup's part without counting its data twice."""
-        raw = self.get_table(part.database, part.table).raw_metadata["parts"][part.name]
-        if not raw.get("link"):
-            self.real_size -= part.size
-        raw["link"] = backup_name
-        raw["link_part_name"] = part_name if part_name != part.name else None
-
     def unlink_part(self, part: PartMetadata) -> None:
         """
         Turn deduplicated data part into a regular one, i.e. stored within the backup itself.

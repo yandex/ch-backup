@@ -842,8 +842,6 @@ class ClickhouseBackup:
         for light_meta in backups:
             references = dedup_references[light_meta.name]
             backup, _light_only = self._get_backup_for_deletion(light_meta, references)
-            if references and self._cloud_storage_data_is_shared(backup, references):
-                continue
             if location := self._get_external_cloud_storage(backup, settings):
                 self._context.backup_layout.get_cloud_storage_object_keys(
                     backup, location[1]

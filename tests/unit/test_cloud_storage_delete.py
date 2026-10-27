@@ -130,6 +130,37 @@ def test_delete_external_copy_uses_only_recorded_objects(cloud_copy, data):
     )
 
 
+def test_delete_cloud_copy_skips_disks_owned_by_another_backup(cloud_copy):
+    backup, meta, context, s3, _configs = cloud_copy
+    meta.cloud_storage.add_disk("linked_s3")
+    meta.add_database(Database("db", "Atomic", None, None, None))
+    table = TableMetadata("db", "table", "MergeTree", None)
+    table.add_part(
+        PartMetadata(
+            "db",
+            "table",
+            "all_1_1_0",
+            "checksum",
+            1,
+            [],
+            False,
+            disk_name="linked_s3",
+            link="owner",
+        )
+    )
+    meta.add_table(table)
+    _saved_objects(context, ["copies/backup1/a"])
+    context.backup_layout.get_cloud_storage_metadata_remote_paths.side_effect = (
+        lambda _name, disk, *_args: (["archive"] if disk == "s3" else [])
+    )
+    _delete_objects(s3, ["copies/backup1/a"])
+
+    assert backup.delete(meta.name, DeleteSettings(delete_cloud_storage_data=True)) == (
+        "backup1",
+        None,
+    )
+
+
 def test_delete_cloud_copy_removes_only_its_prefix_in_batches(cloud_copy):
     backup, meta, context, s3, configs = cloud_copy
     keys = ["copies/backup1/a", "copies/backup1/b", "copies/backup1/c"]
@@ -592,6 +623,60 @@ def test_batch_missing_disk_metadata_precedes_all_changes(cloud_copy, operation)
     context.backup_layout.delete_backup.assert_not_called()
     assert meta.state == BackupState.CREATED
     assert other.state == BackupState.FAILED
+
+
+@pytest.fixture(name="batch_with_referenced_cloud_owner")
+def fixture_batch_with_referenced_cloud_owner(cloud_copy):
+    backup, meta, context, _s3, _configs = cloud_copy
+    meta.state = BackupState.CREATED
+    owner = deepcopy(meta)
+    owner.name = "backup2"
+    owner.state = BackupState.PARTIALLY_DELETED
+    owner.cloud_storage.source.update(
+        {"path": "copies/backup2", "endpoint_url": "https://wrong.example.test"}
+    )
+    owner.add_database(Database("db", "Atomic", None, None, None))
+    table = TableMetadata("db", "table", "MergeTree", None)
+    part = PartMetadata(
+        "db", "table", "all_1_1_0", "checksum", 1, [], False, disk_name="s3"
+    )
+    table.add_part(part)
+    owner.add_table(table)
+    retained = deepcopy(owner)
+    retained.name = "retained"
+    retained.state = BackupState.CREATED
+    retained.link_part(part, owner.name, part.name)
+    backup.config["backup"].update({"retain_count": 1, "retain_time": {}})
+    context.backup_layout.get_backups.return_value = [retained, meta, owner]
+    context.backup_layout.get_backup.side_effect = {
+        meta.name: meta,
+        owner.name: owner,
+        retained.name: retained,
+    }.get
+    context.backup_layout.reload_backup.side_effect = lambda backup, **_kwargs: backup
+    _saved_objects(context, [])
+    return backup, meta, owner, context
+
+
+@pytest.mark.parametrize("operation", ["delete", "purge"])
+def test_batch_validates_referenced_cloud_owner_before_changes(
+    batch_with_referenced_cloud_owner, operation
+):
+    backup, meta, owner, context = batch_with_referenced_cloud_owner
+    with pytest.raises(ConfigurationError, match="endpoint"):
+        if operation == "delete":
+            backup.delete(
+                meta.name,
+                DeleteSettings(purge_partial=True, delete_cloud_storage_data=True),
+            )
+        else:
+            backup.purge(DeleteSettings(delete_cloud_storage_data=True))
+
+    assert meta.state == BackupState.CREATED
+    assert meta.cloud_storage.source is not None
+    assert owner.state == BackupState.PARTIALLY_DELETED
+    context.backup_layout.upload_backup_metadata.assert_not_called()
+    context.backup_layout.delete_backup.assert_not_called()
 
 
 @pytest.mark.parametrize("retain_first", [False, True])
