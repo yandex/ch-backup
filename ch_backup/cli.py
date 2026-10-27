@@ -35,6 +35,7 @@ from ch_backup.command_context import command_context
 from ch_backup.exceptions import ConfigurationError, TerminatingSignal
 
 from . import logging
+from .backup.copy_deduplication import copy_deduplication_cutoff
 from .backup.copy_report import CopyReport, print_copy_report
 from .backup.metadata import BackupState, TableMetadata
 from .backup.sources import BackupSources
@@ -1028,18 +1029,11 @@ def copy_command(
     report_path: str | None = None,
 ) -> None:
     """Copy backup to another storage (another S3 bucket, endpoint or path)."""
+    command_start = utcnow()
     report = CopyReport()
     try:
         if bool(name) == all_:
             ctx.fail("Either BACKUP or --all must be specified.")
-
-        backup_names = None
-        if name:
-            if name == "LAST":
-                name = _validate_and_resolve_name(
-                    ctx, ch_backup, name, BackupState.CREATED
-                )
-            backup_names = [name]
 
         copy_config: dict = {"cloud_storage": {"source": {}, "target": {}}}
         if server_side_copy is not None:
@@ -1060,7 +1054,22 @@ def copy_command(
             _build_cli_cfg_from_config_parameters(target_config_parameters),
         )
         target_cfg.merge({"copy": copy_config})
-        ch_backup.copy(target_cfg, backup_names, keep_going=keep_going, report=report)
+        # Validate before resolving LAST, which already lists the source storage.
+        copy_deduplication_cutoff(target_cfg["copy"], command_start)
+        backup_names = None
+        if name:
+            if name == "LAST":
+                name = _validate_and_resolve_name(
+                    ctx, ch_backup, name, BackupState.CREATED
+                )
+            backup_names = [name]
+        ch_backup.copy(
+            target_cfg,
+            backup_names,
+            keep_going=keep_going,
+            report=report,
+            command_start=command_start,
+        )
     except BaseException as e:
         report.error = f"{type(e).__name__}: {e}"
         raise
