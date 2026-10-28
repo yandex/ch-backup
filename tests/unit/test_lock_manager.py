@@ -9,7 +9,9 @@ from kazoo.exceptions import LockTimeout
 from ch_backup.backup.copy_report import BackupCopyResult, CopyReport
 from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.config import Config
+from ch_backup.exceptions import TerminatingSignal
 from ch_backup.logic.lock_manager import LockManager, storage_locks
+from ch_backup.zookeeper.zookeeper import ZookeeperCTL
 
 
 def _config(path="/backup-lock", hosts=None):
@@ -136,6 +138,157 @@ def test_file_lock_is_closed_if_zookeeper_acquisition_fails():
                     with manager(operation="COPY"):
                         pytest.fail("Missing ZooKeeper must prevent copying")
     lock_file.close.assert_called_once()
+
+
+@pytest.fixture(name="lock_resources")
+def _lock_resources(tmp_path):
+    config = _config()
+    path = tmp_path / "lock"
+    path.touch()
+    config["lock"].update(flock=True, flock_path=str(path))
+    with (
+        patch("ch_backup.zookeeper.zookeeper.KazooClient", autospec=True) as factory,
+        patch("ch_backup.logic.lock_manager.open") as open_file,
+        patch("ch_backup.logic.lock_manager.flock") as flock,
+    ):
+        # Kazoo installs recipe factories on the instance in __init__.
+        factory.return_value.Lock = MagicMock()
+        ctl = ZookeeperCTL(config["zookeeper"])
+        yield (
+            LockManager(config["lock"], ctl)(operation="TEST"),
+            ctl.zk_client,
+            factory.return_value,
+            open_file.return_value,
+            flock,
+        )
+
+
+@pytest.mark.parametrize(
+    "failure_at,body_fails",
+    [
+        ("release", False),
+        ("release", True),
+        ("file", False),
+        ("file", True),
+        ("flock", False),
+        ("acquire", False),
+    ],
+)
+def test_lock_failure_cleans_resources_and_allows_reuse(
+    lock_resources, failure_at, body_fails
+):
+    # pylint: disable=protected-access
+    manager, wrapper, client, lock_file, flock = lock_resources
+    lock = client.Lock.return_value
+    error = OSError(f"{failure_at} failed")
+    body_error = ValueError("operation failed")
+    operations = {
+        "release": lock.release,
+        "file": lock_file.close,
+        "flock": flock,
+        "acquire": lock.acquire,
+    }
+    operations[failure_at].side_effect = error
+    with pytest.raises(OSError) as raised:
+        with manager:
+            assert failure_at not in ("flock", "acquire")
+            if body_fails:
+                raise body_error
+    assert raised.value is error
+    if body_fails:
+        assert raised.value.__context__ is body_error
+        assert not raised.value.__suppress_context__
+    assert wrapper._entered == 0
+    lock_file.close.assert_called_once_with()
+    assert lock.release.call_count == (failure_at not in ("flock", "acquire"))
+    assert client.stop.call_count == client.close.call_count == (failure_at != "flock")
+
+    client.reset_mock(side_effect=True)
+    lock.reset_mock(side_effect=True)
+    lock_file.reset_mock(side_effect=True)
+    flock.reset_mock(side_effect=True)
+    with manager:
+        with wrapper as nested:
+            assert nested is client
+        assert wrapper._entered == 1
+    assert wrapper._entered == 0
+    client.start.assert_called_once()
+    client.stop.assert_called_once_with()
+    client.close.assert_called_once_with()
+    lock.release.assert_called_once_with()
+    lock_file.close.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    "signal_type", [TerminatingSignal, KeyboardInterrupt, SystemExit]
+)
+@pytest.mark.parametrize(
+    "signal_at,failure_at",
+    [
+        ("body", "release"),
+        ("body", "stop"),
+        ("body", "close"),
+        ("body", "file"),
+        ("acquire", "stop"),
+        ("acquire", "close"),
+        ("acquire", "file"),
+        ("release", "stop"),
+        ("stop", "file"),
+        ("file", None),
+    ],
+)
+def test_lock_cleanup_preserves_termination(
+    lock_resources, signal_type, signal_at, failure_at
+):
+    # pylint: disable=protected-access
+    manager, wrapper, client, lock_file, _ = lock_resources
+    lock = client.Lock.return_value
+    signal = signal_type("termination")
+    cleanup_error = BrokenPipeError("cleanup failed")
+    operations = {
+        "acquire": lock.acquire,
+        "release": lock.release,
+        "stop": client.stop,
+        "close": client.close,
+        "file": lock_file.close,
+    }
+    if signal_at != "body":
+        operations[signal_at].side_effect = signal
+    if failure_at is not None:
+        operations[failure_at].side_effect = cleanup_error
+    with pytest.raises(signal_type) as raised:
+        with manager:
+            assert signal_at != "acquire"
+            if signal_at == "body":
+                raise signal
+    assert raised.value is signal
+    if failure_at is not None:
+        assert raised.value.__cause__ is cleanup_error
+    assert wrapper._entered == 0
+    client.stop.assert_called_once_with()
+    client.close.assert_called_once_with()
+    lock_file.close.assert_called_once_with()
+    assert lock.release.call_count == (signal_at != "acquire")
+
+
+def test_lock_reuse_preserves_outer_client_and_skips_disabled_resources(lock_resources):
+    # pylint: disable=protected-access
+    manager, wrapper, client, lock_file, _ = lock_resources
+    with wrapper:
+        for options in ({}, {"distributed": False}, {"disabled": True}, {}):
+            with manager(**options):
+                assert wrapper._entered == (1 if options else 2)
+                with wrapper:
+                    assert wrapper._entered == (2 if options else 3)
+            assert wrapper._entered == 1
+            client.stop.assert_not_called()
+            client.close.assert_not_called()
+    assert wrapper._entered == 0
+    client.start.assert_called_once()
+    client.stop.assert_called_once_with()
+    client.close.assert_called_once_with()
+    assert client.Lock.return_value.release.call_count == 2
+    assert lock_file.close.call_count == 3
 
 
 @pytest.mark.parametrize("failed", [False, True])
