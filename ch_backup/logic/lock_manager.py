@@ -11,7 +11,7 @@ from functools import partial
 from types import TracebackType
 from typing import Any, Callable, Iterator, Sequence
 
-from kazoo.exceptions import LockTimeout
+from kazoo.exceptions import KazooException, LockTimeout
 from kazoo.hosts import collect_hosts
 from kazoo.protocol.paths import normpath
 
@@ -173,9 +173,14 @@ class LockManager:
                     raise LockTimeout("ZooKeeper lock was not acquired")
             except LockTimeout:
                 msg = "ZK lock was not acquired due to timeout error."
-                contenders = lock.contenders()
-                if contenders:
-                    msg = f"{msg} Contenders are {', '.join(contenders)}."
+                try:
+                    contenders = lock.contenders()
+                except KazooException as error:
+                    # Diagnostics must not override the configured lock-failure exit code.
+                    msg = f"{msg} Failed to list contenders ({type(error).__name__})."
+                else:
+                    if contenders:
+                        msg = f"{msg} Contenders are {', '.join(contenders)}."
                 self._logger.opt(exception=True).error(msg)
                 sys.exit(self._exitcode)
             # Release the lock before closing its session, even on cleanup errors.

@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from unittest.mock import MagicMock, call, patch
 
 import pytest
-from kazoo.exceptions import LockTimeout
+from kazoo.exceptions import ConnectionLoss, LockTimeout
 
 from ch_backup.backup.copy_report import BackupCopyResult, CopyReport
 from ch_backup.ch_backup import ClickhouseBackup
@@ -93,13 +93,19 @@ def test_equivalent_lock_paths_and_chroots_are_acquired_once(target_path):
 @pytest.mark.parametrize(
     "acquire_error", [LockTimeout(), None], ids=["timeout", "false"]
 )
-def test_lock_timeout_releases_previously_acquired_locks_and_clients(acquire_error):
+@pytest.mark.parametrize(
+    "contenders_error", [None, ConnectionLoss()], ids=["available", "unavailable"]
+)
+def test_lock_timeout_releases_previously_acquired_locks_and_clients(
+    acquire_error, contenders_error
+):
     clients = [MagicMock(), MagicMock()]
     locks = [client.__enter__.return_value.Lock.return_value for client in clients]
     locks[0].acquire.return_value = True
     locks[1].acquire.side_effect = acquire_error
     locks[1].acquire.return_value = False
     locks[1].contenders.return_value = []
+    locks[1].contenders.side_effect = contenders_error
     with patch("ch_backup.logic.lock_manager.ZookeeperCTL") as ctl:
         ctl.side_effect = [MagicMock(zk_client=client) for client in clients]
         with pytest.raises(SystemExit) as error:
@@ -179,6 +185,7 @@ def test_lock_cleanup_preserves_signal(zk_lock, during_entry, cleanup):
             assert not during_entry
             raise signal
     assert raised.value is signal
+    cleanup_fn.assert_called_once_with()
     client.close.assert_called_once_with()
 
 
