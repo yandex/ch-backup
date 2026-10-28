@@ -24,6 +24,7 @@ from ch_backup.backup.metadata import (
     DetachedPartMetadata,
 )
 from ch_backup.config import DEFAULT_CONFIG
+from ch_backup.encryption import get_cloud_storage_data_encryption_metadata
 from ch_backup.exceptions import (
     ClickhouseBackupError,
     ConfigurationError,
@@ -522,6 +523,49 @@ def test_skip_already_copied_backup() -> None:
     _with_files(ctx, "b1", {"metadata/a.tar": 1})
 
     assert ctx.copy(["b1"]) == ([], ["b1"])
+    assert not ctx.target_layout.uploaded
+    assert not ctx.target_layout.copied
+
+
+@pytest.mark.parametrize("existing_key", [None, "x" * 32])
+def test_copy_rejects_created_backup_with_different_data_encryption(
+    existing_key: str | None,
+) -> None:
+    ctx = _cloud_storage_context()
+    target = copy.deepcopy(ctx.layout.backups["b1"])
+    if existing_key is not None:
+        target.cloud_storage.data_encryption = (
+            get_cloud_storage_data_encryption_metadata(
+                {
+                    "type": "nacl",
+                    "key": existing_key,
+                    "chunk_size": 8 * 1024 * 1024,
+                }
+            )
+        )
+    ctx.target_layout.backups["b1"] = target
+    ctx.target_config["copy"]["cloud_storage"]["encrypt_data"] = True
+
+    with pytest.raises(
+        ClickhouseBackupError, match="different cloud storage data encryption"
+    ):
+        ctx.copy(["b1"])
+
+    assert not ctx.target_layout.uploaded
+    assert not ctx.target_layout.copied
+
+
+def test_copy_skips_created_backup_with_same_data_encryption() -> None:
+    ctx = _cloud_storage_context()
+    target = copy.deepcopy(ctx.layout.backups["b1"])
+    target.cloud_storage.data_encryption = get_cloud_storage_data_encryption_metadata(
+        ctx.target_config["encryption"]
+    )
+    ctx.target_layout.backups["b1"] = target
+    ctx.target_config["copy"]["cloud_storage"]["encrypt_data"] = True
+
+    assert ctx.copy(["b1"]) == ([], ["b1"])
+
     assert not ctx.target_layout.uploaded
     assert not ctx.target_layout.copied
 

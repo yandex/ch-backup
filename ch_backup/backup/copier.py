@@ -345,24 +345,10 @@ class BackupCopier:
                 f'Cloud storage data of backup "{backup.name}" is already encrypted'
             )
 
+        target_meta = self._make_target_metadata(backup)
         target_backup = self._target_layout.get_backup(backup_name, use_light_meta=True)
         if target_backup:
-            if (
-                target_backup.start_time != backup.start_time
-                or target_backup.hostname != backup.hostname
-            ):
-                raise ClickhouseBackupError(
-                    f"Backup {backup_name} already exists in target storage and it is not a copy of the source backup"
-                )
-            if target_backup.state == BackupState.CREATED:
-                if any(part.link for part in backup.get_parts()):
-                    existing = self._target_layout.get_backup(backup_name)
-                    if existing:
-                        self._remember_materialized_parts(backup, existing)
-                logging.info(
-                    "Backup {} is already present in target storage, skipping it",
-                    backup_name,
-                )
+            if self._check_existing_target(backup, target_backup, target_meta):
                 return False
             logging.info(
                 (
@@ -376,7 +362,6 @@ class BackupCopier:
         else:
             logging.info("Copying backup {}", backup_name)
 
-        target_meta = self._make_target_metadata(backup)
         data_encryption = target_meta.cloud_storage.data_encryption
         self._copy_context = CopyContext(
             self._engine(self._target_storage),
@@ -421,6 +406,40 @@ class BackupCopier:
         )
         self._transfer_backup(backup, target_meta, plan, result)
         logging.info("Backup {} is copied", backup_name)
+        return True
+
+    def _check_existing_target(
+        self,
+        backup: BackupMetadata,
+        target_backup: BackupMetadata,
+        target_meta: BackupMetadata,
+    ) -> bool:
+        """Validate an existing target backup and return whether it is complete."""
+        if (
+            target_backup.start_time != backup.start_time
+            or target_backup.hostname != backup.hostname
+        ):
+            raise ClickhouseBackupError(
+                f"Backup {backup.name} already exists in target storage and it is not a copy of the source backup"
+            )
+        if target_backup.state != BackupState.CREATED:
+            return False
+        if (
+            target_backup.cloud_storage.data_encryption
+            != target_meta.cloud_storage.data_encryption
+        ):
+            raise ClickhouseBackupError(
+                f"Backup {backup.name} already exists in target storage with "
+                "different cloud storage data encryption"
+            )
+        if any(part.link for part in backup.get_parts()):
+            existing = self._target_layout.get_backup(backup.name)
+            if existing:
+                self._remember_materialized_parts(backup, existing)
+        logging.info(
+            "Backup {} is already present in target storage, skipping it",
+            backup.name,
+        )
         return True
 
     def _transfer_backup(
