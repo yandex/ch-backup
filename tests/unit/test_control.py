@@ -799,6 +799,91 @@ def test_scan_detached_parts_uses_selected_backing_disk_directory(
     assert part.size == BLOCKSIZE
 
 
+@pytest.fixture(name="detached_candidate")
+def fixture_detached_candidate(tmp_path: Path) -> tuple[Path, DetachedPartMetadata]:
+    part_path = tmp_path / "broken_all_1_1_0"
+    part_path.mkdir()
+    (part_path / "checksums.txt").write_bytes(b"checksums")
+    return part_path, DetachedPartMetadata(
+        "db",
+        "table",
+        part_path.name,
+        "broken",
+        md5(b"checksums").hexdigest(),  # nosec
+        BLOCKSIZE,
+        ["checksums.txt"],
+        True,
+        "default",
+    )
+
+
+def test_detached_match_rejects_missing_directory(detached_candidate):
+    part_path, part = detached_candidate
+
+    assert not ClickhouseCTL.detached_part_matches(part, str(part_path / "missing"))
+
+
+def test_detached_match_rejects_file_names_before_reading_sizes(detached_candidate):
+    part_path, part = detached_candidate
+    part.raw_metadata.files = ["missing.bin"]
+    with mock.patch(
+        "ch_backup.clickhouse.control.calc_aligned_files_size",
+        side_effect=AssertionError("File sizes must not be read after a name mismatch"),
+    ):
+        assert not ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+
+def test_detached_match_rejects_size_before_reading_checksum(detached_candidate):
+    part_path, part = detached_candidate
+    part.raw_metadata.size = 2 * BLOCKSIZE
+    with mock.patch(
+        "ch_backup.clickhouse.control._get_part_checksum",
+        side_effect=AssertionError("Checksum must not be read after a size mismatch"),
+    ):
+        assert not ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+
+@pytest.mark.parametrize("object_storage", [False, True])
+def test_detached_match_skips_checksum_when_backup_has_none(
+    detached_candidate, object_storage
+):
+    part_path, part = detached_candidate
+    part.object_storage = object_storage
+    part.raw_metadata.checksum = ""
+    with (
+        mock.patch(
+            "ch_backup.clickhouse.control._get_part_checksum",
+            side_effect=AssertionError("No checksum is required"),
+        ),
+        mock.patch(
+            "ch_backup.clickhouse.control._get_cloud_part_checksum_and_size",
+            side_effect=AssertionError("No checksum is required"),
+        ),
+    ):
+        assert ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+
+@pytest.mark.parametrize(
+    "operation", ["list_dir_files", "calc_aligned_files_size", "_get_part_checksum"]
+)
+def test_detached_match_rejects_unreadable_files(detached_candidate, operation):
+    part_path, part = detached_candidate
+    with mock.patch(
+        f"ch_backup.clickhouse.control.{operation}", side_effect=OSError("unreadable")
+    ):
+        assert not ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+
+def test_detached_match_does_not_hide_non_filesystem_errors(detached_candidate):
+    part_path, part = detached_candidate
+    with mock.patch(
+        "ch_backup.clickhouse.control._get_part_checksum",
+        side_effect=ValueError("invalid checksum data"),
+    ):
+        with pytest.raises(ValueError, match="invalid checksum data"):
+            ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+
 def test_detached_part_matches_local_backup_metadata(tmp_path: Path) -> None:
     part_path = tmp_path / "all_1_1_0"
     part_path.mkdir()
