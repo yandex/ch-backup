@@ -2693,6 +2693,30 @@ def test_resume_skips_confirmed_cloud_storage_objects() -> None:
     assert {e.dst_path for e in ctx.target_layout.copied} == {"copies/b1/xyz/bbb"}
 
 
+def test_resume_recopies_cloud_storage_objects_when_encryption_changes() -> None:
+    ctx = _cloud_storage_context()
+    ctx.target_layout.store = ctx.store
+    ctx.target_layout.object_errors["data/xyz/bbb"] = StorageError("SlowDown")
+    with pytest.raises(StorageError):
+        ctx.copy(["b1"])
+    ctx.target_layout.object_errors.clear()
+    ctx.target_layout.copied.clear()
+    ctx.target_config["copy"]["cloud_storage"]["encrypt_data"] = True
+
+    ctx.copy(["b1"])
+
+    disk_entries = [
+        entry
+        for entry in ctx.target_layout.copied
+        if entry.dst_storage["credentials"]["bucket"] == "disk-copy"
+    ]
+    assert {entry.dst_path for entry in disk_entries} == {
+        "copies/b1/xyz/aaa",
+        "copies/b1/xyz/bbb",
+    }
+    assert all(entry.encrypt for entry in disk_entries)
+
+
 def test_copy_does_not_copy_copy_context_of_source() -> None:
     ctx = CopyTestContext([_backup("b1")])
     ctx.target_config["copy"]["server_side_copy"] = False

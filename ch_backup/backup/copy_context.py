@@ -8,6 +8,7 @@ import json
 import os
 import time
 import uuid
+from typing import Any
 
 from ch_backup import logging
 from ch_backup.backup.metadata import BackupMetadata
@@ -17,6 +18,7 @@ from ch_backup.storage.object_copy import CopyEntry, storage_id
 COPY_CONTEXT_DIR = "copy_context"
 
 
+# pylint: disable=too-many-instance-attributes
 class CopyContext:
     """
     Journal of objects confirmed copied into one target backup.
@@ -34,10 +36,18 @@ class CopyContext:
         engine: PipeLineCompatibleStorageEngine,
         backup_path: str,
         backup: BackupMetadata,
+        data_encryption: dict | None = None,
         flush_size: int = 10000,
         flush_interval: float = 60,
     ) -> None:
-        identity = json.dumps([backup.name, backup.start_time_str, backup.hostname])
+        identity_parts: list[Any] = [
+            backup.name,
+            backup.start_time_str,
+            backup.hostname,
+        ]
+        if data_encryption is not None:
+            identity_parts.append(data_encryption)
+        identity = json.dumps(identity_parts, sort_keys=True)
         fingerprint = hashlib.sha256(identity.encode()).hexdigest()[:16]
         self._engine = engine
         self._path = os.path.join(backup_path, COPY_CONTEXT_DIR, fingerprint).lstrip(
@@ -51,6 +61,7 @@ class CopyContext:
         self._flushed_size = 0
         self._buffer: list[str] = []
         self._recorded: set[bytes] = set()
+        self._data_encryption = data_encryption
 
     def has_records(self) -> bool:
         """Check that records of previous runs were read."""
@@ -76,7 +87,7 @@ class CopyContext:
 
     def is_recorded(self, entry: CopyEntry) -> bool:
         """Check that copying of the object was confirmed by a previous run."""
-        return _digest(_record(entry)) in self._recorded
+        return _digest(_record(entry, self._data_encryption)) in self._recorded
 
     def forget(self) -> None:
         """Drop records of previous runs once the plan is checked against them."""
@@ -84,7 +95,7 @@ class CopyContext:
 
     def record(self, entry: CopyEntry) -> None:
         """Remember the confirmed copy until the next flush."""
-        self._buffer.append(_record(entry).decode())
+        self._buffer.append(_record(entry, self._data_encryption).decode())
 
     def flush(self, force: bool = False) -> None:
         """
@@ -113,17 +124,18 @@ class CopyContext:
         self._flushed_size = 0
 
 
-def _record(entry: CopyEntry) -> bytes:
+def _record(entry: CopyEntry, data_encryption: dict | None = None) -> bytes:
     """Serialize source and target locations and size of the object."""
-    return json.dumps(
-        [
-            storage_id(entry.src_storage),
-            entry.src_path,
-            storage_id(entry.dst_storage),
-            entry.dst_path,
-            entry.size,
-        ]
-    ).encode()
+    record = [
+        storage_id(entry.src_storage),
+        entry.src_path,
+        storage_id(entry.dst_storage),
+        entry.dst_path,
+        entry.size,
+    ]
+    if data_encryption is not None:
+        record.append(data_encryption)
+    return json.dumps(record, sort_keys=True).encode()
 
 
 def _digest(record: bytes) -> bytes:

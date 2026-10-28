@@ -375,15 +375,23 @@ class BackupCopier:
         else:
             logging.info("Copying backup {}", backup_name)
 
+        target_meta = self._make_target_metadata(backup)
+        data_encryption = target_meta.cloud_storage.data_encryption
         self._copy_context = CopyContext(
             self._engine(self._target_storage),
             self._target_layout.get_backup_path(backup.name),
             backup,
+            data_encryption=data_encryption,
         )
         if target_backup and self._copy_config["resume"]:
-            self._copy_context.load()
+            if target_backup.cloud_storage.data_encryption == data_encryption:
+                self._copy_context.load()
+            else:
+                logging.info(
+                    "Cloud storage data encryption changed for backup {}; copying all objects",
+                    backup.name,
+                )
 
-        target_meta = self._make_target_metadata(backup)
         plan = _CopyPlan()
         self._plan_backup_files(backup, plan, result)
         self._plan_linked_parts(backup, target_meta, plan, result)
