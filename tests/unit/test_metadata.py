@@ -350,10 +350,10 @@ class TestPartMetadata:
             ("db1", "table1", "all_1_1_0_7"),
         ],
     )
-    def test_identity_distinguishes_addresses(self, database, table, name):
+    def test_identity_uses_part_address(self, database, table, name):
         part = PartMetadata.load(database, table, name, self._BASE_RAW)
 
-        assert part.identity != PartIdentity("db1", "table1", "all_1_1_0")
+        assert part.identity == PartIdentity(database, table, name)
 
     @pytest.mark.parametrize(
         "link,stored_name,expected_backup,expected_name",
