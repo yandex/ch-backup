@@ -147,7 +147,7 @@ class FakeLayout:
                 if self.store:
                     self.store.buckets.setdefault(storage_id(entry.dst_storage), {})[
                         entry.dst_path
-                    ] = entry.size
+                    ] = entry.dst_size
                 if callback:
                     callback(entry)
 
@@ -468,7 +468,7 @@ def test_copy_mode_cache_isolates_credentials(
     if second_mode != "ineligible":
         second_target["credentials"][credential] = "different-credential"
     entries = [
-        CopyEntry(source, target, f"{group}/{name}", f"copy/{group}/{name}", 1)
+        CopyEntry(source, target, f"{group}/{name}", f"copy/{group}/{name}", 1, 1)
         for group, source, target in (
             ("a", ctx.config["storage"], ctx.target_config["storage"]),
             ("b", second_source, second_target),
@@ -995,6 +995,10 @@ def test_cloud_storage_data_encryption() -> None:
     ]
     assert disk_entries
     assert all(entry.encrypt for entry in disk_entries)
+    assert {(entry.size, entry.dst_size) for entry in disk_entries} == {
+        (10, 50),
+        (1000, 1040),
+    }
     assert all(
         not entry.encrypt
         for entry in entries
@@ -1021,6 +1025,36 @@ def test_cloud_storage_data_encryption_requires_key() -> None:
         ctx.copy(["b1"])
 
     assert not ctx.target_layout.uploaded
+
+
+def test_copy_preserves_encrypted_cloud_storage_object_size() -> None:
+    ctx = _cloud_storage_context()
+    data_encryption = {
+        "version": 1,
+        "type": "nacl",
+        "chunk_size": 8 * 1024 * 1024,
+        "key_id": "source-key",
+    }
+    ctx.layout.backups["b1"].cloud_storage.data_encryption = data_encryption
+    ctx.config["encryption"]["key"] = None
+    ctx.target_config["encryption"]["key"] = None
+
+    ctx.copy(["b1"])
+
+    disk_entries = [
+        entry
+        for entry in ctx.target_layout.copied
+        if entry.dst_storage["credentials"]["bucket"] == "disk-copy"
+    ]
+    assert disk_entries
+    assert all(not entry.encrypt for entry in disk_entries)
+    assert {(entry.size, entry.dst_size) for entry in disk_entries} == {
+        (10, 50),
+        (1000, 1040),
+    }
+    assert (
+        ctx.target_layout.backups["b1"].cloud_storage.data_encryption == data_encryption
+    )
 
 
 def test_copy_skips_sanitized_disk_prefix_folder_marker() -> None:
@@ -2691,6 +2725,23 @@ def test_resume_skips_confirmed_cloud_storage_objects() -> None:
     ctx.copy(["b1"])
 
     assert {e.dst_path for e in ctx.target_layout.copied} == {"copies/b1/xyz/bbb"}
+
+
+def test_resume_skips_confirmed_encrypted_cloud_storage_objects() -> None:
+    ctx = _cloud_storage_context()
+    ctx.target_config["copy"]["cloud_storage"]["encrypt_data"] = True
+    ctx.target_layout.store = ctx.store
+    ctx.target_layout.object_errors["data/xyz/bbb"] = StorageError("SlowDown")
+    with pytest.raises(StorageError):
+        ctx.copy(["b1"])
+    ctx.target_layout.object_errors.clear()
+    ctx.target_layout.copied.clear()
+
+    ctx.copy(["b1"])
+
+    assert {entry.dst_path for entry in ctx.target_layout.copied} == {
+        "copies/b1/xyz/bbb"
+    }
 
 
 def test_resume_recopies_cloud_storage_objects_when_encryption_changes() -> None:

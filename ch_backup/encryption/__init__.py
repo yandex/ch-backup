@@ -6,6 +6,7 @@ import hmac
 from hashlib import sha256
 from typing import Any, Mapping
 
+from ch_backup.calculators import calc_encrypted_size
 from ch_backup.config import Config
 from ch_backup.encryption.base import BaseEncryption
 from ch_backup.encryption.nacl import NaClEncryption
@@ -63,3 +64,9 @@ def get_cloud_storage_data_encryption_metadata(config: dict) -> dict[str, Any]:
         "chunk_size": config["chunk_size"],
         "key_id": key_id,
     }
+
+
+def calc_encrypted_size_from_config(config: dict, data_size: int) -> int:
+    """Calculate encrypted object size without requiring its encryption key."""
+    metadata_size = get_encryption_class(config["type"]).metadata_size()
+    return calc_encrypted_size(data_size, config["chunk_size"], metadata_size)

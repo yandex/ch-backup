@@ -40,6 +40,7 @@ from ch_backup.clickhouse.object_storage_metadata import (
 )
 from ch_backup.config import Config
 from ch_backup.encryption import (
+    calc_encrypted_size_from_config,
     get_cloud_storage_data_encryption_config,
     get_cloud_storage_data_encryption_metadata,
     get_encryption,
@@ -568,6 +569,7 @@ class BackupCopier:
                         path,
                         os.path.join(dst_dir, file_path),
                         size,
+                        size,
                     )
                 )
 
@@ -665,6 +667,7 @@ class BackupCopier:
                         self._target_storage,
                         os.path.join(src_dir, file_name),
                         os.path.join(dst_dir, dst_file_name),
+                        source_files[os.path.join(part_dir, file_name)],
                         source_files[os.path.join(part_dir, file_name)],
                     )
                 )
@@ -910,6 +913,7 @@ class BackupCopier:
                                     dst_prefix,
                                     entries,
                                     copy_result,
+                                    source_data_encryption=source.cloud_storage.data_encryption,
                                 )
                                 files.append(("/".join(components), data))
                 for part in source_parts:
@@ -935,6 +939,7 @@ class BackupCopier:
         entries: dict[str, CopyEntry],
         result: BackupCopyResult,
         *,
+        source_data_encryption: dict | None = None,
         src_path_override: str | None = None,
     ) -> bytes:
         _validate_relative_key(file_name)
@@ -952,6 +957,11 @@ class BackupCopier:
                     obj,
                     metadata.full_object_keys,
                     encrypt=self._encrypt_cloud_storage_data,
+                    data_encryption=(
+                        self._cloud_storage_data_encryption
+                        if self._encrypt_cloud_storage_data
+                        else source_data_encryption
+                    ),
                     src_path_override=src_path_override,
                 )
                 _add_cloud_storage_copy_entry(entries, entry)
@@ -1014,6 +1024,7 @@ class BackupCopier:
                                     dst_prefix,
                                     entries,
                                     result,
+                                    source_data_encryption=backup.cloud_storage.data_encryption,
                                     src_path_override=src_path_override,
                                 )
                                 if rewritten_data != data:
@@ -1202,7 +1213,7 @@ class BackupCopier:
                 entry
                 for entry in plan.entries
                 if listing.get((storage_id(entry.dst_storage), _key(entry.dst_path)))
-                != entry.size
+                != entry.dst_size
                 or not context.is_recorded(entry)
             ]
             del listing
@@ -1425,6 +1436,7 @@ def _cloud_storage_copy_entry(
     full_object_key: bool,
     *,
     encrypt: bool = False,
+    data_encryption: dict | None = None,
     src_path_override: str | None = None,
 ) -> CopyEntry:
     """
@@ -1463,12 +1475,18 @@ def _cloud_storage_copy_entry(
         raise ClickhouseBackupError(
             f'Copy destination "{destination}" escapes "{dst_prefix}"'
         )
+    dst_size = (
+        calc_encrypted_size_from_config(data_encryption, obj.size)
+        if data_encryption is not None
+        else obj.size
+    )
     return CopyEntry(
         src_storage,
         dst_storage,
         src_path,
         destination,
         obj.size,
+        dst_size,
         encrypt=encrypt,
     )
 
@@ -1483,10 +1501,16 @@ def _add_cloud_storage_copy_entry(
     entries: dict[str, CopyEntry], entry: CopyEntry
 ) -> None:
     planned = entries.setdefault(entry.dst_path, entry)
-    if (storage_id(planned.src_storage), planned.src_path, planned.size) != (
+    if (
+        storage_id(planned.src_storage),
+        planned.src_path,
+        planned.size,
+        planned.dst_size,
+    ) != (
         storage_id(entry.src_storage),
         entry.src_path,
         entry.size,
+        entry.dst_size,
     ):
         raise ClickhouseBackupError(
             f'Objects "{planned.src_path}" and "{entry.src_path}" can\'t be copied to the same location'

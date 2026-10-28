@@ -40,7 +40,7 @@ class MemoryEngine:
 
 
 def _entry(name: str, size: int = 1) -> CopyEntry:
-    return CopyEntry(STORAGE, STORAGE, f"src/{name}", f"dst/{name}", size)
+    return CopyEntry(STORAGE, STORAGE, f"src/{name}", f"dst/{name}", size, size)
 
 
 def _context(engine: MemoryEngine, **kwargs: Any) -> CopyContext:

@@ -131,7 +131,7 @@ def _record(entry: CopyEntry, data_encryption: dict | None = None) -> bytes:
         entry.src_path,
         storage_id(entry.dst_storage),
         entry.dst_path,
-        entry.size,
+        entry.dst_size,
     ]
     if data_encryption is not None:
         record.append(data_encryption)

@@ -18,6 +18,7 @@ class CopyEntry(NamedTuple):
     src_path: str
     dst_path: str
     size: int
+    dst_size: int
     server_side: bool = False
     encrypt: bool = False
 
