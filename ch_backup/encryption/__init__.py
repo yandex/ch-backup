@@ -2,7 +2,9 @@
 Encryption package
 """
 
-from typing import Mapping
+import hmac
+from hashlib import sha256
+from typing import Any, Mapping
 
 from ch_backup.config import Config
 from ch_backup.encryption.base import BaseEncryption
@@ -14,6 +16,9 @@ SUPPORTED_CRYPTO: Mapping[str, type[BaseEncryption]] = {
     "noop": NoopEncryption,
     "nacl": NaClEncryption,
 }
+
+CLOUD_STORAGE_DATA_ENCRYPTION_VERSION = 1
+_CLOUD_STORAGE_DATA_KEY_ID_CONTEXT = b"ch-backup cloud data key id"
 
 
 def get_encryption_class(type_id: str) -> type[BaseEncryption]:
@@ -43,3 +48,18 @@ def get_cloud_storage_data_encryption_config(config: Config | dict) -> dict:
     result = dict(config["encryption"])
     result.update(config["cloud_storage"].get("data_encryption") or {})
     return result
+
+
+def get_cloud_storage_data_encryption_metadata(config: dict) -> dict[str, Any]:
+    """Return the non-secret identity of the cloud data encryption format and key."""
+    key_id = hmac.new(
+        config["key"].encode("utf-8"),
+        _CLOUD_STORAGE_DATA_KEY_ID_CONTEXT,
+        sha256,
+    ).hexdigest()[:32]
+    return {
+        "version": CLOUD_STORAGE_DATA_ENCRYPTION_VERSION,
+        "type": config["type"],
+        "chunk_size": config["chunk_size"],
+        "key_id": key_id,
+    }

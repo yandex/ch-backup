@@ -41,6 +41,7 @@ from ch_backup.clickhouse.object_storage_metadata import (
 from ch_backup.config import Config
 from ch_backup.encryption import (
     get_cloud_storage_data_encryption_config,
+    get_cloud_storage_data_encryption_metadata,
     get_encryption,
 )
 from ch_backup.exceptions import (
@@ -502,10 +503,11 @@ class BackupCopier:
         target_meta.state = BackupState.CREATING
         target_meta.exception = None
         if self._cloud_storage_data_encryption and backup.cloud_storage.enabled:
-            target_meta.cloud_storage.data_encryption = {
-                "type": self._cloud_storage_data_encryption["type"],
-                "chunk_size": self._cloud_storage_data_encryption["chunk_size"],
-            }
+            target_meta.cloud_storage.data_encryption = (
+                get_cloud_storage_data_encryption_metadata(
+                    self._cloud_storage_data_encryption
+                )
+            )
         return target_meta
 
     def _plan_backup_files(

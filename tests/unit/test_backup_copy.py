@@ -1003,8 +1003,10 @@ def test_cloud_storage_data_encryption() -> None:
     assert all(not entry.server_side for entry in entries)
     assert not ctx.store.probes
     assert ctx.target_layout.backups["b1"].cloud_storage.data_encryption == {
+        "version": 1,
         "type": "nacl",
         "chunk_size": 8 * 1024 * 1024,
+        "key_id": "786d009ee52936996da0ee2a6858b294",
     }
     assert ctx.layout.backups["b1"].cloud_storage.data_encryption is None
 
