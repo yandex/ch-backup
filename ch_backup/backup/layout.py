@@ -27,6 +27,7 @@ from ch_backup import logging
 from ch_backup.backup.metadata import (
     BackupMetadata,
     DetachedPartMetadata,
+    PartIdentity,
     PartMetadata,
     sanitize_backup_name,
     split_part_name,
@@ -1548,7 +1549,7 @@ def _cloud_storage_object_keys(data: bytes, prefix: str) -> set[str]:
 
 def get_cloud_storage_part_identity(
     backup: BackupMetadata, disk: str, archive: str, file_name: str
-) -> tuple[str, str, str] | None:
+) -> PartIdentity | None:
     """Identify a manifest entry, including parts removed by an earlier partial deletion."""
     components = file_name.split("/")[:-1]
     name = None
@@ -1561,7 +1562,7 @@ def get_cloud_storage_part_identity(
         break
     if name is None:
         return None
-    matches: list[tuple[str, str, str]] = []
+    matches: list[PartIdentity] = []
     for table in backup.get_tables():
         table_archive = f"/{_quote(table.database)}/{_quote(table.name)}.tar"
         if not (
@@ -1575,7 +1576,7 @@ def get_cloud_storage_part_identity(
                 continue
         part = backup.find_part(table.database, table.name, name)
         if part is None or part.disk_name == disk:
-            matches.append((table.database, table.name, name))
+            matches.append(PartIdentity(table.database, table.name, name))
     return matches[0] if len(matches) == 1 else None
 
 

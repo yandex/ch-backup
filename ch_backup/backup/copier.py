@@ -10,6 +10,7 @@ import json
 import os
 import re
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from itertools import chain
@@ -45,14 +46,16 @@ from ch_backup.backup.metadata import (
     BackupState,
     CopyScope,
     CopyScopeStatus,
+    PartIdentity,
     PartMetadata,
     PartReference,
     TableMetadata,
     sanitize_backup_name,
-    split_part_name,
 )
 from ch_backup.backup.part_matching import (
+    CloudCopyKey,
     MaterializedPartKey,
+    cloud_copy_key,
     linked_part_matches,
     materialized_part_key,
     materialized_part_matches,
@@ -83,6 +86,12 @@ from ch_backup.storage.object_copy import (
 from ch_backup.util import now, utcnow
 
 FROZEN_METADATA_FNAME = "frozen_metadata.txt"
+
+
+@dataclass(frozen=True, slots=True)
+class _CloudPartOwner:
+    reference: PartReference
+    checksum: str
 
 
 class _RewrittenTarball(NamedTuple):
@@ -164,8 +173,8 @@ class BackupCopier:
         # target copy so later backups can link to it instead of copying it again.
         self._materialized_parts: dict[MaterializedPartKey, PartReference] = {}
         self._target_deduplication: CopyDeduplication | None = None
-        self._cloud_storage_parts: dict[tuple, tuple[str, str, str]] | None = None
-        self._source_cloud_fingerprints: dict[str, dict[tuple[str, str, str], str]] = {}
+        self._cloud_storage_parts: dict[CloudCopyKey, _CloudPartOwner] | None = None
+        self._source_cloud_fingerprints: dict[str, dict[PartIdentity, str]] = {}
         # Availability of server-side copy for bucket pairs with particular credentials.
         self._server_side_copy: dict[tuple, bool] = {}
         self._copy_context: CopyContext | None = None
@@ -1286,21 +1295,10 @@ class BackupCopier:
             else data
         )
 
-    @staticmethod
-    def _cloud_storage_part_key(backup: BackupMetadata, part: PartMetadata) -> tuple:
-        return (
-            part.database,
-            part.table,
-            backup.get_table(part.database, part.table).uuid,
-            part.disk_name,
-            split_part_name(part.name)[:4],
-            part.encrypted,
-        )
-
     # pylint: disable=too-many-locals,too-many-branches
     def _cloud_storage_part_fingerprints(
         self, backup: BackupMetadata
-    ) -> dict[tuple[str, str, str], str]:
+    ) -> dict[PartIdentity, str]:
         """Keep original object identity across freeze metadata changes and later copies."""
         if backup.name in self._source_cloud_fingerprints:
             return self._source_cloud_fingerprints[backup.name]
@@ -1315,9 +1313,9 @@ class BackupCopier:
             ]
             fingerprint = raw.get("cloud_storage_fingerprint")
             if fingerprint and not source_overridden:
-                fingerprints[(part.database, part.table, part.name)] = fingerprint
-        references: dict[tuple[str, str, str], list[tuple]] = {}
-        invalid: set[tuple[str, str, str]] = set()
+                fingerprints[part.identity] = fingerprint
+        references: dict[PartIdentity, list[tuple]] = {}
+        invalid: set[PartIdentity] = set()
         for disk in backup.cloud_storage.disks:
             location = None
             for archive in self._layout.get_cloud_storage_metadata_remote_paths(
@@ -1335,7 +1333,7 @@ class BackupCopier:
                         raise
                     # The normal planner reports unreadable archives and handles keep-going.
                     invalid.update(
-                        (part.database, part.table, part.name)
+                        part.identity
                         for part in backup.get_parts()
                         if part.disk_name == disk
                     )
@@ -1419,8 +1417,14 @@ class BackupCopier:
             fingerprint = raw.get("cloud_storage_fingerprint")
             if not part.link and fingerprint:
                 self._cloud_storage_parts.setdefault(
-                    (self._cloud_storage_part_key(backup, part), fingerprint),
-                    (backup.name, part.name, part.checksum),
+                    cloud_copy_key(
+                        part,
+                        backup.get_table(part.database, part.table).uuid,
+                        fingerprint,
+                    ),
+                    _CloudPartOwner(
+                        PartReference(backup.name, part.identity), part.checksum
+                    ),
                 )
 
     def _link_cloud_storage_parts(
@@ -1443,7 +1447,7 @@ class BackupCopier:
                     )
         references = self._cloud_storage_part_fingerprints(backup)
         for part in backup.get_parts():
-            identity = (part.database, part.table, part.name)
+            identity = part.identity
             if identity not in references:
                 continue
             raw = target.get_table(part.database, part.table).raw_metadata["parts"][
@@ -1451,12 +1455,20 @@ class BackupCopier:
             ]
             raw["cloud_storage_fingerprint"] = references[identity]
             owner = self._cloud_storage_parts.get(
-                (self._cloud_storage_part_key(backup, part), references[identity])
+                cloud_copy_key(
+                    part,
+                    backup.get_table(part.database, part.table).uuid,
+                    references[identity],
+                )
             )
-            if owner and owner[0] != backup.name:
-                target.link_part(part, owner[0], owner[1])
-                # Existing link validation compares the owner's checksum, which can differ after another freeze.
-                raw["checksum"] = owner[2]
+            if owner and owner.reference.backup_name != backup.name:
+                target.link_part(
+                    part,
+                    owner.reference.backup_name,
+                    owner.reference.identity.part_name,
+                )
+                # Existing link validation requires the physical owner's checksum.
+                raw["checksum"] = owner.checksum
 
     # pylint: disable=too-many-locals
     def _plan_cloud_storage_objects(
@@ -1577,7 +1589,7 @@ class BackupCopier:
 
         for part in backup.get_parts():
             if part.link and part.disk_name in backup.cloud_storage.disks:
-                stored = target_meta.find_part(part.database, part.table, part.name)
+                stored = target_meta.find_part(*part.identity)
                 if stored and self._cloud_part_is_in_target(stored):
                     continue
                 with self._planning_step(
@@ -1707,7 +1719,7 @@ class BackupCopier:
         else:
             plan.rewritten_cloud_storage_metadata.append(_RewrittenTarball(destination, files))
         fingerprint = self._cloud_storage_part_fingerprints(source).get(
-            (original.database, original.table, original.name)
+            original.identity
         )
         if fingerprint:
             target.get_table(part.database, part.table).raw_metadata["parts"][
