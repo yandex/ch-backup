@@ -7,6 +7,7 @@ import threading
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
+from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE
 from typing import Callable, Sequence
@@ -1205,9 +1206,9 @@ class TestDownloadPartsOfOtherReplicas:
                     database=cls._DB,
                     table=cls._TABLE,
                     name=name,
-                    checksum="abc123",
+                    checksum=md5(b"checksums").hexdigest(),
                     size=1024,
-                    files=["data.bin"],
+                    files=["data.bin", "checksums.txt"],
                     tarball=True,
                     disk_name=disk,
                 )
@@ -1228,9 +1229,14 @@ class TestDownloadPartsOfOtherReplicas:
     ) -> tuple[MagicMock, BackupContext, Table]:
         """Helper: a context with the table and the mock that sees all calls."""
         calls = MagicMock()
-        calls.backup_layout.download_data_part.side_effect = download_error or (
-            lambda _backup, _part, path, callback: os.makedirs(path)
-        )
+
+        def download(_backup, part, path, callback, **_kwargs):
+            os.makedirs(path)
+            (Path(path) / "data.bin").write_bytes(b"x")
+            (Path(path) / "checksums.txt").write_bytes(b"checksums")
+            callback(part)
+
+        calls.backup_layout.download_data_part.side_effect = download_error or download
         calls.check_part_files.side_effect = check_error
         context = BackupContext(DEFAULT_CONFIG)  # type: ignore[arg-type]
         context.ch_ctl = calls.ch_ctl
@@ -1277,7 +1283,9 @@ class TestDownloadPartsOfOtherReplicas:
             active_parts=active_parts,
             lookup_error=lookup_error,
         )
-        with patch("ch_backup.logic.table.check_part_files", calls.check_part_files):
+        with patch(
+            "ch_backup.logic.part_restore.check_part_files", calls.check_part_files
+        ):
             TableBackup._restore_table_object(context, DATABASE, table)
         return calls
 
@@ -1297,7 +1305,10 @@ class TestDownloadPartsOfOtherReplicas:
         ]
         assert downloaded == ["all_1_1_0"]
         calls.backup_layout.wait.assert_called_once_with(keep_going=True)
-        calls.check_part_files.assert_called_once_with(str(tmp_path / "all_1_1_0"))
+        staging = calls.backup_layout.download_data_part.call_args.args[2]
+        assert Path(staging).parent == tmp_path
+        assert Path(staging).name.startswith(".ch-backup-")
+        calls.check_part_files.assert_called_once_with(staging)
         assert (tmp_path / "all_1_1_0").exists()
         assert (
             names.index("backup_layout.wait")
@@ -1328,7 +1339,9 @@ class TestDownloadPartsOfOtherReplicas:
             [],
         ]
 
-        with patch("ch_backup.logic.table.check_part_files", calls.check_part_files):
+        with patch(
+            "ch_backup.logic.part_restore.check_part_files", calls.check_part_files
+        ):
             (
                 still_readonly,
                 _,
@@ -2134,6 +2147,7 @@ class TestDetachedPartsBackup:
 @pytest.mark.parametrize("skip_cloud_storage", [False, True])
 # pylint: disable=too-many-locals,too-many-statements
 def test_restore_skips_unreadable_database_schemas(
+    tmp_path: Path,
     keep_going: bool,
     all_failed: bool,
     legacy: bool,
@@ -2156,7 +2170,7 @@ def test_restore_skips_unreadable_database_schemas(
                 table.database,
                 table.name,
                 "all_1_1_0",
-                "checksum",
+                md5(b"checksums").hexdigest(),
                 512,
                 ["checksums.txt"],
                 True,
@@ -2202,7 +2216,7 @@ def test_restore_skips_unreadable_database_schemas(
         (table.database, table.name), table
     )
     controller.get_detached_part_path.side_effect = lambda table, disk, name: (
-        f"/data/{table.database}/{table.name}/detached/{name}"
+        str(tmp_path / table.database / table.name / "detached" / name)
     )
     context.ch_ctl = controller
 
@@ -2216,11 +2230,14 @@ def test_restore_skips_unreadable_database_schemas(
             )
         ]
 
+    def download(_backup, part, path, callback, **_kwargs):
+        os.makedirs(path)
+        (Path(path) / "checksums.txt").write_bytes(b"checksums")
+        callback(part)
+
     layout = MagicMock(
         get_table_create_statements=Mock(side_effect=download_schema),
-        download_data_part=Mock(
-            side_effect=lambda _backup, part, _path, callback: callback(part)
-        ),
+        download_data_part=Mock(side_effect=download),
     )
     if legacy:
         context.config["path_root"] = "ch_backup"
@@ -2275,8 +2292,9 @@ def test_restore_skips_unreadable_database_schemas(
         layout.download_data_part.assert_called_once_with(
             context.backup_meta,
             healthy.get_parts()[0],
-            f"/data/{healthy_db}/healthy/detached/all_1_1_0",
+            ANY,
             callback=ANY,
+            on_error=ANY,
         )
     else:
         assert (healthy_db, "healthy") not in tables

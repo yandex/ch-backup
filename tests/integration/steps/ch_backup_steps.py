@@ -116,6 +116,24 @@ def step_set_backup_file(context, path, node, backup_id):
     ch_backup.set_backup_file_data(backup_id, path, data=context.text.strip().encode())
 
 
+@when('we save and truncate file "{path}" in {node:w} backup #{backup_id:d}')
+def step_save_truncated_backup_file(context, path, node, backup_id):
+    manager = BackupManager(context, node)
+    name = manager.normalize_id(backup_id)
+    data = manager.get_backup_file_data(name, path)
+    assert len(data) > 1024
+    context.saved_backup_file = (node, name, path, data)
+    manager.set_backup_file_data(name, path, data[:-200])
+
+
+@when("we restore the saved backup file")
+def step_restore_backup_file(context):
+    node, name, path, data = context.saved_backup_file
+    manager = BackupManager(context, node)
+    manager.set_backup_file_data(name, path, data)
+    assert manager.get_backup_file_data(name, path) == data
+
+
 @when("we restore clickhouse backup #{backup_id:d} to {node:w}")
 @when('we restore clickhouse backup "{backup_id}" to {node:w}')
 def step_restore_backup(context, backup_id, node):

@@ -517,6 +517,13 @@ class BackupManager:
             data, os.path.join(backup.get_backup_path(self._path_root), path)
         )
 
+    def get_backup_file_data(self, backup_id: BackupId, path: str) -> bytes:
+        """Read a backup object for reversible fault injection."""
+        backup = self.get_backup(backup_id)
+        return self._s3_client.download_data(
+            os.path.join(backup.get_backup_path(self._path_root), path)
+        )
+
     def rewrite_part_links_to_legacy_format(self, backup_id: BackupId) -> None:
         """
         Rewrite all ``link`` fields in backup part metadata from the new

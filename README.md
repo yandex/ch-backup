@@ -64,6 +64,33 @@ the command reports those failures with a nonzero exit status. A shared Keeper
 metadata conflict stops the restore immediately. The behavior without
 `--skip-cloud-storage` is unchanged.
 
+## Restoring local parts safely
+
+Local parts, including old per-file backups, are downloaded into a new private
+`.ch-backup-<uuid>` directory beside their destination in `detached`. The complete
+file list, aligned size and `checksums.txt` checksum are checked before an atomic
+rename publishes the part. Only published parts are marked `downloaded` and
+passed to `ATTACH`. Downloads used by `--parts-from-backup` also check the data
+before publication.
+
+An existing destination is reused only after checking its metadata and reading
+its data to verify the file hashes in `checksums.txt`. This can take time for a
+large part. A conflicting or unverifiable destination is preserved and reported
+as a failure. Move it aside or remove it after deciding its data is no longer
+needed, then retry. A saved `downloaded` state does not bypass this check.
+
+Ordinary failures clean up private staging directories after their writers finish.
+An abrupt termination or fatal executor failure can leave `.ch-backup-*`
+directories; retries use new directories. Remove leftovers manually only after
+the previous restore and its workers have stopped.
+
+With `--keep-going`, independent parts continue and failures are recorded in the
+restore state and logs. The existing exit-code policy is preserved:
+`backup.restore_fail_on_attach_error: true` makes recorded part failures fail
+the command; its default is `false`. Without `--keep-going`, download, validation
+and publication failures abort the restore. Concurrent restores on the same
+objects and external DDL during restore are unsupported.
+
 ## Installation
 
 In order to get an up-to-date version of ch-backup, run `make build`. It will produce

@@ -817,3 +817,128 @@ Feature: Backup & Restore
     RENAME TABLE long_names.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     TO long_names.babacaba;
     """
+
+  Scenario: A truncated local part stays private and a retry restores complete data
+    Given ch-backup configuration on clickhouse01
+    """
+    encryption:
+        chunk_size: 1024
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    encryption:
+        chunk_size: 1024
+    backup:
+        restore_fail_on_attach_error: false
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    CREATE TABLE test_db.atomic_retry (p UInt64, n UInt64)
+    ENGINE = MergeTree PARTITION BY p ORDER BY n;
+    INSERT INTO test_db.atomic_retry SELECT number % 2, number FROM numbers(100);
+    """
+    When we create clickhouse01 clickhouse backup
+    """
+    name: atomic_retry
+    tables: [test_db.atomic_retry]
+    """
+    And we save and truncate file "data/test_db/atomic_retry/0_1_1_0/0_1_1_0.tar" in clickhouse01 backup #0
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    keep_going: true
+    """
+    And we execute command on clickhouse02
+    """
+    python3 - <<'PY'
+    import json
+    import pathlib
+    import subprocess
+    path = subprocess.check_output(['clickhouse-client', '--query', "SELECT data_paths[1] FROM system.tables WHERE database='test_db' AND name='atomic_retry'"]).decode().strip()
+    assert not list((pathlib.Path(path) / 'detached').iterdir())
+    state = json.load(open('/tmp/ch_backup_restore_state.json'))
+    assert state['databases']['test_db']['atomic_retry']['0_1_1_0'] == 'invalid'
+    assert '0_1_1_0' in state['failed']['test_db']['atomic_retry']['failed_parts']
+    PY
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT count() FROM test_db.atomic_retry
+    """
+    Then we get response
+    """
+    50
+    """
+    When we restore the saved backup file
+    And we restore clickhouse backup #0 to clickhouse02
+    And we execute query on clickhouse02
+    """
+    SELECT count(), sum(n) FROM test_db.atomic_retry FORMAT CSV
+    """
+    Then we get response
+    """
+    100,4950
+    """
+
+  Scenario: Preserve a conflicting local part and reuse it after repair
+    Given ch-backup configuration on clickhouse02
+    """
+    backup:
+        restore_fail_on_attach_error: true
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    CREATE TABLE test_db.atomic_conflict (n UInt64, PROJECTION by_n (SELECT n ORDER BY n))
+    ENGINE = MergeTree ORDER BY n;
+    INSERT INTO test_db.atomic_conflict SELECT number FROM numbers(100);
+    """
+    When we create clickhouse01 clickhouse backup
+    """
+    name: atomic_conflict
+    tables: [test_db.atomic_conflict]
+    """
+    And we try to execute ch-backup on clickhouse02 with ATTACH failing for test_db.atomic_conflict
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf restore atomic_conflict
+    """
+    Then command exits with code 1
+    When we execute command on clickhouse02
+    """
+    python3 - <<'PY'
+    import pathlib
+    import subprocess
+    path = subprocess.check_output(['clickhouse-client', '--query', "SELECT data_paths[1] FROM system.tables WHERE database='test_db' AND name='atomic_conflict'"]).decode().strip()
+    target = pathlib.Path(path) / 'detached/all_1_1_0/count.txt'
+    assert (target.parent / 'by_n.proj').is_dir()
+    pathlib.Path('/tmp/atomic-count-original').write_bytes(target.read_bytes())
+    pathlib.Path('/tmp/atomic-count-path').write_text(str(target))
+    target.write_bytes(b'101')
+    PY
+    """
+    And we try to execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore --keep-going atomic_conflict
+    """
+    Then command exits with code 1
+    When we execute command on clickhouse02
+    """
+    python3 - <<'PY'
+    import pathlib
+    target = pathlib.Path(pathlib.Path('/tmp/atomic-count-path').read_text())
+    assert target.read_bytes() == b'101'
+    target.write_bytes(pathlib.Path('/tmp/atomic-count-original').read_bytes())
+    PY
+    """
+    # Reuse must validate the local data without downloading the damaged archive.
+    And we save and truncate file "data/test_db/atomic_conflict/all_1_1_0/all_1_1_0.tar" in clickhouse01 backup #0
+    And we restore clickhouse backup #0 to clickhouse02
+    And we execute query on clickhouse02
+    """
+    SELECT count(), sum(n) FROM test_db.atomic_conflict FORMAT CSV
+    """
+    Then we get response
+    """
+    100,4950
+    """
+    When we restore the saved backup file

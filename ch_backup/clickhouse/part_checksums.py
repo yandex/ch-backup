@@ -31,22 +31,38 @@ class _FileChecksum(NamedTuple):
     uncompressed_size: int | None
 
 
-def check_part_files(part_path: str) -> None:
+def check_part_files(part_path: str, *, verify_compressed_hashes: bool = False) -> None:
     """
     Check that the files of a part on a local disk match its checksums.txt.
 
     Compressed files are checked by the checksums of their blocks, as hashing them in
-    Python is too slow. Raises ValueError, OSError or CalledProcessError on a mismatch.
+    Python is too slow. For reuse, verify_compressed_hashes also binds compressed
+    data to the manifest, rather than only checking each block's integrity.
+    Raises ValueError, OSError or CalledProcessError on a mismatch.
     """
-    for name, checksum in _read_checksums(part_path).items():
+    _check_part_files(part_path, _read_checksums(part_path), verify_compressed_hashes)
+
+
+def _check_part_files(
+    part_path: str,
+    checksums: dict[str, _FileChecksum],
+    verify_compressed_hashes: bool,
+) -> None:
+    for name, checksum in checksums.items():
         path = os.path.join(part_path, name)
         if os.path.isdir(path):
-            check_part_files(path)
+            projection = _read_checksums(path)
+            if verify_compressed_hashes and (
+                sum(file.size for file in projection.values()) != checksum.size
+                or _hash_checksums(projection) != checksum.hash
+            ):
+                raise ValueError(f"{path} does not match its parent checksums.txt")
+            _check_part_files(path, projection, verify_compressed_hashes)
             continue
         size = os.path.getsize(path)
         if size != checksum.size:
             raise ValueError(f"{path} has size {size} instead of {checksum.size}")
-        if checksum.uncompressed_size is None:
+        if checksum.uncompressed_size is None or verify_compressed_hashes:
             if _hash_file(path) != checksum.hash:
                 raise ValueError(f"{path} does not match its hash in checksums.txt")
         else:
@@ -56,6 +72,54 @@ def check_part_files(part_path: str) -> None:
                     f"{path} has {uncompressed_size} bytes of data"
                     f" instead of {checksum.uncompressed_size}"
                 )
+
+
+def _hash_checksums(checksums: dict[str, _FileChecksum]) -> tuple[int, int]:
+    """Match MergeTreeDataPartChecksums::getTotalChecksumUInt128 for a projection.
+
+    The parent hashes sorted file names (with UInt64 byte lengths) and file hashes.
+    This binds a projection's own manifest to the backup's root manifest.
+    """
+    data = b"".join(
+        struct.pack("<Q", len(name.encode())) + name.encode() + _HASH.pack(*value.hash)
+        for name, value in sorted(checksums.items())
+    )
+    # ClickHouse's SipHash128 uses SipHash-2-4 with zero keys and returns both
+    # halves of the final state, unlike the reference SipHash128 variant.
+    mask = (1 << 64) - 1
+    v0, v1, v2, v3 = (
+        0x736F6D6570736575,
+        0x646F72616E646F6D,
+        0x6C7967656E657261,
+        0x7465646279746573,
+    )
+
+    def rotate(value: int, shift: int) -> int:
+        return ((value << shift) | (value >> (64 - shift))) & mask
+
+    def rounds(count: int) -> None:
+        nonlocal v0, v1, v2, v3
+        for _ in range(count):
+            v0 = (v0 + v1) & mask
+            v1 = rotate(v1, 13) ^ v0
+            v0 = rotate(v0, 32)
+            v2 = (v2 + v3) & mask
+            v3 = rotate(v3, 16) ^ v2
+            v0 = (v0 + v3) & mask
+            v3 = rotate(v3, 21) ^ v0
+            v2 = (v2 + v1) & mask
+            v1 = rotate(v1, 17) ^ v2
+            v2 = rotate(v2, 32)
+
+    end = len(data) - len(data) % 8
+    tail = int.from_bytes(data[end:], "little") | ((len(data) & 255) << 56)
+    for word in (*struct.unpack(f"<{end // 8}Q", data[:end]), tail):
+        v3 ^= word
+        rounds(2)
+        v0 ^= word
+    v2 ^= 0xFF
+    rounds(4)
+    return v0 ^ v1, v2 ^ v3
 
 
 def _read_checksums(part_path: str) -> dict[str, _FileChecksum]:
