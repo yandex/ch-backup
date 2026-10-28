@@ -1030,7 +1030,7 @@ class ClickhouseBackup:
                 )
 
             if sources.data and self._context.restore_context.has_failed_parts():
-                msg = "Some parts are failed to attach"
+                msg = "Some parts failed to restore"
                 logging.warning(msg)
 
                 if self._context.config["restore_fail_on_attach_error"]:

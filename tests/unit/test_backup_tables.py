@@ -2219,7 +2219,7 @@ def test_restore_skips_unreadable_database_schemas(
     layout = MagicMock(
         get_table_create_statements=Mock(side_effect=download_schema),
         download_data_part=Mock(
-            side_effect=lambda _backup, part, _path, callback: callback(part)
+            side_effect=lambda _backup, part, _path, callback, **_kwargs: callback(part)
         ),
     )
     if legacy:
@@ -2277,6 +2277,7 @@ def test_restore_skips_unreadable_database_schemas(
             healthy.get_parts()[0],
             f"/data/{healthy_db}/healthy/detached/all_1_1_0",
             callback=ANY,
+            on_error=ANY,
         )
     else:
         assert (healthy_db, "healthy") not in tables
