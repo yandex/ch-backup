@@ -33,8 +33,15 @@ from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
     PartMetadata,
+    PartReference,
     TableMetadata,
     sanitize_backup_name,
+)
+from ch_backup.backup.part_matching import (
+    MaterializedPartKey,
+    linked_part_matches,
+    materialized_part_key,
+    materialized_part_matches,
 )
 from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.object_storage_metadata import (
@@ -113,8 +120,9 @@ class BackupCopier:
         self._target_backups: dict[str, BackupMetadata | None] = {}
         # Files of backups in source storage used to resolve deduplication links.
         self._source_backup_files: dict[str, dict[str, int]] = {}
-        # Original part identity -> successfully materialized target owner and name.
-        self._materialized_parts: dict[tuple, tuple[str, str]] = {}
+        # Several backups can link to the same original part. Remember its completed
+        # target copy so later backups can link to it instead of copying it again.
+        self._materialized_parts: dict[MaterializedPartKey, PartReference] = {}
         self._target_deduplication: CopyDeduplication | None = None
         # Availability of server-side copy for bucket pairs with particular credentials.
         self._server_side_copy: dict[tuple, bool] = {}
@@ -687,19 +695,6 @@ class BackupCopier:
         if len(result.errors) == error_count:
             target_meta.unlink_part(part)
 
-    @staticmethod
-    def _materialized_part_key(part: PartMetadata) -> tuple:
-        return (
-            part.link,
-            part.database,
-            part.table,
-            part.deduplicated_part_name,
-            part.checksum,
-            part.disk_name,
-            part.tarball,
-            part.encrypted,
-        )
-
     def _remember_materialized_parts(
         self, source: BackupMetadata, target: BackupMetadata
     ) -> None:
@@ -718,27 +713,21 @@ class BackupCopier:
                 source.cloud_storage.data_copied and target.cloud_storage.data_copied
             ):
                 continue
-            stored = target.find_part(part.database, part.table, part.name)
-            if not stored or stored.link:
+            stored = target.find_part(*part.identity)
+            if stored is None or not materialized_part_matches(part, stored):
                 continue
-            if (
-                stored.checksum == part.checksum
-                and stored.disk_name == part.disk_name
-                and stored.tarball == part.tarball
-                and stored.encrypted == part.encrypted
-            ):
-                self._materialized_parts.setdefault(
-                    self._materialized_part_key(part), (target.name, stored.name)
-                )
+            self._materialized_parts.setdefault(
+                materialized_part_key(part),
+                PartReference(target.name, stored.identity),
+            )
 
     def _reuse_materialized_part(
         self, part: PartMetadata, target: BackupMetadata
     ) -> bool:
-        owner = self._materialized_parts.get(self._materialized_part_key(part))
+        owner = self._materialized_parts.get(materialized_part_key(part))
         if owner is None:
             return False
-        name, part_name = owner
-        target.link_part(part, name, part_name)
+        target.link_part(part, owner.backup_name, owner.identity.part_name)
         return True
 
     def _is_link_valid_in_target(self, part: PartMetadata) -> bool:
@@ -773,14 +762,8 @@ class BackupCopier:
         ):
             return False
 
-        target_part = target_backup.find_part(
-            part.database, part.table, part.deduplicated_part_name
-        )
-        return bool(
-            target_part
-            and not target_part.link
-            and target_part.checksum == part.checksum
-        )
+        target_part = target_backup.find_part(*part.stored_identity)
+        return target_part is not None and linked_part_matches(part, target_part)
 
     def _get_source_backup_files(self, backup_name: str) -> dict[str, int]:
         """

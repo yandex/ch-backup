@@ -13,8 +13,8 @@ from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
     PartMetadata,
-    split_part_name,
 )
+from ch_backup.backup.part_matching import backup_part_names_match
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.models import Database, FrozenPart, Table
 from ch_backup.config import as_datetime
@@ -229,18 +229,15 @@ def _populate_dedup_info(
                     ):
                         continue
 
-                    if part.link:
-                        backup_name = part.link
-                        if backup_name not in dedup_backup_names:
-                            continue
-                    else:
-                        backup_name = backup.name
+                    owner = part.stored_reference(backup.name)
+                    if part.link and owner.backup_name not in dedup_backup_names:
+                        continue
 
                     part_dedup = PartDedupInfo(
                         database=db.name,
                         table=table.name,
                         name=part.name,
-                        backup_name=backup_name,
+                        backup_name=owner.backup_name,
                         checksum=part.checksum,
                         size=part.size,
                         files=part.files,
@@ -265,34 +262,6 @@ def _populate_dedup_info(
 
         if not databases_to_handle:
             break
-
-
-def _is_mutation_renamed(current_name: str, dedup_part_name: str) -> bool:
-    """
-    Returns True if two part names differ ONLY by their mutation suffix.
-
-    ClickHouse part name format:
-        {partition_id}_{min_block_num}_{max_block_num}_{level}[_{mutation}]
-
-    Valid pairs (return True):
-        all_1_1_0       <-> all_1_1_0_2    (mutation added)
-        all_1_1_0_1     <-> all_1_1_0_2    (mutation version changed)
-        20230601_1_1_0  <-> 20230601_1_1_0_5
-
-    Invalid pairs (return False):
-        all_1_1_0       <-> all_2_2_0      (different block numbers)
-        all_1_1_0       <-> all_1_1_1      (different merge level)
-        20230601_1_1_0  <-> 20230602_1_1_0 (different partitions)
-    """
-    current_segments = split_part_name(current_name)
-    dedup_part_segments = split_part_name(dedup_part_name)
-
-    return (
-        current_segments.partition_id == dedup_part_segments.partition_id
-        and current_segments.min_block_num == dedup_part_segments.min_block_num
-        and current_segments.max_block_num == dedup_part_segments.max_block_num
-        and current_segments.level == dedup_part_segments.level
-    )
 
 
 # pylint: disable=too-many-positional-arguments
@@ -366,9 +335,9 @@ def deduplicate_parts(
         current_name = existing_part.get("current_name") or existing_part["name"]
         dedup_part_name = existing_part["name"]
 
-        if current_name != dedup_part_name and not _is_mutation_renamed(
-            current_name, dedup_part_name
-        ):
+        # TODO: Consider trying another checksum candidate when the selected candidate
+        # fails the name check. SQL currently selects one candidate per current part.
+        if not backup_part_names_match(current_name, dedup_part_name):
             logging.debug(
                 'Part "{}" and stored part "{}" have the same checksum but differ in name by more than just mutation suffix, skipping deduplication',
                 current_name,
@@ -451,10 +420,13 @@ def collect_dedup_references_for_batch_backup_deletion(
                     if not part.link:
                         continue
 
-                    if part.link not in deleting_backup_names:
+                    owner = part.stored_reference(backup.name)
+                    if owner.backup_name not in deleting_backup_names:
                         continue
 
-                    _add_part_to_dedup_references(dedup_references[part.link], part)
+                    _add_part_to_dedup_references(
+                        dedup_references[owner.backup_name], part
+                    )
 
     return dedup_references
 
@@ -462,4 +434,5 @@ def collect_dedup_references_for_batch_backup_deletion(
 def _add_part_to_dedup_references(
     dedup_references: DedupReferences, part: PartMetadata
 ) -> None:
-    dedup_references[part.database][part.table].add(part.deduplicated_part_name)
+    identity = part.stored_identity
+    dedup_references[identity.database][identity.table].add(identity.part_name)
