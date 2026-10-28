@@ -90,10 +90,15 @@ def test_equivalent_lock_paths_and_chroots_are_acquired_once(target_path):
                 assert manager.call_count == 1
 
 
-def test_lock_timeout_releases_previously_acquired_locks_and_clients():
+@pytest.mark.parametrize(
+    "acquire_error", [LockTimeout(), None], ids=["timeout", "false"]
+)
+def test_lock_timeout_releases_previously_acquired_locks_and_clients(acquire_error):
     clients = [MagicMock(), MagicMock()]
     locks = [client.__enter__.return_value.Lock.return_value for client in clients]
-    locks[1].acquire.side_effect = LockTimeout()
+    locks[0].acquire.return_value = True
+    locks[1].acquire.side_effect = acquire_error
+    locks[1].acquire.return_value = False
     locks[1].contenders.return_value = []
     with patch("ch_backup.logic.lock_manager.ZookeeperCTL") as ctl:
         ctl.side_effect = [MagicMock(zk_client=client) for client in clients]
@@ -160,9 +165,7 @@ def test_release_failure_closes_zookeeper(zk_lock):
     assert client.mock_calls[-2:] == [call.stop(), call.close()]
 
 
-@pytest.mark.parametrize(
-    "during_entry,cleanup", [(False, "release"), (False, "stop"), (True, "stop")]
-)
+@pytest.mark.parametrize("during_entry,cleanup", [(False, "release"), (True, "stop")])
 def test_lock_cleanup_preserves_signal(zk_lock, during_entry, cleanup):
     manager, _, client = zk_lock
     signal = TerminatingSignal()

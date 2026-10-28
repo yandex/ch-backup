@@ -168,7 +168,9 @@ class LockManager:
                 client.create(self._process_zk_lockfile_path, makepath=True)
             lock = client.Lock(self._process_zk_lockfile_path, identifier=self._lock_id)
             try:
-                _ = lock.acquire(blocking=True, timeout=self._lock_timeout)
+                # Kazoo returns False when its connection retry deadline expires.
+                if not lock.acquire(blocking=True, timeout=self._lock_timeout):
+                    raise LockTimeout("ZooKeeper lock was not acquired")
             except LockTimeout:
                 msg = "ZK lock was not acquired due to timeout error."
                 contenders = lock.contenders()
