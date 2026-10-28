@@ -1119,13 +1119,6 @@ Feature: Copy backups to another storage
       | 1   | dedup-base | created | 2          | 0          |
     When we execute command on clickhouse02
     """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy dedup-next \
-        --target-config-parameter backup.path_root '"third/"' \
-        --target-cloud-storage-bucket cloud-storage-02 \
-        --target-cloud-storage-path third
-    """
-    And we execute command on clickhouse02
-    """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf delete dedup-base --delete-cloud-storage-data
     """
     Then we got the following backups on clickhouse02
@@ -1146,14 +1139,101 @@ Feature: Copy backups to another storage
     """
     20	90
     """
+    When we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf purge --delete-cloud-storage-data
+    """
+    Then s3 bucket ch-backup-copy contains 0 objects
+    And s3 bucket cloud-storage-02 contains no objects with prefix "copy/"
+    When we execute query on clickhouse02
+    """
+    SELECT count(), sum(n) FROM test_db.table_s3
+    """
+    Then we get response
+    """
+    20	90
+    """
+
+  @require_version_24.1
+  Scenario: Recopy S3 disk parts without their owner at the destination
+    Given ch-backup configuration on clickhouse02
+    """
+    storage:
+        credentials:
+            bucket: ch-backup-copy
+    backup:
+        retain_count: 0
+        retain_time:
+            days: 0
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_s3 (p UInt32, n UInt32)
+    ENGINE = MergeTree() PARTITION BY p ORDER BY n
+    SETTINGS storage_policy = 's3';
+    INSERT INTO test_db.table_s3 SELECT 0, number FROM numbers(10);
+    INSERT INTO test_db.table_s3 SELECT 1, number FROM numbers(10);
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: dedup-base
+    """
+    And we have executed queries on clickhouse01
+    """
+    ALTER TABLE test_db.table_s3 DROP PARTITION 1;
+    INSERT INTO test_db.table_s3 SELECT 2, number FROM numbers(10);
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: dedup-next
+    """
     When we execute command on clickhouse01
     """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf \
-        --config-parameter storage.credentials.bucket '"ch-backup-copy"' \
-        --config-parameter backup.path_root '"third/"' \
-        restore dedup-next --data
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy dedup-base \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-cloud-storage-bucket cloud-storage-02 \
+        --target-cloud-storage-path copy
+    """
+    And we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy dedup-next \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-cloud-storage-bucket cloud-storage-02 \
+        --target-cloud-storage-path copy
+    """
+    Then we got the following backups on clickhouse02
+      | num | name       | state   | data_count | link_count |
+      | 0   | dedup-next | created | 1          | 1          |
+      | 1   | dedup-base | created | 2          | 0          |
+    When we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy dedup-next \
+        --target-config-parameter backup.path_root '"third/"' \
+        --target-cloud-storage-bucket cloud-storage-02 \
+        --target-cloud-storage-path third
     """
     And we execute query on clickhouse01
+    """
+    DROP DATABASE test_db SYNC
+    """
+    And we delete all objects in s3 bucket cloud-storage-01
+    When we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf purge --delete-cloud-storage-data
+    """
+    Then s3 bucket ch-backup-copy contains no objects with prefix "ch_backup/"
+    And s3 bucket cloud-storage-02 contains no objects with prefix "copy/"
+    Given ch-backup configuration on clickhouse02
+    """
+    backup:
+        path_root: third/
+    """
+    Then we got the following backups on clickhouse02
+      | num | name       | state   | data_count | link_count |
+      | 0   | dedup-next | created | 2          | 0          |
+    When we restore clickhouse backup "dedup-next" to clickhouse02
+    And we execute query on clickhouse02
     """
     SELECT count(), sum(n) FROM test_db.table_s3
     """
@@ -1165,14 +1245,7 @@ Feature: Copy backups to another storage
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf purge --delete-cloud-storage-data
     """
-    And we execute command on clickhouse02
-    """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf \
-        --config-parameter backup.path_root '"third/"' \
-        purge --delete-cloud-storage-data
-    """
     Then s3 bucket ch-backup-copy contains 0 objects
-    And s3 bucket cloud-storage-02 contains no objects with prefix "copy/"
     And s3 bucket cloud-storage-02 contains no objects with prefix "third/"
     When we execute query on clickhouse02
     """
