@@ -7,8 +7,9 @@ Clickhouse backup logic
 import builtins
 import os
 from collections import defaultdict
+from contextlib import ExitStack
 from copy import copy
-from datetime import timedelta
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Sequence
 
@@ -16,6 +17,7 @@ import requests
 
 from ch_backup import logging
 from ch_backup.backup.copier import BackupCopier
+from ch_backup.backup.copy_deduplication import copy_deduplication_cutoff
 from ch_backup.backup.copy_report import CopyReport
 from ch_backup.backup.deduplication import (
     DedupReferences,
@@ -92,6 +94,7 @@ class ClickhouseBackup:
 
     @staticmethod
     def _validate_config(config: Config) -> None:
+        copy_deduplication_cutoff(config["copy"], utcnow())
         start_time = as_datetime(config["backup"].get("deduplication_start_time"))
         if start_time is not None and start_time > utcnow():
             raise ValueError(
@@ -611,6 +614,7 @@ class ClickhouseBackup:
         *,
         keep_going: bool = False,
         report: CopyReport | None = None,
+        command_start: datetime | None = None,
     ) -> tuple[Sequence[str], Sequence[str]]:
         """
         Copy backups to the storage specified in the target config.
@@ -619,6 +623,9 @@ class ClickhouseBackup:
         Return names of copied backups and names of backups skipped as already copied.
         The optional report also receives partial results when copying raises.
         """
+        # Freeze both window bounds before storage setup and lock acquisition.
+        if command_start is None:
+            command_start = utcnow()
         if report is not None:
             report.error = None
             report.backups.clear()
@@ -632,7 +639,12 @@ class ClickhouseBackup:
                 ch_config=self._context.ch_config,
             )
             with storage_locks([self._config, target_config], operation="COPY"):
-                return copier.copy(backup_names, keep_going=keep_going, report=report)
+                return copier.copy(
+                    backup_names,
+                    keep_going=keep_going,
+                    report=report,
+                    command_start=command_start,
+                )
         except BaseException as e:
             if report is not None:
                 report.error = f"{type(e).__name__}: {e}"
@@ -966,36 +978,51 @@ class ClickhouseBackup:
                     self._config["multiprocessing"]["drop_replica_threads"],
                 )
 
-            # Restore databases.
-            restored_databases = self._database_backup_manager.restore(
-                self._context,
-                databases,
-                keep_going,
-                metadata_cleaner,
-            )
+            # Validate adapted schemas before DatabaseBackup can drop an entire
+            # database. Reuse the prepared tables and locks through table CREATE.
+            with ExitStack() as schema_locks:
+                prepared_restore = None
+                if skip_cloud_storage:
+                    prepared_restore = self._table_backup_manager.prepare_restore(
+                        self._context,
+                        databases,
+                        tables,
+                        keep_going,
+                        skip_cloud_storage,
+                        restore_tables_in_replicated_database,
+                        schema_locks,
+                    )
+                # Restore databases.
+                restored_databases = self._database_backup_manager.restore(
+                    self._context,
+                    databases,
+                    keep_going,
+                    metadata_cleaner,
+                )
 
-            # Wait for replicated databases to sync by tracking log_ptr in ZooKeeper.
-            # Always use keep_going=True here: FAILED is an expected intermediate state
-            # that will be retried after table restore below.
-            sync_results = wait_sync_replicated_databases(
-                self._context, restored_databases, keep_going=True
-            )
+                # Wait for replicated databases to sync by tracking log_ptr in ZooKeeper.
+                # Always use keep_going=True here: FAILED is an expected intermediate state
+                # that will be retried after table restore below.
+                sync_results = wait_sync_replicated_databases(
+                    self._context, restored_databases, keep_going=True
+                )
 
-            # Restore tables and data stored on local disks.
-            self._table_backup_manager.restore(
-                context=self._context,
-                databases=databases,
-                schema_only=sources.schema_only,
-                tables=tables,
-                metadata_cleaner=metadata_cleaner,
-                cloud_storage_source_bucket=cloud_storage_source_bucket,
-                cloud_storage_source_path=cloud_storage_source_path,
-                cloud_storage_source_endpoint=cloud_storage_source_endpoint,
-                skip_cloud_storage=skip_cloud_storage,
-                restore_detached_parts=restore_detached_parts,
-                keep_going=keep_going,
-                restore_tables_in_replicated_database=restore_tables_in_replicated_database,
-            )
+                # Restore tables and data stored on local disks.
+                self._table_backup_manager.restore(
+                    context=self._context,
+                    databases=databases,
+                    schema_only=sources.schema_only,
+                    tables=tables,
+                    metadata_cleaner=metadata_cleaner,
+                    cloud_storage_source_bucket=cloud_storage_source_bucket,
+                    cloud_storage_source_path=cloud_storage_source_path,
+                    cloud_storage_source_endpoint=cloud_storage_source_endpoint,
+                    skip_cloud_storage=skip_cloud_storage,
+                    restore_detached_parts=restore_detached_parts,
+                    keep_going=keep_going,
+                    restore_tables_in_replicated_database=restore_tables_in_replicated_database,
+                    prepared_restore=prepared_restore,
+                )
 
             # Retry sync for databases that failed during initial sync.
             # After table restore, broken tables should be fixed and DDL worker

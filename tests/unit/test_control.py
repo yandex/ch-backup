@@ -19,6 +19,75 @@ from ch_backup.exceptions import ClickhouseBackupError
 from tests.unit.utils import parametrize
 
 
+@pytest.fixture(name="cold_table_record")
+def fixture_cold_table_record() -> dict:
+    """The first paths query can still report TableProxy for loaded storage."""
+    return {
+        "database": "db1",
+        "name": "table1",
+        "uuid": "12345678-1234-1234-1234-123456789012",
+        "engine": "TableProxy",
+        "engine_full": "ReplicatedMergeTree('/tables/table1', 'r1') ORDER BY id",
+        "create_table_query": "CREATE TABLE db1.table1 (id UInt64) ENGINE = ReplicatedMergeTree('/tables/table1', 'r1') ORDER BY id",
+        "data_paths": ["/var/lib/clickhouse/store/123/table1/"],
+        "metadata_path": "metadata/db1/table1.sql",
+    }
+
+
+@pytest.mark.parametrize("short_query", [False, True])
+def test_first_discovery_uses_declared_engine_for_lazy_table(
+    cold_table_record: dict, short_query: bool
+) -> None:
+    ctl, client = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    ctl._disks = {  # pylint: disable=protected-access
+        "default": Disk("default", "/var/lib/clickhouse/", "local")
+    }
+    if short_query:
+        cold_table_record.pop("data_paths")
+        cold_table_record.pop("metadata_path")
+    client.query.return_value = {"data": [cold_table_record]}
+
+    table = ctl.get_table("db1", "table1", short_query=short_query)
+
+    assert table is not None
+    assert table.engine == "ReplicatedMergeTree"
+    assert table.is_merge_tree()
+    assert table.is_replicated()
+    assert bool(table.paths_with_disks) is (not short_query)
+
+
+@pytest.mark.parametrize("engine", ["MergeTree", "StorageProxy", "PostgreSQL"])
+def test_discovery_preserves_other_runtime_engines(
+    cold_table_record: dict,
+    engine: str,
+) -> None:
+    ctl, client = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    cold_table_record["engine"] = engine
+    ctl._disks = {  # pylint: disable=protected-access
+        "default": Disk("default", "/var/lib/clickhouse/", "local")
+    }
+    client.query.return_value = {"data": [cold_table_record]}
+
+    table = ctl.get_table("db1", "table1")
+
+    assert table is not None
+    assert table.engine == engine
+    assert bool(table.paths_with_disks) is (engine == "MergeTree")
+
+
+@pytest.mark.parametrize("engine_full", [None, "(missing engine)"])
+def test_lazy_table_with_unknown_declared_engine_fails_discovery(
+    cold_table_record: dict,
+    engine_full: str | None,
+) -> None:
+    ctl, client = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    cold_table_record["engine_full"] = engine_full
+    client.query.return_value = {"data": [cold_table_record]}
+
+    with pytest.raises(ClickhouseBackupError, match="db1.table1"):
+        ctl.get_table("db1", "table1")
+
+
 @parametrize(
     {
         "id": "empty list",

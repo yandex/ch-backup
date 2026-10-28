@@ -28,6 +28,7 @@ from ch_backup.clickhouse.models import (
     Table,
     WorkloadEntityType,
 )
+from ch_backup.clickhouse.storage_schema import StoragePolicy
 from ch_backup.exceptions import ClickhouseBackupError, ConfigurationError
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.util import (
@@ -130,6 +131,8 @@ GET_TABLES_SQL_23_8 = strip_query(
 """
 )
 
+# engine_full shares the CREATE AST already read for create_table_query.
+# It adds no catalog lookup and lets _make_table resolve cold TableProxy engines.
 GET_TABLES_SHORT_SQL = strip_query(
     """
     SELECT
@@ -137,6 +140,7 @@ GET_TABLES_SHORT_SQL = strip_query(
         name,
         uuid,
         engine,
+        engine_full,
         create_table_query
     FROM system.tables
     WHERE ({db_condition})
@@ -1797,17 +1801,57 @@ class ClickhouseCTL:
             for row in disks_resp.get("data", [])
         }
 
+    def get_storage_policies(self) -> dict[str, StoragePolicy]:
+        """Snapshot policies in volume priority and disk order."""
+        # Read effective server policies, including implicit defaults absent from
+        # XML. Their order defines the fallback disk for restored local parts.
+        rows = self._ch_client.query(
+            "SELECT policy_name, volume_name, disks FROM system.storage_policies "
+            "ORDER BY policy_name, volume_priority, volume_name FORMAT JSON"
+        ).get("data", [])
+        disks = self.get_disks()
+        volumes_by_policy: dict[str, list[str]] = {}
+        disks_by_policy: dict[str, list[str]] = {}
+        for row in rows:
+            name = row["policy_name"]
+            volumes_by_policy.setdefault(name, []).append(row["volume_name"])
+            disks_by_policy.setdefault(name, []).extend(row["disks"])
+        # All policy disks/volumes are valid TTL destinations. Part remapping uses
+        # only local disks; remove duplicates while preserving the server's order.
+        return {
+            name: StoragePolicy(
+                name,
+                tuple(volumes),
+                tuple(dict.fromkeys(disks_by_policy[name])),
+                tuple(
+                    dict.fromkeys(
+                        disk
+                        for disk in disks_by_policy[name]
+                        if disk in disks and disks[disk].type == "local"
+                    )
+                ),
+            )
+            for name, volumes in volumes_by_policy.items()
+        }
+
     def _make_table(self, record: dict) -> Table:
+        engine = record["engine"]
+        if engine == "TableProxy":
+            # A paths query can load the table after its engine column was read.
+            # Use the stored engine definition, also available without loading.
+            match = re.match(r"[A-Za-z_][A-Za-z0-9_]*", record.get("engine_full") or "")
+            if not match:
+                raise ClickhouseBackupError(
+                    f"Cannot determine engine of lazy table {record['database']}.{record['name']}"
+                )
+            engine = match.group()
+
         return Table(
             database=record["database"],
             name=record["name"],
-            engine=record.get("engine", None),
+            engine=engine,
             disks=list(self._disks.values()),
-            data_paths=(
-                record.get("data_paths", [])
-                if "MergeTree" in record.get("engine", "")
-                else []
-            ),
+            data_paths=(record.get("data_paths", []) if "MergeTree" in engine else []),
             metadata_path=self._get_metadata_path(record),
             create_statement=record["create_table_query"],
             uuid=record.get("uuid", None),

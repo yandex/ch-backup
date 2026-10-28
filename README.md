@@ -17,6 +17,53 @@ The tool also supports deduplication at part-level granularity. It's set up
  set a start time to exclude earlier backups from deduplication.
 
 
+## Restore without cloud storage
+
+`ch-backup restore --skip-cloud-storage BACKUP` restores local parts and skips
+cloud parts, including detached parts. It also adapts MergeTree schemas and
+materialized views with their own storage to the target server:
+
+- A policy missing from `system.storage_policies` is replaced with `default`.
+- An explicit named `disk` setting is removed, even if that disk exists on the
+  target. The table uses the target server's default MergeTree storage policy
+  (including a `replicated_merge_tree` override), which must contain a local disk.
+  Dynamic `disk(...)` expressions and target engine defaults specifying `disk`
+  instead of a policy are not supported by this adaptation.
+  If removing `disk` would require replacing an existing table (including a
+  detached table or a table with the same UUID), restore stops before deleting
+  any database or table, even with `--keep-going`. Cloud parts would not be
+  restored after that deletion. Use an empty destination, or explicitly remove
+  the existing table after deciding that its data can be discarded.
+- TTL MOVE rules referencing disks or volumes absent from the resulting policy
+  are removed as whole rules. DELETE, conditional DELETE, RECOMPRESS, GROUP BY,
+  column TTLs and available MOVE rules are preserved.
+- Local parts whose original disk is outside the adapted policy go to its first
+  local disk, in volume priority and disk order.
+
+For replicated tables, use the same flag and storage configuration on every
+target replica.
+Restore each replicated shard's data on one replica. On its other replicas, use
+`--schema-only --skip-cloud-storage`, optionally with `--parts-from-backup BACKUP`
+to accelerate recovery. The existing `--parts-from-backup` mode downloads eligible
+parts into `detached/`, verifies their file checksums, then runs
+`SYSTEM RESTORE REPLICA`; replication fetches any remaining parts. This mode
+requires restore without ordinary data loading, so `--schema-only` is still
+needed. Restore non-replicated tables separately with their data.
+If adapting a replicated table's TTL conflicts with existing Keeper metadata,
+restore fails before dropping local databases or tables or cleaning replica metadata, including
+with `--keep-going` and any `--clean-zookeeper-mode`. It never resets shared Keeper
+metadata automatically. Restore to a separate Keeper table path or resolve the
+conflict before retrying. A per-table Keeper lock covers the check and table
+creation. Direct ZooKeeper access, using the same root as ClickHouse, is required
+only when the replicated table TTL is changed; unchanged schemas and policy-only
+changes retain the ordinary restore requirements.
+
+Removed disk settings, policy replacements and removed TTL rules are logged. With `--keep-going`,
+independent tables continue after a schema adaptation or creation failure, but
+the command reports those failures with a nonzero exit status. A shared Keeper
+metadata conflict stops the restore immediately. The behavior without
+`--skip-cloud-storage` is unchanged.
+
 ## Installation
 
 In order to get an up-to-date version of ch-backup, run `make build`. It will produce
@@ -190,9 +237,36 @@ Behavior and limitations:
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
   and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.
   Locking remains optional; the local file lock retains its shared semantics.
-- Deduplicated data parts of the backup are stored in older backups. If such a backup is already
+- By default, deduplicated data parts of the backup are stored in older backups. If such a backup is already
   present in the target storage, the deduplication link is kept. Otherwise, the data part is copied
   into the copied backup. `--all` copies older backups first, so deduplication is kept in the target storage.
+- Set `copy.deduplication_age_limit: {days: 90}` in the target configuration to enable an
+  independent deduplication window for active parts on local disks. The default `{days: 0}`
+  disables this additional lookup; a zero duration keeps the existing source-link behavior.
+  The value accepts the same units as a Python `timedelta` (weeks through microseconds),
+  with finite nonnegative numbers. Target command-line configuration overrides the target file,
+  which overrides the main configuration, following the usual recursive merge rules.
+  When enabled, copy matches parts by database, table, name (allowing mutation suffix changes),
+  checksum, disk, size, file list, layout and encryption, even if source stores the part anew
+  or links to a different owner. The newest matching physical owner with available files is used.
+  Its original backup `start_time` must be within the period before the start of the copy command;
+  both bounds are inclusive and fixed before resolving `LAST` or waiting for locks.
+  Owners without a timestamp or with a future timestamp are skipped. Copying preserves the
+  original timestamp. A recent reference does not extend an old owner's window.
+  This additional lookup reuses only TAR parts, whose stored archive size can be checked.
+  Legacy per-file parts are copied from source because their metadata has no individual file sizes.
+  This applies to source links too: without an eligible target owner, the part is copied from source.
+  The window is independent of `backup.deduplication_age_limit`, `deduplication_start_time`
+  and `deduplicate_parts`; historical backups copied with `--all` use the same current-time bound.
+  Reading full metadata and listing part files in eligible target backups costs additional S3
+  requests. Each candidate's full metadata is read once for the index, file listings are grouped
+  by table, and index memory grows with the number of physical local parts in the window.
+  The index retains a fixed-size fingerprint of each file list instead of its file names.
+  Loading a candidate still requires memory proportional to that backup's full metadata.
+  Existing completed copies are skipped and existing duplicates are not compacted.
+  Cloud-storage and detached parts retain their existing behavior. Restore uses the existing
+  link format; delete and purge preserve referenced parts in partially deleted owners until
+  the references are removed, even when an owner is outside the deduplication window.
 - Full cloud-storage backups created with `--copy-cloud-storage-data` keep their data in the backup
   bucket. Copying them moves that data into the target backup bucket, including linked parts when
   their owning backup is absent there. No ClickHouse disk credentials or `--target-cloud-storage-bucket`

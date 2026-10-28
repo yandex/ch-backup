@@ -127,6 +127,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "kill_old_freeze_queries": True,
     },
     "copy": {
+        # Independent target window for local parts; zero preserves source-link reuse only.
+        "deduplication_age_limit": {"days": 0},
         # Copy objects on the server side if source and target buckets belong to the same S3 service
         # and are accessible with the same credentials.
         "server_side_copy": True,
