@@ -1048,8 +1048,14 @@ def test_cloud_storage_data_encryption() -> None:
         for entry in entries
         if entry.dst_storage["credentials"]["bucket"] != "disk-copy"
     )
-    assert all(not entry.server_side for entry in entries)
-    assert not ctx.store.probes
+    assert all(not entry.server_side for entry in disk_entries)
+    assert ctx.store.probes == [
+        (
+            SRC_BUCKET,
+            "ch_backup/b1/disks/s3/db1/t1.tar.gz",
+            "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz",
+        )
+    ]
     assert ctx.target_layout.backups["b1"].cloud_storage.data_encryption == {
         "version": 1,
         "type": "nacl",

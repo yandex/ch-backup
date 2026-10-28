@@ -1338,15 +1338,14 @@ class BackupCopier:
         Availability of server-side copy is checked by copying the first object of each pair
         of source and target buckets with the same credentials. Such objects are excluded from the result.
         """
-        if (
-            not self._copy_config["server_side_copy"]
-            or self._encrypt_cloud_storage_data
-        ):
+        if not self._copy_config["server_side_copy"]:
             yield from (entry._replace(server_side=False) for entry in entries)
             return
 
         for entry in entries:
-            if not server_side_copy_possible(entry.src_storage, entry.dst_storage):
+            if entry.encrypt or not server_side_copy_possible(
+                entry.src_storage, entry.dst_storage
+            ):
                 yield entry._replace(server_side=False)
                 continue
 
