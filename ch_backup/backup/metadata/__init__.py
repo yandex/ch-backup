@@ -11,5 +11,10 @@ from ch_backup.backup.metadata.backup_metadata import (
 from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageMetadata
 from ch_backup.backup.metadata.common import BackupStorageFormat
 from ch_backup.backup.metadata.detached_part_metadata import DetachedPartMetadata
-from ch_backup.backup.metadata.part_metadata import PartMetadata, normalize_backup_link
+from ch_backup.backup.metadata.part_metadata import (
+    PartIdentity,
+    PartMetadata,
+    PartReference,
+    normalize_backup_link,
+)
 from ch_backup.backup.metadata.table_metadata import TableMetadata, split_part_name

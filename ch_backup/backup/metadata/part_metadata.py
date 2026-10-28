@@ -3,7 +3,8 @@ Backup metadata for ClickHouse data part.
 """
 
 import os
-from typing import Sequence
+from dataclasses import dataclass
+from typing import NamedTuple, Sequence
 
 from ch_backup.clickhouse.models import FrozenPart
 from ch_backup.util import Slotted
@@ -68,6 +69,22 @@ class RawMetadata(Slotted):
         self.encrypted = encrypted
 
 
+class PartIdentity(NamedTuple):
+    """Identify a part by its exact logical address, including its mutation suffix."""
+
+    database: str
+    table: str
+    part_name: str
+
+
+@dataclass(frozen=True, slots=True)
+class PartReference:
+    """Locate a stored part within one backup layout, using its physical name."""
+
+    backup_name: str
+    identity: PartIdentity
+
+
 class PartMetadata(Slotted):
     """
     Backup metadata for ClickHouse data part.
@@ -96,6 +113,24 @@ class PartMetadata(Slotted):
         self.raw_metadata: RawMetadata = RawMetadata(
             checksum, size, files, tarball, link, link_part_name, disk_name, encrypted
         )
+
+    @property
+    def identity(self) -> PartIdentity:
+        """Return the logical address, even when the files use a linked part's name."""
+        return PartIdentity(self.database, self.table, self.name)
+
+    @property
+    def stored_identity(self) -> PartIdentity:
+        """Use the stored name when a mutation renamed the logical part."""
+        return PartIdentity(self.database, self.table, self.deduplicated_part_name)
+
+    def stored_reference(self, containing_backup: str) -> PartReference:
+        """Resolve the files' location without changing this part's logical address.
+
+        Linked parts use their owner backup. Other parts use the containing backup.
+        The stored name can differ from the logical name in either case.
+        """
+        return PartReference(self.link or containing_backup, self.stored_identity)
 
     @property
     def checksum(self) -> str:
