@@ -747,7 +747,8 @@ class BackupLayout:
         """
         Download part data to the specified directory.
         """
-        source_part_name = part.deduplicated_part_name
+        source = part.stored_reference(backup_meta.name)
+        source_part_name = source.identity.part_name
 
         logging.debug(
             'Downloading data part {} (stored as {}) of "{}"."{}"',
@@ -759,15 +760,11 @@ class BackupLayout:
 
         os.makedirs(fs_part_path, exist_ok=True)
 
-        # part.link is the source backup name for deduplicated parts (or None).
-        source_backup_name = part.link or backup_meta.name
-        backup_path = self.get_backup_path(source_backup_name)
+        backup_path = self.get_backup_path(source.backup_name)
         remote_dir_path = self._get_escaped_if_exists(
             _part_path,
             backup_path,
-            part.database,
-            part.table,
-            source_part_name,
+            *source.identity,
         )
 
         if part.tarball:
@@ -842,18 +839,15 @@ class BackupLayout:
         """
         Check availability of part data in storage.
         """
-        source_part_name = part.deduplicated_part_name
+        source = part.stored_reference(backup_name)
+        source_part_name = source.identity.part_name
 
         try:
-            # part.link is the source backup name for deduplicated parts (or None).
-            source_backup_name = part.link or backup_name
-            resolved_backup_path = self.get_backup_path(source_backup_name)
+            resolved_backup_path = self.get_backup_path(source.backup_name)
             remote_dir_path = self._get_escaped_if_exists(
                 _part_path,
                 resolved_backup_path,
-                part.database,
-                part.table,
-                source_part_name,
+                *source.identity,
             )
             remote_files = self._storage_loader.list_dir(remote_dir_path)
             files = dict.fromkeys(remote_files, 0)
@@ -1250,14 +1244,11 @@ class BackupLayout:
         """
         Return remote paths of data part files.
         """
-        # part.link is the source backup name for deduplicated parts (or None).
-        source_backup_name = part.link or backup_name
+        source = part.stored_reference(backup_name)
         part_path = self._get_escaped_if_exists(
             _part_path,
-            self.get_backup_path(source_backup_name),
-            part.database,
-            part.table,
-            part.deduplicated_part_name,
+            self.get_backup_path(source.backup_name),
+            *source.identity,
         )
         return [os.path.join(part_path, f) for f in get_data_part_file_names(part)]
 
@@ -1406,9 +1397,7 @@ def get_data_part_relative_dirs(part: PartMetadata) -> list[str]:
     return [
         _part_path(
             "",
-            part.database,
-            part.table,
-            part.deduplicated_part_name,
+            *part.stored_identity,
             escape_names=escape_names,
         )
         for escape_names in (True, False)
