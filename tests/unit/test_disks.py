@@ -1231,6 +1231,15 @@ def test_restore_replaces_incomplete_part_without_nesting(
             destination /= source.name
         shutil.copytree(source, destination)
 
+    def os_copy(_tag, exe, common_args):
+        """Copy like GNU cp, which ignores a trailing slash of the source unlike BSD cp."""
+        assert exe == "/bin/cp"
+        _, from_path, to_path = common_args
+        destination = Path(to_path)
+        if destination.exists():
+            destination /= Path(from_path).name
+        shutil.copytree(from_path, destination)
+
     with (
         unittest.mock.patch(
             "ch_backup.clickhouse.disks._ch_disks_remove", side_effect=remove_objects
@@ -1238,6 +1247,7 @@ def test_restore_replaces_incomplete_part_without_nesting(
         unittest.mock.patch(
             "ch_backup.clickhouse.disks._ch_disks_copy", side_effect=copy_objects
         ) as copy_command,
+        unittest.mock.patch("ch_backup.clickhouse.disks._exec", side_effect=os_copy),
     ):
         manager._run_copy_command(manager._backup_meta, table, part)
 
