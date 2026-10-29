@@ -768,7 +768,7 @@ Feature: Copy backups to another storage
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
   @require_version_22.8
-  Scenario: Copy encrypts S3 disk data with a dedicated key
+  Scenario Outline: Restore encrypted S3 disk data through <staging>
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE IF NOT EXISTS test_db;
@@ -793,6 +793,14 @@ Feature: Copy backups to another storage
     storage:
         credentials:
             bucket: ch-backup-copy
+    cloud_storage:
+        data_encryption:
+            key: cccccccccccccccccccccccccccccccc
+            chunk_size: 64
+    restore:
+        cloud_storage:
+            decryption_staging:
+                bucket: <staging_bucket>
     """
     And a keyless copy configuration "/tmp/keyless-cloud.conf" on clickhouse01
     """
@@ -823,19 +831,7 @@ Feature: Copy backups to another storage
     """
     And we delete clickhouse01 clickhouse backup #0
     Then s3 bucket cloud-storage-01 contains 0 objects
-    When we decrypt copied S3 objects
-    """
-    source_bucket: cloud-storage-02
-    source_prefix: copy/87654321T123456
-    target_bucket: cloud-storage-01
-    key: cccccccccccccccccccccccccccccccc
-    chunk_size: 64
-    """
-    And we restore clickhouse backup #0 to clickhouse02
-    """
-    cloud_storage_source_bucket: cloud-storage-01
-    cloud_storage_source_path: copy/87654321T123456
-    """
+    When we restore clickhouse backup #0 to clickhouse02
     And we execute query on clickhouse02
     """
     SELECT (count(), sum(UserID)) FROM test_db.encrypted_copy_restore_feature
@@ -844,6 +840,14 @@ Feature: Copy backups to another storage
     """
     (20,90)
     """
+    And s3 bucket cloud-storage-02 contains objects with prefix "copy/87654321T123456"
+    And s3 bucket <cleanup_bucket> contains no objects with prefix "<cleanup_prefix>"
+
+    Examples:
+      | staging                   | staging_bucket   | cleanup_bucket   | cleanup_prefix                 |
+      | destination disk         | null             | cloud-storage-02 | copy/87654321T123456_decrypted |
+      | configured source bucket | cloud-storage-02 | cloud-storage-02 | copy/87654321T123456_decrypted |
+      | another bucket           | cloud-storage-01 | cloud-storage-01 | copy/87654321T123456           |
 
   @require_version_22.8
   Scenario: Deleting copy of backup with data on S3 disk doesn't affect the source backup

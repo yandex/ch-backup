@@ -6,7 +6,6 @@ from behave import given, then, when
 from hamcrest import assert_that, equal_to
 
 from ch_backup.clickhouse.object_storage_metadata import parse_object_storage_metadata
-from ch_backup.storage.async_pipeline.pipelines import decrypt_data_pipeline
 from ch_backup.util import CLOUD_STORAGE_EXCLUDE_FILE_NAMES
 from tests.integration.modules import s3
 from tests.integration.modules.clickhouse import ClickhouseClient, get_part_path
@@ -106,37 +105,6 @@ def step_delete_all_objects_in_bucket(context, bucket):
     for path in s3_client.list_objects(""):
         s3_client.delete_data(path)
     assert_that(s3_client.list_objects(""), equal_to([]))
-
-
-@when("we decrypt copied S3 objects")
-def step_decrypt_copied_s3_objects(context):
-    """Decrypt copied disk objects into a staging bucket until restore supports it."""
-    conf = get_step_data(context)
-    source_prefix = conf["source_prefix"].strip("/")
-    target_prefix = conf.get("target_prefix", source_prefix).strip("/")
-    source = s3.S3Client(context, conf["source_bucket"])
-    target = s3.S3Client(context, conf["target_bucket"])
-    source_root = f"{source_prefix}/" if source_prefix else ""
-    target_root = f"{target_prefix}/" if target_prefix else ""
-    objects = source.list_objects(source_root)
-    assert objects, f"No objects found under {conf['source_bucket']}/{source_root}"
-
-    encryption = {
-        "type": conf.get("type", "nacl"),
-        "key": conf["key"],
-        "chunk_size": conf["chunk_size"],
-        "buffer_size": 32 * 1024 * 1024,
-        "queue_size": 1,
-    }
-    for path in objects:
-        relative_path = path.removeprefix(source_root)
-        encrypted = source.download_data(path)
-        data = (
-            decrypt_data_pipeline({"encryption": encryption}, encrypted)
-            if encrypted
-            else b""
-        )
-        target.upload_data(data, f"{target_root}{relative_path}")
 
 
 @when("we put object in S3")

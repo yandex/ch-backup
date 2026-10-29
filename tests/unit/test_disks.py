@@ -1039,7 +1039,7 @@ def test_restore_reads_copied_data_from_the_backup_bucket():
     )
 
 
-def test_restore_decrypts_copied_data_into_destination_bucket():
+def test_restore_failure_cleans_decryption_staging():
     disk_manager = _make_temporary_disks(
         BACKUP_DISK_CLICKHOUSE_CONFIG,
         cloud_storage_disks=["object_storage"],
@@ -1050,28 +1050,6 @@ def test_restore_decrypts_copied_data_into_destination_bucket():
     decryption = unittest.mock.MagicMock()
     disk_manager._decryption = decryption
 
-    with _capture_config_files() as (written, _):
-        with disk_manager:
-            pass
-
-    decryption.cleanup.assert_called_once_with()
-    args = decryption.decrypt.call_args.args
-    source_storage, source_path, staging_storage, staging_path = args[3:7]
-    assert source_storage["credentials"]["bucket"] == "backup-bucket"
-    assert source_path == ("ch_backup/20260101T000000/cloud_storage/object_storage")
-    assert staging_storage["credentials"]["bucket"] == "test-bucket"
-    assert staging_path == source_path
-
-    config_path = (
-        "/etc/clickhouse-server/config.d/"
-        "cloud_storage_tmp_disk_object_storage_source.xml"
-    )
-    endpoint = xmltodict.parse(written[config_path], disable_entities=False)[
-        "clickhouse"
-    ]["storage_configuration"]["disks"]["object_storage_source"]["endpoint"]
-    assert endpoint == f"https://localhost/test-bucket/{staging_path}/"
-
-    decryption.reset_mock()
     error = RuntimeError("restore failed")
     with unittest.mock.patch.object(ClickHouseDiskManager, "_cleanup"):
         disk_manager._cleanup(RuntimeError, error)
