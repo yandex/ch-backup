@@ -6,7 +6,7 @@ import json
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from click import BadParameter, Command, Context, Group
@@ -134,6 +134,43 @@ def test_copy_command_passes_resume(
     assert result.exit_code == 0
     target_config = backup.copy.call_args.args[0]
     assert target_config["copy"]["resume"] is resume
+
+
+def test_copy_command_masks_config_parameter_secrets_in_log(
+    copy_backup: MagicMock,
+) -> None:
+    backup = copy_backup
+    group = Group()
+    group.add_command(cli.copy_command)
+    secret = "c" * 32
+
+    with patch("ch_backup.cli.logging.info") as log_info:
+        result = CliRunner().invoke(
+            group,
+            [
+                "copy",
+                "--all",
+                "--target-config-parameter",
+                "cloud_storage.data_encryption.key",
+                json.dumps(secret),
+                "--target-config-parameter",
+                "storage.credentials",
+                json.dumps(
+                    {
+                        "access_key_id": "visible",
+                        "secret_access_key": "also-secret",
+                    }
+                ),
+            ],
+            obj={"backup": backup},
+        )
+
+    assert result.exit_code == 0
+    logged = str(log_info.mock_calls)
+    assert secret not in logged
+    assert "also-secret" not in logged
+    assert "visible" in logged
+    assert "[HIDDEN]" in logged
 
 
 @pytest.mark.parametrize(

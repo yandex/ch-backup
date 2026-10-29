@@ -28,7 +28,10 @@ from ch_backup.backup.metadata import (
     DetachedPartMetadata,
 )
 from ch_backup.config import DEFAULT_CONFIG
-from ch_backup.encryption import get_encryption_class
+from ch_backup.encryption import (
+    get_cloud_storage_data_encryption_metadata,
+    get_encryption_class,
+)
 from ch_backup.exceptions import (
     ClickhouseBackupError,
     ConfigurationError,
@@ -183,7 +186,7 @@ class FakeLayout:
                 if self.store:
                     self.store.buckets.setdefault(storage_id(entry.dst_storage), {})[
                         entry.dst_path
-                    ] = entry.size
+                    ] = entry.dst_size
                 if callback:
                     callback(entry)
 
@@ -530,7 +533,7 @@ def test_copy_mode_cache_isolates_credentials(
     if second_mode != "ineligible":
         second_target["credentials"][credential] = "different-credential"
     entries = [
-        CopyEntry(source, target, f"{group}/{name}", f"copy/{group}/{name}", 1)
+        CopyEntry(source, target, f"{group}/{name}", f"copy/{group}/{name}", 1, 1)
         for group, source, target in (
             ("a", ctx.config["storage"], ctx.target_config["storage"]),
             ("b", second_source, second_target),
@@ -584,6 +587,28 @@ def test_skip_already_copied_backup() -> None:
     _with_files(ctx, "b1", {"metadata/a.tar": 1})
 
     assert ctx.copy(["b1"]) == ([], ["b1"])
+    assert not ctx.target_layout.uploaded
+    assert not ctx.target_layout.copied
+
+
+def test_copy_rejects_created_backup_with_different_data_encryption() -> None:
+    ctx = _cloud_storage_context()
+    target = copy.deepcopy(ctx.layout.backups["b1"])
+    target.cloud_storage.data_encryption = get_cloud_storage_data_encryption_metadata(
+        {
+            "type": "nacl",
+            "key": "x" * 32,
+            "chunk_size": 8 * 1024 * 1024,
+        }
+    )
+    ctx.target_layout.backups["b1"] = target
+    ctx.target_config["copy"]["cloud_storage"]["encrypt_data"] = True
+
+    with pytest.raises(
+        ClickhouseBackupError, match="different cloud storage data encryption"
+    ):
+        ctx.copy(["b1"])
+
     assert not ctx.target_layout.uploaded
     assert not ctx.target_layout.copied
 
@@ -1040,6 +1065,48 @@ def test_cloud_storage(backup_name: str) -> None:
         "bucket": "disk-copy",
         "path": f"copies/{backup_name}",
     }
+
+
+def test_cloud_storage_data_encryption_requires_key() -> None:
+    ctx = _cloud_storage_context()
+    ctx.target_config["copy"]["cloud_storage"]["encrypt_data"] = True
+    ctx.config["encryption"]["key"] = None
+    ctx.target_config["encryption"]["key"] = None
+
+    with pytest.raises(ConfigurationError, match="data_encryption.key"):
+        ctx.copy(["b1"])
+
+    assert not ctx.target_layout.uploaded
+
+
+def test_copy_preserves_encrypted_cloud_storage_object_size() -> None:
+    ctx = _cloud_storage_context()
+    data_encryption = {
+        "version": 1,
+        "type": "nacl",
+        "chunk_size": 8 * 1024 * 1024,
+        "key_id": "source-key",
+    }
+    ctx.layout.backups["b1"].cloud_storage.data_encryption = data_encryption
+    ctx.config["encryption"]["key"] = None
+    ctx.target_config["encryption"]["key"] = None
+
+    ctx.copy(["b1"])
+
+    disk_entries = [
+        entry
+        for entry in ctx.target_layout.copied
+        if entry.dst_storage["credentials"]["bucket"] == "disk-copy"
+    ]
+    assert disk_entries
+    assert all(not entry.encrypt for entry in disk_entries)
+    assert {(entry.size, entry.dst_size) for entry in disk_entries} == {
+        (10, 50),
+        (1000, 1040),
+    }
+    assert (
+        ctx.target_layout.backups["b1"].cloud_storage.data_encryption == data_encryption
+    )
 
 
 def test_copy_skips_sanitized_disk_prefix_folder_marker() -> None:
@@ -2710,6 +2777,30 @@ def test_resume_skips_confirmed_cloud_storage_objects() -> None:
     assert {e.dst_path for e in ctx.target_layout.copied} == {"copies/b1/xyz/bbb"}
 
 
+def test_resume_recopies_cloud_storage_objects_when_encryption_changes() -> None:
+    ctx = _cloud_storage_context()
+    ctx.target_layout.store = ctx.store
+    ctx.target_layout.object_errors["data/xyz/bbb"] = StorageError("SlowDown")
+    with pytest.raises(StorageError):
+        ctx.copy(["b1"])
+    ctx.target_layout.object_errors.clear()
+    ctx.target_layout.copied.clear()
+    ctx.target_config["copy"]["cloud_storage"]["encrypt_data"] = True
+
+    ctx.copy(["b1"])
+
+    disk_entries = [
+        entry
+        for entry in ctx.target_layout.copied
+        if entry.dst_storage["credentials"]["bucket"] == "disk-copy"
+    ]
+    assert {entry.dst_path for entry in disk_entries} == {
+        "copies/b1/xyz/aaa",
+        "copies/b1/xyz/bbb",
+    }
+    assert all(entry.encrypt for entry in disk_entries)
+
+
 def test_copy_does_not_copy_copy_context_of_source() -> None:
     ctx = CopyTestContext([_backup("b1")])
     ctx.target_config["copy"]["server_side_copy"] = False
@@ -2847,14 +2938,17 @@ def test_files_retry_manifest_keeps_confirmed_objects() -> None:
     assert _scopes(target)["files"] == "pending"
 
 
-def test_copy_scopes_separately() -> None:
+@pytest.mark.parametrize("encrypt", [False, True])
+def test_copy_scopes_separately(encrypt: bool) -> None:
     ctx = _scoped_context()
+    ctx.target_config["copy"]["cloud_storage"]["encrypt_data"] = encrypt
     report = CopyReport()
 
     assert ctx.copy(["b1"], scopes=["files"], report=report) == (["b1"], [])
 
     target = ctx.target_layout.backups["b1"]
     assert target.state == BackupState.CREATING
+    assert target.cloud_storage.data_encryption is None
     assert _scopes(target) == {"files": "completed", "cloud_storage": "pending"}
     assert report.backups[0].scopes == _scopes(target)
     assert report.backups[0].status == "partial"
@@ -2868,6 +2962,7 @@ def test_copy_scopes_separately() -> None:
 
     target = ctx.target_layout.backups["b1"]
     assert target.state == BackupState.CREATED
+    assert (target.cloud_storage.data_encryption is not None) == encrypt
     assert _scopes(target) == {"files": "completed", "cloud_storage": "completed"}
     assert set(ctx.copied_paths().values()) == _disk_objects(ctx) | {
         "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
@@ -3442,6 +3537,7 @@ def test_cloud_storage_planning_failure_does_not_fail_backup_scope(
 def test_cloud_retry_retains_original_source(publication_failure: bool) -> None:
     """Keep the original cloud source until publication, including failed publication retries."""
     ctx = _scoped_context(version=5)
+    ctx.target_config["copy"]["cloud_storage"]["encrypt_data"] = True
     source = {
         "endpoint_url": "http://minio:9000",
         "bucket": "cloud-storage",
@@ -3449,7 +3545,9 @@ def test_cloud_retry_retains_original_source(publication_failure: bool) -> None:
     }
     ctx.layout.backups["b1"].cloud_storage.source = source
     ctx.copy(["b1"], scopes=["files"])
-    assert ctx.target_layout.backups["b1"].cloud_storage.source == source
+    failed = ctx.target_layout.backups["b1"]
+    assert failed.cloud_storage.source == source
+    assert failed.cloud_storage.data_encryption is None
     assert not any(path.endswith("/backup_struct.json") for path in ctx.copied_paths())
     ctx.layout = UnavailableLayout()  # type: ignore[assignment]
     ctx.target_layout.source = None
@@ -3469,7 +3567,9 @@ def test_cloud_retry_retains_original_source(publication_failure: bool) -> None:
         with pytest.raises(StorageError):
             ctx.copy(["b1"], scopes=["cloud_storage"])
 
-    assert ctx.target_layout.backups["b1"].cloud_storage.source == source
+    failed = ctx.target_layout.backups["b1"]
+    assert failed.cloud_storage.source == source
+    assert failed.cloud_storage.data_encryption is None
     ctx.target_layout.object_errors.clear()
     ctx.copy(["b1"], scopes=["cloud_storage"])
     target = ctx.target_layout.backups["b1"]
@@ -3479,3 +3579,4 @@ def test_cloud_retry_retains_original_source(publication_failure: bool) -> None:
         "bucket": "disk-copy",
         "path": "copies/b1",
     }
+    assert target.cloud_storage.data_encryption is not None

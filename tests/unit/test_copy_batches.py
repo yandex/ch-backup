@@ -22,7 +22,7 @@ def test_copy_batches_drain_futures_and_report_each_result(
     layout._storage_loader = loader
     completed: list[CopyEntry] = []
     errors: list[CopyEntry] = []
-    entries = [CopyEntry({}, {}, str(i), f"target/{i}", 1) for i in range(1025)]
+    entries = [CopyEntry({}, {}, str(i), f"target/{i}", 1, 1) for i in range(1025)]
     with ThreadExecPool(2) as pool:
 
         def copy(entry, *, is_async, callback, on_error):

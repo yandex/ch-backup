@@ -14,7 +14,7 @@ import uuid
 from collections import OrderedDict
 from functools import wraps
 from pathlib import Path as PathlibPath
-from typing import Iterable
+from typing import Any, Iterable
 
 from click import Choice, Path, argument, pass_context, style
 from cloup import (
@@ -55,6 +55,17 @@ from .version import get_version
 
 TIMESTAMP = utcnow().strftime("%Y%m%dT%H%M%S")
 UUID = str(uuid.uuid4())
+_HIDDEN = "[HIDDEN]"
+_SECRET_PARAMETER_NAMES = {
+    "access_token",
+    "api_key",
+    "clickhouse_password",
+    "key",
+    "password",
+    "private_key",
+    "secret_access_key",
+    "token",
+}
 
 
 def signal_handler(signum, _frame):
@@ -195,10 +206,7 @@ def command(*args, **kwargs):
                 logging.info(
                     "Executing command '{}', params: {}, args: {}, version: {}",
                     ctx.command.name,
-                    {
-                        **ctx.parent.params,
-                        **ctx.params,
-                    },
+                    _mask_command_params({**ctx.parent.params, **ctx.params}),
                     ctx.args,
                     get_version(),
                 )
@@ -214,6 +222,32 @@ def command(*args, **kwargs):
         return cli.command(*args, **kwargs)(wrapper)
 
     return decorator
+
+
+def _mask_command_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Hide secrets passed through command options before logging them."""
+    result = {}
+    for name, value in params.items():
+        if name in {"config_parameters", "target_config_parameters"}:
+            result[name] = [
+                (path, _mask_value(parameter_value, path))
+                for path, parameter_value in value
+            ]
+        else:
+            result[name] = _mask_value(value, name)
+    return result
+
+
+def _mask_value(value: Any, name: str | None = None) -> Any:
+    if name and name.rsplit(".", 1)[-1].lower() in _SECRET_PARAMETER_NAMES:
+        return _HIDDEN
+    if isinstance(value, dict):
+        return {key: _mask_value(item, key) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_mask_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_mask_value(item) for item in value)
+    return value
 
 
 @command(name="list")

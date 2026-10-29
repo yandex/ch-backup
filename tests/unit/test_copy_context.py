@@ -50,7 +50,7 @@ class MemoryEngine:
 
 
 def _entry(name: str, size: int = 1) -> CopyEntry:
-    return CopyEntry(STORAGE, STORAGE, f"src/{name}", f"dst/{name}", size)
+    return CopyEntry(STORAGE, STORAGE, f"src/{name}", f"dst/{name}", size, size)
 
 
 def _context(engine: MemoryEngine, **kwargs: Any) -> CopyContext:
@@ -220,7 +220,7 @@ def test_manifest_keeps_locations_without_credentials() -> None:
             "secret": "x",
         },
     }
-    entry = CopyEntry(storage, STORAGE, "src/a", "dst/a", 3)
+    entry = CopyEntry(storage, STORAGE, "src/a", "dst/a", 3, 3)
     context.save_manifest(CopyScope.FILES, [entry])
 
     resumed = _context(engine)
