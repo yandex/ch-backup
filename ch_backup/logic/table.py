@@ -19,7 +19,7 @@ from typing import Iterable, Sequence
 from ch_backup import logging
 from ch_backup.backup.deduplication import deduplicate_parts
 from ch_backup.backup.metadata import DetachedPartMetadata, PartMetadata, TableMetadata
-from ch_backup.backup.metadata.table_metadata import DataSkippedReason
+from ch_backup.backup.metadata.table_metadata import DataSkippedReason, split_part_name
 from ch_backup.backup.restore_context import PartState
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.client import ClickhouseError
@@ -1928,6 +1928,9 @@ class TableBackup(BackupManager):
                 context.ch_ctl.chown_detached_table_parts(
                     table, context.restore_context
                 )
+                # Cloud parts are collected before local downloads finish. ATTACH
+                # assigns new block numbers, so preserve the original part order.
+                attach_parts.sort(key=lambda part: split_part_name(part.name))
                 for part in attach_parts:
                     logging.debug(
                         'Attaching "{}.{}" part: {}',

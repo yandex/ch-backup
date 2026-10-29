@@ -75,6 +75,9 @@ before publication. Size validation accepts both the current aligned size and
 the unaligned size recorded by old per-file and early TAR backups, including
 parts copied or linked from those backups.
 
+Local and cloud parts are attached together in their original part order to
+preserve which row wins in `ReplacingMergeTree` without a version column.
+
 An existing destination is reused only after checking its metadata and reading
 its data to verify the file hashes in `checksums.txt`. This can take time for a
 large part. A conflicting or unverifiable destination is preserved and reported

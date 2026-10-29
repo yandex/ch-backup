@@ -61,6 +61,50 @@ Feature: Backup & Clean & Restore
       | test_backup       |
       | LAST              |
 
+  @require_version_22.8
+  Scenario: Restore mixed local and cloud parts in original order
+    Given a working clickhouse on clickhouse02
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE mixed_restore;
+    CREATE TABLE mixed_restore.t (id UInt64, value String)
+    ENGINE = ReplacingMergeTree ORDER BY id
+    SETTINGS storage_policy = 's3_cold';
+    SYSTEM STOP MERGES mixed_restore.t;
+    INSERT INTO mixed_restore.t VALUES (1, 'old');
+    INSERT INTO mixed_restore.t VALUES (1, 'new');
+    ALTER TABLE mixed_restore.t MOVE PART 'all_2_2_0' TO VOLUME 'external';
+    """
+    And we execute query on clickhouse01
+    """
+    SELECT name, if(disk_name IN ('s3', 's3_cache'), 'cloud', disk_name)
+    FROM system.parts
+    WHERE database = 'mixed_restore' AND table = 't' AND active
+    ORDER BY name FORMAT CSV
+    """
+    Then we get response
+    """
+    "all_1_1_0","default"
+    "all_2_2_0","cloud"
+    """
+    When we create clickhouse01 clickhouse backup
+    """
+    tables: [mixed_restore.t]
+    """
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    cloud_storage_source_bucket: cloud-storage-01
+    cloud_storage_source_path: data
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT id, value FROM mixed_restore.t FINAL FORMAT CSV
+    """
+    Then we get response
+    """
+    1,"new"
+    """
+
   Scenario: Download backup metadata to local path
     When we execute queries on clickhouse01
     """
