@@ -209,6 +209,7 @@ class StorageLoader:
         )
         return data
 
+    # pylint: disable=too-many-positional-arguments
     def download_file(
         self,
         remote_path: str,
@@ -216,7 +217,6 @@ class StorageLoader:
         is_async: bool = False,
         encryption: bool = False,
         compression: bool = False,
-        *,
         callback: Callable | None = None,
         on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
@@ -242,7 +242,6 @@ class StorageLoader:
         encryption: bool = False,
         compression: bool = False,
         callback: Callable | None = None,
-        *,
         on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         """

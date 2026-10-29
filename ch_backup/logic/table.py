@@ -17,7 +17,7 @@ from string import ascii_lowercase
 from typing import Iterable, Sequence
 
 from ch_backup import logging
-from ch_backup.backup.deduplication import deduplicate_parts
+from ch_backup.backup.deduplication import StoredFiles, deduplicate_parts
 from ch_backup.backup.metadata import DetachedPartMetadata, PartMetadata, TableMetadata
 from ch_backup.backup.metadata.table_metadata import DataSkippedReason, split_part_name
 from ch_backup.backup.restore_context import PartState
@@ -1045,7 +1045,7 @@ class TableBackup(BackupManager):
         logging.debug('Uploading table data for "{}"."{}"', table.database, table.name)
 
         upload_observer = UploadPartObserver(context)
-        stored_files: dict[tuple[str, str, str], dict[str, dict[str, int]]] = {}
+        stored_files: StoredFiles = {}
         skip_failed_part = (
             partial(TableBackup._skip_failed_part, context, table)
             if context.config["keep_going"]
@@ -1778,7 +1778,7 @@ class TableBackup(BackupManager):
         keep_going: bool,
         storage_disks: dict[tuple[str, str], tuple[str, ...]] | None = None,
     ) -> None:
-        # pylint: disable=too-many-branches
+        # pylint: disable=too-many-branches,too-many-locals
         logging.info("Restoring tables data")
         for table_meta in tables:
             cloud_storage_parts = []
@@ -1827,6 +1827,7 @@ class TableBackup(BackupManager):
                     table_meta.database, table_meta.name
                 )  # type: ignore
                 attach_parts: list[PartMetadata] = []
+                failed_parts: set[str] = set()
 
                 def downloaded(part: PartMetadata) -> None:
                     context.restore_context.change_part_state(
@@ -1835,7 +1836,12 @@ class TableBackup(BackupManager):
                     # LocalPartRestorer drains callbacks before advancing to the next table.
                     attach_parts.append(part)  # pylint: disable=cell-var-from-loop
 
-                def failed(part: PartMetadata, error: Exception) -> None:
+                def failed(part: PartMetadata, error: BaseException) -> None:
+                    # Both pools collect callbacks before advancing to the next table.
+                    # pylint: disable=cell-var-from-loop
+                    if not isinstance(error, Exception) or part.name in failed_parts:
+                        return
+                    failed_parts.add(part.name)
                     logging.warning(
                         "Restore of backup {} part {}.{} / {} failed: {}",
                         context.backup_meta.name,
@@ -1874,7 +1880,7 @@ class TableBackup(BackupManager):
                             and context.restore_context.part_downloaded(part)
                         ):
                             logging.debug(
-                                f"{table.database}.{table.name} part {part.name} already downloading, only attach it"
+                                f"{table.database}.{table.name} part {part.name} already downloaded, only attach it"
                             )
                             attach_parts.append(part)
                             continue
@@ -1889,7 +1895,6 @@ class TableBackup(BackupManager):
                                 )
                                 continue
                             cloud_storage_parts.append((table, part))
-                            attach_parts.append(part)
                             continue
 
                         # Keep the source identity; disk mapping affects only the destination.
@@ -1917,10 +1922,8 @@ class TableBackup(BackupManager):
                             "cloud_storage_restore_workers"
                         ],
                         keep_going,
-                        part_callback=partial(
-                            context.restore_context.change_part_state,
-                            PartState.DOWNLOADED,
-                        ),
+                        part_callback=downloaded,
+                        on_error=failed,
                     )
 
                     local_parts.wait()
@@ -1928,8 +1931,8 @@ class TableBackup(BackupManager):
                 context.ch_ctl.chown_detached_table_parts(
                     table, context.restore_context
                 )
-                # Cloud parts are collected before local downloads finish. ATTACH
-                # assigns new block numbers, so preserve the original part order.
+                # Downloads finish out of order, but ATTACH assigns new block
+                # numbers. Preserve the original order for ReplacingMergeTree.
                 attach_parts.sort(key=lambda part: split_part_name(part.name))
                 for part in attach_parts:
                     logging.debug(

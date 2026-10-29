@@ -748,8 +748,7 @@ class BackupLayout:
         part: PartMetadata,
         fs_part_path: str,
         callback: Callable,
-        *,
-        on_error: Callable[[BaseException], None] | None = None,
+        on_error: Callable[[PartMetadata, BaseException], None] | None = None,
     ) -> None:
         """Download a whole part, confirming success only after every file finishes."""
         remaining = 1 if part.tarball else len(part.files)
@@ -770,7 +769,7 @@ class BackupLayout:
             if not failed:
                 failed = True
                 if on_error:
-                    on_error(error)
+                    on_error(part, error)
 
         # Callbacks run serially in the caller of wait(), including with workers.
         # The scheduling gate also covers the synchronous (workers=0) path.

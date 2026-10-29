@@ -6,7 +6,7 @@ import json
 from collections import defaultdict
 from enum import Enum
 from os.path import exists
-from typing import Any, Callable, Mapping
+from typing import Any, Callable
 
 from ch_backup.backup.metadata import PartMetadata
 
@@ -31,11 +31,14 @@ class RestoreContext:
         self._state_file = config["restore_context_path"]
         self._state_file_dump_threshold = config["restore_context_sync_threshold_ops"]
         self._state_updates_cnt = 0
+        self._state_loaded = False
+        # Persisted diagnostics must not affect the current invocation's exit code.
+        self._has_failed_parts = False
 
         self._databases_dict: dict[str, dict[str, dict[str, PartState]]] = defaultdict(
             lambda: defaultdict(lambda: defaultdict(lambda: PartState.NOT_DOWNLOADED))
         )
-        self._failed: Mapping[str, Any] = defaultdict(
+        self._failed: dict[str, Any] = defaultdict(
             lambda: defaultdict(
                 lambda: {
                     "failed_paths": [],
@@ -47,8 +50,11 @@ class RestoreContext:
     @staticmethod
     def _dump_state_if_need(function: Callable) -> Any:
         def wrapper(self, *args, **kwargs):
-            result = function(self, *args, **kwargs)
             # pylint: disable=protected-access
+            # Load before mutations, including errors recorded before any part
+            # state is read. Otherwise loading can overwrite the new diagnostics.
+            self._load_state()
+            result = function(self, *args, **kwargs)
             self._state_updates_cnt += 1
             if self._state_updates_cnt >= self._state_file_dump_threshold:
                 self.dump_state()
@@ -62,17 +68,8 @@ class RestoreContext:
         """
         Databases property with lazy load.
         """
-        if not self._databases_dict:
-            if exists(self._state_file):
-                self._load_state()
+        self._load_state()
         return self._databases_dict
-
-    @_databases.setter
-    def _databases(self, databases: dict[str, dict[str, dict[str, PartState]]]) -> None:
-        """
-        Databases property setter.
-        """
-        self._databases_dict = databases
 
     def _part(self, part: PartMetadata) -> PartState:
         return self._databases[part.database][part.table][part.name]
@@ -83,6 +80,15 @@ class RestoreContext:
         Changes the state of the restoring part.
         """
         self._databases[part.database][part.table][part.name] = state
+        if state == PartState.RESTORED:
+            tables = self._failed.get(part.database, {})
+            errors = tables.get(part.table)
+            if errors is not None:
+                errors["failed_parts"].pop(part.name, None)
+                if not errors["failed_parts"] and not errors["failed_paths"]:
+                    del tables[part.table]
+                    if not tables:
+                        del self._failed[part.database]
 
     @_dump_state_if_need
     def add_failed_chown(self, database: str, table: str, path: str) -> None:
@@ -90,6 +96,7 @@ class RestoreContext:
         Save information about failed detached dir chown in context
         """
         self._failed[database][table]["failed_paths"].append(path)
+        self._has_failed_parts = True
 
     @_dump_state_if_need
     def add_failed_part(self, part: PartMetadata, e: Exception) -> None:
@@ -97,12 +104,13 @@ class RestoreContext:
         Save information about failed to restore part in context
         """
         self._failed[part.database][part.table]["failed_parts"][part.name] = repr(e)
+        self._has_failed_parts = True
 
     def has_failed_parts(self) -> bool:
         """
-        Returns whether some parts failed during restore.
+        Returns whether some parts failed during this restore invocation.
         """
-        return len(self._failed) > 0
+        return self._has_failed_parts
 
     def part_downloaded(self, part: PartMetadata) -> bool:
         """
@@ -133,15 +141,18 @@ class RestoreContext:
             )
 
     def _load_state(self) -> None:
+        if self._state_loaded:
+            return
+        if not exists(self._state_file):
+            self._state_loaded = True
+            return
         with open(self._state_file, "r", encoding="utf-8") as f:
             state: dict[str, Any] = json.load(f)
-            databases: dict[str, dict[str, dict[str, PartState]]] = defaultdict(
-                lambda: defaultdict(
-                    lambda: defaultdict(lambda: PartState.NOT_DOWNLOADED)
-                )
-            )
             for db, tables in state.get("databases", {}).items():
                 for table, parts in tables.items():
                     for part_name, part_state in parts.items():
-                        databases[db][table][part_name] = part_state
-            self._databases = databases
+                        self._databases_dict[db][table][part_name] = part_state
+            for db, tables in state.get("failed", {}).items():
+                for table, errors in tables.items():
+                    self._failed[db][table].update(errors)
+        self._state_loaded = True

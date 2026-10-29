@@ -86,7 +86,7 @@ class _Download:
         """Record completion without publishing from an executor callback."""
         self.complete = True
 
-    def failed(self, error: BaseException) -> None:
+    def failed(self, _part: PartMetadata, error: BaseException) -> None:
         """Remember a download error until every writer has stopped."""
         self.error = error
 

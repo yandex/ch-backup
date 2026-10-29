@@ -103,6 +103,7 @@ Feature: Backup & Restore
     ORDER BY (dt, id)
     PARTITION BY toYYYYMM(dt);
 
+    SYSTEM STOP MERGES test_db.hits;
     INSERT INTO test_db.hits VALUES
       (toDate('2024-10-24'), 1, '/index', 100);
     """
@@ -163,6 +164,7 @@ Feature: Backup & Restore
     """
     When we create clickhouse01 clickhouse backup
     And we restore clickhouse backup #0 to clickhouse02
+    # Merges can progress differently on each node. Compare logical rows with FINAL.
     When we execute query on clickhouse01
     """
     SELECT id, visits FROM test_db.hits FINAL ORDER BY id FORMAT Vertical;
@@ -184,6 +186,17 @@ Feature: Backup & Restore
     ──────
     id:     1
     visits: 111
+    """
+
+    # Compare every column after both nodes have merged the replaced rows.
+    When we execute queries on clickhouse01
+    """
+    SYSTEM START MERGES test_db.hits;
+    OPTIMIZE TABLE test_db.hits FINAL;
+    """
+    And we execute query on clickhouse02
+    """
+    OPTIMIZE TABLE test_db.hits FINAL;
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
@@ -273,9 +286,10 @@ Feature: Backup & Restore
     And we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
-  Scenario: Restore of a backup with a corrupted data part
+  Scenario Outline: Restore of a backup with a corrupted data part: <mode>
     When we drop all databases at clickhouse01
     And we drop all databases at clickhouse02
+    And we drop restore context at clickhouse02
     And we execute queries on clickhouse01
     """
     CREATE DATABASE test_db;
@@ -285,27 +299,70 @@ Feature: Backup & Restore
     INSERT INTO test_db.test_table SELECT number % 2, number FROM system.numbers LIMIT 100;
     """
     And we create clickhouse01 clickhouse backup
+    """
+    name: corrupted_part_<mode>
+    """
     Given ch-backup configuration on clickhouse02
     """
     backup:
-        restore_fail_on_attach_error: False
+        restore_fail_on_attach_error: <fail_on_error>
+    clickhouse:
+        settings:
+            log_queries: 1
+            log_comment: corrupted_part_<mode>
     """
     And file "data/test_db/test_table/0_1_1_0/0_1_1_0.tar" in clickhouse01 backup #0 data set to
     """
     Corrupted backup data part
     """
-    When we restore clickhouse backup #0 to clickhouse02
+    When we try to execute command on clickhouse02
     """
-    keep_going: true
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore corrupted_part_<mode> <keep_going>
     """
-    And we execute query on clickhouse02
+    Then command exits with code <exit_code>
+    When we execute query on clickhouse02
     """
-    SELECT count() FROM system.parts WHERE table = 'test_table';
+    SELECT count(), countIf(partition_id = 0) FROM test_db.test_table;
     """
     Then we get response
     """
-    1
+    <rows>	0
     """
+    When we execute query on clickhouse02
+    """
+    SYSTEM FLUSH LOGS;
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT countIf(position(query, '0_1_1_0') > 0),
+           countIf(type = 'QueryFinish' AND position(query, '0_1_1_0') = 0)
+    FROM system.query_log
+    WHERE log_comment = 'corrupted_part_<mode>'
+      AND position(query, 'ATTACH PART') > 0;
+    """
+    Then we get response
+    """
+    0	<attached>
+    """
+    When we execute command on clickhouse02
+    """
+    python3 - <<'PY'
+    import json
+    with open('/tmp/ch_backup_restore_state.json') as stream:
+        state = json.load(stream)
+    assert state['databases']['test_db']['test_table']['0_1_1_0'] == 'invalid', state
+    error = state['failed']['test_db']['test_table']['failed_parts']['0_1_1_0']
+    assert 'ciphertext' in error.lower(), error
+    assert 'NO_FILE_IN_DATA_PART' not in error, error
+    PY
+    """
+    And we drop restore context at clickhouse02
+
+    Examples:
+      | mode    | keep_going   | fail_on_error | exit_code | rows | attached |
+      | lenient | --keep-going | false         | 0         | 50   | 1        |
+      | strict  | --keep-going | true          | 1         | 50   | 1        |
+      | stop    |              | false         | 1         | 0    | 0        |
 
   Scenario: Overwrite existing table on destination node when UUID is equal and schema is mismatched
     When we drop all databases at clickhouse01

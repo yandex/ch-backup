@@ -220,6 +220,7 @@ class PipelineExecutor:
 
         return self._exec_pipeline(job_id, pipeline, is_async)
 
+    # pylint: disable=too-many-positional-arguments
     def download_file(
         self,
         remote_path: str,
@@ -227,7 +228,6 @@ class PipelineExecutor:
         is_async: bool,
         encryption: bool,
         compression: bool,
-        *,
         callback: Callable | None = None,
         on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
@@ -255,7 +255,6 @@ class PipelineExecutor:
         encryption: bool,
         compression: bool,
         callback: Callable | None,
-        *,
         on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         """

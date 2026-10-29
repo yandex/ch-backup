@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import socket
+from contextlib import suppress
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Sequence
@@ -39,6 +40,28 @@ class BackupState(Enum):
     CREATING = "creating"
     DELETING = "deleting"
     PARTIALLY_DELETED = "partially_deleted"
+    FAILED = "failed"
+
+
+class CopyScope(Enum):
+    """
+    Parts of a backup copied by the "copy" command.
+    """
+
+    FILES = "files"
+    CLOUD_STORAGE = "cloud_storage"
+
+
+ALL_SCOPES = frozenset(CopyScope)
+
+
+class CopyScopeStatus(Enum):
+    """
+    Statuses of copying of a scope saved in metadata of the copy.
+    """
+
+    PENDING = "pending"
+    COMPLETED = "completed"
     FAILED = "failed"
 
 
@@ -89,6 +112,8 @@ class BackupMetadata:
         self.cloud_storage: CloudStorageMetadata = CloudStorageMetadata()
         # Location of the storage the backup was copied from (for backups created by "copy" command).
         self.copied_from: dict | None = None
+        self.copy_scopes: dict[CopyScope, CopyScopeStatus] = {}
+        self.copy_updated_at: datetime | None = None
         self._skipped_data_counts = (0, 0)
 
         self._state = BackupState.CREATING
@@ -165,6 +190,15 @@ class BackupMetadata:
         meta: dict[str, Any] = {}
         if self.copied_from:
             meta["copied_from"] = self.copied_from
+        if self.copy_scopes or self.copy_updated_at:
+            meta["copy"] = {
+                "scopes": {
+                    scope.value: status.value
+                    for scope, status in self.copy_scopes.items()
+                }
+            }
+            if self.copy_updated_at:
+                meta["copy"]["updated_at"] = self._format_time(self.copy_updated_at)
         data_skipped_tables, incomplete_tables = self.count_skipped_data_tables()
         if data_skipped_tables:
             meta["data_skipped_tables"] = data_skipped_tables
@@ -349,6 +383,16 @@ class BackupMetadata:
             backup.encrypted = meta.get("encrypted", True)
             backup.metadata_encrypted = meta.get("metadata_encrypted")
             backup.copied_from = meta.get("copied_from")
+            backup.copy_scopes = {}
+            copy_meta = meta.get("copy") or {}
+            for scope in CopyScope:
+                with suppress(ValueError):
+                    backup.copy_scopes[scope] = CopyScopeStatus(
+                        (copy_meta.get("scopes") or {}).get(scope.value)
+                    )
+            backup.copy_updated_at = cls._load_time(
+                copy_meta, "updated_at", backup.time_format
+            )
             backup._skipped_data_counts = (
                 meta.get("data_skipped_tables", 0),
                 meta.get("incomplete_tables", 0),
@@ -688,12 +732,15 @@ class BackupMetadata:
         return value.strftime(self.time_format)
 
     @staticmethod
-    def _load_time(meta: dict, attr: str) -> datetime | None:
+    def _load_time(
+        meta: dict, attr: str, time_format: str | None = None
+    ) -> datetime | None:
+        """Read a timestamp using the supplied format or the metadata format."""
         attr_value = meta.get(attr)
         if not attr_value:
             return None
 
-        result = datetime.strptime(attr_value, meta["time_format"])
+        result = datetime.strptime(attr_value, time_format or meta["time_format"])
         if result.tzinfo is None:
             result = result.replace(tzinfo=timezone.utc)
 

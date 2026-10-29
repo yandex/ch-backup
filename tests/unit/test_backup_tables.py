@@ -20,7 +20,7 @@ from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata, TableMetadata
 from ch_backup.backup.metadata.detached_part_metadata import DetachedPartMetadata
 from ch_backup.backup.metadata.table_metadata import DataSkippedReason
-from ch_backup.backup.restore_context import RestoreContext
+from ch_backup.backup.restore_context import PartState, RestoreContext
 from ch_backup.backup_context import BackupContext
 from ch_backup.calculators import calc_aligned_files_size, calc_tarball_size
 from ch_backup.clickhouse.client import ClickhouseError
@@ -67,6 +67,78 @@ _METADATA_MTIME_CHANGED = replace(_METADATA_UNCHANGED, mtime_ns=1689000195800011
 _METADATA_CTIME_CHANGED = replace(_METADATA_UNCHANGED, ctime_ns=16890001958000111)
 _FREEZE_ERROR = ClickhouseError("Cannot freeze table")
 _EXISTS_ERROR = ClickhouseError("Cannot check table existence")
+
+
+@pytest.mark.parametrize("newest_source", ["download", "cloud", "downloaded"])
+# pylint: disable=protected-access
+def test_restore_attaches_parts_in_source_order(tmp_path, newest_source):
+    # Unlike an integration run, force newer downloads to finish first.
+    context = _make_backup_context()
+    context.config["restore_context_path"] = str(tmp_path / "restore.json")
+    context.backup_layout = layout = Mock()
+    context.ch_ctl = ch_ctl = Mock()
+    ch_ctl.get_detached_part_path.side_effect = lambda _table, _disk, name: str(
+        tmp_path / "detached" / name
+    )
+    checksums = b"checksums format version: 3\n\x00"
+    table = TableMetadata("db1", "tbl", "ReplacingMergeTree", None)
+    names = ["all_1_1_0", "all_2_2_0", "all_10_10_0"]
+    for name in names:
+        disk = "cloud" if name == names[-1] and newest_source == "cloud" else "default"
+        table.add_part(
+            PartMetadata(
+                "db1",
+                "tbl",
+                name,
+                md5(checksums).hexdigest(),
+                BLOCKSIZE,
+                ["checksums.txt"],
+                True,
+                disk_name=disk,
+            )
+        )
+    parts = table.get_parts()
+    collected = {name: threading.Event() for name in names}
+    disks = Mock()
+    if newest_source == "cloud":
+        context.backup_meta.cloud_storage.add_disk("cloud")
+        disks.copy_parts.side_effect = (
+            lambda _backup, _parts, *_args, part_callback, **_kwargs: complete(
+                part_callback, parts[-1]
+            )
+        )
+    elif newest_source == "downloaded":
+        destination = tmp_path / "detached" / names[-1]
+        destination.mkdir(parents=True)
+        (destination / "checksums.txt").write_bytes(checksums)
+        context.restore_context.change_part_state(PartState.DOWNLOADED, parts[-1])
+        collected[names[-1]].set()
+
+    def complete(callback, part):
+        callback(part)
+        collected[part.name].set()
+
+    def download(_backup, part, path, callback, **_kwargs):
+        index = names.index(part.name)
+
+        def task():
+            if index + 1 < len(names):
+                assert collected[names[index + 1]].wait(
+                    10
+                ), "newer part was not collected"
+            destination = Path(path)
+            destination.mkdir(parents=True)
+            (destination / "checksums.txt").write_bytes(checksums)
+
+        pool.submit(part.name, task, callback=lambda: complete(callback, part))
+
+    with ThreadExecPool(3) as pool:
+        layout.download_data_part.side_effect = download
+        layout.wait.side_effect = pool.wait_all
+        TableBackup._restore_data(context, [table], disks, False, False)
+
+    assert [call.args[1] for call in ch_ctl.attach_part.call_args_list] == names
+    assert all(context.restore_context.part_restored(part) for part in parts)
 
 
 @pytest.mark.parametrize(

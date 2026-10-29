@@ -4,8 +4,11 @@ Backup metadata.
 
 from ch_backup.backup.metadata.access_control_metadata import AccessControlMetadata
 from ch_backup.backup.metadata.backup_metadata import (
+    ALL_SCOPES,
     BackupMetadata,
     BackupState,
+    CopyScope,
+    CopyScopeStatus,
     sanitize_backup_name,
 )
 from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageMetadata

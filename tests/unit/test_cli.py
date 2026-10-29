@@ -40,7 +40,7 @@ def test_copy_command_writes_report_on_success_error_and_signal(
     backup = copy_backup
     report_path = tmp_path / "report.json"
 
-    def copy(_target, _names, *, keep_going, report, command_start):
+    def copy(_target, _names, *, keep_going, report, command_start, **_):
         assert keep_going
         assert command_start.tzinfo is not None
         report.backups.append(
@@ -136,6 +136,77 @@ def test_copy_command_passes_resume(
     assert target_config["copy"]["resume"] is resume
 
 
+@pytest.mark.parametrize(
+    "args,scopes",
+    [
+        ([], ()),
+        (["--scope", "files"], ("files",)),
+        (
+            ["--scope", "cloud_storage", "--scope", "files"],
+            ("cloud_storage", "files"),
+        ),
+    ],
+)
+def test_copy_command_passes_scopes(
+    args: list[str], scopes: tuple, copy_backup: MagicMock
+) -> None:
+    backup = copy_backup
+
+    def copy(_target, _names, *, report, **_):
+        report.backups.append(
+            BackupCopyResult(
+                "b1",
+                status="partial",
+                backup_state="creating",
+                scopes={"files": "completed", "cloud_storage": "pending"},
+            )
+        )
+        return ["b1"], []
+
+    backup.copy.side_effect = copy
+    group = Group()
+    group.add_command(cli.copy_command)
+
+    result = CliRunner().invoke(group, ["copy", "--all", *args], obj={"backup": backup})
+
+    assert result.exit_code == 0
+    assert backup.copy.call_args.kwargs["scopes"] == (
+        frozenset(map(cli.CopyScope, scopes)) or cli.ALL_SCOPES
+    )
+    assert "b1: partial, the copy is creating in target storage" in result.output
+    assert "scopes: files completed, cloud_storage pending" in result.output
+
+
+def test_copy_command_takes_last_copy_from_target_without_files_scope(
+    copy_backup: MagicMock,
+) -> None:
+    backup = copy_backup
+    backup.copy.return_value = (["b1"], [])
+    group = Group()
+    group.add_command(cli.copy_command)
+
+    result = CliRunner().invoke(
+        group, ["copy", "LAST", "--scope", "cloud_storage"], obj={"backup": backup}
+    )
+
+    assert result.exit_code == 0
+    backup.list.assert_not_called()
+    assert backup.copy.call_args.args[1] == ["LAST"]
+
+
+def test_copy_command_rejects_unknown_scope() -> None:
+    backup = MagicMock()
+    group = Group()
+    group.add_command(cli.copy_command)
+
+    result = CliRunner().invoke(
+        group, ["copy", "--all", "--scope", "data"], obj={"backup": backup}
+    )
+
+    assert result.exit_code == 2
+    backup.copy.assert_not_called()
+
+
 @pytest.mark.parametrize("state", [None, BackupState.FAILED])
 @pytest.mark.parametrize("keep_going", [False, True])
 def test_copy_named_validation_failure_has_report_row(
@@ -144,7 +215,7 @@ def test_copy_named_validation_failure_has_report_row(
     ctx = CopyTestContext([_backup("requested", state=state)] if state else [])
     backup = copy_backup
 
-    def copy(_target, names, *, keep_going, report, command_start):
+    def copy(_target, names, *, keep_going, report, command_start, **_):
         assert command_start.tzinfo is not None
         return ctx.copy(names, keep_going=keep_going, report=report)
 

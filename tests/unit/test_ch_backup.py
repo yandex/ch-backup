@@ -2,6 +2,8 @@
 ClickhouseBackup unit tests.
 """
 
+# pylint: disable=too-many-lines
+
 from collections import defaultdict
 from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime, timedelta, timezone
@@ -362,13 +364,14 @@ def test_backup_skips_unreadable_old_metadata(force, deduplicate_parts):
     }
     context.ch_ctl.get_databases.return_value = []
     context.backup_layout.get_backup_names.return_value = ["broken"]
-    context.backup_layout.get_backups.side_effect = _get_backups_with_unreadable()
+    get_backups = Mock(side_effect=_get_backups_with_unreadable())
+    context.backup_layout.get_backups = get_backups
     sources = BackupSources(False, False, False, False, False, False)
 
     assert backup.backup(sources, name="new", force=force) == ("new", None)
     assert context.backup_meta.state == BackupState.CREATED
     if force and not deduplicate_parts:
-        context.backup_layout.get_backups.assert_not_called()
+        get_backups.assert_not_called()
 
 
 def _backup_with_context(
@@ -589,11 +592,20 @@ def _light_backup(
     return meta
 
 
-def _purge(backups: list[Mock], retain_count: int, retain_time: dict) -> list[str]:
+def _purge(
+    backups: list[Mock],
+    retain_count: int,
+    retain_time: dict,
+    retain_incomplete_copy_time: dict | None = None,
+) -> list[str]:
     """Helper: purge backups listed newest first and return the deleted ones."""
     backup, context = _backup_with_context()
     context.locker = MagicMock()
-    context.config = {"retain_time": retain_time, "retain_count": retain_count}
+    context.config = {
+        "retain_time": retain_time,
+        "retain_count": retain_count,
+        "retain_incomplete_copy_time": retain_incomplete_copy_time,
+    }
     context.backup_layout.get_backups.return_value = backups
     with (
         patch(
@@ -668,6 +680,52 @@ def test_deleted_incomplete_backup_does_not_keep_a_complete_one() -> None:
         "incomplete",
         "older",
     ]
+
+
+def _copy(backup: Mock, updated_days: int | None) -> Mock:
+    """Make the backup a copy that is not completed, saved by copying updated_days ago."""
+    backup.state = BackupState.CREATING
+    backup.copy_updated_at = (
+        None if updated_days is None else util.now() - timedelta(days=updated_days)
+    )
+    return backup
+
+
+def test_purge_keeps_copies_being_copied() -> None:
+    """A copy between scopes of the copy command is kept while copying goes on."""
+    backups = [
+        _light_backup("complete", 0),
+        _copy(_light_backup("recent", 30), updated_days=1),
+        _copy(_light_backup("stale", 31), updated_days=10),
+        _copy(_light_backup("unknown", 32), updated_days=None),
+    ]
+
+    assert _purge(
+        backups, retain_count=1, retain_time={}, retain_incomplete_copy_time={"days": 7}
+    ) == ["stale", "unknown"]
+    assert _purge(backups, retain_count=1, retain_time={}) == [
+        "recent",
+        "stale",
+        "unknown",
+    ]
+
+
+def test_purge_partial_keeps_copies_being_copied() -> None:
+    """delete --purge-partial keeps a copy between scopes of the copy command too."""
+    backup, context = _backup_with_context()
+    context.locker = MagicMock()
+    context.config = {"retain_incomplete_copy_time": {"days": 7}}
+    recent = _copy(_readable_backup("recent"), updated_days=1)
+    stale = _copy(_readable_backup("stale"), updated_days=10)
+    context.backup_layout.get_backups.side_effect = _get_backups_with_unreadable(
+        _readable_backup("newest"), recent, stale
+    )
+    context.backup_layout.reload_backup.side_effect = lambda meta, **_: meta
+
+    with patch.object(backup, "_delete", return_value=("stale", None)) as delete:
+        backup.delete("broken", purge_partial=True)
+
+    assert [call.args[0] for call in delete.call_args_list] == [stale]
 
 
 def test_purge_by_age_keeps_nothing_old_without_incomplete_backups() -> None:
@@ -849,7 +907,8 @@ def test_delete_unfreezes_only_own_backups(
     meta = _backup_metadata(copied_from=copied_from)
     context = MagicMock()
     context.backup_layout.get_backup.return_value = meta
-    context.backup_layout.delete_backup.side_effect = lambda name, unfreeze: unfreeze()
+    delete_backup = Mock(side_effect=lambda name, unfreeze: unfreeze())
+    context.backup_layout.delete_backup = delete_backup
     backup = ClickhouseBackup.__new__(ClickhouseBackup)
     backup.__dict__["_context"] = context
 
@@ -858,8 +917,8 @@ def test_delete_unfreezes_only_own_backups(
         None,
     )
 
-    context.backup_layout.delete_backup.assert_called_once()
-    assert context.backup_layout.delete_backup.call_args.args[0] == "backup1"
+    delete_backup.assert_called_once()
+    assert delete_backup.call_args.args[0] == "backup1"
     if unfreeze_expected:
         context.ch_ctl.system_unfreeze.assert_called_once_with("backup1")
     else:

@@ -8,6 +8,7 @@ from itertools import islice
 from tempfile import SpooledTemporaryFile
 from typing import Iterator, Literal, TextIO
 
+from ch_backup.backup.metadata import CopyScopeStatus
 from ch_backup.exceptions import ClickhouseBackupError
 
 
@@ -58,12 +59,16 @@ class BackupCopyResult:
     """Confirmed operations and errors for one backup."""
 
     name: str
-    status: Literal["copied", "skipped", "failed", "not_processed"] = "not_processed"
+    status: Literal["copied", "partial", "skipped", "failed", "not_processed"] = (
+        "not_processed"
+    )
+    backup_state: str | None = None
     objects_total: int | None = None
     objects_copied: int = 0
     objects_failed: int = 0
     objects_skipped: int = 0
     known_bytes_copied: int = 0
+    scopes: dict[str, str] | None = None
     errors: CopyErrors = field(default_factory=CopyErrors)
 
     def completed(self, size: int = 0) -> None:
@@ -124,11 +129,12 @@ def _write_report(report: CopyReport, report_file: TextIO) -> None:
 
 def print_copy_report(report: CopyReport, report_path: str | None) -> None:
     """Print confirmed results and optionally save them without masking copy errors."""
-    statuses = ("copied", "skipped", "failed", "not_processed")
+    statuses = ("copied", "partial", "skipped", "failed", "not_processed")
     for result in report.backups:
-        suffix = (
-            ", already present in target storage" if result.status == "skipped" else ""
-        )
+        suffix = {
+            "skipped": ", already present in target storage",
+            "partial": f", the copy is {result.backup_state} in target storage",
+        }.get(result.status, "")
         print(f"{result.name}: {result.status}{suffix}")
         if result.objects_total is not None:
             print(
@@ -139,6 +145,15 @@ def print_copy_report(report: CopyReport, report_path: str | None) -> None:
                     else ""
                 )
                 + f"{result.objects_failed} failed; known bytes copied: {result.known_bytes_copied}"
+            )
+        if result.scopes and set(result.scopes.values()) != {
+            CopyScopeStatus.COMPLETED.value
+        }:
+            print(
+                "  scopes: "
+                + ", ".join(
+                    f"{name} {status}" for name, status in result.scopes.items()
+                )
             )
         for error in result.errors:
             path = error.get("target", error.get("source", ""))
