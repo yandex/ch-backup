@@ -57,7 +57,12 @@ def check_local_part(part: PartMetadata, path: str, *, existing: bool = False) -
     paths = [root / name for name in files]
     if any(file.is_symlink() for file in paths):
         raise ClickhouseBackupError(f'Part contains a symlink: "{path}"')
-    if calc_aligned_files_size(paths, alignment=BLOCKSIZE) != part.size:
+    # Per-file and early TAR backups stored unaligned sizes. Copying and
+    # deduplication preserve those values, even in backups made by new versions.
+    if (
+        calc_aligned_files_size(paths, alignment=BLOCKSIZE) != part.size
+        and calc_aligned_files_size(paths) != part.size
+    ):
         raise ClickhouseBackupError(f'Part size does not match backup: "{path}"')
     if (
         not part.checksum
@@ -179,7 +184,21 @@ class LocalPartRestorer:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        if not self._wait_started:
+        if (
+            not self._drained
+            and exc_value is not None
+            and (not isinstance(exc_value, Exception) or is_broken_executor(exc_value))
+        ):
+            # A signal during submission must not turn into an unbounded drain.
+            # Forced shutdown is bounded; leave staging in case a writer survives.
+            try:
+                self._layout.abort()
+            except Exception:
+                logging.warning(
+                    "Failed to stop part downloads while handling a fatal error",
+                    exc_info=True,
+                )
+        elif not self._wait_started:
             try:
                 self._layout.wait(keep_going=True)
                 self._drained = True

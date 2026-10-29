@@ -2,16 +2,20 @@
 
 import copy
 import os
+import signal
 import struct
 import threading
+import time
 from concurrent.futures import BrokenExecutor
 from hashlib import md5
+from multiprocessing.process import BaseProcess
 from pathlib import Path
 from tarfile import GNU_FORMAT, TarInfo
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
 from ch_backup.backup.metadata.table_metadata import TableMetadata
@@ -19,7 +23,9 @@ from ch_backup.backup.restore_context import PartState, RestoreContext
 from ch_backup.clickhouse.models import Database
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import StorageError, TerminatingSignal
+from ch_backup.logic.part_restore import LocalPartRestorer
 from ch_backup.logic.table import TableBackup
+from ch_backup.storage.async_pipeline.base_pipeline import exec_pool
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.storage.async_pipeline.stages.filesystem.write_files_stage import (
     UnpackTarballStage,
@@ -116,10 +122,15 @@ def _run(restore, keep_going=False):
 
 
 @pytest.mark.parametrize("tarball", [True, False])
-def test_publish_before_state_and_attach(restore, tarball):
+@pytest.mark.parametrize("legacy_size", [False, True])
+def test_publish_before_state_and_attach(restore, tarball, legacy_size):
     context, _, part, _, _, root = restore
     part.raw_metadata.tarball = tarball
-    restore[1].raw_metadata["parts"][part.name]["tarball"] = part.tarball
+    if legacy_size:
+        part.raw_metadata.size = sum(map(len, _files().values()))
+    restore[1].raw_metadata["parts"][part.name].update(
+        tarball=part.tarball, bytes=part.size
+    )
     original = context.restore_context.change_part_state
 
     def change(state, current):
@@ -199,7 +210,7 @@ def test_failed_download_is_private_and_retry_starts_clean(
     assert all(not path.exists() for path in failed_paths)
 
 
-@pytest.mark.parametrize("damage", ["missing", "extra", "checksum"])
+@pytest.mark.parametrize("damage", ["missing", "extra", "checksum", "size"])
 def test_download_metadata_mismatch_is_not_published(restore, damage):
     context, _, part, _, _, root = restore
     files = _files()
@@ -207,6 +218,8 @@ def test_download_metadata_mismatch_is_not_published(restore, damage):
         del files["count.txt"]
     elif damage == "extra":
         files["extra.txt"] = b"x"
+    elif damage == "size":
+        restore[1].raw_metadata["parts"][part.name]["bytes"] = 123
     else:
         files["checksums.txt"] = b"wrong checksum"
     with patch(__name__ + "._files", return_value=files):
@@ -219,10 +232,14 @@ def test_download_metadata_mismatch_is_not_published(restore, damage):
 
 @pytest.mark.parametrize("state", [PartState.NOT_DOWNLOADED, PartState.DOWNLOADED])
 @pytest.mark.parametrize(
-    "contents", ["matching", "corrupt", "missing", "extra", "file"]
+    "contents", ["matching", "legacy", "corrupt", "missing", "extra", "file"]
 )
 def test_existing_destination_is_verified_and_preserved(restore, state, contents):
     context, _, part, storage, _, root = restore
+    if contents == "legacy":
+        restore[1].raw_metadata["parts"][part.name]["bytes"] = sum(
+            map(len, _files().values())
+        )
     target = root / "detached" / part.name
     if contents != "missing":
         target.mkdir(parents=True)
@@ -239,7 +256,7 @@ def test_existing_destination_is_verified_and_preserved(restore, state, contents
             target.write_bytes(b"preserved")
     context.restore_context.change_part_state(state, part)
     _run(restore, True)
-    if contents in {"matching", "missing"}:
+    if contents in {"matching", "legacy", "missing"}:
         assert context.restore_context.part_restored(part)
         assert (root / part.name / "count.txt").read_bytes() == b"10"
     else:
@@ -325,6 +342,8 @@ def test_broken_executor_is_fatal_with_keep_going(restore):
     storage.download_files.side_effect = BrokenExecutor("broken")
     with pytest.raises(Exception, match="Failed to download part"):
         _run(restore, True)
+    storage.wait.assert_not_called()
+    storage.abort.assert_called_once_with()
 
 
 @pytest.mark.parametrize("error", [TerminatingSignal(), BrokenExecutor("broken")])
@@ -340,14 +359,79 @@ def test_fatal_drain_error_propagates_after_submission_failure(restore, error):
     assert raised.value is error or raised.value.__cause__ is error
 
 
-def test_executor_failure_while_draining_does_not_replace_termination(restore):
+def test_abort_failure_does_not_replace_termination(restore):
     _, _, _, storage, _, _ = restore
     termination = TerminatingSignal()
     storage.download_files.side_effect = termination
-    storage.wait.side_effect = BrokenExecutor("broken")
+    storage.abort.side_effect = BrokenExecutor("broken")
     with pytest.raises(TerminatingSignal) as raised:
         _run(restore)
     assert raised.value is termination
+    storage.wait.assert_not_called()
+
+
+def _unfinished_download(path: str, release: Path) -> None:
+    Path(path).write_bytes(b"partial")
+    while not release.exists():
+        time.sleep(0.01)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Uses SIGTERM")
+def test_sigterm_during_submission_stops_workers_and_keeps_staging(
+    tmp_path, monkeypatch
+):
+    # pylint: disable=protected-access
+    monkeypatch.setattr(logging.logger._core, "handlers", {})  # type: ignore[attr-defined]
+    monkeypatch.setattr(exec_pool, "TIMEOUT_WORKER_TERMINATING_SEC", 0.1)
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["backup"]["path_root"] = "backups"
+    layout = BackupLayout(config)  # type: ignore[arg-type]
+    monkeypatch.setattr(layout, "_get_escaped_if_exists", lambda *_args: "data")
+    pool = layout._storage_loader._ploader._exec_pool
+    assert pool is not None
+    processes: list[BaseProcess] = []
+    completed: list[PartMetadata] = []
+    failed = MagicMock()
+    release = tmp_path / "release"
+    # Release the worker even with the old, broken drain path, so regression
+    # failures cannot hang pytest. Successful cancellation never needs this file.
+    release_timer = threading.Timer(10, release.touch)
+    destination = tmp_path / "detached" / "all_1_1_0"
+    staging = []
+
+    def download(*, local_path, **_kwargs):
+        staging.append(Path(local_path))
+        ready = Path(local_path) / "count.txt"
+        pool.submit("unfinished", _unfinished_download, str(ready), release)
+        processes.extend(pool._pool._processes.values())
+        release_timer.start()
+        while not ready.exists():
+            assert not release.exists(), "worker did not start"
+            time.sleep(0.01)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    monkeypatch.setattr(layout._storage_loader, "download_files", download)
+    part = PartMetadata("db", "table", destination.name, "checksum", 1024, [], True)
+    try:
+        with pytest.raises(TerminatingSignal):
+            with LocalPartRestorer(
+                layout,
+                BackupMetadata("backup", "2", "25.8", "%Y-%m-%d"),
+                keep_going=True,
+                on_success=completed.append,
+                on_error=failed,
+            ) as restorer:
+                restorer.download(part, str(destination))
+        assert not release.exists(), "termination waited for the download"
+        assert all(not process.is_alive() for process in processes)
+        assert (staging[0] / "count.txt").read_bytes() == b"partial"
+        assert not destination.exists()
+        assert not completed
+        failed.assert_not_called()
+    finally:
+        release_timer.cancel()
+        release.touch()
+        pool.shutdown(graceful=False)
 
 
 @pytest.mark.parametrize("cut", [1, 511, 512, 562, 612, 1023])

@@ -1345,6 +1345,10 @@ class BackupLayout:
         except Exception as e:
             raise StorageError("Failed to complete async operations") from e
 
+    def abort(self) -> None:
+        """Stop pending transfers without waiting for their I/O to finish."""
+        self._storage_loader.abort()
+
     def get_backup_path(self, backup_name: str) -> str:
         """
         Get backup path by backup name.

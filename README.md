@@ -68,10 +68,12 @@ metadata conflict stops the restore immediately. The behavior without
 
 Local parts, including old per-file backups, are downloaded into a new private
 `.ch-backup-<uuid>` directory beside their destination in `detached`. The complete
-file list, aligned size and `checksums.txt` checksum are checked before an atomic
+file list, size and `checksums.txt` checksum are checked before an atomic
 rename publishes the part. Only published parts are marked `downloaded` and
 passed to `ATTACH`. Downloads used by `--parts-from-backup` also check the data
-before publication.
+before publication. Size validation accepts both the current aligned size and
+the unaligned size recorded by old per-file and early TAR backups, including
+parts copied or linked from those backups.
 
 An existing destination is reused only after checking its metadata and reading
 its data to verify the file hashes in `checksums.txt`. This can take time for a
@@ -80,7 +82,8 @@ as a failure. Move it aside or remove it after deciding its data is no longer
 needed, then retry. A saved `downloaded` state does not bypass this check.
 
 Ordinary failures clean up private staging directories after their writers finish.
-An abrupt termination or fatal executor failure can leave `.ch-backup-*`
+On a termination signal, transfer workers are stopped without waiting for their
+downloads to finish. A termination or fatal executor failure can leave `.ch-backup-*`
 directories; retries use new directories. Remove leftovers manually only after
 the previous restore and its workers have stopped.
 
