@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import Literal, Sequence
+from typing import Iterator, Literal, Sequence
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
@@ -39,7 +39,7 @@ class CloudStorageDecryption:
     def __init__(self, config: Config | dict, backup_layout: BackupLayout) -> None:
         self._layout = backup_layout
         self._storage_loader = StorageLoader(config)
-        self._staging_objects: dict[tuple, tuple[dict, set[str]]] = {}
+        self._cleanup_plans: list[tuple[str, dict, str]] = []
 
     # pylint: disable=too-many-positional-arguments,too-many-locals
     def decrypt(
@@ -114,22 +114,29 @@ class CloudStorageDecryption:
             disk_name,
         )
         self._decrypt_entries(entries, disk_name, keep_going)
-        if entries:
-            staging = self._staging_objects.setdefault(
-                storage_id(staging_storage), (staging_storage, set())
-            )
-            staging[1].update(entries)
+
+    def register_cleanup(
+        self, metadata_root: str, staging_storage: dict, staging_path: str
+    ) -> None:
+        """Remember where to find exact staging keys after restore."""
+        self._cleanup_plans.append(
+            (metadata_root, staging_storage, _normalize_prefix(staging_path))
+        )
 
     def cleanup(self) -> None:
         """Remove plaintext staging objects after a completed restore."""
-        for storage, paths in self._staging_objects.values():
-            logging.info(
-                "Removing {} decrypted cloud storage staging objects", len(paths)
-            )
+        for metadata_root, storage, staging_path in self._cleanup_plans:
             engine = get_storage_engine(storage)
-            for batch in chunked(sorted(paths), storage["bulk_delete_chunk_size"]):
-                engine.delete_files(batch)
-        self._staging_objects.clear()
+            for batch in chunked(
+                _staging_object_paths(metadata_root, staging_path),
+                storage["bulk_delete_chunk_size"],
+            ):
+                paths = list(dict.fromkeys(batch))
+                logging.info(
+                    "Removing {} decrypted cloud storage staging objects", len(paths)
+                )
+                engine.delete_files(paths)
+        self._cleanup_plans.clear()
 
     def _decrypt_entries(
         self, entries: dict[str, CopyEntry], disk_name: str, keep_going: bool
@@ -293,3 +300,21 @@ def _object_relative_key(key: str, source_path: str, full_key: bool) -> str:
             f'Cloud storage object key "{key}" is outside source prefix "{source_path}"'
         )
     return key[len(prefix) :]
+
+
+def _staging_object_paths(metadata_root: str, staging_path: str) -> Iterator[str]:
+    """Yield exact staging keys referenced by downloaded disk metadata."""
+    for file_path in Path(metadata_root).rglob("*"):
+        if not file_path.is_file() or file_path.name == FROZEN_METADATA_FNAME:
+            continue
+        try:
+            metadata = parse_object_storage_metadata(file_path.read_bytes())
+        except ObjectStorageMetadataError as e:
+            raise ClickhouseBackupError(
+                f'Failed to read cloud storage metadata file "{file_path}" for cleanup'
+            ) from e
+        for obj in metadata.objects:
+            relative_key = _object_relative_key(
+                obj.key, staging_path, metadata.full_object_keys
+            )
+            yield os.path.join(staging_path, relative_key)

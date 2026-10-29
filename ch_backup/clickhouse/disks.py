@@ -290,13 +290,19 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         value: BaseException | None,
         traceback: TracebackType | None,
     ) -> bool:
+        return self._cleanup(exc_type, value)
+
+    def _cleanup(
+        self, exc_type: type[BaseException] | None, value: BaseException | None
+    ) -> bool:
+        """Remove plaintext staging and then the temporary ClickHouse disks."""
         if exc_type is None and self._decryption is not None:
             try:
                 self._decryption.cleanup()
             except BaseException as e:
-                self._cleanup(type(e), e)
+                super()._cleanup(type(e), e)
                 raise
-        return self._cleanup(exc_type, value)
+        return super()._cleanup(exc_type, value)
 
     def _linked_backups_data(
         self,
@@ -374,7 +380,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
 
         orig_disk_endpoint = self._disks[disk_name]["endpoint"]
         disk_config = self._source_disk_config(backup_meta, disk_name)
-        rewrite_paths = None
+        decryption_staging = None
         if backup_meta.cloud_storage.data_encryption is not None:
             if self._decryption is None:
                 self._decryption = CloudStorageDecryption(
@@ -402,7 +408,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
             disk_config = self._storage_disk_config(
                 disk_name, staging_storage, staging_path
             )
-            rewrite_paths = source_path, staging_path
+            decryption_staging = staging_storage, source_path, staging_path
         tmp_disk_endpoint = disk_config["endpoint"]
 
         if self._use_local_copy and not is_equal_s3_endpoints(
@@ -423,16 +429,21 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
             disk_name,
             desired_tables,
         )
-        if rewrite_paths is not None and rewrite_paths[0] != rewrite_paths[1]:
-            self._backup_layout.wait()
+        if decryption_staging is not None:
+            staging_storage, source_path, staging_path = decryption_staging
             assert self._decryption is not None
-            self._decryption.rewrite_metadata(
-                os.path.join(
-                    source_disk.path,
-                    "shadow",
-                    backup_meta.get_sanitized_name(),
-                ),
-                *rewrite_paths,
+            metadata_root = os.path.join(
+                source_disk.path,
+                "shadow",
+                backup_meta.get_sanitized_name(),
+            )
+            if source_path != staging_path:
+                self._backup_layout.wait()
+                self._decryption.rewrite_metadata(
+                    metadata_root, source_path, staging_path
+                )
+            self._decryption.register_cleanup(
+                metadata_root, staging_storage, staging_path
             )
 
     def _source_disk_config(self, backup_meta: BackupMetadata, disk_name: str) -> dict:
