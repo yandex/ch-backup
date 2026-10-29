@@ -199,11 +199,13 @@ class PipelineBuilder:
 
         return self
 
-    def build_decrypt_stage(self) -> "PipelineBuilder":
+    def build_decrypt_stage(
+        self, encryption_config: dict | None = None
+    ) -> "PipelineBuilder":
         """
         Build decrypting stage.
         """
-        stage_config = self._config[EncryptStage.stype]
+        stage_config = encryption_config or self._config[EncryptStage.stype]
 
         buffer_size = stage_config["buffer_size"]
         chunk_size = stage_config["chunk_size"]

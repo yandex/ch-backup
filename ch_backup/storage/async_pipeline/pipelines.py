@@ -276,18 +276,23 @@ def download_files_pipeline(
 
 def copy_object_pipeline(config: dict, entry: CopyEntry) -> None:
     """
-    Entrypoint of copy object pipeline. Optionally encrypt object data in transit.
+    Entrypoint of copy object pipeline. Optionally transform object data in transit.
     """
+    if entry.encrypt and entry.decrypt:
+        raise ValueError("Object cannot be encrypted and decrypted at the same time")
+
     if entry.server_side:
-        if entry.encrypt:
-            raise ValueError("Encrypted object cannot be copied on the server side")
+        if entry.encrypt or entry.decrypt:
+            raise ValueError("Transformed object cannot be copied on the server side")
         get_storage_engine(entry.dst_storage).copy_object(
             entry.src_storage["credentials"]["bucket"], entry.src_path, entry.dst_path
         )
         return
 
     encryption_config = (
-        get_cloud_storage_data_encryption_config(config) if entry.encrypt else None
+        get_cloud_storage_data_encryption_config(config)
+        if entry.encrypt or entry.decrypt
+        else None
     )
 
     if entry.size == 0:
@@ -302,7 +307,10 @@ def copy_object_pipeline(config: dict, entry: CopyEntry) -> None:
         entry.src_path, storage_config=entry.src_storage
     )
     if encryption_config:
-        builder.build_encrypt_stage(encryption_config)
+        if entry.encrypt:
+            builder.build_encrypt_stage(encryption_config)
+        else:
+            builder.build_decrypt_stage(encryption_config)
     builder.build_uploading_stage(
         entry.dst_path, entry.dst_size, storage_config=entry.dst_storage
     )

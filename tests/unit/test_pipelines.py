@@ -12,11 +12,13 @@ from ch_backup.encryption import get_encryption
 from ch_backup.storage import StorageLoader
 from ch_backup.storage.async_pipeline.pipeline_builder import PipelineBuilder
 from ch_backup.storage.async_pipeline.pipelines import (
+    copy_object_pipeline,
     download_data_pipeline,
     run,
     run_and_collect_all,
     run_and_return_first,
 )
+from ch_backup.storage.object_copy import CopyEntry
 
 
 @pytest.mark.parametrize("size", [0, 1, 63, 64, 65, 128, 129])
@@ -48,6 +50,38 @@ def test_decrypt_downloaded_data_matches_download_pipeline(
         assert loader.decrypt_data(ciphertext) == plaintext
         get_engine.assert_not_called()
         assert download_data_pipeline(config, "metadata", decrypt=True) == plaintext
+
+
+def test_copy_object_pipeline_decrypts_cloud_storage_data() -> None:
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    encryption = dict(config["encryption"], key="b" * 32, chunk_size=64)
+    config["cloud_storage"]["data_encryption"] = encryption
+    plaintext = b"cloud storage data"
+    crypto = get_encryption("nacl", encryption)
+    ciphertext = crypto.encrypt(plaintext)
+    storage = MagicMock()
+    storage.download_part.side_effect = [ciphertext, b""]
+    source_storage = copy.deepcopy(config["storage"])
+    target_storage = copy.deepcopy(config["storage"])
+    source_storage["credentials"]["bucket"] = "source"
+    target_storage["credentials"]["bucket"] = "target"
+    entry = CopyEntry(
+        source_storage,
+        target_storage,
+        "source/object",
+        "target/object",
+        len(plaintext),
+        len(plaintext),
+        decrypt=True,
+    )
+
+    with patch(
+        "ch_backup.storage.async_pipeline.pipeline_builder.get_storage_engine",
+        return_value=storage,
+    ):
+        copy_object_pipeline(config, entry)
+
+    storage.upload_data.assert_called_once_with(plaintext, "target/object")
 
 
 def _pipeline_with_masked_error() -> Iterator[str]:

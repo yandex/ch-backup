@@ -1407,8 +1407,10 @@ class BackupCopier:
             return
 
         for entry in entries:
-            if entry.encrypt or not server_side_copy_possible(
-                entry.src_storage, entry.dst_storage
+            if (
+                entry.encrypt
+                or entry.decrypt
+                or not server_side_copy_possible(entry.src_storage, entry.dst_storage)
             ):
                 yield entry._replace(server_side=False)
                 continue
