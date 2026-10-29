@@ -157,6 +157,7 @@ def test_restore_checks_parts_backup(
     backup.__dict__["_context"] = context
     backup_meta = MagicMock()
     backup_meta.schema_only = parts_schema_only
+    backup_meta.cloud_storage.data_encryption = None
     backup_meta.get_databases.return_value = []
     backup_meta.get_skipped_data_tables.return_value = ([], [])
     sources = BackupSources.for_restore(

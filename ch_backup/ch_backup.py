@@ -40,6 +40,7 @@ from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner, select_replic
 from ch_backup.clickhouse.models import Database, Table
 from ch_backup.clickhouse.part_checksums import CLICKHOUSE_BINARY
 from ch_backup.config import Config, as_datetime
+from ch_backup.encryption import validate_cloud_storage_data_encryption_config
 from ch_backup.exceptions import (
     BackupNotFound,
     ClickhouseBackupError,
@@ -340,6 +341,15 @@ class ClickhouseBackup:
         """
         logging.info(f"Restore sources: {sources}")
         self._context.backup_meta = self._get_backup(backup_name)
+        if (
+            sources.data
+            and not skip_cloud_storage
+            and self._context.backup_meta.cloud_storage.data_encryption is not None
+        ):
+            validate_cloud_storage_data_encryption_config(
+                self._config,
+                self._context.backup_meta.cloud_storage.data_encryption,
+            )
         data_skipped_tables, incomplete_tables = (
             self._context.backup_meta.get_skipped_data_tables()
         )

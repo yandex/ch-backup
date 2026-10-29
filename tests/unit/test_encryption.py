@@ -2,7 +2,9 @@ import pytest
 
 from ch_backup.encryption import (
     get_cloud_storage_data_encryption_config,
+    get_cloud_storage_data_encryption_metadata,
     get_encryption,
+    validate_cloud_storage_data_encryption_config,
 )
 from ch_backup.encryption.nacl import NaClEncryption
 from ch_backup.encryption.noop import NoopEncryption
@@ -38,3 +40,20 @@ def test_cloud_storage_data_encryption_inherits_key() -> None:
         "key": "main-key",
         "chunk_size": 2048,
     }
+
+
+def test_validate_cloud_storage_data_encryption_config() -> None:
+    config: dict = {
+        "encryption": {"type": "nacl", "key": "k" * 32, "chunk_size": 1024},
+        "cloud_storage": {"data_encryption": {}},
+    }
+    metadata = get_cloud_storage_data_encryption_metadata(config["encryption"])
+
+    assert (
+        validate_cloud_storage_data_encryption_config(config, metadata)
+        == config["encryption"]
+    )
+
+    config["cloud_storage"]["data_encryption"] = {"key": "x" * 32}
+    with pytest.raises(ConfigurationError, match="key does not match"):
+        validate_cloud_storage_data_encryption_config(config, metadata)

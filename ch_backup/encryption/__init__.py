@@ -11,7 +11,7 @@ from ch_backup.config import Config
 from ch_backup.encryption.base import BaseEncryption
 from ch_backup.encryption.nacl import NaClEncryption
 from ch_backup.encryption.noop import NoopEncryption
-from ch_backup.exceptions import UnknownEncryptionError
+from ch_backup.exceptions import ConfigurationError, UnknownEncryptionError
 
 SUPPORTED_CRYPTO: Mapping[str, type[BaseEncryption]] = {
     "noop": NoopEncryption,
@@ -64,6 +64,35 @@ def get_cloud_storage_data_encryption_metadata(config: dict) -> dict[str, Any]:
         "chunk_size": config["chunk_size"],
         "key_id": key_id,
     }
+
+
+def validate_cloud_storage_data_encryption_config(
+    config: Config | dict, metadata: Mapping[str, Any]
+) -> dict:
+    """Return cloud data encryption config after matching it to backup metadata."""
+    encryption_config = get_cloud_storage_data_encryption_config(config)
+    if not encryption_config.get("key"):
+        raise ConfigurationError(
+            "cloud_storage.data_encryption.key or encryption.key is required "
+            "to restore encrypted cloud storage data"
+        )
+
+    get_encryption(encryption_config["type"], encryption_config)
+    expected = get_cloud_storage_data_encryption_metadata(encryption_config)
+    for field in ("version", "type", "chunk_size"):
+        if metadata.get(field) != expected[field]:
+            raise ConfigurationError(
+                f"cloud_storage.data_encryption.{field} does not match backup metadata"
+            )
+
+    key_id = metadata.get("key_id")
+    if not isinstance(key_id, str) or not hmac.compare_digest(
+        key_id, expected["key_id"]
+    ):
+        raise ConfigurationError(
+            "cloud_storage.data_encryption.key does not match backup metadata"
+        )
+    return encryption_config
 
 
 def calc_encrypted_size_from_config(config: dict, data_size: int) -> int:
