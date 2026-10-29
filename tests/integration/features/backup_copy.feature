@@ -236,7 +236,7 @@ Feature: Copy backups to another storage
       | --server-side-copy    | delete a_owner |
       | --no-server-side-copy | purge          |
 
-  Scenario: Copy reuses a materialized part after its original owner fails
+  Scenario: Copy keeps links to parts of a copy that fails to be published
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE test_db1;
@@ -249,7 +249,7 @@ Feature: Copy backups to another storage
     """
     And we have created clickhouse01 clickhouse backup
     """
-    name: b_materialized
+    name: b_linked
     """
     And we have created clickhouse01 clickhouse backup
     """
@@ -271,9 +271,9 @@ Feature: Copy backups to another storage
     And we got the following backups on clickhouse02
       | num | state   | data_count | link_count |
       | 0   | created | 0          | 1          |
-      | 1   | created | 1          | 0          |
+      | 1   | created | 0          | 1          |
       | 2   | failed  | 1          | 0          |
-    And all parts in clickhouse02 backup "c_linked" link to "b_materialized"
+    And all parts in clickhouse02 backup "c_linked" link to "a_owner"
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
@@ -765,6 +765,58 @@ Feature: Copy backups to another storage
         --target-cloud-storage-path copy
     """
     And we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
+  @require_version_22.8
+  Scenario: Copy backup with data on S3 disk by scopes
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    CREATE TABLE test_db.table_01 (
+        CounterID UInt32,
+        UserID UInt32
+    )
+    ENGINE = MergeTree()
+    PARTITION BY CounterID % 3
+    ORDER BY UserID
+    SETTINGS storage_policy = 's3';
+
+    INSERT INTO test_db.table_01 SELECT 0, number FROM system.numbers LIMIT 10;
+    INSERT INTO test_db.table_01 SELECT 1, number FROM system.numbers LIMIT 10;
+    """
+    And we have created clickhouse01 clickhouse backup
+    And ch-backup configuration on clickhouse02
+    """
+    storage:
+        credentials:
+            bucket: ch-backup-copy
+    """
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy LAST --scope files --server-side-copy \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
+    """
+    Then we get response contains
+    """
+    scopes: files completed, cloud_storage pending
+    """
+    And we got the following backups on clickhouse02
+      | num | state    |
+      | 0   | creating |
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf \
+        --config-parameter storage.credentials.bucket '"missing-bucket"' \
+        copy LAST --scope cloud_storage --keep-going \
+        --no-server-side-copy \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-cloud-storage-bucket cloud-storage-02 \
+        --target-cloud-storage-path copy
+    """
+    Then we got the following backups on clickhouse02
+      | num | state   |
+      | 0   | created |
+    When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
   @require_version_22.8

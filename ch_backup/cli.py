@@ -37,7 +37,7 @@ from ch_backup.exceptions import ConfigurationError, TerminatingSignal
 from . import logging
 from .backup.copy_deduplication import copy_deduplication_cutoff
 from .backup.copy_report import CopyReport, print_copy_report
-from .backup.metadata import BackupState, TableMetadata
+from .backup.metadata import ALL_SCOPES, BackupState, CopyScope, TableMetadata
 from .backup.sources import BackupSources
 from .ch_backup import CleanZooKeeperMode, ClickhouseBackup
 from .config import DEFAULT_CONFIG, Config
@@ -954,6 +954,17 @@ def delete_command(
         type=Path(dir_okay=False),
         help="Save the final copy report as JSON, including on failure.",
     ),
+    option(
+        "--scope",
+        "scopes",
+        multiple=True,
+        type=Choice([scope.value for scope in CopyScope]),
+        help='Copy only the specified scope: "files" for files of the backup, '
+        '"cloud_storage" for data of object storage disks. Can be specified multiple times, '
+        "all scopes are copied by default. The copy is published once every scope is copied. "
+        'Without "files", copies are taken from the target storage, so the source storage is '
+        'not accessed; --all and LAST select copies with "cloud_storage" not completed.',
+    ),
 )
 @option_group(
     "Target storage options",
@@ -1027,9 +1038,11 @@ def copy_command(
     cloud_storage_source_path: str | None,
     keep_going: bool = False,
     report_path: str | None = None,
+    scopes: tuple[str, ...] = (),
 ) -> None:
     """Copy backup to another storage (another S3 bucket, endpoint or path)."""
     command_start = utcnow()
+    selected_scopes = frozenset(map(CopyScope, scopes)) or ALL_SCOPES
     report = CopyReport()
     try:
         if bool(name) == all_:
@@ -1058,7 +1071,7 @@ def copy_command(
         copy_deduplication_cutoff(target_cfg["copy"], command_start)
         backup_names = None
         if name:
-            if name == "LAST":
+            if name == "LAST" and CopyScope.FILES in selected_scopes:
                 name = _validate_and_resolve_name(
                     ctx, ch_backup, name, BackupState.CREATED
                 )
@@ -1068,6 +1081,7 @@ def copy_command(
             backup_names,
             keep_going=keep_going,
             report=report,
+            scopes=selected_scopes,
             command_start=command_start,
         )
     except BaseException as e:

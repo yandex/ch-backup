@@ -10,7 +10,7 @@ from ch_backup.backup.layout import (
     get_data_part_file_names,
     get_data_part_relative_dirs,
 )
-from ch_backup.backup.metadata import BackupState
+from ch_backup.backup.metadata import BackupState, CopyScope, CopyScopeStatus
 from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.exceptions import ClickhouseBackupError
 from tests.unit.test_backup_copy import CopyTestContext, _backup, _part, _with_files
@@ -168,13 +168,18 @@ def test_copy_all_indexes_only_published_owners():
     assert len(ctx.target_layout.copied) == 2
 
 
-def test_failed_restart_invalidates_partially_deleted_owner():
+@pytest.mark.parametrize(
+    "state", [BackupState.PARTIALLY_DELETED, BackupState.CREATING, BackupState.FAILED]
+)
+def test_failed_restart_invalidates_owner(state: BackupState) -> None:
+    """Remove an owner's indexed parts before a retry that fails."""
     owner = _backup(
         "a",
         start_time="2026-10-20 00:00:00 +0000",
-        state=BackupState.PARTIALLY_DELETED,
+        state=state,
         parts={PART: _part()},
     )
+    owner.copy_scopes = {CopyScope.FILES: CopyScopeStatus.COMPLETED}
     ctx = _context(owners=[owner])
     source = _backup("a", start_time="2026-10-20 00:00:00 +0000", parts={PART: _part()})
     ctx.layout.backups["a"] = source
@@ -198,3 +203,65 @@ def test_truncated_target_part_is_materialized():
     ctx.copy()
     assert ctx.target_layout.backups["new"].get_parts()[0].link is None
     assert len(ctx.target_layout.copied) == 1
+
+
+@pytest.mark.parametrize("separate", [False, True])
+@pytest.mark.parametrize("linked", [False, True])
+def test_files_scope_reuses_incomplete_owner(separate: bool, linked: bool) -> None:
+    """Reuse completed local files within one command and across separate runs."""
+    ctx = _context(owners=[])
+    ctx.target_layout.store = ctx.store
+    backups = [
+        _backup(
+            "a",
+            start_time="2026-10-19 00:00:00 +0000",
+            parts={PART: _part()},
+            cloud_storage_disks=["s3"],
+        ),
+        _backup(
+            "b",
+            start_time="2026-10-20 00:00:00 +0000",
+            parts={PART: _part(link="a" if linked else None)},
+            cloud_storage_disks=["s3"],
+        ),
+    ]
+    ctx.layout.backups = {backup.name: backup for backup in backups}
+    for backup in backups:
+        if backup.get_parts()[0].link is None:
+            _with_files(ctx, backup.name, _files(backup, ctx.layout))
+
+    if separate:
+        ctx.copy(["a"], scopes=["files"])
+        ctx.copy(["b"], scopes=["files"])
+    else:
+        ctx.copy(scopes=["files"])
+
+    owner = ctx.target_layout.backups["a"]
+    target = ctx.target_layout.backups["b"]
+    assert owner.state == target.state == BackupState.CREATING
+    assert target.get_parts()[0].link == "a"
+    assert target.real_size == 0
+    assert (
+        sum(entry.dst_path.endswith(".tar") for entry in ctx.target_layout.copied) == 1
+    )
+
+
+@pytest.mark.parametrize(
+    "state", [BackupState.CREATING, BackupState.FAILED, BackupState.DELETING]
+)
+@pytest.mark.parametrize("status", ["pending", "failed", "completed"])
+def test_incomplete_owner_requires_completed_files(
+    state: BackupState, status: str
+) -> None:
+    """Accept only completed files of creating or failed copies with verified data."""
+    ctx = _context()
+    owner = ctx.target_layout.backups["owner"]
+    owner.state = state
+    owner.copy_scopes = {CopyScope.FILES: CopyScopeStatus(status)}
+
+    ctx.copy()
+
+    expected = (
+        "owner" if state != BackupState.DELETING and status == "completed" else None
+    )
+    assert ctx.target_layout.backups["new"].get_parts()[0].link == expected

@@ -18,7 +18,7 @@ from typing import Iterable, Sequence
 from uuid import uuid4
 
 from ch_backup import logging
-from ch_backup.backup.deduplication import deduplicate_parts
+from ch_backup.backup.deduplication import StoredFiles, deduplicate_parts
 from ch_backup.backup.metadata import DetachedPartMetadata, PartMetadata, TableMetadata
 from ch_backup.backup.metadata.table_metadata import DataSkippedReason
 from ch_backup.backup.restore_context import PartState
@@ -1041,7 +1041,7 @@ class TableBackup(BackupManager):
         logging.debug('Uploading table data for "{}"."{}"', table.database, table.name)
 
         upload_observer = UploadPartObserver(context)
-        stored_files: dict[tuple[str, str, str], dict[str, dict[str, int]]] = {}
+        stored_files: StoredFiles = {}
         skip_failed_part = (
             partial(TableBackup._skip_failed_part, context, table)
             if context.config["keep_going"]
