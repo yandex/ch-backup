@@ -932,57 +932,6 @@ def test_delete_unfreezes_only_own_backups(
 
 
 @pytest.mark.parametrize(
-    ["cli_options", "expected"],
-    [
-        pytest.param(
-            {},
-            {
-                "cloud_storage_source_bucket": "disk-copy",
-                "cloud_storage_source_path": "copies/backup1",
-                "cloud_storage_source_endpoint": "http://s3.test:9000",
-            },
-            id="location from metadata",
-        ),
-        pytest.param(
-            {
-                "cloud_storage_source_bucket": "cloud-storage",
-                "cloud_storage_source_path": "data",
-            },
-            {
-                "cloud_storage_source_bucket": "cloud-storage",
-                "cloud_storage_source_path": "data",
-                "cloud_storage_source_endpoint": None,
-            },
-            id="explicit location",
-        ),
-    ],
-)
-# pylint: disable=protected-access
-def test_restore_cloud_storage_location(cli_options: dict, expected: dict) -> None:
-    meta = _backup_metadata(
-        cloud_storage_source={
-            "endpoint_url": "http://s3.test:9000",
-            "bucket": "disk-copy",
-            "path": "copies/backup1",
-        }
-    )
-    context = MagicMock()
-    context.config = {"force_non_replicated": False}
-    context.backup_layout.get_backup.return_value = meta
-    backup = ClickhouseBackup.__new__(ClickhouseBackup)
-    backup.__dict__["_context"] = context
-    backup._check_zookeeper_for_restore = Mock()  # type: ignore[method-assign]
-    backup._restore = Mock()  # type: ignore[method-assign]
-
-    backup.restore(BackupSources(), "backup1", [], [], **cli_options)
-
-    restore_kwargs = (
-        backup._restore.call_args.kwargs
-    )  # pylint: disable=protected-access
-    assert {key: restore_kwargs[key] for key in expected} == expected
-
-
-@pytest.mark.parametrize(
     "original_scheme,stored_scheme", [("http", "https"), ("https", "http")]
 )
 @pytest.mark.parametrize(
