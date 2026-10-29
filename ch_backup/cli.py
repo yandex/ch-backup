@@ -941,7 +941,8 @@ def delete_command(
         "all_",
         is_flag=True,
         default=False,
-        help='Copy all backups in the state "created". Older backups are copied first.',
+        help="Copy created backups, oldest first. Backups without table data are skipped "
+        "by default; use --no-only-with-data to include them.",
     ),
     option(
         "--keep-going",
@@ -1063,6 +1064,8 @@ def copy_command(
         )
         target_cfg.merge({"copy": copy_config})
         # Validate before resolving LAST, which already lists the source storage.
+        if not isinstance(target_cfg["copy"]["only_with_data"], bool):
+            raise ConfigurationError("copy.only_with_data must be a boolean")
         copy_deduplication_cutoff(target_cfg["copy"], command_start)
         backup_names = None
         if name:

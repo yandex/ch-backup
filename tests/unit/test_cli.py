@@ -784,3 +784,15 @@ def test_copy_only_with_data_config_and_cli(copy_backup, configured, override):
         assert names == (
             None if selection == "--all" else ["data" if expected else "empty"]
         )
+
+
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, None, [], {}])
+@pytest.mark.parametrize("selection", ["LAST", "--all"])
+def test_copy_rejects_non_boolean_only_with_data(copy_backup, value, selection):
+    """Reject invalid filter settings before listing or copying backups."""
+    copy_backup.config["copy"]["only_with_data"] = value
+    result = _invoke(cli.copy_command, ["copy", selection], copy_backup)
+    assert isinstance(result.exception, ConfigurationError)
+    assert str(result.exception) == "copy.only_with_data must be a boolean"
+    copy_backup.list.assert_not_called()
+    copy_backup.copy.assert_not_called()

@@ -2707,3 +2707,16 @@ def test_select_all_only_with_data(only_with_data):
         assert set(copied) == ({"data"} if configured else {"empty", "schema", "data"})
         assert not skipped
         assert copier.copy(["schema"]) == (["schema"], [])
+
+
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, None, [], {}])
+def test_copy_api_rejects_non_boolean_only_with_data(value):
+    """Validate filter types for callers that bypass the CLI."""
+    ctx = CopyTestContext([_backup("b1")])
+    ctx.target_config["copy"]["only_with_data"] = value
+    with pytest.raises(
+        ConfigurationError, match="copy.only_with_data must be a boolean"
+    ):
+        ctx.copy()
+    assert not ctx.target_layout.uploaded
+    assert not ctx.target_layout.copied
