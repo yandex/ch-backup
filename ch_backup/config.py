@@ -166,6 +166,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # by the copy command. Unset values inherit endpoint, bucket and credentials
         # from the destination ClickHouse disk. An unset path is selected safely at
         # restore time depending on whether source and staging buckets are the same.
+        # All objects under the staging path are removed when restore finishes.
         "cloud_storage": {
             "decryption_staging": {
                 "endpoint_url": None,

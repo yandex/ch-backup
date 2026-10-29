@@ -267,6 +267,14 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         self._ch_availible_disks: dict[str, Disk] = {}
 
     def __enter__(self):
+        try:
+            return self._enter()
+        except BaseException as e:
+            self._cleanup(type(e), e)
+            raise
+
+    def _enter(self):
+        """Create temporary disks and finish their asynchronous metadata loads."""
         self._read_configured_disks()
         if not self._skip_cloud_storage:
             for disk_name in self._backup_meta.cloud_storage.disks:
@@ -296,13 +304,20 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         self, exc_type: type[BaseException] | None, value: BaseException | None
     ) -> bool:
         """Remove plaintext staging and then the temporary ClickHouse disks."""
-        if exc_type is None and self._decryption is not None:
+        cleanup_error: BaseException | None = None
+        if self._decryption is not None:
             try:
                 self._decryption.cleanup()
             except BaseException as e:
-                super()._cleanup(type(e), e)
-                raise
-        return super()._cleanup(exc_type, value)
+                if exc_type is None:
+                    cleanup_error = e
+                    exc_type, value = type(e), e
+                else:
+                    logging.exception("Failed to clean decrypted cloud storage staging")
+        result = super()._cleanup(exc_type, value)
+        if cleanup_error is not None:
+            raise cleanup_error
+        return result
 
     def _linked_backups_data(
         self,
@@ -380,7 +395,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
 
         orig_disk_endpoint = self._disks[disk_name]["endpoint"]
         disk_config = self._source_disk_config(backup_meta, disk_name)
-        decryption_staging = None
+        rewrite_paths = None
         if backup_meta.cloud_storage.data_encryption is not None:
             if self._decryption is None:
                 self._decryption = CloudStorageDecryption(
@@ -408,7 +423,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
             disk_config = self._storage_disk_config(
                 disk_name, staging_storage, staging_path
             )
-            decryption_staging = staging_storage, source_path, staging_path
+            rewrite_paths = source_path, staging_path
         tmp_disk_endpoint = disk_config["endpoint"]
 
         if self._use_local_copy and not is_equal_s3_endpoints(
@@ -429,22 +444,15 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
             disk_name,
             desired_tables,
         )
-        if decryption_staging is not None:
-            staging_storage, source_path, staging_path = decryption_staging
+        if rewrite_paths is not None and rewrite_paths[0] != rewrite_paths[1]:
+            self._backup_layout.wait()
             assert self._decryption is not None
             metadata_root = os.path.join(
                 source_disk.path,
                 "shadow",
                 backup_meta.get_sanitized_name(),
             )
-            if source_path != staging_path:
-                self._backup_layout.wait()
-                self._decryption.rewrite_metadata(
-                    metadata_root, source_path, staging_path
-                )
-            self._decryption.register_cleanup(
-                metadata_root, staging_storage, staging_path
-            )
+            self._decryption.rewrite_metadata(metadata_root, *rewrite_paths)
 
     def _source_disk_config(self, backup_meta: BackupMetadata, disk_name: str) -> dict:
         """

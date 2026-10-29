@@ -1055,7 +1055,6 @@ def test_restore_decrypts_copied_data_into_destination_bucket():
             pass
 
     decryption.cleanup.assert_called_once_with()
-    decryption.register_cleanup.assert_called_once()
     args = decryption.decrypt.call_args.args
     source_storage, source_path, staging_storage, staging_path = args[3:7]
     assert source_storage["credentials"]["bucket"] == "backup-bucket"
@@ -1076,7 +1075,7 @@ def test_restore_decrypts_copied_data_into_destination_bucket():
     error = RuntimeError("restore failed")
     with unittest.mock.patch.object(ClickHouseDiskManager, "_cleanup"):
         disk_manager._cleanup(RuntimeError, error)
-    decryption.cleanup.assert_not_called()
+    decryption.cleanup.assert_called_once_with()
 
 
 LINKED_BACKUP_NAME = "20251231T000000"

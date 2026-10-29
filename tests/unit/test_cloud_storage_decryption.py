@@ -1,5 +1,5 @@
 import copy
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -119,7 +119,7 @@ def test_decrypt_cloud_storage_data(tmp_path) -> None:
                 source,
                 "copies/backup",
                 staging,
-                "copies/backup",
+                "copies/failed",
             )
         assert [call.kwargs for call in loader.wait.call_args_list] == [
             {"keep_going": False},
@@ -141,12 +141,19 @@ def test_decrypt_cloud_storage_data(tmp_path) -> None:
     assert full_keys.read_bytes() == b"5\n1\t4\n4\tstaging/backup/object\n1\n0\n\n"
     assert relative_keys.read_bytes() == relative_data
 
-    decryption.register_cleanup(str(metadata_root), staging, "staging/backup")
     with patch(
         "ch_backup.backup.cloud_storage_decryption.get_storage_engine"
     ) as get_engine:
+        get_engine.return_value.list_dir.side_effect = lambda prefix, **_: [
+            f"{prefix}/object"
+        ]
         decryption.cleanup()
     get_engine.assert_called_once_with(staging)
-    get_engine.return_value.delete_files.assert_called_once_with(
-        ["staging/backup/object"]
-    )
+    assert get_engine.return_value.list_dir.call_args_list == [
+        call("copies/backup", recursive=True, absolute=True),
+        call("copies/failed", recursive=True, absolute=True),
+    ]
+    assert get_engine.return_value.delete_files.call_args_list == [
+        call(["copies/backup/object"]),
+        call(["copies/failed/object"]),
+    ]
