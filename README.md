@@ -235,8 +235,8 @@ Behavior and limitations:
   set `backup.deduplication_start_time` to the beginning of the series when enabling the new format.
 - If both buckets belong to the same S3 service and are accessible with the same credentials, objects
   are copied on the server side. Otherwise, data is streamed through ch-backup. Server-side copy can be
-  disabled with `--no-server-side-copy`. It is disabled automatically for the whole command when
-  `copy.cloud_storage.encrypt_data=true`.
+  disabled with `--no-server-side-copy`. It is disabled automatically for cloud-storage objects
+  transformed by encryption or decryption.
 - The copy becomes valid (gets the state `created`) only after all its data is copied. If copying is
   interrupted, the copy remains in the state `creating` or `failed`, and the next run of the command
   resumes it. Confirmed copies are recorded in the copy context, a journal kept in the target storage

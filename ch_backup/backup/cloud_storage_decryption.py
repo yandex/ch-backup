@@ -229,17 +229,27 @@ def resolve_decryption_staging(
     destination_disk: dict,
 ) -> tuple[dict, str]:
     """Return storage and key prefix for plaintext cloud storage objects."""
+    staging_config = config["restore"]["cloud_storage"]["decryption_staging"]
     disk_location = get_s3_disk_location(destination_disk)
     if disk_location is None:
-        raise ConfigurationError(
-            "Failed to determine decryption staging location from ClickHouse disk; "
-            "set restore.cloud_storage.decryption_staging explicitly"
-        )
-    disk_endpoint, disk_bucket, _ = disk_location
+        if not staging_config.get("endpoint_url") or not staging_config.get("bucket"):
+            raise ConfigurationError(
+                "Failed to determine decryption staging location from ClickHouse disk; "
+                "set restore.cloud_storage.decryption_staging explicitly"
+            )
+        disk_endpoint = disk_bucket = None
+    else:
+        disk_endpoint, disk_bucket, _ = disk_location
 
-    staging_config = config["restore"]["cloud_storage"]["decryption_staging"]
     endpoint_url = staging_config.get("endpoint_url") or disk_endpoint
     bucket = staging_config.get("bucket") or disk_bucket
+    if (
+        not isinstance(endpoint_url, str)
+        or not endpoint_url
+        or not isinstance(bucket, str)
+        or not bucket
+    ):
+        raise ConfigurationError("Invalid decryption staging endpoint or bucket")
     if staging_config.get("access_key_id"):
         access_key_id = staging_config["access_key_id"]
         secret_access_key = staging_config.get("secret_access_key")
