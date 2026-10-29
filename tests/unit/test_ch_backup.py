@@ -727,7 +727,7 @@ def test_purge_partial_keeps_copies_being_copied() -> None:
     context.backup_layout.reload_backup.side_effect = lambda meta, **_: meta
 
     with patch.object(backup, "_delete", return_value=("stale", None)) as delete:
-        backup.delete("broken", purge_partial=True)
+        backup.delete("broken", settings=DeleteSettings(purge_partial=True))
 
     assert [call.args[0] for call in delete.call_args_list] == [stale]
 
