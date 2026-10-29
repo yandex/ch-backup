@@ -2,7 +2,6 @@
 
 from collections import defaultdict
 from datetime import datetime, timedelta
-from hashlib import blake2b
 from typing import NamedTuple
 
 from ch_backup import logging
@@ -13,11 +12,11 @@ from ch_backup.backup.metadata import (
     CopyScope,
     CopyScopeStatus,
     PartMetadata,
-    split_part_name,
 )
+from ch_backup.backup.part_matching import LocalCopyKey, local_copy_key
 from ch_backup.exceptions import ConfigurationError, is_broken_executor
 
-PartsByTable = dict[tuple[str, str], list[tuple[tuple, PartMetadata]]]
+PartsByTable = dict[tuple[str, str], list[tuple[LocalCopyKey, PartMetadata]]]
 
 
 def copy_deduplication_cutoff(copy_config: dict, now: datetime) -> datetime | None:
@@ -49,28 +48,6 @@ class _StoredPart(NamedTuple):
     part_name: str
 
 
-def _part_key(part: PartMetadata) -> tuple:
-    # Use the same parser/rule as backup deduplication: only a mutation suffix may differ.
-    name: tuple[str, int, int, int] | str
-    try:
-        name = split_part_name(part.name)[:4]
-    except ValueError:
-        name = part.name
-    return (
-        part.database,
-        part.table,
-        name,
-        part.checksum,
-        part.disk_name,
-        part.size,
-        part.tarball,
-        part.encrypted,
-        # File names cannot contain NUL. Preserve file-list matching without
-        # retaining every name after the candidate metadata is released.
-        blake2b("\0".join(sorted(part.files)).encode(), digest_size=16).digest(),
-    )
-
-
 def _local_parts(backup: BackupMetadata) -> PartsByTable:
     """Parse the entire candidate before indexing it or accessing its data objects."""
     parts: PartsByTable = defaultdict(list)
@@ -82,7 +59,7 @@ def _local_parts(backup: BackupMetadata) -> PartsByTable:
             and part.link is None
             and part.disk_name not in backup.cloud_storage.disks
         ):
-            parts[(part.database, part.table)].append((_part_key(part), part))
+            parts[(part.database, part.table)].append((local_copy_key(part), part))
     return parts
 
 
@@ -95,8 +72,8 @@ class CopyDeduplication:
         self._layout = layout
         self.cutoff = cutoff
         self.command_start = command_start
-        self._parts: dict[tuple, list[_StoredPart]] = defaultdict(list)
-        self._backup_keys: dict[str, set[tuple]] = defaultdict(set)
+        self._parts: dict[LocalCopyKey, list[_StoredPart]] = defaultdict(list)
+        self._backup_keys: dict[str, set[LocalCopyKey]] = defaultdict(set)
 
     def eligible(self, backup: BackupMetadata) -> bool:
         """A fresh reference cannot extend the physical owner's window."""
@@ -194,7 +171,7 @@ class CopyDeduplication:
         return next(
             (
                 candidate
-                for candidate in self._parts.get(_part_key(part), ())
+                for candidate in self._parts.get(local_copy_key(part), ())
                 if candidate.backup_name != backup_name
             ),
             None,

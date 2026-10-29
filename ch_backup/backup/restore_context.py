@@ -8,7 +8,7 @@ from enum import Enum
 from os.path import exists
 from typing import Any, Callable
 
-from ch_backup.backup.metadata import PartMetadata
+from ch_backup.backup.metadata import PartIdentity, PartMetadata
 
 
 class PartState(str, Enum):
@@ -71,24 +71,25 @@ class RestoreContext:
         self._load_state()
         return self._databases_dict
 
-    def _part(self, part: PartMetadata) -> PartState:
-        return self._databases[part.database][part.table][part.name]
+    def _part(self, identity: PartIdentity) -> PartState:
+        return self._databases[identity.database][identity.table][identity.part_name]
 
     @_dump_state_if_need
     def change_part_state(self, state: PartState, part: PartMetadata) -> None:
         """
         Changes the state of the restoring part.
         """
-        self._databases[part.database][part.table][part.name] = state
+        identity = part.identity
+        self._databases[identity.database][identity.table][identity.part_name] = state
         if state == PartState.RESTORED:
-            tables = self._failed.get(part.database, {})
-            errors = tables.get(part.table)
+            tables = self._failed.get(identity.database, {})
+            errors = tables.get(identity.table)
             if errors is not None:
-                errors["failed_parts"].pop(part.name, None)
+                errors["failed_parts"].pop(identity.part_name, None)
                 if not errors["failed_parts"] and not errors["failed_paths"]:
-                    del tables[part.table]
+                    del tables[identity.table]
                     if not tables:
-                        del self._failed[part.database]
+                        del self._failed[identity.database]
 
     @_dump_state_if_need
     def add_failed_chown(self, database: str, table: str, path: str) -> None:
@@ -103,7 +104,10 @@ class RestoreContext:
         """
         Save information about failed to restore part in context
         """
-        self._failed[part.database][part.table]["failed_parts"][part.name] = repr(e)
+        identity = part.identity
+        self._failed[identity.database][identity.table]["failed_parts"][
+            identity.part_name
+        ] = repr(e)
         self._has_failed_parts = True
 
     def has_failed_parts(self) -> bool:
@@ -116,13 +120,13 @@ class RestoreContext:
         """
         Checks if data part was downloaded.
         """
-        return self._part(part) == PartState.DOWNLOADED
+        return self._part(part.identity) == PartState.DOWNLOADED
 
     def part_restored(self, part: PartMetadata) -> bool:
         """
         Checks if data part was restored.
         """
-        return self._part(part) == PartState.RESTORED
+        return self._part(part.identity) == PartState.RESTORED
 
     def dump_state(self) -> None:
         """
