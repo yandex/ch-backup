@@ -1,7 +1,5 @@
 """Restore staging for encrypted object storage data."""
 
-import os
-
 from ch_backup.config import Config
 from ch_backup.exceptions import ConfigurationError
 from ch_backup.storage.object_copy import (
@@ -10,7 +8,7 @@ from ch_backup.storage.object_copy import (
     storage_id,
 )
 
-DEFAULT_DECRYPTED_SUFFIX = ".ch-backup-decrypted"
+DEFAULT_DECRYPTED_SUFFIX = "_decrypted"
 
 
 def resolve_decryption_staging(
@@ -50,7 +48,7 @@ def resolve_decryption_staging(
     if configured_path is None:
         staging_path = source_path
         if _same_storage(source_storage, storage):
-            staging_path = os.path.join(source_path, DEFAULT_DECRYPTED_SUFFIX)
+            staging_path = f"{source_path}{DEFAULT_DECRYPTED_SUFFIX}"
     else:
         staging_path = _normalize_prefix(configured_path)
 

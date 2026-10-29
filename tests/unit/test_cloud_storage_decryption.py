@@ -12,7 +12,7 @@ from ch_backup.config import DEFAULT_CONFIG
         ("https://dst/destination/data/", "copies/backup"),
         (
             "https://source/encrypted/data/",
-            "copies/backup/.ch-backup-decrypted",
+            "copies/backup_decrypted",
         ),
     ],
 )
