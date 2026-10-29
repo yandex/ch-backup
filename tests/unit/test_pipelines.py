@@ -1,4 +1,6 @@
 import copy
+import io
+import tarfile
 import threading
 from collections.abc import Callable, Iterator
 from typing import Any
@@ -7,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pypeln.thread import Worker
 
+from ch_backup.compression import get_compression
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.encryption import get_encryption
 from ch_backup.storage import StorageLoader
@@ -204,3 +207,24 @@ def test_empty_pipeline_finishes() -> None:
     builder = PipelineBuilder(DEFAULT_CONFIG).build_iterable_stage([])
 
     assert not run_and_collect_all(builder.pipeline())
+
+
+def test_unpack_data_tarball_larger_than_buffer() -> None:
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["filesystem"].update(buffer_size=64 * 1024, chunk_size=16 * 1024)
+    files = [(f"part_{i}/column.bin", bytes([i % 256]) * 4096) for i in range(100)]
+    tar = io.BytesIO()
+    with tarfile.open(fileobj=tar, mode="w") as archive:
+        for name, data in files:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+        tarball = tar.getvalue()[: archive.offset]
+    compressor = get_compression(config["compression"]["type"])
+    compressed = compressor.compress(tarball) + compressor.flush_compress()
+    assert len(compressed) < config["filesystem"]["buffer_size"] < len(tarball)
+
+    builder = PipelineBuilder(config).build_iterable_stage([compressed])
+    builder.build_decompress_stage().build_unpack_data_tarball_stage()
+
+    assert run_and_collect_all(builder.pipeline()) == files
