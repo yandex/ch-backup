@@ -1,14 +1,111 @@
 """Restore staging for encrypted object storage data."""
 
+import os
+from typing import Literal, Sequence
+
+from ch_backup import logging
+from ch_backup.backup.layout import BackupLayout
+from ch_backup.backup.metadata import BackupMetadata, TableMetadata
+from ch_backup.clickhouse.object_storage_metadata import (
+    FROZEN_METADATA_FNAME,
+    ObjectStorageMetadataError,
+    parse_object_storage_metadata,
+)
 from ch_backup.config import Config
-from ch_backup.exceptions import ConfigurationError
+from ch_backup.exceptions import ClickhouseBackupError, ConfigurationError
+from ch_backup.storage import StorageLoader
 from ch_backup.storage.object_copy import (
+    CopyEntry,
     get_s3_disk_location,
     make_storage_config,
     storage_id,
 )
 
 DEFAULT_DECRYPTED_SUFFIX = "_decrypted"
+
+
+class CloudStorageDecryption:
+    """Decrypt copied object storage data into restore staging."""
+
+    def __init__(self, config: Config | dict, backup_layout: BackupLayout) -> None:
+        self._layout = backup_layout
+        self._storage_loader = StorageLoader(config)
+
+    # pylint: disable=too-many-positional-arguments,too-many-locals
+    def decrypt(
+        self,
+        backup: BackupMetadata,
+        disk_name: str,
+        desired_tables: Sequence[TableMetadata] | Literal["all"],
+        source_storage: dict,
+        source_path: str,
+        staging_storage: dict,
+        staging_path: str,
+        keep_going: bool = False,
+    ) -> None:
+        """Decrypt objects referenced by disk metadata into staging."""
+        source_path = _normalize_prefix(source_path)
+        staging_path = _normalize_prefix(staging_path)
+        entries: dict[str, CopyEntry] = {}
+        remote_paths = self._layout.get_cloud_storage_metadata_remote_paths(
+            backup.get_sanitized_name(),
+            disk_name,
+            backup.cloud_storage.compressed,
+            desired_tables,
+        )
+        for remote_path in remote_paths:
+            for file_name, data in self._layout.get_cloud_storage_metadata_files(
+                backup, remote_path
+            ):
+                if os.path.basename(file_name) == FROZEN_METADATA_FNAME:
+                    continue
+                try:
+                    metadata = parse_object_storage_metadata(data)
+                except ObjectStorageMetadataError as e:
+                    raise ClickhouseBackupError(
+                        f'Failed to parse metadata file "{file_name}" '
+                        f'from "{remote_path}": {e}'
+                    ) from e
+
+                for obj in metadata.objects:
+                    relative_key = _object_relative_key(
+                        obj.key, source_path, metadata.full_object_keys
+                    )
+                    entry = CopyEntry(
+                        source_storage,
+                        staging_storage,
+                        (
+                            obj.key
+                            if metadata.full_object_keys
+                            else os.path.join(source_path, relative_key)
+                        ),
+                        os.path.join(staging_path, relative_key),
+                        obj.size,
+                        obj.size,
+                        decrypt=True,
+                    )
+                    previous = entries.setdefault(entry.dst_path, entry)
+                    if (
+                        storage_id(previous.src_storage),
+                        previous.src_path,
+                        previous.size,
+                    ) != (
+                        storage_id(entry.src_storage),
+                        entry.src_path,
+                        entry.size,
+                    ):
+                        raise ClickhouseBackupError(
+                            f'Multiple encrypted objects map to staging key "{entry.dst_path}"'
+                        )
+
+        logging.info(
+            "Decrypting {} cloud storage objects of disk {} into restore staging",
+            len(entries),
+            disk_name,
+        )
+        for entry in entries.values():
+            self._storage_loader.copy_object(entry, is_async=True)
+        self._storage_loader.wait(keep_going=keep_going)
 
 
 def resolve_decryption_staging(
@@ -74,3 +171,22 @@ def _normalize_prefix(path: str) -> str:
     if any(part in (".", "..") for part in prefix.split("/")):
         raise ConfigurationError(f'Unsafe decryption staging path "{path}"')
     return prefix
+
+
+def _object_relative_key(key: str, source_path: str, full_key: bool) -> str:
+    if (
+        not key
+        or key.startswith("/")
+        or any(part in (".", "..") for part in key.split("/"))
+    ):
+        raise ClickhouseBackupError(f'Unsafe cloud storage object key "{key}"')
+    if not full_key:
+        return key
+    if not source_path:
+        return key
+    prefix = f"{source_path}/"
+    if not key.startswith(prefix):
+        raise ClickhouseBackupError(
+            f'Cloud storage object key "{key}" is outside source prefix "{source_path}"'
+        )
+    return key[len(prefix) :]

@@ -37,6 +37,7 @@ from ch_backup.backup.metadata import (
 )
 from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.object_storage_metadata import (
+    FROZEN_METADATA_FNAME,
     ObjectStorageMetadata,
     ObjectStorageMetadataError,
     StorageObject,
@@ -67,8 +68,6 @@ from ch_backup.storage.object_copy import (
     storage_id,
 )
 from ch_backup.util import utcnow
-
-FROZEN_METADATA_FNAME = "frozen_metadata.txt"
 
 
 class _CopyPlan:
