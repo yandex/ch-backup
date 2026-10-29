@@ -17,6 +17,22 @@ The tool also supports deduplication at part-level granularity. It's set up
  set a start time to exclude earlier backups from deduplication.
 
 
+## Restore after part download errors
+
+Restore attaches a part only after all its files have been downloaded and unpacked,
+or its cloud-storage copy has completed. Failed parts are recorded as `invalid`
+with the original download or copy error in the restore state file.
+With `--keep-going`, other parts continue restoring; without it, the command
+stops with the download or copy error. With `--keep-going`, set
+`backup.restore_fail_on_attach_error: true` to return a nonzero exit code if any
+part failed to download, copy, or attach. The default remains `false`.
+A new restore invocation retries invalid parts, attaches already downloaded
+parts, and skips restored parts.
+Successfully downloaded parts are attached in their original part order,
+regardless of download completion order. Saved failure details survive restores
+of other tables; a part's error is removed after that part is successfully attached.
+Only failures from the current invocation affect its exit code.
+
 ## Restore without cloud storage
 
 `ch-backup restore --skip-cloud-storage BACKUP` restores local parts and skips

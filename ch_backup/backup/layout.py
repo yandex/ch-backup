@@ -39,7 +39,12 @@ from ch_backup.clickhouse.object_storage_metadata import (
 )
 from ch_backup.config import Config
 from ch_backup.encryption import get_encryption_class
-from ch_backup.exceptions import ConfigurationError, StorageError, is_broken_executor
+from ch_backup.exceptions import (
+    ConfigurationError,
+    StorageError,
+    TerminatingSignal,
+    is_broken_executor,
+)
 from ch_backup.storage import StorageLoader
 from ch_backup.storage.engine.s3 import S3RetryingError
 from ch_backup.storage.object_copy import CopyEntry
@@ -743,11 +748,27 @@ class BackupLayout:
         part: PartMetadata,
         fs_part_path: str,
         callback: Callable,
+        on_error: Callable[[PartMetadata, BaseException], None] | None = None,
     ) -> None:
         """
-        Download part data to the specified directory.
+        Download a whole part, reporting success only after every file is written.
         """
         source_part_name = part.deduplicated_part_name
+        pending = 1 if part.tarball else len(part.files)
+        failed = False
+
+        def downloaded() -> None:
+            nonlocal pending
+            pending -= 1
+            if pending == 0 and not failed:
+                callback(part)
+
+        def download_failed(error: BaseException) -> None:
+            nonlocal failed
+            if not failed:
+                failed = True
+                if on_error:
+                    on_error(part, error)
 
         logging.debug(
             'Downloading data part {} (stored as {}) of "{}"."{}"',
@@ -757,48 +778,53 @@ class BackupLayout:
             part.table,
         )
 
-        os.makedirs(fs_part_path, exist_ok=True)
+        try:
+            os.makedirs(fs_part_path, exist_ok=True)
 
-        # part.link is the source backup name for deduplicated parts (or None).
-        source_backup_name = part.link or backup_meta.name
-        backup_path = self.get_backup_path(source_backup_name)
-        remote_dir_path = self._get_escaped_if_exists(
-            _part_path,
-            backup_path,
-            part.database,
-            part.table,
-            source_part_name,
-        )
+            # part.link is the source backup name for deduplicated parts (or None).
+            source_backup_name = part.link or backup_meta.name
+            backup_path = self.get_backup_path(source_backup_name)
+            remote_dir_path = self._get_escaped_if_exists(
+                _part_path,
+                backup_path,
+                part.database,
+                part.table,
+                source_part_name,
+            )
 
-        if part.tarball:
-            remote_path = os.path.join(remote_dir_path, f"{source_part_name}.tar")
-            logging.debug("Downloading part tarball file: {}", remote_path)
-            try:
+            if part.tarball:
+                remote_path = os.path.join(remote_dir_path, f"{source_part_name}.tar")
+                logging.debug("Downloading part tarball file: {}", remote_path)
                 self._storage_loader.download_files(
                     remote_path=remote_path,
                     local_path=fs_part_path,
                     is_async=True,
                     encryption=part.encrypted,
-                    callback=partial(callback, part),
+                    callback=downloaded,
+                    on_error=download_failed,
                 )
-            except Exception as e:
-                msg = f"Failed to download part tarball file {remote_path}"
-                raise StorageError(msg) from e
-        else:
-            for filename in part.files:
-                local_path = os.path.join(fs_part_path, filename)
-                remote_path = os.path.join(remote_dir_path, filename)
-                try:
+            else:
+                # ExecPool invokes callbacks in the collecting thread. Count all
+                # files up front, also when workers=0 runs callbacks during submit.
+                for filename in part.files:
+                    local_path = os.path.join(fs_part_path, filename)
+                    remote_path = os.path.join(remote_dir_path, filename)
                     logging.debug("Downloading part file: {}", remote_path)
                     self._storage_loader.download_file(
                         remote_path=remote_path,
                         local_path=local_path,
                         is_async=True,
                         encryption=part.encrypted,
+                        callback=downloaded,
+                        on_error=download_failed,
                     )
-                except Exception as e:
-                    msg = f"Failed to download part file {remote_path}"
-                    raise StorageError(msg) from e
+                if not part.files:
+                    callback(part)
+        except (Exception, TerminatingSignal) as error:
+            # Includes failures before submit. Later successful file callbacks
+            # must not publish a partially scheduled part as downloaded.
+            download_failed(error)
+            raise
 
     def download_detached_part(
         self,

@@ -399,6 +399,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         )
         return disk_config
 
+    # pylint: disable=too-many-positional-arguments
     def copy_parts(
         self,
         backup_meta: BackupMetadata,
@@ -406,6 +407,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         max_proccesses_count: int,
         keep_going: bool,
         part_callback: Callable,
+        on_error: Callable[[PartMetadata, BaseException], None] | None = None,
     ) -> None:
         """
         Copy parts from temporary cloud storage disk to actual.
@@ -421,14 +423,20 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
             )
         with ThreadExecPool(max_proccesses_count) as executor:
             for part in parts_to_copy:
-                executor.submit(
-                    f"Restore of part {part[1].name}",
-                    self._run_copy_command,
-                    backup_meta,
-                    part[0],
-                    part[1],
-                    callback=partial(part_callback, part[1]),
-                )
+                try:
+                    executor.submit(
+                        f"Restore of part {part[1].name}",
+                        self._run_copy_command,
+                        backup_meta,
+                        part[0],
+                        part[1],
+                        callback=partial(part_callback, part[1]),
+                        on_error=partial(on_error, part[1]) if on_error else None,
+                    )
+                except Exception as error:
+                    if on_error:
+                        on_error(part[1], error)
+                    raise
             executor.wait_all(keep_going)
 
     def _run_copy_command(
