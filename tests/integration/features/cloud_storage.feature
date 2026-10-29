@@ -1026,6 +1026,16 @@ Feature: Backup & Clean & Restore
     """
     Then the user's data equal to saved one on clickhouse02
     And data part checksums equal to saved ones on clickhouse02
+    When we execute command on clickhouse02
+    """
+    python3 - <<'PY'
+    import json
+    with open('/tmp/ch_backup_restore_state.json') as stream:
+        state = json.load(stream)
+    assert state['databases']['test_db']['restore_retry']['all_1_1_0'] == 'restored', state
+    assert not state['failed'], state
+    PY
+    """
 
     Examples:
       | mode | keep_going   | error_message                |

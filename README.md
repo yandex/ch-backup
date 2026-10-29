@@ -28,6 +28,10 @@ stops with the download or copy error. With `--keep-going`, set
 part failed to download, copy, or attach. The default remains `false`.
 A new restore invocation retries invalid parts, attaches already downloaded
 parts, and skips restored parts.
+Successfully downloaded parts are attached in their original part order,
+regardless of download completion order. Saved failure details survive restores
+of other tables; a part's error is removed after that part is successfully attached.
+Only failures from the current invocation affect its exit code.
 
 ## Restore without cloud storage
 

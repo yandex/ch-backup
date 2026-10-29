@@ -103,6 +103,7 @@ Feature: Backup & Restore
     ORDER BY (dt, id)
     PARTITION BY toYYYYMM(dt);
 
+    SYSTEM STOP MERGES test_db.hits;
     INSERT INTO test_db.hits VALUES
       (toDate('2024-10-24'), 1, '/index', 100);
     """
@@ -163,6 +164,7 @@ Feature: Backup & Restore
     """
     When we create clickhouse01 clickhouse backup
     And we restore clickhouse backup #0 to clickhouse02
+    # Merges can progress differently on each node. Compare logical rows with FINAL.
     When we execute query on clickhouse01
     """
     SELECT id, visits FROM test_db.hits FINAL ORDER BY id FORMAT Vertical;
@@ -185,7 +187,6 @@ Feature: Backup & Restore
     id:     1
     visits: 111
     """
-    Then we got same clickhouse data at clickhouse01 clickhouse02
 
   Scenario: Backup & Restore with long file names
     When we drop all databases at clickhouse01

@@ -142,6 +142,71 @@ def test_downloaded_part_is_attached_without_download(restore_case, monkeypatch)
     assert all(context.restore_context.part_restored(part) for part in parts)
 
 
+@pytest.mark.parametrize("tarball", [True, False])
+@pytest.mark.parametrize("newest_source", ["download", "cloud", "downloaded"])
+def test_attach_preserves_part_order(restore_case, monkeypatch, tarball, newest_source):
+    context, _ = restore_case(0, tarball)
+    metadata = TableMetadata("db", "tbl", "ReplacingMergeTree", None)
+    names = [BAD_PART, GOOD_PART, "all_10_10_0"]
+    for name in names:
+        metadata.add_part(
+            PartMetadata(
+                "db",
+                "tbl",
+                name,
+                "",
+                1,
+                ["data.bin"],
+                tarball,
+                disk_name=(
+                    "cloud"
+                    if name == names[-1] and newest_source == "cloud"
+                    else "default"
+                ),
+            )
+        )
+    collected = {name: Event() for name in names}
+    change_state = context.restore_context.change_part_state
+
+    def record_completion(state, part):
+        change_state(state, part)
+        if state == PartState.DOWNLOADED:
+            collected[part.name].set()
+
+    def download(_config, remote_path, *_args):
+        name = Path(remote_path).parent.name
+        index = names.index(name)
+        if index + 1 < len(names):
+            assert collected[names[index + 1]].wait(10), "newer part was not collected"
+
+    monkeypatch.setattr(context.restore_context, "change_part_state", record_completion)
+    monkeypatch.setattr(pipeline_executor, "download_file_pipeline", download)
+    monkeypatch.setattr(pipeline_executor, "download_files_pipeline", download)
+    disks = Mock()
+    if newest_source == "cloud":
+        context.backup_meta.cloud_storage.add_disk("cloud")
+        disks.copy_parts.side_effect = (
+            lambda _backup, parts, *_args, part_callback, **_kwargs: part_callback(
+                parts[0][1]
+            )
+        )
+    elif newest_source == "downloaded":
+        context.restore_context.change_part_state(
+            PartState.DOWNLOADED, metadata.get_parts()[-1]
+        )
+
+    with ThreadExecPool(4) as pool:
+        monkeypatch.setattr(
+            context.backup_layout._storage_loader._ploader, "_exec_pool", pool
+        )
+        TableBackup._restore_data(context, [metadata], disks, False, False)
+
+    assert [call.args[1] for call in context.ch_ctl.attach_part.call_args_list] == names
+    assert all(
+        context.restore_context.part_restored(part) for part in metadata.get_parts()
+    )
+
+
 def test_partial_submission_never_completes_part(restore_case, monkeypatch, tmp_path):
     context, metadata = restore_case(2, False)
     part = next(p for p in metadata.get_parts() if p.name == GOOD_PART)
