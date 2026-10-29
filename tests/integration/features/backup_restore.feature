@@ -188,6 +188,18 @@ Feature: Backup & Restore
     visits: 111
     """
 
+    # Compare every column after both nodes have merged the replaced rows.
+    When we execute queries on clickhouse01
+    """
+    SYSTEM START MERGES test_db.hits;
+    OPTIMIZE TABLE test_db.hits FINAL;
+    """
+    And we execute query on clickhouse02
+    """
+    OPTIMIZE TABLE test_db.hits FINAL;
+    """
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
   Scenario: Backup & Restore with long file names
     When we drop all databases at clickhouse01
     And we drop all databases at clickhouse02

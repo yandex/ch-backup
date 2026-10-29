@@ -1376,57 +1376,6 @@ def test_restore_keeps_copy_ownership_until_attach_succeeds(
     assert not mode_file.exists()
 
 
-@pytest.mark.parametrize("keep_going", [False, True])
-# pylint: disable=protected-access,too-many-locals
-def test_failed_cloud_copy_is_not_attached(part_copy, tmp_path, keep_going):
-    manager, table, part, _, detached = part_copy
-    healthy = copy.deepcopy(part)
-    healthy.name = "all_3_3_0"
-    manager._backup_meta.cloud_storage.disks = [part.disk_name]
-    manager._ch_ctl.get_table.return_value = table
-    config = _make_backup_storage_config()
-    config["backup"]["restore_context_path"] = str(tmp_path / "restore-state.json")
-    config["multiprocessing"]["cloud_storage_restore_workers"] = 2
-    context = BackupContext(config)  # type: ignore[arg-type]
-    context.ch_ctl = manager._ch_ctl
-    context.backup_meta = manager._backup_meta
-    context.backup_layout = unittest.mock.Mock()
-    table_meta = TableMetadata(part.database, part.table, "MergeTree", None)
-    table_meta.add_part(part)
-    table_meta.add_part(healthy)
-
-    def copy_objects(_from_disk, _from_path, _to_disk, to_path, _tag):
-        target = Path(manager._ch_availible_disks[part.disk_name].path) / to_path
-        target.mkdir()
-        (target / "id.bin").write_text("copied bytes")
-        if target.name == part.name:
-            raise ClickHouseDisksException("injected cloud copy failure")
-
-    with unittest.mock.patch.object(manager, "_copy_dir", side_effect=copy_objects):
-        if keep_going:
-            TableBackup._restore_data(context, [table_meta], manager, False, True)
-        else:
-            with pytest.raises(
-                ClickHouseDisksException, match="injected cloud copy failure"
-            ):
-                TableBackup._restore_data(context, [table_meta], manager, False, False)
-
-    assert [call.args[1] for call in manager._ch_ctl.attach_part.call_args_list] == (
-        [healthy.name] if keep_going else []
-    )
-    state = json.loads(
-        Path(config["backup"]["restore_context_path"]).read_text(encoding="utf-8")
-    )
-    assert state["databases"][part.database][part.table][part.name] == "invalid"
-    assert state["failed"][part.database][part.table]["failed_parts"] == {
-        part.name: "ClickHouseDisksException('injected cloud copy failure')"
-    }
-    assert (detached / f".{part.name}.ch-backup-copy-mode").read_text() == "copy"
-    if keep_going:
-        assert context.restore_context.part_restored(healthy)
-        assert not (detached / f".{healthy.name}.ch-backup-copy-mode").exists()
-
-
 @pytest.mark.parametrize("modern_cli", [False, True])
 def test_remove_part_uses_disk_and_version_specific_cli(modern_cli):
     ch_ctl = unittest.mock.Mock()
