@@ -107,6 +107,19 @@ def step_delete_all_objects_in_bucket(context, bucket):
     assert_that(s3_client.list_objects(""), equal_to([]))
 
 
+@when('we delete objects with prefix "{prefix}" in s3 bucket {bucket}')
+def step_delete_objects_with_prefix(context, prefix, bucket):
+    s3_client = s3.S3Client(context, bucket)
+    paths = s3_client.list_objects(prefix)
+    assert_that(
+        len(paths) > 0,
+        equal_to(True),
+        f"No objects with prefix {prefix} in bucket {bucket}",
+    )
+    for path in paths:
+        s3_client.delete_data(path)
+
+
 @when("we put object in S3")
 def step_create_file_in_s3(context):
     conf = get_step_data(context)

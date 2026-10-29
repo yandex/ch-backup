@@ -16,6 +16,7 @@ from typing import Sequence
 import requests
 
 from ch_backup import logging
+from ch_backup.backup.checker import BackupChecker, BackupCheckResult
 from ch_backup.backup.copier import BackupCopier
 from ch_backup.backup.copy_deduplication import copy_deduplication_cutoff
 from ch_backup.backup.copy_report import CopyReport
@@ -649,6 +650,19 @@ class ClickhouseBackup:
             if report is not None:
                 report.error = f"{type(e).__name__}: {e}"
             raise
+
+    def check(
+        self,
+        backup_names: Sequence[str] | None = None,
+        deep: bool = False,
+        workers: int = 4,
+        tmp_dir: str | None = None,
+    ) -> builtins.list[BackupCheckResult]:
+        """
+        Check that backups are readable and their data is in place, reading them only.
+        If backup names are not specified, all backups are checked.
+        """
+        return BackupChecker(self._config, deep, workers, tmp_dir).check(backup_names)
 
     def purge(self) -> tuple[Sequence[str], str | None]:
         """
