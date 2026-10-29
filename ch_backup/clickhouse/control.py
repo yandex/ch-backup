@@ -131,6 +131,8 @@ GET_TABLES_SQL_23_8 = strip_query(
 """
 )
 
+# engine_full shares the CREATE AST already read for create_table_query.
+# It adds no catalog lookup and lets _make_table resolve cold TableProxy engines.
 GET_TABLES_SHORT_SQL = strip_query(
     """
     SELECT
@@ -138,6 +140,7 @@ GET_TABLES_SHORT_SQL = strip_query(
         name,
         uuid,
         engine,
+        engine_full,
         create_table_query
     FROM system.tables
     WHERE ({db_condition})
@@ -1832,16 +1835,23 @@ class ClickhouseCTL:
         }
 
     def _make_table(self, record: dict) -> Table:
+        engine = record["engine"]
+        if engine == "TableProxy":
+            # A paths query can load the table after its engine column was read.
+            # Use the stored engine definition, also available without loading.
+            match = re.match(r"[A-Za-z_][A-Za-z0-9_]*", record.get("engine_full") or "")
+            if not match:
+                raise ClickhouseBackupError(
+                    f"Cannot determine engine of lazy table {record['database']}.{record['name']}"
+                )
+            engine = match.group()
+
         return Table(
             database=record["database"],
             name=record["name"],
-            engine=record.get("engine", None),
+            engine=engine,
             disks=list(self._disks.values()),
-            data_paths=(
-                record.get("data_paths", [])
-                if "MergeTree" in record.get("engine", "")
-                else []
-            ),
+            data_paths=(record.get("data_paths", []) if "MergeTree" in engine else []),
             metadata_path=self._get_metadata_path(record),
             create_statement=record["create_table_query"],
             uuid=record.get("uuid", None),

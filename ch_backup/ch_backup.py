@@ -9,7 +9,7 @@ import os
 from collections import defaultdict
 from contextlib import ExitStack
 from copy import copy
-from datetime import timedelta
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Sequence
 
@@ -17,6 +17,7 @@ import requests
 
 from ch_backup import logging
 from ch_backup.backup.copier import BackupCopier
+from ch_backup.backup.copy_deduplication import copy_deduplication_cutoff
 from ch_backup.backup.copy_report import CopyReport
 from ch_backup.backup.deduplication import (
     DedupReferences,
@@ -93,6 +94,7 @@ class ClickhouseBackup:
 
     @staticmethod
     def _validate_config(config: Config) -> None:
+        copy_deduplication_cutoff(config["copy"], utcnow())
         start_time = as_datetime(config["backup"].get("deduplication_start_time"))
         if start_time is not None and start_time > utcnow():
             raise ValueError(
@@ -612,6 +614,7 @@ class ClickhouseBackup:
         *,
         keep_going: bool = False,
         report: CopyReport | None = None,
+        command_start: datetime | None = None,
     ) -> tuple[Sequence[str], Sequence[str]]:
         """
         Copy backups to the storage specified in the target config.
@@ -620,6 +623,9 @@ class ClickhouseBackup:
         Return names of copied backups and names of backups skipped as already copied.
         The optional report also receives partial results when copying raises.
         """
+        # Freeze both window bounds before storage setup and lock acquisition.
+        if command_start is None:
+            command_start = utcnow()
         if report is not None:
             report.error = None
             report.backups.clear()
@@ -633,7 +639,12 @@ class ClickhouseBackup:
                 ch_config=self._context.ch_config,
             )
             with storage_locks([self._config, target_config], operation="COPY"):
-                return copier.copy(backup_names, keep_going=keep_going, report=report)
+                return copier.copy(
+                    backup_names,
+                    keep_going=keep_going,
+                    report=report,
+                    command_start=command_start,
+                )
         except BaseException as e:
             if report is not None:
                 report.error = f"{type(e).__name__}: {e}"
