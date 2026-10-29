@@ -162,6 +162,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "restore": {
         "use_inplace_cloud_restore": False,
+        # Plaintext staging location used to restore cloud storage data encrypted
+        # by the copy command. Unset values inherit endpoint, bucket and credentials
+        # from the destination ClickHouse disk. An unset path is selected safely at
+        # restore time depending on whether source and staging buckets are the same.
+        "cloud_storage": {
+            "decryption_staging": {
+                "endpoint_url": None,
+                "bucket": None,
+                "path": None,
+                "access_key_id": None,
+                "secret_access_key": None,
+            },
+        },
         # Max table name length. Actually it is just a result of the getMaxTableNameLengthForDatabase(<atomic_db>) ch function.
         "max_table_name": 206,
     },
