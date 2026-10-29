@@ -2,8 +2,6 @@
 ClickhouseBackup unit tests.
 """
 
-# pylint: disable=too-many-lines
-
 from collections import defaultdict
 from contextlib import AbstractContextManager, nullcontext
 from copy import deepcopy
