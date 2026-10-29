@@ -290,6 +290,14 @@ Behavior and limitations:
   Disk metadata that cannot be planned is not copied, so it never overwrites rewritten disk
   metadata; a later run copies it. Copy scopes of one backup one after another: the local lock
   serializes runs on one host, runs on different hosts require `lock.zk_flock`.
+  Linked cloud parts also require the owner's disk metadata and cloud location. The `files`
+  scope stages the required archives and missing owner information in the same copy context,
+  without saving another full backup metadata file. If the owner's payload is inside backup
+  storage, `files` stages that payload too. The `cloud_storage` scope can then complete without
+  source backup storage. Original cloud-part links and the source location remain in incomplete
+  copy metadata until publication as `created`. An older incomplete copy without staged owner
+  information must run `files` again before `cloud_storage`.
+
 - Copy acquires the configured source and target locks through completion, including retries and
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
   and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.
@@ -360,14 +368,26 @@ Behavior and limitations:
   prefix from stored source metadata or disk configuration. Copy fails before writing if that prefix
   is unknown or a key is outside it. Without a path override, full keys are read as stored.
   Restore of the copy uses the copied objects by default; they must be accessible with credentials of the
-  object storage disk of the host where the backup is restored. Each copied backup stores these objects
-  separately. Deleting a copy retains external objects by default. Add `--delete-cloud-storage-data` to
+  object storage disk of the host where the backup is restored.
+  Copies reuse unchanged whole parts from completed backups in the same target cloud bucket and path.
+  Copy compares archived object references because ClickHouse can change metadata checksums on each freeze.
+  Each copied part stores a fingerprint derived from the original object namespace and references.
+  Later copies preserve that identity when objects move to another destination.
+  Older destination copies without this fingerprint remain readable but cannot supply deduplication owners.
+  Backup metadata records each part's owning backup. Restore reads each part from its owner's location.
+  Copying a backup without its owner at the destination materializes the linked part in the new copy.
+  Deleting a copy retains external objects by default. Add `--delete-cloud-storage-data` to
   `delete` or `purge` to remove copied objects that surviving backups do not reference. Original backup data is preserved.
   Cleanup selects objects from saved disk metadata and uses backup-storage credentials by default. Configure
   `copy.cloud_storage.target` for separate credentials or a different endpoint.
   Metadata must be trusted and readable. Encrypted disk metadata requires its original key.
+  Part links and persisted source fingerprints also trust backup metadata. Fingerprints identify data but do not authenticate metadata.
+  Partial cleanup removes unreferenced parts and their archived disk metadata. Parts referenced by
+  surviving backups retain both their objects and disk metadata. Objects shared with retained parts also remain.
   Batch cleanup validates all selected backups before deletion. Failed cleanup can be retried.
   In-memory archives have a 1 GiB limit, adjustable in bytes with `filesystem.max_in_memory_tarball_size`.
+  Restore accepts stored endpoints only when their HTTP(S) origin matches a configured disk or backup-storage endpoint.
+  Use `--cloud-storage-source-endpoint` to explicitly authorize another endpoint for restore.
   Restore preserves the HTTP/HTTPS scheme of the stored endpoint. Its `--cloud-storage-source-endpoint`
   option accepts a full HTTP(S) URL or `host[:port]`; the latter uses the original disk's scheme.
 - ClickHouse 26.8+ SQL-defined HTTP handlers are included in full backups; use `--http-handlers` with backup

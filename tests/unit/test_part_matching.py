@@ -8,6 +8,7 @@ import pytest
 from ch_backup.backup.metadata import PartMetadata
 from ch_backup.backup.part_matching import (
     backup_part_names_match,
+    cloud_copy_key,
     linked_part_matches,
     local_copy_key,
     materialized_part_key,
@@ -216,3 +217,32 @@ def test_materialized_match_requires_logical_address_and_compatible_files(
     )
 
     assert materialized_part_matches(source, stored) is expected
+
+
+def test_cloud_copy_key_ignores_only_mutation(make_part):
+    key = cloud_copy_key(make_part(), "uuid", "fingerprint")
+    assert key == cloud_copy_key(make_part(name="all_1_2_0_7"), "uuid", "fingerprint")
+    assert key != cloud_copy_key(make_part(), "other", "fingerprint")
+    assert key != cloud_copy_key(make_part(), "uuid", "other")
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"database": "other"},
+        {"table": "other"},
+        {"name": "all_2_2_0"},
+        {"name": "all_1_2_1"},
+        {"disk_name": "other"},
+        {"encrypted": False},
+    ],
+)
+def test_cloud_copy_key_rejects_incompatible_parts(make_part, change):
+    assert cloud_copy_key(make_part(), "uuid", "fingerprint") != cloud_copy_key(
+        make_part(**change), "uuid", "fingerprint"
+    )
+
+
+def test_cloud_copy_key_rejects_malformed_name(make_part):
+    with pytest.raises(ValueError):
+        cloud_copy_key(make_part(name="broken"), None, "fingerprint")

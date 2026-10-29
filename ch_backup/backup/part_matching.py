@@ -107,3 +107,31 @@ def materialized_part_matches(source: PartMetadata, stored: PartMetadata) -> boo
         and stored.tarball == source.tarball
         and stored.encrypted == source.encrypted
     )
+
+
+@dataclass(frozen=True, slots=True)
+class CloudCopyKey:
+    """Match cloud parts by their original objects and compatible storage settings."""
+
+    database: str
+    table: str
+    table_uuid: str | None
+    disk_name: str
+    name: PartNameKey
+    encrypted: bool
+    fingerprint: str
+
+
+def cloud_copy_key(
+    part: PartMetadata, table_uuid: str | None, fingerprint: str
+) -> CloudCopyKey:
+    """Ignore mutation renames while preserving the original source fingerprint."""
+    return CloudCopyKey(
+        database=part.database,
+        table=part.table,
+        table_uuid=table_uuid,
+        disk_name=part.disk_name,
+        name=part_name_without_mutation(part.name),
+        encrypted=part.encrypted,
+        fingerprint=fingerprint,
+    )

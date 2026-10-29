@@ -26,15 +26,12 @@ from ch_backup.backup.metadata import (
     sanitize_backup_name,
 )
 from ch_backup.backup.metadata.table_metadata import TableMetadata
-from ch_backup.clickhouse.config import ClickhouseConfig
+from ch_backup.clickhouse.config import ClickhouseConfig, set_backup_storage
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.models import Disk, FrozenPart, Table
 from ch_backup.config import Config
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
-from ch_backup.util import (
-    is_equal_s3_endpoints,
-    s3_uri_from_path_style_to_virtual_hosted,
-)
+from ch_backup.util import is_equal_s3_endpoints
 
 
 class ClickHouseDisksException(RuntimeError):
@@ -144,7 +141,7 @@ class ClickHouseDiskManager:
             for key, value in self._disks[disk_name].items()
             if key in BACKUP_DISK_CONFIG_KEYS
         }
-        _set_backup_storage(
+        set_backup_storage(
             disk_config,
             self._storage_config,
             self._backup_layout.get_cloud_storage_data_path(backup_name, disk_name),
@@ -234,11 +231,26 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         super().__init__(ch_ctl, backup_layout, config, backup_meta, ch_config)
         self._use_local_copy = use_local_copy
         self._skip_cloud_storage = skip_cloud_storage
+        # Metadata defaults must not become explicit authorization of an endpoint.
+        self._metadata_source_endpoint: str | None = None
+        source = backup_meta.cloud_storage.source
+        if source_bucket is None and source:
+            source_bucket = source["bucket"]
+            source_path = source_path or source["path"]
+            self._metadata_source_endpoint = (
+                source["endpoint_url"] or "https://s3.amazonaws.com"
+            )
+            logging.info(
+                "Using cloud storage data location from backup metadata: bucket {}, path {}",
+                source_bucket,
+                source_path,
+            )
         self._source_bucket: str = source_bucket or ""
         self._source_path: str = source_path or ""
         self._source_endpoint: str = source_endpoint or ""
         if (
             backup_meta.cloud_storage.requires_source_bucket
+            and backup_meta.get_owned_cloud_storage_disks()
             and source_bucket is None
             and not skip_cloud_storage
         ):
@@ -252,7 +264,12 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
     def __enter__(self):
         self._read_configured_disks()
         if not self._skip_cloud_storage:
-            for disk_name in self._backup_meta.cloud_storage.disks:
+            own_disks = (
+                self._backup_meta.cloud_storage.disks
+                if self._backup_meta.cloud_storage.data_copied
+                else self._backup_meta.get_owned_cloud_storage_disks()
+            )
+            for disk_name in own_disks:
                 self._create_temporary_disk(
                     self._backup_meta,
                     disk_name,
@@ -303,7 +320,10 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
             backup_meta = self._backup_layout.get_backup(
                 backup_name, use_light_meta=True
             )
-            if backup_meta is None or not backup_meta.cloud_storage.data_copied:
+            if backup_meta is None or not (
+                backup_meta.cloud_storage.data_copied
+                or backup_meta.cloud_storage.source
+            ):
                 raise ClickHouseDisksException(
                     f'Backup "{backup_name}" holding data of deduplicated parts'
                     " is missing or holds no copied data"
@@ -334,7 +354,9 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         relative to the disk endpoint. Objects copied into the backup are not
         reachable from the original disk, so such backups are refused.
         """
-        if self._use_local_copy and backup_meta.cloud_storage.data_copied:
+        if self._use_local_copy and (
+            backup_meta.cloud_storage.data_copied or backup_meta.cloud_storage.source
+        ):
             raise ClickHouseDisksException(
                 f'Backup "{backup_meta.name}" holds a copy of cloud storage data,'
                 " it cannot be restored with use_inplace_cloud_restore."
@@ -381,20 +403,63 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
 
         disk_config = copy.copy(self._disks[disk_name])
         endpoint = urlparse(disk_config["endpoint"])
-        if self._source_endpoint:
-            source_endpoint = urlparse(
-                self._source_endpoint
-                if "://" in self._source_endpoint
-                else f"//{self._source_endpoint}"
+        source_bucket, source_path, source_endpoint_url = (
+            self._source_bucket,
+            self._source_path,
+            self._source_endpoint or self._metadata_source_endpoint,
+        )
+        if (
+            backup_meta.name != self._backup_meta.name
+            and backup_meta.cloud_storage.source
+        ):
+            source = backup_meta.cloud_storage.source
+            source_bucket, source_path, source_endpoint_url = (
+                source["bucket"],
+                source["path"],
+                source["endpoint_url"] or "https://s3.amazonaws.com",
             )
+        if source_endpoint_url:
+            source_endpoint = urlparse(
+                source_endpoint_url
+                if "://" in source_endpoint_url
+                else f"//{source_endpoint_url}"
+            )
+            trusted_endpoints = [
+                disk_config["endpoint"],
+                self._storage_config["credentials"]["endpoint_url"]
+                or "https://s3.amazonaws.com",
+            ]
+            if self._source_endpoint:
+                trusted_endpoints.append(self._source_endpoint)
+            trusted_origins = set()
+            for value in trusted_endpoints:
+                parsed = urlparse(value if "://" in value else f"//{value}")
+                trusted_origins.add(
+                    (parsed.scheme or endpoint.scheme, parsed.netloc.lower())
+                )
+            origin = (
+                source_endpoint.scheme or endpoint.scheme,
+                source_endpoint.netloc.lower(),
+            )
+            if (
+                origin not in trusted_origins
+                or origin[0] not in ("http", "https")
+                or not source_endpoint.hostname
+                or source_endpoint.username is not None
+                or source_endpoint.password is not None
+            ):
+                raise ClickHouseDisksException(
+                    f'Cloud storage source endpoint in backup "{backup_meta.name}" does not match '
+                    "a configured endpoint. Set --cloud-storage-source-endpoint explicitly"
+                )
             endpoint = endpoint._replace(
-                scheme=source_endpoint.scheme or endpoint.scheme,
+                scheme=origin[0],
                 netloc=source_endpoint.netloc,
             )
         disk_config["endpoint"] = os.path.join(
             f"{endpoint.scheme}://{endpoint.netloc}",
-            self._source_bucket,
-            self._source_path,
+            source_bucket,
+            source_path,
             "",
         )
         return disk_config
@@ -678,65 +743,6 @@ class ClickHouseBackupDisks(ClickHouseDiskManager):
             f"Backup of {table.database}.{table.name} on disk {disk_name}",
         )
         return backup_disk
-
-
-def _set_backup_storage(
-    disk_config: dict, storage_config: dict, key_prefix: str
-) -> None:
-    """
-    Point a disk configuration to a location in the backup storage.
-    """
-    credentials = storage_config["credentials"]
-    disk_config["endpoint"] = _backup_storage_endpoint(storage_config, key_prefix)
-    disk_config["access_key_id"] = credentials["access_key_id"]
-    disk_config["secret_access_key"] = credentials["secret_access_key"]
-
-    proxy = _backup_storage_proxy(storage_config)
-    if proxy:
-        disk_config["proxy"] = proxy
-
-
-def _backup_storage_endpoint(storage_config: dict, key_prefix: str) -> str:
-    """
-    Build the backup storage URL of a given key prefix.
-
-    "auto" addressing style is built as path-style, since it puts no
-    requirements on the bucket name.
-    """
-    credentials = storage_config["credentials"]
-    endpoint_url = credentials["endpoint_url"].rstrip("/")
-    url = f"{endpoint_url}/{credentials['bucket']}/{key_prefix.strip('/')}/"
-
-    if storage_config["boto_config"]["addressing_style"] == "virtual":
-        return s3_uri_from_path_style_to_virtual_hosted(url)
-
-    return url
-
-
-def _backup_storage_proxy(storage_config: dict) -> dict | None:
-    """
-    Build the proxy configuration for reaching the backup storage, if any.
-
-    ClickHouse is given the resolver rather than a host resolved once, so that
-    it picks a proxy per request and drops one that fails. The endpoint always
-    gets a path: the resolve request line is built out of the path alone.
-    """
-    proxy_resolver = storage_config.get("proxy_resolver", {})
-    resolver_uri = proxy_resolver.get("uri")
-    if not resolver_uri:
-        return None
-
-    endpoint = urlparse(resolver_uri)
-    if not endpoint.path:
-        endpoint = endpoint._replace(path="/")
-
-    return {
-        "resolver": {
-            "endpoint": endpoint.geturl(),
-            "proxy_scheme": "http",
-            "proxy_port": str(proxy_resolver["proxy_port"]),
-        }
-    }
 
 
 def _raise_request_timeout(disk_config: dict) -> bool:

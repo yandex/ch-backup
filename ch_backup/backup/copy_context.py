@@ -10,6 +10,7 @@ import time
 import uuid
 from tempfile import NamedTemporaryFile
 from types import TracebackType
+from typing import Any, TypedDict
 
 from ch_backup import logging
 from ch_backup.backup.metadata import BackupMetadata, CopyScope
@@ -20,6 +21,15 @@ COPY_CONTEXT_DIR = "copy_context"
 FAILED_OBJECTS_DIR = "failed"
 MANIFEST_DIR = "manifest"
 SOURCE_DIR = "source"
+
+
+class SourceOwner(TypedDict):
+    """Owner information absent from the child; part addresses stay in child metadata."""
+
+    cloud_storage: dict[str, Any]
+    tables: list[tuple[str, str, str | None]]
+    fingerprints: list[tuple[str, str, str, str]]
+    data_paths: dict[str, str]
 
 
 class FailedObjects:
@@ -164,6 +174,21 @@ class CopyContext:
                 self._engine.delete_file(path)
         except Exception as e:
             logging.warning("Failed to save list of failed objects {}: {}", path, e)
+
+    def save_source_owners(self, owners: dict[str, SourceOwner]) -> None:
+        """Save dependency information before publishing completion of the files scope."""
+        self._engine.upload_data(
+            json.dumps(owners).encode(),
+            os.path.join(self._path, SOURCE_DIR, "owners.json"),
+        )
+
+    def load_source_owners(self) -> dict[str, SourceOwner]:
+        """Load staged dependencies; missing records require another files-scope run."""
+        return json.loads(
+            self._engine.download_data(
+                os.path.join(self._path, SOURCE_DIR, "owners.json")
+            )
+        )
 
     def save_manifest(self, scope: CopyScope, entries: list[CopyEntry]) -> None:
         """Save locations and sizes of all objects of the scope, without credentials."""

@@ -2,7 +2,15 @@
 Backup metadata for Cloud Storage.
 """
 
-from typing import Any
+from typing import Any, TypedDict
+
+
+class CloudStorageSource(TypedDict):
+    """Recorded cloud location. A null endpoint selects the AWS default."""
+
+    endpoint_url: str | None
+    bucket: str
+    path: str
 
 
 class CloudStorageMetadata:
@@ -16,13 +24,13 @@ class CloudStorageMetadata:
         compression: bool = True,
         data_copied: bool = False,
         disks: list[str] | None = None,
-        source: dict[str, str] | None = None,
+        source: CloudStorageSource | None = None,
     ) -> None:
         self._encryption: bool = encryption
         self._compression: bool = compression
         self._data_copied: bool = data_copied
         self._disks: list[str] = disks or []
-        self._source: dict[str, str] | None = source
+        self._source: CloudStorageSource | None = source
 
     @property
     def enabled(self) -> bool:
@@ -101,7 +109,7 @@ class CloudStorageMetadata:
         return self.enabled and not self._data_copied
 
     @property
-    def source(self) -> dict[str, str] | None:
+    def source(self) -> CloudStorageSource | None:
         """
         Return location of cloud storage data (keys "endpoint_url", "bucket" and "path")
         if it was copied out of the source disk, or None if the data is stored on the source disk.
@@ -109,7 +117,7 @@ class CloudStorageMetadata:
         return self._source
 
     @source.setter
-    def source(self, value: dict[str, str] | None) -> None:
+    def source(self, value: CloudStorageSource | None) -> None:
         """
         Set location of cloud storage data.
         """

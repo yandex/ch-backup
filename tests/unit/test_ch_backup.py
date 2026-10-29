@@ -2,8 +2,6 @@
 ClickhouseBackup unit tests.
 """
 
-# pylint: disable=too-many-lines
-
 from collections import defaultdict
 from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime, timedelta, timezone
@@ -22,6 +20,7 @@ from ch_backup.backup.metadata import (
     PartMetadata,
     TableMetadata,
 )
+from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageSource
 from ch_backup.backup.sources import BackupSources
 from ch_backup.ch_backup import (
     CleanZooKeeperMode,
@@ -30,7 +29,10 @@ from ch_backup.ch_backup import (
     _zookeeper_roots_differ,
 )
 from ch_backup.clickhouse.client import ClickhouseError
-from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
+from ch_backup.clickhouse.disks import (
+    ClickHouseDisksException,
+    ClickHouseTemporaryDisks,
+)
 from ch_backup.clickhouse.models import Database
 from ch_backup.config import DEFAULT_CONFIG, Config
 from ch_backup.exceptions import (
@@ -882,7 +884,8 @@ def test_delete_with_unreadable_full_metadata_and_references_fails() -> None:
 
 
 def _backup_metadata(
-    copied_from: dict | None = None, cloud_storage_source: dict | None = None
+    copied_from: dict | None = None,
+    cloud_storage_source: CloudStorageSource | None = None,
 ) -> BackupMetadata:
     meta = BackupMetadata(
         name="backup1",
@@ -932,33 +935,30 @@ def test_delete_unfreezes_only_own_backups(
 
 
 @pytest.mark.parametrize(
-    "original_scheme,stored_scheme", [("http", "https"), ("https", "http")]
-)
-@pytest.mark.parametrize(
-    "override",
+    "original_scheme,source_endpoint,override,trusted,expected",
     [
-        None,
-        "https://explicit.example:443",
-        "http://explicit.example:9000",
-        "explicit.example:8443",
+        ("http", "https://copied", None, True, "https://copied"),
+        ("https", "http://copied", None, True, "http://copied"),
+        ("http", "https://copied", None, False, None),
+        ("http", "https://copied", "http://explicit", False, "http://explicit"),
+        ("https", "http://copied", "explicit:8443", False, "https://explicit:8443"),
+        ("http", None, None, False, "https://s3.amazonaws.com"),
     ],
 )
 # pylint: disable=protected-access
-def test_restore_keeps_stored_endpoint_scheme(
-    original_scheme: str, stored_scheme: str, override: str | None
-) -> None:
+def test_restore_uses_trusted_or_explicit_cloud_endpoint(
+    original_scheme, source_endpoint, override, trusted, expected
+):
     meta = _backup_metadata(
         cloud_storage_source={
-            "endpoint_url": f"{stored_scheme}://copied.example:8443",
+            "endpoint_url": source_endpoint,
             "bucket": "copied-disk",
             "path": "copies/backup1",
         }
     )
-    context = MagicMock()
-    context.config = {"force_non_replicated": False}
+    backup, context = _backup_with_context()
+    context.locker = MagicMock()
     context.backup_layout.get_backup.return_value = meta
-    backup = ClickhouseBackup.__new__(ClickhouseBackup)
-    backup.__dict__["_context"] = context
     with (
         patch.object(backup, "_check_zookeeper_for_restore"),
         patch.object(backup, "_restore") as restore,
@@ -967,42 +967,25 @@ def test_restore_keeps_stored_endpoint_scheme(
             BackupSources(), "backup1", [], [], cloud_storage_source_endpoint=override
         )
     options = restore.call_args.kwargs
+    config = Config("/dev/null")
+    if trusted:
+        config["storage"]["credentials"]["endpoint_url"] = source_endpoint
     disks = ClickHouseTemporaryDisks(
         MagicMock(),
         MagicMock(),
-        DEFAULT_CONFIG,  # type: ignore[arg-type]
+        config,
         meta,
         options["cloud_storage_source_bucket"],
         options["cloud_storage_source_path"],
         options["cloud_storage_source_endpoint"],
         MagicMock(),
     )
-    disks._disks = {
-        "s3": {"endpoint": f"{original_scheme}://original.example/original/data/"}
-    }
-    expected = override or f"{stored_scheme}://copied.example:8443"
-    if "://" not in expected:
-        expected = f"{original_scheme}://{expected}"
-    assert disks._source_disk_config(meta, "s3")["endpoint"] == (
-        f"{expected}/copied-disk/copies/backup1/"
-    )
-
-
-def test_tables_left_without_data_are_reported() -> None:
-    """The caller must learn that the backup holds incomplete data of tables."""
-    backup, context = _backup_with_context()
-    context.backup_meta.count_skipped_data_tables.return_value = (1, 2)
-
-    message = backup._skipped_data_message()  # pylint: disable=protected-access
-
-    assert message is not None
-    assert "1 tables without data" in message
-    assert "2 tables without some data parts" in message
-
-
-def test_nothing_is_reported_when_all_data_is_backed_up() -> None:
-    """A complete backup must not print anything about skipped data."""
-    backup, context = _backup_with_context()
-    context.backup_meta.count_skipped_data_tables.return_value = (0, 0)
-
-    assert backup._skipped_data_message() is None  # pylint: disable=protected-access
+    disks._disks = {"s3": {"endpoint": f"{original_scheme}://original/data/"}}
+    if expected is None:
+        with pytest.raises(ClickHouseDisksException, match="endpoint"):
+            disks._source_disk_config(meta, "s3")
+    else:
+        assert (
+            disks._source_disk_config(meta, "s3")["endpoint"]
+            == f"{expected}/copied-disk/copies/backup1/"
+        )

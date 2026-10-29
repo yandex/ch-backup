@@ -9,10 +9,14 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from ch_backup.backup.layout import BackupLayout
+from ch_backup.backup.layout import (
+    BackupLayout,
+    get_cloud_storage_metadata_path,
+    get_cloud_storage_part_identity,
+)
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata
 from ch_backup.backup.metadata.table_metadata import TableMetadata
-from ch_backup.clickhouse.models import Disk, Table
+from ch_backup.clickhouse.models import Database, Disk, Table
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import StorageError
 from ch_backup.storage.async_pipeline import pipeline_executor
@@ -592,3 +596,39 @@ class TestTableDataFiles:
         storage.get_file_size.assert_called_once_with(
             "ch_backup/b1/data/db1/t1/all_1_1_0/all_1_1_0.tar"
         )
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize(
+    "table_name,table_uuid", [("table-one", "uuid-one"), ("table.two", "uuid-two")]
+)
+def test_cloud_manifest_part_identity_distinguishes_tables(
+    legacy, table_name, table_uuid
+):
+    backup = BackupMetadata("backup", "2", "26.8", "%Y-%m-%d")
+    backup.add_database(Database("db-name", "Atomic", None, None, None))
+    for name, uuid in [("table-one", "uuid-one"), ("table.two", "uuid-two")]:
+        table = TableMetadata("db-name", name, "MergeTree", uuid)
+        table.add_part(
+            PartMetadata(
+                "db-name", name, "all_1_1_0", "checksum", 1, [], False, disk_name="s3"
+            )
+        )
+        backup.add_table(table)
+    archive = get_cloud_storage_metadata_path(
+        "ch_backup/backup",
+        None if legacy else "db-name",
+        None if legacy else table_name,
+        "s3",
+        True,
+    )
+    name = (
+        f"store/abc/{table_uuid}/all_1_1_0/projection.proj/data.bin"
+        if legacy
+        else "all_1_1_0/data.bin"
+    )
+    assert get_cloud_storage_part_identity(backup, "s3", archive, name) == (
+        "db-name",
+        table_name,
+        "all_1_1_0",
+    )

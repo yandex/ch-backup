@@ -18,6 +18,7 @@ from ch_backup.clickhouse.models import Database
 from ch_backup.config import Config
 from ch_backup.exceptions import ConfigurationError, InvalidBackupStruct, StorageError
 from ch_backup.storage.engine.s3 import S3StorageEngine
+from tests.unit.test_backup_copy import _object_storage_metadata
 from tests.unit.test_ch_backup import _backup_metadata
 
 
@@ -54,6 +55,11 @@ def fixture_cloud_copy(monkeypatch, tmp_path):
             context.backup_layout, meta, prefix
         )
     )
+    context.backup_layout.delete_cloud_storage_parts.side_effect = (
+        lambda metadata, retained, storage: BackupLayout.delete_cloud_storage_parts(
+            context.backup_layout, metadata, retained, storage
+        )
+    )
     context.config = config["backup"]
     context.backup_layout.get_backups.return_value = [meta]
     context.backup_layout.get_backup.return_value = meta
@@ -72,6 +78,9 @@ def fixture_cloud_copy(monkeypatch, tmp_path):
 
     monkeypatch.setattr(
         "ch_backup.ch_backup.get_storage_engine", make_engine, raising=False
+    )
+    monkeypatch.setattr(
+        "ch_backup.backup.layout.get_storage_engine", make_engine, raising=False
     )
     with Stubber(engine.get_client()) as s3:
         yield backup, meta, context, s3, storage_configs
@@ -116,6 +125,37 @@ def test_delete_external_copy_uses_only_recorded_objects(cloud_copy, data):
     _delete_objects(s3, ["copies/backup1/cluster-a"])
 
     assert backup._delete(meta, {}, DeleteSettings(delete_cloud_storage_data=True)) == (
+        "backup1",
+        None,
+    )
+
+
+def test_delete_cloud_copy_skips_disks_owned_by_another_backup(cloud_copy):
+    backup, meta, context, s3, _configs = cloud_copy
+    meta.cloud_storage.add_disk("linked_s3")
+    meta.add_database(Database("db", "Atomic", None, None, None))
+    table = TableMetadata("db", "table", "MergeTree", None)
+    table.add_part(
+        PartMetadata(
+            "db",
+            "table",
+            "all_1_1_0",
+            "checksum",
+            1,
+            [],
+            False,
+            disk_name="linked_s3",
+            link="owner",
+        )
+    )
+    meta.add_table(table)
+    _saved_objects(context, ["copies/backup1/a"])
+    context.backup_layout.get_cloud_storage_metadata_remote_paths.side_effect = (
+        lambda _name, disk, *_args: (["archive"] if disk == "s3" else [])
+    )
+    _delete_objects(s3, ["copies/backup1/a"])
+
+    assert backup.delete(meta.name, DeleteSettings(delete_cloud_storage_data=True)) == (
         "backup1",
         None,
     )
@@ -289,7 +329,14 @@ def test_partial_delete_keeps_referenced_cloud_data(cloud_copy, shared_disk):
     meta.add_table(table)
     refs: DedupReferences = defaultdict(lambda: defaultdict(set))
     refs["db"]["table"].add("all_1_1_0")
-    if shared_disk != "s3":
+    if shared_disk == "s3":
+        context.backup_layout.get_cloud_storage_metadata_remote_paths.return_value = [
+            "ch_backup/backup1/disks/s3/db/table.tar.gz"
+        ]
+        context.backup_layout.get_cloud_storage_metadata_files.return_value = [
+            ("db/table/all_1_1_0/data.bin", _object_storage_metadata(("xyz/a", 1)))
+        ]
+    else:
         _saved_objects(context, ["copies/backup1/a"])
         _delete_objects(s3, ["copies/backup1/a"])
 
@@ -300,7 +347,7 @@ def test_partial_delete_keeps_referenced_cloud_data(cloud_copy, shared_disk):
     assert deleted is None
     assert message
     assert meta.state == BackupState.PARTIALLY_DELETED
-    assert bool(configs) == (shared_disk != "s3")
+    assert configs
 
 
 @pytest.mark.parametrize(
@@ -576,3 +623,182 @@ def test_batch_missing_disk_metadata_precedes_all_changes(cloud_copy, operation)
     context.backup_layout.delete_backup.assert_not_called()
     assert meta.state == BackupState.CREATED
     assert other.state == BackupState.FAILED
+
+
+@pytest.fixture(name="batch_with_referenced_cloud_owner")
+def fixture_batch_with_referenced_cloud_owner(cloud_copy):
+    backup, meta, context, _s3, _configs = cloud_copy
+    meta.state = BackupState.CREATED
+    owner = deepcopy(meta)
+    owner.name = "backup2"
+    owner.state = BackupState.PARTIALLY_DELETED
+    owner.cloud_storage.source.update(
+        {"path": "copies/backup2", "endpoint_url": "https://wrong.example.test"}
+    )
+    owner.add_database(Database("db", "Atomic", None, None, None))
+    table = TableMetadata("db", "table", "MergeTree", None)
+    part = PartMetadata(
+        "db", "table", "all_1_1_0", "checksum", 1, [], False, disk_name="s3"
+    )
+    table.add_part(part)
+    owner.add_table(table)
+    retained = deepcopy(owner)
+    retained.name = "retained"
+    retained.state = BackupState.CREATED
+    retained.link_part(part, owner.name, part.name)
+    backup.config["backup"].update({"retain_count": 1, "retain_time": {}})
+    context.backup_layout.get_backups.return_value = [retained, meta, owner]
+    context.backup_layout.get_backup.side_effect = {
+        meta.name: meta,
+        owner.name: owner,
+        retained.name: retained,
+    }.get
+    context.backup_layout.reload_backup.side_effect = lambda backup, **_kwargs: backup
+    _saved_objects(context, [])
+    return backup, meta, owner, context
+
+
+@pytest.mark.parametrize("operation", ["delete", "purge"])
+def test_batch_validates_referenced_cloud_owner_before_changes(
+    batch_with_referenced_cloud_owner, operation
+):
+    backup, meta, owner, context = batch_with_referenced_cloud_owner
+    with pytest.raises(ConfigurationError, match="endpoint"):
+        if operation == "delete":
+            backup.delete(
+                meta.name,
+                DeleteSettings(purge_partial=True, delete_cloud_storage_data=True),
+            )
+        else:
+            backup.purge(DeleteSettings(delete_cloud_storage_data=True))
+
+    assert meta.state == BackupState.CREATED
+    assert meta.cloud_storage.source is not None
+    assert owner.state == BackupState.PARTIALLY_DELETED
+    context.backup_layout.upload_backup_metadata.assert_not_called()
+    context.backup_layout.delete_backup.assert_not_called()
+
+
+@pytest.mark.parametrize("retain_first", [False, True])
+@pytest.mark.parametrize("failure", [None, "payload", "archive"])
+def test_partial_delete_removes_unreferenced_parts_and_keeps_shared_objects(
+    cloud_copy, retain_first, failure
+):
+    backup, meta, context, s3, _configs = cloud_copy
+    meta.add_database(Database("db", "Atomic", None, None, None))
+    table = TableMetadata("db", "table", "MergeTree", None)
+    table.add_part(
+        PartMetadata(
+            "db",
+            "table",
+            "all_1_1_0",
+            "first",
+            100,
+            ["data.bin"],
+            False,
+            disk_name="s3",
+        )
+    )
+    table.add_part(
+        PartMetadata(
+            "db",
+            "table",
+            "all_3_3_0",
+            "third",
+            200,
+            ["data.bin"],
+            False,
+            disk_name="s3",
+        )
+    )
+    meta.add_table(table)
+    archive = "ch_backup/backup1/disks/s3/db/table.tar.gz"
+    kept_name = "store/abc/uuid/all_1_1_0/data.bin"
+    manifests = {
+        archive: [
+            (kept_name, _object_storage_metadata(("xyz/shared", 5))),
+            (
+                "store/abc/uuid/all_3_3_0/data.bin",
+                _object_storage_metadata(("xyz/shared", 5), ("xyz/third", 7)),
+            ),
+            (
+                "store/abc/uuid/all_3_3_0/p.proj/data.bin",
+                _object_storage_metadata(
+                    ("copies/backup1/xyz/projection", 3), version=5
+                ),
+            ),
+        ]
+    }
+    context.backup_layout.get_cloud_storage_metadata_remote_paths.return_value = [
+        archive
+    ]
+    context.backup_layout.get_cloud_storage_metadata_files.side_effect = (
+        lambda _meta, path: list(manifests[path])
+    )
+    pending: dict[str, list[tuple[str, bytes]]] = {}
+    context.backup_layout.upload_cloud_storage_metadata_files.side_effect = (
+        lambda _meta, path, files: pending.__setitem__(path, files)
+    )
+
+    def commit_uploads():
+        manifests.update(pending)
+        pending.clear()
+
+    context.backup_layout.wait.side_effect = commit_uploads
+    refs: DedupReferences = defaultdict(lambda: defaultdict(set))
+    refs["db"]["table"].add("all_1_1_0")
+    if retain_first:
+        backup._delete(meta, refs)
+        assert len(manifests[archive]) == 3
+    request = {
+        "Bucket": "disk-copy",
+        "Delete": {
+            "Objects": [
+                {"Key": "copies/backup1/xyz/projection"},
+                {"Key": "copies/backup1/xyz/third"},
+            ]
+        },
+    }
+    if failure:
+        if failure == "payload":
+            s3.add_response(
+                "delete_objects",
+                {
+                    "Errors": [
+                        {"Key": "copies/backup1/xyz/third", "Code": "AccessDenied"}
+                    ]
+                },
+                request,
+            )
+        else:
+            s3.add_response("delete_objects", {}, request)
+            context.backup_layout.wait.side_effect = StorageError(
+                "archive upload failed"
+            )
+        with pytest.raises(StorageError):
+            backup._delete(meta, refs, DeleteSettings(delete_cloud_storage_data=True))
+        assert meta.state == BackupState.FAILED
+        assert len(meta.get_parts()) == (1 if retain_first else 2)
+        if failure == "archive":
+            assert len(manifests[archive]) == 3
+            pending.clear()
+            context.backup_layout.wait.side_effect = commit_uploads
+        else:
+            assert len(manifests[archive]) == 3
+    s3.add_response("delete_objects", {}, request)
+
+    deleted, message = backup._delete(
+        meta, refs, DeleteSettings(delete_cloud_storage_data=True)
+    )
+
+    assert deleted is None and message
+    assert meta.state == BackupState.PARTIALLY_DELETED
+    assert [part.name for part in meta.get_parts()] == ["all_1_1_0"]
+    assert meta.real_size == 100
+    assert [name for name, _data in manifests[archive]] == [kept_name]
+    assert context.backup_layout.upload_cloud_storage_metadata_files.call_count == (
+        2 if failure == "archive" else 1
+    )
+    assert meta.cloud_storage.source["path"] == "copies/backup1"
+    backup._delete(meta, refs, DeleteSettings(delete_cloud_storage_data=True))
+    assert [name for name, _data in manifests[archive]] == [kept_name]
