@@ -8,14 +8,66 @@ import json
 import os
 import time
 import uuid
-from typing import Any
+from tempfile import NamedTemporaryFile
+from types import TracebackType
 
 from ch_backup import logging
-from ch_backup.backup.metadata import BackupMetadata
+from ch_backup.backup.metadata import BackupMetadata, CopyScope
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
 from ch_backup.storage.object_copy import CopyEntry, storage_id
 
 COPY_CONTEXT_DIR = "copy_context"
+FAILED_OBJECTS_DIR = "failed"
+MANIFEST_DIR = "manifest"
+SOURCE_DIR = "source"
+
+
+class FailedObjects:
+    """
+    Objects that failed to copy, kept compressed in a temporary file instead of memory.
+    """
+
+    def __init__(self) -> None:
+        """Create an empty compressed temporary file."""
+        # pylint: disable-next=consider-using-with
+        self._file = NamedTemporaryFile()
+        self._gzip = gzip.GzipFile(fileobj=self._file, mode="wb")
+        self._count = 0
+
+    def __enter__(self) -> "FailedObjects":
+        """Return the list itself."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Remove the temporary file."""
+        self._gzip.close()
+        self._file.close()
+
+    def __len__(self) -> int:
+        """Return the number of objects that failed to copy."""
+        return self._count
+
+    def append(self, entry: CopyEntry, error: str) -> None:
+        """Save the object that failed to copy with the error."""
+        line = {
+            "src": entry.src_path,
+            "dst": entry.dst_path,
+            "size": entry.size,
+            "error": error,
+        }
+        self._gzip.write((json.dumps(line) + "\n").encode())
+        self._count += 1
+
+    def path(self) -> str:
+        """Finish compression and return the path of the file."""
+        self._gzip.close()
+        self._file.flush()
+        return self._file.name
 
 
 # pylint: disable=too-many-instance-attributes
@@ -27,7 +79,10 @@ class CopyContext:
     "<backup path>/copy_context/<fingerprint>/". Every file is written once under a
     unique name, so an interrupted run never damages records of earlier runs.
     The fingerprint identifies the source backup; a record identifies source and
-    target locations and size of the object.
+    target locations and size of the object. The journal is only read from files directly
+    under the fingerprint directory. Objects that failed to copy are listed in
+    "failed/<scope>.jsonl.gz", objects of a scope in "manifest/<scope>.jsonl.gz", and
+    "source/" holds source metadata of the backup laid out as in its directory.
     """
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -40,19 +95,10 @@ class CopyContext:
         flush_size: int = 10000,
         flush_interval: float = 60,
     ) -> None:
-        identity_parts: list[Any] = [
-            backup.name,
-            backup.start_time_str,
-            backup.hostname,
-        ]
-        if data_encryption is not None:
-            identity_parts.append(data_encryption)
-        identity = json.dumps(identity_parts, sort_keys=True)
-        fingerprint = hashlib.sha256(identity.encode()).hexdigest()[:16]
         self._engine = engine
-        self._path = os.path.join(backup_path, COPY_CONTEXT_DIR, fingerprint).lstrip(
-            "/"
-        )
+        self._path = os.path.join(
+            backup_path, COPY_CONTEXT_DIR, _fingerprint(backup)
+        ).lstrip("/")
         self._run_id = f"{time.strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:8]}"
         self._index = 0
         self._flush_size = flush_size
@@ -75,6 +121,8 @@ class CopyContext:
             logging.warning("Failed to list copy context {}: {}", self._path, e)
             return
         for path in paths:
+            if os.path.dirname(path) != self._path:
+                continue
             try:
                 lines = gzip.decompress(self._engine.download_data(path)).splitlines()
             except Exception as e:
@@ -89,6 +137,12 @@ class CopyContext:
         """Check that copying of the object was confirmed by a previous run."""
         return _digest(_record(entry, self._data_encryption)) in self._recorded
 
+    def is_archive_recorded(
+        self, storage: dict, path: str, files: list[tuple[str, bytes]], size: int | None
+    ) -> bool:
+        """Check that upload of the rewritten metadata tarball of this size was confirmed by a previous run."""
+        return _digest(_archive_record(storage, path, files, size)) in self._recorded
+
     def forget(self) -> None:
         """Drop records of previous runs once the plan is checked against them."""
         self._recorded.clear()
@@ -96,6 +150,46 @@ class CopyContext:
     def record(self, entry: CopyEntry) -> None:
         """Remember the confirmed copy until the next flush."""
         self._buffer.append(_record(entry, self._data_encryption).decode())
+
+    def record_archive(
+        self, storage: dict, path: str, files: list[tuple[str, bytes]], size: int
+    ) -> None:
+        """Remember the confirmed upload of the rewritten metadata tarball until the next flush."""
+        self._buffer.append(_archive_record(storage, path, files, size).decode())
+
+    def save_failures(self, scope: CopyScope, failures: FailedObjects) -> None:
+        """Replace the list of objects of the scope that failed to copy, removing it if there are none."""
+        path = os.path.join(self._path, FAILED_OBJECTS_DIR, f"{scope.value}.jsonl.gz")
+        try:
+            if failures:
+                self._engine.upload_file(failures.path(), path)
+            else:
+                self._engine.delete_file(path)
+        except Exception as e:
+            logging.warning("Failed to save list of failed objects {}: {}", path, e)
+
+    def save_manifest(self, scope: CopyScope, entries: list[CopyEntry]) -> None:
+        """Save locations and sizes of all objects of the scope, without credentials."""
+        self._engine.upload_data(
+            gzip.compress(b"".join(_record(entry) + b"\n" for entry in entries)),
+            os.path.join(self._path, MANIFEST_DIR, f"{scope.value}.jsonl.gz"),
+        )
+
+    def load_manifest(self, scope: CopyScope) -> list[CopyEntry]:
+        """Return objects of the scope saved by a previous run, with storages identified only."""
+        data = self._engine.download_data(
+            os.path.join(self._path, MANIFEST_DIR, f"{scope.value}.jsonl.gz")
+        )
+        entries = []
+        storages: dict[tuple, dict] = {}
+        for line in gzip.decompress(data).splitlines():
+            if line:
+                src, src_path, dst, dst_path, size = json.loads(line)
+                src, dst = (
+                    storages.setdefault(tuple(i), _storage(i)) for i in (src, dst)
+                )
+                entries.append(CopyEntry(src, dst, src_path, dst_path, size, size))
+        return entries
 
     def flush(self, force: bool = False) -> None:
         """
@@ -124,6 +218,26 @@ class CopyContext:
         self._flushed_size = 0
 
 
+def source_dir(backup: BackupMetadata) -> str:
+    """Return the directory with source metadata of the backup, relative to the backup directory."""
+    return os.path.join(COPY_CONTEXT_DIR, _fingerprint(backup), SOURCE_DIR)
+
+
+def _fingerprint(backup: BackupMetadata) -> str:
+    """Identify the source backup."""
+    identity = json.dumps([backup.name, backup.start_time_str, backup.hostname])
+    return hashlib.sha256(identity.encode()).hexdigest()[:16]
+
+
+def _storage(identity: list) -> dict:
+    """Describe the storage by its identifier, as returned by storage_id."""
+    storage_type, endpoint_url, bucket = identity
+    return {
+        "type": storage_type,
+        "credentials": {"endpoint_url": endpoint_url, "bucket": bucket},
+    }
+
+
 def _record(entry: CopyEntry, data_encryption: dict | None = None) -> bytes:
     """Serialize source and target locations and size of the object."""
     record = [
@@ -133,9 +247,20 @@ def _record(entry: CopyEntry, data_encryption: dict | None = None) -> bytes:
         entry.dst_path,
         entry.dst_size,
     ]
-    if data_encryption is not None:
+    if entry.encrypt and data_encryption is not None:
         record.append(data_encryption)
     return json.dumps(record, sort_keys=True).encode()
+
+
+def _archive_record(
+    storage: dict, path: str, files: list[tuple[str, bytes]], size: int | None
+) -> bytes:
+    """Serialize target location, size and content of the rewritten metadata tarball."""
+    content = hashlib.blake2b(digest_size=16)
+    for name, data in files:
+        content.update(json.dumps([name, len(data)]).encode())
+        content.update(data)
+    return json.dumps([storage_id(storage), path, size, content.hexdigest()]).encode()
 
 
 def _digest(record: bytes) -> bytes:

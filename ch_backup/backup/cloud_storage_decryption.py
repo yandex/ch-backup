@@ -56,6 +56,13 @@ class CloudStorageDecryption:
         """Decrypt objects referenced by disk metadata into staging."""
         source_path = _normalize_prefix(source_path)
         staging_path = _normalize_prefix(staging_path)
+        staging = self._staging_prefixes.setdefault(
+            storage_id(staging_storage), (staging_storage, set())
+        )
+        if staging_path not in staging[1]:
+            self._cleanup_prefix(staging_storage, staging_path)
+            staging[1].add(staging_path)
+
         entries: dict[str, CopyEntry] = {}
         remote_paths = self._layout.get_cloud_storage_metadata_remote_paths(
             backup.get_sanitized_name(),
@@ -113,27 +120,27 @@ class CloudStorageDecryption:
             len(entries),
             disk_name,
         )
-        if entries:
-            staging = self._staging_prefixes.setdefault(
-                storage_id(staging_storage), (staging_storage, set())
-            )
-            staging[1].add(staging_path)
         self._decrypt_entries(entries, disk_name, keep_going)
 
     def cleanup(self) -> None:
         """Remove all plaintext objects under the registered staging prefixes."""
         for storage, prefixes in self._staging_prefixes.values():
-            engine = get_storage_engine(storage)
             for prefix in sorted(prefixes):
-                paths = engine.list_dir(prefix, recursive=True, absolute=True)
-                logging.info(
-                    "Removing {} decrypted cloud storage staging objects from {}",
-                    len(paths),
-                    prefix,
-                )
-                for batch in chunked(paths, storage["bulk_delete_chunk_size"]):
-                    engine.delete_files(batch)
+                self._cleanup_prefix(storage, prefix)
         self._staging_prefixes.clear()
+
+    @staticmethod
+    def _cleanup_prefix(storage: dict, prefix: str) -> None:
+        """Remove all objects under one exclusive staging prefix."""
+        engine = get_storage_engine(storage)
+        paths = engine.list_dir(prefix, recursive=True, absolute=True)
+        logging.info(
+            "Removing {} decrypted cloud storage staging objects from {}",
+            len(paths),
+            prefix,
+        )
+        for batch in chunked(paths, storage["bulk_delete_chunk_size"]):
+            engine.delete_files(batch)
 
     def _decrypt_entries(
         self, entries: dict[str, CopyEntry], disk_name: str, keep_going: bool

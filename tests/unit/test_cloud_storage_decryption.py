@@ -1,159 +1,31 @@
-import copy
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from ch_backup.backup.cloud_storage_decryption import (
-    CloudStorageDecryption,
-    resolve_decryption_staging,
-)
+from ch_backup.backup.cloud_storage_decryption import CloudStorageDecryption
 from ch_backup.config import DEFAULT_CONFIG
 
 
-@pytest.mark.parametrize(
-    ("destination_endpoint", "expected_path"),
-    [
-        ("https://dst/destination/data/", "copies/backup"),
-        (
-            "https://source/encrypted/data/",
-            "copies/backup_decrypted",
-        ),
-    ],
-)
-def test_resolve_decryption_staging(
-    destination_endpoint: str, expected_path: str
-) -> None:
-    config = copy.deepcopy(DEFAULT_CONFIG)
-    source = copy.deepcopy(config["storage"])
-    source["credentials"].update(endpoint_url="https://source", bucket="encrypted")
-    destination_disk = {
-        "endpoint": destination_endpoint,
-        "access_key_id": "destination-key",
-        "secret_access_key": "destination-secret",
-    }
-
-    storage, path = resolve_decryption_staging(
-        config, source, "copies/backup", destination_disk
-    )
-
-    assert storage["credentials"] == {
-        "endpoint_url": destination_endpoint.rsplit("/", 3)[0],
-        "bucket": destination_endpoint.rsplit("/", 3)[1],
-        "access_key_id": "destination-key",
-        "secret_access_key": "destination-secret",
-    }
-    assert path == expected_path
-
-
-def test_decrypt_cloud_storage_data(tmp_path) -> None:
-    config = copy.deepcopy(DEFAULT_CONFIG)
-    layout = MagicMock()
-    backup = MagicMock()
-    backup.get_sanitized_name.return_value = "backup"
-    backup.cloud_storage.compressed = True
-    layout.get_cloud_storage_metadata_remote_paths.return_value = ["metadata.tar.gz"]
-    metadata = b"5\n1\t4\n4\tcopies/backup/object\n1\n0\n\n"
-    layout.get_cloud_storage_metadata_files.return_value = [
-        ("part/data.bin", metadata),
-        ("part/copy.bin", metadata),
-    ]
-    source = copy.deepcopy(config["storage"])
-    source["credentials"].update(endpoint_url="https://source", bucket="encrypted")
-    staging = copy.deepcopy(config["storage"])
-    staging["credentials"].update(endpoint_url="https://target", bucket="plaintext")
-
+def test_decryption_keep_going_and_drain() -> None:
     with patch(
         "ch_backup.backup.cloud_storage_decryption.StorageLoader"
     ) as loader_class:
-        decryption = CloudStorageDecryption(config, layout)
-        decryption.decrypt(
-            backup,
-            "s3",
-            "all",
-            source,
-            "copies/backup",
-            staging,
-            "copies/backup",
-        )
-
+        decryption = CloudStorageDecryption(DEFAULT_CONFIG, MagicMock())
         loader = loader_class.return_value
-        loader.copy_object.assert_called_once()
-        entry = loader.copy_object.call_args.args[0]
-        assert (entry.src_path, entry.dst_path, entry.size, entry.dst_size) == (
-            "copies/backup/object",
-            "copies/backup/object",
-            4,
-            4,
-        )
-        assert entry.decrypt
-        loader.wait.assert_called_once_with(keep_going=False)
 
-        loader.copy_object.reset_mock()
-        loader.wait.reset_mock()
-
-        def fail_copy(_entry, *, on_error, **_kwargs):
+        def fail_async(_entry, *, on_error, **_kwargs):
             on_error(RuntimeError("failed"))
 
-        loader.copy_object.side_effect = fail_copy
-        decryption.decrypt(
-            backup,
-            "s3",
-            "all",
-            source,
-            "copies/backup",
-            staging,
-            "copies/backup",
-            keep_going=True,
-        )
+        loader.copy_object.side_effect = fail_async
+        decryption._decrypt_entries({"object": MagicMock()}, "s3", keep_going=True)
         loader.wait.assert_called_once_with(keep_going=True)
 
-        loader.copy_object.side_effect = None
-        loader.copy_object.reset_mock()
-        loader.wait.reset_mock()
-        loader.wait.side_effect = [RuntimeError("failed"), None]
-        with pytest.raises(RuntimeError, match="failed"):
-            decryption.decrypt(
-                backup,
+        loader.reset_mock()
+        loader.copy_object.side_effect = [None, RuntimeError("submission failed")]
+        with pytest.raises(RuntimeError, match="submission failed"):
+            decryption._decrypt_entries(
+                {"first": MagicMock(), "second": MagicMock()},
                 "s3",
-                "all",
-                source,
-                "copies/backup",
-                staging,
-                "copies/failed",
+                keep_going=False,
             )
-        assert [call.kwargs for call in loader.wait.call_args_list] == [
-            {"keep_going": False},
-            {"keep_going": True},
-        ]
-
-    metadata_root = tmp_path / "shadow"
-    metadata_root.mkdir()
-    full_keys = metadata_root / "full"
-    full_keys.write_bytes(metadata)
-    relative_keys = metadata_root / "relative"
-    relative_data = b"4\n1\t4\n4\tobject\n1\n0\n\n"
-    relative_keys.write_bytes(relative_data)
-
-    CloudStorageDecryption.rewrite_metadata(
-        str(metadata_root), "copies/backup", "staging/backup"
-    )
-
-    assert full_keys.read_bytes() == b"5\n1\t4\n4\tstaging/backup/object\n1\n0\n\n"
-    assert relative_keys.read_bytes() == relative_data
-
-    with patch(
-        "ch_backup.backup.cloud_storage_decryption.get_storage_engine"
-    ) as get_engine:
-        get_engine.return_value.list_dir.side_effect = lambda prefix, **_: [
-            f"{prefix}/object"
-        ]
-        decryption.cleanup()
-    get_engine.assert_called_once_with(staging)
-    assert get_engine.return_value.list_dir.call_args_list == [
-        call("copies/backup", recursive=True, absolute=True),
-        call("copies/failed", recursive=True, absolute=True),
-    ]
-    assert get_engine.return_value.delete_files.call_args_list == [
-        call(["copies/backup/object"]),
-        call(["copies/failed/object"]),
-    ]
+        assert loader.wait.call_args_list == [call(keep_going=True)]

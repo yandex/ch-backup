@@ -4,6 +4,7 @@ import copy
 import os
 from collections import Counter
 from datetime import datetime
+from threading import Event
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -14,6 +15,8 @@ from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.clickhouse.models import Disk, Table
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import StorageError
+from ch_backup.storage.async_pipeline import pipeline_executor
+from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.storage.engine.s3 import S3RetryingError
 
 
@@ -25,6 +28,70 @@ def make_layout() -> BackupLayout:
         layout = BackupLayout(config)  # type: ignore[arg-type]
     setattr(layout, "_storage_loader", MagicMock())
     return layout
+
+
+@pytest.mark.parametrize("failure", [None, "first", "both", "submit"])
+# pylint: disable=protected-access
+def test_legacy_part_completes_only_after_all_files(tmp_path, monkeypatch, failure):
+    # Current integration backups use TAR; legacy parts have separate futures.
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["backup"]["path_root"] = "ch_backup"
+    config["multiprocessing"]["workers"] = 0
+    layout = BackupLayout(config)  # type: ignore[arg-type]
+    layout._storage_loader._engine = MagicMock()
+    backup = BackupMetadata("backup", "2", "23.3", "%Y-%m-%d")
+    part = PartMetadata("db", "tbl", "all_1_1_0", "", 1, ["a", "b"], False)
+    first_collected = Event()
+    completed: list[PartMetadata] = []
+    errors: list[str] = []
+
+    def on_error(failed_part, error):
+        assert failed_part is part
+        errors.append(str(error))
+        first_collected.set()
+
+    def download(_config, remote_path, local_path, *_args):
+        if remote_path.endswith("/b"):
+            assert first_collected.wait(10), "first file was not collected"
+            if failure == "both":
+                raise OSError("later error")
+        elif failure in ("first", "both"):
+            raise OSError("first error")
+        with open(local_path, "w", encoding="utf-8") as stream:
+            stream.write(remote_path[-1])
+
+    def submit_file(job_id, pipeline, *args, callback, **kwargs):
+        def done():
+            callback()
+            if str(tmp_path / "a") in job_id:
+                assert not completed, "part completed before its last file"
+                first_collected.set()
+
+        if failure == "submit" and str(tmp_path / "b") in job_id:
+            raise OSError("submission error")
+        return submit(job_id, pipeline, *args, callback=done, **kwargs)
+
+    monkeypatch.setattr(pipeline_executor, "download_file_pipeline", download)
+    with ThreadExecPool(2) as pool:
+        submit = pool.submit
+        monkeypatch.setattr(pool, "submit", submit_file)
+        monkeypatch.setattr(layout._storage_loader._ploader, "_exec_pool", pool)
+        try:
+            layout.download_data_part(
+                backup, part, str(tmp_path), completed.append, on_error
+            )
+        except OSError as error:
+            assert failure == "submit" and str(error) == "submission error"
+        layout.wait(keep_going=True)
+
+    assert completed == ([] if failure else [part])
+    assert errors == (
+        ["submission error" if failure == "submit" else "first error"]
+        if failure
+        else []
+    )
+    if not failure:
+        assert [(tmp_path / name).read_text() for name in part.files] == part.files
 
 
 @pytest.mark.parametrize("name", ["../handler/日本語", "foo%2Fbar"])

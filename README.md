@@ -17,6 +17,22 @@ The tool also supports deduplication at part-level granularity. It's set up
  set a start time to exclude earlier backups from deduplication.
 
 
+## Restore after part download errors
+
+Restore attaches a part only after all its files have been downloaded and unpacked,
+or its cloud-storage copy has completed. Failed parts are recorded as `invalid`
+with the original download or copy error in the restore state file.
+With `--keep-going`, other parts continue restoring; without it, the command
+stops with the download or copy error. With `--keep-going`, set
+`backup.restore_fail_on_attach_error: true` to return a nonzero exit code if any
+part failed to download, copy, or attach. The default remains `false`.
+A new restore invocation retries invalid parts, attaches already downloaded
+parts, and skips restored parts.
+Successfully downloaded parts are attached in their original part order,
+regardless of download completion order. Saved failure details survive restores
+of other tables; a part's error is removed after that part is successfully attached.
+Only failures from the current invocation affect its exit code.
+
 ## Restore without cloud storage
 
 `ch-backup restore --skip-cloud-storage BACKUP` restores local parts and skips
@@ -164,6 +180,12 @@ ch-backup copy --all --target-config /etc/yandex/ch-backup/dr.conf
 # Continue after errors and save confirmed results, including on failure.
 ch-backup copy --all --keep-going --target-config /etc/yandex/ch-backup/dr.conf \
     --report-path /tmp/ch-backup-copy-report.json
+
+# Copy files of the backup on the server side first, then stream data of object storage disks,
+# possibly from another host without access to the source storage.
+ch-backup copy LAST --scope files --server-side-copy --target-config /etc/yandex/ch-backup/dr.conf
+ch-backup copy LAST --scope cloud_storage --keep-going --no-server-side-copy \
+    --target-config /etc/yandex/ch-backup/dr.conf
 ```
 
 ```yaml
@@ -233,12 +255,50 @@ Behavior and limitations:
   Completed backups are skipped.
   When a linked part has already been materialized in a successfully copied backup, subsequent
   backups reuse that copy, including mutation-renamed parts and full cloud-storage backups.
+- Copying consists of two scopes: `files` copies files of the backup, `cloud_storage` copies data
+  and metadata of object storage disks kept in their buckets, rewriting the metadata to reference
+  the copied data. Backups without such data, including ones created with
+  `--copy-cloud-storage-data`, are copied entirely by `files`, and their scope `cloud_storage` is
+  completed right away. `--scope` (can be given multiple times) copies only the specified scopes,
+  all of them by default. Each run chooses its own copy mode with `--[no-]server-side-copy`. `files`
+  also copies the original disk metadata into
+  `<backup>/copy_context/<id>/source/` and saves the list of its objects in
+  `<backup>/copy_context/<id>/manifest/files.jsonl.gz` (locations and sizes, without credentials). A
+  run without `files` does not access the source storage: it takes copies from the target storage
+  (the specified ones, or with `--all` every copy whose `cloud_storage` is not completed, or the
+  newest of them for `LAST`), reads the copy's full metadata and disk metadata from `source/`,
+  copies disk metadata that needs no rewriting from there and checks `files` by the manifest.
+  The copy retains the original cloud storage location until it is published as `created`. So `files` must be copied first, from a
+  host with access to the source storage; `cloud_storage` needs only access to the buckets of the
+  disks. A scope that is not copied is planned only if it is completed, to check it with the same
+  settings as copying it, so copying only the scope `files` needs no settings of object storage data
+  while `cloud_storage` is not completed. Statuses of the scopes (`pending`, `completed`, `failed`)
+  are saved in `meta.copy` of the copy, for example `state: creating, copy: {scopes: {files:
+  completed, cloud_storage: pending}, updated_at: ...}`, where `updated_at` is when copying was last
+  saved. The copy becomes `created` once every scope is completed. Until then the report shows the
+  backup as `partial` with `backup_state: creating`, and the command exits with 0 if the copied
+  scopes succeed. Saved statuses are not trusted: a scope that is not copied is completed only if
+  the copy context and the target listing confirm all its objects, otherwise it becomes `pending`
+  again, e.g. after a failed delete. `--no-resume` overwrites objects of the scopes that are copied
+  and still checks the other scopes this way. Between scopes, the copy is in the state `creating`.
+  `purge` and `delete --purge-partial` on the target storage keep a copy in the state `creating` or
+  `failed` that was updated within `backup.retain_incomplete_copy_time` (7 days by default, empty to
+  disable) and treat older ones as any other incomplete backup; older versions of ch-backup do not
+  know this rule. With `--keep-going`, objects of a scope that failed to copy are listed in
+  `<backup>/copy_context/<id>/failed/<scope>.jsonl.gz` (source and target keys, size and error) and
+  the scope becomes `failed`; the next run of the scope copies only unconfirmed objects. The list is
+  rewritten by each run of the scope in which objects fail and removed once the scope completes.
+  Disk metadata that cannot be planned is not copied, so it never overwrites rewritten disk
+  metadata; a later run copies it. Copy scopes of one backup one after another: the local lock
+  serializes runs on one host, runs on different hosts require `lock.zk_flock`.
 - Copy acquires the configured source and target locks through completion, including retries and
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
   and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.
   Locking remains optional; the local file lock retains its shared semantics.
 - By default, deduplicated data parts of the backup are stored in older backups. If such a backup is already
-  present in the target storage, the deduplication link is kept. Otherwise, the data part is copied
+  present in the target storage, the deduplication link is kept. A link to a local part is also kept
+  if the copy of that backup is not completed but already holds files of the part, e.g. after its
+  scope `files`, as deduplication of new backups does. Otherwise, the data part is copied
   into the copied backup. `--all` copies older backups first, so deduplication is kept in the target storage.
 - Set `copy.deduplication_age_limit: {days: 90}` in the target configuration to enable an
   independent deduplication window for active parts on local disks. The default `{days: 0}`

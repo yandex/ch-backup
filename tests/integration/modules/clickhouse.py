@@ -9,8 +9,15 @@ from urllib.parse import urljoin
 
 from docker.models.containers import ExecResult
 from requests import HTTPError, Session
-from tenacity import retry, stop_after_attempt, wait_fixed
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    stop_after_delay,
+    wait_fixed,
+)
 
+from ch_backup.util import escape, sql_string_literal
 from tests.integration.diagnostics import record_stage_failure
 
 from . import docker
@@ -451,6 +458,43 @@ class ClickhouseClient:
             rows.append(", ".join(row))
 
         return rows
+
+
+def sync_replica(context: ContextT, node: str, database: str, table: str) -> None:
+    """Synchronize the database schema, table session and table data in order."""
+    client = ClickhouseClient(context, node)
+    engine = client.get_response(
+        "SELECT engine FROM system.databases "
+        f"WHERE name = {sql_string_literal(database)} FORMAT TabSeparated"
+    )
+    assert engine, f"Database {database} does not exist on {node}"
+    # ReplicatedMergeTree tables can also belong to Atomic/Ordinary databases,
+    # which do not support SYSTEM SYNC DATABASE REPLICA.
+    if engine == "Replicated":
+        client.execute(f"SYSTEM SYNC DATABASE REPLICA `{escape(database)}`")
+    wait_for_replica_ready(context, node, database, table)
+    client.execute(f"SYSTEM SYNC REPLICA `{escape(database)}`.`{escape(table)}`")
+
+
+@retry(
+    retry=retry_if_exception_type(AssertionError),
+    wait=wait_fixed(0.1),
+    stop=stop_after_delay(60),
+    reraise=True,
+)
+def wait_for_replica_ready(
+    context: ContextT, node: str, database: str, table: str
+) -> None:
+    """Schema replication may finish before the table's Keeper session starts."""
+    state = ClickhouseClient(context, node).get_response(
+        "SELECT is_readonly, is_session_expired FROM system.replicas "
+        f"WHERE database = {sql_string_literal(database)} "
+        f"AND table = {sql_string_literal(table)} FORMAT TabSeparated"
+    )
+    assert state == "0\t0", (
+        f"Replica {database}.{table} on {node} is not writable: "
+        f"(is_readonly, is_session_expired) = {state!r}; empty means missing replica"
+    )
 
 
 @retry(wait=wait_fixed(0.5), stop=stop_after_attempt(360), reraise=True)

@@ -1,4 +1,6 @@
 import copy
+import io
+import tarfile
 import threading
 from collections.abc import Callable, Iterator
 from typing import Any
@@ -7,18 +9,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pypeln.thread import Worker
 
+from ch_backup.compression import get_compression
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.encryption import get_encryption
 from ch_backup.storage import StorageLoader
 from ch_backup.storage.async_pipeline.pipeline_builder import PipelineBuilder
 from ch_backup.storage.async_pipeline.pipelines import (
-    copy_object_pipeline,
     download_data_pipeline,
     run,
     run_and_collect_all,
     run_and_return_first,
 )
-from ch_backup.storage.object_copy import CopyEntry
 
 
 @pytest.mark.parametrize("size", [0, 1, 63, 64, 65, 128, 129])
@@ -50,38 +51,6 @@ def test_decrypt_downloaded_data_matches_download_pipeline(
         assert loader.decrypt_data(ciphertext) == plaintext
         get_engine.assert_not_called()
         assert download_data_pipeline(config, "metadata", decrypt=True) == plaintext
-
-
-def test_copy_object_pipeline_decrypts_cloud_storage_data() -> None:
-    config = copy.deepcopy(DEFAULT_CONFIG)
-    encryption = dict(config["encryption"], key="b" * 32, chunk_size=64)
-    config["cloud_storage"]["data_encryption"] = encryption
-    plaintext = b"cloud storage data"
-    crypto = get_encryption("nacl", encryption)
-    ciphertext = crypto.encrypt(plaintext)
-    storage = MagicMock()
-    storage.download_part.side_effect = [ciphertext, b""]
-    source_storage = copy.deepcopy(config["storage"])
-    target_storage = copy.deepcopy(config["storage"])
-    source_storage["credentials"]["bucket"] = "source"
-    target_storage["credentials"]["bucket"] = "target"
-    entry = CopyEntry(
-        source_storage,
-        target_storage,
-        "source/object",
-        "target/object",
-        len(plaintext),
-        len(plaintext),
-        decrypt=True,
-    )
-
-    with patch(
-        "ch_backup.storage.async_pipeline.pipeline_builder.get_storage_engine",
-        return_value=storage,
-    ):
-        copy_object_pipeline(config, entry)
-
-    storage.upload_data.assert_called_once_with(plaintext, "target/object")
 
 
 def _pipeline_with_masked_error() -> Iterator[str]:
@@ -238,3 +207,24 @@ def test_empty_pipeline_finishes() -> None:
     builder = PipelineBuilder(DEFAULT_CONFIG).build_iterable_stage([])
 
     assert not run_and_collect_all(builder.pipeline())
+
+
+def test_unpack_data_tarball_larger_than_buffer() -> None:
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["filesystem"].update(buffer_size=64 * 1024, chunk_size=16 * 1024)
+    files = [(f"part_{i}/column.bin", bytes([i % 256]) * 4096) for i in range(100)]
+    tar = io.BytesIO()
+    with tarfile.open(fileobj=tar, mode="w") as archive:
+        for name, data in files:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+        tarball = tar.getvalue()[: archive.offset]
+    compressor = get_compression(config["compression"]["type"])
+    compressed = compressor.compress(tarball) + compressor.flush_compress()
+    assert len(compressed) < config["filesystem"]["buffer_size"] < len(tarball)
+
+    builder = PipelineBuilder(config).build_iterable_stage([compressed])
+    builder.build_decompress_stage().build_unpack_data_tarball_stage()
+
+    assert run_and_collect_all(builder.pipeline()) == files

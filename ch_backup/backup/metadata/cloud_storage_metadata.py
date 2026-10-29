@@ -128,11 +128,6 @@ class CloudStorageMetadata:
         """Set encryption format of copied data objects, without the key."""
         self._data_encryption = value
 
-    @property
-    def data_encrypted(self) -> bool:
-        """Return whether copied cloud storage data objects are encrypted."""
-        return self._data_encryption is not None
-
     @classmethod
     def load(cls, data: dict[str, Any]) -> "CloudStorageMetadata":
         """

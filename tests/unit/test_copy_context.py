@@ -2,12 +2,15 @@
 Unit tests for the journal of copied objects.
 """
 
+import gzip
+import json
 from typing import Any
 from unittest.mock import patch
 
-from ch_backup.backup.copy_context import CopyContext
+from ch_backup.backup.copy_context import CopyContext, FailedObjects
+from ch_backup.backup.metadata import CopyScope
 from ch_backup.exceptions import StorageError
-from ch_backup.storage.object_copy import CopyEntry
+from ch_backup.storage.object_copy import CopyEntry, storage_id
 from tests.unit.test_backup_copy import _backup
 
 STORAGE = {
@@ -35,8 +38,15 @@ class MemoryEngine:
         self.objects[remote_path] = data
         return remote_path
 
+    def upload_file(self, local_path: str, remote_path: str) -> str:
+        with open(local_path, "rb") as file:
+            return self.upload_data(file.read(), remote_path)
+
     def download_data(self, remote_path: str) -> bytes:
         return self.objects[remote_path]
+
+    def delete_file(self, remote_path: str) -> None:
+        self.objects.pop(remote_path, None)
 
 
 def _entry(name: str, size: int = 1) -> CopyEntry:
@@ -156,3 +166,68 @@ def test_unreadable_file_is_skipped() -> None:
 
     assert not resumed.is_recorded(_entry("a"))
     assert resumed.is_recorded(_entry("b"))
+
+
+def test_archive_records_depend_on_content_and_size() -> None:
+    engine = MemoryEngine()
+    context = _context(engine)
+    context.record_archive(STORAGE, "dst/t1.tar", [("a", b"1")], 10)
+    context.flush(force=True)
+
+    resumed = _context(engine)
+    resumed.load()
+
+    assert resumed.is_archive_recorded(STORAGE, "dst/t1.tar", [("a", b"1")], 10)
+    assert not resumed.is_archive_recorded(STORAGE, "dst/t1.tar", [("a", b"2")], 10)
+    assert not resumed.is_archive_recorded(STORAGE, "dst/t1.tar", [("a", b"1")], 9)
+    assert not resumed.is_archive_recorded(STORAGE, "dst/t1.tar", [("a", b"1")], None)
+
+
+def test_failed_objects_are_not_records() -> None:
+    engine = MemoryEngine()
+    context = _context(engine)
+    with FailedObjects() as failures:
+        failures.append(_entry("a"), "StorageError: SlowDown")
+        failures.append(_entry("b", size=2), "StorageError: SlowDown")
+        context.save_failures(CopyScope.FILES, failures)
+    path = next(
+        path for path in engine.objects if path.endswith("/failed/files.jsonl.gz")
+    )
+    assert [
+        json.loads(line) for line in gzip.decompress(engine.objects[path]).splitlines()
+    ] == [
+        {"src": "src/a", "dst": "dst/a", "size": 1, "error": "StorageError: SlowDown"},
+        {"src": "src/b", "dst": "dst/b", "size": 2, "error": "StorageError: SlowDown"},
+    ]
+
+    resumed = _context(engine)
+    resumed.load()
+    assert not resumed.has_records()
+
+    with FailedObjects() as failures:
+        resumed.save_failures(CopyScope.FILES, failures)
+    assert not engine.objects
+
+
+def test_manifest_keeps_locations_without_credentials() -> None:
+    engine = MemoryEngine()
+    context = _context(engine)
+    storage = {
+        "type": "s3",
+        "credentials": {
+            "endpoint_url": "http://s3.test:9000",
+            "bucket": "copy",
+            "secret": "x",
+        },
+    }
+    entry = CopyEntry(storage, STORAGE, "src/a", "dst/a", 3, 3)
+    context.save_manifest(CopyScope.FILES, [entry])
+
+    resumed = _context(engine)
+    resumed.load()
+
+    assert not resumed.has_records()
+    assert b"secret" not in gzip.decompress(next(iter(engine.objects.values())))
+    loaded = resumed.load_manifest(CopyScope.FILES)
+    assert [(e.src_path, e.dst_path, e.size) for e in loaded] == [("src/a", "dst/a", 3)]
+    assert [storage_id(e.src_storage) for e in loaded] == [storage_id(storage)]

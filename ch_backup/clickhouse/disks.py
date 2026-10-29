@@ -304,20 +304,16 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         self, exc_type: type[BaseException] | None, value: BaseException | None
     ) -> bool:
         """Remove plaintext staging and then the temporary ClickHouse disks."""
-        cleanup_error: BaseException | None = None
         if self._decryption is not None:
             try:
                 self._decryption.cleanup()
             except BaseException as e:
-                if exc_type is None:
-                    cleanup_error = e
-                    exc_type, value = type(e), e
-                else:
+                if exc_type is not None:
                     logging.exception("Failed to clean decrypted cloud storage staging")
-        result = super()._cleanup(exc_type, value)
-        if cleanup_error is not None:
-            raise cleanup_error
-        return result
+                else:
+                    super()._cleanup(type(e), e)
+                    raise
+        return super()._cleanup(exc_type, value)
 
     def _linked_backups_data(
         self,
@@ -510,6 +506,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
             source_path,
         )
 
+    # pylint: disable=too-many-positional-arguments
     def copy_parts(
         self,
         backup_meta: BackupMetadata,
@@ -517,6 +514,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         max_proccesses_count: int,
         keep_going: bool,
         part_callback: Callable,
+        on_error: Callable[[PartMetadata, BaseException], None] | None = None,
     ) -> None:
         """
         Copy parts from temporary cloud storage disk to actual.
@@ -532,14 +530,20 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
             )
         with ThreadExecPool(max_proccesses_count) as executor:
             for part in parts_to_copy:
-                executor.submit(
-                    f"Restore of part {part[1].name}",
-                    self._run_copy_command,
-                    backup_meta,
-                    part[0],
-                    part[1],
-                    callback=partial(part_callback, part[1]),
-                )
+                try:
+                    executor.submit(
+                        f"Restore of part {part[1].name}",
+                        self._run_copy_command,
+                        backup_meta,
+                        part[0],
+                        part[1],
+                        callback=partial(part_callback, part[1]),
+                        on_error=partial(on_error, part[1]) if on_error else None,
+                    )
+                except Exception as error:
+                    if on_error:
+                        on_error(part[1], error)
+                    raise
             executor.wait_all(keep_going)
 
     def _run_copy_command(

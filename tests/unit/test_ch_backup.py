@@ -2,6 +2,8 @@
 ClickhouseBackup unit tests.
 """
 
+# pylint: disable=too-many-lines
+
 from collections import defaultdict
 from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime, timedelta, timezone
@@ -590,11 +592,20 @@ def _light_backup(
     return meta
 
 
-def _purge(backups: list[Mock], retain_count: int, retain_time: dict) -> list[str]:
+def _purge(
+    backups: list[Mock],
+    retain_count: int,
+    retain_time: dict,
+    retain_incomplete_copy_time: dict | None = None,
+) -> list[str]:
     """Helper: purge backups listed newest first and return the deleted ones."""
     backup, context = _backup_with_context()
     context.locker = MagicMock()
-    context.config = {"retain_time": retain_time, "retain_count": retain_count}
+    context.config = {
+        "retain_time": retain_time,
+        "retain_count": retain_count,
+        "retain_incomplete_copy_time": retain_incomplete_copy_time,
+    }
     context.backup_layout.get_backups.return_value = backups
     with (
         patch(
@@ -669,6 +680,52 @@ def test_deleted_incomplete_backup_does_not_keep_a_complete_one() -> None:
         "incomplete",
         "older",
     ]
+
+
+def _copy(backup: Mock, updated_days: int | None) -> Mock:
+    """Make the backup a copy that is not completed, saved by copying updated_days ago."""
+    backup.state = BackupState.CREATING
+    backup.copy_updated_at = (
+        None if updated_days is None else util.now() - timedelta(days=updated_days)
+    )
+    return backup
+
+
+def test_purge_keeps_copies_being_copied() -> None:
+    """A copy between scopes of the copy command is kept while copying goes on."""
+    backups = [
+        _light_backup("complete", 0),
+        _copy(_light_backup("recent", 30), updated_days=1),
+        _copy(_light_backup("stale", 31), updated_days=10),
+        _copy(_light_backup("unknown", 32), updated_days=None),
+    ]
+
+    assert _purge(
+        backups, retain_count=1, retain_time={}, retain_incomplete_copy_time={"days": 7}
+    ) == ["stale", "unknown"]
+    assert _purge(backups, retain_count=1, retain_time={}) == [
+        "recent",
+        "stale",
+        "unknown",
+    ]
+
+
+def test_purge_partial_keeps_copies_being_copied() -> None:
+    """delete --purge-partial keeps a copy between scopes of the copy command too."""
+    backup, context = _backup_with_context()
+    context.locker = MagicMock()
+    context.config = {"retain_incomplete_copy_time": {"days": 7}}
+    recent = _copy(_readable_backup("recent"), updated_days=1)
+    stale = _copy(_readable_backup("stale"), updated_days=10)
+    context.backup_layout.get_backups.side_effect = _get_backups_with_unreadable(
+        _readable_backup("newest"), recent, stale
+    )
+    context.backup_layout.reload_backup.side_effect = lambda meta, **_: meta
+
+    with patch.object(backup, "_delete", return_value=("stale", None)) as delete:
+        backup.delete("broken", purge_partial=True)
+
+    assert [call.args[0] for call in delete.call_args_list] == [stale]
 
 
 def test_purge_by_age_keeps_nothing_old_without_incomplete_backups() -> None:

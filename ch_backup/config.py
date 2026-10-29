@@ -95,6 +95,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # Retain policy for the purge command that sets the maximum number of
         # valid backups to keep.
         "retain_count": None,
+        # Copies made by the copy command that are not completed, e.g. between
+        # its scopes, are kept by purge and delete --purge-partial while copying
+        # was saved within this time.
+        "retain_incomplete_copy_time": {
+            "days": 7,
+        },
         # User data including into backup metadata.
         "labels": {},
         # Backup sources used when none of the source options is passed to the backup

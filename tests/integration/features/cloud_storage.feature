@@ -663,22 +663,19 @@ Feature: Backup & Clean & Restore
     And we have enabled shared zookeeper for clickhouse02
     When we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse01 with restart
     And we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse02 with restart
-    When we restore clickhouse backup #0 to clickhouse01
+    When we restore the last created clickhouse backup to clickhouse01
     """
     skip_cloud_storage: true
     """
     # Restore ordinary data once per shard. The second replica preloads parts
     # from the backup and lets replica recovery register them.
-    And we restore clickhouse backup #0 to clickhouse02
+    And we restore the last created clickhouse backup to clickhouse02
     """
     skip_cloud_storage: true
     schema_only: true
-    parts_from_backup: 0
+    parts_from_backup: "{{ last_created_backup_name }}"
     """
-    And we execute query on clickhouse02
-    """
-    SYSTEM SYNC REPLICA storage_restore.t
-    """
+    And we synchronize replica storage_restore.t on clickhouse02
     And we execute query on clickhouse02
     """
     SELECT count() FROM storage_restore.t
@@ -701,7 +698,7 @@ Feature: Backup & Clean & Restore
     """
     1	0
     """
-    When we restore clickhouse backup #0 to clickhouse01
+    When we restore the last created clickhouse backup to clickhouse01
     """
     skip_cloud_storage: true
     """
@@ -924,7 +921,7 @@ Feature: Backup & Clean & Restore
     """
 
   @require_version_24.7
-  Scenario: Restore retries a partially copied S3 part into its original directory
+  Scenario Outline: Restore retries a partially copied S3 part into its original directory: <mode>
     # MDB-51258: copy into an existing detached/<part>/ must not create
     # detached/<part>/<part>/. A missing data object leaves an incomplete
     # destination on the first attempt; retry must restore the complete part.
@@ -935,6 +932,10 @@ Feature: Backup & Clean & Restore
         restore_fail_on_attach_error: true
     multiprocessing:
         cloud_storage_restore_workers: 1
+    clickhouse:
+        settings:
+            log_queries: 1
+            log_comment: cloud_copy_<mode>
     """
     And we have executed queries on clickhouse01
     """
@@ -973,12 +974,12 @@ Feature: Backup & Clean & Restore
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore restore_retry \
         --cloud-storage-source-bucket cloud-storage-01 \
-        --cloud-storage-source-path data
+        --cloud-storage-source-path data <keep_going>
     """
     Then command exits with code 1
     And we get response contains
     """
-    clickhouse-disks call failed
+    <error_message>
     """
     When we execute query on clickhouse02
     """
@@ -987,6 +988,31 @@ Feature: Backup & Clean & Restore
     Then we get response
     """
     0
+    """
+    When we execute query on clickhouse02
+    """
+    SYSTEM FLUSH LOGS;
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT count() FROM system.query_log
+    WHERE log_comment = 'cloud_copy_<mode>' AND position(query, 'ATTACH PART') > 0;
+    """
+    Then we get response
+    """
+    0
+    """
+    When we execute command on clickhouse02
+    """
+    python3 - <<'PY'
+    import json
+    with open('/tmp/ch_backup_restore_state.json') as stream:
+        state = json.load(stream)
+    assert state['databases']['test_db']['restore_retry']['all_1_1_0'] == 'invalid', state
+    error = state['failed']['test_db']['restore_retry']['failed_parts']['all_1_1_0']
+    assert 'clickhouse-disks call failed' in error, error
+    assert 'NO_FILE_IN_DATA_PART' not in error, error
+    PY
     """
     # Leave the destination and restore state intact. Only repair the source.
     When we restore saved S3 objects
@@ -997,6 +1023,21 @@ Feature: Backup & Clean & Restore
     """
     Then the user's data equal to saved one on clickhouse02
     And data part checksums equal to saved ones on clickhouse02
+    When we execute command on clickhouse02
+    """
+    python3 - <<'PY'
+    import json
+    with open('/tmp/ch_backup_restore_state.json') as stream:
+        state = json.load(stream)
+    assert state['databases']['test_db']['restore_retry']['all_1_1_0'] == 'restored', state
+    assert not state['failed'], state
+    PY
+    """
+
+    Examples:
+      | mode | keep_going   | error_message                |
+      | stop |              | clickhouse-disks call failed  |
+      | skip | --keep-going | Some parts failed to restore |
 
   @require_version_24.7
   Scenario: Restore retry removes copied S3 objects after ATTACH fails
@@ -1032,7 +1073,7 @@ Feature: Backup & Clean & Restore
     Then command exits with code 1
     And we get response contains
     """
-    Some parts are failed to attach
+    Some parts failed to restore
     """
     When we execute command on clickhouse02
     """

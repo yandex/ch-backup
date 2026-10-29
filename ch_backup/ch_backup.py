@@ -26,8 +26,10 @@ from ch_backup.backup.deduplication import (
 )
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import (
+    ALL_SCOPES,
     BackupMetadata,
     BackupState,
+    CopyScope,
     TableMetadata,
     sanitize_backup_name,
 )
@@ -315,7 +317,7 @@ class ClickhouseBackup:
             " them by data_skipped_reason and skipped_parts."
         )
 
-    # pylint: disable=too-many-arguments,duplicate-code,too-many-positional-arguments,too-many-branches,too-many-locals
+    # pylint: disable=too-many-arguments,duplicate-code,too-many-positional-arguments,too-many-branches,too-many-locals,too-many-statements
     def restore(
         self,
         sources: BackupSources,
@@ -572,6 +574,7 @@ class ClickhouseBackup:
         deleting_backups = []
         retained_backups = []
         unreadable: dict[str, str] = {}
+        copying_since = self._copying_since()
         with self._context.locker(operation="DELETE"):
             # Use light metadata in backups iteration to avoid high memory usage.
             for i, backup in enumerate(self.list(unreadable=unreadable)):
@@ -580,7 +583,12 @@ class ClickhouseBackup:
                     found = True
                     continue
 
-                if purge_partial and backup.state != BackupState.CREATED and i != 0:
+                if (
+                    purge_partial
+                    and backup.state != BackupState.CREATED
+                    and i != 0
+                    and not _is_being_copied(backup, copying_since)
+                ):
                     deleting_backups.append(backup)
                 else:
                     retained_backups.append(backup)
@@ -624,11 +632,13 @@ class ClickhouseBackup:
         *,
         keep_going: bool = False,
         report: CopyReport | None = None,
+        scopes: frozenset[CopyScope] = ALL_SCOPES,
         command_start: datetime | None = None,
     ) -> tuple[Sequence[str], Sequence[str]]:
         """
         Copy backups to the storage specified in the target config.
         If backup names are not specified, all backups in the state "created" are copied.
+        If scopes are not specified, all of them are copied.
 
         Return names of copied backups and names of backups skipped as already copied.
         The optional report also receives partial results when copying raises.
@@ -653,6 +663,7 @@ class ClickhouseBackup:
                     backup_names,
                     keep_going=keep_going,
                     report=report,
+                    scopes=scopes,
                     command_start=command_start,
                 )
         except BaseException as e:
@@ -683,6 +694,7 @@ class ClickhouseBackup:
 
         retained_backups: list[BackupMetadata] = []
         deleting_backups: list[BackupMetadata] = []
+        copying_since = self._copying_since()
 
         with self._context.locker(operation="PURGE"):
             # Use light metadata in backups iteration to avoid high memory usage.
@@ -701,6 +713,15 @@ class ClickhouseBackup:
                 if retain_time_limit and backup.start_time >= retain_time_limit:
                     logging.info(
                         "Preserving backup per retain time policy: {}, state {}",
+                        backup.name,
+                        backup.state,
+                    )
+                    retained_backups.append(backup)
+                    continue
+
+                if _is_being_copied(backup, copying_since):
+                    logging.info(
+                        "Preserving copy of backup that is being copied: {}, state {}",
                         backup.name,
                         backup.state,
                     )
@@ -770,6 +791,11 @@ class ClickhouseBackup:
         self._context.backup_layout.wait()
 
         return True
+
+    def _copying_since(self) -> datetime | None:
+        """Return the time after which an incomplete copy saved by the copy command is kept."""
+        retain_time = self._context.config.get("retain_incomplete_copy_time")
+        return now() - timedelta(**retain_time) if retain_time else None
 
     def _delete(
         self, backup_light_meta: BackupMetadata, dedup_references: DedupReferences
@@ -1051,7 +1077,7 @@ class ClickhouseBackup:
                 )
 
             if sources.data and self._context.restore_context.has_failed_parts():
-                msg = "Some parts are failed to attach"
+                msg = "Some parts failed to restore"
                 logging.warning(msg)
 
                 if self._context.config["restore_fail_on_attach_error"]:
@@ -1148,3 +1174,11 @@ def _zookeeper_roots_differ(ch_config: dict, zk_config: dict) -> bool:
     """
     ch_root = (ch_config.get("zookeeper") or {}).get("root") or ""
     return ch_root.rstrip("/") != (zk_config.get("root_path") or "").rstrip("/")
+
+
+def _is_being_copied(backup: BackupMetadata, since: datetime | None) -> bool:
+    """Check that the backup is a copy that is not completed and was saved by the copy command after since."""
+    if since is None or backup.state not in (BackupState.CREATING, BackupState.FAILED):
+        return False
+    updated_at = backup.copy_updated_at
+    return updated_at is not None and updated_at >= since
