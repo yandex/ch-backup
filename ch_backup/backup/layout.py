@@ -69,6 +69,60 @@ CLOUD_STORAGE_DATA_DIR = "cloud_storage"
 MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE = 1024 * 1024
 
 
+class _CloudStoragePruning:
+    """Collect deletions without changing storage until retained parts are validated."""
+
+    def __init__(
+        self, backup: BackupMetadata, retained: set[tuple[str, str, str]]
+    ) -> None:
+        self.backup = backup
+        self.retained = retained
+        self.found: set[PartIdentity] = set()
+        self.deleting: set[str] = set()
+        self.protected: set[str] = set()
+        self.rewrites: dict[str, list[tuple[str, bytes]]] = {}
+
+    def scan_archive(
+        self, disk: str, archive: str, files: list[tuple[str, bytes]], prefix: str
+    ) -> None:
+        """Track references even when several parts share the same object."""
+        kept = []
+        for name, data in files:
+            if os.path.basename(name) in CLOUD_STORAGE_EXCLUDE_FILE_NAMES:
+                kept.append((name, data))
+                continue
+            identity = get_cloud_storage_part_identity(self.backup, disk, archive, name)
+            part = self.backup.find_part(*identity) if identity else None
+            if part and part.link:
+                if identity in self.retained:
+                    kept.append((name, data))
+                continue
+            keys = _cloud_storage_object_keys(data, prefix)
+            if identity is not None and identity not in self.retained:
+                self.deleting.update(keys)
+            else:
+                self.protected.update(keys)
+                kept.append((name, data))
+                if identity is not None:
+                    self.found.add(identity)
+        if kept != files:
+            self.rewrites[archive] = kept
+
+    def validate(self) -> None:
+        """Refuse deletion if a retained owned part has no disk metadata."""
+        required = {
+            part.identity
+            for part in self.backup.get_parts()
+            if not part.link
+            and part.disk_name in self.backup.cloud_storage.disks
+            and part.identity in self.retained
+        }
+        if missing := required - self.found:
+            raise InvalidBackupStruct(
+                f"Disk metadata of retained cloud parts is missing: {sorted(missing)}"
+            )
+
+
 # pylint: disable=too-many-public-methods
 class BackupLayout:
     """
@@ -1119,71 +1173,38 @@ class BackupLayout:
                         objects.add(key)
         return sorted(objects)
 
-    # The scan validates all retained manifests before it changes data or archives.
-    # pylint: disable=too-many-locals,too-many-branches
     def delete_cloud_storage_parts(
         self, backup: BackupMetadata, retained: set[tuple[str, str, str]], storage: dict
     ) -> None:
-        """Remove unreferenced part data before pruning its archived disk metadata."""
-        required = {
-            (part.database, part.table, part.name)
-            for part in backup.get_parts()
-            if not part.link
-            and part.disk_name in backup.cloud_storage.disks
-            and (part.database, part.table, part.name) in retained
-        }
-        found: set[tuple[str, str, str]] = set()
-        deleting: set[str] = set()
-        protected: set[str] = set()
-        rewrites: dict[str, list[tuple[str, bytes]]] = {}
+        """Validate retained manifests, then remove unused data and prune archives."""
+        pruning = _CloudStoragePruning(backup, retained)
         for disk in backup.cloud_storage.disks:
             if backup.cloud_storage.data_copied:
                 prefix = self.get_cloud_storage_data_path(backup.name, disk)
             else:
                 assert backup.cloud_storage.source is not None
                 prefix = backup.cloud_storage.source["path"]
-            prefix = prefix.strip("/")
             for archive in self.get_cloud_storage_metadata_remote_paths(
                 backup.get_sanitized_name(),
                 disk,
                 backup.cloud_storage.compressed,
                 "all",
             ):
-                files = self.get_cloud_storage_metadata_files(backup, archive)
-                kept = []
-                for name, data in files:
-                    if os.path.basename(name) in CLOUD_STORAGE_EXCLUDE_FILE_NAMES:
-                        kept.append((name, data))
-                        continue
-                    identity = get_cloud_storage_part_identity(
-                        backup, disk, archive, name
-                    )
-                    part = backup.find_part(*identity) if identity else None
-                    if part and part.link:
-                        if identity in retained:
-                            kept.append((name, data))
-                        continue
-                    keys = _cloud_storage_object_keys(data, prefix)
-                    if identity is not None and identity not in retained:
-                        deleting.update(keys)
-                    else:
-                        protected.update(keys)
-                        kept.append((name, data))
-                        if identity is not None and identity in required:
-                            found.add(identity)
-                if kept != files:
-                    rewrites[archive] = kept
-        if missing := required - found:
-            raise InvalidBackupStruct(
-                f"Disk metadata of retained cloud parts is missing: {sorted(missing)}"
-            )
+                pruning.scan_archive(
+                    disk,
+                    archive,
+                    self.get_cloud_storage_metadata_files(backup, archive),
+                    prefix.strip("/"),
+                )
+        pruning.validate()
         engine = get_storage_engine(storage)
         # Different parts can reference the same blob. Retaining either part keeps that blob alive.
         for batch in chunked(
-            sorted(deleting - protected), storage["bulk_delete_chunk_size"]
+            sorted(pruning.deleting - pruning.protected),
+            storage["bulk_delete_chunk_size"],
         ):
             engine.delete_files(batch)
-        for archive, files in rewrites.items():
+        for archive, files in pruning.rewrites.items():
             if files:
                 self.upload_cloud_storage_metadata_files(backup, archive, files)
                 self.wait()

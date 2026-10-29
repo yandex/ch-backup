@@ -1282,6 +1282,8 @@ def test_cloud_storage_of_copied_backup(
     configured_endpoint = None if default_endpoint else ENDPOINT
     ctx.config["storage"]["credentials"]["endpoint_url"] = configured_endpoint
     ctx.target_config["storage"]["credentials"]["endpoint_url"] = configured_endpoint
+    if default_endpoint:
+        ctx.store.buckets[("s3", None, SRC_BUCKET)] = ctx.src_objects
     source_endpoint = endpoint_override or configured_endpoint
     ctx.layout.backups["b1"].cloud_storage.source = {
         "endpoint_url": source_endpoint + "/" if source_endpoint else None,
@@ -3386,8 +3388,8 @@ def test_incomplete_cloud_storage_planning_keeps_failed_objects() -> None:
     # pylint: disable-next=protected-access
     plan_objects = BackupCopier._plan_cloud_storage_objects
 
-    def incomplete(self, backup, plan, result):
-        plan_objects(self, backup, plan, result)
+    def incomplete(self, backup, target, plan, result):
+        plan_objects(self, backup, target, plan, result)
         result.add_error(StorageError("SlowDown"), "planning")
 
     with patch.object(BackupCopier, "_plan_cloud_storage_objects", incomplete):
@@ -3456,7 +3458,7 @@ def test_cloud_storage_planning_failure_does_not_fail_backup_scope(
 def test_cloud_retry_retains_original_source(publication_failure: bool) -> None:
     """Keep the original cloud source until publication, including failed publication retries."""
     ctx = _scoped_context(version=5)
-    source = {
+    source: CloudStorageSource = {
         "endpoint_url": "http://minio:9000",
         "bucket": "cloud-storage",
         "path": "data",
@@ -3551,6 +3553,7 @@ def test_cloud_copy_reuses_unchanged_parts(separate_runs: bool) -> None:
 
 def _linked_cloud_copy_context() -> CopyTestContext:
     ctx = _cloud_storage_context("child")
+    ctx.target_layout.store = ctx.store
     original = {**_part(), "disk_name": "s3", "tarball": False}
     owner = _backup("owner", parts={"all_1_1_0": original}, cloud_storage_disks=["s3"])
     owner.cloud_storage.source = {
@@ -3567,23 +3570,35 @@ def _linked_cloud_copy_context() -> CopyTestContext:
     )
     child.cloud_storage.source = None
     ctx.layout.backups = {"owner": owner, "child": child}
-    ctx.layout.cloud_storage_files = {
-        "ch_backup/owner/disks/s3/db1/t1.tar.gz": [
-            (
-                "store/abc/uuid/all_1_1_0/data.bin",
-                _object_storage_metadata(("copies/owner/xyz/data", 100), version=5),
-            )
-        ]
-    }
+    ctx.layout.cloud_storage_files.clear()
+    ctx.layout.cloud_storage_files.update(
+        {
+            "ch_backup/owner/disks/s3/db1/t1.tar.gz": [
+                (
+                    "store/abc/uuid/all_1_1_0/data.bin",
+                    _object_storage_metadata(("copies/owner/xyz/data", 100), version=5),
+                )
+            ]
+        }
+    )
+    _with_files(ctx, "owner", {"disks/s3/db1/t1.tar.gz": 50})
     ctx.ch_config.config = {}
     ctx.target_config["copy"]["cloud_storage"]["target"]["bucket"] = "third-disk"
 
     return ctx
 
 
-def test_cloud_copy_materializes_a_missing_owner() -> None:
+@pytest.mark.parametrize("staged", [False, True])
+def test_cloud_copy_materializes_a_missing_owner(staged: bool) -> None:
     ctx = _linked_cloud_copy_context()
-    assert ctx.copy(["child"]) == (["child"], [])
+    if staged:
+        ctx.copy(["child"], scopes=["files"])
+        ctx.layout = UnavailableLayout()  # type: ignore[assignment]
+        ctx.target_layout.source = None
+    assert ctx.copy(["child"], scopes=["cloud_storage"] if staged else None) == (
+        ["child"],
+        [],
+    )
 
     entries = [
         e
@@ -3619,14 +3634,18 @@ def test_cloud_copy_reuses_only_complete_owning_parts(
     ctx.layout.backups["child"] = _backup(
         "child", parts={"all_1_1_0_2": part}, cloud_storage_disks=["s3"]
     )
-    ctx.layout.cloud_storage_files = {
-        "ch_backup/child/disks/s3/db1/t1.tar.gz": [
-            (
-                "store/abc/uuid/all_1_1_0_2/data.bin",
-                _object_storage_metadata(("xyz/data", 100)),
-            )
-        ]
-    }
+    ctx.layout.cloud_storage_files.clear()
+    ctx.layout.cloud_storage_files.update(
+        {
+            "ch_backup/child/disks/s3/db1/t1.tar.gz": [
+                (
+                    "store/abc/uuid/all_1_1_0_2/data.bin",
+                    _object_storage_metadata(("xyz/data", 100)),
+                )
+            ]
+        }
+    )
+    _with_files(ctx, "child", {"disks/s3/db1/t1.tar.gz": 50})
     ctx.layout.backups["owner"] = _backup(
         "owner",
         parts={"all_1_1_0": dict(part)},
@@ -3641,6 +3660,7 @@ def test_cloud_copy_reuses_only_complete_owning_parts(
             ),
         )
     ]
+    _with_files(ctx, "owner", {"disks/s3/db1/t1.tar.gz": 50})
     assert ctx.copy(["owner"]) == (["owner"], [])
     ctx.target_layout.copied.clear()
     owner = ctx.target_layout.backups["owner"]
@@ -3767,3 +3787,52 @@ def test_cloud_copy_does_not_share_equal_suffixes_from_different_sources(namespa
         for name in ("day1", "day2")
     ]
     assert fingerprints[0] != fingerprints[1]
+
+
+@pytest.mark.parametrize("in_backup", [False, True])
+def test_staged_cloud_owner_retry_needs_no_source_backup(in_backup: bool) -> None:
+    ctx = _linked_cloud_copy_context()
+    archive = "ch_backup/owner/disks/s3/db1/t1.tar.gz"
+    if in_backup:
+        owner = ctx.layout.backups["owner"]
+        owner.cloud_storage.data_copied = True
+        owner.cloud_storage.source = None
+        ctx.layout.cloud_storage_files[archive] = [
+            (
+                "store/abc/uuid/all_1_1_0/data.bin",
+                _object_storage_metadata(("xyz/data", 100)),
+            )
+        ]
+        _with_files(
+            ctx,
+            "owner",
+            {"disks/s3/db1/t1.tar.gz": 50, "cloud_storage/s3/xyz/data": 100},
+        )
+    ctx.copy(["child"], scopes=["files"])
+    staged_payload = [
+        e.dst_path for e in ctx.target_layout.copied if "/cloud_storage/" in e.dst_path
+    ]
+    assert bool(staged_payload) == in_backup
+    ctx.layout = UnavailableLayout()  # type: ignore[assignment]
+    ctx.target_layout.source = None
+    payload = staged_payload[0] if in_backup else "copies/owner/xyz/data"
+    ctx.target_layout.object_errors[payload] = StorageError("interrupted")
+
+    with pytest.raises(ClickhouseBackupError):
+        ctx.copy(["child"], scopes=["cloud_storage"], keep_going=True)
+    failed = ctx.target_layout.backups["child"]
+    assert failed.state == BackupState.FAILED
+    assert failed.get_parts()[0].link == "owner"
+    assert failed.cloud_storage.source is None
+
+    ctx.target_layout.object_errors.clear()
+    ctx.copy(["child"], scopes=["cloud_storage"])
+    copied = ctx.target_layout.backups["child"]
+    assert copied.state == BackupState.CREATED
+    assert copied.get_parts()[0].link is None
+    assert copied.cloud_storage.source is not None
+    assert copied.cloud_storage.source["bucket"] == "third-disk"
+    assert any(
+        e.src_path == payload and e.dst_path == "copies/child/xyz/data"
+        for e in ctx.target_layout.copied
+    )

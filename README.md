@@ -290,6 +290,14 @@ Behavior and limitations:
   Disk metadata that cannot be planned is not copied, so it never overwrites rewritten disk
   metadata; a later run copies it. Copy scopes of one backup one after another: the local lock
   serializes runs on one host, runs on different hosts require `lock.zk_flock`.
+  Linked cloud parts also require the owner's disk metadata and cloud location. The `files`
+  scope stages the required archives and missing owner information in the same copy context,
+  without saving another full backup metadata file. If the owner's payload is inside backup
+  storage, `files` stages that payload too. The `cloud_storage` scope can then complete without
+  source backup storage. Original cloud-part links and the source location remain in incomplete
+  copy metadata until publication as `created`. An older incomplete copy without staged owner
+  information must run `files` again before `cloud_storage`.
+
 - Copy acquires the configured source and target locks through completion, including retries and
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
   and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.

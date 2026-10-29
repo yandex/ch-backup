@@ -1208,7 +1208,12 @@ Feature: Copy backups to another storage
       | 1   | dedup-base | created | 2          | 0          |
     When we execute command on clickhouse02
     """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy dedup-next \
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy dedup-next --scope files \
+        --target-config-parameter backup.path_root '"third/"'
+    """
+    And we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy dedup-next --scope cloud_storage \
         --target-config-parameter backup.path_root '"third/"' \
         --target-cloud-storage-bucket cloud-storage-02 \
         --target-cloud-storage-path third

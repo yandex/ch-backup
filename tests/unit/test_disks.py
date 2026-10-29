@@ -326,6 +326,30 @@ def _make_temporary_disks(
     skip_cloud_storage: bool = False,
 ) -> ClickHouseTemporaryDisks:
     """Helper: build ClickHouseTemporaryDisks with mocked dependencies."""
+    context = _make_temporary_context(
+        clickhouse_config_xml, cloud_storage_disks, data_copied, parts
+    )
+
+    return ClickHouseTemporaryDisks(
+        context.ch_ctl,
+        context.backup_layout,
+        context.config_root,
+        context.backup_meta,
+        source_bucket,
+        None,
+        None,
+        context.ch_config,
+        skip_cloud_storage=skip_cloud_storage,
+    )
+
+
+def _make_temporary_context(
+    clickhouse_config_xml: str,
+    cloud_storage_disks: list[str] | None,
+    data_copied: bool,
+    parts: Sequence[PartMetadata],
+) -> BackupContext:
+    """Prepare restore dependencies so tests configure them before manager construction."""
     context = _make_context(_make_backup_storage_config(), clickhouse_config_xml)
     context.backup_layout = _make_backup_layout(_make_backup_storage_config())
     context.backup_layout.get_backup.side_effect = lambda name, **_: (
@@ -350,17 +374,7 @@ def _make_temporary_disks(
     context.backup_meta.get_databases.return_value = ["db1"]  # type: ignore[attr-defined]
     context.backup_meta.get_tables.return_value = [table]  # type: ignore[attr-defined]
 
-    return ClickHouseTemporaryDisks(
-        context.ch_ctl,
-        context.backup_layout,
-        context.config_root,
-        context.backup_meta,
-        source_bucket,
-        None,
-        None,
-        context.ch_config,
-        skip_cloud_storage=skip_cloud_storage,
-    )
+    return context
 
 
 def test_skip_cloud_storage_does_not_require_bucket_or_create_temporary_disk():
@@ -1438,10 +1452,10 @@ def test_restore_fails_when_the_backup_holding_data_is_gone():
 
 @pytest.mark.parametrize("trusted", [False, True])
 def test_restore_linked_external_part_uses_its_owners_location(trusted):
-    disk_manager = _make_temporary_disks(
+    context = _make_temporary_context(
         BACKUP_DISK_CLICKHOUSE_CONFIG,
         cloud_storage_disks=["object_storage"],
-        source_bucket="current-bucket",
+        data_copied=False,
         parts=[
             _make_linked_part(),
             PartMetadata(
@@ -1463,13 +1477,22 @@ def test_restore_linked_external_part_uses_its_owners_location(trusted):
         "bucket": "owner-bucket",
         "path": "copies/owner",
     }
-    # pylint: disable=protected-access
-    disk_manager._source_path = "copies/current"
     if trusted:
-        disk_manager._storage_config["credentials"]["endpoint_url"] = (
+        context.config_root["storage"]["credentials"]["endpoint_url"] = (
             owner.cloud_storage.source["endpoint_url"]
         )
-    disk_manager._backup_layout.get_backup.side_effect = lambda *_args, **_kwargs: owner  # type: ignore[attr-defined]
+    layout = _make_backup_layout(_make_backup_storage_config())
+    layout.get_backup.return_value = owner
+    disk_manager = ClickHouseTemporaryDisks(
+        context.ch_ctl,
+        layout,
+        context.config_root,
+        context.backup_meta,
+        "current-bucket",
+        "copies/current",
+        None,
+        context.ch_config,
+    )
 
     if not trusted:
         with _capture_config_files() as (written, _removed):
@@ -1497,10 +1520,10 @@ def test_restore_linked_external_part_uses_its_owners_location(trusted):
 
 
 def test_restore_all_linked_external_parts_needs_no_current_source_bucket():
-    disk_manager = _make_temporary_disks(
+    context = _make_temporary_context(
         BACKUP_DISK_CLICKHOUSE_CONFIG,
         cloud_storage_disks=["object_storage"],
-        source_bucket=None,
+        data_copied=False,
         parts=[_make_linked_part()],
     )
     owner = _make_linked_backup_meta(LINKED_BACKUP_NAME)
@@ -1510,11 +1533,21 @@ def test_restore_all_linked_external_parts_needs_no_current_source_bucket():
         "bucket": "owner",
         "path": "copies/owner",
     }
-    # pylint: disable=protected-access
-    disk_manager._storage_config["credentials"]["endpoint_url"] = (
+    context.config_root["storage"]["credentials"]["endpoint_url"] = (
         owner.cloud_storage.source["endpoint_url"]
     )
-    disk_manager._backup_layout.get_backup.side_effect = lambda *_args, **_kwargs: owner  # type: ignore[attr-defined]
+    layout = _make_backup_layout(_make_backup_storage_config())
+    layout.get_backup.return_value = owner
+    disk_manager = ClickHouseTemporaryDisks(
+        context.ch_ctl,
+        layout,
+        context.config_root,
+        context.backup_meta,
+        None,
+        None,
+        None,
+        context.ch_config,
+    )
 
     with _capture_config_files() as (written, _removed):
         with disk_manager:
