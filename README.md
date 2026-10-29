@@ -178,6 +178,11 @@ storage:
 
 Behavior and limitations:
 
+- `copy.only_with_data` is enabled by default: `LAST` selects the latest created backup
+  with data, and `--all` skips backups without data. The filter uses the data size in backup
+  metadata, including deduplicated and detached parts. Override it with
+  `--only-with-data` / `--no-only-with-data`. Backups explicitly selected by name are copied
+  regardless of this setting.
 - A final text report lists copied, skipped, failed and unprocessed backups. `--report-path`
   also saves a JSON report (schema version 1) once the command finishes, including failures
   and handled termination signals. Any failure gives a nonzero exit code.

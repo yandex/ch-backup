@@ -295,7 +295,9 @@ class BackupCopier:
             try:
                 backup = self._layout.get_backup(name, use_light_meta=True)
                 if backup_names is None and (
-                    not backup or backup.state != BackupState.CREATED
+                    not backup
+                    or backup.state != BackupState.CREATED
+                    or (self._copy_config["only_with_data"] and backup.is_empty())
                 ):
                     self._report.backups.remove(result)
                     continue

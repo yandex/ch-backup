@@ -66,6 +66,39 @@ Feature: Copy backups to another storage
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
+  Scenario Outline: Copy <selection> skips backups without data
+    Given clickhouse on clickhouse01 has test schema
+    And clickhouse01 has test clickhouse data test1
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: with-data
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: schema-only
+    schema_only: true
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    backup:
+        path_root: ch_backup_copy/
+    """
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy <selection> \
+        --target-config-parameter backup.path_root '"ch_backup_copy/"'
+    """
+    Then we got the following backups on clickhouse02
+      | num | name      | state   |
+      | 0   | with-data | created |
+    When we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
+    Examples:
+      | selection |
+      | LAST      |
+      | --all     |
+
   Scenario: Copy only the latest deduplicated backup
     Given we have executed queries on clickhouse01
     """
