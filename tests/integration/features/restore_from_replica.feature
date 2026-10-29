@@ -44,11 +44,8 @@ Feature: Restore schema from a live replica
         --config-parameter storage.credentials.endpoint_url '"http://127.0.0.1:1"' \
         restore-from-replica --source-host clickhouse01
     """
-    And we execute queries on clickhouse02
-    """
-    SYSTEM SYNC REPLICA test_db.table_01;
-    SYSTEM SYNC REPLICA repl_db.table_01
-    """
+    When we synchronize replica test_db.table_01 on clickhouse02
+    When we synchronize replica repl_db.table_01 on clickhouse02
     Then clickhouse02 has same schema as clickhouse01
     When we execute query on clickhouse02
     """
@@ -88,8 +85,8 @@ Feature: Restore schema from a live replica
     CREATE TABLE test_db.table_01 (n UInt32)
     ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/test_db.table_01_rebuild', '{replica}')
     ORDER BY n;
-    SYSTEM SYNC REPLICA test_db.table_01;
     """
+    When we synchronize replica test_db.table_01 on clickhouse02
     ## The disk of clickhouse02 is lost, its replica stays registered in ZooKeeper.
     When we stop clickhouse at clickhouse02
     And we execute command on clickhouse02
@@ -101,10 +98,7 @@ Feature: Restore schema from a live replica
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore-from-replica --source-host clickhouse01
     """
-    And we execute queries on clickhouse02
-    """
-    SYSTEM SYNC REPLICA test_db.table_01
-    """
+    When we synchronize replica test_db.table_01 on clickhouse02
     Then clickhouse02 has same schema as clickhouse01
     When we execute query on clickhouse02
     """
@@ -220,10 +214,7 @@ Feature: Restore schema from a live replica
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore-from-replica --source-host clickhouse01
     """
-    And we execute queries on clickhouse02
-    """
-    SYSTEM SYNC REPLICA test_db.table_01
-    """
+    When we synchronize replica test_db.table_01 on clickhouse02
     Then clickhouse02 has same access control objects as clickhouse01
     When we execute command on clickhouse02
     """

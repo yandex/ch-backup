@@ -40,6 +40,7 @@ def step_create_backup(context, node):
     name_regexp = name_regexp.replace("{timestamp}", "[0-9]{8}T[0-9]{6}")
     name_regexp = name_regexp.replace("{uuid}", "[0-9a-f-]{36}")
     assert_that(name, matches_regexp(name_regexp))
+    context.last_created_backup_name = name
 
 
 @when("we try to create {node:w} clickhouse backup")
@@ -118,7 +119,10 @@ def step_set_backup_file(context, path, node, backup_id):
 
 @when("we restore clickhouse backup #{backup_id:d} to {node:w}")
 @when('we restore clickhouse backup "{backup_id}" to {node:w}')
-def step_restore_backup(context, backup_id, node):
+@when("we restore the last created clickhouse backup to {node:w}")
+def step_restore_backup(context, node, backup_id=None):
+    if backup_id is None:
+        backup_id = context.last_created_backup_name
     options = get_step_data(context)
     result = BackupManager(context, node).restore(backup_id, **options)
     assert_that(result, matches_regexp("^$"))
@@ -204,10 +208,15 @@ def step_no_backups(context, node):
     )
 
 
+@then("we got the following readable backups on {node:w}")
+def step_check_readable_backups_conditions(context, node):
+    step_check_backups_conditions(context, node, allow_unreadable=True)
+
+
 @then("we got the following backups on {node:w}")
-def step_check_backups_conditions(context, node):
+def step_check_backups_conditions(context, node, allow_unreadable=False):
     ch_backup = BackupManager(context, node)
-    backup_ids = ch_backup.get_backup_ids()
+    backup_ids = ch_backup.get_backup_ids(allow_unreadable=allow_unreadable)
 
     backup_count = len(backup_ids)
     expected_backup_count = len(context.table.rows)

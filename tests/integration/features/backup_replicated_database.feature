@@ -269,9 +269,8 @@ Feature: Backup and restore Replicated Database with synchronization
     CREATE TABLE mock_table (id UInt32, name String)
     ENGINE = ReplicatedMergeTree('/clickhouse/tables/82aa76a0-45cd-42f2-b355-852cc8c9c0af/shard1', '{replica}')
     ORDER BY id PARTITION BY id;
-
-    SYSTEM SYNC REPLICA mock_table;
     """
+    When we synchronize replica default.mock_table on clickhouse02
     When we execute query on clickhouse02
     """
     SELECT count(*) FROM mock_table;
@@ -334,14 +333,7 @@ Feature: Backup and restore Replicated Database with synchronization
 
     INSERT INTO test_replicated_db.test_table VALUES (1, 'one'), (2, 'two'), (3, 'three');
     """
-    When we execute query on clickhouse02
-    """
-    SYSTEM SYNC DATABASE REPLICA test_replicated_db
-    """
-    When we execute query on clickhouse02
-    """
-    SYSTEM SYNC REPLICA test_replicated_db.test_table
-    """
+    When we synchronize replica test_replicated_db.test_table on clickhouse02
     When we execute query on clickhouse02
     """
     SELECT count() FROM test_replicated_db.test_table
