@@ -343,12 +343,14 @@ class PipelineBuilder:
         """
         stage_config = self._config[WriteFilesStage.stype]
         buffer_size = stage_config["buffer_size"]
+        chunk_size = stage_config["chunk_size"]
         queue_size = stage_config["queue_size"]
 
         self.append(
+            thread_flat_map(ChunkingStage(chunk_size, chunk_size), maxsize=queue_size),
             thread_map(
                 UnpackTarballStage(stage_config, buffer_size), maxsize=queue_size
-            )
+            ),
         )
         return self
 

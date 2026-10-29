@@ -31,7 +31,7 @@ Feature: Backups with unreadable metadata
     """
     {not a json
     """
-    Then we got the following backups on clickhouse01
+    Then we got the following readable backups on clickhouse01
       | num | name       | state   | link_count |
       | 0   | new_backup | created | 2          |
     When we execute command on clickhouse01
@@ -89,7 +89,7 @@ Feature: Backups with unreadable metadata
     """
     name: next_backup
     """
-    Then we got the following backups on clickhouse01
+    Then we got the following readable backups on clickhouse01
       | num | name        | state   |
       | 0   | next_backup | created |
       | 1   | new_backup  | created |
