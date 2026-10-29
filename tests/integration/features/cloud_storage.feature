@@ -707,22 +707,19 @@ Feature: Backup & Clean & Restore
     And we have enabled shared zookeeper for clickhouse02
     When we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse01 with restart
     And we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse02 with restart
-    When we restore clickhouse backup #0 to clickhouse01
+    When we restore the last created clickhouse backup to clickhouse01
     """
     skip_cloud_storage: true
     """
     # Restore ordinary data once per shard. The second replica preloads parts
     # from the backup and lets replica recovery register them.
-    And we restore clickhouse backup #0 to clickhouse02
+    And we restore the last created clickhouse backup to clickhouse02
     """
     skip_cloud_storage: true
     schema_only: true
-    parts_from_backup: 0
+    parts_from_backup: "{{ last_created_backup_name }}"
     """
-    And we execute query on clickhouse02
-    """
-    SYSTEM SYNC REPLICA storage_restore.t
-    """
+    And we synchronize replica storage_restore.t on clickhouse02
     And we execute query on clickhouse02
     """
     SELECT count() FROM storage_restore.t
@@ -745,7 +742,7 @@ Feature: Backup & Clean & Restore
     """
     1	0
     """
-    When we restore clickhouse backup #0 to clickhouse01
+    When we restore the last created clickhouse backup to clickhouse01
     """
     skip_cloud_storage: true
     """

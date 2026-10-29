@@ -12,6 +12,7 @@ from tests.integration.modules.clickhouse import (
     ClickhouseClient,
     restart_clickhouse_and_wait,
     start_clickhouse_and_wait,
+    sync_replica,
     wait_for_clickhouse_ready,
 )
 from tests.integration.modules.docker import get_container, put_file
@@ -22,6 +23,11 @@ from tests.integration.modules.templates import render_template
 @given("a working clickhouse on {node:w}")
 def step_wait_for_clickhouse_alive(context, node):
     wait_for_clickhouse_ready(context, node)
+
+
+@when("we synchronize replica {database:w}.{table:w} on {node:w}")
+def step_sync_replica(context, database, table, node):
+    sync_replica(context, node, database, table)
 
 
 @given("clickhouse on {node:w} supports UNIQUE KEY")

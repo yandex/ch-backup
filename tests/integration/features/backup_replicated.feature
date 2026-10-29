@@ -860,10 +860,7 @@ Feature: Backup replicated merge tree table
     """
     schema_only: true
     """
-    When we execute query on clickhouse02
-    """
-    SYSTEM SYNC REPLICA default.table_01;
-    """
+    When we synchronize replica default.table_01 on clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
     
     @require_version_23.8
@@ -1172,9 +1169,9 @@ Feature: Backup replicated merge tree table
     schema_only: True
     parts_from_backup: 1
     """
+    When we synchronize replica test_db.table_01 on clickhouse02
     And we execute queries on clickhouse02
     """
-    SYSTEM SYNC REPLICA test_db.table_01;
     SYSTEM FLUSH LOGS
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
@@ -1245,10 +1242,10 @@ Feature: Backup replicated merge tree table
     schema_only: True
     parts_from_backup: 1
     """
+    When we synchronize replica test_db.table_01 on clickhouse02
+    When we synchronize replica test_db.table_02 on clickhouse02
     And we execute queries on clickhouse02
     """
-    SYSTEM SYNC REPLICA test_db.table_01;
-    SYSTEM SYNC REPLICA test_db.table_02;
     SYSTEM FLUSH LOGS
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
@@ -1304,9 +1301,9 @@ Feature: Backup replicated merge tree table
     schema_only: True
     parts_from_backup: 1
     """
+    When we synchronize replica test_db.table_01 on clickhouse02
     And we execute queries on clickhouse02
     """
-    SYSTEM SYNC REPLICA test_db.table_01;
     SYSTEM FLUSH LOGS
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
@@ -1374,9 +1371,9 @@ Feature: Backup replicated merge tree table
     schema_only: True
     parts_from_backup: 1
     """
+    When we synchronize replica test_db.table_01 on clickhouse02
     And we execute queries on clickhouse02
     """
-    SYSTEM SYNC REPLICA test_db.table_01;
     SYSTEM FLUSH LOGS
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
@@ -1448,9 +1445,9 @@ Feature: Backup replicated merge tree table
     schema_only: True
     parts_from_backup: 1
     """
+    When we synchronize replica test_db.table_01 on clickhouse02
     And we execute queries on clickhouse02
     """
-    SYSTEM SYNC REPLICA test_db.table_01;
     SYSTEM FLUSH LOGS
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
@@ -1545,10 +1542,7 @@ Feature: Backup replicated merge tree table
     """
     timeout 300 bash -c 'until [ -f /tmp/load.done ]; do sleep 1; done'
     """
-    And we execute queries on clickhouse02
-    """
-    SYSTEM SYNC REPLICA test_db.table_01
-    """
+    When we synchronize replica test_db.table_01 on clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
     When we execute query on clickhouse02
     """
