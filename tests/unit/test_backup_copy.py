@@ -318,6 +318,7 @@ class CopyTestContext:
         self.store = FakeStore()
         self.config = _config(SRC_BUCKET, "ch_backup")
         self.target_config = _config(target_bucket, "ch_backup_copy")
+        self.target_config["copy"]["only_with_data"] = False
         self.layout = FakeLayout("ch_backup", source_backups, self.store, self.config)
         self.target_layout = FakeLayout(
             "ch_backup_copy", target_backups or [], self.store, self.target_config
@@ -2724,6 +2725,41 @@ def test_copy_does_not_copy_copy_context_of_source() -> None:
     assert set(ctx.copied_paths()) == {"ch_backup/b1/metadata/a.tar"}
 
 
+@pytest.mark.parametrize("only_with_data", [None, True, False])
+def test_select_all_only_with_data(only_with_data):
+    """Filter empty backups for --all while retaining deduplicated data."""
+    data = _backup("data", parts={"all_1_1_0": _part(link="older")})
+    schema = _backup("schema")
+    schema.schema_only = True
+    ctx = CopyTestContext([_backup("empty"), schema, data])
+    configured = (
+        DEFAULT_CONFIG["copy"]["only_with_data"]
+        if only_with_data is None
+        else only_with_data
+    )
+    assert DEFAULT_CONFIG["copy"]["only_with_data"] is True
+    ctx.target_config["copy"]["only_with_data"] = configured
+    copier = ctx.make_copier()
+    with patch.object(copier, "_copy_backup", return_value=True):
+        copied, skipped = copier.copy()
+        assert set(copied) == ({"data"} if configured else {"empty", "schema", "data"})
+        assert not skipped
+        assert copier.copy(["schema"]) == (["schema"], [])
+
+
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, None, [], {}])
+def test_copy_api_rejects_non_boolean_only_with_data(value):
+    """Validate filter types for callers that bypass the CLI."""
+    ctx = CopyTestContext([_backup("b1")])
+    ctx.target_config["copy"]["only_with_data"] = value
+    with pytest.raises(
+        ConfigurationError, match="copy.only_with_data must be a boolean"
+    ):
+        ctx.copy()
+    assert not ctx.target_layout.uploaded
+    assert not ctx.target_layout.copied
+
+
 def _scoped_context(version: int = 3) -> CopyTestContext:
     """Backup with data of object storage disks copied into target storage tracked by the store."""
     ctx = _cloud_storage_context()
@@ -3479,3 +3515,28 @@ def test_cloud_retry_retains_original_source(publication_failure: bool) -> None:
         "bucket": "disk-copy",
         "path": "copies/b1",
     }
+
+
+@pytest.mark.parametrize("only_with_data", [True, False])
+@pytest.mark.parametrize("names", [None, ["LAST"]])
+def test_cloud_storage_selection_only_with_data(only_with_data, names):
+    """Filter staged copies using target metadata for LAST and --all."""
+    ctx = _scoped_context()
+    ctx.copy(["b1"], scopes=["files"])
+    data = ctx.target_layout.backups["b1"]
+    data.size = 100
+    empty = copy.deepcopy(data)
+    empty.name = "empty"
+    empty.size = 0
+    empty.start_time = data.start_time.replace(year=data.start_time.year + 1)
+    ctx.target_layout.backups[empty.name] = empty
+    ctx.layout.backups.clear()
+    ctx.target_config["copy"]["only_with_data"] = only_with_data
+    copier = ctx.make_copier()
+    with patch.object(copier, "_copy_backup", return_value=True):
+        copied, skipped = copier.copy(
+            names, scopes=frozenset({CopyScope.CLOUD_STORAGE})
+        )
+    expected = ["b1"] if only_with_data else (["empty"] if names else ["b1", "empty"])
+    assert copied == expected
+    assert not skipped
