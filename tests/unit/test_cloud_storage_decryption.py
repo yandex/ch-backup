@@ -45,7 +45,7 @@ def test_resolve_decryption_staging(
     assert path == expected_path
 
 
-def test_decrypt_cloud_storage_data() -> None:
+def test_decrypt_cloud_storage_data(tmp_path) -> None:
     config = copy.deepcopy(DEFAULT_CONFIG)
     layout = MagicMock()
     backup = MagicMock()
@@ -125,3 +125,18 @@ def test_decrypt_cloud_storage_data() -> None:
             {"keep_going": False},
             {"keep_going": True},
         ]
+
+    metadata_root = tmp_path / "shadow"
+    metadata_root.mkdir()
+    full_keys = metadata_root / "full"
+    full_keys.write_bytes(metadata)
+    relative_keys = metadata_root / "relative"
+    relative_data = b"4\n1\t4\n4\tobject\n1\n0\n\n"
+    relative_keys.write_bytes(relative_data)
+
+    CloudStorageDecryption.rewrite_metadata(
+        str(metadata_root), "copies/backup", "staging/backup"
+    )
+
+    assert full_keys.read_bytes() == b"5\n1\t4\n4\tstaging/backup/object\n1\n0\n\n"
+    assert relative_keys.read_bytes() == relative_data

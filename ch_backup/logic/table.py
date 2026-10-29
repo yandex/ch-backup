@@ -860,6 +860,7 @@ class TableBackup(BackupManager):
             desired_tables=tables_meta,
             use_local_copy=use_inplace_cloud_restore,
             skip_cloud_storage=skip_cloud_storage,
+            keep_going=keep_going,
         ) as disks:
             self._restore_data(
                 context,

@@ -1,6 +1,7 @@
 """Restore staging for encrypted object storage data."""
 
 import os
+from pathlib import Path
 from typing import Literal, Sequence
 
 from ch_backup import logging
@@ -10,6 +11,7 @@ from ch_backup.clickhouse.object_storage_metadata import (
     FROZEN_METADATA_FNAME,
     ObjectStorageMetadataError,
     parse_object_storage_metadata,
+    replace_object_keys,
 )
 from ch_backup.config import Config
 from ch_backup.exceptions import (
@@ -157,6 +159,37 @@ class CloudStorageDecryption:
                 len(entries),
                 disk_name,
             )
+
+    @staticmethod
+    def rewrite_metadata(
+        metadata_root: str, source_path: str, staging_path: str
+    ) -> None:
+        """Point full object keys in downloaded metadata to decryption staging."""
+        source_path = _normalize_prefix(source_path)
+        staging_path = _normalize_prefix(staging_path)
+        if source_path == staging_path:
+            return
+
+        for file_path in Path(metadata_root).rglob("*"):
+            if not file_path.is_file() or file_path.name == FROZEN_METADATA_FNAME:
+                continue
+            try:
+                data = file_path.read_bytes()
+                metadata = parse_object_storage_metadata(data)
+                if not metadata.full_object_keys:
+                    continue
+                keys = [
+                    os.path.join(
+                        staging_path,
+                        _object_relative_key(obj.key, source_path, full_key=True),
+                    )
+                    for obj in metadata.objects
+                ]
+                file_path.write_bytes(replace_object_keys(data, keys))
+            except ObjectStorageMetadataError as e:
+                raise ClickhouseBackupError(
+                    f'Failed to rewrite cloud storage metadata file "{file_path}"'
+                ) from e
 
 
 def resolve_decryption_staging(

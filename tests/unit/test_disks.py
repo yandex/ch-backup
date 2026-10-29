@@ -222,6 +222,7 @@ def test_temporary_disk(clickhouse_config, disk_name, source, temp_config):
     context.backup_layout = unittest.mock.MagicMock()
     context.backup_meta = unittest.mock.MagicMock()
     context.backup_meta.cloud_storage.data_copied = False
+    context.backup_meta.cloud_storage.data_encryption = None
     with unittest.mock.patch(
         "builtins.open",
         new=unittest.mock.mock_open(read_data=clickhouse_config),
@@ -312,6 +313,7 @@ def _make_linked_backup_meta(backup_name: str) -> unittest.mock.MagicMock:
     backup_meta.name = backup_name
     backup_meta.get_sanitized_name.return_value = backup_name
     backup_meta.cloud_storage.data_copied = True
+    backup_meta.cloud_storage.data_encryption = None
     return backup_meta
 
 
@@ -333,6 +335,7 @@ def _make_temporary_disks(
     context.backup_meta.cloud_storage.disks = cloud_storage_disks or []  # type: ignore[misc]
     context.backup_meta.cloud_storage.enabled = bool(cloud_storage_disks)  # type: ignore[misc]
     context.backup_meta.cloud_storage.data_copied = data_copied  # type: ignore[misc]
+    context.backup_meta.cloud_storage.data_encryption = None  # type: ignore[misc]
     context.backup_meta.cloud_storage.requires_source_bucket = (  # type: ignore[misc]
         bool(cloud_storage_disks) and not data_copied
     )
@@ -1033,6 +1036,38 @@ def test_restore_reads_copied_data_from_the_backup_bucket():
         xmltodict.parse(written[config_path], disable_entities=False),
         xmltodict.parse(expected_config, disable_entities=False),
     )
+
+
+def test_restore_decrypts_copied_data_into_destination_bucket():
+    disk_manager = _make_temporary_disks(
+        BACKUP_DISK_CLICKHOUSE_CONFIG,
+        cloud_storage_disks=["object_storage"],
+        data_copied=True,
+        source_bucket=None,
+    )
+    disk_manager._backup_meta.cloud_storage.data_encryption = {"type": "nacl"}
+    decryption = unittest.mock.MagicMock()
+    disk_manager._decryption = decryption
+
+    with _capture_config_files() as (written, _):
+        with disk_manager:
+            pass
+
+    args = decryption.decrypt.call_args.args
+    source_storage, source_path, staging_storage, staging_path = args[3:7]
+    assert source_storage["credentials"]["bucket"] == "backup-bucket"
+    assert source_path == ("ch_backup/20260101T000000/cloud_storage/object_storage")
+    assert staging_storage["credentials"]["bucket"] == "test-bucket"
+    assert staging_path == source_path
+
+    config_path = (
+        "/etc/clickhouse-server/config.d/"
+        "cloud_storage_tmp_disk_object_storage_source.xml"
+    )
+    endpoint = xmltodict.parse(written[config_path], disable_entities=False)[
+        "clickhouse"
+    ]["storage_configuration"]["disks"]["object_storage_source"]["endpoint"]
+    assert endpoint == f"https://localhost/test-bucket/{staging_path}/"
 
 
 LINKED_BACKUP_NAME = "20251231T000000"
