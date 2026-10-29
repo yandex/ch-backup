@@ -1040,6 +1040,7 @@ def test_restore_reads_copied_data_from_the_backup_bucket():
 
 
 def test_restore_failure_cleans_decryption_staging():
+    # pylint: disable=protected-access
     disk_manager = _make_temporary_disks(
         BACKUP_DISK_CLICKHOUSE_CONFIG,
         cloud_storage_disks=["object_storage"],

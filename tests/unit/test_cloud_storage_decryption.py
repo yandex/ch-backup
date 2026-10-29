@@ -7,6 +7,7 @@ from ch_backup.config import DEFAULT_CONFIG
 
 
 def test_decryption_keep_going_and_drain() -> None:
+    # pylint: disable=protected-access
     with patch(
         "ch_backup.backup.cloud_storage_decryption.StorageLoader"
     ) as loader_class:
