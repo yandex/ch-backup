@@ -71,8 +71,8 @@ Feature: Backup & Clean & Restore
     ENGINE = ReplacingMergeTree ORDER BY id
     SETTINGS storage_policy = 's3_cold';
     SYSTEM STOP MERGES mixed_restore.t;
-    INSERT INTO mixed_restore.t VALUES (1, 'old');
-    INSERT INTO mixed_restore.t VALUES (1, 'new');
+    INSERT INTO mixed_restore.t SETTINGS optimize_on_insert = 0 VALUES (1, 'old');
+    INSERT INTO mixed_restore.t SETTINGS optimize_on_insert = 0 VALUES (1, 'new');
     ALTER TABLE mixed_restore.t MOVE PART 'all_2_2_0' TO VOLUME 'external';
     """
     And we execute query on clickhouse01
