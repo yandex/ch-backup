@@ -26,8 +26,10 @@ from ch_backup.backup.deduplication import (
 )
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import (
+    ALL_SCOPES,
     BackupMetadata,
     BackupState,
+    CopyScope,
     TableMetadata,
     sanitize_backup_name,
 )
@@ -620,7 +622,7 @@ class ClickhouseBackup:
         *,
         keep_going: bool = False,
         report: CopyReport | None = None,
-        scopes: Sequence[str] | None = None,
+        scopes: frozenset[CopyScope] = ALL_SCOPES,
         command_start: datetime | None = None,
     ) -> tuple[Sequence[str], Sequence[str]]:
         """

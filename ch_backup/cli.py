@@ -37,7 +37,7 @@ from ch_backup.exceptions import ConfigurationError, TerminatingSignal
 from . import logging
 from .backup.copy_deduplication import copy_deduplication_cutoff
 from .backup.copy_report import CopyReport, print_copy_report
-from .backup.metadata import BackupState, CopyScope, TableMetadata
+from .backup.metadata import ALL_SCOPES, BackupState, CopyScope, TableMetadata
 from .backup.sources import BackupSources
 from .ch_backup import CleanZooKeeperMode, ClickhouseBackup
 from .config import DEFAULT_CONFIG, Config
@@ -1042,6 +1042,7 @@ def copy_command(
 ) -> None:
     """Copy backup to another storage (another S3 bucket, endpoint or path)."""
     command_start = utcnow()
+    selected_scopes = frozenset(map(CopyScope, scopes)) or ALL_SCOPES
     report = CopyReport()
     try:
         if bool(name) == all_:
@@ -1070,7 +1071,7 @@ def copy_command(
         copy_deduplication_cutoff(target_cfg["copy"], command_start)
         backup_names = None
         if name:
-            if name == "LAST" and (not scopes or CopyScope.FILES.value in scopes):
+            if name == "LAST" and CopyScope.FILES in selected_scopes:
                 name = _validate_and_resolve_name(
                     ctx, ch_backup, name, BackupState.CREATED
                 )
@@ -1080,7 +1081,7 @@ def copy_command(
             backup_names,
             keep_going=keep_going,
             report=report,
-            scopes=scopes,
+            scopes=selected_scopes,
             command_start=command_start,
         )
     except BaseException as e:

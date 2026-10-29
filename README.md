@@ -244,13 +244,14 @@ Behavior and limitations:
   `--copy-cloud-storage-data`, are copied entirely by `files`, and their scope `cloud_storage` is
   completed right away. `--scope` (can be given multiple times) copies only the specified scopes,
   all of them by default. Each run chooses its own copy mode with `--[no-]server-side-copy`. `files`
-  also copies metadata of the backup and the original disk metadata into
+  also copies the original disk metadata into
   `<backup>/copy_context/<id>/source/` and saves the list of its objects in
   `<backup>/copy_context/<id>/manifest/files.jsonl.gz` (locations and sizes, without credentials). A
   run without `files` does not access the source storage: it takes copies from the target storage
   (the specified ones, or with `--all` every copy whose `cloud_storage` is not completed, or the
-  newest of them for `LAST`), reads metadata from `source/`, copies disk metadata that needs no
-  rewriting from there and checks `files` by the manifest. So `files` must be copied first, from a
+  newest of them for `LAST`), reads the copy's full metadata and disk metadata from `source/`,
+  copies disk metadata that needs no rewriting from there and checks `files` by the manifest.
+  The copy retains the original cloud storage location until it is published as `created`. So `files` must be copied first, from a
   host with access to the source storage; `cloud_storage` needs only access to the buckets of the
   disks. A scope that is not copied is planned only if it is completed, to check it with the same
   settings as copying it, so copying only the scope `files` needs no settings of object storage data

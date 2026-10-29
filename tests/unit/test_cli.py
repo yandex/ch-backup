@@ -170,7 +170,9 @@ def test_copy_command_passes_scopes(
     result = CliRunner().invoke(group, ["copy", "--all", *args], obj={"backup": backup})
 
     assert result.exit_code == 0
-    assert backup.copy.call_args.kwargs["scopes"] == scopes
+    assert backup.copy.call_args.kwargs["scopes"] == (
+        frozenset(map(cli.CopyScope, scopes)) or cli.ALL_SCOPES
+    )
     assert "b1: partial, the copy is creating in target storage" in result.output
     assert "scopes: files completed, cloud_storage pending" in result.output
 

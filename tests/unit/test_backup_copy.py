@@ -21,8 +21,10 @@ from ch_backup.backup.copy_context import CopyContext
 from ch_backup.backup.copy_report import CopyReport, print_copy_report
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import (
+    ALL_SCOPES,
     BackupMetadata,
     BackupState,
+    CopyScope,
     DetachedPartMetadata,
 )
 from ch_backup.config import DEFAULT_CONFIG
@@ -129,7 +131,6 @@ class FakeLayout:
         ).metadata_size()
         self.store: FakeStore | None = None
         self.source: FakeLayout | None = None
-        self.staged: dict[str, BackupMetadata] = {}
         self.copied_files: dict[str, list[tuple[str, bytes]]] = {}
 
     def get_backup_names(self):
@@ -154,7 +155,7 @@ class FakeLayout:
         )
 
     def get_backup(self, backup_name, use_light_meta=False):
-        backup = self.backups.get(backup_name) or self.staged.get(backup_name)
+        backup = self.backups.get(backup_name)
         return copy.deepcopy(backup) if backup else None
 
     def get_backups(self, use_light_meta=False):
@@ -190,18 +191,12 @@ class FakeLayout:
         pass
 
     def _copy_content(self, entry: CopyEntry) -> None:
-        """Keep contents of copied disk metadata and backup metadata readable."""
+        """Keep contents of copied disk metadata readable."""
         for layout in (self, self.source):
             if layout and entry.src_path in layout.metadata_files():
                 self.copied_files[entry.dst_path] = list(
                     layout.metadata_files()[entry.src_path]
                 )
-        if self.source and entry.src_path.endswith("/backup_struct.json"):
-            name = os.path.relpath(
-                os.path.dirname(entry.src_path), self.source.path_root
-            )
-            staged = os.path.relpath(os.path.dirname(entry.dst_path), self.path_root)
-            self.staged[staged] = copy.deepcopy(self.source.backups[name])
 
     def get_cloud_storage_metadata_remote_paths(
         self, backup_name, disk_name, compression, desired_tables
@@ -354,7 +349,10 @@ class CopyTestContext:
             "ch_backup.backup.copier.get_storage_engine", side_effect=self.store.engine
         ):
             return copier.copy(
-                backup_names, keep_going=keep_going, report=report, scopes=scopes
+                backup_names,
+                keep_going=keep_going,
+                report=report,
+                scopes=frozenset(map(CopyScope, scopes or ())) or ALL_SCOPES,
             )
 
     def make_copier(self) -> BackupCopier:
@@ -2361,7 +2359,7 @@ def test_copy_counts_rewritten_metadata(metadata_failure: bool) -> None:
         result.objects_copied,
         result.objects_failed,
         result.known_bytes_copied,
-    ) == (4, 3 if metadata_failure else 4, int(metadata_failure), 1150)
+    ) == (3, 2 if metadata_failure else 3, int(metadata_failure), 1050)
     if metadata_failure:
         assert result.errors[0]["target"] == dst_path
 
@@ -2402,8 +2400,8 @@ def test_copy_records_synchronous_cloud_metadata_validation_failure(
     failed, independent = report.backups
     assert failed.status == "failed"
     assert (failed.objects_total, failed.objects_copied, failed.objects_failed) == (
-        4,
         3,
+        2,
         1,
     )
     assert len(failed.errors) == 1
@@ -2559,11 +2557,11 @@ def test_copy_continues_other_rewritten_metadata_uploads() -> None:
     )
     result = report.backups[0]
     assert (result.objects_total, result.objects_copied, result.objects_failed) == (
-        7,
         6,
+        5,
         1,
     )
-    assert result.known_bytes_copied == 2200
+    assert result.known_bytes_copied == 2100
 
 
 def _interrupted_copy(
@@ -2743,8 +2741,7 @@ def _scoped_context(version: int = 3) -> CopyTestContext:
 
 def _scopes(backup: BackupMetadata) -> dict[str, str]:
     """Return statuses of scopes saved in metadata of the copy."""
-    assert backup.copy
-    return backup.copy["scopes"]
+    return {scope.value: status.value for scope, status in backup.copy_scopes.items()}
 
 
 def _disk_objects(ctx: CopyTestContext) -> set[str]:
@@ -2754,6 +2751,100 @@ def _disk_objects(ctx: CopyTestContext) -> set[str]:
         for e in ctx.target_layout.copied
         if e.dst_storage["credentials"]["bucket"] == "disk-copy"
     }
+
+
+@pytest.mark.parametrize("after_manifest", [False, True])
+def test_interrupted_files_retry_blocks_cloud_storage(after_manifest: bool) -> None:
+    """Do not publish a copy after a retry stops between metadata and manifest writes."""
+    ctx = _scoped_context()
+    ctx.copy(["b1"], scopes=["files"])
+    del ctx.dst_objects["ch_backup_copy/b1/metadata/a.tar"]
+    del ctx.src_objects["ch_backup/b1/metadata/a.tar"]
+    upload_data = FakeEngine.upload_data
+    upload_metadata = ctx.target_layout.upload_backup_metadata
+
+    def save_manifest(engine: FakeEngine, data: bytes, remote_path: str) -> str:
+        """Stop immediately after the new manifest reaches storage."""
+        result = upload_data(engine, data, remote_path)
+        if remote_path.endswith("/manifest/files.jsonl.gz"):
+            raise KeyboardInterrupt()
+        return result
+
+    def save_metadata(backup: BackupMetadata) -> None:
+        """Stop immediately after the first metadata write reaches storage."""
+        upload_metadata(backup)
+        raise KeyboardInterrupt()
+
+    with pytest.raises(KeyboardInterrupt):
+        if after_manifest:
+            with patch.object(FakeEngine, "upload_data", save_manifest):
+                ctx.copy(["b1"], scopes=["files"])
+        else:
+            with patch.object(
+                ctx.target_layout, "upload_backup_metadata", side_effect=save_metadata
+            ):
+                ctx.copy(["b1"], scopes=["files"])
+
+    with pytest.raises(
+        ClickhouseBackupError, match='scope "files" must be copied first'
+    ):
+        ctx.copy(["b1"], scopes=["cloud_storage"])
+
+    assert ctx.target_layout.backups["b1"].state != BackupState.CREATED
+    assert not _disk_objects(ctx)
+
+
+def test_cloud_storage_scope_rejects_stale_light_completed_status() -> None:
+    """Use full metadata when a stopped files retry leaves light metadata completed."""
+    ctx = _scoped_context()
+    ctx.copy(["b1"], scopes=["files"])
+    light = copy.deepcopy(ctx.target_layout.backups["b1"])
+    upload = ctx.target_layout.upload_backup_metadata
+    get_backup = ctx.target_layout.get_backup
+
+    def save_full_metadata(backup: BackupMetadata) -> None:
+        """Stop after saving full metadata, before updating its light copy."""
+        upload(backup)
+        raise KeyboardInterrupt()
+
+    def read_metadata(
+        backup_name: str, use_light_meta: bool = False
+    ) -> BackupMetadata | None:
+        """Return the old light metadata or the current full metadata."""
+        if backup_name == "b1" and use_light_meta:
+            return copy.deepcopy(light)
+        return get_backup(backup_name, use_light_meta=use_light_meta)
+
+    with (
+        patch.object(
+            ctx.target_layout, "upload_backup_metadata", side_effect=save_full_metadata
+        ),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        ctx.copy(["b1"], scopes=["files"])
+
+    with patch.object(ctx.target_layout, "get_backup", side_effect=read_metadata):
+        with pytest.raises(
+            ClickhouseBackupError, match='scope "files" must be copied first'
+        ):
+            ctx.copy(["b1"], scopes=["cloud_storage"])
+
+    assert ctx.target_layout.backups["b1"].state != BackupState.CREATED
+    assert not _disk_objects(ctx)
+
+
+def test_files_retry_manifest_keeps_confirmed_objects() -> None:
+    """Keep previously copied files in the manifest used to detect missing objects."""
+    ctx = _scoped_context()
+    ctx.copy(["b1"], scopes=["files"])
+    ctx.copy(["b1"], scopes=["files"])
+    del ctx.dst_objects["ch_backup_copy/b1/metadata/a.tar"]
+
+    ctx.copy(["b1"], scopes=["cloud_storage"])
+
+    target = ctx.target_layout.backups["b1"]
+    assert target.state == BackupState.CREATING
+    assert _scopes(target)["files"] == "pending"
 
 
 def test_copy_scopes_separately() -> None:
@@ -2814,13 +2905,6 @@ def test_copy_scopes_of_backup_without_cloud_storage() -> None:
     target = ctx.target_layout.backups["b1"]
     assert target.state == BackupState.CREATED
     assert _scopes(target) == {"files": "completed", "cloud_storage": "completed"}
-
-
-def test_copy_rejects_unknown_scope() -> None:
-    ctx = CopyTestContext([_backup("b1")])
-
-    with pytest.raises(ConfigurationError, match="data"):
-        ctx.copy(["b1"], scopes=["data"])
 
 
 def test_cloud_storage_scope_lists_failed_objects() -> None:
@@ -3036,7 +3120,7 @@ def test_files_scope_needs_no_settings_of_object_storage() -> None:
         ctx.copy(["b1"], scopes=["files"], report=report)
 
     download.assert_not_called()
-    assert report.backups[0].objects_skipped == 3
+    assert report.backups[0].objects_skipped == 2
     assert _scopes(ctx.target_layout.backups["b1"]) == {
         "files": "completed",
         "cloud_storage": "pending",
@@ -3178,8 +3262,11 @@ def test_files_scope_copies_backup_with_copied_cloud_storage_data() -> None:
 
 
 @pytest.mark.parametrize("stored", [True, False])
-def test_links_to_local_parts_of_incomplete_copies(stored: bool) -> None:
+@pytest.mark.parametrize("window", [0, 36500])
+def test_links_to_local_parts_of_incomplete_copies(stored: bool, window: int) -> None:
+    """Reuse incomplete owners only when their local files are available."""
     ctx = _scoped_context()
+    ctx.target_config["copy"]["deduplication_age_limit"] = {"days": window}
     ctx.layout.backups["b1"] = _backup(
         "b1", parts={"all_1_1_0": _part()}, cloud_storage_disks=["s3"]
     )
@@ -3285,8 +3372,8 @@ def test_incomplete_cloud_storage_planning_keeps_failed_objects() -> None:
     # pylint: disable-next=protected-access
     plan_objects = BackupCopier._plan_cloud_storage_objects
 
-    def incomplete(self, backup, target_meta, plan, result):
-        plan_objects(self, backup, target_meta, plan, result)
+    def incomplete(self, backup, plan, result):
+        plan_objects(self, backup, plan, result)
         result.add_error(StorageError("SlowDown"), "planning")
 
     with patch.object(BackupCopier, "_plan_cloud_storage_objects", incomplete):
@@ -3324,7 +3411,7 @@ def test_repeated_scope_is_copied_and_counted_once() -> None:
 
     ctx.copy(["b1"], scopes=["files", "files"], report=report)
 
-    assert report.backups[0].objects_total == report.backups[0].objects_copied == 3
+    assert report.backups[0].objects_total == report.backups[0].objects_copied == 2
 
 
 @pytest.mark.parametrize("keep_going", [False, True])
@@ -3348,4 +3435,47 @@ def test_cloud_storage_planning_failure_does_not_fail_backup_scope(
     assert _scopes(target) == {
         "files": "completed",
         "cloud_storage": "failed" if keep_going else "pending",
+    }
+
+
+@pytest.mark.parametrize("publication_failure", [False, True])
+def test_cloud_retry_retains_original_source(publication_failure: bool) -> None:
+    """Keep the original cloud source until publication, including failed publication retries."""
+    ctx = _scoped_context(version=5)
+    source = {
+        "endpoint_url": "http://minio:9000",
+        "bucket": "cloud-storage",
+        "path": "data",
+    }
+    ctx.layout.backups["b1"].cloud_storage.source = source
+    ctx.copy(["b1"], scopes=["files"])
+    assert ctx.target_layout.backups["b1"].cloud_storage.source == source
+    assert not any(path.endswith("/backup_struct.json") for path in ctx.copied_paths())
+    ctx.layout = UnavailableLayout()  # type: ignore[assignment]
+    ctx.target_layout.source = None
+    upload = ctx.target_layout.upload_backup_metadata
+
+    def fail_publication(backup: BackupMetadata) -> None:
+        """Fail before publishing the completed copy."""
+        if publication_failure and backup.state == BackupState.CREATED:
+            raise StorageError("publication failed")
+        upload(backup)
+
+    if not publication_failure:
+        ctx.target_layout.object_errors["data/xyz/aaa"] = StorageError("copy failed")
+    with patch.object(
+        ctx.target_layout, "upload_backup_metadata", side_effect=fail_publication
+    ):
+        with pytest.raises(StorageError):
+            ctx.copy(["b1"], scopes=["cloud_storage"])
+
+    assert ctx.target_layout.backups["b1"].cloud_storage.source == source
+    ctx.target_layout.object_errors.clear()
+    ctx.copy(["b1"], scopes=["cloud_storage"])
+    target = ctx.target_layout.backups["b1"]
+    assert target.state == BackupState.CREATED
+    assert target.cloud_storage.source == {
+        "endpoint_url": ENDPOINT,
+        "bucket": "disk-copy",
+        "path": "copies/b1",
     }
