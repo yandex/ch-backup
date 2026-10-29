@@ -146,16 +146,22 @@ class ClickHouseDiskManager:
         already known to be writable, and ClickHouse retries a failed check
         far beyond the time ch-backup waits for SYSTEM RELOAD CONFIG.
         """
+        return self._storage_disk_config(
+            disk_name,
+            self._storage_config,
+            self._backup_layout.get_cloud_storage_data_path(backup_name, disk_name),
+        )
+
+    def _storage_disk_config(
+        self, disk_name: str, storage_config: dict, key_prefix: str
+    ) -> dict:
+        """Build a disk configuration pointing to a given object storage location."""
         disk_config = {
             key: value
             for key, value in self._disks[disk_name].items()
             if key in BACKUP_DISK_CONFIG_KEYS
         }
-        _set_backup_storage(
-            disk_config,
-            self._storage_config,
-            self._backup_layout.get_cloud_storage_data_path(backup_name, disk_name),
-        )
+        _set_backup_storage(disk_config, storage_config, key_prefix)
         disk_config["skip_access_check"] = str(True).lower()
         return disk_config
 
@@ -387,7 +393,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
                 staging_path,
                 keep_going=self._keep_going,
             )
-            disk_config = self._staging_disk_config(
+            disk_config = self._storage_disk_config(
                 disk_name, staging_storage, staging_path
             )
             rewrite_paths = source_path, staging_path
@@ -478,18 +484,6 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
             ),
             source_path,
         )
-
-    def _staging_disk_config(
-        self, disk_name: str, staging_storage: dict, staging_path: str
-    ) -> dict:
-        """Build a temporary disk configuration pointing to plaintext staging."""
-        disk_config = {
-            key: value
-            for key, value in self._disks[disk_name].items()
-            if key in BACKUP_DISK_CONFIG_KEYS
-        }
-        _set_backup_storage(disk_config, staging_storage, staging_path)
-        return disk_config
 
     def copy_parts(
         self,
