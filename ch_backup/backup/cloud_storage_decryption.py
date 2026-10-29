@@ -12,7 +12,12 @@ from ch_backup.clickhouse.object_storage_metadata import (
     parse_object_storage_metadata,
 )
 from ch_backup.config import Config
-from ch_backup.exceptions import ClickhouseBackupError, ConfigurationError
+from ch_backup.exceptions import (
+    ClickhouseBackupError,
+    ConfigurationError,
+    TerminatingSignal,
+    is_broken_executor,
+)
 from ch_backup.storage import StorageLoader
 from ch_backup.storage.object_copy import (
     CopyEntry,
@@ -103,9 +108,55 @@ class CloudStorageDecryption:
             len(entries),
             disk_name,
         )
-        for entry in entries.values():
-            self._storage_loader.copy_object(entry, is_async=True)
-        self._storage_loader.wait(keep_going=keep_going)
+        self._decrypt_entries(entries, disk_name, keep_going)
+
+    def _decrypt_entries(
+        self, entries: dict[str, CopyEntry], disk_name: str, keep_going: bool
+    ) -> None:
+        """Run decryption jobs and drain already submitted jobs on failure."""
+        failures = 0
+
+        def failed(_error: BaseException) -> None:
+            nonlocal failures
+            failures += 1
+
+        index = 0
+        try:
+            for index, entry in enumerate(entries.values(), 1):
+                try:
+                    self._storage_loader.copy_object(
+                        entry, is_async=True, on_error=failed
+                    )
+                except (Exception, TerminatingSignal) as e:
+                    if (
+                        not keep_going
+                        or not isinstance(e, Exception)
+                        or is_broken_executor(e)
+                    ):
+                        raise
+                if index % 256 == 0:
+                    self._storage_loader.wait(keep_going=keep_going)
+            if index % 256:
+                self._storage_loader.wait(keep_going=keep_going)
+        except (Exception, TerminatingSignal):
+            try:
+                self._storage_loader.wait(keep_going=True)
+            except (Exception, TerminatingSignal):
+                logging.exception("Failed to drain cloud storage decryption jobs")
+            raise
+
+        if failures:
+            if not keep_going:
+                raise ClickhouseBackupError(
+                    f"Failed to decrypt {failures} cloud storage objects of disk {disk_name}"
+                )
+            logging.warning(
+                "Failed to decrypt {} of {} cloud storage objects of disk {}; "
+                "restore continues with keep-going",
+                failures,
+                len(entries),
+                disk_name,
+            )
 
 
 def resolve_decryption_staging(

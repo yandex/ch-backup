@@ -65,7 +65,8 @@ def test_decrypt_cloud_storage_data() -> None:
     with patch(
         "ch_backup.backup.cloud_storage_decryption.StorageLoader"
     ) as loader_class:
-        CloudStorageDecryption(config, layout).decrypt(
+        decryption = CloudStorageDecryption(config, layout)
+        decryption.decrypt(
             backup,
             "s3",
             "all",
@@ -75,14 +76,52 @@ def test_decrypt_cloud_storage_data() -> None:
             "copies/backup",
         )
 
-    loader = loader_class.return_value
-    loader.copy_object.assert_called_once()
-    entry = loader.copy_object.call_args.args[0]
-    assert (entry.src_path, entry.dst_path, entry.size, entry.dst_size) == (
-        "copies/backup/object",
-        "copies/backup/object",
-        4,
-        4,
-    )
-    assert entry.decrypt
-    loader.wait.assert_called_once_with(keep_going=False)
+        loader = loader_class.return_value
+        loader.copy_object.assert_called_once()
+        entry = loader.copy_object.call_args.args[0]
+        assert (entry.src_path, entry.dst_path, entry.size, entry.dst_size) == (
+            "copies/backup/object",
+            "copies/backup/object",
+            4,
+            4,
+        )
+        assert entry.decrypt
+        loader.wait.assert_called_once_with(keep_going=False)
+
+        loader.copy_object.reset_mock()
+        loader.wait.reset_mock()
+
+        def fail_copy(_entry, *, on_error, **_kwargs):
+            on_error(RuntimeError("failed"))
+
+        loader.copy_object.side_effect = fail_copy
+        decryption.decrypt(
+            backup,
+            "s3",
+            "all",
+            source,
+            "copies/backup",
+            staging,
+            "copies/backup",
+            keep_going=True,
+        )
+        loader.wait.assert_called_once_with(keep_going=True)
+
+        loader.copy_object.side_effect = None
+        loader.copy_object.reset_mock()
+        loader.wait.reset_mock()
+        loader.wait.side_effect = [RuntimeError("failed"), None]
+        with pytest.raises(RuntimeError, match="failed"):
+            decryption.decrypt(
+                backup,
+                "s3",
+                "all",
+                source,
+                "copies/backup",
+                staging,
+                "copies/backup",
+            )
+        assert [call.kwargs for call in loader.wait.call_args_list] == [
+            {"keep_going": False},
+            {"keep_going": True},
+        ]
