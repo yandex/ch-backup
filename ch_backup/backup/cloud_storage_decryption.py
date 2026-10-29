@@ -21,12 +21,14 @@ from ch_backup.exceptions import (
     is_broken_executor,
 )
 from ch_backup.storage import StorageLoader
+from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.object_copy import (
     CopyEntry,
     get_s3_disk_location,
     make_storage_config,
     storage_id,
 )
+from ch_backup.util import chunked
 
 DEFAULT_DECRYPTED_SUFFIX = "_decrypted"
 
@@ -37,6 +39,7 @@ class CloudStorageDecryption:
     def __init__(self, config: Config | dict, backup_layout: BackupLayout) -> None:
         self._layout = backup_layout
         self._storage_loader = StorageLoader(config)
+        self._staging_objects: dict[tuple, tuple[dict, set[str]]] = {}
 
     # pylint: disable=too-many-positional-arguments,too-many-locals
     def decrypt(
@@ -111,6 +114,22 @@ class CloudStorageDecryption:
             disk_name,
         )
         self._decrypt_entries(entries, disk_name, keep_going)
+        if entries:
+            staging = self._staging_objects.setdefault(
+                storage_id(staging_storage), (staging_storage, set())
+            )
+            staging[1].update(entries)
+
+    def cleanup(self) -> None:
+        """Remove plaintext staging objects after a completed restore."""
+        for storage, paths in self._staging_objects.values():
+            logging.info(
+                "Removing {} decrypted cloud storage staging objects", len(paths)
+            )
+            engine = get_storage_engine(storage)
+            for batch in chunked(sorted(paths), storage["bulk_delete_chunk_size"]):
+                engine.delete_files(batch)
+        self._staging_objects.clear()
 
     def _decrypt_entries(
         self, entries: dict[str, CopyEntry], disk_name: str, keep_going: bool

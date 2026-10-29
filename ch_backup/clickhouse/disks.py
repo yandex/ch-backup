@@ -290,6 +290,12 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         value: BaseException | None,
         traceback: TracebackType | None,
     ) -> bool:
+        if exc_type is None and self._decryption is not None:
+            try:
+                self._decryption.cleanup()
+            except BaseException as e:
+                self._cleanup(type(e), e)
+                raise
         return self._cleanup(exc_type, value)
 
     def _linked_backups_data(

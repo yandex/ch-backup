@@ -140,3 +140,12 @@ def test_decrypt_cloud_storage_data(tmp_path) -> None:
 
     assert full_keys.read_bytes() == b"5\n1\t4\n4\tstaging/backup/object\n1\n0\n\n"
     assert relative_keys.read_bytes() == relative_data
+
+    with patch(
+        "ch_backup.backup.cloud_storage_decryption.get_storage_engine"
+    ) as get_engine:
+        decryption.cleanup()
+    get_engine.assert_called_once_with(staging)
+    get_engine.return_value.delete_files.assert_called_once_with(
+        ["copies/backup/object"]
+    )

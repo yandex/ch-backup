@@ -1053,6 +1053,7 @@ def test_restore_decrypts_copied_data_into_destination_bucket():
         with disk_manager:
             pass
 
+    decryption.cleanup.assert_called_once_with()
     args = decryption.decrypt.call_args.args
     source_storage, source_path, staging_storage, staging_path = args[3:7]
     assert source_storage["credentials"]["bucket"] == "backup-bucket"
@@ -1068,6 +1069,12 @@ def test_restore_decrypts_copied_data_into_destination_bucket():
         "clickhouse"
     ]["storage_configuration"]["disks"]["object_storage_source"]["endpoint"]
     assert endpoint == f"https://localhost/test-bucket/{staging_path}/"
+
+    decryption.reset_mock()
+    error = RuntimeError("restore failed")
+    with unittest.mock.patch.object(disk_manager, "_cleanup"):
+        disk_manager.__exit__(RuntimeError, error, None)
+    decryption.cleanup.assert_not_called()
 
 
 LINKED_BACKUP_NAME = "20251231T000000"
