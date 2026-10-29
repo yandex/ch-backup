@@ -6,14 +6,13 @@ Copying of backups from one storage to another.
 
 import copy
 import os
-import re
 from contextlib import contextmanager
 from datetime import datetime
 from functools import partial
 from itertools import chain
 from pathlib import PurePosixPath
 from typing import Iterator, Sequence
-from urllib.parse import quote, urlparse
+from urllib.parse import quote
 
 from ch_backup import logging
 from ch_backup.backup.copy_context import COPY_CONTEXT_DIR, CopyContext
@@ -62,6 +61,8 @@ from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
 from ch_backup.storage.object_copy import (
     CopyEntry,
+    get_s3_disk_location,
+    make_storage_config,
     server_side_copy_possible,
     storage_id,
 )
@@ -1157,7 +1158,7 @@ class BackupCopier:
                 credentials["secret_access_key"],
             )
 
-        storage = _make_storage_config(
+        storage = make_storage_config(
             self._target_storage,
             endpoint_url=conf.get("endpoint_url") or credentials["endpoint_url"],
             bucket=conf["bucket"],
@@ -1222,7 +1223,7 @@ class BackupCopier:
                 self._storage["credentials"]["secret_access_key"],
             )
 
-        storage = _make_storage_config(
+        storage = make_storage_config(
             self._storage,
             endpoint_url=endpoint_url,
             bucket=bucket,
@@ -1250,23 +1251,7 @@ class BackupCopier:
         Return endpoint URL, bucket and key prefix of the object storage disk from ClickHouse config.
         Support path-style and S3 virtual-host endpoints.
         """
-        disk_config = self._get_disk_config(disk_name) or {}
-        endpoint = disk_config.get("endpoint")
-        if not isinstance(endpoint, str):
-            return None
-
-        url = urlparse(endpoint)
-        # Follow ClickHouse's S3 host recognition; AWS PrivateLink uses path-style buckets.
-        virtual_host = re.fullmatch(r"(.+)\.(s3[.-][a-z0-9.:-]+)", url.netloc)
-        private_link = re.fullmatch(
-            r"bucket\.vpce-[a-z0-9.-]+\.vpce\.amazonaws\.com(:\d{1,5})?", url.netloc
-        )
-        if virtual_host and not private_link:
-            bucket, host = virtual_host.groups()
-            return f"{url.scheme}://{host}", bucket, url.path.strip("/")
-
-        bucket, _, path = url.path.strip("/").partition("/")
-        return f"{url.scheme}://{url.netloc}", bucket, path
+        return get_s3_disk_location(self._get_disk_config(disk_name) or {})
 
     def _get_disk_credentials(self, disk_name: str) -> tuple[str, str] | None:
         disk_config = self._get_disk_config(disk_name) or {}
@@ -1607,28 +1592,6 @@ def _check_backup_state(backup: BackupMetadata) -> None:
             f'Backup {backup.name} is in the state "{backup.state.value}", '
             f'only backups in the state "{BackupState.CREATED.value}" can be copied'
         )
-
-
-def _make_storage_config(
-    base: dict,
-    endpoint_url: str,
-    bucket: str,
-    access_key_id: str | None,
-    secret_access_key: str | None,
-) -> dict:
-    """
-    Make storage config for the bucket with other settings taken from the base storage config.
-    """
-    storage = copy.deepcopy(base)
-    storage["credentials"] = {
-        "endpoint_url": endpoint_url,
-        "bucket": bucket,
-        "access_key_id": access_key_id,
-        "secret_access_key": secret_access_key,
-    }
-    # Proxy is configured for backup storage only.
-    storage["proxy_resolver"] = {"uri": None, "proxy_port": None}
-    return storage
 
 
 def _key(path: str | None) -> str:
