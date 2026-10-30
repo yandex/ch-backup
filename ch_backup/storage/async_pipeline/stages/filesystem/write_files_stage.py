@@ -7,6 +7,7 @@ from pathlib import Path
 from tarfile import BLOCKSIZE, ENCODING, GNUTYPE_LONGNAME, NUL, TarInfo
 from typing import IO, Any, Iterator
 
+from ch_backup.exceptions import ConfigurationError, StorageError
 from ch_backup.storage.async_pipeline.base_pipeline.bytes_fifo import BytesFIFO
 from ch_backup.storage.async_pipeline.base_pipeline.handler import Handler
 from ch_backup.storage.async_pipeline.stages.types import StageType
@@ -181,8 +182,35 @@ class UnpackTarballStage(TarStreamProcessorBase):
 
     def __init__(self, config: dict, buffer_size: int) -> None:
         super().__init__(config, buffer_size)
+        self._size_limit = config["max_in_memory_tarball_size"]
+        if (
+            not isinstance(self._size_limit, int)
+            or isinstance(self._size_limit, bool)
+            or self._size_limit <= 0
+        ):
+            raise ConfigurationError(
+                "filesystem.max_in_memory_tarball_size must be a positive integer in bytes"
+            )
+        self._tarball_size = 0
         self._current_data: bytearray = bytearray()
         self._results: list[tuple[str, bytes]] = []
+
+    def _read_header(self) -> bool:
+        if not super()._read_header():
+            return False
+        assert self._tarinfo
+        if self._tarinfo.size < 0:
+            raise StorageError("In-memory TAR archive contains a negative member size")
+        # Count headers too, so many small files or long names cannot bypass the limit.
+        self._tarball_size += BLOCKSIZE * (
+            1 + (self._tarinfo.size + BLOCKSIZE - 1) // BLOCKSIZE
+        )
+        if self._tarball_size > self._size_limit:
+            raise StorageError(
+                "In-memory TAR archive exceeds filesystem.max_in_memory_tarball_size "
+                f"({self._size_limit} bytes)"
+            )
+        return True
 
     def _on_file_complete(self) -> None:
         if self._current_data and self._tarinfo:

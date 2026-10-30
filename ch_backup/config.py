@@ -265,6 +265,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "filesystem": {
         "type": "unlimited",
+        # Limit each archive collected in memory, including TAR headers and padding, in bytes.
+        "max_in_memory_tarball_size": parse_size("1 GiB"),
         # Chunk size used when reading from / writing to filesystem, in bytes.
         "chunk_size": parse_size("1 MiB"),
         # Buffer size, in bytes.
