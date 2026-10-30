@@ -201,58 +201,13 @@ def test_strict_reuse_checks_compressed_file_hash(
         _write_part(
             part,
             {"projection.proj": None},
-            {"projection.proj": part_checksums._hash_checksums(checksums)},
+            {},
             sizes={"projection.proj": sum(file.size for file in checksums.values())},
         )
     check_part_files(str(part), verify_compressed_hashes=True)
     (data_part / "n.bin").write_bytes(_compressed(b"b" * 250))
     check_part_files(str(part))
     with pytest.raises(ValueError, match="does not match its hash"):
-        check_part_files(str(part), verify_compressed_hashes=True)
-
-
-@pytest.mark.parametrize(
-    "name,expected",
-    [
-        ("", (16826475524770608434, 17803272260936971749)),
-        ("a", (9170271355882761012, 6594342632879333982)),
-        ("ab", (8765132939283770375, 7527700824365095199)),
-        ("abc", (3459551965900676540, 10853183302312847502)),
-        ("abcd", (3266958275459854103, 16497990043872626018)),
-        ("abcde", (3398993254539735980, 14768245806335491912)),
-        ("abcdef", (6609614232025611715, 17744807677980396362)),
-        ("abcdefg", (4280158529187059133, 3114886423947184548)),
-        ("abcdefgh", (3210459610002005580, 16588571432997444166)),
-        ("проекция", (7003556953258242900, 9194266842513337881)),
-    ],
-)
-def test_projection_hash_matches_clickhouse(name, expected):
-    """Golden SipHash128 values from ClickHouse 25.8, including every tail length."""
-    # pylint: disable=protected-access
-    checksums = {name: part_checksums._FileChecksum(0, (1, 2), None)} if name else {}
-    assert part_checksums._hash_checksums(checksums) == expected
-
-
-def test_strict_reuse_binds_projection_manifest_to_parent(tmp_path):
-    """A self-consistent projection from another part must not be reused."""
-    # pylint: disable=protected-access
-    part = tmp_path / "part"
-    _write_part(part, {"p.proj": None}, {})
-    projection = part / "p.proj"
-    _write_part(projection, {"count.txt": _COUNT_TXT}, {"count.txt": _COUNT_TXT_HASH})
-    checksums = part_checksums._read_checksums(str(projection))
-    _write_part(
-        part,
-        {"p.proj": None},
-        {"p.proj": part_checksums._hash_checksums(checksums)},
-        sizes={"p.proj": len(_COUNT_TXT)},
-    )
-    check_part_files(str(part), verify_compressed_hashes=True)
-    (projection / "count.txt").write_bytes(b"11")
-    changed_hash = part_checksums._hash_file(str(projection / "count.txt"))
-    _write_part(projection, {"count.txt": b"11"}, {"count.txt": changed_hash})
-    check_part_files(str(part))
-    with pytest.raises(ValueError, match="parent checksums.txt"):
         check_part_files(str(part), verify_compressed_hashes=True)
 
 

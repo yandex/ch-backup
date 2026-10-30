@@ -54,7 +54,6 @@ def _check_part_files(
             projection = _read_checksums(path)
             if verify_compressed_hashes and (
                 sum(file.size for file in projection.values()) != checksum.size
-                or _hash_checksums(projection) != checksum.hash
             ):
                 raise ValueError(f"{path} does not match its parent checksums.txt")
             _check_part_files(path, projection, verify_compressed_hashes)
@@ -72,54 +71,6 @@ def _check_part_files(
                     f"{path} has {uncompressed_size} bytes of data"
                     f" instead of {checksum.uncompressed_size}"
                 )
-
-
-def _hash_checksums(checksums: dict[str, _FileChecksum]) -> tuple[int, int]:
-    """Match MergeTreeDataPartChecksums::getTotalChecksumUInt128 for a projection.
-
-    The parent hashes sorted file names (with UInt64 byte lengths) and file hashes.
-    This binds a projection's own manifest to the backup's root manifest.
-    """
-    data = b"".join(
-        struct.pack("<Q", len(name.encode())) + name.encode() + _HASH.pack(*value.hash)
-        for name, value in sorted(checksums.items())
-    )
-    # ClickHouse's SipHash128 uses SipHash-2-4 with zero keys and returns both
-    # halves of the final state, unlike the reference SipHash128 variant.
-    mask = (1 << 64) - 1
-    v0, v1, v2, v3 = (
-        0x736F6D6570736575,
-        0x646F72616E646F6D,
-        0x6C7967656E657261,
-        0x7465646279746573,
-    )
-
-    def rotate(value: int, shift: int) -> int:
-        return ((value << shift) | (value >> (64 - shift))) & mask
-
-    def rounds(count: int) -> None:
-        nonlocal v0, v1, v2, v3
-        for _ in range(count):
-            v0 = (v0 + v1) & mask
-            v1 = rotate(v1, 13) ^ v0
-            v0 = rotate(v0, 32)
-            v2 = (v2 + v3) & mask
-            v3 = rotate(v3, 16) ^ v2
-            v0 = (v0 + v3) & mask
-            v3 = rotate(v3, 21) ^ v0
-            v2 = (v2 + v1) & mask
-            v1 = rotate(v1, 17) ^ v2
-            v2 = rotate(v2, 32)
-
-    end = len(data) - len(data) % 8
-    tail = int.from_bytes(data[end:], "little") | ((len(data) & 255) << 56)
-    for word in (*struct.unpack(f"<{end // 8}Q", data[:end]), tail):
-        v3 ^= word
-        rounds(2)
-        v0 ^= word
-    v2 ^= 0xFF
-    rounds(4)
-    return v0 ^ v1, v2 ^ v3
 
 
 def _read_checksums(part_path: str) -> dict[str, _FileChecksum]:

@@ -26,12 +26,18 @@ With `--keep-going`, other parts continue restoring; without it, the command
 stops with the download or copy error. With `--keep-going`, set
 `backup.restore_fail_on_attach_error: true` to return a nonzero exit code if any
 part failed to download, copy, or attach. The default remains `false`.
-A new restore invocation retries invalid parts, revalidates downloaded local
-parts before attaching them, and skips restored parts.
+A new restore invocation retries invalid parts, attaches already downloaded
+parts, and skips restored parts.
 Successfully downloaded parts are attached in their original part order,
 regardless of download completion order. Saved failure details survive restores
 of other tables; a part's error is removed after that part is successfully attached.
 Only failures from the current invocation affect its exit code.
+
+Cloud parts are copied into a private `.ch-backup-<part>` directory under
+`detached` and published by rename after copying completes. Interrupted copies
+retain their ownership markers there: a retry removes copied blobs, but only
+local metadata for an inplace copy. The destination marker remains until ATTACH
+succeeds. Concurrent restores of the same table are unsupported.
 
 ## Restore without cloud storage
 
@@ -79,39 +85,6 @@ independent tables continue after a schema adaptation or creation failure, but
 the command reports those failures with a nonzero exit status. A shared Keeper
 metadata conflict stops the restore immediately. The behavior without
 `--skip-cloud-storage` is unchanged.
-
-## Restoring local parts safely
-
-Local parts, including old per-file backups, are downloaded into a new private
-`.ch-backup-<uuid>` directory beside their destination in `detached`. The complete
-file list, size and `checksums.txt` checksum are checked before an atomic
-rename publishes the part. Only published parts are marked `downloaded` and
-passed to `ATTACH`. Downloads used by `--parts-from-backup` also check the data
-before publication. Size validation accepts both the current aligned size and
-the unaligned size recorded by old per-file and early TAR backups, including
-parts copied or linked from those backups.
-
-Local and cloud parts are attached together in their original part order to
-preserve which row wins in `ReplacingMergeTree` without a version column.
-
-An existing destination is reused only after checking its metadata and reading
-its data to verify the file hashes in `checksums.txt`. This can take time for a
-large part. A conflicting or unverifiable destination is preserved and reported
-as a failure. Move it aside or remove it after deciding its data is no longer
-needed, then retry. A saved `downloaded` state does not bypass this check.
-
-Ordinary failures clean up private staging directories after their writers finish.
-On a termination signal, transfer workers are stopped without waiting for their
-downloads to finish. A termination or fatal executor failure can leave `.ch-backup-*`
-directories; retries use new directories. Remove leftovers manually only after
-the previous restore and its workers have stopped.
-
-With `--keep-going`, independent parts continue and failures are recorded in the
-restore state and logs. The existing exit-code policy is preserved:
-`backup.restore_fail_on_attach_error: true` makes recorded part failures fail
-the command; its default is `false`. Without `--keep-going`, download, validation
-and publication failures abort the restore. Concurrent restores on the same
-objects and external DDL during restore are unsupported.
 
 ## Installation
 

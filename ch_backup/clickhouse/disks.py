@@ -446,7 +446,6 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         Copy data from temporary cloud storage disk to actual.
         """
         source_part_name = part.deduplicated_part_name
-        source_backup_name = part.link or backup_meta.name
 
         routine_tag = f"{table.database}.{table.name}::{source_part_name}"
         target_disk = self._ch_availible_disks[part.disk_name]
@@ -457,26 +456,40 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
             if disk.name == target_disk.name:
                 table_path = os.path.relpath(path, target_disk.path)
                 target_path = os.path.join(table_path, "detached")
+                # Keep a stable private directory so retries can clean up owned
+                # blobs even after termination or switching from inplace copy.
+                staging_path = os.path.join(target_path, f".ch-backup-{part.name}")
                 if self._ch_ctl.ch_version_ge("23.7"):
-                    target_path = os.path.join(target_path, part.name, "")
-                    target_part_path = target_path
+                    target_part_path = os.path.join(target_path, part.name)
+                    staging_part_path = os.path.join(staging_path, part.name)
+                    copy_path = staging_part_path + "/"
                 else:
                     target_part_path = os.path.join(target_path, source_part_name)
+                    staging_part_path = os.path.join(staging_path, source_part_name)
+                    copy_path = staging_path + "/"
                 source_path = os.path.join(
                     "shadow",
-                    sanitize_backup_name(source_backup_name),
+                    sanitize_backup_name(part.link or backup_meta.name),
                     table_path,
                     source_part_name,
                     "",
                 )
-                self._prepare_part_copy(target_disk, target_part_path, routine_tag)
+                self._prepare_part_copy(target_disk, staging_part_path, routine_tag)
                 self._copy_dir(
                     source_disk.name,
                     source_path,
                     target_disk.name,
-                    target_path,
+                    copy_path,
                     routine_tag,
                 )
+                # Only replace an earlier failed destination once copying has
+                # completed. Record ownership before rename, retaining the marker
+                # until ATTACH succeeds, including if state persistence fails.
+                self._prepare_part_copy(target_disk, target_part_path, routine_tag)
+                staging = Path(target_disk.path) / staging_part_path
+                os.rename(staging, Path(target_disk.path) / target_part_path)
+                staging.with_name(f".{staging.name}.ch-backup-copy-mode").unlink()
+                staging.parent.rmdir()
                 return
 
         raise RuntimeError(

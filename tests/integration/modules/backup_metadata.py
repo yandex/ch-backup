@@ -2,6 +2,7 @@
 
 import copy
 import json
+from urllib.parse import quote
 
 import yaml
 
@@ -91,6 +92,47 @@ class BackupStorage:
             self.loader.upload_data(
                 json.dumps(data), path, encryption=filename == "backup_struct.json"
             )
+
+    def rewrite_per_file_parts(self, backup_name: str) -> None:
+        """Store real part files with the unaligned sizes used by old backups."""
+        backup = self.layout.get_backup(backup_name)
+        assert backup is not None
+        for table in backup.get_tables():
+            for part in table.get_parts():
+                assert part.tarball and not part.link
+                path = "/".join(
+                    [
+                        self.layout.get_backup_path(backup_name),
+                        "data",
+                        quote(part.database, safe=""),
+                        quote(part.table, safe=""),
+                        part.name,
+                    ]
+                )
+                archive = f"{path}/{part.name}.tar"
+                files = dict(
+                    self.loader.download_data_tarball(
+                        archive, encryption=part.encrypted
+                    )
+                )
+                for name, data in files.items():
+                    self.loader.upload_data(
+                        data, f"{path}/{name}", encryption=part.encrypted
+                    )
+                # Submit these first so the fault can keep one writer pending
+                # while another future or its submission fails.
+                names = ["count.txt", "checksums.txt"] + sorted(
+                    files.keys() - {"count.txt", "checksums.txt"}
+                )
+                size = sum(map(len, files.values()))
+                backup.size += size - part.size
+                table.raw_metadata["parts"][part.name].update(
+                    tarball=False,
+                    bytes=size,
+                    files=names,
+                )
+                self.engine.delete_file(archive)
+        self.layout.upload_backup_metadata(backup)
 
     def raw_objects(self, backup_name: str) -> dict[str, bytes]:
         """Read the exact stored bytes, bypassing decryption and metadata parsing."""

@@ -773,9 +773,16 @@ class BackupLayout:
 
         # Callbacks run serially in the caller of wait(), including with workers.
         # The scheduling gate also covers the synchronous (workers=0) path.
+        source_part_name = part.deduplicated_part_name
+        logging.debug(
+            'Downloading data part {} (stored as {}) of "{}"."{}"',
+            part.name,
+            source_part_name,
+            part.database,
+            part.table,
+        )
         try:
             os.makedirs(fs_part_path, exist_ok=False)
-            source_part_name = part.deduplicated_part_name
             remote_dir_path = self._get_escaped_if_exists(
                 _part_path,
                 self.get_backup_path(part.link or backup_meta.name),
@@ -784,10 +791,10 @@ class BackupLayout:
                 source_part_name,
             )
             if part.tarball:
+                remote_path = os.path.join(remote_dir_path, f"{source_part_name}.tar")
+                logging.debug("Downloading part tarball file: {}", remote_path)
                 self._storage_loader.download_files(
-                    remote_path=os.path.join(
-                        remote_dir_path, f"{source_part_name}.tar"
-                    ),
+                    remote_path=remote_path,
                     local_path=fs_part_path,
                     is_async=True,
                     encryption=part.encrypted,
@@ -797,9 +804,11 @@ class BackupLayout:
             else:
                 for filename in part.files:
                     local_path = os.path.join(fs_part_path, filename)
+                    remote_path = os.path.join(remote_dir_path, filename)
+                    logging.debug("Downloading part file: {}", remote_path)
                     os.makedirs(os.path.dirname(local_path), exist_ok=True)
                     self._storage_loader.download_file(
-                        remote_path=os.path.join(remote_dir_path, filename),
+                        remote_path=remote_path,
                         local_path=local_path,
                         is_async=True,
                         encryption=part.encrypted,

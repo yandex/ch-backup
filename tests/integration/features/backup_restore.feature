@@ -905,20 +905,9 @@ Feature: Backup & Restore
     """
     keep_going: true
     """
-    And we execute command on clickhouse02
-    """
-    python3 - <<'PY'
-    import json
-    import pathlib
-    import subprocess
-    path = subprocess.check_output(['clickhouse-client', '--query', "SELECT data_paths[1] FROM system.tables WHERE database='test_db' AND name='atomic_retry'"]).decode().strip()
-    assert not list((pathlib.Path(path) / 'detached').iterdir())
-    state = json.load(open('/tmp/ch_backup_restore_state.json'))
-    assert state['databases']['test_db']['atomic_retry']['0_1_1_0'] == 'invalid'
-    assert '0_1_1_0' in state['failed']['test_db']['atomic_retry']['failed_parts']
-    PY
-    """
-    And we execute query on clickhouse02
+    Then detached directories of test_db.atomic_retry on clickhouse02 are empty
+    And part "0_1_1_0" of test_db.atomic_retry has restore state "invalid" on clickhouse02
+    When we execute query on clickhouse02
     """
     SELECT count() FROM test_db.atomic_retry
     """
@@ -960,33 +949,30 @@ Feature: Backup & Restore
     -c /etc/yandex/ch-backup/ch-backup.conf restore atomic_conflict
     """
     Then command exits with code 1
-    When we execute command on clickhouse02
+    When we save and corrupt a data part file on clickhouse02
     """
-    python3 - <<'PY'
-    import pathlib
-    import subprocess
-    path = subprocess.check_output(['clickhouse-client', '--query', "SELECT data_paths[1] FROM system.tables WHERE database='test_db' AND name='atomic_conflict'"]).decode().strip()
-    target = pathlib.Path(path) / 'detached/all_1_1_0/count.txt'
-    assert (target.parent / 'by_n.proj').is_dir()
-    pathlib.Path('/tmp/atomic-count-original').write_bytes(target.read_bytes())
-    pathlib.Path('/tmp/atomic-count-path').write_text(str(target))
-    target.write_bytes(b'101')
-    PY
+    database: test_db
+    table: atomic_conflict
+    part: all_1_1_0
+    detached: true
+    file: by_n.proj/count.txt
+    action: flip_byte
     """
     And we try to execute command on clickhouse02
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore --keep-going atomic_conflict
     """
     Then command exits with code 1
-    When we execute command on clickhouse02
+    And a data part file on clickhouse02 contains
     """
-    python3 - <<'PY'
-    import pathlib
-    target = pathlib.Path(pathlib.Path('/tmp/atomic-count-path').read_text())
-    assert target.read_bytes() == b'101'
-    target.write_bytes(pathlib.Path('/tmp/atomic-count-original').read_bytes())
-    PY
+    database: test_db
+    table: atomic_conflict
+    part: all_1_1_0
+    detached: true
+    file: by_n.proj/count.txt
+    data: '900'
     """
+    When we restore saved data part files
     # Reuse must validate the local data without downloading the damaged archive.
     And we save and truncate file "data/test_db/atomic_conflict/all_1_1_0/all_1_1_0.tar" in clickhouse01 backup #0
     And we restore clickhouse backup #0 to clickhouse02
@@ -999,3 +985,69 @@ Feature: Backup & Restore
     100,4950
     """
     When we restore the saved backup file
+
+  Scenario Outline: Drain pending files of a legacy part after a <phase> failure: <mode>
+    Given ch-backup configuration on clickhouse01
+    """
+    backup:
+        deduplicate_parts: false
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    backup:
+        restore_fail_on_attach_error: true
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    DROP TABLE IF EXISTS test_db.legacy_async SYNC;
+    CREATE TABLE test_db.legacy_async (n UInt64) ENGINE = MergeTree ORDER BY n;
+    INSERT INTO test_db.legacy_async SELECT number FROM numbers(100);
+    """
+    And we have executed queries on clickhouse02
+    """
+    DROP TABLE IF EXISTS test_db.legacy_async SYNC;
+    """
+    When we drop restore context at clickhouse02
+    When we create clickhouse01 clickhouse backup
+    """
+    name: legacy_async_<phase>_<mode>
+    tables: [test_db.legacy_async]
+    """
+    And local parts of clickhouse01 backup "legacy_async_<phase>_<mode>" use the legacy per-file layout
+    And we try to execute ch-backup on clickhouse02 with a part file <phase> failure
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf restore <keep_going> legacy_async_<phase>_<mode>
+    """
+    Then command exits with code 1
+    And we get response contains
+    """
+    Pending part file download finished before cleanup
+    """
+    And detached directories of test_db.legacy_async on clickhouse02 are empty
+    And part "all_1_1_0" of test_db.legacy_async has restore state "invalid" on clickhouse02
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM test_db.legacy_async
+    """
+    Then we get response
+    """
+    0
+    """
+    When we restore clickhouse backup "legacy_async_<phase>_<mode>" to clickhouse02
+    Then part "all_1_1_0" of test_db.legacy_async has restore state "restored" on clickhouse02
+    When we execute query on clickhouse02
+    """
+    SELECT count(), sum(n) FROM test_db.legacy_async FORMAT CSV
+    """
+    Then we get response
+    """
+    100,4950
+    """
+
+    Examples:
+      | phase      | mode | keep_going   |
+      | worker     | stop |              |
+      | worker     | skip | --keep-going |
+      | submission | stop |              |
+      | submission | skip | --keep-going |

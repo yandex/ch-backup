@@ -146,6 +146,19 @@ def step_restore_backup(context, node, backup_id=None):
     assert_that(result, matches_regexp("^$"))
 
 
+@then('part "{part}" of {database:w}.{table:w} has restore state "{state}" on {node:w}')
+def step_part_restore_state(context, part, database, table, state, node):
+    # pylint: disable=too-many-positional-arguments
+    result = get_container(context, node).exec_run(
+        ["cat", "/tmp/ch_backup_restore_state.json"], user="root"
+    )
+    assert result.exit_code == 0, result.output
+    saved = json.loads(result.output)
+    assert saved["databases"][database][table][part] == state, saved
+    failures = saved["failed"].get(database, {}).get(table, {}).get("failed_parts", {})
+    assert (part in failures) == (state == "invalid"), failures
+
+
 @when("we delete {node:w} clickhouse backup #{backup_id:d}")
 @when('we delete {node:w} clickhouse backup "{backup_id}"')
 def step_delete_backup(context, node, backup_id):

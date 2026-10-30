@@ -1875,6 +1875,7 @@ class TableBackup(BackupManager):
                             )
                             continue
 
+                        # Cloud parts already marked downloaded can be attached directly.
                         if (
                             part.disk_name in context.backup_meta.cloud_storage.disks
                             and context.restore_context.part_downloaded(part)
@@ -1909,6 +1910,7 @@ class TableBackup(BackupManager):
                             if not keep_going or is_broken_executor(error):
                                 raise
                             continue
+                        # Local parts must be verified again before they can be attached.
                         if context.restore_context.part_downloaded(part):
                             context.restore_context.change_part_state(
                                 PartState.NOT_DOWNLOADED, part

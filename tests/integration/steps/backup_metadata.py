@@ -19,6 +19,11 @@ def step_legacy_full_metadata(context, node, backup_name):
     BackupStorage(context, node).rewrite_legacy_metadata(backup_name)
 
 
+@when('local parts of {node:w} backup "{backup_name}" use the legacy per-file layout')
+def step_legacy_per_file_parts(context, node, backup_name):
+    BackupStorage(context, node).rewrite_per_file_parts(backup_name)
+
+
 @then('private definitions in {node:w} backup "{backup_name}" are encrypted')
 def step_private_definitions_encrypted(context, node, backup_name):
     options = get_step_data(context)

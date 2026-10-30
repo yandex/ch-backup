@@ -20,6 +20,10 @@ from ch_backup.storage.async_pipeline.pipelines import (
     run_and_collect_all,
     run_and_return_first,
 )
+from ch_backup.storage.async_pipeline.stages.filesystem.write_files_stage import (
+    UnpackTarballStage,
+    WriteFilesStage,
+)
 
 
 @pytest.mark.parametrize("size", [0, 1, 63, 64, 65, 128, 129])
@@ -228,3 +232,37 @@ def test_unpack_data_tarball_larger_than_buffer() -> None:
     builder.build_decompress_stage().build_unpack_data_tarball_stage()
 
     assert run_and_collect_all(builder.pipeline()) == files
+
+
+@pytest.mark.parametrize("cut", [1, 511, 512, 562, 612, 1023])
+@pytest.mark.parametrize("disk", [False, True])
+def test_tar_rejects_truncated_header_payload_or_padding(tmp_path, cut, disk):
+    header = tarfile.TarInfo("data.bin")
+    header.size = 100
+    stream = header.tobuf(format=tarfile.GNU_FORMAT) + b"x" * 100 + b"\0" * 412
+    stage = (
+        WriteFilesStage({}, tmp_path, 4096) if disk else UnpackTarballStage({}, 4096)
+    )
+    stage(stream[:cut], 0)
+    with pytest.raises(ValueError, match="Truncated TAR"):
+        list(stage.on_done() or [])
+
+
+@pytest.mark.parametrize("name", ["data.bin", "длинное_имя/" * 20 + "file"])
+def test_tar_accepts_complete_files_without_end_blocks(tmp_path, name):
+    header = tarfile.TarInfo(name)
+    header.size = 100
+    stream = header.tobuf(format=tarfile.GNU_FORMAT) + b"x" * 100 + b"\0" * 412
+    stage = WriteFilesStage({}, tmp_path, 4096)
+    for pos in range(0, len(stream), 71):
+        stage(stream[pos : pos + 71], pos)
+    stage.on_done()
+    assert (tmp_path / name).read_bytes() == b"x" * 100
+
+
+def test_tar_rejects_incomplete_long_name(tmp_path):
+    header = tarfile.TarInfo("long_name" * 30)
+    stage = WriteFilesStage({}, tmp_path, 4096)
+    stage(header.tobuf(format=tarfile.GNU_FORMAT)[:530], 0)
+    with pytest.raises(ValueError, match="Truncated TAR"):
+        stage.on_done()

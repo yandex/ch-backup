@@ -1025,6 +1025,7 @@ Feature: Backup & Clean & Restore
     """
     <error_message>
     """
+    And part "all_1_1_0" of test_db.restore_retry is not published on clickhouse02
     When we execute query on clickhouse02
     """
     SELECT count() FROM test_db.restore_retry;
@@ -1210,6 +1211,7 @@ Feature: Backup & Clean & Restore
     """
     injected inplace copy interruption; ref_count=0
     """
+    And part "all_1_1_0" of test_db.restore_switch is not published on clickhouse02
     And saved S3 objects are unchanged
     Given ch-backup configuration on clickhouse02
     """
