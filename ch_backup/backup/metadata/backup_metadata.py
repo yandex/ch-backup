@@ -586,6 +586,17 @@ class BackupMetadata:
         if not part.link:
             self.real_size += part.size
 
+    def get_owned_cloud_storage_disks(self) -> list[str]:
+        """Exclude disks containing only links; keep unknown legacy disks conservative."""
+        parts = self.get_parts()
+        owned = {part.disk_name for part in parts if not part.link}
+        linked = {part.disk_name for part in parts if part.link}
+        return [
+            disk
+            for disk in self.cloud_storage.disks
+            if disk in owned or disk not in linked
+        ]
+
     def unlink_part(self, part: PartMetadata) -> None:
         """
         Turn deduplicated data part into a regular one, i.e. stored within the backup itself.

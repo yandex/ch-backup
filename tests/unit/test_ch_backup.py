@@ -279,14 +279,16 @@ def _delete_backup_with_cloud_storage(referenced_parts: Sequence[str]) -> MagicM
     dedup_references["db1"]["table1"] = set(referenced_parts)
 
     # pylint: disable=protected-access
-    backup._delete(backup_meta, dedup_references)
+    prepared, light_only, cleanup = backup._prepare_deletions(
+        [backup_meta], {backup_meta.name: dedup_references}, False
+    )[0]
+    backup._delete(prepared, dedup_references, light_only, cleanup)
     return backup.__dict__["_context"].backup_layout
 
 
 def test_delete_keeps_cloud_storage_data_in_use_by_other_backups():
     """
-    Object keys are known only from the disk metadata inside the backup, so
-    its cloud storage data is kept whole until the last reference is gone.
+    Shared cloud parts keep the backup's cloud storage directory alive.
     """
     layout = _delete_backup_with_cloud_storage(referenced_parts=["all_1_1_0"])
 
@@ -513,8 +515,8 @@ def test_delete_referenced_backup_requires_full_metadata() -> None:
     context.backup_layout.get_backup.return_value = None
 
     with pytest.raises(InvalidBackupStruct):
-        backup._delete(  # pylint: disable=protected-access
-            light_metadata, {"db": {"table": {"part"}}}
+        backup._prepare_deletions(  # pylint: disable=protected-access
+            [light_metadata], {"old": {"db": {"table": {"part"}}}}, False
         )
 
     context.backup_layout.delete_backup.assert_not_called()
@@ -530,6 +532,7 @@ def test_delete_failure_persists_failed_state(referenced: bool) -> None:
     full_metadata = Mock(name="old", state=BackupState.CREATED, exception=None)
     full_metadata.name = "old"
     full_metadata.get_databases.return_value = []
+    full_metadata.get_tables.return_value = []
     full_metadata.cloud_storage.enabled = False
     full_metadata.count_skipped_data_tables.return_value = (0, 0)
     context.backup_layout.get_backup.return_value = (
@@ -549,7 +552,10 @@ def test_delete_failure_persists_failed_state(referenced: bool) -> None:
 
     with pytest.raises(StorageError) as exc:
         backup._delete(  # pylint: disable=protected-access
-            light_metadata, {"db": {"table": {"part"}}} if referenced else {}
+            full_metadata if referenced else light_metadata,
+            {"db": {"table": {"part"}}} if referenced else {},
+            light_only=not referenced,
+            cleanup=None,
         )
 
     assert exc.value is error
@@ -568,6 +574,7 @@ def test_referenced_delete_persists_partial_state() -> None:
     full_metadata.name = "old"
     full_metadata.exception = "Previous deletion failed"
     full_metadata.get_databases.return_value = []
+    full_metadata.get_tables.return_value = []
     full_metadata.cloud_storage.enabled = False
     full_metadata.count_skipped_data_tables.return_value = (0, 0)
     full_metadata.cloud_storage.source = None
@@ -575,7 +582,7 @@ def test_referenced_delete_persists_partial_state() -> None:
     context.backup_layout.get_backup.return_value = full_metadata
 
     result = backup._delete(  # pylint: disable=protected-access
-        light_metadata, {"db": {"table": {"part"}}}
+        full_metadata, {"db": {"table": {"part"}}}, light_only=False, cleanup=None
     )
 
     assert result[0] is None
@@ -588,7 +595,10 @@ def _readable_backup(name: str, link: str | None = None) -> Mock:
     """Mock light metadata of a readable backup with one part linked to link."""
     meta = Mock(state=BackupState.CREATED)
     meta.name = name
-    part = Mock(link=link, database="db", table="table", deduplicated_part_name="p")
+    meta.cloud_storage = CloudStorageMetadata()
+    part = PartMetadata(
+        "db", "table", "p", "checksum", 1, ["data.bin"], True, link=link
+    )
     meta.get_databases.return_value = ["db"]
     meta.get_tables.return_value = [Mock(get_parts=Mock(return_value=[part]))]
     return meta
@@ -604,6 +614,7 @@ def _light_backup(
         schema_only=schema_only,
     )
     meta.name = name
+    meta.cloud_storage = CloudStorageMetadata()
     meta.count_skipped_data_tables.return_value = (0, 1) if incomplete else (0, 0)
     return meta
 
@@ -623,6 +634,9 @@ def _purge(
         "retain_incomplete_copy_time": retain_incomplete_copy_time,
     }
     context.backup_layout.get_backups.return_value = backups
+    context.backup_layout.get_backup.side_effect = lambda name: next(
+        meta for meta in backups if meta.name == name
+    )
     with (
         patch(
             "ch_backup.ch_backup.collect_dedup_references_for_batch_backup_deletion",
@@ -631,7 +645,7 @@ def _purge(
         patch.object(
             ClickhouseBackup,
             "_delete",
-            side_effect=lambda meta, _refs: (meta.name, None),
+            side_effect=lambda meta, _refs, _light_only, _cleanup: (meta.name, None),
         ),
     ):
         deleted, _ = backup.purge()
@@ -857,7 +871,11 @@ def test_delete_with_unreadable_full_metadata_without_references() -> None:
     light_metadata.cloud_storage.source = None
     context.backup_layout.get_backup.side_effect = StorageError("Unreadable full")
 
-    result = backup._delete(light_metadata, {})  # pylint: disable=protected-access
+    # pylint: disable=protected-access
+    prepared, light_only, cleanup = backup._prepare_deletions(
+        [light_metadata], {"old": {}}, False
+    )[0]
+    result = backup._delete(prepared, {}, light_only, cleanup)
 
     assert result == ("old", None)
     context.backup_layout.upload_backup_metadata.assert_called_once_with(
@@ -874,8 +892,8 @@ def test_delete_with_unreadable_full_metadata_and_references_fails() -> None:
     context.backup_layout.get_backup.side_effect = StorageError("Unreadable full")
 
     with pytest.raises(StorageError, match="Unreadable full"):
-        backup._delete(  # pylint: disable=protected-access
-            light_metadata, {"db": {"table": {"part"}}}
+        backup._prepare_deletions(  # pylint: disable=protected-access
+            [light_metadata], {"old": {"db": {"table": {"part"}}}}, False
         )
 
     context.backup_layout.delete_backup.assert_not_called()
@@ -919,7 +937,8 @@ def test_delete_unfreezes_only_own_backups(
     backup = ClickhouseBackup.__new__(ClickhouseBackup)
     backup.__dict__["_context"] = context
 
-    assert backup._delete(meta, {}) == (  # pylint: disable=protected-access
+    # pylint: disable=protected-access
+    assert backup._delete(meta, {}, False, None) == (
         "backup1",
         None,
     )

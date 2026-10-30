@@ -302,6 +302,7 @@ Behavior and limitations:
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
   and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.
   Locking remains optional; the local file lock retains its shared semantics.
+  Without this coordination, do not run copy concurrently with delete or purge on the same storage.
 - By default, deduplicated data parts of the backup are stored in older backups. If such a backup is already
   present in the target storage, the deduplication link is kept. A link to a local part is also kept
   if the copy of that backup is not completed but already holds files of the part, e.g. after its
@@ -367,8 +368,13 @@ Behavior and limitations:
   prefix from stored source metadata or disk configuration. Copy fails before writing if that prefix
   is unknown or a key is outside it. Without a path override, full keys are read as stored.
   Restore of the copy uses the copied objects by default; they must be accessible with credentials of the
-  object storage disk of the host where the backup is restored. Note that these objects are not removed
-  when the copy is deleted, and they're stored for each copied backup separately.
+  object storage disk of the host where the backup is restored. Each copied backup stores these objects
+  separately. Deleting a copy retains external objects by default. Add `--delete-cloud-storage-data` to
+  `delete` or `purge` to remove copied objects that surviving backups do not reference. Original backup data is preserved.
+  Cleanup selects objects from saved disk metadata and uses backup-storage credentials by default. Configure
+  `copy.cloud_storage.target` for separate credentials or a different endpoint.
+  Metadata must be trusted and readable. Encrypted disk metadata requires its original key.
+  Batch cleanup validates all selected backups before deletion. Failed cleanup can be retried.
   Restore preserves the HTTP/HTTPS scheme of the stored endpoint. Its `--cloud-storage-source-endpoint`
   option accepts a full HTTP(S) URL or `host[:port]`; the latter uses the original disk's scheme.
 - ClickHouse 26.8+ SQL-defined HTTP handlers are included in full backups; use `--http-handlers` with backup
