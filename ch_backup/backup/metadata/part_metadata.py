@@ -98,6 +98,24 @@ class PartMetadata(Slotted):
         )
 
     @property
+    def identity(self) -> tuple[str, str, str]:
+        """Return the logical address, even when the files use a linked part's name."""
+        return self.database, self.table, self.name
+
+    @property
+    def stored_identity(self) -> tuple[str, str, str]:
+        """Use the stored name when a mutation renamed the logical part."""
+        return self.database, self.table, self.deduplicated_part_name
+
+    def stored_reference(self, containing_backup: str) -> tuple[str, str, str, str]:
+        """Resolve the files' location without changing this part's logical address.
+
+        Linked parts use their owner backup. Other parts use the containing backup.
+        Physical name and logical name may differ.
+        """
+        return self.link or containing_backup, *self.stored_identity
+
+    @property
     def checksum(self) -> str:
         """
         Return data part checksum.
