@@ -1059,9 +1059,7 @@ class BackupCopier:
     def _materialized_part_key(part: PartMetadata) -> tuple:
         return (
             part.link,
-            part.database,
-            part.table,
-            part.deduplicated_part_name,
+            *part.stored_identity,
             part.checksum,
             part.disk_name,
             part.tarball,
@@ -1086,7 +1084,7 @@ class BackupCopier:
                 source.cloud_storage.data_copied and target.cloud_storage.data_copied
             ):
                 continue
-            stored = target.find_part(part.database, part.table, part.name)
+            stored = target.find_part(*part.logical_identity)
             if not stored or stored.link:
                 continue
             if (
@@ -1145,9 +1143,7 @@ class BackupCopier:
         ):
             return False
 
-        target_part = target_backup.find_part(
-            part.database, part.table, part.deduplicated_part_name
-        )
+        target_part = target_backup.find_part(*part.stored_identity)
         return bool(
             target_part
             and not target_part.link
