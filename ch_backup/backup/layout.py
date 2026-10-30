@@ -552,10 +552,13 @@ class BackupLayout:
         use_light_meta: bool = False,
         *,
         unreadable: dict[str, str] | None = None,
+        refresh_copy: bool = False,
     ) -> list[BackupMetadata]:
         """
         Return list of existing backups sorted by start_time in descent order.
         If unreadable is provided, collect per-backup read errors there.
+        Refresh copy scopes and timestamp from full metadata when requested:
+        full metadata is saved before light metadata and can be newer after a failure.
         """
         logging.debug(
             "Collecting {} of existing backups",
@@ -571,6 +574,20 @@ class BackupLayout:
             )
             try:
                 backup = self.get_backup(name, use_light_meta)
+                if (
+                    use_light_meta
+                    and refresh_copy
+                    and backup
+                    and any(
+                        (backup.copied_from, backup.copy_scopes, backup.copy_updated_at)
+                    )
+                ):
+                    full = self.get_backup(name)
+                    if full is None:
+                        raise StorageError(f"Full metadata of copy {name} is missing")
+                    backup.copy_scopes = full.copy_scopes
+                    backup.copy_updated_at = full.copy_updated_at
+                    del full
             except (StorageError, S3RetryingError) as exc:
                 if unreadable is None:
                     raise

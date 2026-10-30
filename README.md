@@ -267,7 +267,11 @@ Behavior and limitations:
   the copied data. Backups without such data, including ones created with
   `--copy-cloud-storage-data`, are copied entirely by `files`, and their scope `cloud_storage` is
   completed right away. `--scope` (can be given multiple times) copies only the specified scopes,
-  all of them by default. Each run chooses its own copy mode with `--[no-]server-side-copy`. `files`
+  overriding `copy.scopes` in the configuration (default: `[files, cloud_storage]`). For example,
+  `copy: {scopes: [cloud_storage]}` selects only object storage copying. The list must be non-empty.
+  The setting is read from the merged target configuration, so it can be set in the main config,
+  `--target-config` or `--target-config-parameter copy.scopes '["files"]'`.
+  Each run chooses its own copy mode with `--[no-]server-side-copy`. `files`
   also copies the original disk metadata into
   `<backup>/copy_context/<id>/source/` and saves the list of its objects in
   `<backup>/copy_context/<id>/manifest/files.jsonl.gz` (locations and sizes, without credentials). A
@@ -282,7 +286,11 @@ Behavior and limitations:
   while `cloud_storage` is not completed. Statuses of the scopes (`pending`, `completed`, `failed`)
   are saved in `meta.copy` of the copy, for example `state: creating, copy: {scopes: {files:
   completed, cloud_storage: pending}, updated_at: ...}`, where `updated_at` is when copying was last
-  saved. The copy becomes `created` once every scope is completed. Until then the report shows the
+  saved. `list -av` shows these values in the `copy` column; `list -av --format json` includes
+  the same `copy` object. Backups without `meta.copy` have an empty cell or JSON `null`.
+  Copy scopes and their timestamp are read from full metadata, since light metadata can lag
+  behind after an interrupted update. If full metadata cannot be read, the copy is unreadable.
+  The copy becomes `created` once every scope is completed. Until then the report shows the
   backup as `partial` with `backup_state: creating`, and the command exits with 0 if the copied
   scopes succeed. Saved statuses are not trusted: a scope that is not copied is completed only if
   the copy context and the target listing confirm all its objects, otherwise it becomes `pending`

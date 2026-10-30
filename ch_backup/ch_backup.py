@@ -145,7 +145,7 @@ class ClickhouseBackup:
         """
         backups = []
         for backup in self._context.backup_layout.get_backups(
-            use_light_meta=True, unreadable=unreadable
+            use_light_meta=True, unreadable=unreadable, refresh_copy=True
         ):
             if state and backup.state != state:
                 continue

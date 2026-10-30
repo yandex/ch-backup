@@ -37,7 +37,7 @@ from ch_backup.exceptions import ConfigurationError, TerminatingSignal
 from . import logging
 from .backup.copy_deduplication import copy_deduplication_cutoff
 from .backup.copy_report import CopyReport, print_copy_report
-from .backup.metadata import ALL_SCOPES, BackupState, CopyScope, TableMetadata
+from .backup.metadata import BackupState, CopyScope, TableMetadata
 from .backup.sources import BackupSources
 from .ch_backup import CleanZooKeeperMode, ClickhouseBackup
 from .config import DEFAULT_CONFIG, Config
@@ -263,6 +263,7 @@ def list_command(
     records = []
     for backup in backups:
         data_skipped_tables, incomplete_tables = backup.count_skipped_data_tables()
+        copy = backup.dump(light=True)["meta"].get("copy")
         record: dict = OrderedDict(
             (
                 ("name", backup.name),
@@ -278,12 +279,20 @@ def list_command(
         )
         if format_ == "json":
             record["labels"] = backup.labels
+            record["copy"] = copy
             record["cloud_disks"] = backup.cloud_storage.disks
             record["exception"] = backup.exception
         else:
             record["labels"] = "\n".join(
                 f"{name}: {value}" for name, value in backup.labels.items()
             )
+            copy_lines = [
+                f"{scope}: {status}"
+                for scope, status in (copy or {}).get("scopes", {}).items()
+            ]
+            if copy and copy.get("updated_at"):
+                copy_lines.extend(("", f"updated_at: {copy['updated_at']}"))
+            record["copy"] = "\n".join(copy_lines).lstrip("\n")
         if all_ or include_unreadable:
             record["metadata_error"] = None
         records.append(record)
@@ -299,6 +308,7 @@ def list_command(
                 "data_skipped_tables",
                 "incomplete_tables",
                 "labels",
+                "copy",
             )
         )
         record = {"name": name, "state": "unknown", **record}
@@ -967,7 +977,8 @@ def delete_command(
         type=Choice([scope.value for scope in CopyScope]),
         help='Copy only the specified scope: "files" for files of the backup, '
         '"cloud_storage" for data of object storage disks. Can be specified multiple times, '
-        "all scopes are copied by default. The copy is published once every scope is copied. "
+        "overrides copy.scopes in the configuration (all scopes by default). "
+        "The copy is published once every scope is copied. "
         'Without "files", copies are taken from the target storage, so the source storage is '
         'not accessed; --all and LAST select copies with "cloud_storage" not completed.',
     ),
@@ -1049,13 +1060,14 @@ def copy_command(
 ) -> None:
     """Copy backup to another storage (another S3 bucket, endpoint or path)."""
     command_start = utcnow()
-    selected_scopes = frozenset(map(CopyScope, scopes)) or ALL_SCOPES
     report = CopyReport()
     try:
         if bool(name) == all_:
             ctx.fail("Either BACKUP or --all must be specified.")
 
         copy_config: dict = {"cloud_storage": {"source": {}, "target": {}}}
+        if scopes:
+            copy_config["scopes"] = list(scopes)
         if server_side_copy is not None:
             copy_config["server_side_copy"] = server_side_copy
         if only_with_data is not None:
@@ -1076,6 +1088,18 @@ def copy_command(
             _build_cli_cfg_from_config_parameters(target_config_parameters),
         )
         target_cfg.merge({"copy": copy_config})
+        scope_names = target_cfg["copy"]["scopes"]
+        if (
+            not isinstance(scope_names, list)
+            or not scope_names
+            or any(
+                name not in [scope.value for scope in CopyScope] for name in scope_names
+            )
+        ):
+            raise ConfigurationError(
+                'copy.scopes must be a non-empty list of "files" and/or "cloud_storage"'
+            )
+        selected_scopes = frozenset(map(CopyScope, scope_names))
         # Validate before resolving LAST, which already lists the source storage.
         if not isinstance(target_cfg["copy"]["only_with_data"], bool):
             raise ConfigurationError("copy.only_with_data must be a boolean")
