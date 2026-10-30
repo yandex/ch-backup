@@ -37,7 +37,10 @@ Cloud parts are copied into a private `.ch-backup-<part>` directory under
 `detached` and published by rename after copying completes. Interrupted copies
 retain their ownership markers there: a retry removes copied blobs, but only
 local metadata for an inplace copy. The destination marker remains until ATTACH
-succeeds. Concurrent restores of the same table are unsupported.
+succeeds. An occupied cloud-part destination without a recognized ownership
+marker is preserved and reported as a conflict, including directories left by
+older versions without markers. Move the conflicting directory aside before
+retrying. Concurrent restores of the same table are unsupported.
 
 ## Restore without cloud storage
 

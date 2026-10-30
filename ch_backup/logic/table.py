@@ -35,7 +35,7 @@ from ch_backup.exceptions import ClickhouseBackupError, is_broken_executor
 from ch_backup.logic.backup_manager import BackupManager
 from ch_backup.logic.part_restore import (
     LocalPartRestorer,
-    cleanup_staging_paths,
+    PartDownloadStaging,
     part_staging_path,
     promote_part,
 )
@@ -2010,66 +2010,63 @@ class TableBackup(BackupManager):
                     continue
                 raise error
 
-            scheduled_paths: list[str] = []
             downloaded_parts: list[tuple[DetachedPartMetadata, str, str, str]] = []
             disks_to_chown: set[str] = set()
-            for part in detached_parts:
-                try:
-                    if part.object_storage and skip_cloud_storage:
-                        logging.debug(
-                            "Skipping detached part {}.{} {} on cloud disk {} because of --skip-cloud-storage flag",
-                            part.database,
-                            part.table,
+            with PartDownloadStaging(context.backup_layout) as staging:
+                for part in detached_parts:
+                    try:
+                        if part.object_storage and skip_cloud_storage:
+                            logging.debug(
+                                "Skipping detached part {}.{} {} on cloud disk {} because of --skip-cloud-storage flag",
+                                part.database,
+                                part.table,
+                                part.name,
+                                part.disk_name,
+                            )
+                            continue
+
+                        # Apply the same local disk mapping as for active parts.
+                        # Object-storage metadata remains tied to its original disk.
+                        target_disk = (
+                            part.disk_name
+                            if part.object_storage
+                            else restore_disk_name(table, part.disk_name, storage_disks)
+                        )
+                        destination = TableBackup._find_detached_restore_destination(
+                            context, table, part, target_disk
+                        )
+                        if destination is None:
+                            disks_to_chown.add(target_disk)
+                            continue
+                        restore_part, destination_path = destination
+
+                        staging_path = part_staging_path(destination_path)
+                        staging.paths.append(staging_path)
+                        # Carry the target disk through the asynchronous download so
+                        # ownership is fixed where the part was actually restored.
+                        callback = partial(
+                            downloaded_parts.append,
+                            (restore_part, staging_path, destination_path, target_disk),
+                        )
+                        # The archive is stored under its original backup name. The
+                        # possibly suffixed name applies only to the restore target.
+                        context.backup_layout.download_detached_part(
+                            context.backup_meta,
+                            part,
+                            staging_path,
+                            callback=callback,
+                        )
+                    except Exception as error:
+                        if not keep_going or is_broken_executor(error):
+                            raise
+                        logging.warning(
+                            "Restore of detached part {} failed: {}; skipping due to --keep-going flag",
                             part.name,
-                            part.disk_name,
+                            error,
+                            exc_info=True,
                         )
-                        continue
 
-                    # Apply the same local disk mapping as for active parts.
-                    # Object-storage metadata remains tied to its original disk.
-                    target_disk = (
-                        part.disk_name
-                        if part.object_storage
-                        else restore_disk_name(table, part.disk_name, storage_disks)
-                    )
-                    destination = TableBackup._find_detached_restore_destination(
-                        context, table, part, target_disk
-                    )
-                    if destination is None:
-                        disks_to_chown.add(target_disk)
-                        continue
-                    restore_part, destination_path = destination
-
-                    staging_path = part_staging_path(destination_path)
-                    scheduled_paths.append(staging_path)
-                    # Carry the target disk through the asynchronous download so
-                    # ownership is fixed where the part was actually restored.
-                    callback = partial(
-                        downloaded_parts.append,
-                        (restore_part, staging_path, destination_path, target_disk),
-                    )
-                    # The archive is stored under its original backup name. The
-                    # possibly suffixed name applies only to the restore target.
-                    context.backup_layout.download_detached_part(
-                        context.backup_meta,
-                        part,
-                        staging_path,
-                        callback=callback,
-                    )
-                except Exception:
-                    if keep_going:
-                        logging.exception(
-                            f"Restore of detached part {part.name} failed, skipping due to --keep-going flag"
-                        )
-                    else:
-                        try:
-                            context.backup_layout.wait(keep_going=True)
-                        finally:
-                            cleanup_staging_paths(scheduled_paths)
-                        raise
-
-            try:
-                context.backup_layout.wait(keep_going)
+                staging.wait(keep_going)
 
                 for part, staging_path, target_path, target_disk in downloaded_parts:
                     try:
@@ -2084,8 +2081,6 @@ class TableBackup(BackupManager):
                             )
                         else:
                             raise
-            finally:
-                cleanup_staging_paths(scheduled_paths)
 
             if disks_to_chown:
                 context.ch_ctl.chown_detached_table_parts(

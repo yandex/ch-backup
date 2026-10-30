@@ -100,10 +100,13 @@ def step_detached_directories_empty(context, database, table, node):
 def step_part_not_published(context, part, database, table, node):
     container = get_container(context, node)
     for path in get_table_paths(context, node, database, table):
-        result = container.exec_run(
-            ["test", "!", "-e", f"{path}/detached/{part}"], user="root"
-        )
-        assert result.exit_code == 0, f"Part was published at {path}/detached/{part}"
+        for predicate in ("-e", "-L"):
+            result = container.exec_run(
+                ["test", "!", predicate, f"{path}/detached/{part}"], user="root"
+            )
+            assert (
+                result.exit_code == 0
+            ), f"Part was published at {path}/detached/{part}"
 
 
 @given("we restore saved data part files")

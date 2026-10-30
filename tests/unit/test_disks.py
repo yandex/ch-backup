@@ -1205,7 +1205,7 @@ def fixture_part_copy(tmp_path):
 
 @pytest.mark.parametrize("version", ["23.3", "23.9", "24.7"])
 @pytest.mark.parametrize("inplace", [False, True])
-@pytest.mark.parametrize("previous_mode", ["copy", "inplace", None, "incomplete"])
+@pytest.mark.parametrize("previous_mode", ["copy", "inplace"])
 def test_restore_replaces_incomplete_part_without_nesting(
     part_copy, version, inplace, previous_mode
 ):
@@ -1276,10 +1276,12 @@ def test_restore_records_copy_mode_before_writing_a_part_and_keeps_it_on_failure
     # pylint: disable=protected-access
     manager._use_local_copy = inplace
 
-    def interrupted_copy(*_args):
+    def interrupted_copy(_from_disk, _from_path, to_disk, to_path, _tag):
+        destination = Path(manager._ch_availible_disks[to_disk].path) / to_path
+        assert destination == staging
         assert mode_file.read_text() == ("inplace" if inplace else "copy")
-        staging.mkdir()
-        (staging / "id.bin").write_text("partial metadata")
+        destination.mkdir()
+        (destination / "id.bin").write_text("partial metadata")
         raise ClickHouseDisksException("interrupted copy")
 
     with unittest.mock.patch.object(manager, "_copy_dir", side_effect=interrupted_copy):
@@ -1288,6 +1290,37 @@ def test_restore_records_copy_mode_before_writing_a_part_and_keeps_it_on_failure
 
     assert mode_file.read_text() == ("inplace" if inplace else "copy")
     assert not target.exists()
+
+
+@pytest.mark.parametrize("previous_mode", [None, "incomplete"])
+def test_restore_preserves_unowned_cloud_part(part_copy, previous_mode):
+    # pylint: disable=protected-access
+    manager, table, part, source, detached = part_copy
+    target = detached / part.name
+    target.mkdir()
+    (target / "id.bin").write_text("existing data")
+    mode_file = target.with_name(f".{target.name}.ch-backup-copy-mode")
+    if previous_mode is not None:
+        mode_file.write_text(previous_mode)
+
+    def copy_objects(_ctl, _from_disk, _from_path, to_disk, to_path, _tag):
+        shutil.copytree(
+            source, Path(manager._ch_availible_disks[to_disk].path) / to_path
+        )
+
+    with (
+        unittest.mock.patch(
+            "ch_backup.clickhouse.disks._ch_disks_copy", side_effect=copy_objects
+        ),
+        pytest.raises(ClickHouseDisksException, match="not owned by ch-backup"),
+    ):
+        manager._run_copy_command(manager._backup_meta, table, part)
+    assert (target / "id.bin").read_text() == "existing data"
+    assert (
+        mode_file.read_text() == previous_mode
+        if previous_mode
+        else not mode_file.exists()
+    )
 
 
 def test_restore_does_not_publish_or_mark_downloaded_when_cleanup_fails(part_copy):

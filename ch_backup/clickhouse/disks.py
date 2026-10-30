@@ -503,10 +503,16 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         if mode_file.exists():
             previous_mode = mode_file.read_text(encoding="utf-8")
 
+        if full_path.is_symlink() or (
+            full_path.exists() and previous_mode not in {"copy", "inplace"}
+        ):
+            raise ClickHouseDisksException(
+                f'Detached part path is not owned by ch-backup: "{full_path}"'
+            )
         if full_path.exists():
             # The directory may come from an earlier inplace restore, even if
             # this invocation copies objects. Only a recorded object copy owns
-            # its S3 objects; unknown/legacy directories get metadata-only cleanup.
+            # its S3 objects; an inplace copy owns only its local metadata.
             logging.info("Removing incomplete part {} from disk {}", path, disk.name)
             if previous_mode == "copy":
                 _ch_disks_remove(self._ch_ctl, disk.name, path, routine_tag)

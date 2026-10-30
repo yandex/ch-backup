@@ -782,6 +782,8 @@ class BackupLayout:
             part.table,
         )
         try:
+            if not part.tarball:
+                _validate_part_file_paths(fs_part_path, part.files)
             os.makedirs(fs_part_path, exist_ok=False)
             remote_dir_path = self._get_escaped_if_exists(
                 _part_path,
@@ -1612,3 +1614,19 @@ def _quote(value: str) -> str:
             ord("-"): "%2D",
         }
     )
+
+
+def _validate_part_file_paths(path: str, filenames: Sequence[str]) -> None:
+    """Validate the whole legacy manifest before scheduling any writes.
+
+    Projection files may be nested, but must stay inside staging.
+    """
+    root = Path(path).resolve()
+    for filename in filenames:
+        relative = Path(filename)
+        if (
+            relative.is_absolute()
+            or ".." in relative.parts
+            or not (root / relative).resolve().is_relative_to(root)
+        ):
+            raise StorageError(f'Invalid part filename: "{filename}"')

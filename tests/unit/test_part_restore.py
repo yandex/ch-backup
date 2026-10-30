@@ -16,7 +16,7 @@ import pytest
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
-from ch_backup.backup.metadata import BackupMetadata, PartMetadata
+from ch_backup.backup.metadata import BackupMetadata, DetachedPartMetadata, PartMetadata
 from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.backup.restore_context import PartState, RestoreContext
 from ch_backup.clickhouse.models import Database
@@ -129,6 +129,39 @@ def test_downloaded_part_missing_on_disk_is_downloaded_again(restore):
     assert (root / part.name / "count.txt").read_bytes() == b"10"
 
 
+def test_local_part_rejects_symlinked_projection_directory(tmp_path):
+    root = tmp_path / "part"
+    root.mkdir()
+    projection = tmp_path / "projection"
+    projection.mkdir()
+    (projection / "count.txt").write_bytes(b"10")
+    (root / "p.proj").symlink_to(projection, target_is_directory=True)
+    (root / "checksums.txt").write_bytes(b"checksums")
+    part = PartMetadata(
+        "db",
+        "table",
+        "all_1_1_0",
+        md5(b"checksums").hexdigest(),
+        1024,
+        ["p.proj/count.txt", "checksums.txt"],
+        True,
+    )
+    with pytest.raises(ClickhouseBackupError, match="symlink"):
+        check_local_part(part, str(root))
+
+
+@pytest.mark.parametrize("filename", ["../outside", "/outside"])
+def test_legacy_download_rejects_paths_outside_staging(restore, filename):
+    context, _, part, storage, root = restore
+    part.raw_metadata.files = ["count.txt", filename]
+    with pytest.raises(StorageError):
+        context.backup_layout.download_data_part(
+            context.backup_meta, part, str(root / "staging"), MagicMock()
+        )
+    storage.download_file.assert_not_called()
+    assert not (root / "outside").exists()
+
+
 @pytest.mark.parametrize("keep_going", [False, True])
 def test_rename_failure_does_not_mark_downloaded(restore, keep_going):
     context, _, part, _, root = restore
@@ -216,12 +249,14 @@ def _unfinished_download(path: str, release: Path) -> None:
 
 
 @pytest.mark.skipif(os.name != "posix", reason="Uses SIGTERM")
-def test_sigterm_during_submission_stops_workers_and_keeps_staging(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("detached", [False, True])
+@pytest.mark.parametrize("phase", ["submission", "wait"])
+def test_sigterm_stops_part_workers_and_keeps_staging(
+    tmp_path, monkeypatch, detached, phase
 ):
-    # pylint: disable=protected-access
+    # pylint: disable=protected-access,too-many-locals,too-many-statements
     monkeypatch.setattr(logging.logger._core, "handlers", {})  # type: ignore[attr-defined]
-    monkeypatch.setattr(exec_pool, "TIMEOUT_WORKER_TERMINATING_SEC", 0.1)
+    monkeypatch.setattr(exec_pool, "TIMEOUT_WORKER_TERMINATING_SEC", 1)
     config = copy.deepcopy(DEFAULT_CONFIG)
     config["backup"]["path_root"] = "backups"
     layout = BackupLayout(config)  # type: ignore[arg-type]
@@ -247,20 +282,50 @@ def test_sigterm_during_submission_stops_workers_and_keeps_staging(
         while not ready.exists():
             assert not release.exists(), "worker did not start"
             time.sleep(0.01)
-        os.kill(os.getpid(), signal.SIGTERM)
+        if phase == "submission":
+            os.kill(os.getpid(), signal.SIGTERM)
 
     monkeypatch.setattr(layout._storage_loader, "download_files", download)
+    if phase == "wait":
+        monkeypatch.setattr(
+            layout,
+            "wait",
+            lambda *_args, **_kwargs: os.kill(os.getpid(), signal.SIGTERM),
+        )
     part = PartMetadata("db", "table", destination.name, "checksum", 1024, [], True)
     try:
         with pytest.raises(TerminatingSignal):
-            with LocalPartRestorer(
-                layout,
-                BackupMetadata("backup", "2", "25.8", "%Y-%m-%d"),
-                keep_going=True,
-                on_success=completed.append,
-                on_error=failed,
-            ) as restorer:
-                restorer.download(part, str(destination))
+            backup = BackupMetadata("backup", "2", "25.8", "%Y-%m-%d")
+            if detached:
+                context = MagicMock()
+                context.backup_meta = backup
+                context.backup_layout = layout
+                context.ch_ctl.get_detached_part_path.return_value = str(destination)
+                table = TableMetadata("db", "table", "MergeTree", None)
+                table.add_detached_part(
+                    DetachedPartMetadata(
+                        "db",
+                        "table",
+                        part.name,
+                        "",
+                        "checksum",
+                        1024,
+                        [],
+                        True,
+                        "default",
+                    )
+                )
+                TableBackup._restore_detached_data(context, [table], False, True)
+            else:
+                with LocalPartRestorer(
+                    layout,
+                    backup,
+                    keep_going=True,
+                    on_success=completed.append,
+                    on_error=failed,
+                ) as restorer:
+                    restorer.download(part, str(destination))
+                    restorer.wait()
         assert not release.exists(), "termination waited for the download"
         assert all(not process.is_alive() for process in processes)
         assert (staging[0] / "count.txt").read_bytes() == b"partial"
