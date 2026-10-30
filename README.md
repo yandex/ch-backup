@@ -33,14 +33,14 @@ regardless of download completion order. Saved failure details survive restores
 of other tables; a part's error is removed after that part is successfully attached.
 Only failures from the current invocation affect its exit code.
 
-Cloud parts are copied into a private `.ch-backup-<part>` directory under
-`detached` and published by rename after copying completes. Interrupted copies
-retain their ownership markers there: a retry removes copied blobs, but only
-local metadata for an inplace copy. The destination marker remains until ATTACH
-succeeds. An occupied cloud-part destination without a recognized ownership
-marker is preserved and reported as a conflict, including directories left by
-older versions without markers. Move the conflicting directory aside before
-retrying. Concurrent restores of the same table are unsupported.
+Local parts are downloaded into unique `.ch-backup-*` staging directories on
+the destination disk. After all files have been written, restore checks their
+file list, recorded size and the checksum of `checksums.txt`, replaces any
+existing destination directory and publishes the part with `rename` before
+recording `DOWNLOADED` or attaching it. This does not hash every data file.
+Local parts saved as `DOWNLOADED` are downloaded again on retry. Failed downloads
+leave the existing destination untouched. If transfer workers do not finish
+normally, staging directories are retained for manual cleanup after they stop.
 
 ## Restore without cloud storage
 

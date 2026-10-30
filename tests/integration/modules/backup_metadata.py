@@ -119,17 +119,12 @@ class BackupStorage:
                     self.loader.upload_data(
                         data, f"{path}/{name}", encryption=part.encrypted
                     )
-                # Submit these first so the fault can keep one writer pending
-                # while another future or its submission fails.
-                names = ["count.txt", "checksums.txt"] + sorted(
-                    files.keys() - {"count.txt", "checksums.txt"}
-                )
                 size = sum(map(len, files.values()))
                 backup.size += size - part.size
                 table.raw_metadata["parts"][part.name].update(
                     tarball=False,
                     bytes=size,
-                    files=names,
+                    files=list(files),
                 )
                 self.engine.delete_file(archive)
         self.layout.upload_backup_metadata(backup)

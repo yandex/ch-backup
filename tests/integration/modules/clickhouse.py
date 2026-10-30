@@ -55,27 +55,9 @@ FORMAT JSON
 
 
 def get_part_path(
-    context: ContextT,
-    node: str,
-    database: str,
-    table: str,
-    part: str,
-    *,
-    detached: bool = False,
+    context: ContextT, node: str, database: str, table: str, part: str
 ) -> str:
-    """Find exactly one part before injecting a file or object fault."""
-    if detached:
-        container = docker.get_container(context, node)
-        paths = [
-            f"{path}/detached/{part}"
-            for path in get_table_paths(context, node, database, table)
-            if container.exec_run(
-                ["test", "-d", f"{path}/detached/{part}"], user="root"
-            ).exit_code
-            == 0
-        ]
-        assert len(paths) == 1, f"Expected one detached part, found paths: {paths}"
-        return paths[0]
+    """Find exactly one active part before injecting a file or object fault."""
     paths = (
         ClickhouseClient(context, node)
         .get_response(
@@ -87,23 +69,6 @@ def get_part_path(
     )
     assert len(paths) == 1, f"Expected one active part, found paths: {paths}"
     return paths[0].rstrip("/")
-
-
-def get_table_paths(
-    context: ContextT, node: str, database: str, table: str
-) -> list[str]:
-    """Read all disk paths of a table, including disks with no active parts."""
-    paths = (
-        ClickhouseClient(context, node)
-        .get_response(
-            f"SELECT arrayJoin(data_paths) FROM system.tables "
-            f"WHERE database = {sql_string_literal(database)} AND name = {sql_string_literal(table)} "
-            "FORMAT TSVRaw"
-        )
-        .splitlines()
-    )
-    assert paths, f"No data paths for {database}.{table} on {node}"
-    return [path.rstrip("/") for path in paths]
 
 
 class ClickhouseClient:

@@ -19,11 +19,6 @@ def step_legacy_full_metadata(context, node, backup_name):
     BackupStorage(context, node).rewrite_legacy_metadata(backup_name)
 
 
-@when('local parts of {node:w} backup "{backup_name}" use the legacy per-file layout')
-def step_legacy_per_file_parts(context, node, backup_name):
-    BackupStorage(context, node).rewrite_per_file_parts(backup_name)
-
-
 @then('private definitions in {node:w} backup "{backup_name}" are encrypted')
 def step_private_definitions_encrypted(context, node, backup_name):
     options = get_step_data(context)
@@ -132,3 +127,10 @@ def step_restore_cloud_metadata(context):
         layout.wait()
         assert layout.get_cloud_storage_metadata_files(backup, path) == files
     context.saved_cloud_metadata = {}
+
+
+@given('local parts of {node:w} backup "{backup_name}" use the {layout:w} layout')
+def step_local_part_layout(context, node, backup_name, layout):
+    assert layout in {"tar", "legacy"}
+    if layout == "legacy":
+        BackupStorage(context, node).rewrite_per_file_parts(backup_name)

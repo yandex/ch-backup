@@ -905,7 +905,7 @@ Feature: Backup & Restore
     """
     keep_going: true
     """
-    Then detached directories of test_db.atomic_retry on clickhouse02 are empty
+    Then part "0_1_1_0" of test_db.atomic_retry is not published on clickhouse02
     And part "0_1_1_0" of test_db.atomic_retry has restore state "invalid" on clickhouse02
     When we execute query on clickhouse02
     """
@@ -926,67 +926,7 @@ Feature: Backup & Restore
     100,4950
     """
 
-  Scenario: Preserve a conflicting local part and reuse it after repair
-    Given ch-backup configuration on clickhouse02
-    """
-    backup:
-        restore_fail_on_attach_error: true
-    """
-    And we have executed queries on clickhouse01
-    """
-    CREATE DATABASE IF NOT EXISTS test_db;
-    CREATE TABLE test_db.atomic_conflict (n UInt64, PROJECTION by_n (SELECT n ORDER BY n))
-    ENGINE = MergeTree ORDER BY n;
-    INSERT INTO test_db.atomic_conflict SELECT number FROM numbers(100);
-    """
-    When we create clickhouse01 clickhouse backup
-    """
-    name: atomic_conflict
-    tables: [test_db.atomic_conflict]
-    """
-    And we try to execute ch-backup on clickhouse02 with ATTACH failing for test_db.atomic_conflict
-    """
-    -c /etc/yandex/ch-backup/ch-backup.conf restore atomic_conflict
-    """
-    Then command exits with code 1
-    When we save and corrupt a data part file on clickhouse02
-    """
-    database: test_db
-    table: atomic_conflict
-    part: all_1_1_0
-    detached: true
-    file: by_n.proj/count.txt
-    action: flip_byte
-    """
-    And we try to execute command on clickhouse02
-    """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore --keep-going atomic_conflict
-    """
-    Then command exits with code 1
-    And a data part file on clickhouse02 contains
-    """
-    database: test_db
-    table: atomic_conflict
-    part: all_1_1_0
-    detached: true
-    file: by_n.proj/count.txt
-    data: '900'
-    """
-    When we restore saved data part files
-    # Reuse must validate the local data without downloading the damaged archive.
-    And we save and truncate file "data/test_db/atomic_conflict/all_1_1_0/all_1_1_0.tar" in clickhouse01 backup #0
-    And we restore clickhouse backup #0 to clickhouse02
-    And we execute query on clickhouse02
-    """
-    SELECT count(), sum(n) FROM test_db.atomic_conflict FORMAT CSV
-    """
-    Then we get response
-    """
-    100,4950
-    """
-    When we restore the saved backup file
-
-  Scenario Outline: Drain pending files of a legacy part after a <phase> failure: <mode>
+  Scenario Outline: Replace an existing local part after a complete <layout> download
     Given ch-backup configuration on clickhouse01
     """
     backup:
@@ -997,57 +937,45 @@ Feature: Backup & Restore
     backup:
         restore_fail_on_attach_error: true
     """
-    And we have executed queries on clickhouse01
+    When we execute queries on clickhouse01
     """
     CREATE DATABASE IF NOT EXISTS test_db;
-    DROP TABLE IF EXISTS test_db.legacy_async SYNC;
-    CREATE TABLE test_db.legacy_async (n UInt64) ENGINE = MergeTree ORDER BY n;
-    INSERT INTO test_db.legacy_async SELECT number FROM numbers(100);
+    CREATE TABLE test_db.atomic_<layout> (n UInt64) ENGINE = MergeTree ORDER BY n;
+    INSERT INTO test_db.atomic_<layout> SELECT number FROM numbers(100);
     """
-    And we have executed queries on clickhouse02
+    And we create clickhouse01 clickhouse backup
     """
-    DROP TABLE IF EXISTS test_db.legacy_async SYNC;
+    name: atomic_<layout>
+    tables: [test_db.atomic_<layout>]
     """
-    When we drop restore context at clickhouse02
-    When we create clickhouse01 clickhouse backup
+    Given local parts of clickhouse01 backup "atomic_<layout>" use the <layout> layout
+    When we try to execute ch-backup on clickhouse02 with ATTACH failing for test_db.atomic_<layout>
     """
-    name: legacy_async_<phase>_<mode>
-    tables: [test_db.legacy_async]
-    """
-    And local parts of clickhouse01 backup "legacy_async_<phase>_<mode>" use the legacy per-file layout
-    And we try to execute ch-backup on clickhouse02 with a part file <phase> failure
-    """
-    -c /etc/yandex/ch-backup/ch-backup.conf restore <keep_going> legacy_async_<phase>_<mode>
+    -c /etc/yandex/ch-backup/ch-backup.conf restore atomic_<layout>
     """
     Then command exits with code 1
-    And we get response contains
+    When we execute command on clickhouse02
     """
-    Pending part file download finished before cleanup
+    table_path=$(clickhouse-client -q "SELECT data_paths[1] FROM system.tables WHERE database='test_db' AND name='atomic_<layout>' FORMAT TSVRaw")
+    echo stale > "${table_path}/detached/all_1_1_0/stale.txt"
     """
-    And detached directories of test_db.legacy_async on clickhouse02 are empty
-    And part "all_1_1_0" of test_db.legacy_async has restore state "invalid" on clickhouse02
+    And we restore clickhouse backup "atomic_<layout>" to clickhouse02
+    Then part "all_1_1_0" of test_db.atomic_<layout> has restore state "restored" on clickhouse02
     When we execute query on clickhouse02
     """
-    SELECT count() FROM test_db.legacy_async
-    """
-    Then we get response
-    """
-    0
-    """
-    When we restore clickhouse backup "legacy_async_<phase>_<mode>" to clickhouse02
-    Then part "all_1_1_0" of test_db.legacy_async has restore state "restored" on clickhouse02
-    When we execute query on clickhouse02
-    """
-    SELECT count(), sum(n) FROM test_db.legacy_async FORMAT CSV
+    SELECT count(), sum(n) FROM test_db.atomic_<layout> FORMAT CSV
     """
     Then we get response
     """
     100,4950
     """
+    When we execute command on clickhouse02
+    """
+    part_path=$(clickhouse-client -q "SELECT path FROM system.parts WHERE database='test_db' AND table='atomic_<layout>' AND active FORMAT TSVRaw")
+    test -n "$part_path" && test ! -e "${part_path}/stale.txt"
+    """
 
     Examples:
-      | phase      | mode | keep_going   |
-      | worker     | stop |              |
-      | worker     | skip | --keep-going |
-      | submission | stop |              |
-      | submission | skip | --keep-going |
+      | layout |
+      | tar    |
+      | legacy |

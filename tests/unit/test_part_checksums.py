@@ -128,24 +128,19 @@ def _write_part(
     files: dict[str, bytes | None],
     hashes: dict[str, tuple[int, int]],
     uncompressed_sizes: dict[str, int] | None = None,
-    sizes: dict[str, int] | None = None,
 ) -> None:
     """
     Helper: write a part with checksums.txt in format 3; .bin files are compressed,
     a file without data is a projection.
     """
-    path.mkdir(exist_ok=True)
+    path.mkdir()
     entries = b""
     for name, data in files.items():
         content = b""
         if data is not None:
             content = _compressed(data) if name.endswith(".bin") else data
             (path / name).write_bytes(content)
-        entries += (
-            _varint(len(name.encode()))
-            + name.encode()
-            + _varint((sizes or {}).get(name, len(content)))
-        )
+        entries += _varint(len(name)) + name.encode() + _varint(len(content))
         entries += _hash_bytes(hashes.get(name, (0, 0)))
         if data is not None and name.endswith(".bin"):
             size = (uncompressed_sizes or {}).get(name, len(data))
@@ -177,38 +172,6 @@ def test_part_that_matches_its_checksums_passes(tmp_path: Path) -> None:
     _good_part(tmp_path / "all_1_1_0")
 
     check_part_files(str(tmp_path / "all_1_1_0"))
-
-
-@pytest.mark.parametrize("projection", [False, True])
-def test_strict_reuse_checks_compressed_file_hash(
-    tmp_path: Path, projection: bool
-) -> None:
-    """Valid compressed blocks of different data must not match the backup."""
-    # pylint: disable=protected-access
-    reference = tmp_path / "reference"
-    reference.write_bytes(_compressed(b"a" * 250))
-    expected = part_checksums._hash_file(
-        str(reference)
-    )  # pylint: disable=protected-access
-    part = tmp_path / "part"
-    data_part = part
-    if projection:
-        _write_part(part, {"projection.proj": None}, {})
-        data_part = part / "projection.proj"
-    _write_part(data_part, {"n.bin": b"a" * 250}, {"n.bin": expected})
-    if projection:
-        checksums = part_checksums._read_checksums(str(data_part))
-        _write_part(
-            part,
-            {"projection.proj": None},
-            {},
-            sizes={"projection.proj": sum(file.size for file in checksums.values())},
-        )
-    check_part_files(str(part), verify_compressed_hashes=True)
-    (data_part / "n.bin").write_bytes(_compressed(b"b" * 250))
-    check_part_files(str(part))
-    with pytest.raises(ValueError, match="does not match its hash"):
-        check_part_files(str(part), verify_compressed_hashes=True)
 
 
 def _flip(path: Path, offset: int) -> None:

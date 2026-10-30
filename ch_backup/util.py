@@ -97,10 +97,7 @@ def list_dir_files(dir_path: str) -> list[str]:
 
 
 def scan_dir_files(
-    dir_path: Path,
-    exclude_file_names: list[str] | None = None,
-    *,
-    reject_symlinks: bool = False,
+    dir_path: Path, exclude_file_names: list[str] | None = None
 ) -> Iterable[str]:
     """
     Yields relative file paths in a given directory and excludes files with given names
@@ -109,10 +106,6 @@ def scan_dir_files(
     def scan_recursive(dir_path: Path, relative_prefix: Path = None) -> Iterable[str]:
         with os.scandir(dir_path) as scan:
             for dir_entry in scan:
-                if reject_symlinks and dir_entry.is_symlink():
-                    raise ClickhouseBackupError(
-                        f'Part contains a symlink: "{dir_entry.path}"'
-                    )
                 if dir_entry.is_file():
                     if (
                         exclude_file_names is None

@@ -4,10 +4,32 @@ from uuid import uuid4
 
 from behave import given, then, when
 
-from tests.integration.modules.clickhouse import get_part_path, get_table_paths
+from tests.integration.modules.clickhouse import ClickhouseClient, get_part_path
 from tests.integration.modules.docker import get_container
 from tests.integration.modules.faults import FAULT_MODULE, run_fault
 from tests.integration.modules.steps import get_step_data
+
+
+@then('part "{part}" of {database:w}.{table:w} is not published on {node:w}')
+def step_part_not_published(context, part, database, table, node):
+    paths = (
+        ClickhouseClient(context, node)
+        .get_response(
+            f"SELECT arrayJoin(data_paths) FROM system.tables "
+            f"WHERE database = '{database}' AND name = '{table}' FORMAT TSVRaw"
+        )
+        .splitlines()
+    )
+    assert paths, "Expected a restored table"
+    container = get_container(context, node)
+    for path in paths:
+        for predicate in ("-e", "-L"):
+            result = container.exec_run(
+                ["test", "!", predicate, f"{path}/detached/{part}"]
+            )
+            assert (
+                result.exit_code == 0
+            ), f"Part was published at {path}/detached/{part}"
 
 
 @when(
@@ -32,23 +54,11 @@ def step_fail_part_attach(context, node, database, table):
     run_fault(context, node, "fail-part-attach", database, table)
 
 
-@when("we try to execute ch-backup on {node:w} with a part file {phase:w} failure")
-def step_fail_part_download(context, node, phase):
-    run_fault(context, node, "fail-part-download", phase)
-
-
 @given("we save and corrupt a data part file on {node:w}")
 @when("we save and corrupt a data part file on {node:w}")
 def step_corrupt_part_file(context, node):
     conf = get_step_data(context)
-    path = get_part_path(
-        context,
-        node,
-        conf["database"],
-        conf["table"],
-        conf["part"],
-        detached=conf.get("detached", False),
-    )
+    path = get_part_path(context, node, conf["database"], conf["table"], conf["part"])
     path = f"{path}/{conf['file']}"
     saved = getattr(context, "saved_part_files", {})
     assert (node, path) not in saved, f"File already saved: {path}"
@@ -64,49 +74,6 @@ def step_corrupt_part_file(context, node):
         workdir="/code",
     )
     assert result.exit_code == 0, result.output
-
-
-@then("a data part file on {node:w} contains")
-def step_part_file_contents(context, node):
-    conf = get_step_data(context)
-    path = get_part_path(
-        context,
-        node,
-        conf["database"],
-        conf["table"],
-        conf["part"],
-        detached=conf.get("detached", False),
-    )
-    result = get_container(context, node).exec_run(
-        ["cat", f"{path}/{conf['file']}"], user="root"
-    )
-    assert result.exit_code == 0, result.output
-    assert result.output.decode() == conf["data"], result.output
-
-
-@then("detached directories of {database:w}.{table:w} on {node:w} are empty")
-def step_detached_directories_empty(context, database, table, node):
-    container = get_container(context, node)
-    for path in get_table_paths(context, node, database, table):
-        result = container.exec_run(
-            ["find", f"{path}/detached", "-mindepth", "1", "-maxdepth", "1"],
-            user="root",
-        )
-        assert result.exit_code == 0, result.output
-        assert not result.output, result.output
-
-
-@then('part "{part}" of {database:w}.{table:w} is not published on {node:w}')
-def step_part_not_published(context, part, database, table, node):
-    container = get_container(context, node)
-    for path in get_table_paths(context, node, database, table):
-        for predicate in ("-e", "-L"):
-            result = container.exec_run(
-                ["test", "!", predicate, f"{path}/detached/{part}"], user="root"
-            )
-            assert (
-                result.exit_code == 0
-            ), f"Part was published at {path}/detached/{part}"
 
 
 @given("we restore saved data part files")

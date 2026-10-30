@@ -41,7 +41,6 @@ def test_legacy_part_completes_only_after_all_files(tmp_path, monkeypatch, failu
     layout._storage_loader._engine = MagicMock()
     backup = BackupMetadata("backup", "2", "23.3", "%Y-%m-%d")
     part = PartMetadata("db", "tbl", "all_1_1_0", "", 1, ["a", "b"], False)
-    destination = tmp_path / part.name
     first_collected = Event()
     completed: list[PartMetadata] = []
     errors: list[str] = []
@@ -64,11 +63,11 @@ def test_legacy_part_completes_only_after_all_files(tmp_path, monkeypatch, failu
     def submit_file(job_id, pipeline, *args, callback, **kwargs):
         def done():
             callback()
-            if str(destination / "a") in job_id:
+            if str(tmp_path / "a") in job_id:
                 assert not completed, "part completed before its last file"
                 first_collected.set()
 
-        if failure == "submit" and str(destination / "b") in job_id:
+        if failure == "submit" and str(tmp_path / "b") in job_id:
             raise OSError("submission error")
         return submit(job_id, pipeline, *args, callback=done, **kwargs)
 
@@ -79,10 +78,10 @@ def test_legacy_part_completes_only_after_all_files(tmp_path, monkeypatch, failu
         monkeypatch.setattr(layout._storage_loader._ploader, "_exec_pool", pool)
         try:
             layout.download_data_part(
-                backup, part, str(destination), completed.append, on_error
+                backup, part, str(tmp_path), completed.append, on_error
             )
-        except StorageError as error:
-            assert failure == "submit" and str(error.__cause__) == "submission error"
+        except OSError as error:
+            assert failure == "submit" and str(error) == "submission error"
         layout.wait(keep_going=True)
 
     assert completed == ([] if failure else [part])
@@ -92,7 +91,7 @@ def test_legacy_part_completes_only_after_all_files(tmp_path, monkeypatch, failu
         else []
     )
     if not failure:
-        assert [(destination / name).read_text() for name in part.files] == part.files
+        assert [(tmp_path / name).read_text() for name in part.files] == part.files
 
 
 @pytest.mark.parametrize("name", ["../handler/日本語", "foo%2Fbar"])

@@ -78,9 +78,8 @@ def test_restore_attaches_parts_in_source_order(tmp_path, newest_source):
     context.backup_layout = layout = Mock()
     context.ch_ctl = ch_ctl = Mock()
     ch_ctl.get_detached_part_path.side_effect = lambda _table, _disk, name: str(
-        tmp_path / "detached" / name
+        tmp_path / name
     )
-    checksums = b"checksums format version: 3\n\x00"
     table = TableMetadata("db1", "tbl", "ReplacingMergeTree", None)
     names = ["all_1_1_0", "all_2_2_0", "all_10_10_0"]
     for name in names:
@@ -90,8 +89,8 @@ def test_restore_attaches_parts_in_source_order(tmp_path, newest_source):
                 "db1",
                 "tbl",
                 name,
-                md5(checksums).hexdigest(),
-                BLOCKSIZE,
+                md5(b"checksums").hexdigest(),
+                512,
                 ["checksums.txt"],
                 True,
                 disk_name=disk,
@@ -108,9 +107,6 @@ def test_restore_attaches_parts_in_source_order(tmp_path, newest_source):
             )
         )
     elif newest_source == "downloaded":
-        destination = tmp_path / "detached" / names[-1]
-        destination.mkdir(parents=True)
-        (destination / "checksums.txt").write_bytes(checksums)
         context.restore_context.change_part_state(PartState.DOWNLOADED, parts[-1])
         collected[names[-1]].set()
 
@@ -118,7 +114,7 @@ def test_restore_attaches_parts_in_source_order(tmp_path, newest_source):
         callback(part)
         collected[part.name].set()
 
-    def download(_backup, part, path, callback, **_kwargs):
+    def download(_backup, part, _path, callback, **_kwargs):
         index = names.index(part.name)
 
         def task():
@@ -126,9 +122,8 @@ def test_restore_attaches_parts_in_source_order(tmp_path, newest_source):
                 assert collected[names[index + 1]].wait(
                     10
                 ), "newer part was not collected"
-            destination = Path(path)
-            destination.mkdir(parents=True)
-            (destination / "checksums.txt").write_bytes(checksums)
+            Path(_path).mkdir()
+            (Path(_path) / "checksums.txt").write_bytes(b"checksums")
 
         pool.submit(part.name, task, callback=lambda: complete(callback, part))
 
@@ -1278,9 +1273,9 @@ class TestDownloadPartsOfOtherReplicas:
                     database=cls._DB,
                     table=cls._TABLE,
                     name=name,
-                    checksum=md5(b"checksums").hexdigest(),
+                    checksum="abc123",
                     size=1024,
-                    files=["data.bin", "checksums.txt"],
+                    files=["data.bin"],
                     tarball=True,
                     disk_name=disk,
                 )
@@ -1301,14 +1296,9 @@ class TestDownloadPartsOfOtherReplicas:
     ) -> tuple[MagicMock, BackupContext, Table]:
         """Helper: a context with the table and the mock that sees all calls."""
         calls = MagicMock()
-
-        def download(_backup, part, path, callback, **_kwargs):
-            os.makedirs(path)
-            (Path(path) / "data.bin").write_bytes(b"x")
-            (Path(path) / "checksums.txt").write_bytes(b"checksums")
-            callback(part)
-
-        calls.backup_layout.download_data_part.side_effect = download_error or download
+        calls.backup_layout.download_data_part.side_effect = download_error or (
+            lambda _backup, _part, path, callback: os.makedirs(path)
+        )
         calls.check_part_files.side_effect = check_error
         context = BackupContext(DEFAULT_CONFIG)  # type: ignore[arg-type]
         context.ch_ctl = calls.ch_ctl
@@ -1355,9 +1345,7 @@ class TestDownloadPartsOfOtherReplicas:
             active_parts=active_parts,
             lookup_error=lookup_error,
         )
-        with patch(
-            "ch_backup.logic.part_restore.check_part_files", calls.check_part_files
-        ):
+        with patch("ch_backup.logic.table.check_part_files", calls.check_part_files):
             TableBackup._restore_table_object(context, DATABASE, table)
         return calls
 
@@ -1377,10 +1365,7 @@ class TestDownloadPartsOfOtherReplicas:
         ]
         assert downloaded == ["all_1_1_0"]
         calls.backup_layout.wait.assert_called_once_with(keep_going=True)
-        staging = calls.backup_layout.download_data_part.call_args.args[2]
-        assert Path(staging).parent == tmp_path
-        assert Path(staging).name.startswith(".ch-backup-")
-        calls.check_part_files.assert_called_once_with(staging)
+        calls.check_part_files.assert_called_once_with(str(tmp_path / "all_1_1_0"))
         assert (tmp_path / "all_1_1_0").exists()
         assert (
             names.index("backup_layout.wait")
@@ -1411,9 +1396,7 @@ class TestDownloadPartsOfOtherReplicas:
             [],
         ]
 
-        with patch(
-            "ch_backup.logic.part_restore.check_part_files", calls.check_part_files
-        ):
+        with patch("ch_backup.logic.table.check_part_files", calls.check_part_files):
             (
                 still_readonly,
                 _,
@@ -2219,11 +2202,11 @@ class TestDetachedPartsBackup:
 @pytest.mark.parametrize("skip_cloud_storage", [False, True])
 # pylint: disable=too-many-locals,too-many-statements
 def test_restore_skips_unreadable_database_schemas(
-    tmp_path: Path,
     keep_going: bool,
     all_failed: bool,
     legacy: bool,
     skip_cloud_storage: bool,
+    tmp_path: Path,
 ) -> None:
     context = _make_backup_context()
     context.restore_context = Mock(
@@ -2303,7 +2286,7 @@ def test_restore_skips_unreadable_database_schemas(
         ]
 
     def download(_backup, part, path, callback, **_kwargs):
-        os.makedirs(path)
+        Path(path).mkdir(parents=True)
         (Path(path) / "checksums.txt").write_bytes(b"checksums")
         callback(part)
 

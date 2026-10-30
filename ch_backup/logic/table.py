@@ -5,7 +5,7 @@ Clickhouse backup logic for tables
 # pylint: disable=too-many-lines
 
 import os
-import sys
+import shutil
 from collections import deque
 from contextlib import AbstractContextManager, ExitStack, nullcontext
 from dataclasses import dataclass
@@ -15,6 +15,7 @@ from pathlib import Path
 from random import choices
 from string import ascii_lowercase
 from typing import Iterable, Sequence
+from uuid import uuid4
 
 from ch_backup import logging
 from ch_backup.backup.deduplication import StoredFiles, deduplicate_parts
@@ -26,6 +27,7 @@ from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseBackupDisks, ClickHouseTemporaryDisks
 from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner
 from ch_backup.clickhouse.models import Database, Disk, FrozenPart, Table
+from ch_backup.clickhouse.part_checksums import check_part_files
 from ch_backup.clickhouse.schema import (
     rewrite_table_schema,
     to_attach_query,
@@ -33,12 +35,7 @@ from ch_backup.clickhouse.schema import (
 )
 from ch_backup.exceptions import ClickhouseBackupError, is_broken_executor
 from ch_backup.logic.backup_manager import BackupManager
-from ch_backup.logic.part_restore import (
-    LocalPartRestorer,
-    PartDownloadStaging,
-    part_staging_path,
-    promote_part,
-)
+from ch_backup.logic.part_restore import LocalPartRestorer
 from ch_backup.logic.storage_schema_restore import (
     StorageSchemaRestore,
     restore_disk_name,
@@ -1829,106 +1826,96 @@ class TableBackup(BackupManager):
                 attach_parts: list[PartMetadata] = []
                 failed_parts: set[str] = set()
 
+                # Both pools collect these callbacks before the next table.
+                # pylint: disable=cell-var-from-loop
                 def downloaded(part: PartMetadata) -> None:
                     context.restore_context.change_part_state(
                         PartState.DOWNLOADED, part
                     )
-                    # LocalPartRestorer drains callbacks before advancing to the next table.
-                    attach_parts.append(part)  # pylint: disable=cell-var-from-loop
+                    attach_parts.append(part)
 
-                def failed(part: PartMetadata, error: BaseException) -> None:
-                    # Both pools collect callbacks before advancing to the next table.
-                    # pylint: disable=cell-var-from-loop
+                def download_failed(part: PartMetadata, error: BaseException) -> None:
                     if not isinstance(error, Exception) or part.name in failed_parts:
                         return
                     failed_parts.add(part.name)
-                    logging.warning(
-                        "Restore of backup {} part {}.{} / {} failed: {}",
-                        context.backup_meta.name,
-                        part.database,
-                        part.table,
-                        part.name,
-                        error,
-                        exc_info=True,
-                    )
                     context.restore_context.add_failed_part(part, error)
                     context.restore_context.change_part_state(PartState.INVALID, part)
+                    logging.warning(
+                        'Restoring part {} of "{}"."{}" from backup {} failed: {}',
+                        part.name,
+                        part.database,
+                        part.table,
+                        context.backup_meta.name,
+                        repr(error),
+                    )
 
-                with LocalPartRestorer(
+                # pylint: enable=cell-var-from-loop
+                local_parts = LocalPartRestorer(
                     context.backup_layout,
                     context.backup_meta,
                     keep_going=keep_going,
                     on_success=downloaded,
-                    on_error=failed,
-                ) as local_parts:
-                    for part in table_meta.get_parts():
-                        if context.restore_context.part_restored(part):
-                            if (
-                                part.disk_name
-                                in context.backup_meta.cloud_storage.disks
-                            ):
-                                # Retry marker cleanup if the previous invocation stopped
-                                # after persisting RESTORED but before removing the marker.
-                                disks.remove_part_copy_marker(table, part)
-                            logging.debug(
-                                f"{table.database}.{table.name} part {part.name} already restored, skipping it"
-                            )
-                            continue
+                    on_error=download_failed,
+                )
+                for part in table_meta.get_parts():
+                    if context.restore_context.part_restored(part):
+                        if part.disk_name in context.backup_meta.cloud_storage.disks:
+                            # Retry marker cleanup if the previous invocation stopped
+                            # after persisting RESTORED but before removing the marker.
+                            disks.remove_part_copy_marker(table, part)
+                        logging.debug(
+                            f"{table.database}.{table.name} part {part.name} already restored, skipping it"
+                        )
+                        continue
 
-                        # Cloud parts already marked downloaded can be attached directly.
-                        if (
-                            part.disk_name in context.backup_meta.cloud_storage.disks
-                            and context.restore_context.part_downloaded(part)
-                        ):
-                            logging.debug(
-                                f"{table.database}.{table.name} part {part.name} already downloaded, only attach it"
-                            )
-                            attach_parts.append(part)
-                            continue
+                    if (
+                        part.disk_name in context.backup_meta.cloud_storage.disks
+                        and context.restore_context.part_downloaded(part)
+                    ):
+                        logging.debug(
+                            f"{table.database}.{table.name} part {part.name} already downloaded, only attach it"
+                        )
+                        attach_parts.append(part)
+                        continue
 
+                    try:
                         if part.disk_name in context.backup_meta.cloud_storage.disks:
                             if skip_cloud_storage:
                                 logging.debug(
-                                    "Skipping restoring of {}.{} part {} on cloud storage because of --skip-cloud-storage flag",
-                                    table.database,
-                                    table.name,
-                                    part.name,
+                                    f"Skipping restoring of {table.database}.{table.name} part {part.name} "
+                                    "on cloud storage because of --skip-cloud-storage flag"
                                 )
                                 continue
                             cloud_storage_parts.append((table, part))
-                            continue
-
-                        # Keep the source identity; disk mapping affects only the destination.
-                        try:
+                        else:
+                            # Keep the backup part's identity for download; only
+                            # its local destination changes with the target policy.
                             fs_part_path = context.ch_ctl.get_detached_part_path(
                                 table,
                                 restore_disk_name(table, part.disk_name, storage_disks),
                                 part.name,
                             )
-                        except Exception as error:
-                            failed(part, error)
-                            if not keep_going or is_broken_executor(error):
-                                raise
-                            continue
-                        # Local parts must be verified again before they can be attached.
-                        if context.restore_context.part_downloaded(part):
                             context.restore_context.change_part_state(
                                 PartState.NOT_DOWNLOADED, part
                             )
-                        local_parts.download(part, fs_part_path)
+                            local_parts.download(part, fs_part_path)
+                    except Exception as error:
+                        download_failed(part, error)
+                        if not keep_going or is_broken_executor(error):
+                            raise
 
-                    disks.copy_parts(
-                        context.backup_meta,
-                        cloud_storage_parts,
-                        context.config_root["multiprocessing"][
-                            "cloud_storage_restore_workers"
-                        ],
-                        keep_going,
-                        part_callback=downloaded,
-                        on_error=failed,
-                    )
+                disks.copy_parts(
+                    context.backup_meta,
+                    cloud_storage_parts,
+                    context.config_root["multiprocessing"][
+                        "cloud_storage_restore_workers"
+                    ],
+                    keep_going,
+                    part_callback=downloaded,
+                    on_error=download_failed,
+                )
 
-                    local_parts.wait()
+                local_parts.wait()
 
                 context.ch_ctl.chown_detached_table_parts(
                     table, context.restore_context
@@ -1967,16 +1954,7 @@ class TableBackup(BackupManager):
                             # INVALID and cause it to be copied again.
                             disks.remove_part_copy_marker(table, part)
             finally:
-                original_error = sys.exc_info()[1]
-                try:
-                    context.restore_context.dump_state()
-                except Exception:
-                    if original_error is None:
-                        raise
-                    logging.warning(
-                        "Failed to save restore state while handling an error",
-                        exc_info=True,
-                    )
+                context.restore_context.dump_state()
 
         logging.info("Restoring tables data completed")
 
@@ -2010,63 +1988,66 @@ class TableBackup(BackupManager):
                     continue
                 raise error
 
+            scheduled_paths: list[str] = []
             downloaded_parts: list[tuple[DetachedPartMetadata, str, str, str]] = []
             disks_to_chown: set[str] = set()
-            with PartDownloadStaging(context.backup_layout) as staging:
-                for part in detached_parts:
-                    try:
-                        if part.object_storage and skip_cloud_storage:
-                            logging.debug(
-                                "Skipping detached part {}.{} {} on cloud disk {} because of --skip-cloud-storage flag",
-                                part.database,
-                                part.table,
-                                part.name,
-                                part.disk_name,
-                            )
-                            continue
-
-                        # Apply the same local disk mapping as for active parts.
-                        # Object-storage metadata remains tied to its original disk.
-                        target_disk = (
-                            part.disk_name
-                            if part.object_storage
-                            else restore_disk_name(table, part.disk_name, storage_disks)
-                        )
-                        destination = TableBackup._find_detached_restore_destination(
-                            context, table, part, target_disk
-                        )
-                        if destination is None:
-                            disks_to_chown.add(target_disk)
-                            continue
-                        restore_part, destination_path = destination
-
-                        staging_path = part_staging_path(destination_path)
-                        staging.paths.append(staging_path)
-                        # Carry the target disk through the asynchronous download so
-                        # ownership is fixed where the part was actually restored.
-                        callback = partial(
-                            downloaded_parts.append,
-                            (restore_part, staging_path, destination_path, target_disk),
-                        )
-                        # The archive is stored under its original backup name. The
-                        # possibly suffixed name applies only to the restore target.
-                        context.backup_layout.download_detached_part(
-                            context.backup_meta,
-                            part,
-                            staging_path,
-                            callback=callback,
-                        )
-                    except Exception as error:
-                        if not keep_going or is_broken_executor(error):
-                            raise
-                        logging.warning(
-                            "Restore of detached part {} failed: {}; skipping due to --keep-going flag",
+            for part in detached_parts:
+                try:
+                    if part.object_storage and skip_cloud_storage:
+                        logging.debug(
+                            "Skipping detached part {}.{} {} on cloud disk {} because of --skip-cloud-storage flag",
+                            part.database,
+                            part.table,
                             part.name,
-                            error,
-                            exc_info=True,
+                            part.disk_name,
                         )
+                        continue
 
-                staging.wait(keep_going)
+                    # Apply the same local disk mapping as for active parts.
+                    # Object-storage metadata remains tied to its original disk.
+                    target_disk = (
+                        part.disk_name
+                        if part.object_storage
+                        else restore_disk_name(table, part.disk_name, storage_disks)
+                    )
+                    destination = TableBackup._find_detached_restore_destination(
+                        context, table, part, target_disk
+                    )
+                    if destination is None:
+                        disks_to_chown.add(target_disk)
+                        continue
+                    restore_part, destination_path = destination
+
+                    staging_path = TableBackup._detached_staging_path(destination_path)
+                    scheduled_paths.append(staging_path)
+                    # Carry the target disk through the asynchronous download so
+                    # ownership is fixed where the part was actually restored.
+                    callback = partial(
+                        downloaded_parts.append,
+                        (restore_part, staging_path, destination_path, target_disk),
+                    )
+                    # The archive is stored under its original backup name. The
+                    # possibly suffixed name applies only to the restore target.
+                    context.backup_layout.download_detached_part(
+                        context.backup_meta,
+                        part,
+                        staging_path,
+                        callback=callback,
+                    )
+                except Exception:
+                    if keep_going:
+                        logging.exception(
+                            f"Restore of detached part {part.name} failed, skipping due to --keep-going flag"
+                        )
+                    else:
+                        try:
+                            context.backup_layout.wait(keep_going=True)
+                        finally:
+                            TableBackup._cleanup_detached_staging_paths(scheduled_paths)
+                        raise
+
+            try:
+                context.backup_layout.wait(keep_going)
 
                 for part, staging_path, target_path, target_disk in downloaded_parts:
                     try:
@@ -2081,6 +2062,8 @@ class TableBackup(BackupManager):
                             )
                         else:
                             raise
+            finally:
+                TableBackup._cleanup_detached_staging_paths(scheduled_paths)
 
             if disks_to_chown:
                 context.ch_ctl.chown_detached_table_parts(
@@ -2151,6 +2134,20 @@ class TableBackup(BackupManager):
         raise AssertionError("unreachable")
 
     @staticmethod
+    def _detached_staging_path(destination_path: str) -> str:
+        """Return a unique same-filesystem staging path for atomic promotion."""
+        return os.path.join(
+            os.path.dirname(destination_path), f".ch-backup-{uuid4().hex}"
+        )
+
+    @staticmethod
+    def _cleanup_detached_staging_paths(staging_paths: Iterable[str]) -> None:
+        """Remove private staging directories left by failed downloads."""
+        for staging_path in staging_paths:
+            if os.path.exists(staging_path):
+                shutil.rmtree(staging_path)
+
+    @staticmethod
     def _promote_detached_part(
         context: BackupContext,
         part: DetachedPartMetadata,
@@ -2162,7 +2159,11 @@ class TableBackup(BackupManager):
             raise ClickhouseBackupError(
                 f'Downloaded detached part does not match backup metadata: "{staging_path}"'
             )
-        promote_part(staging_path, destination_path)
+        if os.path.exists(destination_path):
+            raise ClickhouseBackupError(
+                f'Detached part path appeared during restore: "{destination_path}"'
+            )
+        os.rename(staging_path, destination_path)
 
     def _rewrite_table_schema(
         self,
@@ -2383,27 +2384,36 @@ class TableBackup(BackupManager):
             table.name,
             backup_meta.name,
         )
-
-        def failed(part: PartMetadata, error: Exception) -> None:
-            logging.warning(
-                'Failed to prepare part {} of "{}"."{}" from backup {}: {}; it is left to replicas',
-                part.name,
-                part.database,
-                part.table,
-                backup_meta.name,
-                error,
-                exc_info=True,
-            )
-
-        with LocalPartRestorer(
-            context.backup_layout,
-            backup_meta,
-            keep_going=True,
-            on_success=lambda _part: None,
-            on_error=failed,
-            check_data=True,
-        ) as local_parts:
-            for part in parts:
-                local_parts.download(part, part_paths[part.name])
-            local_parts.wait()
+        for part in parts:
+            try:
+                context.backup_layout.download_data_part(
+                    backup_meta,
+                    part,
+                    part_paths[part.name],
+                    callback=lambda _: None,
+                )
+            except Exception:
+                logging.warning(
+                    'Failed to download part {} of "{}"."{}", it is left to replicas',
+                    part.name,
+                    table.database,
+                    table.name,
+                    exc_info=True,
+                )
+        context.backup_layout.wait(keep_going=True)
+        for part in parts:
+            part_path = part_paths[part.name]
+            if not os.path.exists(part_path):
+                continue
+            try:
+                check_part_files(part_path)
+            except Exception:
+                logging.warning(
+                    'Part {} of "{}"."{}" does not match its checksums, it is left to replicas',
+                    part.name,
+                    table.database,
+                    table.name,
+                    exc_info=True,
+                )
+                shutil.rmtree(part_path)
         context.ch_ctl.chown_detached_table_parts(ch_table, context.restore_context)

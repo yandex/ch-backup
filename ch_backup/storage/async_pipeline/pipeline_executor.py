@@ -307,13 +307,8 @@ class PipelineExecutor:
             try:
                 self._exec_pool.wait_all(keep_going)
             except:
-                self.abort()
+                self._exec_pool.shutdown(graceful=False)
                 raise
-
-    def abort(self) -> None:
-        """Cancel queued jobs and force worker shutdown with bounded waits."""
-        if self._exec_pool:
-            self._exec_pool.shutdown(graceful=False)
 
     def _exec_pipeline(
         self,

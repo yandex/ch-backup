@@ -49,7 +49,7 @@ def _part(
 
 
 def _context(part: DetachedPartMetadata) -> tuple[MagicMock, TableMetadata, Table]:
-    context = MagicMock(backup_layout=MagicMock(download_detached_part=MagicMock()))
+    context = MagicMock()
     context.backup_meta = _backup_meta()
     table_meta = context.backup_meta.get_table("db", "table")
     table_meta.add_detached_part(part)

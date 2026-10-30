@@ -364,14 +364,13 @@ def test_backup_skips_unreadable_old_metadata(force, deduplicate_parts):
     }
     context.ch_ctl.get_databases.return_value = []
     context.backup_layout.get_backup_names.return_value = ["broken"]
-    get_backups = Mock(side_effect=_get_backups_with_unreadable())
-    context.backup_layout.get_backups = get_backups
+    context.backup_layout.get_backups.side_effect = _get_backups_with_unreadable()
     sources = BackupSources(False, False, False, False, False, False)
 
     assert backup.backup(sources, name="new", force=force) == ("new", None)
     assert context.backup_meta.state == BackupState.CREATED
     if force and not deduplicate_parts:
-        get_backups.assert_not_called()
+        context.backup_layout.get_backups.assert_not_called()
 
 
 def _backup_with_context(
@@ -907,8 +906,7 @@ def test_delete_unfreezes_only_own_backups(
     meta = _backup_metadata(copied_from=copied_from)
     context = MagicMock()
     context.backup_layout.get_backup.return_value = meta
-    delete_backup = Mock(side_effect=lambda name, unfreeze: unfreeze())
-    context.backup_layout.delete_backup = delete_backup
+    context.backup_layout.delete_backup.side_effect = lambda name, unfreeze: unfreeze()
     backup = ClickhouseBackup.__new__(ClickhouseBackup)
     backup.__dict__["_context"] = context
 
@@ -917,8 +915,8 @@ def test_delete_unfreezes_only_own_backups(
         None,
     )
 
-    delete_backup.assert_called_once()
-    assert delete_backup.call_args.args[0] == "backup1"
+    context.backup_layout.delete_backup.assert_called_once()
+    assert context.backup_layout.delete_backup.call_args.args[0] == "backup1"
     if unfreeze_expected:
         context.ch_ctl.system_unfreeze.assert_called_once_with("backup1")
     else:

@@ -31,37 +31,22 @@ class _FileChecksum(NamedTuple):
     uncompressed_size: int | None
 
 
-def check_part_files(part_path: str, *, verify_compressed_hashes: bool = False) -> None:
+def check_part_files(part_path: str) -> None:
     """
     Check that the files of a part on a local disk match its checksums.txt.
 
     Compressed files are checked by the checksums of their blocks, as hashing them in
-    Python is too slow. For reuse, verify_compressed_hashes also binds compressed
-    data to the manifest, rather than only checking each block's integrity.
-    Raises ValueError, OSError or CalledProcessError on a mismatch.
+    Python is too slow. Raises ValueError, OSError or CalledProcessError on a mismatch.
     """
-    _check_part_files(part_path, _read_checksums(part_path), verify_compressed_hashes)
-
-
-def _check_part_files(
-    part_path: str,
-    checksums: dict[str, _FileChecksum],
-    verify_compressed_hashes: bool,
-) -> None:
-    for name, checksum in checksums.items():
+    for name, checksum in _read_checksums(part_path).items():
         path = os.path.join(part_path, name)
         if os.path.isdir(path):
-            projection = _read_checksums(path)
-            if verify_compressed_hashes and (
-                sum(file.size for file in projection.values()) != checksum.size
-            ):
-                raise ValueError(f"{path} does not match its parent checksums.txt")
-            _check_part_files(path, projection, verify_compressed_hashes)
+            check_part_files(path)
             continue
         size = os.path.getsize(path)
         if size != checksum.size:
             raise ValueError(f"{path} has size {size} instead of {checksum.size}")
-        if checksum.uncompressed_size is None or verify_compressed_hashes:
+        if checksum.uncompressed_size is None:
             if _hash_file(path) != checksum.hash:
                 raise ValueError(f"{path} does not match its hash in checksums.txt")
         else:

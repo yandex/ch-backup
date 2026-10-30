@@ -1150,10 +1150,7 @@ def test_restore_copies_a_deduplicated_part_from_its_own_backup(part, tmp_path):
     )
 
     with unittest.mock.patch(
-        "ch_backup.clickhouse.disks._ch_disks_copy",
-        side_effect=lambda _ctl, _src_disk, _src_path, _dst_disk, dst_path, _tag: (
-            Path(target_disk.path) / dst_path
-        ).mkdir(parents=True),
+        "ch_backup.clickhouse.disks._ch_disks_copy"
     ) as copy_command:
         disk_manager._run_copy_command(disk_manager._backup_meta, table, part)
 
@@ -1205,7 +1202,7 @@ def fixture_part_copy(tmp_path):
 
 @pytest.mark.parametrize("version", ["23.3", "23.9", "24.7"])
 @pytest.mark.parametrize("inplace", [False, True])
-@pytest.mark.parametrize("previous_mode", ["copy", "inplace"])
+@pytest.mark.parametrize("previous_mode", ["copy", "inplace", None, "incomplete"])
 def test_restore_replaces_incomplete_part_without_nesting(
     part_copy, version, inplace, previous_mode
 ):
@@ -1271,17 +1268,14 @@ def test_restore_records_copy_mode_before_writing_a_part_and_keeps_it_on_failure
 ):
     manager, table, part, _, detached = part_copy
     target = detached / part.name
-    staging = detached / f".ch-backup-{part.name}" / part.name
-    mode_file = staging.with_name(f".{part.name}.ch-backup-copy-mode")
+    mode_file = detached / f".{part.name}.ch-backup-copy-mode"
     # pylint: disable=protected-access
     manager._use_local_copy = inplace
 
-    def interrupted_copy(_from_disk, _from_path, to_disk, to_path, _tag):
-        destination = Path(manager._ch_availible_disks[to_disk].path) / to_path
-        assert destination == staging
+    def interrupted_copy(*_args):
         assert mode_file.read_text() == ("inplace" if inplace else "copy")
-        destination.mkdir()
-        (destination / "id.bin").write_text("partial metadata")
+        target.mkdir()
+        (target / "id.bin").write_text("partial metadata")
         raise ClickHouseDisksException("interrupted copy")
 
     with unittest.mock.patch.object(manager, "_copy_dir", side_effect=interrupted_copy):
@@ -1289,41 +1283,9 @@ def test_restore_records_copy_mode_before_writing_a_part_and_keeps_it_on_failure
             manager._run_copy_command(manager._backup_meta, table, part)
 
     assert mode_file.read_text() == ("inplace" if inplace else "copy")
-    assert not target.exists()
 
 
-@pytest.mark.parametrize("previous_mode", [None, "incomplete"])
-def test_restore_preserves_unowned_cloud_part(part_copy, previous_mode):
-    # pylint: disable=protected-access
-    manager, table, part, source, detached = part_copy
-    target = detached / part.name
-    target.mkdir()
-    (target / "id.bin").write_text("existing data")
-    mode_file = target.with_name(f".{target.name}.ch-backup-copy-mode")
-    if previous_mode is not None:
-        mode_file.write_text(previous_mode)
-
-    def copy_objects(_ctl, _from_disk, _from_path, to_disk, to_path, _tag):
-        shutil.copytree(
-            source, Path(manager._ch_availible_disks[to_disk].path) / to_path
-        )
-
-    with (
-        unittest.mock.patch(
-            "ch_backup.clickhouse.disks._ch_disks_copy", side_effect=copy_objects
-        ),
-        pytest.raises(ClickHouseDisksException, match="not owned by ch-backup"),
-    ):
-        manager._run_copy_command(manager._backup_meta, table, part)
-    assert (target / "id.bin").read_text() == "existing data"
-    assert (
-        mode_file.read_text() == previous_mode
-        if previous_mode
-        else not mode_file.exists()
-    )
-
-
-def test_restore_does_not_publish_or_mark_downloaded_when_cleanup_fails(part_copy):
+def test_restore_does_not_copy_or_mark_downloaded_when_cleanup_fails(part_copy):
     manager, table, part, _, detached = part_copy
     (detached / part.name).mkdir()
     mode_file = detached / f".{part.name}.ch-backup-copy-mode"
@@ -1344,7 +1306,7 @@ def test_restore_does_not_publish_or_mark_downloaded_when_cleanup_fails(part_cop
                 manager._backup_meta, [(table, part)], 1, False, callback
             )
 
-    copy_command.assert_called_once()
+    copy_command.assert_not_called()
     callback.assert_not_called()
     assert mode_file.read_text() == "copy"
 
@@ -1371,10 +1333,8 @@ def test_restore_keeps_copy_ownership_until_attach_succeeds(
     table_meta = TableMetadata(part.database, part.table, "MergeTree", None)
     table_meta.add_part(part)
 
-    def copy_objects(_ctl, _from_disk, _from_path, _to_disk, to_path, _tag):
-        shutil.copytree(
-            source, Path(manager._ch_availible_disks[part.disk_name].path) / to_path
-        )
+    def copy_objects(*_args):
+        shutil.copytree(source, target)
 
     def remove_objects(*_args):
         shutil.rmtree(target)

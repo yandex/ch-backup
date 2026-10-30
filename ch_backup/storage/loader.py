@@ -290,10 +290,6 @@ class StorageLoader:
         """
         self._ploader.wait(keep_going)
 
-    def abort(self) -> None:
-        """Stop transfer workers without draining their pending operations."""
-        self._ploader.abort()
-
     def list_dir(
         self, remote_path: str, recursive: bool = False, absolute: bool = False
     ) -> Sequence[str]:

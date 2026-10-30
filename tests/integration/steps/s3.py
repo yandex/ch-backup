@@ -69,14 +69,26 @@ def step_cloud_storage_bucket_has_no_prefix(context, bucket, prefix):
 @when("we save S3 object keys of a detached data part on {node:w}")
 def step_save_detached_part_object_keys(context, node):
     conf = get_step_data(context)
-    path = get_part_path(
-        context, node, conf["database"], conf["table"], conf["part"], detached=True
+    table_paths = (
+        ClickhouseClient(context, node)
+        .get_response(
+            f"SELECT arrayJoin(data_paths) FROM system.tables "
+            f"WHERE database = '{conf['database']}' AND name = '{conf['table']}' "
+            "FORMAT TSVRaw"
+        )
+        .splitlines()
     )
     container = get_container(context, node)
+    paths = []
+    for table_path in table_paths:
+        path = f"{table_path.rstrip('/')}/detached/{conf['part']}"
+        if container.exec_run(["test", "-d", path], user="root").exit_code == 0:
+            paths.append(path)
+    assert len(paths) == 1, f"Expected one detached part, found paths: {paths}"
     # Table-level objects such as format_version.txt survive part replacement.
     context.saved_s3_object_keys = (
         conf["bucket"],
-        _read_part_object_keys(container, path, conf["path"]),
+        _read_part_object_keys(container, paths[0], conf["path"]),
     )
 
 
