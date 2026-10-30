@@ -623,6 +623,7 @@ def test_list_command_with_unreadable_metadata(format_, flags):
     if format_ == "json":
         rows = json.loads(result.stdout)
         assert [row["name"] for row in rows] == ["good", "broken"]
+        assert all(row["copy"] is None for row in rows)
         assert rows[0]["metadata_error"] is None
         assert rows[1]["state"] == "unknown"
         assert rows[1]["metadata_error"] == "S3RetryingError: InternalError"
@@ -636,6 +637,70 @@ def test_list_command_with_unreadable_metadata(format_, flags):
             value in result.stdout
             for value in ("good", "broken", "unknown", "InternalError")
         )
+        lines = result.stdout.splitlines()
+        start, end = lines[0].index("copy"), lines[0].index("metadata_error")
+        assert all(not line[start:end].strip() for line in lines[2:])
+
+
+@pytest.mark.parametrize("format_", ["json", "table"])
+@pytest.mark.parametrize("with_updated_at", [False, True])
+@pytest.mark.parametrize(
+    "state,status",
+    [("creating", "pending"), ("created", "completed"), ("failed", "failed")],
+)
+def test_list_command_reports_copy(format_, with_updated_at, state, status):
+    """Show saved copy scopes and timestamp without changing the backup state."""
+    metadata = BackupMetadata("copied", "2", "26.6", "%Y-%m-%d %H:%M:%S.%f %z").dump(
+        light=True
+    )
+    copy: dict = {"scopes": {"files": "completed", "cloud_storage": status}}
+    updated_at = "2026-10-30 10:00:00.123456 +0300"
+    if with_updated_at:
+        copy["updated_at"] = updated_at
+    metadata["meta"].update(state=state, copy=copy)
+    backup = MagicMock()
+
+    def list_backups(_state, *, unreadable):
+        """Return a copy and a regular backup alongside unreadable metadata."""
+        unreadable["broken"] = "StorageError: unreadable metadata"
+        return [
+            BackupMetadata.load(metadata),
+            BackupMetadata("regular", "2", "26.6", "%Y-%m-%d"),
+        ]
+
+    backup.list.side_effect = list_backups
+
+    result = _invoke(cli.list_command, ["list", "-av", "--format", format_], backup)
+
+    assert result.exit_code == 0, result.output
+    if format_ == "json":
+        rows = json.loads(result.stdout)
+        assert [row["name"] for row in rows] == ["copied", "regular", "broken"]
+        assert rows[0]["state"] == state
+        assert [row["copy"] for row in rows] == [copy, None, None]
+    else:
+        lines = result.stdout.splitlines()
+        assert lines[2].split()[1] == state
+        start, end = lines[0].index("copy"), lines[0].index("metadata_error")
+        cell = "\n".join(line[start:end].rstrip() for line in lines[2:])
+        assert cell == (
+            f"files: completed\ncloud_storage: {status}"
+            + (f"\n\nupdated_at: {updated_at}" if with_updated_at else "")
+            + "\n\n"
+        )
+
+
+def test_list_command_without_verbose():
+    """Keep the plain list limited to backup names even when copy metadata exists."""
+    copied = BackupMetadata("copied", "2", "26.6", "%Y-%m-%d")
+    copied.copy_updated_at = datetime(2026, 10, 30, tzinfo=timezone.utc)
+    backup = MagicMock()
+    backup.list.return_value = [copied]
+
+    result = _invoke(cli.list_command, ["list", "-a"], backup)
+
+    assert result.exit_code == 0
+    assert result.stdout == "copied\n"
 
 
 @pytest.mark.parametrize("format_", ["json", "table"])

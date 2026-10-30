@@ -263,6 +263,7 @@ def list_command(
     records = []
     for backup in backups:
         data_skipped_tables, incomplete_tables = backup.count_skipped_data_tables()
+        copy = backup.dump(light=True)["meta"].get("copy")
         record: dict = OrderedDict(
             (
                 ("name", backup.name),
@@ -278,12 +279,20 @@ def list_command(
         )
         if format_ == "json":
             record["labels"] = backup.labels
+            record["copy"] = copy
             record["cloud_disks"] = backup.cloud_storage.disks
             record["exception"] = backup.exception
         else:
             record["labels"] = "\n".join(
                 f"{name}: {value}" for name, value in backup.labels.items()
             )
+            copy_lines = [
+                f"{scope}: {status}"
+                for scope, status in (copy or {}).get("scopes", {}).items()
+            ]
+            if copy and copy.get("updated_at"):
+                copy_lines.extend(("", f"updated_at: {copy['updated_at']}"))
+            record["copy"] = "\n".join(copy_lines).lstrip("\n")
         if all_ or include_unreadable:
             record["metadata_error"] = None
         records.append(record)
@@ -299,6 +308,7 @@ def list_command(
                 "data_skipped_tables",
                 "incomplete_tables",
                 "labels",
+                "copy",
             )
         )
         record = {"name": name, "state": "unknown", **record}
