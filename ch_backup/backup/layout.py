@@ -552,10 +552,12 @@ class BackupLayout:
         use_light_meta: bool = False,
         *,
         unreadable: dict[str, str] | None = None,
+        excluded_names: frozenset[str] = frozenset(),
     ) -> list[BackupMetadata]:
         """
         Return list of existing backups sorted by start_time in descent order.
         If unreadable is provided, collect per-backup read errors there.
+        If excluded are provided, don't even try to read their metadata.
         """
         logging.debug(
             "Collecting {} of existing backups",
@@ -564,6 +566,8 @@ class BackupLayout:
 
         backups = []
         for name in self.get_backup_names():
+            if name in excluded_names:
+                continue
             logging.debug(
                 "Collecting {} of backup: {}",
                 "light metadata" if use_light_meta else "metadata",

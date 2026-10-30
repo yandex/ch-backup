@@ -61,6 +61,7 @@ from ch_backup.logic.udf import UDFBackup
 from ch_backup.logic.workload_entities import WorkloadEntitiesBackup
 from ch_backup.storage.async_pipeline.stages import EncryptStage
 from ch_backup.storage.engine.s3 import validate_s3_retry_config
+from ch_backup.storage.engine.s3.s3_retry import S3RetryingError
 from ch_backup.util import cached_property, now, utcnow
 from ch_backup.version import get_version
 
@@ -560,17 +561,30 @@ class ClickhouseBackup:
         """
         Delete the specified backup.
         """
-        found = False
         deleting_backups = []
         retained_backups = []
-        unreadable: dict[str, str] = {}
         copying_since = self._copying_since()
         with self._context.locker(operation="DELETE"):
-            # Use light metadata in backups iteration to avoid high memory usage.
-            for i, backup in enumerate(self.list(unreadable=unreadable)):
+            # Other backups must be readable: their references protect shared data.
+            backups = self._context.backup_layout.get_backups(
+                use_light_meta=True, excluded_names=frozenset({backup_name})
+            )
+            try:
+                target = self._context.backup_layout.get_backup(
+                    backup_name, use_light_meta=True
+                )
+            except (StorageError, S3RetryingError):
+                logging.exception("Cannot read metadata of backup {}", backup_name)
+                target = None
+            else:
+                if target is None or target.name != backup_name:
+                    raise BackupNotFound(backup_name)
+                backups.append(target)
+                backups.sort(key=lambda backup: backup.start_time, reverse=True)
+
+            for i, backup in enumerate(backups):
                 if backup.name == backup_name:
                     deleting_backups.append(backup)
-                    found = True
                     continue
 
                 if (
@@ -583,13 +597,6 @@ class ClickhouseBackup:
                 else:
                     retained_backups.append(backup)
 
-            if blocking := set(unreadable) - {backup_name}:
-                raise StorageError(
-                    f"Failed to read metadata of backups: {', '.join(sorted(blocking))}"
-                )
-            if not found and backup_name not in unreadable:
-                raise BackupNotFound(backup_name)
-
             dedup_references = collect_dedup_references_for_batch_backup_deletion(
                 layout=self._context.backup_layout,
                 retained_backups_light_meta=retained_backups,
@@ -599,7 +606,7 @@ class ClickhouseBackup:
                 },
             )
 
-            if backup_name in unreadable and dedup_references[backup_name]:
+            if target is None and dedup_references[backup_name]:
                 raise ClickhouseBackupError(
                     f"Backup {backup_name} has unreadable metadata and is referenced "
                     "by other backups"
@@ -610,7 +617,7 @@ class ClickhouseBackup:
                 deleted_name, msg = self._delete(backup, dedup_references[backup.name])
                 if backup_name == backup.name:
                     result = (deleted_name, msg)
-            if backup_name in unreadable:
+            if target is None:
                 result = self._delete_unreadable(backup_name)
 
         return result
