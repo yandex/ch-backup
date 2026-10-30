@@ -941,13 +941,19 @@ def delete_command(
         "all_",
         is_flag=True,
         default=False,
-        help='Copy all backups in the state "created". Older backups are copied first.',
+        help="Copy created backups, oldest first. Backups without table data are skipped "
+        "by default; use --no-only-with-data to include them.",
     ),
     option(
         "--keep-going",
         is_flag=True,
         default=False,
         help="Continue copying independent objects and backups after errors.",
+    ),
+    option(
+        "--only-with-data/--no-only-with-data",
+        default=None,
+        help="Select only backups with data for LAST and --all. Enabled by default.",
     ),
     option(
         "--report-path",
@@ -1037,6 +1043,7 @@ def copy_command(
     cloud_storage_source_bucket: str | None,
     cloud_storage_source_path: str | None,
     keep_going: bool = False,
+    only_with_data: bool | None = None,
     report_path: str | None = None,
     scopes: tuple[str, ...] = (),
 ) -> None:
@@ -1051,6 +1058,8 @@ def copy_command(
         copy_config: dict = {"cloud_storage": {"source": {}, "target": {}}}
         if server_side_copy is not None:
             copy_config["server_side_copy"] = server_side_copy
+        if only_with_data is not None:
+            copy_config["only_with_data"] = only_with_data
         if resume is not None:
             copy_config["resume"] = resume
         for section, key, value in (
@@ -1068,12 +1077,18 @@ def copy_command(
         )
         target_cfg.merge({"copy": copy_config})
         # Validate before resolving LAST, which already lists the source storage.
+        if not isinstance(target_cfg["copy"]["only_with_data"], bool):
+            raise ConfigurationError("copy.only_with_data must be a boolean")
         copy_deduplication_cutoff(target_cfg["copy"], command_start)
         backup_names = None
         if name:
             if name == "LAST" and CopyScope.FILES in selected_scopes:
                 name = _validate_and_resolve_name(
-                    ctx, ch_backup, name, BackupState.CREATED
+                    ctx,
+                    ch_backup,
+                    name,
+                    BackupState.CREATED,
+                    only_with_data=target_cfg["copy"]["only_with_data"],
                 )
             backup_names = [name]
         ch_backup.copy(
@@ -1140,8 +1155,13 @@ def _validate_and_resolve_name(
     ch_backup: ClickhouseBackup,
     name: str,
     backup_state: BackupState = None,
+    only_with_data: bool = False,
 ) -> str:
-    """Check that the backup exists; LAST is refused while any metadata is unreadable."""
+    """
+    Check that the backup exists; LAST is refused while any metadata is unreadable.
+
+    With only_with_data, LAST is resolved to the latest backup with data parts.
+    """
     unreadable: dict[str, str] = {}
     backups = ch_backup.list(backup_state, unreadable=unreadable)
 
@@ -1152,6 +1172,10 @@ def _validate_and_resolve_name(
             )
         if not backups:
             ctx.fail("There are no backups.")
+        if only_with_data:
+            backups = [b for b in backups if not b.is_empty()]
+            if not backups:
+                ctx.fail("There are no backups with data.")
         return backups[0].name
 
     if name not in unreadable and name not in (b.name for b in backups):

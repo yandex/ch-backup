@@ -20,7 +20,7 @@ from ch_backup.backup.sources import BackupSources
 from ch_backup.clickhouse.models import Database
 from ch_backup.config import DEFAULT_CONFIG, Config
 from ch_backup.exceptions import ConfigurationError, StorageError, TerminatingSignal
-from tests.unit.test_backup_copy import CopyTestContext, _backup
+from tests.unit.test_backup_copy import CopyTestContext, _backup, _part
 from tests.unit.utils import parametrize
 
 
@@ -137,6 +137,48 @@ def test_copy_command_passes_resume(
 
 
 @pytest.mark.parametrize(
+    "args,expected", [([], "full"), (["--no-only-with-data"], "schema")]
+)
+def test_copy_last_skips_empty_backups(
+    args: list[str], expected: str, copy_backup: MagicMock
+) -> None:
+    """LAST is resolved to the latest backup with data parts unless told otherwise."""
+    schema_backup = _backup("schema")
+    schema_backup.schema_only = True
+    copy_backup.list.return_value = [
+        schema_backup,
+        _backup("no-parts"),
+        _backup("full", parts={"all_1_1_0": _part()}),
+    ]
+
+    result = CliRunner().invoke(
+        Group(commands=[cli.copy_command]),
+        ["copy", "LAST", *args],
+        obj={"backup": copy_backup},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert copy_backup.copy.call_args.args[1] == [expected]
+
+
+def test_copy_last_fails_with_only_empty_backups(copy_backup: MagicMock) -> None:
+    """LAST is not resolved when no backup has data parts."""
+    schema_backup = _backup("schema")
+    schema_backup.schema_only = True
+    copy_backup.list.return_value = [schema_backup, _backup("no-parts")]
+
+    result = CliRunner().invoke(
+        Group(commands=[cli.copy_command]),
+        ["copy", "LAST"],
+        obj={"backup": copy_backup},
+    )
+
+    assert result.exit_code == 2
+    assert "There are no backups with data." in result.output
+    copy_backup.copy.assert_not_called()
+
+
+@pytest.mark.parametrize(
     "args,scopes",
     [
         ([], ()),
@@ -244,7 +286,7 @@ def test_copy_window_cli_override_before_last_lookup(copy_backup, days, monkeypa
 
     def list_backups(*_args, **_kwargs):
         clock[0] += timedelta(seconds=30)
-        return [_backup("selected")]
+        return [_backup("selected", parts={"all_1_1_0": _part()})]
 
     copy_backup.config["copy"]["deduplication_age_limit"] = {"days": 7}
     copy_backup.list.side_effect = list_backups
@@ -788,3 +830,40 @@ def test_http_handlers_from_config() -> None:
     assert backup_mock.backup.call_args.args[0] == BackupSources.for_backup(
         http_handlers=True
     )
+
+
+@pytest.mark.parametrize("configured", [False, True])
+@pytest.mark.parametrize("override", [None, False, True])
+def test_copy_only_with_data_config_and_cli(copy_backup, configured, override):
+    """CLI overrides the configured filter for both LAST and --all."""
+    copy_backup.config["copy"]["only_with_data"] = configured
+    copy_backup.list.return_value = [
+        _backup("empty"),
+        _backup("data", parts={"all_1_1_0": _part()}),
+    ]
+    args = (
+        []
+        if override is None
+        else ["--only-with-data" if override else "--no-only-with-data"]
+    )
+    expected = configured if override is None else override
+    for selection in ["LAST", "--all"]:
+        result = _invoke(cli.copy_command, ["copy", selection, *args], copy_backup)
+        assert result.exit_code == 0, result.output
+        config, names = copy_backup.copy.call_args.args
+        assert config["copy"]["only_with_data"] is expected
+        assert names == (
+            None if selection == "--all" else ["data" if expected else "empty"]
+        )
+
+
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, None, [], {}])
+@pytest.mark.parametrize("selection", ["LAST", "--all"])
+def test_copy_rejects_non_boolean_only_with_data(copy_backup, value, selection):
+    """Reject invalid filter settings before listing or copying backups."""
+    copy_backup.config["copy"]["only_with_data"] = value
+    result = _invoke(cli.copy_command, ["copy", selection], copy_backup)
+    assert isinstance(result.exception, ConfigurationError)
+    assert str(result.exception) == "copy.only_with_data must be a boolean"
+    copy_backup.list.assert_not_called()
+    copy_backup.copy.assert_not_called()

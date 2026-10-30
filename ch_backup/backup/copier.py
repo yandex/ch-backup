@@ -301,6 +301,9 @@ class BackupCopier:
             result.add_error(e, "planning", source=source)
 
     def _validate_configs(self, command_start: datetime) -> None:
+        """Validate copy settings before selecting backups or writing objects."""
+        if not isinstance(self._copy_config["only_with_data"], bool):
+            raise ConfigurationError("copy.only_with_data must be a boolean")
         cutoff = copy_deduplication_cutoff(self._copy_config, command_start)
         self._target_deduplication = (
             CopyDeduplication(self._target_layout, cutoff, command_start)
@@ -360,6 +363,7 @@ class BackupCopier:
                         if staged
                         else backup.state != BackupState.CREATED
                     )
+                    or (self._copy_config["only_with_data"] and backup.is_empty())
                 ):
                     self._report.backups.remove(result)
                     continue

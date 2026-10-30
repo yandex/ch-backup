@@ -170,7 +170,7 @@ Commands:
 
 ### Copying backups to another storage
 
-`ch-backup copy` copies a backup (or all backups with `--all`) to another S3 bucket,
+`ch-backup copy` copies a backup (or selected created backups with `--all`) to another S3 bucket,
 endpoint or `backup.path_root`. The main configuration describes the source storage. The
 target storage is described by the main configuration merged with a configuration file passed
 in `--target-config` and values passed in `--target-config-parameter`, so it's enough to
@@ -206,6 +206,14 @@ storage:
 
 Behavior and limitations:
 
+- `copy.only_with_data` is enabled by default: `LAST` selects the latest created backup
+  with data, and `--all` skips backups without data. The filter uses the data size in backup
+  metadata, including deduplicated and detached parts. Override it with
+  `--only-with-data` / `--no-only-with-data`. Backups explicitly selected by name are copied
+  regardless of this setting. Schema-only and access-control-only backups are excluded too:
+  access entities and other definitions do not count as table data. To preserve all created
+  snapshots, including permission changes in access-only backups, use
+  `copy --all --no-only-with-data` or set `copy.only_with_data: false`.
 - A final text report lists copied, skipped, failed and unprocessed backups. `--report-path`
   also saves a JSON report (schema version 1) once the command finishes, including failures
   and handled termination signals. Any failure gives a nonzero exit code.
