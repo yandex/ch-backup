@@ -378,6 +378,51 @@ def _dedup_row(name: str) -> dict:
     }
 
 
+@pytest.fixture(name="dedup_context")
+def fixture_dedup_context():
+    return Mock()
+
+
+@pytest.mark.parametrize(
+    "current,stored,physical,expected_physical",
+    [
+        ("all_1_1_0", "all_1_1_0", "", "all_1_1_0"),
+        ("all_1_1_0_7", "all_1_1_0_3", "", "all_1_1_0_3"),
+        ("all_1_1_0_7", "all_1_1_0_3", "all_1_1_0", "all_1_1_0"),
+        ("broken", "broken", "", "broken"),
+    ],
+)
+def test_deduplicate_keeps_logical_name_and_physical_owner(
+    dedup_context, current, stored, physical, expected_physical
+):
+    dedup_context.ch_ctl.get_deduplication_info.return_value = [
+        {
+            **_dedup_row(stored),
+            "current_name": current,
+            "link_part_name": physical,
+            "verified": True,
+        }
+    ]
+
+    parts = deduplicate_parts(dedup_context, "db1", "table1", {}, {})
+
+    assert list(parts) == [current]
+    part = parts[current]
+    assert (part.name, part.link, part.deduplicated_part_name) == (
+        current,
+        DEDUP_BACKUP_NAME,
+        expected_physical,
+    )
+
+
+def test_deduplicate_rejects_other_block_range(dedup_context):
+    dedup_context.ch_ctl.get_deduplication_info.return_value = [
+        {**_dedup_row("all_2_2_0"), "current_name": "all_1_1_0", "verified": True}
+    ]
+
+    assert not deduplicate_parts(dedup_context, "db1", "table1", {}, {})
+
+
 def test_table_is_listed_once_for_all_batches():
     """
     Data of a table in a source backup is listed once and reused by the next

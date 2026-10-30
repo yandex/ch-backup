@@ -17,7 +17,9 @@ from ch_backup.backup.metadata import (
     CopyScope,
     CopyScopeStatus,
     DetachedPartMetadata,
+    PartIdentity,
     PartMetadata,
+    PartReference,
     normalize_backup_link,
 )
 from ch_backup.backup.metadata.table_metadata import (
@@ -330,6 +332,54 @@ class TestPartMetadata:
         "table": "test_table",
         "name": "20181017T210300",
     }
+
+    @pytest.mark.parametrize("link", [None, "older_backup"])
+    def test_identity_keeps_logical_name(self, link):
+        raw = {
+            **self._BASE_RAW,
+            "link": link,
+            "link_part_name": "all_1_1_0" if link else None,
+        }
+        part = PartMetadata.load("db1", "table1", "all_1_1_0_7", raw)
+
+        assert part.identity == PartIdentity("db1", "table1", "all_1_1_0_7")
+
+    @pytest.mark.parametrize(
+        "database,table,name",
+        [
+            ("db2", "table1", "all_1_1_0"),
+            ("db1", "table2", "all_1_1_0"),
+            ("db1", "table1", "all_1_1_0_7"),
+        ],
+    )
+    def test_identity_uses_part_address(self, database, table, name):
+        part = PartMetadata.load(database, table, name, self._BASE_RAW)
+
+        assert part.identity == PartIdentity(database, table, name)
+
+    @pytest.mark.parametrize(
+        "link,stored_name,expected_backup,expected_name",
+        [
+            (None, None, "current", "all_1_1_0_7"),
+            ("owner", None, "owner", "all_1_1_0_7"),
+            ("owner", "all_1_1_0", "owner", "all_1_1_0"),
+            (None, "all_1_1_0", "current", "all_1_1_0"),
+        ],
+    )
+    def test_stored_reference_resolves_backup_and_name_independently(
+        self, link, stored_name, expected_backup, expected_name
+    ):
+        part = PartMetadata.load(
+            "db1",
+            "table1",
+            "all_1_1_0_7",
+            {**self._BASE_RAW, "link": link, "link_part_name": stored_name},
+        )
+
+        assert part.stored_reference("current") == PartReference(
+            expected_backup, PartIdentity("db1", "table1", expected_name)
+        )
+        assert part.identity.part_name == "all_1_1_0_7"
 
     @pytest.mark.parametrize(
         ("raw_link", "expected_backup_name"),

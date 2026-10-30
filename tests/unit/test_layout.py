@@ -475,6 +475,36 @@ class TestTableDataFiles:
 
     # pylint: disable=protected-access
 
+    def test_linked_part_operations_use_owner_and_stored_name(self, tmp_path):
+        layout = make_layout()
+        storage = layout._storage_loader = MagicMock()
+        part = PartMetadata(
+            "db1",
+            "t1",
+            "all_1_1_0_7",
+            "c",
+            1024,
+            ["data.bin"],
+            True,
+            link="owner",
+            link_part_name="all_1_1_0",
+            encrypted=False,
+        )
+        backup = BackupMetadata("current", "2", "26.8", "%Y-%m-%d")
+        expected_path = "ch_backup/owner/data/db1/t1/all_1_1_0/all_1_1_0.tar"
+        storage.list_dir.return_value = ["all_1_1_0.tar"]
+        storage.get_file_size.return_value = layout._target_part_size(
+            part, encrypted=False
+        )
+
+        assert layout.get_data_part_files(backup.name, part) == [expected_path]
+        assert layout.check_data_part(backup.name, part)
+        storage.get_file_size.assert_called_once_with(expected_path)
+
+        layout.download_data_part(backup, part, str(tmp_path), lambda _: None)
+        assert storage.download_files.call_args.kwargs["remote_path"] == expected_path
+        assert part.name == "all_1_1_0_7"
+
     def test_files_are_grouped_by_part(self):
         """One listing of a table gives files of all its parts."""
         layout = make_layout()
