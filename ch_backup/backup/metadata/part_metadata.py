@@ -98,6 +98,26 @@ class PartMetadata(Slotted):
         )
 
     @property
+    def logical_identity(self) -> tuple[str, str, str]:
+        """Return database, table, and logical part name, independent of file ownership."""
+        return self.database, self.table, self.name
+
+    @property
+    def stored_identity(self) -> tuple[str, str, str]:
+        """Return database, table, and stored part name, including before a mutation rename."""
+        return self.database, self.table, self.deduplicated_part_name
+
+    def resolve_stored_reference(
+        self, containing_backup_name: str
+    ) -> tuple[str, str, str, str]:
+        """Return owner backup name followed by the stored part identity.
+
+        Linked parts use their owner backup. Other parts use the containing backup.
+        Physical name and logical name may differ.
+        """
+        return self.link or containing_backup_name, *self.stored_identity
+
+    @property
     def checksum(self) -> str:
         """
         Return data part checksum.
