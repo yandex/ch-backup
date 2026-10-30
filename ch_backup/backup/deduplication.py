@@ -232,12 +232,9 @@ def _populate_dedup_info(
                     ):
                         continue
 
-                    if part.link:
-                        backup_name = part.link
-                        if backup_name not in dedup_backup_names:
-                            continue
-                    else:
-                        backup_name = backup.name
+                    backup_name, _, _, _ = part.stored_reference(backup.name)
+                    if part.link and backup_name not in dedup_backup_names:
+                        continue
 
                     part_dedup = PartDedupInfo(
                         database=db.name,
@@ -454,10 +451,11 @@ def collect_dedup_references_for_batch_backup_deletion(
                     if not part.link:
                         continue
 
-                    if part.link not in deleting_backup_names:
+                    owner, _, _, _ = part.stored_reference(backup.name)
+                    if owner not in deleting_backup_names:
                         continue
 
-                    _add_part_to_dedup_references(dedup_references[part.link], part)
+                    _add_part_to_dedup_references(dedup_references[owner], part)
 
     return dedup_references
 
@@ -465,4 +463,5 @@ def collect_dedup_references_for_batch_backup_deletion(
 def _add_part_to_dedup_references(
     dedup_references: DedupReferences, part: PartMetadata
 ) -> None:
-    dedup_references[part.database][part.table].add(part.deduplicated_part_name)
+    database, table, name = part.stored_identity
+    dedup_references[database][table].add(name)

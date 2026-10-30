@@ -445,8 +445,9 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         """
         Copy data from temporary cloud storage disk to actual.
         """
-        source_part_name = part.deduplicated_part_name
-        source_backup_name = part.link or backup_meta.name
+        source_backup_name, _, _, source_part_name = part.stored_reference(
+            backup_meta.name
+        )
 
         routine_tag = f"{table.database}.{table.name}::{source_part_name}"
         target_disk = self._ch_availible_disks[part.disk_name]

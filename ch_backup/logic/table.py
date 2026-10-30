@@ -1823,7 +1823,7 @@ class TableBackup(BackupManager):
                     table_meta.database, table_meta.name
                 )  # type: ignore
                 attach_parts: list[PartMetadata] = []
-                failed_parts: set[str] = set()
+                failed_parts: set[tuple[str, str, str]] = set()
 
                 # Both pools collect these callbacks before the next table.
                 # pylint: disable=cell-var-from-loop
@@ -1834,9 +1834,12 @@ class TableBackup(BackupManager):
                     attach_parts.append(part)
 
                 def download_failed(part: PartMetadata, error: BaseException) -> None:
-                    if not isinstance(error, Exception) or part.name in failed_parts:
+                    if (
+                        not isinstance(error, Exception)
+                        or part.identity in failed_parts
+                    ):
                         return
-                    failed_parts.add(part.name)
+                    failed_parts.add(part.identity)
                     context.restore_context.add_failed_part(part, error)
                     context.restore_context.change_part_state(PartState.INVALID, part)
                     logging.warning(

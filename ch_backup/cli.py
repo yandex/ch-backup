@@ -904,12 +904,20 @@ def fix_admin_user_command(
     default=False,
     help="Do nothing if backup does not exist",
 )
+@option(
+    "--delete-cloud-storage-data",
+    is_flag=True,
+    default=False,
+    help="Also delete external cloud storage data owned by copied backups.",
+)
 def delete_command(
     ctx: Context,
     ch_backup: ClickhouseBackup,
     name: str,
     purge_partial: bool,
     force: bool,
+    *,
+    delete_cloud_storage_data: bool,
 ) -> None:
     """Delete particular backup."""
     try:
@@ -922,7 +930,11 @@ def delete_command(
             return
         raise
 
-    deleted_backup_name, msg = ch_backup.delete(name, purge_partial)
+    deleted_backup_name, msg = ch_backup.delete(
+        name,
+        purge_partial=purge_partial,
+        delete_cloud_storage_data=delete_cloud_storage_data,
+    )
 
     if msg:
         print(msg, file=sys.stderr, flush=True)
@@ -1107,9 +1119,17 @@ def copy_command(
 
 
 @command(name="purge")
-def purge_command(_ctx: Context, ch_backup: ClickhouseBackup) -> None:
+@option(
+    "--delete-cloud-storage-data",
+    is_flag=True,
+    default=False,
+    help="Also delete external cloud storage data owned by copied backups.",
+)
+def purge_command(
+    _ctx: Context, ch_backup: ClickhouseBackup, delete_cloud_storage_data: bool
+) -> None:
     """Purge outdated backups."""
-    names, msg = ch_backup.purge()
+    names, msg = ch_backup.purge(delete_cloud_storage_data=delete_cloud_storage_data)
 
     if msg:
         print(msg, file=sys.stderr, flush=True)

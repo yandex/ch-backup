@@ -701,7 +701,9 @@ def test_delete_command_accepts_unreadable_backup():
     backup.delete.return_value = ("broken", None)
     result = _invoke(cli.delete_command, ["delete", "broken"], backup)
     assert result.exit_code == 0, result.output
-    backup.delete.assert_called_once_with("broken", False)
+    backup.delete.assert_called_once_with(
+        "broken", purge_partial=False, delete_cloud_storage_data=False
+    )
 
 
 def test_backup_help_lists_detached_parts_filters() -> None:
