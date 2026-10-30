@@ -189,10 +189,16 @@ def test_copy_last_fails_with_only_empty_backups(copy_backup: MagicMock) -> None
         ),
     ],
 )
+@pytest.mark.parametrize(
+    "configured", [None, ["files"], ["cloud_storage"], ["files", "files"]]
+)
 def test_copy_command_passes_scopes(
-    args: list[str], scopes: tuple, copy_backup: MagicMock
+    args: list[str], scopes: tuple, configured: list[str] | None, copy_backup: MagicMock
 ) -> None:
+    """CLI scopes override the configured scopes, including the default."""
     backup = copy_backup
+    if configured is not None:
+        backup.config["copy"]["scopes"] = configured
 
     def copy(_target, _names, *, report, **_):
         report.backups.append(
@@ -212,28 +218,87 @@ def test_copy_command_passes_scopes(
     result = CliRunner().invoke(group, ["copy", "--all", *args], obj={"backup": backup})
 
     assert result.exit_code == 0
-    assert backup.copy.call_args.kwargs["scopes"] == (
-        frozenset(map(cli.CopyScope, scopes)) or cli.ALL_SCOPES
+    assert backup.copy.call_args.kwargs["scopes"] == frozenset(
+        map(cli.CopyScope, scopes or backup.config["copy"]["scopes"])
     )
     assert "b1: partial, the copy is creating in target storage" in result.output
     assert "scopes: files completed, cloud_storage pending" in result.output
 
 
+@pytest.mark.parametrize("configured", [False, True])
 def test_copy_command_takes_last_copy_from_target_without_files_scope(
     copy_backup: MagicMock,
+    configured: bool,
 ) -> None:
+    """Configured cloud-only copying resolves LAST in the target like the CLI flag."""
     backup = copy_backup
+    if configured:
+        backup.config["copy"]["scopes"] = ["cloud_storage"]
     backup.copy.return_value = (["b1"], [])
     group = Group()
     group.add_command(cli.copy_command)
 
     result = CliRunner().invoke(
-        group, ["copy", "LAST", "--scope", "cloud_storage"], obj={"backup": backup}
+        group,
+        ["copy", "LAST", *([] if configured else ["--scope", "cloud_storage"])],
+        obj={"backup": backup},
     )
 
     assert result.exit_code == 0
     backup.list.assert_not_called()
     assert backup.copy.call_args.args[1] == ["LAST"]
+
+
+@pytest.mark.parametrize("level", range(4))
+def test_copy_scopes_config_precedence(copy_backup, tmp_path, level):
+    """Resolve scopes from main config, target config, overrides, then CLI flags."""
+    main = tmp_path / "main.yaml"
+    target = tmp_path / "target.yaml"
+    main.write_text("copy:\n  scopes: [cloud_storage]\n")
+    target.write_text("copy:\n  scopes: [files]\n")
+    copy_backup.config = Config(str(main))
+    copy_backup.list.return_value = [_backup("latest", parts={"p": _part()})]
+    args = ["copy", "LAST"]
+    if level >= 1:
+        args += ["--target-config", str(target)]
+    if level >= 2:
+        args += ["--target-config-parameter", "copy.scopes", '["cloud_storage"]']
+    if level >= 3:
+        args += ["--scope", "files"]
+
+    result = _invoke(cli.copy_command, args, copy_backup)
+
+    assert result.exit_code == 0, result.output
+    expected = "files" if level in (1, 3) else "cloud_storage"
+    config, names = copy_backup.copy.call_args.args
+    assert config["copy"]["scopes"] == [expected]
+    assert copy_backup.copy.call_args.kwargs["scopes"] == {cli.CopyScope(expected)}
+    assert names == (["latest"] if expected == "files" else ["LAST"])
+    assert copy_backup.list.called == (expected == "files")
+    assert copy_backup.config["copy"]["scopes"] == ["cloud_storage"]
+
+
+@pytest.mark.parametrize(
+    "value", [None, [], {}, "files", ["data"], ["files", "data"], [None], [1], [[]]]
+)
+@pytest.mark.parametrize("override", [False, True])
+def test_copy_rejects_invalid_configured_scopes(copy_backup, value, override):
+    """Reject invalid effective scopes before storage access; CLI may override them."""
+    copy_backup.config["copy"]["scopes"] = value
+    args = ["copy", "LAST", *(["--scope", "cloud_storage"] if override else [])]
+
+    result = _invoke(cli.copy_command, args, copy_backup)
+
+    copy_backup.list.assert_not_called()
+    if override:
+        assert result.exit_code == 0, result.output
+        assert copy_backup.copy.call_args.kwargs["scopes"] == {
+            cli.CopyScope.CLOUD_STORAGE
+        }
+    else:
+        assert isinstance(result.exception, ConfigurationError)
+        assert "copy.scopes" in str(result.exception)
+        copy_backup.copy.assert_not_called()
 
 
 def test_copy_command_rejects_unknown_scope() -> None:
