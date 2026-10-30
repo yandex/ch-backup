@@ -1277,15 +1277,17 @@ class BackupCopier:
                 )
                 names = {part.deduplicated_part_name: part for part in source_parts}
                 found = set()
-                for remote_path in self._layout.get_cloud_storage_metadata_remote_paths(
+                for remote_path in self._layout.list_cloud_storage_metadata_archives(
                     source.get_sanitized_name(),
                     disk_name,
                     source.cloud_storage.compressed,
                     [table],
                 ):
                     with self._planning_step(copy_result, remote_path):
-                        metadata_files = self._layout.get_cloud_storage_metadata_files(
-                            source, remote_path
+                        metadata_files = (
+                            self._layout.read_cloud_storage_metadata_archive(
+                                source, remote_path
+                            )
                         )
                         for file_name, data in metadata_files:
                             with self._planning_step(
@@ -1419,14 +1421,14 @@ class BackupCopier:
                 src_storage, src_prefix, src_path_override = (
                     self._get_source_cloud_storage(backup, disk_name)
                 )
-                for remote_path in layout.get_cloud_storage_metadata_remote_paths(
+                for remote_path in layout.list_cloud_storage_metadata_archives(
                     name, disk_name, backup.cloud_storage.compressed, "all"
                 ):
                     with self._planning_step(result, remote_path):
                         errors = len(result.errors)
                         relative_path = _key(remote_path)[len(disks_dir) + 1 :]
                         dst_path = os.path.join(dst_dir, relative_path)
-                        files = layout.get_cloud_storage_metadata_files(
+                        files = layout.read_cloud_storage_metadata_archive(
                             backup, remote_path
                         )
                         rewritten = False

@@ -29,6 +29,7 @@ from ch_backup.backup.metadata import (
     DetachedPartMetadata,
     PartMetadata,
     sanitize_backup_name,
+    split_part_name,
 )
 from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.calculators import calc_encrypted_size, calc_tarball_size
@@ -41,15 +42,18 @@ from ch_backup.config import Config
 from ch_backup.encryption import get_encryption_class
 from ch_backup.exceptions import (
     ConfigurationError,
+    InvalidBackupStruct,
     StorageError,
     TerminatingSignal,
     is_broken_executor,
 )
 from ch_backup.storage import StorageLoader
+from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.engine.s3 import S3RetryingError
 from ch_backup.storage.object_copy import CopyEntry
 from ch_backup.util import (
     CLOUD_STORAGE_EXCLUDE_FILE_NAMES,
+    chunked,
     dir_is_empty,
     escape_metadata_file_name,
 )
@@ -988,10 +992,10 @@ class BackupLayout:
             )
             return False
 
-    def get_cloud_storage_metadata_remote_paths(
+    def list_cloud_storage_metadata_archives(
         self,
         backup_name: str,
-        source_disk_name: str,
+        disk_name: str,
         compression: bool,
         desired_tables: Sequence[TableMetadata] | Literal["all"],
     ) -> Sequence[str]:
@@ -1000,37 +1004,41 @@ class BackupLayout:
         """
         backup_path = self.get_backup_path(backup_name)
         # Check if metadata is stored as 'disks/s3.tar.gz' for backwards compatibility
-        old_style_remote_path = _disk_metadata_path(
-            backup_path, None, None, source_disk_name, compression
+        legacy_archive_path = _disk_metadata_path(
+            backup_path, None, None, disk_name, compression
         )
-        if self._storage_loader.path_exists(old_style_remote_path):
-            return [old_style_remote_path]
+        if self._storage_loader.path_exists(legacy_archive_path):
+            return [legacy_archive_path]
 
-        disk_path = os.path.join(
-            backup_path, CLOUD_STORAGE_METADATA_DIR, source_disk_name
+        metadata_directory = os.path.join(
+            backup_path, CLOUD_STORAGE_METADATA_DIR, disk_name
         )
-        existing_paths = self._storage_loader.list_dir(
-            disk_path, recursive=True, absolute=True
+        existing_archive_paths = self._storage_loader.list_dir(
+            metadata_directory, recursive=True, absolute=True
         )
         if desired_tables == "all":
-            return existing_paths
+            return existing_archive_paths
 
-        remote_paths = {
+        requested_archive_paths = {
             _disk_metadata_path(
                 backup_path,
                 table.database,
                 table.name,
-                source_disk_name,
+                disk_name,
                 compression,
             )
             for table in desired_tables
         }
-        needed_paths = remote_paths.intersection(existing_paths)
-        missing_paths = remote_paths.difference(existing_paths)
-        for path in missing_paths:
-            logging.warning(f"Missing path {path} on remote")
+        selected_archive_paths = requested_archive_paths.intersection(
+            existing_archive_paths
+        )
+        missing_archive_paths = requested_archive_paths.difference(
+            existing_archive_paths
+        )
+        for archive_path in missing_archive_paths:
+            logging.warning(f"Missing path {archive_path} on remote")
 
-        return list(needed_paths)
+        return list(selected_archive_paths)
 
     @contextmanager
     def _get_cloud_storage_metadata_dst(
@@ -1066,21 +1074,125 @@ class BackupLayout:
             for compressed in (True, False)
         )
 
-    def get_cloud_storage_metadata_files(
-        self, backup_meta: BackupMetadata, remote_path: str
+    def read_cloud_storage_metadata_archive(
+        self, backup_meta: BackupMetadata, archive_path: str
     ) -> list[tuple[str, bytes]]:
         """
         Download tarball with cloud storage metadata and return its files as (file_name, data) pairs.
         """
         try:
             return self._storage_loader.download_data_tarball(
-                remote_path,
+                archive_path,
                 encryption=backup_meta.cloud_storage.encrypted,
                 compression=backup_meta.cloud_storage.compressed,
             )
         except Exception as e:
-            msg = f'Failed to download tarball file "{remote_path}"'
+            msg = f'Failed to download tarball file "{archive_path}"'
             raise StorageError(msg) from e
+
+    def collect_cloud_object_keys_for_deletion(
+        self, backup_meta: BackupMetadata, object_prefix: str
+    ) -> list[str]:
+        """Read archived disk metadata to select copied payload objects for deletion.
+
+        Reject keys outside the copy's prefix. Archive deletion is a separate
+        step, so the returned keys identify payload objects only.
+        """
+        object_keys_to_delete: set[str] = set()
+        for disk_name in backup_meta.select_cloud_disks_for_cleanup():
+            archive_paths = self.list_cloud_storage_metadata_archives(
+                backup_meta.get_sanitized_name(),
+                disk_name,
+                backup_meta.cloud_storage.compressed,
+                "all",
+            )
+            if not archive_paths:
+                raise InvalidBackupStruct(
+                    f'Cannot identify copied cloud objects: disk metadata for "{disk_name}" is missing'
+                )
+            for archive_path in archive_paths:
+                metadata_files = self.read_cloud_storage_metadata_archive(
+                    backup_meta, archive_path
+                )
+                for entry_path, metadata_contents in metadata_files:
+                    if os.path.basename(entry_path) in CLOUD_STORAGE_EXCLUDE_FILE_NAMES:
+                        continue
+                    metadata = parse_object_storage_metadata(metadata_contents)
+                    for obj in metadata.objects:
+                        object_key = (
+                            obj.key
+                            if metadata.full_object_keys
+                            else os.path.join(object_prefix, obj.key)
+                        )
+                        if not object_key.startswith(object_prefix + "/") or any(
+                            component in (".", "..")
+                            for component in object_key.split("/")
+                        ):
+                            raise ConfigurationError(
+                                "Cloud object in disk metadata is outside the copied backup prefix"
+                            )
+                        object_keys_to_delete.add(object_key)
+        return sorted(object_keys_to_delete)
+
+    def build_unreferenced_cloud_cleanup_action(
+        self,
+        backup: BackupMetadata,
+        retained_part_identities: set[tuple[str, str, str]],
+        payload_storage: dict,
+    ) -> Callable[[], None]:
+        """Build a deferred action that removes unreferenced cloud parts.
+
+        Read the disk metadata archives to identify unused objects and verify
+        that retained parts stored by this backup have metadata. Preserve
+        objects that retained parts also reference.
+
+        Return a callable so the caller can validate the entire deletion batch
+        before deleting any data. The callable reuses the collected object keys
+        and replacement archive contents, avoiding a second metadata download.
+        """
+        deletion_plan = _CloudPartDeletionPlan(backup, retained_part_identities)
+        for disk_name in backup.select_cloud_disks_for_cleanup():
+            if backup.cloud_storage.data_copied:
+                object_prefix = self.get_cloud_storage_data_path(backup.name, disk_name)
+            else:
+                assert backup.cloud_storage.source is not None
+                object_prefix = backup.cloud_storage.source["path"]
+            for archive_path in self.list_cloud_storage_metadata_archives(
+                backup.get_sanitized_name(),
+                disk_name,
+                backup.cloud_storage.compressed,
+                "all",
+            ):
+                deletion_plan.plan_archive_cleanup(
+                    disk_name,
+                    archive_path,
+                    self.read_cloud_storage_metadata_archive(backup, archive_path),
+                    object_prefix.strip("/"),
+                )
+        deletion_plan.require_metadata_for_retained_parts()
+        object_keys_to_delete = sorted(
+            deletion_plan.deletion_candidate_keys - deletion_plan.protected_object_keys
+        )
+        archive_replacements = deletion_plan.archive_replacements
+
+        def delete_objects_and_rewrite_archives() -> None:
+            payload_engine = get_storage_engine(payload_storage)
+            # Different parts can reference the same blob. Retaining either part keeps that blob alive.
+            for object_key_batch in chunked(
+                object_keys_to_delete,
+                payload_storage["bulk_delete_chunk_size"],
+            ):
+                payload_engine.delete_files(object_key_batch)
+            for archive_path, retained_metadata_files in archive_replacements.items():
+                if retained_metadata_files:
+                    self.upload_cloud_storage_metadata_files(
+                        backup, archive_path, retained_metadata_files
+                    )
+                    self.wait()
+                else:
+                    self._delete_files([archive_path], is_async=False)
+
+        return delete_objects_and_rewrite_archives
 
     def upload_cloud_storage_metadata_files(
         self,
@@ -1168,7 +1280,7 @@ class BackupLayout:
         backup_name = backup_meta.get_sanitized_name()
         compression = backup_meta.cloud_storage.compressed
         encryption = backup_meta.cloud_storage.encrypted
-        metadata_remote_paths = self.get_cloud_storage_metadata_remote_paths(
+        metadata_remote_paths = self.list_cloud_storage_metadata_archives(
             backup_name,
             source_disk_name,
             compression,
@@ -1617,3 +1729,137 @@ def _quote(value: str) -> str:
             ord("-"): "%2D",
         }
     )
+
+
+class _CloudPartDeletionPlan:
+    """Collect object deletions and archive replacements while protecting retained parts."""
+
+    def __init__(
+        self,
+        backup: BackupMetadata,
+        retained_part_identities: set[tuple[str, str, str]],
+    ) -> None:
+        self.backup = backup
+        self.retained_part_identities = retained_part_identities
+        self.retained_parts_with_metadata: set[tuple[str, str, str]] = set()
+        self.deletion_candidate_keys: set[str] = set()
+        self.protected_object_keys: set[str] = set()
+        self.archive_replacements: dict[str, list[tuple[str, bytes]]] = {}
+
+    def plan_archive_cleanup(
+        self,
+        disk_name: str,
+        archive_path: str,
+        metadata_files: list[tuple[str, bytes]],
+        object_prefix: str,
+    ) -> None:
+        """Select metadata to keep and collect object references before deleting anything.
+
+        An object used by a removed part can also serve a retained part. Keep
+        both sets of keys until every archive is scanned. If a file's part
+        cannot be identified, preserve the file and its objects.
+        """
+        retained_metadata_files = []
+        for entry_path, metadata_contents in metadata_files:
+            if os.path.basename(entry_path) in CLOUD_STORAGE_EXCLUDE_FILE_NAMES:
+                retained_metadata_files.append((entry_path, metadata_contents))
+                continue
+            part_identity = identify_cloud_part_from_archive_entry(
+                self.backup, disk_name, archive_path, entry_path
+            )
+            part = self.backup.find_part(*part_identity) if part_identity else None
+            if part and part.link:
+                if part_identity in self.retained_part_identities:
+                    retained_metadata_files.append((entry_path, metadata_contents))
+                continue
+            object_keys = _resolve_cloud_object_keys_within_prefix(
+                metadata_contents, object_prefix
+            )
+            if (
+                part_identity is not None
+                and part_identity not in self.retained_part_identities
+            ):
+                self.deletion_candidate_keys.update(object_keys)
+            else:
+                self.protected_object_keys.update(object_keys)
+                retained_metadata_files.append((entry_path, metadata_contents))
+                if part_identity is not None:
+                    self.retained_parts_with_metadata.add(part_identity)
+        if retained_metadata_files != metadata_files:
+            self.archive_replacements[archive_path] = retained_metadata_files
+
+    def require_metadata_for_retained_parts(self) -> None:
+        """Reject deletion when a retained part stored by this backup has no metadata."""
+        required_part_identities = {
+            part.logical_identity
+            for part in self.backup.get_parts()
+            if not part.link
+            and part.disk_name in self.backup.cloud_storage.disks
+            and part.logical_identity in self.retained_part_identities
+        }
+        if (
+            missing_part_identities := required_part_identities
+            - self.retained_parts_with_metadata
+        ):
+            raise InvalidBackupStruct(
+                f"Disk metadata of retained cloud parts is missing: {sorted(missing_part_identities)}"
+            )
+
+
+def _resolve_cloud_object_keys_within_prefix(
+    metadata_contents: bytes, object_prefix: str
+) -> set[str]:
+    """Resolve relative keys and reject objects outside this backup's payload prefix."""
+    metadata = parse_object_storage_metadata(metadata_contents)
+    object_keys = {
+        obj.key if metadata.full_object_keys else os.path.join(object_prefix, obj.key)
+        for obj in metadata.objects
+    }
+    if any(
+        not object_key.startswith(object_prefix + "/")
+        or any(component in (".", "..") for component in object_key.split("/"))
+        for object_key in object_keys
+    ):
+        raise ConfigurationError(
+            "Cloud object in disk metadata is outside the copied backup prefix"
+        )
+    return object_keys
+
+
+def identify_cloud_part_from_archive_entry(
+    backup: BackupMetadata, disk_name: str, archive_path: str, entry_path: str
+) -> tuple[str, str, str] | None:
+    """Identify the part described by an archive entry, or return None if uncertain.
+
+    Match the table through its archive path, UUID, or database/table path.
+    A previous partial deletion may have removed the part from backup metadata
+    while leaving its archived files, so the part need not still be listed.
+    """
+    entry_directories = entry_path.split("/")[:-1]
+    part_name = None
+    for directory_name in reversed(entry_directories):
+        try:
+            split_part_name(directory_name)
+        except ValueError:
+            continue
+        part_name = directory_name
+        break
+    if part_name is None:
+        return None
+    matching_part_identities: list[tuple[str, str, str]] = []
+    for table in backup.get_tables():
+        table_archive_suffix = f"/{_quote(table.database)}/{_quote(table.name)}.tar"
+        if not (
+            archive_path.endswith(table_archive_suffix)
+            or archive_path.endswith(table_archive_suffix + ".gz")
+        ):
+            table_directory = f"/{escape_metadata_file_name(table.database)}/{escape_metadata_file_name(table.name)}/"
+            if (
+                not (table.uuid and table.uuid in entry_directories)
+                and table_directory not in "/" + entry_path
+            ):
+                continue
+        part = backup.find_part(table.database, table.name, part_name)
+        if part is None or part.disk_name == disk_name:
+            matching_part_identities.append((table.database, table.name, part_name))
+    return matching_part_identities[0] if len(matching_part_identities) == 1 else None
