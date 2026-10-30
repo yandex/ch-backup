@@ -35,6 +35,7 @@ from ch_backup.clickhouse.schema import (
 )
 from ch_backup.exceptions import ClickhouseBackupError, is_broken_executor
 from ch_backup.logic.backup_manager import BackupManager
+from ch_backup.logic.part_restore import LocalPartRestorer
 from ch_backup.logic.storage_schema_restore import (
     StorageSchemaRestore,
     restore_disk_name,
@@ -1849,6 +1850,13 @@ class TableBackup(BackupManager):
                     )
 
                 # pylint: enable=cell-var-from-loop
+                local_parts = LocalPartRestorer(
+                    context.backup_layout,
+                    context.backup_meta,
+                    keep_going=keep_going,
+                    on_success=downloaded,
+                    on_error=download_failed,
+                )
                 for part in table_meta.get_parts():
                     if context.restore_context.part_restored(part):
                         if part.disk_name in context.backup_meta.cloud_storage.disks:
@@ -1860,7 +1868,10 @@ class TableBackup(BackupManager):
                         )
                         continue
 
-                    if context.restore_context.part_downloaded(part):
+                    if (
+                        part.disk_name in context.backup_meta.cloud_storage.disks
+                        and context.restore_context.part_downloaded(part)
+                    ):
                         logging.debug(
                             f"{table.database}.{table.name} part {part.name} already downloaded, only attach it"
                         )
@@ -1884,13 +1895,10 @@ class TableBackup(BackupManager):
                                 restore_disk_name(table, part.disk_name, storage_disks),
                                 part.name,
                             )
-                            context.backup_layout.download_data_part(
-                                context.backup_meta,
-                                part,
-                                fs_part_path,
-                                callback=downloaded,
-                                on_error=download_failed,
+                            context.restore_context.change_part_state(
+                                PartState.NOT_DOWNLOADED, part
                             )
+                            local_parts.download(part, fs_part_path)
                     except Exception as error:
                         download_failed(part, error)
                         if not keep_going or is_broken_executor(error):
@@ -1907,7 +1915,7 @@ class TableBackup(BackupManager):
                     on_error=download_failed,
                 )
 
-                context.backup_layout.wait(keep_going)
+                local_parts.wait()
 
                 context.ch_ctl.chown_detached_table_parts(
                     table, context.restore_context

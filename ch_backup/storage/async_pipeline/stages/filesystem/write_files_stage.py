@@ -146,6 +146,14 @@ class TarStreamProcessorBase(Handler):
 
     def on_done(self) -> Any:
         self._on_file_complete()
+        # Our writer ends on a file boundary, without TAR end-of-archive blocks.
+        # Closing the last file alone would silently accept a truncated payload.
+        if (
+            self._state != State.READ_HEADER
+            or len(self._tarstream)
+            or self._name_from_buffer is not None
+        ):
+            raise ValueError("Truncated TAR stream")
 
 
 class WriteFilesStage(TarStreamProcessorBase):

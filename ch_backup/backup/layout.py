@@ -810,6 +810,7 @@ class BackupLayout:
                     local_path = os.path.join(fs_part_path, filename)
                     remote_path = os.path.join(remote_dir_path, filename)
                     logging.debug("Downloading part file: {}", remote_path)
+                    os.makedirs(os.path.dirname(local_path), exist_ok=True)
                     self._storage_loader.download_file(
                         remote_path=remote_path,
                         local_path=local_path,

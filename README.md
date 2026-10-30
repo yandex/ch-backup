@@ -33,6 +33,15 @@ regardless of download completion order. Saved failure details survive restores
 of other tables; a part's error is removed after that part is successfully attached.
 Only failures from the current invocation affect its exit code.
 
+Local parts are downloaded into unique `.ch-backup-*` staging directories on
+the destination disk. After all files have been written, restore checks their
+file list, recorded size and the checksum of `checksums.txt`, replaces any
+existing destination directory and publishes the part with `rename` before
+recording `DOWNLOADED` or attaching it. This does not hash every data file.
+Local parts saved as `DOWNLOADED` are downloaded again on retry. Failed downloads
+leave the existing destination untouched. If transfer workers do not finish
+normally, staging directories are retained for manual cleanup after they stop.
+
 ## Restore without cloud storage
 
 `ch-backup restore --skip-cloud-storage BACKUP` restores local parts and skips

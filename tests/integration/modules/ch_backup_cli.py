@@ -519,6 +519,13 @@ class BackupManager:
             os.path.join(backup.get_backup_path(self._path_root), path)
         )
 
+    def get_backup_file_data(self, backup_id: BackupId, path: str) -> bytes:
+        """Read a backup object for reversible fault injection."""
+        backup = self.get_backup(backup_id)
+        return self._s3_client.download_data(
+            os.path.join(backup.get_backup_path(self._path_root), path)
+        )
+
     def set_backup_file_data(self, backup_id: BackupId, path: str, data: bytes) -> None:
         """
         Set particular file data in backup (useful for fault injection).
