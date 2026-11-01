@@ -2087,15 +2087,6 @@ class TableBackup(BackupManager):
         directory with different contents is preserved and the first free
         ``_tryN`` name is used instead.
         """
-        if (
-            not part.name
-            or part.name in {".", ".."}
-            or os.path.basename(part.name) != part.name
-        ):
-            raise ClickhouseBackupError(
-                f'Invalid detached part directory name: "{part.name}"'
-            )
-
         for try_no in count():
             restore_part = (
                 part if try_no == 0 else part.with_name(f"{part.name}_try{try_no}")

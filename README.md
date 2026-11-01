@@ -34,12 +34,19 @@ of other tables; a part's error is removed after that part is successfully attac
 Only failures from the current invocation affect its exit code.
 
 Local parts are downloaded into unique `.ch-backup-*` staging directories on
-the destination disk. After all files have been written, restore checks their
+the destination disk. Each part name must be a single directory name. Nested
+paths in per-file backups must stay inside staging. Restore accepts early TAR
+backups that omit all padding after the last complete file.
+After all files have been written, restore checks their
 file list, recorded size and the checksum of `checksums.txt`, replaces any
 existing destination directory and publishes the part with `rename` before
 recording `DOWNLOADED` or attaching it. This does not hash every data file.
 Local parts saved as `DOWNLOADED` are downloaded again on retry. Failed downloads
-leave the existing destination untouched. If transfer workers do not finish
+leave the existing destination untouched. During replacement the previous part
+is moved aside until publication succeeds. If the publish rename fails, restore
+moves the old part back. If that rollback fails, the error log gives its path.
+An interruption between the two renames can leave the old part in a
+`.ch-backup-*.previous` directory. If transfer workers do not finish
 normally, staging directories are retained for manual cleanup after they stop.
 
 ## Restore without cloud storage

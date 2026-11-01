@@ -234,7 +234,7 @@ def test_unpack_data_tarball_larger_than_buffer() -> None:
     assert run_and_collect_all(builder.pipeline()) == files
 
 
-@pytest.mark.parametrize("cut", [1, 511, 512, 562, 612, 1023])
+@pytest.mark.parametrize("cut", [1, 511, 512, 562, 613, 1023])
 @pytest.mark.parametrize("disk", [False, True])
 def test_tar_rejects_truncated_header_payload_or_padding(tmp_path, cut, disk):
     header = tarfile.TarInfo("data.bin")
@@ -258,6 +258,18 @@ def test_tar_accepts_complete_files_without_end_blocks(tmp_path, name):
         stage(stream[pos : pos + 71], pos)
     stage.on_done()
     assert (tmp_path / name).read_bytes() == b"x" * 100
+
+
+def test_tar_accepts_legacy_final_file_without_padding(tmp_path):
+    # Before 3dd4904a, a 513-byte file with filesystem.chunk_size=513 was
+    # written as a header and a full read chunk, without the 511 padding bytes.
+    header = tarfile.TarInfo("checksums.txt")
+    header.size = 513
+    data = b"x" * header.size
+    stage = WriteFilesStage({}, tmp_path, 4096)
+    stage(header.tobuf() + data, 0)
+    stage.on_done()
+    assert (tmp_path / header.name).read_bytes() == data
 
 
 def test_tar_rejects_incomplete_long_name(tmp_path):

@@ -146,8 +146,15 @@ class TarStreamProcessorBase(Handler):
 
     def on_done(self) -> Any:
         self._on_file_complete()
-        # Our writer ends on a file boundary, without TAR end-of-archive blocks.
-        # Closing the last file alone would silently accept a truncated payload.
+        # Early writers omitted all final padding if the last read filled a chunk.
+        # Accept only a complete regular file with its entire padding outstanding.
+        if (
+            self._state == State.SKIP_BYTES
+            and self._tarinfo is not None
+            and self._tarinfo.isreg()
+            and self._bytes_to_process == -self._tarinfo.size % BLOCKSIZE
+        ):
+            return
         if (
             self._state != State.READ_HEADER
             or len(self._tarstream)

@@ -34,6 +34,43 @@ def check_local_part(part: PartMetadata, path: str) -> None:
         raise ClickhouseBackupError(f'Part checksum does not match backup: "{path}"')
 
 
+def _remove_staging(path: str) -> None:
+    try:
+        if os.path.islink(path):
+            os.unlink(path)
+        else:
+            shutil.rmtree(path)
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        logging.warning("Failed to remove restore staging path {}: {}", path, error)
+
+
+def _publish_local_part(staging: str, destination: str) -> None:
+    """Publish the validated part, retaining the old directory until rename succeeds."""
+    if not (os.path.islink(destination) or os.path.isdir(destination)):
+        os.rename(staging, destination)
+        return
+
+    previous = f"{staging}.previous"
+    os.rename(destination, previous)
+    try:
+        os.rename(staging, destination)
+    except BaseException:
+        try:
+            os.rename(previous, destination)
+        except OSError as error:
+            logging.error(
+                "Rollback of {} failed: {}. Previous part retained at {}",
+                destination,
+                error,
+                previous,
+            )
+        raise
+
+    _remove_staging(previous)
+
+
 class LocalPartRestorer:
     """Stage a table's downloads and publish successful parts after workers finish."""
 
@@ -77,11 +114,7 @@ class LocalPartRestorer:
             for part, staging, destination in self._completed:
                 try:
                     check_local_part(part, staging)
-                    if os.path.islink(destination):
-                        os.unlink(destination)
-                    elif os.path.exists(destination):
-                        shutil.rmtree(destination)
-                    os.rename(staging, destination)
+                    _publish_local_part(staging, destination)
                 except Exception as error:
                     self._on_error(part, error)
                     if not self._keep_going:
@@ -91,11 +124,4 @@ class LocalPartRestorer:
                 self._on_success(part)
         finally:
             for path in self._paths:
-                try:
-                    shutil.rmtree(path)
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    logging.warning(
-                        "Failed to remove restore staging directory {}", path
-                    )
+                _remove_staging(path)

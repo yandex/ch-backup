@@ -1,9 +1,9 @@
 """Metadata compatibility and publication failure boundaries."""
 
-from contextlib import ExitStack
 from hashlib import md5
+from os import rename
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pytest
 
@@ -49,7 +49,7 @@ def test_download_metadata_validation(tmp_path, part, change):
 
 @pytest.mark.parametrize("failure", ["rename", "state", "wait", "checksum"])
 @pytest.mark.parametrize("keep_going", [False, True])
-def test_publication_failure_boundary(tmp_path, part, failure, keep_going):
+def test_publication_failure_boundary(tmp_path, part, failure, keep_going, monkeypatch):
     layout, success, error = Mock(), Mock(), Mock()
     paths = []
 
@@ -70,27 +70,28 @@ def test_publication_failure_boundary(tmp_path, part, failure, keep_going):
     destination = tmp_path / part.name
     restorer.download(part, str(destination))
     assert not destination.exists()
-    if failure == "checksum":
+    if failure in {"rename", "checksum"}:
         destination.mkdir()
         (destination / "original").write_bytes(b"keep me")
-        (paths[0] / "checksums.txt").write_bytes(b"corrupt")
-    with ExitStack() as stack:
-        if failure == "rename":
-            stack.enter_context(
-                patch(
-                    "ch_backup.logic.part_restore.os.rename",
-                    side_effect=OSError("rename"),
-                )
-            )
-        if failure in {"rename", "checksum"} and keep_going:
-            restorer.wait()
-        else:
-            with pytest.raises(
-                (OSError, RuntimeError, ClickhouseBackupError), match=failure
-            ):
-                restorer.wait()
-    assert destination.exists() == (failure in {"state", "checksum"})
     if failure == "checksum":
+        (paths[0] / "checksums.txt").write_bytes(b"corrupt")
+    if failure == "rename":
+
+        def fail_publication(src, dst):
+            if Path(src) == paths[0] and Path(dst) == destination:
+                raise OSError("rename")
+            rename(src, dst)
+
+        monkeypatch.setattr("ch_backup.logic.part_restore.os.rename", fail_publication)
+    if failure in {"rename", "checksum"} and keep_going:
+        restorer.wait()
+    else:
+        with pytest.raises(
+            (OSError, RuntimeError, ClickhouseBackupError), match=failure
+        ):
+            restorer.wait()
+    assert destination.exists() == (failure != "wait")
+    if failure in {"rename", "checksum"}:
         assert (destination / "original").read_bytes() == b"keep me"
     assert paths[0].exists() == (failure == "wait")
     assert success.called == (failure == "state")
