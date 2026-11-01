@@ -218,8 +218,8 @@ def test_copy_command_passes_scopes(
     result = CliRunner().invoke(group, ["copy", "--all", *args], obj={"backup": backup})
 
     assert result.exit_code == 0
-    assert backup.copy.call_args.kwargs["scopes"] == frozenset(
-        map(cli.CopyScope, scopes or backup.config["copy"]["scopes"])
+    assert backup.copy.call_args.args[0]["copy"]["scopes"] == list(
+        scopes or backup.config["copy"]["scopes"]
     )
     assert "b1: partial, the copy is creating in target storage" in result.output
     assert "scopes: files completed, cloud_storage pending" in result.output
@@ -272,7 +272,6 @@ def test_copy_scopes_config_precedence(copy_backup, tmp_path, level):
     expected = "files" if level in (1, 3) else "cloud_storage"
     config, names = copy_backup.copy.call_args.args
     assert config["copy"]["scopes"] == [expected]
-    assert copy_backup.copy.call_args.kwargs["scopes"] == {cli.CopyScope(expected)}
     assert names == (["latest"] if expected == "files" else ["LAST"])
     assert copy_backup.list.called == (expected == "files")
     assert copy_backup.config["copy"]["scopes"] == ["cloud_storage"]
@@ -292,9 +291,7 @@ def test_copy_rejects_invalid_configured_scopes(copy_backup, value, override):
     copy_backup.list.assert_not_called()
     if override:
         assert result.exit_code == 0, result.output
-        assert copy_backup.copy.call_args.kwargs["scopes"] == {
-            cli.CopyScope.CLOUD_STORAGE
-        }
+        assert copy_backup.copy.call_args.args[0]["copy"]["scopes"] == ["cloud_storage"]
     else:
         assert isinstance(result.exception, ConfigurationError)
         assert "copy.scopes" in str(result.exception)

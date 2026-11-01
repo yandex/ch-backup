@@ -288,8 +288,7 @@ Behavior and limitations:
   completed, cloud_storage: pending}, updated_at: ...}`, where `updated_at` is when copying was last
   saved. `list -av` shows these values in the `copy` column; `list -av --format json` includes
   the same `copy` object. Backups without `meta.copy` have an empty cell or JSON `null`.
-  Copy scopes and their timestamp are read from full metadata, since light metadata can lag
-  behind after an interrupted update. If full metadata cannot be read, the copy is unreadable.
+  The listing reads light metadata, including the saved copy scopes and timestamp.
   The copy becomes `created` once every scope is completed. Until then the report shows the
   backup as `partial` with `backup_state: creating`, and the command exits with 0 if the copied
   scopes succeed. Saved statuses are not trusted: a scope that is not copied is completed only if

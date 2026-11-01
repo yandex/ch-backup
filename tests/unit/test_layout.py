@@ -3,7 +3,7 @@
 import copy
 import os
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from threading import Event
 from unittest.mock import MagicMock, call, patch
 
@@ -185,69 +185,36 @@ def test_list_failure_is_not_treated_as_unreadable_metadata():
     assert not unreadable
 
 
-@pytest.mark.parametrize("legacy", [False, True])
-@pytest.mark.parametrize("failure", [None, "missing", "unreadable"])
-def test_list_refreshes_copy_after_failed_light_upload(legacy, failure):
-    """A failed light upload must not hide the latest saved copy progress."""
+@pytest.mark.parametrize("full_metadata", [None, "invalid metadata"])
+def test_list_keeps_copies_with_unreadable_full_metadata(full_metadata):
+    """Listing copies needs only light metadata, even when a full file is corrupt."""
     layout = make_layout()
     storage = MagicMock()
     setattr(layout, "_storage_loader", storage)
-    objects: dict[str, str] = {}
-    fail_light = False
-
-    def upload(data, *, remote_path):
-        """Persist full metadata but fail the next light update when requested."""
-        if fail_light and remote_path.endswith("backup_light_struct.json"):
-            raise StorageError("light upload failed")
-        objects[remote_path] = data
-
-    def download(path, **_kwargs):
-        """Read persisted metadata, with an optional full-metadata failure."""
-        if failure == "unreadable" and path.endswith("/copied/backup_struct.json"):
-            raise StorageError("full metadata unreadable")
-        return objects[path]
-
-    storage.upload_data.side_effect = upload
-    storage.download_data.side_effect = download
-    storage.path_exists.side_effect = lambda path: path in objects
-    storage.list_dir.return_value = ["copied", "regular"]
-    copied = BackupMetadata("copied", "2", "26.6", "%Y-%m-%d %H:%M:%S %z")
+    copied = BackupMetadata("base", "2", "26.6", "%Y-%m-%d %H:%M:%S %z")
+    copied.state = BackupState.CREATED
     copied.copied_from = {"bucket": "source"}
-    if not legacy:
-        copied.copy_scopes = {CopyScope.FILES: CopyScopeStatus.PENDING}
-        copied.copy_updated_at = datetime(2026, 10, 30, tzinfo=timezone.utc)
-    layout.upload_backup_metadata(copied)
-    layout.upload_backup_metadata(BackupMetadata("regular", "2", "26.6", "%Y-%m-%d"))
-    copied.copy_scopes = {
-        CopyScope.FILES: CopyScopeStatus.COMPLETED,
-        CopyScope.CLOUD_STORAGE: CopyScopeStatus.PENDING,
-    }
-    copied.copy_updated_at = datetime(2026, 10, 30, tzinfo=timezone.utc) + timedelta(
-        hours=1
-    )
-    fail_light = True
-    with pytest.raises(StorageError):
-        layout.upload_backup_metadata(copied)
-    if failure == "missing":
-        del objects["ch_backup/copied/backup_struct.json"]
+    copied.copy_scopes = {CopyScope.FILES: CopyScopeStatus.COMPLETED}
+    copied.copy_updated_at = datetime.fromisoformat("2026-10-30T10:00:00+03:00")
+    objects = {"ch_backup/base/backup_light_struct.json": copied.dump_json(light=True)}
+    if full_metadata is not None:
+        objects["ch_backup/base/backup_struct.json"] = full_metadata
+    storage.path_exists.side_effect = objects.__contains__
+    storage.list_dir.return_value = ["base"]
+    storage.download_data.side_effect = lambda path, **_: objects[path]
     backup = ClickhouseBackup.__new__(ClickhouseBackup)
     backup.__dict__["_context"] = MagicMock(backup_layout=layout)
     unreadable: dict[str, str] = {}
 
-    listed = {item.name: item for item in backup.list(unreadable=unreadable)}
+    listed = backup.list(unreadable=unreadable)
 
-    assert "regular" in listed
-    assert "ch_backup/regular/backup_struct.json" not in [
-        invocation.args[0] for invocation in storage.download_data.call_args_list
-    ]
-    if failure:
-        assert "copied" not in listed
-        assert "copied" in unreadable
-    else:
-        assert not unreadable
-        assert listed["copied"].copy_scopes == copied.copy_scopes
-        assert listed["copied"].copy_updated_at == copied.copy_updated_at
-        assert listed["copied"].state == BackupState.CREATING
+    assert not unreadable
+    assert [item.name for item in listed] == ["base"]
+    assert listed[0].copy_scopes == copied.copy_scopes
+    assert listed[0].copy_updated_at == copied.copy_updated_at
+    storage.download_data.assert_called_once_with(
+        "ch_backup/base/backup_light_struct.json", encoding=None
+    )
 
 
 class TestCloudStorageMetadataRemotePaths:

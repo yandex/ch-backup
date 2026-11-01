@@ -37,7 +37,7 @@ from ch_backup.exceptions import ConfigurationError, TerminatingSignal
 from . import logging
 from .backup.copy_deduplication import copy_deduplication_cutoff
 from .backup.copy_report import CopyReport, print_copy_report
-from .backup.metadata import BackupState, CopyScope, TableMetadata
+from .backup.metadata import BackupState, CopyScope, TableMetadata, parse_copy_scopes
 from .backup.sources import BackupSources
 from .ch_backup import CleanZooKeeperMode, ClickhouseBackup
 from .config import DEFAULT_CONFIG, Config
@@ -1088,25 +1088,15 @@ def copy_command(
             _build_cli_cfg_from_config_parameters(target_config_parameters),
         )
         target_cfg.merge({"copy": copy_config})
-        scope_names = target_cfg["copy"]["scopes"]
-        if (
-            not isinstance(scope_names, list)
-            or not scope_names
-            or any(
-                name not in [scope.value for scope in CopyScope] for name in scope_names
-            )
-        ):
-            raise ConfigurationError(
-                'copy.scopes must be a non-empty list of "files" and/or "cloud_storage"'
-            )
-        selected_scopes = frozenset(map(CopyScope, scope_names))
         # Validate before resolving LAST, which already lists the source storage.
         if not isinstance(target_cfg["copy"]["only_with_data"], bool):
             raise ConfigurationError("copy.only_with_data must be a boolean")
         copy_deduplication_cutoff(target_cfg["copy"], command_start)
         backup_names = None
         if name:
-            if name == "LAST" and CopyScope.FILES in selected_scopes:
+            if name == "LAST" and CopyScope.FILES in parse_copy_scopes(
+                target_cfg["copy"]["scopes"]
+            ):
                 name = _validate_and_resolve_name(
                     ctx,
                     ch_backup,
@@ -1120,7 +1110,6 @@ def copy_command(
             backup_names,
             keep_going=keep_going,
             report=report,
-            scopes=selected_scopes,
             command_start=command_start,
         )
     except BaseException as e:
