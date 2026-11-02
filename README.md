@@ -357,7 +357,8 @@ Behavior and limitations:
   Encryption settings come from the top-level `encryption` section by default; values under
   `cloud_storage.data_encryption` override them, allowing a dedicated key on keyless copy workers.
   The copy metadata stores the encryption type and chunk size, but never the key. An already encrypted
-  cloud-data copy cannot be encrypted again.
+  cloud-data copy cannot be encrypted again. Encrypting data of backups created with
+  `cloud_storage.copy_data=true` is not supported.
   To use a separate worker, provide source endpoint, bucket, path and credentials explicitly;
   neither a local ClickHouse configuration nor a connection to the source server is required.
   Without the original disk configuration, leave the source path unset for V5 metadata to

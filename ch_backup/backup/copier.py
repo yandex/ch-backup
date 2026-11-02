@@ -445,12 +445,16 @@ class BackupCopier:
         _validate_relative_key(backup.name)
         for disk_name in backup.cloud_storage.disks:
             _validate_relative_key(disk_name)
-        if self._encrypt_cloud_storage_data and (
-            backup.cloud_storage.data_encryption is not None
-        ):
-            raise ClickhouseBackupError(
-                f'Cloud storage data of backup "{backup.name}" is already encrypted'
-            )
+        if self._encrypt_cloud_storage_data:
+            if backup.cloud_storage.data_copied:
+                raise ClickhouseBackupError(
+                    f'Encrypting cloud storage data of backup "{backup.name}" created '
+                    "with cloud_storage.copy_data is not supported"
+                )
+            if backup.cloud_storage.data_encryption is not None:
+                raise ClickhouseBackupError(
+                    f'Cloud storage data of backup "{backup.name}" is already encrypted'
+                )
 
         target_data_encryption = (
             get_cloud_storage_data_encryption_metadata(

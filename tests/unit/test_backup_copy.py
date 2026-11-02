@@ -1720,6 +1720,15 @@ def test_full_cloud_storage_copy_keeps_valid_links() -> None:
     assert not ctx.target_layout.cloud_storage_files
 
 
+def test_full_cloud_storage_copy_rejects_data_encryption() -> None:
+    ctx = _cloud_storage_context()
+    ctx.layout.backups["b1"].cloud_storage.data_copied = True
+    ctx.target_config["copy"]["cloud_storage"]["encrypt_data"] = True
+
+    with pytest.raises(ClickhouseBackupError, match="copy_data is not supported"):
+        ctx.copy(["b1"])
+
+
 def test_full_cloud_storage_copy_rejects_missing_linked_metadata() -> None:
     part = {**_part(link="missing"), "disk_name": "s3"}
     backup = _backup("next", parts={"all_1_1_0": part}, cloud_storage_disks=["s3"])
