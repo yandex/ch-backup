@@ -445,17 +445,6 @@ class BackupCopier:
         _validate_relative_key(backup.name)
         for disk_name in backup.cloud_storage.disks:
             _validate_relative_key(disk_name)
-        if self._encrypt_cloud_storage_data:
-            if backup.cloud_storage.data_copied:
-                raise ClickhouseBackupError(
-                    f'Encrypting cloud storage data of backup "{backup.name}" created '
-                    "with cloud_storage.copy_data is not supported"
-                )
-            if backup.cloud_storage.data_encryption is not None:
-                raise ClickhouseBackupError(
-                    f'Cloud storage data of backup "{backup.name}" is already encrypted'
-                )
-
         target_data_encryption = (
             get_cloud_storage_data_encryption_metadata(
                 self._cloud_storage_data_encryption
@@ -477,9 +466,14 @@ class BackupCopier:
                     target_backup.cloud_storage.data_encryption
                     != target_data_encryption
                 ):
-                    raise ClickhouseBackupError(
-                        f"Backup {backup.name} already exists in target storage with "
-                        "different cloud storage data encryption"
+                    result.skip_reason = (
+                        "already present in target storage with different cloud "
+                        "storage data encryption"
+                    )
+                    logging.warning(
+                        "Backup {} {}, skipping it",
+                        backup.name,
+                        result.skip_reason,
                     )
                 if any(
                     part.link
@@ -492,10 +486,11 @@ class BackupCopier:
                     existing = self._target_layout.get_backup(backup_name)
                     if existing:
                         self._remember_materialized_parts(backup, existing)
-                logging.info(
-                    "Backup {} is already present in target storage, skipping it",
-                    backup_name,
-                )
+                if result.skip_reason is None:
+                    logging.info(
+                        "Backup {} is already present in target storage, skipping it",
+                        backup_name,
+                    )
                 return False
             logging.info(
                 (
@@ -508,6 +503,17 @@ class BackupCopier:
             )
         else:
             logging.info("Copying backup {}", backup_name)
+
+        if self._encrypt_cloud_storage_data:
+            if backup.cloud_storage.data_copied:
+                raise ClickhouseBackupError(
+                    f'Encrypting cloud storage data of backup "{backup.name}" created '
+                    "with cloud_storage.copy_data is not supported"
+                )
+            if backup.cloud_storage.data_encryption is not None:
+                raise ClickhouseBackupError(
+                    f'Cloud storage data of backup "{backup.name}" is already encrypted'
+                )
 
         if self._target_deduplication is not None:
             # A PARTIALLY_DELETED owner may be retried. If it fails, later backups
@@ -2025,12 +2031,10 @@ def _add_cloud_storage_copy_entry(
         storage_id(planned.src_storage),
         planned.src_path,
         planned.size,
-        planned.dst_size,
     ) != (
         storage_id(entry.src_storage),
         entry.src_path,
         entry.size,
-        entry.dst_size,
     ):
         raise ClickhouseBackupError(
             f'Objects "{planned.src_path}" and "{entry.src_path}" can\'t be copied to the same location'

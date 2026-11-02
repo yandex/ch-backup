@@ -54,6 +54,7 @@ class CopyErrors:
         return len(self) == len(other) and all(a == b for a, b in zip(self, other))
 
 
+# pylint: disable=too-many-instance-attributes
 @dataclass
 class BackupCopyResult:
     """Confirmed operations and errors for one backup."""
@@ -62,6 +63,7 @@ class BackupCopyResult:
     status: Literal["copied", "partial", "skipped", "failed", "not_processed"] = (
         "not_processed"
     )
+    skip_reason: str | None = None
     backup_state: str | None = None
     objects_total: int | None = None
     objects_copied: int = 0
@@ -132,7 +134,7 @@ def print_copy_report(report: CopyReport, report_path: str | None) -> None:
     statuses = ("copied", "partial", "skipped", "failed", "not_processed")
     for result in report.backups:
         suffix = {
-            "skipped": ", already present in target storage",
+            "skipped": f", {result.skip_reason or 'already present in target storage'}",
             "partial": f", the copy is {result.backup_state} in target storage",
         }.get(result.status, "")
         print(f"{result.name}: {result.status}{suffix}")

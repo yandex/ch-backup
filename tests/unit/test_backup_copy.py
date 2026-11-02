@@ -592,7 +592,9 @@ def test_skip_already_copied_backup() -> None:
     assert not ctx.target_layout.copied
 
 
-def test_copy_rejects_created_backup_with_different_data_encryption() -> None:
+def test_copy_skips_created_backup_with_different_data_encryption(
+    capsys: pytest.CaptureFixture,
+) -> None:
     ctx = _cloud_storage_context()
     target = copy.deepcopy(ctx.layout.backups["b1"])
     target.cloud_storage.data_encryption = get_cloud_storage_data_encryption_metadata(
@@ -605,10 +607,13 @@ def test_copy_rejects_created_backup_with_different_data_encryption() -> None:
     ctx.target_layout.backups["b1"] = target
     ctx.target_config["copy"]["cloud_storage"]["encrypt_data"] = True
 
-    with pytest.raises(
-        ClickhouseBackupError, match="different cloud storage data encryption"
-    ):
-        ctx.copy(["b1"])
+    report = CopyReport()
+    assert ctx.copy(["b1"], report=report) == ([], ["b1"])
+    assert report.backups[0].skip_reason == (
+        "already present in target storage with different cloud storage data encryption"
+    )
+    print_copy_report(report, None)
+    assert report.backups[0].skip_reason in capsys.readouterr().out
 
     assert not ctx.target_layout.uploaded
     assert not ctx.target_layout.copied
@@ -3013,6 +3018,8 @@ def test_copy_scopes_separately(encrypt: bool) -> None:
         "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
     }
     assert _disk_objects(ctx) == {"copies/b1/xyz/aaa", "copies/b1/xyz/bbb"}
+    if encrypt:
+        assert ctx.copy(["b1"], scopes=["cloud_storage"]) == ([], ["b1"])
 
 
 def test_report_of_partial_copy(capsys: pytest.CaptureFixture) -> None:
