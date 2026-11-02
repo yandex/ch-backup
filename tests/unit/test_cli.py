@@ -2,6 +2,8 @@
 Cli unit tests.
 """
 
+# pylint: disable=too-many-lines
+
 import json
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
