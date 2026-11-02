@@ -664,9 +664,9 @@ class ClickhouseBackup:
         """
         Purge backups.
 
-        When every retained backup that is created holds incomplete table data,
-        the newest complete backup is kept anyway: it may hold the last copy of
-        the data the retained backups lack.
+        If a created backup or partial copy is retained but none is complete,
+        keep the newest complete backup: it may hold the last copy of data
+        the retained backups lack.
         """
         retain_time = self._context.config["retain_time"]
         retain_count = self._context.config["retain_count"]
@@ -720,13 +720,14 @@ class ClickhouseBackup:
                 deleting_backups.append(backup)
 
             if any(
-                backup.state == BackupState.CREATED for backup in retained_backups
+                backup.state == BackupState.CREATED or _is_partial_copy(backup)
+                for backup in retained_backups
             ) and not any(map(_is_complete, retained_backups)):
                 complete_backup = next(filter(_is_complete, deleting_backups), None)
                 if complete_backup:
                     logging.info(
                         "Preserving the newest complete backup, the retained ones"
-                        " hold incomplete table data: {}",
+                        " hold incomplete data: {}",
                         complete_backup.name,
                     )
                     deleting_backups.remove(complete_backup)

@@ -297,11 +297,15 @@ Behavior and limitations:
   and still checks the other scopes this way. Between scopes, the copy is in the state `creating`.
   Copies in `creating` or `failed` with `files: completed` and `cloud_storage: pending` or `failed`
   follow `backup.retain_count` and `backup.retain_time` in `purge` just like `created` backups,
-  regardless of `updated_at`. `delete --purge-partial` keeps these copies; explicit deletion by
+  regardless of `updated_at`. If retained backups include partial copies but none is complete,
+  `purge` also keeps the newest complete backup.
+  `delete --purge-partial` keeps these copies; explicit deletion by
   name is still available. Other incomplete copies retain the temporary protection from `purge`
   and `delete --purge-partial` while their `updated_at` is within
-  `backup.retain_incomplete_copy_time` (7 days by default, empty to disable). Older versions of
-  ch-backup do not know these rules.
+  `backup.retain_incomplete_copy_time` (7 days by default, empty to disable).
+  Before relying on these retention rules, upgrade every node and scheduled job that can run
+  `purge` or `delete --purge-partial` against the same storage to a version implementing them.
+  Older versions can still delete backups protected by these rules.
   With `--keep-going`, objects of a scope that failed to copy are listed in
   `<backup>/copy_context/<id>/failed/<scope>.jsonl.gz` (source and target keys, size and error) and
   the scope becomes `failed`; the next run of the scope copies only unconfirmed objects. The list is

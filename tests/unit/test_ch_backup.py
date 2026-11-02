@@ -773,7 +773,28 @@ def test_partial_copy_does_not_replace_complete_backup(partial_copy: Mock) -> No
     ]
 
     assert _purge(backups, retain_count=2, retain_time={}) == ["older"]
-    assert _purge(backups[1:], retain_count=1, retain_time={}) == ["complete", "older"]
+    assert _purge(backups[1:], retain_count=1, retain_time={}) == ["older"]
+
+
+@pytest.mark.parametrize("retain_count,retain_time", [(1, {}), (0, {"days": 35})])
+def test_retained_partial_copy_keeps_newest_complete_backup(
+    partial_copy: Mock, retain_count: int, retain_time: dict
+) -> None:
+    """Keep the newest complete backup while retaining only partial copies."""
+    backups = [
+        partial_copy,
+        _light_backup("complete", 40),
+        _light_backup("older", 41),
+    ]
+
+    assert _purge(backups, retain_count=retain_count, retain_time=retain_time) == [
+        "older"
+    ]
+    assert _purge(backups, retain_count=0, retain_time={"days": 7}) == [
+        "partial",
+        "complete",
+        "older",
+    ]
 
 
 @pytest.mark.parametrize("operation", ["purge", "delete"])
