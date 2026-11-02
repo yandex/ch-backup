@@ -250,12 +250,30 @@ def resolve_decryption_staging(
         or not bucket
     ):
         raise ConfigurationError("Invalid decryption staging endpoint or bucket")
-    if staging_config.get("access_key_id"):
-        access_key_id = staging_config["access_key_id"]
-        secret_access_key = staging_config.get("secret_access_key")
+    configured_access_key = staging_config.get("access_key_id")
+    configured_secret_key = staging_config.get("secret_access_key")
+    if bool(configured_access_key) != bool(configured_secret_key):
+        raise ConfigurationError(
+            "Decryption staging access_key_id and secret_access_key must be set together"
+        )
+    if (
+        staging_config.get("endpoint_url") is not None
+        or staging_config.get("bucket") is not None
+    ) and not configured_access_key:
+        raise ConfigurationError(
+            "Decryption staging credentials are required when endpoint or bucket is overridden"
+        )
+    if configured_access_key:
+        access_key_id = configured_access_key
+        secret_access_key = configured_secret_key
     else:
         access_key_id = destination_disk.get("access_key_id")
         secret_access_key = destination_disk.get("secret_access_key")
+    if bool(access_key_id) != bool(secret_access_key):
+        raise ConfigurationError(
+            "Resolved decryption staging access_key_id and secret_access_key "
+            "must be set together"
+        )
 
     storage = make_storage_config(
         config["storage"],
@@ -273,12 +291,14 @@ def resolve_decryption_staging(
     else:
         staging_path = _normalize_prefix(configured_path)
 
-    if _same_storage(source_storage, storage) and staging_path == source_path:
-        raise ConfigurationError(
-            "Decryption staging must not overwrite encrypted cloud storage data"
-        )
     if not staging_path:
         raise ConfigurationError("Decryption staging path must not be the bucket root")
+    if _same_storage(source_storage, storage) and _prefixes_overlap(
+        source_path, staging_path
+    ):
+        raise ConfigurationError(
+            "Decryption staging path must not overlap encrypted cloud storage path"
+        )
     return storage, staging_path
 
 
@@ -297,6 +317,16 @@ def _normalize_prefix(path: str) -> str:
     if any(part in (".", "..") for part in prefix.split("/")):
         raise ConfigurationError(f'Unsafe decryption staging path "{path}"')
     return prefix
+
+
+def _prefixes_overlap(first: str, second: str) -> bool:
+    return (
+        not first
+        or not second
+        or first == second
+        or first.startswith(f"{second}/")
+        or second.startswith(f"{first}/")
+    )
 
 
 def _object_relative_key(key: str, source_path: str, full_key: bool) -> str:

@@ -394,7 +394,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
                 f" Add the disk to the ClickHouse configuration and retry."
             )
 
-        orig_disk_endpoint = self._disks[disk_name]["endpoint"]
+        orig_disk_endpoint = self._disks[disk_name].get("endpoint") or ""
         disk_config = self._source_disk_config(backup_meta, disk_name)
         rewrite_paths = None
         if backup_meta.cloud_storage.data_encryption is not None:

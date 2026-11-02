@@ -359,6 +359,15 @@ Behavior and limitations:
   The copy metadata stores the encryption type and chunk size, but never the key. An already encrypted
   cloud-data copy cannot be encrypted again. Encrypting data of backups created with
   `cloud_storage.copy_data=true` is not supported.
+  Restore decrypts encrypted blobs into `restore.cloud_storage.decryption_staging` before
+  creating the temporary ClickHouse disk. By default staging uses the destination disk's
+  endpoint, bucket and credentials; disks without static credentials use the storage SDK's
+  normal environment/provider chain. Overriding the staging endpoint or bucket requires both
+  `access_key_id` and `secret_access_key`. The staging path is exclusive to one restore and must
+  not overlap the encrypted source prefix in the same bucket, because ch-backup removes everything
+  below it before and after restore. Reserve staging capacity for the full restored cloud-storage
+  data volume. Decryption and downloading disk metadata a second time make this restore slower than
+  an unencrypted cloud-data restore.
   To use a separate worker, provide source endpoint, bucket, path and credentials explicitly;
   neither a local ClickHouse configuration nor a connection to the source server is required.
   Without the original disk configuration, leave the source path unset for V5 metadata to
