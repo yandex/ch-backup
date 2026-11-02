@@ -26,10 +26,8 @@ from ch_backup.backup.deduplication import (
 )
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import (
-    ALL_SCOPES,
     BackupMetadata,
     BackupState,
-    CopyScope,
     TableMetadata,
     sanitize_backup_name,
 )
@@ -622,13 +620,12 @@ class ClickhouseBackup:
         *,
         keep_going: bool = False,
         report: CopyReport | None = None,
-        scopes: frozenset[CopyScope] = ALL_SCOPES,
         command_start: datetime | None = None,
     ) -> tuple[Sequence[str], Sequence[str]]:
         """
         Copy backups to the storage specified in the target config.
         If backup names are not specified, all backups in the state "created" are copied.
-        If scopes are not specified, all of them are copied.
+        Copy scopes are taken from the target configuration, all of them by default.
 
         Return names of copied backups and names of backups skipped as already copied.
         The optional report also receives partial results when copying raises.
@@ -653,7 +650,6 @@ class ClickhouseBackup:
                     backup_names,
                     keep_going=keep_going,
                     report=report,
-                    scopes=scopes,
                     command_start=command_start,
                 )
         except BaseException as e:

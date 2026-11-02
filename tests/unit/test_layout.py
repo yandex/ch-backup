@@ -10,8 +10,15 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from ch_backup.backup.layout import BackupLayout
-from ch_backup.backup.metadata import BackupMetadata, PartMetadata
+from ch_backup.backup.metadata import (
+    BackupMetadata,
+    BackupState,
+    CopyScope,
+    CopyScopeStatus,
+    PartMetadata,
+)
 from ch_backup.backup.metadata.table_metadata import TableMetadata
+from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.clickhouse.models import Disk, Table
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import StorageError
@@ -195,6 +202,38 @@ def test_list_failure_is_not_treated_as_unreadable_metadata():
     with pytest.raises(S3RetryingError, match="LIST failed"):
         layout.get_backups(True, unreadable=unreadable)
     assert not unreadable
+
+
+@pytest.mark.parametrize("full_metadata", [None, "invalid metadata"])
+def test_list_keeps_copies_with_unreadable_full_metadata(full_metadata):
+    """Listing copies needs only light metadata, even when a full file is corrupt."""
+    layout = make_layout()
+    storage = MagicMock()
+    setattr(layout, "_storage_loader", storage)
+    copied = BackupMetadata("base", "2", "26.6", "%Y-%m-%d %H:%M:%S %z")
+    copied.state = BackupState.CREATED
+    copied.copied_from = {"bucket": "source"}
+    copied.copy_scopes = {CopyScope.FILES: CopyScopeStatus.COMPLETED}
+    copied.copy_updated_at = datetime.fromisoformat("2026-10-30T10:00:00+03:00")
+    objects = {"ch_backup/base/backup_light_struct.json": copied.dump_json(light=True)}
+    if full_metadata is not None:
+        objects["ch_backup/base/backup_struct.json"] = full_metadata
+    storage.path_exists.side_effect = objects.__contains__
+    storage.list_dir.return_value = ["base"]
+    storage.download_data.side_effect = lambda path, **_: objects[path]
+    backup = ClickhouseBackup.__new__(ClickhouseBackup)
+    backup.__dict__["_context"] = MagicMock(backup_layout=layout)
+    unreadable: dict[str, str] = {}
+
+    listed = backup.list(unreadable=unreadable)
+
+    assert not unreadable
+    assert [item.name for item in listed] == ["base"]
+    assert listed[0].copy_scopes == copied.copy_scopes
+    assert listed[0].copy_updated_at == copied.copy_updated_at
+    storage.download_data.assert_called_once_with(
+        "ch_backup/base/backup_light_struct.json", encoding=None
+    )
 
 
 class TestCloudStorageMetadataRemotePaths:

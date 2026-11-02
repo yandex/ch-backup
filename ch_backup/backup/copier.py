@@ -36,13 +36,13 @@ from ch_backup.backup.layout import (
     get_data_part_relative_dirs,
 )
 from ch_backup.backup.metadata import (
-    ALL_SCOPES,
     BackupMetadata,
     BackupState,
     CopyScope,
     CopyScopeStatus,
     PartMetadata,
     TableMetadata,
+    parse_copy_scopes,
     sanitize_backup_name,
 )
 from ch_backup.clickhouse.config import ClickhouseConfig
@@ -164,7 +164,6 @@ class BackupCopier:
         *,
         keep_going: bool = False,
         report: CopyReport | None = None,
-        scopes: frozenset[CopyScope] = ALL_SCOPES,
         command_start: datetime | None = None,
     ) -> tuple[list[str], list[str]]:
         """
@@ -173,7 +172,7 @@ class BackupCopier:
         Return names of copied backups and names of backups skipped as already copied.
         A copy with scopes left to copy is reported as partial and stays "creating".
         With keep_going, attempt every viable backup before raising an aggregate error.
-        Only the specified scopes are copied, all of them by default.
+        Copy scopes are taken from the target configuration, all of them by default.
         """
         self._keep_going = keep_going
         self._report = report if report is not None else CopyReport()
@@ -182,7 +181,6 @@ class BackupCopier:
         self._materialized_parts.clear()
         self._target_table_files.clear()
         try:
-            self._scopes = tuple(scope for scope in CopyScope if scope in scopes)
             self._validate_configs(utcnow() if command_start is None else command_start)
             backups = self._select_backups(backup_names)
             results = {result.name: result for result in self._report.backups}
@@ -302,6 +300,7 @@ class BackupCopier:
 
     def _validate_configs(self, command_start: datetime) -> None:
         """Validate copy settings before selecting backups or writing objects."""
+        self._scopes = parse_copy_scopes(self._copy_config["scopes"])
         if not isinstance(self._copy_config["only_with_data"], bool):
             raise ConfigurationError("copy.only_with_data must be a boolean")
         cutoff = copy_deduplication_cutoff(self._copy_config, command_start)
