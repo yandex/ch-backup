@@ -21,10 +21,8 @@ from ch_backup.backup.copy_context import CopyContext
 from ch_backup.backup.copy_report import CopyReport, print_copy_report
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import (
-    ALL_SCOPES,
     BackupMetadata,
     BackupState,
-    CopyScope,
     DetachedPartMetadata,
 )
 from ch_backup.config import DEFAULT_CONFIG
@@ -346,6 +344,10 @@ class CopyTestContext:
         report: CopyReport | None = None,
         scopes: list[str] | None = None,
     ) -> tuple[list[str], list[str]]:
+        """Copy test backups with scopes supplied through the target config."""
+        self.target_config["copy"]["scopes"] = list(
+            scopes if scopes is not None else DEFAULT_CONFIG["copy"]["scopes"]
+        )
         for name in self.layout.backups:
             self.src_objects.setdefault(f"ch_backup/{name}/backup_struct.json", 100)
         copier = self.make_copier()
@@ -356,7 +358,6 @@ class CopyTestContext:
                 backup_names,
                 keep_going=keep_going,
                 report=report,
-                scopes=frozenset(map(CopyScope, scopes or ())) or ALL_SCOPES,
             )
 
     def make_copier(self) -> BackupCopier:
@@ -2852,6 +2853,21 @@ def test_select_all_only_with_data(only_with_data):
         assert copier.copy(["schema"]) == (["schema"], [])
 
 
+@pytest.mark.parametrize(
+    "value", [None, [], {}, "files", ["data"], ["files", "data"], [None], [1], [[]]]
+)
+@pytest.mark.parametrize("names", [None, ["b1"], ["LAST"]])
+def test_copy_api_rejects_invalid_scopes(value, names):
+    """Reject invalid configured scopes before selecting backups."""
+    ctx = CopyTestContext([])
+    ctx.target_config["copy"]["scopes"] = value
+    copier = ctx.make_copier()
+    with patch.object(copier, "_select_backups") as select:
+        with pytest.raises(ConfigurationError, match="copy.scopes"):
+            copier.copy(names)
+        select.assert_not_called()
+
+
 @pytest.mark.parametrize("value", ["false", "true", 0, 1, None, [], {}])
 def test_copy_api_rejects_non_boolean_only_with_data(value):
     """Validate filter types for callers that bypass the CLI."""
@@ -3649,11 +3665,10 @@ def test_cloud_storage_selection_only_with_data(only_with_data, names):
     ctx.target_layout.backups[empty.name] = empty
     ctx.layout.backups.clear()
     ctx.target_config["copy"]["only_with_data"] = only_with_data
+    ctx.target_config["copy"]["scopes"] = ["cloud_storage"]
     copier = ctx.make_copier()
     with patch.object(copier, "_copy_backup", return_value=True):
-        copied, skipped = copier.copy(
-            names, scopes=frozenset({CopyScope.CLOUD_STORAGE})
-        )
+        copied, skipped = copier.copy(names)
     expected = ["b1"] if only_with_data else (["empty"] if names else ["b1", "empty"])
     assert copied == expected
     assert not skipped

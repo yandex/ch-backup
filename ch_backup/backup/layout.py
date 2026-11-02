@@ -779,6 +779,8 @@ class BackupLayout:
         )
 
         try:
+            if not part.tarball:
+                _validate_part_file_paths(fs_part_path, part.files)
             os.makedirs(fs_part_path, exist_ok=True)
 
             # part.link is the source backup name for deduplicated parts (or None).
@@ -810,6 +812,7 @@ class BackupLayout:
                     local_path = os.path.join(fs_part_path, filename)
                     remote_path = os.path.join(remote_dir_path, filename)
                     logging.debug("Downloading part file: {}", remote_path)
+                    os.makedirs(os.path.dirname(local_path), exist_ok=True)
                     self._storage_loader.download_file(
                         remote_path=remote_path,
                         local_path=local_path,
@@ -1422,6 +1425,19 @@ class BackupLayout:
         if self._storage_loader.path_exists(path, is_dir=True):
             return path
         return path_function(*args, escape_names=False, **kwargs)
+
+
+def _validate_part_file_paths(path: str, filenames: Sequence[str]) -> None:
+    """Check all legacy filenames before submitting even the first download."""
+    root = Path(path).resolve()
+    for filename in filenames:
+        relative = Path(filename)
+        if (
+            relative.is_absolute()
+            or ".." in relative.parts
+            or root not in (root / relative).resolve().parents
+        ):
+            raise StorageError(f'Invalid part filename: "{filename}"')
 
 
 def get_data_part_relative_dirs(part: PartMetadata) -> list[str]:

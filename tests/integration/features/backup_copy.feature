@@ -836,6 +836,34 @@ Feature: Copy backups to another storage
     And we got the following backups on clickhouse02
       | num | state    |
       | 0   | creating |
+    When metadata of clickhouse02 backup #0 was adjusted with
+    """
+    meta:
+        copy:
+            updated_at: {{ backup.meta['copy'].updated_at | decrease_on('2 weeks') }}
+    """
+    And we create clickhouse02 clickhouse backup
+    """
+    schema_only: true
+    """
+    And we delete clickhouse02 clickhouse backup #0
+    """
+    purge_partial: true
+    """
+    Then we got the following backups on clickhouse02
+      | num | state    |
+      | 0   | creating |
+    Given ch-backup configuration on clickhouse02
+    """
+    backup:
+        retain_count: 0
+        retain_time:
+            days: 30
+    """
+    When we purge clickhouse02 clickhouse backups
+    Then we got the following backups on clickhouse02
+      | num | state    |
+      | 0   | creating |
     When we execute command on clickhouse01
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf \

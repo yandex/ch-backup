@@ -26,10 +26,10 @@ from ch_backup.backup.deduplication import (
 )
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import (
-    ALL_SCOPES,
     BackupMetadata,
     BackupState,
     CopyScope,
+    CopyScopeStatus,
     TableMetadata,
     sanitize_backup_name,
 )
@@ -586,6 +586,7 @@ class ClickhouseBackup:
                 if (
                     purge_partial
                     and backup.state != BackupState.CREATED
+                    and not _is_partial_copy(backup)
                     and i != 0
                     and not _is_being_copied(backup, copying_since)
                 ):
@@ -632,13 +633,12 @@ class ClickhouseBackup:
         *,
         keep_going: bool = False,
         report: CopyReport | None = None,
-        scopes: frozenset[CopyScope] = ALL_SCOPES,
         command_start: datetime | None = None,
     ) -> tuple[Sequence[str], Sequence[str]]:
         """
         Copy backups to the storage specified in the target config.
         If backup names are not specified, all backups in the state "created" are copied.
-        If scopes are not specified, all of them are copied.
+        Copy scopes are taken from the target configuration, all of them by default.
 
         Return names of copied backups and names of backups skipped as already copied.
         The optional report also receives partial results when copying raises.
@@ -663,7 +663,6 @@ class ClickhouseBackup:
                     backup_names,
                     keep_going=keep_going,
                     report=report,
-                    scopes=scopes,
                     command_start=command_start,
                 )
         except BaseException as e:
@@ -675,9 +674,9 @@ class ClickhouseBackup:
         """
         Purge backups.
 
-        When every retained backup that is created holds incomplete table data,
-        the newest complete backup is kept anyway: it may hold the last copy of
-        the data the retained backups lack.
+        If a created backup or partial copy is retained but none is complete,
+        keep the newest complete backup: it may hold the last copy of data
+        the retained backups lack.
         """
         retain_time = self._context.config["retain_time"]
         retain_count = self._context.config["retain_count"]
@@ -699,14 +698,14 @@ class ClickhouseBackup:
         with self._context.locker(operation="PURGE"):
             # Use light metadata in backups iteration to avoid high memory usage.
             for backup in self._context.backup_layout.get_backups(use_light_meta=True):
-                if retain_count > 0:
+                if retain_count is not None and retain_count > 0:
                     logging.info(
                         "Preserving backup per retain count policy: {}, state {}",
                         backup.name,
                         backup.state,
                     )
                     retained_backups.append(backup)
-                    if backup.state == BackupState.CREATED:
+                    if backup.state == BackupState.CREATED or _is_partial_copy(backup):
                         retain_count -= 1
                     continue
 
@@ -731,13 +730,14 @@ class ClickhouseBackup:
                 deleting_backups.append(backup)
 
             if any(
-                backup.state == BackupState.CREATED for backup in retained_backups
+                backup.state == BackupState.CREATED or _is_partial_copy(backup)
+                for backup in retained_backups
             ) and not any(map(_is_complete, retained_backups)):
                 complete_backup = next(filter(_is_complete, deleting_backups), None)
                 if complete_backup:
                     logging.info(
                         "Preserving the newest complete backup, the retained ones"
-                        " hold incomplete table data: {}",
+                        " hold incomplete data: {}",
                         complete_backup.name,
                     )
                     deleting_backups.remove(complete_backup)
@@ -1176,9 +1176,23 @@ def _zookeeper_roots_differ(ch_config: dict, zk_config: dict) -> bool:
     return ch_root.rstrip("/") != (zk_config.get("root_path") or "").rstrip("/")
 
 
+def _is_partial_copy(backup: BackupMetadata) -> bool:
+    """Check for copied files with cloud storage still pending or failed."""
+    return (
+        backup.state in (BackupState.CREATING, BackupState.FAILED)
+        and backup.copy_scopes.get(CopyScope.FILES) == CopyScopeStatus.COMPLETED
+        and backup.copy_scopes.get(CopyScope.CLOUD_STORAGE)
+        in (CopyScopeStatus.PENDING, CopyScopeStatus.FAILED)
+    )
+
+
 def _is_being_copied(backup: BackupMetadata, since: datetime | None) -> bool:
-    """Check that the backup is a copy that is not completed and was saved by the copy command after since."""
-    if since is None or backup.state not in (BackupState.CREATING, BackupState.FAILED):
+    """Check whether an incomplete copy needs temporary retention."""
+    if (
+        since is None
+        or backup.state not in (BackupState.CREATING, BackupState.FAILED)
+        or _is_partial_copy(backup)
+    ):
         return False
     updated_at = backup.copy_updated_at
     return updated_at is not None and updated_at >= since

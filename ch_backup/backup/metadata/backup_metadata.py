@@ -18,7 +18,11 @@ from ch_backup.backup.metadata.detached_part_metadata import DetachedPartMetadat
 from ch_backup.backup.metadata.part_metadata import PartMetadata
 from ch_backup.backup.metadata.table_metadata import DataSkippedReason, TableMetadata
 from ch_backup.clickhouse.models import Database
-from ch_backup.exceptions import InvalidBackupStruct, UnknownBackupStateError
+from ch_backup.exceptions import (
+    ConfigurationError,
+    InvalidBackupStruct,
+    UnknownBackupStateError,
+)
 from ch_backup.util import now
 
 
@@ -52,7 +56,17 @@ class CopyScope(Enum):
     CLOUD_STORAGE = "cloud_storage"
 
 
-ALL_SCOPES = frozenset(CopyScope)
+def parse_copy_scopes(value: Any) -> tuple[CopyScope, ...]:
+    """Validate configured copy scopes and return them in execution order."""
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(name not in [scope.value for scope in CopyScope] for name in value)
+    ):
+        raise ConfigurationError(
+            'copy.scopes must be a non-empty list of "files" and/or "cloud_storage"'
+        )
+    return tuple(scope for scope in CopyScope if scope.value in value)
 
 
 class CopyScopeStatus(Enum):
