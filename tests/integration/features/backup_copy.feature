@@ -914,6 +914,8 @@ Feature: Copy backups to another storage
         cloud_storage:
             decryption_staging:
                 bucket: <staging_bucket>
+                access_key_id: <staging_access_key_id>
+                secret_access_key: <staging_secret_access_key>
     """
     And a keyless copy configuration "/tmp/keyless-cloud.conf" on clickhouse01
     """
@@ -957,10 +959,10 @@ Feature: Copy backups to another storage
     And s3 bucket <cleanup_bucket> contains no objects with prefix "<cleanup_prefix>"
 
     Examples:
-      | staging                   | staging_bucket   | cleanup_bucket   | cleanup_prefix                 |
-      | destination disk         | null             | cloud-storage-02 | copy/87654321T123456_decrypted |
-      | configured source bucket | cloud-storage-02 | cloud-storage-02 | copy/87654321T123456_decrypted |
-      | another bucket           | cloud-storage-01 | cloud-storage-01 | copy/87654321T123456           |
+      | staging                   | staging_bucket   | staging_access_key_id      | staging_secret_access_key      | cleanup_bucket   | cleanup_prefix                 |
+      | destination disk         | null             | null                       | null                           | cloud-storage-02 | copy/87654321T123456_decrypted |
+      | configured source bucket | cloud-storage-02 | {{ conf.s3.access_key_id }} | {{ conf.s3.access_secret_key }} | cloud-storage-02 | copy/87654321T123456_decrypted |
+      | another bucket           | cloud-storage-01 | {{ conf.s3.access_key_id }} | {{ conf.s3.access_secret_key }} | cloud-storage-01 | copy/87654321T123456           |
 
   @require_version_22.8
   Scenario: Deleting copy of backup with data on S3 disk doesn't affect the source backup
