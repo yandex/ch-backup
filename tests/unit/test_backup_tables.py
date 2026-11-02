@@ -7,6 +7,7 @@ import threading
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
+from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE
 from typing import Callable, Sequence
@@ -76,12 +77,24 @@ def test_restore_attaches_parts_in_source_order(tmp_path, newest_source):
     context.config["restore_context_path"] = str(tmp_path / "restore.json")
     context.backup_layout = layout = Mock()
     context.ch_ctl = ch_ctl = Mock()
+    ch_ctl.get_detached_part_path.side_effect = lambda _table, _disk, name: str(
+        tmp_path / name
+    )
     table = TableMetadata("db1", "tbl", "ReplacingMergeTree", None)
     names = ["all_1_1_0", "all_2_2_0", "all_10_10_0"]
     for name in names:
         disk = "cloud" if name == names[-1] and newest_source == "cloud" else "default"
         table.add_part(
-            PartMetadata("db1", "tbl", name, "", 1, [], True, disk_name=disk)
+            PartMetadata(
+                "db1",
+                "tbl",
+                name,
+                md5(b"checksums").hexdigest(),
+                512,
+                ["checksums.txt"],
+                True,
+                disk_name=disk,
+            )
         )
     parts = table.get_parts()
     collected = {name: threading.Event() for name in names}
@@ -109,6 +122,8 @@ def test_restore_attaches_parts_in_source_order(tmp_path, newest_source):
                 assert collected[names[index + 1]].wait(
                     10
                 ), "newer part was not collected"
+            Path(_path).mkdir()
+            (Path(_path) / "checksums.txt").write_bytes(b"checksums")
 
         pool.submit(part.name, task, callback=lambda: complete(callback, part))
 
@@ -2191,6 +2206,7 @@ def test_restore_skips_unreadable_database_schemas(
     all_failed: bool,
     legacy: bool,
     skip_cloud_storage: bool,
+    tmp_path: Path,
 ) -> None:
     context = _make_backup_context()
     context.restore_context = Mock(
@@ -2209,7 +2225,7 @@ def test_restore_skips_unreadable_database_schemas(
                 table.database,
                 table.name,
                 "all_1_1_0",
-                "checksum",
+                md5(b"checksums").hexdigest(),
                 512,
                 ["checksums.txt"],
                 True,
@@ -2255,7 +2271,7 @@ def test_restore_skips_unreadable_database_schemas(
         (table.database, table.name), table
     )
     controller.get_detached_part_path.side_effect = lambda table, disk, name: (
-        f"/data/{table.database}/{table.name}/detached/{name}"
+        str(tmp_path / table.database / table.name / "detached" / name)
     )
     context.ch_ctl = controller
 
@@ -2269,11 +2285,14 @@ def test_restore_skips_unreadable_database_schemas(
             )
         ]
 
+    def download(_backup, part, path, callback, **_kwargs):
+        Path(path).mkdir(parents=True)
+        (Path(path) / "checksums.txt").write_bytes(b"checksums")
+        callback(part)
+
     layout = MagicMock(
         get_table_create_statements=Mock(side_effect=download_schema),
-        download_data_part=Mock(
-            side_effect=lambda _backup, part, _path, callback, **_kwargs: callback(part)
-        ),
+        download_data_part=Mock(side_effect=download),
     )
     if legacy:
         context.config["path_root"] = "ch_backup"
@@ -2328,7 +2347,7 @@ def test_restore_skips_unreadable_database_schemas(
         layout.download_data_part.assert_called_once_with(
             context.backup_meta,
             healthy.get_parts()[0],
-            f"/data/{healthy_db}/healthy/detached/all_1_1_0",
+            ANY,
             callback=ANY,
             on_error=ANY,
         )

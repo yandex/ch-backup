@@ -1325,6 +1325,10 @@ class ClickhouseCTL:
         """
         Get filesystem absolute path to detached data part.
         """
+        if part_name in {"", ".", ".."} or os.path.basename(part_name) != part_name:
+            raise ClickhouseBackupError(
+                f'Invalid detached part directory name: "{part_name}"'
+            )
         return os.path.join(self._get_table_detached_path(table, disk_name), part_name)
 
     @staticmethod

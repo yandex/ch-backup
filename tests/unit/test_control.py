@@ -849,7 +849,7 @@ def test_detached_part_matches_object_storage_metadata(tmp_path: Path) -> None:
     assert not ClickhouseCTL.detached_part_matches(part, str(part_path))
 
 
-def test_detached_path_accepts_table_disk_with_same_storage_path(
+def test_detached_path_is_direct_child_on_table_disk_with_same_storage_path(
     tmp_path: Path,
 ) -> None:
     ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
@@ -878,3 +878,6 @@ def test_detached_path_accepts_table_disk_with_same_storage_path(
     assert ch_ctl.get_detached_part_path(table, backing_disk.name, "all_1_1_0") == str(
         table_path / "detached" / "all_1_1_0"
     )
+    for name in ("../all_1_1_0", str(table_path / "all_1_1_0")):
+        with pytest.raises(ClickhouseBackupError, match="Invalid detached part"):
+            ch_ctl.get_detached_part_path(table, backing_disk.name, name)

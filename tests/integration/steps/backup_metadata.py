@@ -127,3 +127,10 @@ def step_restore_cloud_metadata(context):
         layout.wait()
         assert layout.get_cloud_storage_metadata_files(backup, path) == files
     context.saved_cloud_metadata = {}
+
+
+@given('local parts of {node:w} backup "{backup_name}" use the {layout:w} layout')
+def step_local_part_layout(context, node, backup_name, layout):
+    assert layout in {"tar", "legacy"}
+    if layout == "legacy":
+        BackupStorage(context, node).rewrite_per_file_parts(backup_name)

@@ -37,6 +37,25 @@ def make_layout() -> BackupLayout:
     return layout
 
 
+@pytest.mark.parametrize("filename", ["../outside/file", "/outside/file", "link/file"])
+def test_legacy_part_rejects_unsafe_manifest_before_download(tmp_path, filename):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "link").symlink_to(tmp_path / "outside", target_is_directory=True)
+    if filename.startswith("/"):
+        filename = str(tmp_path / filename.lstrip("/"))
+    layout = make_layout()
+    part = PartMetadata("db", "t", "all_1_1_0", "", 1, ["p.proj/a", filename], False)
+    with (
+        patch.object(layout, "_storage_loader") as storage,
+        pytest.raises(StorageError, match="Invalid part filename"),
+    ):
+        layout.download_data_part(MagicMock(), part, str(staging), MagicMock())
+    storage.download_file.assert_not_called()
+    assert not (staging / "p.proj").exists()
+    assert not (tmp_path / "outside").exists()
+
+
 @pytest.mark.parametrize("failure", [None, "first", "both", "submit"])
 # pylint: disable=protected-access
 def test_legacy_part_completes_only_after_all_files(tmp_path, monkeypatch, failure):
