@@ -28,6 +28,8 @@ from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
+    CopyScope,
+    CopyScopeStatus,
     TableMetadata,
     sanitize_backup_name,
 )
@@ -574,6 +576,7 @@ class ClickhouseBackup:
                 if (
                     purge_partial
                     and backup.state != BackupState.CREATED
+                    and not _is_partial_copy(backup)
                     and i != 0
                     and not _is_being_copied(backup, copying_since)
                 ):
@@ -685,14 +688,14 @@ class ClickhouseBackup:
         with self._context.locker(operation="PURGE"):
             # Use light metadata in backups iteration to avoid high memory usage.
             for backup in self._context.backup_layout.get_backups(use_light_meta=True):
-                if retain_count > 0:
+                if retain_count is not None and retain_count > 0:
                     logging.info(
                         "Preserving backup per retain count policy: {}, state {}",
                         backup.name,
                         backup.state,
                     )
                     retained_backups.append(backup)
-                    if backup.state == BackupState.CREATED:
+                    if backup.state == BackupState.CREATED or _is_partial_copy(backup):
                         retain_count -= 1
                     continue
 
@@ -1162,9 +1165,23 @@ def _zookeeper_roots_differ(ch_config: dict, zk_config: dict) -> bool:
     return ch_root.rstrip("/") != (zk_config.get("root_path") or "").rstrip("/")
 
 
+def _is_partial_copy(backup: BackupMetadata) -> bool:
+    """Check for copied files with cloud storage still pending or failed."""
+    return (
+        backup.state in (BackupState.CREATING, BackupState.FAILED)
+        and backup.copy_scopes.get(CopyScope.FILES) == CopyScopeStatus.COMPLETED
+        and backup.copy_scopes.get(CopyScope.CLOUD_STORAGE)
+        in (CopyScopeStatus.PENDING, CopyScopeStatus.FAILED)
+    )
+
+
 def _is_being_copied(backup: BackupMetadata, since: datetime | None) -> bool:
-    """Check that the backup is a copy that is not completed and was saved by the copy command after since."""
-    if since is None or backup.state not in (BackupState.CREATING, BackupState.FAILED):
+    """Check whether an incomplete copy needs temporary retention."""
+    if (
+        since is None
+        or backup.state not in (BackupState.CREATING, BackupState.FAILED)
+        or _is_partial_copy(backup)
+    ):
         return False
     updated_at = backup.copy_updated_at
     return updated_at is not None and updated_at >= since
