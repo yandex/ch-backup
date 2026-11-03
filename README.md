@@ -328,8 +328,8 @@ Behavior and limitations:
   the scope becomes `failed`; the next run of the scope copies only unconfirmed objects. The list is
   rewritten by each run of the scope in which objects fail and removed once the scope completes.
   Disk metadata that cannot be planned is not copied, so it never overwrites rewritten disk
-  metadata; a later run copies it. Copy scopes of one backup one after another: the local lock
-  serializes runs on one host, runs on different hosts require `lock.zk_flock`.
+  metadata; a later run copies it. Run copy scopes of one backup sequentially. The shared local file
+  lock does not serialize runs; use matching ZooKeeper locks or serialize operations externally.
 - Copy acquires the configured source and target locks through completion, including retries and
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
   and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.
@@ -422,7 +422,10 @@ Behavior and limitations:
   `copy.cloud_storage.target` for separate credentials or a different endpoint.
   Metadata must be trusted and readable. Encrypted disk metadata requires its original key.
   Batch cleanup validates all selected backups before deletion. Failed cleanup can be retried.
-  Restore preserves the HTTP/HTTPS scheme of the stored endpoint. Its `--cloud-storage-source-endpoint`
+  Restore accepts a stored endpoint only if its origin matches a configured disk or backup-storage endpoint,
+  or an explicit `--cloud-storage-source-endpoint` override. A null stored endpoint selects the AWS default.
+  In-place restore is not supported for copied cloud data, including external copies.
+  Restore preserves the HTTP/HTTPS scheme of the selected endpoint. Its `--cloud-storage-source-endpoint`
   option accepts a full HTTP(S) URL or `host[:port]`; the latter uses the original disk's scheme.
 - ClickHouse 26.8+ SQL-defined HTTP handlers are included in full backups; use `--http-handlers` with backup
   or restore handlers only.
