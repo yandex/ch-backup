@@ -17,12 +17,15 @@ class CloudStorageMetadata:
         data_copied: bool = False,
         disks: list[str] | None = None,
         source: dict[str, str] | None = None,
+        *,
+        data_encryption: dict[str, Any] | None = None,
     ) -> None:
         self._encryption: bool = encryption
         self._compression: bool = compression
         self._data_copied: bool = data_copied
         self._disks: list[str] = disks or []
         self._source: dict[str, str] | None = source
+        self._data_encryption: dict[str, Any] | None = data_encryption
 
     @property
     def enabled(self) -> bool:
@@ -115,6 +118,16 @@ class CloudStorageMetadata:
         """
         self._source = value
 
+    @property
+    def data_encryption(self) -> dict[str, Any] | None:
+        """Return encryption format of copied data objects, without the key."""
+        return self._data_encryption
+
+    @data_encryption.setter
+    def data_encryption(self, value: dict[str, Any] | None) -> None:
+        """Set encryption format of copied data objects, without the key."""
+        self._data_encryption = value
+
     @classmethod
     def load(cls, data: dict[str, Any]) -> "CloudStorageMetadata":
         """
@@ -126,6 +139,7 @@ class CloudStorageMetadata:
             data_copied=data.get("data_copied", False),
             disks=data.get("disks", []),
             source=data.get("source"),
+            data_encryption=data.get("data_encryption"),
         )
 
     def dump(self) -> dict[str, Any]:
@@ -140,4 +154,6 @@ class CloudStorageMetadata:
         }
         if self._source:
             result["source"] = self._source
+        if self._data_encryption is not None:
+            result["data_encryption"] = self._data_encryption
         return result

@@ -21,11 +21,13 @@ from ch_backup.calculators import (
     calc_aligned_data_size,
     calc_aligned_files_size,
     calc_aligned_files_size_scan,
-    calc_encrypted_size,
     calc_tarball_size,
     calc_tarball_size_scan,
 )
-from ch_backup.encryption import get_encryption
+from ch_backup.encryption import (
+    calc_encrypted_size_from_config,
+    get_cloud_storage_data_encryption_config,
+)
 from ch_backup.storage.async_pipeline.pipeline_builder import PipelineBuilder
 from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.object_copy import CopyEntry
@@ -44,7 +46,9 @@ def upload_data_pipeline(
     builder.build_iterable_stage([data])
     if encrypt:
         builder.build_encrypt_stage()
-        estimated_size = _calc_encrypted_size(config, estimated_size)
+        estimated_size = calc_encrypted_size_from_config(
+            config["encryption"], estimated_size
+        )
     builder.build_uploading_stage(remote_path, estimated_size)
 
     run(builder.pipeline())
@@ -74,7 +78,9 @@ def upload_data_tarball_pipeline(
         builder.build_compress_stage()
     if encrypt:
         builder.build_encrypt_stage()
-        estimated_size = _calc_encrypted_size(config, estimated_size)
+        estimated_size = calc_encrypted_size_from_config(
+            config["encryption"], estimated_size
+        )
     # Assuming actual size after compression is not larger than estimated_size
     # If it is not, number of chunks may exceed the maximum allowed count and upload will fail
     builder.build_uploading_stage(remote_path, estimated_size)
@@ -94,7 +100,9 @@ def upload_file_pipeline(
     builder.build_read_file_stage(file_path=local_path)
     if encrypt:
         builder.build_encrypt_stage()
-        estimated_size = _calc_encrypted_size(config, estimated_size)
+        estimated_size = calc_encrypted_size_from_config(
+            config["encryption"], estimated_size
+        )
     builder.build_uploading_stage(remote_path, estimated_size)
     if delete_after:
         builder.build_delete_files_stage([local_path])
@@ -132,7 +140,9 @@ def upload_files_tarball_scan_pipeline(
         builder.build_compress_stage()
     if encrypt:
         builder.build_encrypt_stage()
-        estimated_size = _calc_encrypted_size(config, estimated_size)
+        estimated_size = calc_encrypted_size_from_config(
+            config["encryption"], estimated_size
+        )
     # Assuming actual size after compression is not larger than estimated_size
     # If it is not, number of chunks may exceed the maximum allowed count and upload will fail
     builder.build_uploading_stage(remote_path, estimated_size)
@@ -167,7 +177,9 @@ def upload_files_tarball_pipeline(
         builder.build_compress_stage()
     if encrypt:
         builder.build_encrypt_stage()
-        estimated_size = _calc_encrypted_size(config, estimated_size)
+        estimated_size = calc_encrypted_size_from_config(
+            config["encryption"], estimated_size
+        )
     # Assuming actual size after compression is not larger than estimated_size
     # If it is not, number of chunks may exceed the maximum allowed count and upload will fail
     builder.build_uploading_stage(remote_path, estimated_size)
@@ -264,16 +276,28 @@ def download_files_pipeline(
 
 def copy_object_pipeline(config: dict, entry: CopyEntry) -> None:
     """
-    Entrypoint of copy object pipeline. Object data is copied as is.
+    Entrypoint of copy object pipeline. Optionally transform object data in transit.
     """
+    if entry.encrypt and entry.decrypt:
+        raise ValueError("Object cannot be encrypted and decrypted at the same time")
+
     if entry.server_side:
+        if entry.encrypt or entry.decrypt:
+            raise ValueError("Transformed object cannot be copied on the server side")
         get_storage_engine(entry.dst_storage).copy_object(
             entry.src_storage["credentials"]["bucket"], entry.src_path, entry.dst_path
         )
         return
 
+    encryption_config = (
+        get_cloud_storage_data_encryption_config(config)
+        if entry.encrypt or entry.decrypt
+        else None
+    )
+
     if entry.size == 0:
-        # Uploading stage doesn't create an object if there is no data to upload
+        # Encryption is chunk-based, so an empty object has no encrypted chunks.
+        # Uploading stage doesn't create an object if there is no data to upload.
         get_storage_engine(entry.dst_storage).upload_data(b"", entry.dst_path)
         return
 
@@ -282,8 +306,13 @@ def copy_object_pipeline(config: dict, entry: CopyEntry) -> None:
     builder.build_download_storage_stage(
         entry.src_path, storage_config=entry.src_storage
     )
+    if encryption_config:
+        if entry.encrypt:
+            builder.build_encrypt_stage(encryption_config)
+        else:
+            builder.build_decrypt_stage(encryption_config)
     builder.build_uploading_stage(
-        entry.dst_path, entry.size, storage_config=entry.dst_storage
+        entry.dst_path, entry.dst_size, storage_config=entry.dst_storage
     )
 
     run(builder.pipeline())
@@ -383,11 +412,3 @@ def _ignore_invalid_thread_id_error(
         exc_info=True,
     )
     return True
-
-
-def _calc_encrypted_size(config: dict, data_size: int) -> int:
-    enc_conf = config["encryption"]
-    chunk_size = enc_conf["chunk_size"]
-    metadata_size = get_encryption(enc_conf["type"], enc_conf).metadata_size()
-
-    return calc_encrypted_size(data_size, chunk_size, metadata_size)

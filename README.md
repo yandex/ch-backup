@@ -259,7 +259,8 @@ Behavior and limitations:
   set `backup.deduplication_start_time` to the beginning of the series when enabling the new format.
 - If both buckets belong to the same S3 service and are accessible with the same credentials, objects
   are copied on the server side. Otherwise, data is streamed through ch-backup. Server-side copy can be
-  disabled with `--no-server-side-copy`.
+  disabled with `--no-server-side-copy`. It is disabled automatically for cloud-storage objects
+  transformed by encryption or decryption.
 - The copy becomes valid (gets the state `created`) only after all its data is copied. If copying is
   interrupted, the copy remains in the state `creating` or `failed`, and the next run of the command
   resumes it. Confirmed copies are recorded in the copy context, a journal kept in the target storage
@@ -382,7 +383,22 @@ Behavior and limitations:
   Each file is limited to 1 MiB, checked and archived from the same bounded memory buffer.
   Larger disk metadata files also require `cloud_storage.encryption=true`.
   Such files require `cloud_storage.encryption=true`, and copying that backup requires a key.
-  The flag only controls disk metadata: blobs retain the encryption applied by ClickHouse or S3.
+  The flag only controls disk metadata. By default, blobs retain the encryption applied by ClickHouse
+  or S3. Set `copy.cloud_storage.encrypt_data=true` to encrypt copied blobs in the streaming pipeline.
+  Encryption settings come from the top-level `encryption` section by default; values under
+  `cloud_storage.data_encryption` override them, allowing a dedicated key on keyless copy workers.
+  The copy metadata stores the encryption type and chunk size, but never the key. An already encrypted
+  cloud-data copy cannot be encrypted again. Encrypting data of backups created with
+  `cloud_storage.copy_data=true` is not supported.
+  Restore decrypts encrypted blobs into `restore.cloud_storage.decryption_staging` before
+  creating the temporary ClickHouse disk. By default staging uses the destination disk's
+  endpoint, bucket and credentials; disks without static credentials use the storage SDK's
+  normal environment/provider chain. Overriding the staging endpoint or bucket requires both
+  `access_key_id` and `secret_access_key`. The staging path is exclusive to one restore and must
+  not overlap the encrypted source prefix in the same bucket, because ch-backup removes everything
+  below it before and after restore. Reserve staging capacity for the full restored cloud-storage
+  data volume. Decryption and downloading disk metadata a second time make this restore slower than
+  an unencrypted cloud-data restore.
   To use a separate worker, provide source endpoint, bucket, path and credentials explicitly;
   neither a local ClickHouse configuration nor a connection to the source server is required.
   Without the original disk configuration, leave the source path unset for V5 metadata to
