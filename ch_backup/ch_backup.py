@@ -1083,10 +1083,14 @@ class ClickhouseBackup:
             configured_copy_target.get("endpoint_url")
             or payload_credentials["endpoint_url"]
         )
+        normalized_configured_endpoint = (
+            configured_endpoint or "https://s3.amazonaws.com"
+        ).rstrip("/")
+        normalized_recorded_endpoint = (
+            recorded_location.get("endpoint_url") or "https://s3.amazonaws.com"
+        ).rstrip("/")
         # Metadata is not authenticated. Credentials must only reach a configured endpoint.
-        if (configured_endpoint or "").rstrip("/") != (
-            recorded_location.get("endpoint_url") or ""
-        ).rstrip("/"):
+        if normalized_configured_endpoint != normalized_recorded_endpoint:
             raise ConfigurationError(
                 "Cloud storage endpoint in backup metadata does not match the configured endpoint; "
                 'set "copy.cloud_storage.target.endpoint_url" explicitly'
@@ -1098,9 +1102,13 @@ class ClickhouseBackup:
             raise ConfigurationError(
                 "Cloud storage bucket in backup metadata does not match copy.cloud_storage.target.bucket"
             )
-        if (payload_credentials["endpoint_url"] or "").rstrip("/") == (
-            configured_endpoint or ""
-        ).rstrip("/") and payload_credentials["bucket"] == recorded_location["bucket"]:
+        normalized_backup_endpoint = (
+            payload_credentials["endpoint_url"] or "https://s3.amazonaws.com"
+        ).rstrip("/")
+        if (
+            normalized_backup_endpoint == normalized_configured_endpoint
+            and payload_credentials["bucket"] == recorded_location["bucket"]
+        ):
             backup_directory_prefixes = [
                 os.path.join(
                     self._config["backup"]["path_root"], backup_directory_name
