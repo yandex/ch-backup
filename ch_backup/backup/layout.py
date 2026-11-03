@@ -9,7 +9,7 @@ import os
 from contextlib import contextmanager
 from functools import partial
 from io import IOBase
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import (
     Any,
     BinaryIO,
@@ -1002,6 +1002,10 @@ class BackupLayout:
         """
         Return remote paths of tarballs with cloud storage metadata of the specified disk.
         """
+        if not disk_name or disk_name in (".", "..") or "/" in disk_name:
+            raise ConfigurationError(
+                "Cloud storage disk name must be one path component"
+            )
         backup_path = self.get_backup_path(backup_name)
         # Check if metadata is stored as 'disks/s3.tar.gz' for backwards compatibility
         legacy_archive_path = _disk_metadata_path(
@@ -1016,6 +1020,21 @@ class BackupLayout:
         existing_archive_paths = self._storage_loader.list_dir(
             metadata_directory, recursive=True, absolute=True
         )
+        # Cleanup can rewrite these archives. A listing must not redirect it
+        # outside the requested disk, even if no table filter was requested.
+        for archive_path in existing_archive_paths:
+            try:
+                relative_path = PurePosixPath(archive_path).relative_to(
+                    metadata_directory
+                )
+            except ValueError as error:
+                raise ConfigurationError(
+                    "Cloud metadata archive is outside its disk directory"
+                ) from error
+            if not relative_path.parts or ".." in relative_path.parts:
+                raise ConfigurationError(
+                    "Cloud metadata archive is outside its disk directory"
+                )
         if desired_tables == "all":
             return existing_archive_paths
 
@@ -1184,13 +1203,13 @@ class BackupLayout:
             ):
                 payload_engine.delete_files(object_key_batch)
             for archive_path, retained_metadata_files in archive_replacements.items():
-                if retained_metadata_files:
-                    self.upload_cloud_storage_metadata_files(
-                        backup, archive_path, retained_metadata_files
-                    )
-                    self.wait()
-                else:
-                    self._delete_files([archive_path], is_async=False)
+                # Keep an empty archive as evidence that this disk was cleaned.
+                # A later failure must not make retry indistinguishable from
+                # missing metadata whose objects were never identified.
+                self.upload_cloud_storage_metadata_files(
+                    backup, archive_path, retained_metadata_files
+                )
+                self.wait()
 
         return delete_objects_and_rewrite_archives
 
