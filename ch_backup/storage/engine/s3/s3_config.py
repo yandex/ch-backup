@@ -7,6 +7,8 @@ from typing import Any
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError
+from urllib3.exceptions import LocationParseError
+from urllib3.util import parse_url
 
 from ch_backup.exceptions import ConfigurationError
 
@@ -40,6 +42,24 @@ def _number(value: Any, path: str, *, integer: bool, minimum: int = 1) -> None:
         raise ConfigurationError(f"{path} must be {kind} of at least {minimum}")
 
 
+def _validate_proxy_urls(proxies: dict | None) -> None:
+    for proxy_url in (proxies or {}).values():
+        if not isinstance(proxy_url, str):
+            continue
+        # Match botocore's handling of proxy addresses without a scheme.
+        if proxy_url.startswith("//"):
+            proxy_url = f"http:{proxy_url}"
+        elif not proxy_url.startswith(("http:", "https:")):
+            proxy_url = f"http://{proxy_url}"
+        try:
+            parse_url(proxy_url)
+        except LocationParseError:
+            # SDK request logging would expose credentials in the parser error.
+            raise ConfigurationError(
+                f"{_PREFIX}.botocore.proxies: invalid proxy URL"
+            ) from None
+
+
 def build_botocore_config(storage: dict) -> Config:
     """Apply explicit SDK options over legacy settings without doing any I/O."""
     options = _module_options(storage, "botocore")
@@ -47,6 +67,7 @@ def build_botocore_config(storage: dict) -> Config:
     for name in ("s3", "retries", "proxies", "proxies_config"):
         if name in options and options[name] is not None:
             _mapping(options[name], f"{prefix}.{name}")
+    _validate_proxy_urls(options.get("proxies"))
     for name in ("connect_timeout", "read_timeout"):
         if name in options and options[name] is not None:
             value = options[name]
