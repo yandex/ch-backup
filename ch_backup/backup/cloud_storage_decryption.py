@@ -56,6 +56,16 @@ class CloudStorageDecryption:
         """Decrypt objects referenced by disk metadata into staging."""
         source_path = _normalize_prefix(source_path)
         staging_path = _normalize_prefix(staging_path)
+        logging.info(
+            "Cloud decryption staging: owner={}, disk={}, source_bucket={}, source_prefix={}, "
+            "staging_bucket={}, staging_prefix={}",
+            backup.name,
+            disk_name,
+            source_storage["credentials"]["bucket"],
+            source_path,
+            staging_storage["credentials"]["bucket"],
+            staging_path,
+        )
         staging = self._staging_prefixes.setdefault(
             storage_id(staging_storage), (staging_storage, set())
         )
@@ -133,14 +143,36 @@ class CloudStorageDecryption:
     def _cleanup_prefix(storage: dict, prefix: str) -> None:
         """Remove all objects under one exclusive staging prefix."""
         engine = get_storage_engine(storage)
-        paths = engine.list_dir(prefix, recursive=True, absolute=True)
+        planned = None
+        confirmed = 0
+        try:
+            paths = engine.list_dir(prefix, recursive=True, absolute=True)
+            planned = len(paths)
+            logging.info(
+                "Plaintext staging cleanup planned: bucket={}, prefix={}, planned={}",
+                storage["credentials"]["bucket"],
+                prefix,
+                planned,
+            )
+            for batch in chunked(paths, storage["bulk_delete_chunk_size"]):
+                engine.delete_files(batch)
+                confirmed += len(batch)
+        except (Exception, TerminatingSignal):
+            logging.error(
+                "Plaintext staging cleanup failed: bucket={}, prefix={}, confirmed={}, planned={}; "
+                "plaintext may remain; retry cleanup of this staging location",
+                storage["credentials"]["bucket"],
+                prefix,
+                confirmed,
+                planned,
+            )
+            raise
         logging.info(
-            "Removing {} decrypted cloud storage staging objects from {}",
-            len(paths),
+            "Plaintext staging cleanup completed: bucket={}, prefix={}, confirmed={}",
+            storage["credentials"]["bucket"],
             prefix,
+            confirmed,
         )
-        for batch in chunked(paths, storage["bulk_delete_chunk_size"]):
-            engine.delete_files(batch)
 
     def _decrypt_entries(
         self, entries: dict[str, CopyEntry], disk_name: str, keep_going: bool

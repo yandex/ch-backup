@@ -1242,24 +1242,55 @@ class BackupLayout:
             deletion_plan.deletion_candidate_keys - deletion_plan.protected_object_keys
         )
         archive_replacements = deletion_plan.archive_replacements
+        logging.info(
+            "Cloud cleanup planned: backup={}, bucket={}, planned={}, protected={}, archive_rewrites={}",
+            backup.name,
+            payload_storage["credentials"]["bucket"],
+            len(object_keys_to_delete),
+            len(deletion_plan.protected_object_keys),
+            len(archive_replacements),
+        )
 
         def delete_objects_and_rewrite_archives() -> None:
             payload_engine = get_storage_engine(payload_storage)
+            confirmed = 0
+            rewritten = 0
             # Different parts can reference the same blob. Retaining either part keeps that blob alive.
-            for object_key_batch in chunked(
-                object_keys_to_delete,
-                payload_storage["bulk_delete_chunk_size"],
-            ):
-                payload_engine.delete_files(object_key_batch)
-            # Preserve object references until deletion succeeds, so failures remain retryable.
-            for archive_path, retained_metadata_files in archive_replacements.items():
-                # Keep an empty archive as evidence that this disk was cleaned.
-                # A later failure must not make retry indistinguishable from
-                # missing metadata whose objects were never identified.
-                self.upload_cloud_storage_metadata_files(
-                    backup, archive_path, retained_metadata_files
+            try:
+                for object_key_batch in chunked(
+                    object_keys_to_delete,
+                    payload_storage["bulk_delete_chunk_size"],
+                ):
+                    payload_engine.delete_files(object_key_batch)
+                    confirmed += len(object_key_batch)
+                # Preserve object references until deletion succeeds, so failures remain retryable.
+                for (
+                    archive_path,
+                    retained_metadata_files,
+                ) in archive_replacements.items():
+                    # Empty archives distinguish completed cleanup from missing inputs on retry.
+                    self.upload_cloud_storage_metadata_files(
+                        backup, archive_path, retained_metadata_files
+                    )
+                    self.wait()
+                    rewritten += 1
+            except (Exception, TerminatingSignal):
+                logging.error(
+                    "Cloud cleanup failed: backup={}, confirmed={}, planned={}, "
+                    "archives_rewritten={}/{}; the failed operation may have taken effect; retry cleanup",
+                    backup.name,
+                    confirmed,
+                    len(object_keys_to_delete),
+                    rewritten,
+                    len(archive_replacements),
                 )
-                self.wait()
+                raise
+            logging.info(
+                "Cloud cleanup completed: backup={}, confirmed={}, archives_rewritten={}",
+                backup.name,
+                confirmed,
+                rewritten,
+            )
 
         return delete_objects_and_rewrite_archives
 

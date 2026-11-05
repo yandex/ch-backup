@@ -459,6 +459,36 @@ Behavior and limitations:
   shared parents or resources can affect other entities. Type conflicts and server restrictions
   abort restore; concurrent workload/resource DDL is unsupported.
 
+### Inspecting cloud copy and cleanup
+
+Deduplication can keep objects after their original backup is replaced or deleted. To find
+the owners and the backups that still reference them, run this command against the target storage:
+
+```bash
+ch-backup show BACKUP --cloud-owners --pretty
+```
+
+The command also accepts an internal generation name or the name of a deleted backup whose
+generations remain. It reports owner locations, encryption descriptors (not keys), current and
+pending generations, direct referring backups, and pending copies. Unreadable or missing owner
+metadata sets `references_complete: false` and exit code 2. This is a diagnostic snapshot;
+concurrent operations can change the references. An empty list is not authorization to delete objects.
+
+Copy's text and JSON reports identify the attempted generation, whether it was allocated or
+resumed, and its publication status. `pending` means publication has not been attempted;
+`previous_preserved` means a failed replacement left the previous public version intact.
+`published` means publication was acknowledged, even if a later journal write failed.
+`unconfirmed` means the publication response failed and the full public manifest must be inspected.
+The JSON fields `cloud_parts_reused` and `cloud_parts_to_copy` describe the part plan;
+`objects_skipped` still counts objects confirmed by resume. None of these measures physical storage savings.
+
+INFO logs identify generation transitions, retaining backups, cleanup plans and outcomes, and
+restore staging locations. Cleanup reports acknowledged object-key deletions separately from
+planned deletions and archive rewrites. Confirmed counts cover successful requests; a failed
+request can also have deleted some objects. These counts do not measure reclaimed objects or bytes.
+DEBUG logs give individual part reuse and materialization decisions. Staging cleanup failures
+are ERROR messages because plaintext can remain after restore fails.
+
 ### Backup targets in configuration
 
 What the `backup` command saves can be set in the configuration file instead of command

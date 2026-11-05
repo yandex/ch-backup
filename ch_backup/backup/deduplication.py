@@ -447,6 +447,7 @@ def collect_dedup_references_for_batch_backup_deletion(
 
     for backup in retained_backups_light_meta:
         backup = layout.reload_backup(backup, use_light_meta=False)
+        referenced_parts: dict[str, int] = defaultdict(int)
         for db_name in backup.get_databases():
             for table in backup.get_tables(db_name):
                 for part in table.get_parts():
@@ -462,6 +463,14 @@ def collect_dedup_references_for_batch_backup_deletion(
                     _add_part_to_dedup_references(
                         dedup_references[owner_backup_name], part
                     )
+                    referenced_parts[owner_backup_name] += 1
+        for owner_name, part_count in sorted(referenced_parts.items()):
+            logging.info(
+                "Retaining referenced parts: owner={}, dependent={}, parts={}",
+                owner_name,
+                backup.name,
+                part_count,
+            )
 
     return dedup_references
 
