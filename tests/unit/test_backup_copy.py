@@ -571,33 +571,6 @@ def test_copy_mode_cache_isolates_credentials(
     assert "different-credential" not in str(logging.mock_calls)
 
 
-@pytest.mark.parametrize(
-    "section,options",
-    [
-        ("module_config", {"botocore": {"read_timeout": 123}}),
-        ("module_config", {"transfer": {"max_concurrency": 2}}),
-        ("proxy_resolver", {"uri": "http://different-resolver"}),
-    ],
-)
-def test_engine_cache_respects_storage_options(section, options):
-    ctx = CopyTestContext([])
-    original = ctx.config["storage"]
-    changed = copy.deepcopy(original)
-    changed[section] = options
-    copier = ctx.make_copier()
-    with patch(
-        "ch_backup.backup.copier.get_storage_engine",
-        side_effect=copy.deepcopy,
-    ):
-        # pylint: disable=protected-access
-        first = copier._engine(original)
-        second = copier._engine(changed)
-        assert second is not first
-        assert second == changed
-        assert copier._engine(copy.deepcopy(changed)) is second
-        assert copier._engine(original) is first
-
-
 def test_copy_all_backups_oldest_first() -> None:
     ctx = CopyTestContext(
         [

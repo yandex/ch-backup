@@ -1,5 +1,5 @@
 """
-Unit tests for S3StorageEngine retries.
+Unit tests for S3StorageEngine.
 """
 
 import socket
@@ -38,6 +38,31 @@ def _engine(
     config: dict = {**DEFAULT_CONFIG["storage"], **storage}  # type: ignore[dict-item]
     config["credentials"] = {**config["credentials"], "bucket": "bucket"}
     return S3StorageEngine(config, retry_policy=retry_policy)
+
+
+def test_module_config_is_passed_to_sdk() -> None:
+    options: dict[str, dict[str, Any]] = {
+        "botocore": {
+            "read_timeout": 120,
+            "retries": {"mode": "standard", "total_max_attempts": 3},
+        },
+        "transfer": {"multipart_chunksize": 16777216, "max_concurrency": 4},
+    }
+    with patch(
+        "ch_backup.storage.engine.s3.s3_client_factory.boto3.session.Session"
+    ) as session_class:
+        engine = _engine(module_config=options)
+        engine.copy_object("source-bucket", "source", "target")
+
+    session = session_class.return_value
+    botocore_config = session.client.call_args.kwargs["config"]
+    transfer_config = session.client.return_value.copy.call_args.kwargs["Config"]
+    for module, config in (
+        ("botocore", botocore_config),
+        ("transfer", transfer_config),
+    ):
+        for name, value in options[module].items():
+            assert getattr(config, name) == value
 
 
 @pytest.mark.parametrize("max_attempts", [1, 3])

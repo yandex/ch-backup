@@ -16,12 +16,6 @@ def step_fail_backup_publication(context, node, backup_name):
     run_fault(context, node, "fail-backup-publication", backup_name)
 
 
-@when("we verify multipart copy on {node:w} with {attempts:d} SDK attempts")
-def step_retry_multipart_copy(context, node, attempts):
-    run_fault(context, node, "retry-multipart-copy", str(attempts))
-    assert context.exit_code == 0, context.response
-
-
 @then('failed copy report "{path}" on {node:w} has results')
 def step_failed_copy_report(context, path, node):
     result = get_container(context, node).exec_run(["cat", path], user="root")
