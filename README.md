@@ -214,6 +214,16 @@ Behavior and limitations:
 - If both buckets belong to the same S3 service and are accessible with the same credentials, objects
   are copied on the server side. Otherwise, data is streamed through ch-backup. Server-side copy can be
   disabled with `--no-server-side-copy`.
+- Server-side copy retries individual S3 requests, including `UploadPartCopy`, using
+  `storage.retry.backup` and the base storage retry settings. A failed segment keeps
+  its upload ID, part number and byte range; completed segments are not copied again.
+  Retryable failures can select a new S3 proxy. After the request budget is exhausted,
+  the multipart transfer fails and ch-backup attempts to abort it, logging the cleanup
+  result without replacing the original error. This also applies to the first object
+  used to probe server-side copy: an initiated multipart transfer does not fall back
+  to streaming the whole object. With `--keep-going`, independent objects continue
+  and the failed object remains in the report. Unfinished multipart transfers are not
+  resumed by a later command; only completed objects use the existing copy context.
 - The copy becomes valid (gets the state `created`) only after all its data is copied. If copying is
   interrupted, the copy remains in the state `creating` or `failed`, and the next run of the command
   resumes it. Confirmed copies are recorded in the copy context, a journal kept in the target storage

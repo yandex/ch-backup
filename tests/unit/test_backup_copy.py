@@ -31,6 +31,8 @@ from ch_backup.exceptions import (
     StorageError,
     TerminatingSignal,
 )
+from ch_backup.storage.engine.s3.s3_copy_client import S3MultipartCopyError
+from ch_backup.storage.engine.s3.s3_retry import S3RetryingError
 from ch_backup.storage.object_copy import CopyEntry, storage_id
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S %z"
@@ -2294,6 +2296,41 @@ def test_copy_counts_server_side_probe_once() -> None:
     )
     assert len(ctx.store.probes) == 1
     assert len(ctx.target_layout.copied) == 1
+
+
+@pytest.mark.parametrize("keep_going", [False, True])
+@pytest.mark.parametrize("error_type", [S3MultipartCopyError, S3RetryingError])
+def test_copy_probe_failure_does_not_restart_or_disable_server_copy(
+    keep_going: bool,
+    error_type: type[Exception],
+) -> None:
+    ctx = CopyTestContext([_backup("b1")])
+    _with_files(ctx, "b1", {"metadata/a.tar": 1, "metadata/b.tar": 2})
+    report = CopyReport()
+    probe = FakeEngine.try_copy_object
+
+    def fail_first(engine, bucket, source, target):
+        if source.endswith("a.tar"):
+            raise error_type("S3 request failed")
+        return probe(engine, bucket, source, target)
+
+    with patch.object(FakeEngine, "try_copy_object", fail_first):
+        with pytest.raises(ClickhouseBackupError if keep_going else error_type):
+            ctx.copy(keep_going=keep_going, report=report)
+    result = report.backups[0]
+    assert result.status == "failed"
+    assert result.objects_failed == 1
+    assert result.objects_copied == (1 if keep_going else 0)
+    assert not ctx.target_layout.copied
+    assert ctx.target_layout.backups["b1"].state == BackupState.FAILED
+    if keep_going:
+        assert ctx.store.probes == [
+            (
+                SRC_BUCKET,
+                "ch_backup/b1/metadata/b.tar",
+                "ch_backup_copy/b1/metadata/b.tar",
+            )
+        ]
 
 
 @pytest.mark.parametrize("metadata_failure", [False, True])

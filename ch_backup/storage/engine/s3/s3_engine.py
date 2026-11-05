@@ -5,10 +5,12 @@ S3 storage engine.
 import os
 import time
 from tempfile import TemporaryFile
-from typing import Sequence
+from typing import Any, Sequence
 
 import requests
+from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ClientError
+from s3transfer.manager import TransferManager
 
 from ch_backup import logging
 from ch_backup.exceptions import StorageError
@@ -16,6 +18,10 @@ from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
 from ch_backup.storage.engine.s3.s3_client_factory import (
     S3ClientCachedFactory,
     S3ClientFactory,
+)
+from ch_backup.storage.engine.s3.s3_copy_client import (
+    S3CopyClient,
+    S3MultipartCopyError,
 )
 from ch_backup.storage.engine.s3.s3_multipart_uploader import S3MultipartUploader
 from ch_backup.storage.engine.s3.s3_retry import (
@@ -175,6 +181,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
 
         return result
 
+    @S3RetryMeta.no_retry
     def copy_object(
         self, source_bucket: str, source_path: str, remote_path: str
     ) -> None:
@@ -183,6 +190,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
         """
         self._copy_object(source_bucket, source_path, remote_path)
 
+    @S3RetryMeta.no_retry
     def try_copy_object(
         self, source_bucket: str, source_path: str, remote_path: str
     ) -> bool:
@@ -204,12 +212,36 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
     def _copy_object(
         self, source_bucket: str, source_path: str, remote_path: str
     ) -> None:
-        # Managed copy uses UploadPartCopy for large objects.
-        self._s3_client.copy(
-            CopySource={"Bucket": source_bucket, "Key": source_path.lstrip("/")},
-            Bucket=self._s3_bucket_name,
-            Key=remote_path.lstrip("/"),
-        )
+        # Keep SDK chunk sizing, concurrency and cleanup, but retry API requests,
+        # not the whole transfer. Boto's managed copy also uses the classic manager.
+        client = S3CopyClient(self.get_client().meta, self._copy_request)
+        try:
+            with TransferManager(client, TransferConfig()) as manager:
+                manager.copy(
+                    copy_source={
+                        "Bucket": source_bucket,
+                        "Key": source_path.lstrip("/"),
+                    },
+                    bucket=self._s3_bucket_name,
+                    key=remote_path.lstrip("/"),
+                ).result()
+        except S3MultipartCopyError:
+            raise
+        except Exception as error:
+            # SDK failures after initiation (e.g. an incomplete part response) also
+            # must not make the probe restart the object through streamed copy.
+            if client.upload_id is not None:
+                raise S3MultipartCopyError(
+                    f"Multipart copy failed for s3://{self._s3_bucket_name}/{remote_path.lstrip('/')} "
+                    f"(UploadId {client.upload_id}): {error}"
+                ) from error
+            raise
+
+    @S3RetryMeta.retry_wrapper
+    @S3RetryMeta.s3_exception_wrapper
+    def _copy_request(self, operation: str, **parameters: Any) -> dict:
+        # Resolve inside each attempt so a failed request can select another proxy.
+        return getattr(self._s3_client, operation)(**parameters)
 
     def path_exists(self, remote_path: str, is_dir: bool = False) -> bool:
         """

@@ -54,6 +54,8 @@ from ch_backup.exceptions import (
 )
 from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
+from ch_backup.storage.engine.s3.s3_copy_client import S3MultipartCopyError
+from ch_backup.storage.engine.s3.s3_retry import S3RetryingError
 from ch_backup.storage.object_copy import (
     CopyEntry,
     server_side_copy_possible,
@@ -1345,6 +1347,21 @@ class BackupCopier:
                         entry.src_path,
                         entry.dst_path,
                     )
+                except (S3MultipartCopyError, S3RetryingError) as e:
+                    # Exhausted request retries do not prove server-side copy is
+                    # unavailable. Do not restart this object through streamed copy.
+                    if copy_result is not None:
+                        copy_result.add_error(
+                            e,
+                            "copy",
+                            source=entry.src_path,
+                            target=entry.dst_path,
+                            object_failed=True,
+                        )
+                    if not self._keep_going or is_broken_executor(e):
+                        raise
+                    logging.warning("Server-side copy failed: {}", e)
+                    continue
                 except Exception as e:
                     if not self._keep_going or is_broken_executor(e):
                         raise

@@ -7,6 +7,43 @@ Feature: Copy backups to another storage
     And a working clickhouse on clickhouse01
     And a working clickhouse on clickhouse02
 
+  @require_version_22.8
+  Scenario Outline: Multipart copy retries only the failed segment
+    Given a multipart copy backup
+    And multipart copy faults
+    """
+    status: <status>
+    rotate: <rotate>
+    """
+    When we copy the multipart backup in "ordinary" mode
+    Then only the failed multipart segment was retried
+    And the copied multipart backup restores its data
+
+    Examples:
+      | status | rotate |
+      | 500    | false  |
+      | 503    | false  |
+      | 200    | false  |
+      | 503    | true   |
+
+  @require_version_22.8
+  Scenario Outline: Multipart copy aborts after exhausting the segment budget
+    Given a multipart copy backup
+    And multipart copy faults
+    """
+    permanent: true
+    abort_failure: <abort_failure>
+    """
+    When we copy the multipart backup in "<mode>" mode
+    Then the multipart failure was reported without restarting the object
+
+    Examples:
+      | mode       | abort_failure |
+      | ordinary   | false         |
+      | keep-going | false         |
+      | keep-going | true          |
+      | probe      | false         |
+
   Scenario Outline: Copy backup to another bucket without encryption keys
     Given clickhouse on clickhouse01 has test schema
     And clickhouse01 has test clickhouse data test1
