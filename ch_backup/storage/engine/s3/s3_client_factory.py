@@ -13,6 +13,12 @@ from botocore.config import Config
 from ch_backup import logging
 from ch_backup.type_hints.boto3.s3 import S3Client
 
+_MAX_CACHED_FACTORIES = 16
+
+# ProcessExecPool uses spawn, so each worker owns its sessions and connections.
+_FACTORIES: list[tuple[dict, "S3ClientCachedFactory"]] = []
+_FACTORIES_LOCK = threading.Lock()
+
 
 class S3BalancerUnknownHost(ValueError):
     """
@@ -119,13 +125,6 @@ class S3ClientCachedFactory:
             if client is not None and self._cached_s3_client is client:
                 self._cached_s3_client = None
         self._thread_state.client = None
-
-
-_MAX_CACHED_FACTORIES = 16
-
-# ProcessExecPool uses spawn, so each worker owns its sessions and connections.
-_FACTORIES: list[tuple[dict, S3ClientCachedFactory]] = []
-_FACTORIES_LOCK = threading.Lock()
 
 
 def get_cached_s3_client_factory(config: dict) -> S3ClientCachedFactory:
