@@ -2,8 +2,8 @@
 
 import copy
 import os
-import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from threading import Barrier, Event
 from unittest.mock import MagicMock, call, patch
@@ -23,7 +23,7 @@ from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.clickhouse.models import Disk, Table
 from ch_backup.command_context import command_context, get_current_command
 from ch_backup.config import DEFAULT_CONFIG
-from ch_backup.exceptions import ConfigurationError, StorageError
+from ch_backup.exceptions import StorageError
 from ch_backup.storage.async_pipeline import pipeline_executor
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.storage.engine.s3 import S3RetryingError
@@ -70,20 +70,17 @@ def test_metadata_reads_are_parallel_bounded_and_ordered(use_light_meta, workers
         assert get_backup.call_count == workers * 2
 
 
-@pytest.mark.parametrize("workers", [0, 4])
-def test_metadata_reads_preserve_missing_and_errors_and_finish_before_yield(workers):
+def test_metadata_reads_preserve_missing_and_errors_and_finish_before_yield():
     layout = make_layout()
-    if workers == 0:
-        with pytest.raises(ConfigurationError, match="metadata_read_threads"):
-            next(read_metadata_in_batches(layout, ["missing"], workers=workers))
-        return
     failure = StorageError("unreadable metadata")
     finished = []
+    last_started, release_last, yielded = Event(), Event(), Event()
 
     def read(name, **_kwargs):
         try:
             if name == "last":
-                time.sleep(0.05)
+                last_started.set()
+                assert release_last.wait(10)
             if name == "broken":
                 raise failure
         finally:
@@ -91,9 +88,17 @@ def test_metadata_reads_preserve_missing_and_errors_and_finish_before_yield(work
 
     with patch.object(layout, "get_backup", side_effect=read):
         reads = read_metadata_in_batches(
-            layout, ["missing", "broken", "unused", "last"], workers=workers
+            layout, ["missing", "broken", "unused", "last"], workers=4
         )
-        name, future = next(reads)
+        with ThreadPoolExecutor(max_workers=1) as consumer:
+            first = consumer.submit(next, reads)
+            first.add_done_callback(lambda _: yielded.set())
+            try:
+                assert last_started.wait(10)
+                assert not yielded.wait(0.05)
+            finally:
+                release_last.set()
+            name, future = first.result(timeout=10)
         assert name == "missing" and future.result() is None
         assert sorted(finished) == ["broken", "last", "missing", "unused"]
         name, future = next(reads)

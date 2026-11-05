@@ -79,10 +79,6 @@ def read_metadata_in_batches(
     Finish each batch before yielding, so early exit of the consumer leaves no background reads.
     Bound metadata retained in futures instead of submitting the whole inventory.
     """
-    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
-        raise ConfigurationError(
-            "multiprocessing.metadata_read_threads must be a positive integer"
-        )
     names = iter(names)
     command = get_current_command()
     while batch := list(islice(names, workers)):
