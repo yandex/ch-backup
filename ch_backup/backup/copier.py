@@ -33,7 +33,7 @@ from ch_backup.backup.layout import (
     BackupLayout,
     get_data_part_file_names,
     get_data_part_relative_dirs,
-    iter_backup_reads,
+    read_metadata_in_batches,
 )
 from ch_backup.backup.metadata import (
     BackupMetadata,
@@ -149,6 +149,9 @@ class BackupCopier:
         self._storage: dict = config["storage"]
         self._target_storage: dict = target_config["storage"]
         self._copy_config: dict = target_config["copy"]
+        self._metadata_read_threads = target_config["multiprocessing"][
+            "metadata_read_threads"
+        ]
         self._encrypt_cloud_storage_data = bool(
             self._copy_config["cloud_storage"].get("encrypt_data")
         )
@@ -277,9 +280,10 @@ class BackupCopier:
         """Reserve unreadable target names without blocking independent backups."""
         names = {}
         candidates = []
-        for name, read in iter_backup_reads(
+        for name, read in read_metadata_in_batches(
             self._target_layout,
             self._target_layout.get_backup_names(),
+            workers=self._metadata_read_threads,
             use_light_meta=True,
         ):
             try:
@@ -387,7 +391,9 @@ class BackupCopier:
         )
         results = {name: BackupCopyResult(name) for name in dict.fromkeys(names)}
         self._report.backups.extend(results.values())
-        for name, read in iter_backup_reads(layout, results, use_light_meta=True):
+        for name, read in read_metadata_in_batches(
+            layout, results, workers=self._metadata_read_threads, use_light_meta=True
+        ):
             result = results[name]
             try:
                 backup = read.result()

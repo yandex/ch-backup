@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from ch_backup.backup.layout import BackupLayout, iter_backup_reads
+from ch_backup.backup.layout import BackupLayout, read_metadata_in_batches
 from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
@@ -23,7 +23,7 @@ from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.clickhouse.models import Disk, Table
 from ch_backup.command_context import command_context, get_current_command
 from ch_backup.config import DEFAULT_CONFIG
-from ch_backup.exceptions import StorageError
+from ch_backup.exceptions import ConfigurationError, StorageError
 from ch_backup.storage.async_pipeline import pipeline_executor
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.storage.engine.s3 import S3RetryingError
@@ -40,15 +40,17 @@ def make_layout() -> BackupLayout:
 
 
 @pytest.mark.parametrize("use_light_meta", [False, True])
-def test_metadata_reads_are_parallel_bounded_and_ordered(use_light_meta):
+@pytest.mark.parametrize("workers", [1, 2, 4])
+def test_metadata_reads_are_parallel_bounded_and_ordered(use_light_meta, workers):
     layout = make_layout()
-    names = [f"b{i}" for i in range(8)]
-    barrier = Barrier(4)
+    names = [f"b{i}" for i in range(workers * 2)]
+    barrier = Barrier(workers)
 
     def read(name, use_light_meta=False):
         assert use_light_meta is light
         assert get_current_command() == "copy"
-        barrier.wait(timeout=10)  # All four reads must start before any can finish.
+        # All reads of the batch must start before any can finish.
+        barrier.wait(timeout=10)
         return BackupMetadata(name, "2", "26.6", "%Y-%m-%d")
 
     light = use_light_meta
@@ -56,18 +58,25 @@ def test_metadata_reads_are_parallel_bounded_and_ordered(use_light_meta):
         command_context("copy"),
         patch.object(layout, "get_backup", side_effect=read) as get_backup,
     ):
-        reads = iter_backup_reads(layout, names, use_light_meta=use_light_meta)
+        reads = read_metadata_in_batches(
+            layout, names, workers=workers, use_light_meta=use_light_meta
+        )
         name, future = next(reads)
         assert name == names[0]
         backup = future.result()
         assert backup is not None and backup.name == name
-        assert get_backup.call_count == 4
+        assert get_backup.call_count == workers
         assert [name] + [name for name, future in reads if future.result()] == names
-        assert get_backup.call_count == 8
+        assert get_backup.call_count == workers * 2
 
 
-def test_metadata_reads_preserve_missing_and_errors_and_finish_before_yield():
+@pytest.mark.parametrize("workers", [0, 4])
+def test_metadata_reads_preserve_missing_and_errors_and_finish_before_yield(workers):
     layout = make_layout()
+    if workers == 0:
+        with pytest.raises(ConfigurationError, match="metadata_read_threads"):
+            next(read_metadata_in_batches(layout, ["missing"], workers=workers))
+        return
     failure = StorageError("unreadable metadata")
     finished = []
 
@@ -81,7 +90,9 @@ def test_metadata_reads_preserve_missing_and_errors_and_finish_before_yield():
             finished.append(name)
 
     with patch.object(layout, "get_backup", side_effect=read):
-        reads = iter_backup_reads(layout, ["missing", "broken", "unused", "last"])
+        reads = read_metadata_in_batches(
+            layout, ["missing", "broken", "unused", "last"], workers=workers
+        )
         name, future = next(reads)
         assert name == "missing" and future.result() is None
         assert sorted(finished) == ["broken", "last", "missing", "unused"]

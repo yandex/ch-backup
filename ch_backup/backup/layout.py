@@ -65,21 +65,28 @@ COMPRESSED_EXTENSION = ".gz"
 CLOUD_STORAGE_METADATA_DIR = "disks"
 CLOUD_STORAGE_DATA_DIR = "cloud_storage"
 MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE = 1024 * 1024
-METADATA_READ_WORKERS = 4
 
 
-def iter_backup_reads(
-    layout: "BackupLayout", names: Iterable[str], *, use_light_meta: bool = False
+def read_metadata_in_batches(
+    layout: "BackupLayout",
+    names: Iterable[str],
+    *,
+    workers: int,
+    use_light_meta: bool = False,
 ) -> Iterator[tuple[str, Future[BackupMetadata | None]]]:
-    """Read metadata in batches of four, preserving order and per-backup errors.
+    """Read metadata in bounded batches, preserving order and per-backup errors.
 
     Finish each batch before yielding, so early exit of the consumer leaves no background reads.
-    Bound full metadata retained in futures instead of submitting the whole inventory.
+    Bound metadata retained in futures instead of submitting the whole inventory.
     """
+    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+        raise ConfigurationError(
+            "multiprocessing.metadata_read_threads must be a positive integer"
+        )
     names = iter(names)
     command = get_current_command()
-    while batch := list(islice(names, METADATA_READ_WORKERS)):
-        with ThreadPoolExecutor(max_workers=METADATA_READ_WORKERS) as pool:
+    while batch := list(islice(names, workers)):
+        with ThreadPoolExecutor(max_workers=workers) as pool:
             reads = [
                 (
                     name,
