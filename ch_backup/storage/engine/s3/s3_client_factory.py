@@ -4,6 +4,7 @@ S3 client factory.
 
 import socket
 import threading
+from copy import deepcopy
 
 import boto3
 import requests
@@ -118,3 +119,23 @@ class S3ClientCachedFactory:
             if client is not None and self._cached_s3_client is client:
                 self._cached_s3_client = None
         self._thread_state.client = None
+
+
+# ProcessExecPool uses spawn, so each worker owns its sessions and connections.
+_FACTORIES: list[tuple[dict, S3ClientCachedFactory]] = []
+_FACTORIES_LOCK = threading.Lock()
+
+
+def get_cached_s3_client_factory(config: dict) -> S3ClientCachedFactory:
+    """Return the process-local factory shared by engines with an equal config."""
+    with _FACTORIES_LOCK:
+        for index, (cached_config, factory) in enumerate(_FACTORIES):
+            if config == cached_config:
+                _FACTORIES.append(_FACTORIES.pop(index))
+                return factory
+        # Keep the cache key and factory independent of caller mutations.
+        snapshot = deepcopy(config)
+        factory = S3ClientCachedFactory(S3ClientFactory(snapshot))
+        _FACTORIES.append((snapshot, factory))
+        del _FACTORIES[:-16]
+        return factory

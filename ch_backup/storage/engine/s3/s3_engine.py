@@ -35,9 +35,17 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
 
     DEFAULT_DOWNLOAD_PART_LEN = 128 * 1024 * 1024
 
-    def __init__(self, config: dict, retry_policy: S3RetryPolicy | None = None) -> None:
+    def __init__(
+        self,
+        config: dict,
+        retry_policy: S3RetryPolicy | None = None,
+        *,
+        client_factory: S3ClientCachedFactory | None = None,
+    ) -> None:
         max_attempts, max_interval = resolve_s3_retry_config(config, retry_policy)
-        self._s3_client_factory = S3ClientCachedFactory(S3ClientFactory(config))
+        self._s3_client_factory = client_factory or S3ClientCachedFactory(
+            S3ClientFactory(config)
+        )
         self._s3_bucket_name = config["credentials"]["bucket"]
 
         self._multipart_uploader = S3MultipartUploader(
