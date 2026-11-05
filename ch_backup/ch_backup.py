@@ -62,6 +62,7 @@ from ch_backup.logic.udf import UDFBackup
 from ch_backup.logic.workload_entities import WorkloadEntitiesBackup
 from ch_backup.storage.async_pipeline.stages import EncryptStage
 from ch_backup.storage.engine.s3 import validate_s3_retry_config
+from ch_backup.storage.object_copy import ServerSideCopyMode
 from ch_backup.util import cached_property, now, utcnow
 from ch_backup.version import get_version
 
@@ -632,6 +633,7 @@ class ClickhouseBackup:
         backup_names: Sequence[str] | None = None,
         *,
         keep_going: bool = False,
+        server_side_copy_mode: ServerSideCopyMode = ServerSideCopyMode.AUTO,
         report: CopyReport | None = None,
         command_start: datetime | None = None,
     ) -> tuple[Sequence[str], Sequence[str]]:
@@ -662,6 +664,7 @@ class ClickhouseBackup:
                 return copier.copy(
                     backup_names,
                     keep_going=keep_going,
+                    server_side_copy_mode=server_side_copy_mode,
                     report=report,
                     command_start=command_start,
                 )

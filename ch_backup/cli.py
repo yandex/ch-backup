@@ -44,6 +44,7 @@ from .config import DEFAULT_CONFIG, Config
 from .logic.partial_restore import PartialRestoreFilter
 from .params import JsonParamType, KeyValues, List, String, TimeSpan
 from .profile import profile
+from .storage.object_copy import ServerSideCopyMode
 from .util import (
     chown_dir_contents,
     drop_privileges,
@@ -1036,10 +1037,12 @@ def delete_command(
         "The same as --config-parameter, but for the target configuration.",
     ),
     option(
-        "--server-side-copy/--no-server-side-copy",
-        default=None,
-        help="Copy objects on the server side if source and target buckets belong to the same "
-        "S3 service and are accessible with the same credentials. Enabled by default.",
+        "--server-side-copy-mode",
+        type=Choice(ServerSideCopyMode),
+        default=ServerSideCopyMode.AUTO,
+        show_default=True,
+        help="strict forbids fallback; auto respects copy.server_side_copy and allows fallback; "
+        "disabled copies through ch-backup.",
     ),
     option(
         "--resume/--no-resume",
@@ -1081,7 +1084,7 @@ def copy_command(
     all_: bool,
     target_config: str | None,
     target_config_parameters: Iterable[tuple[str, dict]],
-    server_side_copy: bool | None,
+    server_side_copy_mode: ServerSideCopyMode,
     resume: bool | None,
     target_cloud_storage_bucket: str | None,
     target_cloud_storage_path: str | None,
@@ -1102,8 +1105,6 @@ def copy_command(
         copy_config: dict = {"cloud_storage": {"source": {}, "target": {}}}
         if scopes:
             copy_config["scopes"] = list(scopes)
-        if server_side_copy is not None:
-            copy_config["server_side_copy"] = server_side_copy
         if only_with_data is not None:
             copy_config["only_with_data"] = only_with_data
         if resume is not None:
@@ -1143,6 +1144,7 @@ def copy_command(
             target_cfg,
             backup_names,
             keep_going=keep_going,
+            server_side_copy_mode=server_side_copy_mode,
             report=report,
             command_start=command_start,
         )

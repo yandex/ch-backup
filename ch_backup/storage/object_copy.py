@@ -4,8 +4,21 @@ Copying of objects between storages.
 
 import copy
 import re
+from enum import Enum
 from typing import NamedTuple
 from urllib.parse import urlparse
+
+
+class ServerSideCopyMode(str, Enum):
+    """Policy for server-side copying and fallback through ch-backup."""
+
+    STRICT = "strict"
+    AUTO = "auto"
+    DISABLED = "disabled"
+
+    def __str__(self) -> str:
+        """Display the CLI value in help and logs."""
+        return self.value
 
 
 class CopyEntry(NamedTuple):

@@ -22,6 +22,7 @@ from ch_backup.backup.sources import BackupSources
 from ch_backup.clickhouse.models import Database
 from ch_backup.config import DEFAULT_CONFIG, Config
 from ch_backup.exceptions import ConfigurationError, StorageError, TerminatingSignal
+from ch_backup.storage.object_copy import ServerSideCopyMode
 from tests.unit.test_backup_copy import CopyTestContext, _backup, _part
 from tests.unit.utils import parametrize
 
@@ -136,6 +137,65 @@ def test_copy_command_passes_resume(
     assert result.exit_code == 0
     target_config = backup.copy.call_args.args[0]
     assert target_config["copy"]["resume"] is resume
+
+
+@pytest.mark.parametrize(
+    "options,settings,exit_code,error",
+    [
+        (
+            [],
+            {"server_side_copy": False},
+            0,
+            None,
+        ),
+        (
+            ["--server-side-copy-mode", "strict"],
+            {"server_side_copy": False},
+            0,
+            None,
+        ),
+        (
+            ["--server-side-copy-mode", "strict"],
+            {"cloud_storage": {"encrypt_data": True}},
+            1,
+            "Strict server-side copy is incompatible with copy.cloud_storage.encrypt_data",
+        ),
+    ],
+)
+def test_copy_server_side_copy_mode(
+    copy_backup: MagicMock,
+    options: list[str],
+    settings: dict,
+    exit_code: int,
+    error: str | None,
+) -> None:
+    ctx = CopyTestContext([_backup("b1")])
+    ctx.src_objects["ch_backup/b1/metadata/a.tar"] = 1
+    copy_backup.config.merge({"copy": settings})
+
+    def copy(target, names, *, server_side_copy_mode, report, **_):
+        assert isinstance(server_side_copy_mode, ServerSideCopyMode)
+        ctx.target_config["copy"] = deepcopy(target["copy"])
+        with patch(
+            "ch_backup.backup.copier.get_storage_engine", side_effect=ctx.store.engine
+        ):
+            return ctx.make_copier().copy(
+                names, server_side_copy_mode=server_side_copy_mode, report=report
+            )
+
+    copy_backup.copy.side_effect = copy
+    result = _invoke(cli.copy_command, ["copy", "b1", *options], copy_backup)
+
+    assert result.exit_code == exit_code, result.output + result.stderr
+    if error:
+        assert error in result.stderr
+        assert not ctx.target_layout.uploaded
+    else:
+        expected = ServerSideCopyMode.STRICT if options else ServerSideCopyMode.AUTO
+        assert copy_backup.copy.call_args.kwargs["server_side_copy_mode"] == expected
+        assert len(ctx.store.probes) == int(expected == ServerSideCopyMode.STRICT)
+        if expected == ServerSideCopyMode.AUTO:
+            assert [entry.server_side for entry in ctx.target_layout.copied] == [False]
 
 
 def test_copy_command_masks_config_parameter_secrets_in_log(

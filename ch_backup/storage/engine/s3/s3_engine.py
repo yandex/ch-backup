@@ -23,6 +23,7 @@ from ch_backup.storage.engine.s3.s3_retry import (
     S3RetryingError,
     S3RetryMeta,
     S3RetryPolicy,
+    is_retryable_s3_error,
     resolve_s3_retry_config,
 )
 from ch_backup.type_hints.boto3.s3 import S3Client
@@ -187,12 +188,14 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
         self, source_bucket: str, source_path: str, remote_path: str
     ) -> bool:
         """
-        Try to copy object on the server side. Return False if S3 service rejected the request.
+        Try server-side copy, retrying temporary errors. Return False on permanent rejection.
         """
         try:
             self._copy_object(source_bucket, source_path, remote_path)
             return True
         except ClientError as e:
+            if is_retryable_s3_error(e):
+                raise
             logging.warning(
                 "Server-side copy of '{}' from bucket '{}' failed: {}",
                 source_path,
