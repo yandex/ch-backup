@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from pypeln import utils as pypeln_utils
 from pypeln.thread import Worker
 
 from ch_backup.compression import get_compression
@@ -211,6 +212,20 @@ def test_empty_pipeline_finishes() -> None:
     builder = PipelineBuilder(DEFAULT_CONFIG).build_iterable_stage([])
 
     assert not run_and_collect_all(builder.pipeline())
+
+
+def test_pipeline_builder_applies_queue_poll_interval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pypeln_utils, "TIMEOUT", pypeln_utils.TIMEOUT)
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["pipeline"]["queue_poll_interval"] = 0.01
+
+    builder = PipelineBuilder(config).build_iterable_stage([b"a", b"b"])
+    builder.build_collect_data_stage()
+
+    assert pypeln_utils.TIMEOUT == 0.01
+    assert run_and_return_first(builder.pipeline()) == b"ab"
 
 
 def test_unpack_data_tarball_larger_than_buffer() -> None:
