@@ -133,6 +133,7 @@ def get_cached_s3_client_factory(config: dict) -> S3ClientCachedFactory:
     with _FACTORIES_LOCK:
         for index, (cached_config, factory) in enumerate(_FACTORIES):
             if config == cached_config:
+                # Move this factory to the end to mark it as most recently used.
                 _FACTORIES.append(_FACTORIES.pop(index))
                 return factory
         # Keep the cache key and factory independent of caller mutations.
