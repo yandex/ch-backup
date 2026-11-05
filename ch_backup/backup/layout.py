@@ -6,9 +6,11 @@ Management of backup data layout.
 
 import json
 import os
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from functools import partial
 from io import IOBase
+from itertools import islice
 from pathlib import Path
 from typing import (
     Any,
@@ -37,6 +39,7 @@ from ch_backup.clickhouse.object_storage_metadata import (
     ObjectStorageMetadataError,
     parse_object_storage_metadata,
 )
+from ch_backup.command_context import get_current_command, run_with_command_context
 from ch_backup.config import Config
 from ch_backup.encryption import get_encryption_class
 from ch_backup.exceptions import (
@@ -62,6 +65,34 @@ COMPRESSED_EXTENSION = ".gz"
 CLOUD_STORAGE_METADATA_DIR = "disks"
 CLOUD_STORAGE_DATA_DIR = "cloud_storage"
 MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE = 1024 * 1024
+METADATA_READ_WORKERS = 4
+
+
+def iter_backup_reads(
+    layout: "BackupLayout", names: Iterable[str], *, use_light_meta: bool = False
+) -> Iterator[tuple[str, Future[BackupMetadata | None]]]:
+    """Read metadata in batches of four, preserving order and per-backup errors.
+
+    Finish each batch before yielding, so early exit of the consumer leaves no background reads.
+    Bound full metadata retained in futures instead of submitting the whole inventory.
+    """
+    names = iter(names)
+    command = get_current_command()
+    while batch := list(islice(names, METADATA_READ_WORKERS)):
+        with ThreadPoolExecutor(max_workers=METADATA_READ_WORKERS) as pool:
+            reads = [
+                (
+                    name,
+                    pool.submit(
+                        run_with_command_context,
+                        command,
+                        partial(layout.get_backup, name, use_light_meta=use_light_meta),
+                    ),
+                )
+                for name in batch
+            ]
+        yield from reads
+        del reads
 
 
 # pylint: disable=too-many-public-methods

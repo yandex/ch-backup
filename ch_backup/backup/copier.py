@@ -33,6 +33,7 @@ from ch_backup.backup.layout import (
     BackupLayout,
     get_data_part_file_names,
     get_data_part_relative_dirs,
+    iter_backup_reads,
 )
 from ch_backup.backup.metadata import (
     BackupMetadata,
@@ -276,9 +277,13 @@ class BackupCopier:
         """Reserve unreadable target names without blocking independent backups."""
         names = {}
         candidates = []
-        for name in self._target_layout.get_backup_names():
+        for name, read in iter_backup_reads(
+            self._target_layout,
+            self._target_layout.get_backup_names(),
+            use_light_meta=True,
+        ):
             try:
-                backup = self._target_layout.get_backup(name, use_light_meta=True)
+                backup = read.result()
                 if backup is None:
                     continue
                 if backup.name != name:
@@ -382,9 +387,10 @@ class BackupCopier:
         )
         results = {name: BackupCopyResult(name) for name in dict.fromkeys(names)}
         self._report.backups.extend(results.values())
-        for name, result in results.items():
+        for name, read in iter_backup_reads(layout, results, use_light_meta=True):
+            result = results[name]
             try:
-                backup = layout.get_backup(name, use_light_meta=True)
+                backup = read.result()
                 if backup_names is None and (
                     not backup
                     or (

@@ -2,14 +2,15 @@
 
 import copy
 import os
+import time
 from collections import Counter
 from datetime import datetime
-from threading import Event
+from threading import Barrier, Event
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from ch_backup.backup.layout import BackupLayout
+from ch_backup.backup.layout import BackupLayout, iter_backup_reads
 from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
@@ -20,6 +21,7 @@ from ch_backup.backup.metadata import (
 from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.clickhouse.models import Disk, Table
+from ch_backup.command_context import command_context, get_current_command
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import StorageError
 from ch_backup.storage.async_pipeline import pipeline_executor
@@ -35,6 +37,60 @@ def make_layout() -> BackupLayout:
         layout = BackupLayout(config)  # type: ignore[arg-type]
     setattr(layout, "_storage_loader", MagicMock())
     return layout
+
+
+@pytest.mark.parametrize("use_light_meta", [False, True])
+def test_metadata_reads_are_parallel_bounded_and_ordered(use_light_meta):
+    layout = make_layout()
+    names = [f"b{i}" for i in range(8)]
+    barrier = Barrier(4)
+
+    def read(name, use_light_meta=False):
+        assert use_light_meta is light
+        assert get_current_command() == "copy"
+        barrier.wait(timeout=10)  # All four reads must start before any can finish.
+        return BackupMetadata(name, "2", "26.6", "%Y-%m-%d")
+
+    light = use_light_meta
+    with (
+        command_context("copy"),
+        patch.object(layout, "get_backup", side_effect=read) as get_backup,
+    ):
+        reads = iter_backup_reads(layout, names, use_light_meta=use_light_meta)
+        name, future = next(reads)
+        assert name == names[0]
+        backup = future.result()
+        assert backup is not None and backup.name == name
+        assert get_backup.call_count == 4
+        assert [name] + [name for name, future in reads if future.result()] == names
+        assert get_backup.call_count == 8
+
+
+def test_metadata_reads_preserve_missing_and_errors_and_finish_before_yield():
+    layout = make_layout()
+    failure = StorageError("unreadable metadata")
+    finished = []
+
+    def read(name, **_kwargs):
+        try:
+            if name == "last":
+                time.sleep(0.05)
+            if name == "broken":
+                raise failure
+        finally:
+            finished.append(name)
+
+    with patch.object(layout, "get_backup", side_effect=read):
+        reads = iter_backup_reads(layout, ["missing", "broken", "unused", "last"])
+        name, future = next(reads)
+        assert name == "missing" and future.result() is None
+        assert sorted(finished) == ["broken", "last", "missing", "unused"]
+        name, future = next(reads)
+        assert name == "broken"
+        with pytest.raises(StorageError) as raised:
+            future.result()
+        assert raised.value is failure
+        del reads
 
 
 @pytest.mark.parametrize("filename", ["../outside/file", "/outside/file", "link/file"])
