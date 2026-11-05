@@ -71,6 +71,13 @@ class BackupCopyResult:
     objects_skipped: int = 0
     known_bytes_copied: int = 0
     scopes: dict[str, str] | None = None
+    # Part counts describe the plan, not confirmed object transfers or physical savings.
+    cloud_parts_reused: int = 0
+    cloud_parts_to_copy: int = 0
+    cloud_generation: str | None = None
+    previous_cloud_generation: str | None = None
+    generation_action: str | None = None
+    generation_publication: str | None = None
     errors: CopyErrors = field(default_factory=CopyErrors)
 
     def completed(self, size: int = 0) -> None:
@@ -138,6 +145,15 @@ def print_copy_report(report: CopyReport, report_path: str | None) -> None:
             "partial": f", the copy is {result.backup_state} in target storage",
         }.get(result.status, "")
         print(f"{result.name}: {result.status}{suffix}")
+        if result.cloud_generation:
+            print(
+                f"  generation: {result.cloud_generation}, {result.generation_action}, "
+                f"publication: {result.generation_publication}"
+            )
+            print(
+                f"  cloud part plan: {result.cloud_parts_reused} reused, "
+                f"{result.cloud_parts_to_copy} to copy"
+            )
         if result.objects_total is not None:
             print(
                 f"  objects: {result.objects_copied}/{result.objects_total} copied, "

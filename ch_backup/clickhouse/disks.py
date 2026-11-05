@@ -316,10 +316,18 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
             )
             staging_mappings: list[tuple] = []
             for owner, disk, _tables, _link in owners:
+                logging.info(
+                    "Preparing cloud restore: backup={}, owner={}, disk={}, generation_of={}",
+                    self._backup_meta.name,
+                    owner.name,
+                    disk,
+                    owner.generation_of,
+                )
                 encryption = owner.cloud_storage.data_encryption
                 if encryption != self._backup_meta.cloud_storage.data_encryption:
                     raise ClickHouseDisksException(
-                        "Cloud owner and child encryption metadata differ"
+                        "Cloud owner and child encryption metadata differ: "
+                        f"backup={self._backup_meta.name}, owner={owner.name}, disk={disk}"
                     )
                 if encryption is None:
                     continue

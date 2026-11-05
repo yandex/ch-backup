@@ -140,6 +140,106 @@ class ClickhouseBackup:
         """
         return self._get_backup(backup_name)
 
+    def inspect_cloud_owners(self, backup_name: str) -> dict:
+        """Explain cloud owners and their direct dependents, including hidden generations.
+
+        This is a diagnostic snapshot, not a deletion authorization. Unreadable metadata
+        makes the dependency list incomplete; it must not imply that an owner is unused.
+        """
+        layout = self._context.backup_layout
+        errors: dict[str, str] = {}
+        backups = {
+            backup.name: backup
+            for backup in layout.get_backups(
+                include_generations=True, unreadable=errors
+            )
+        }
+        selected = backups.get(backup_name)
+        owner_names = {
+            backup.name
+            for backup in backups.values()
+            if backup.generation_of == backup_name
+        }
+        if selected:
+            if (
+                selected.generation_of
+                or selected.select_disks_with_stored_cloud_parts()
+            ):
+                owner_names.add(selected.name)
+            if selected.cloud_generation:
+                owner_names.add(selected.cloud_generation)
+            owner_names.update(
+                part.link
+                for part in selected.get_parts()
+                if part.link and part.disk_name in selected.cloud_storage.disks
+            )
+        elif not owner_names and backup_name not in errors:
+            raise BackupNotFound(backup_name)
+
+        references: dict[str, set[str]] = defaultdict(set)
+        pending: dict[str, set[str]] = defaultdict(set)
+        for backup in backups.values():
+            for part in backup.get_parts():
+                if part.link and part.disk_name in backup.cloud_storage.disks:
+                    references[part.link].add(backup.name)
+            if backup.cloud_generation and backup.state in (
+                BackupState.CREATING,
+                BackupState.FAILED,
+            ):
+                pending[backup.cloud_generation].add(backup.name)
+
+        if references[backup_name]:
+            # Old children can still reference the legacy snapshot after public replacement.
+            owner_names.add(backup_name)
+
+        owners = []
+        for name in sorted(owner_names):
+            record: dict = {
+                "name": name,
+                "referenced_by": sorted(references[name]),
+                "pending_copies": sorted(pending[name]),
+            }
+            try:
+                owner = layout.get_backup(name, for_reference=True)
+                if owner is None:
+                    raise BackupNotFound(name)
+            except Exception as error:
+                errors[name] = str(error)
+                record["metadata_error"] = str(error)
+            else:
+                public = backups.get(owner.generation_of or "")
+                record.update(
+                    generation_of=owner.generation_of,
+                    current=bool(
+                        public
+                        and public.state
+                        in (BackupState.CREATED, BackupState.PARTIALLY_DELETED)
+                        and public.cloud_generation == owner.name
+                    ),
+                    state=owner.state.value,
+                    cloud_storage=owner.cloud_storage.dump(),
+                )
+            owners.append(record)
+        return {
+            "backup": backup_name,
+            "current_generation": (
+                selected.cloud_generation
+                if selected
+                and selected.state
+                in (BackupState.CREATED, BackupState.PARTIALLY_DELETED)
+                else None
+            ),
+            "pending_generation": (
+                selected.cloud_generation
+                if selected
+                and selected.state in (BackupState.CREATING, BackupState.FAILED)
+                else None
+            ),
+            "owners": owners,
+            "references_complete": not errors,
+            "metadata_errors": errors,
+        }
+
     def list(
         self, state: BackupState = None, *, unreadable: dict[str, str] | None = None
     ) -> Sequence[BackupMetadata]:
@@ -728,6 +828,11 @@ class ClickhouseBackup:
             ):
                 if backup.generation_of:
                     if _is_being_copied(backup, copying_since):
+                        logging.info(
+                            "Retaining pending cloud generation {} of backup {}: incomplete-copy grace period",
+                            backup.name,
+                            backup.generation_of,
+                        )
                         retained_backups.append(backup)
                     else:
                         deleting_backups.append(backup)
@@ -890,6 +995,11 @@ class ClickhouseBackup:
                 backup, retained_part_references, delete_cloud_storage_data
             )
             prepared_deletions.append((backup, metadata_is_light, cloud_cleanup_action))
+        logging.info(
+            "Deletion batch validated: backups={}, cloud_cleanup_actions={}; no deletion started during validation",
+            len(prepared_deletions),
+            sum(action is not None for _, _, action in prepared_deletions),
+        )
         return prepared_deletions
 
     def _execute_backup_deletion(
@@ -1183,14 +1293,34 @@ class ClickhouseBackup:
         payload_engine = get_storage_engine(payload_storage)
 
         logging.info(
-            "Deleting copied cloud storage data of backup {} in bucket {}",
+            "Cloud cleanup planned: backup={}, bucket={}, planned={} object keys",
             backup.name,
             credentials["bucket"],
+            len(object_keys_to_delete),
         )
-        for object_key_batch in chunked(
-            object_keys_to_delete, payload_storage["bulk_delete_chunk_size"]
-        ):
-            payload_engine.delete_files(object_key_batch)
+        confirmed = 0
+        try:
+            for object_key_batch in chunked(
+                object_keys_to_delete, payload_storage["bulk_delete_chunk_size"]
+            ):
+                payload_engine.delete_files(object_key_batch)
+                confirmed += len(object_key_batch)
+        except (Exception, TerminatingSignal):
+            logging.error(
+                "Cloud cleanup failed: backup={}, bucket={}, confirmed={}, planned={}; "
+                "the failed batch may be partially deleted; retry cleanup",
+                backup.name,
+                credentials["bucket"],
+                confirmed,
+                len(object_keys_to_delete),
+            )
+            raise
+        logging.info(
+            "Cloud cleanup completed: backup={}, bucket={}, confirmed={} object-key deletions",
+            backup.name,
+            credentials["bucket"],
+            confirmed,
+        )
         # Archive cleanup can fail later. A retry must not need manifests for already deleted blobs.
         backup.cloud_storage.source = None
 
@@ -1488,5 +1618,10 @@ def _retain_pending_cloud_generations(
     }
     for generation in builtins.list(deleting):
         if generation.generation_of and generation.name in pending_names:
+            logging.info(
+                "Retaining pending cloud generation {} of backup {}: retained incomplete copy",
+                generation.name,
+                generation.generation_of,
+            )
             deleting.remove(generation)
             retained.append(generation)
