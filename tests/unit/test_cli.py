@@ -163,6 +163,18 @@ def test_copy_command_masks_config_parameter_secrets_in_log(
                         "secret_access_key": "also-secret",
                     }
                 ),
+                "--target-config-parameter",
+                "storage.module_config.botocore.proxies.https",
+                json.dumps("http://user:proxy-secret@proxy:8080"),
+                "--target-config-parameter",
+                "storage.module_config",
+                json.dumps(
+                    {
+                        "botocore": {
+                            "proxies": {"http": "http://user:nested-secret@proxy:8080"}
+                        }
+                    }
+                ),
             ],
             obj={"backup": backup},
         )
@@ -171,6 +183,8 @@ def test_copy_command_masks_config_parameter_secrets_in_log(
     logged = str(log_info.mock_calls)
     assert secret not in logged
     assert "also-secret" not in logged
+    assert "proxy-secret" not in logged
+    assert "nested-secret" not in logged
     assert "visible" in logged
     assert "[HIDDEN]" in logged
 

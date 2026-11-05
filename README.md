@@ -96,6 +96,76 @@ the command reports those failures with a nonzero exit status. A shared Keeper
 metadata conflict stops the restore immediately. The behavior without
 `--skip-cloud-storage` is unchanged.
 
+## S3 SDK configuration
+
+`storage.module_config` passes keyword arguments directly to the installed AWS
+SDK constructors. `botocore` configures `botocore.config.Config`; `transfer`
+configures `boto3.s3.transfer.TransferConfig`. Both sections default to `{}`,
+preserving existing behavior. For example:
+
+```yaml
+storage:
+    module_config:
+        botocore:
+            connect_timeout: 10
+            read_timeout: 120
+            max_pool_connections: 32
+            retries:
+                mode: standard
+                total_max_attempts: 3
+        transfer:
+            multipart_threshold: 16777216
+            multipart_chunksize: 16777216
+            max_concurrency: 4
+```
+
+Parameter names, types and units follow the SDK: timeouts are seconds, sizes are
+bytes, and strings such as `"16 MiB"` are not converted. Supported arguments depend
+on the installed boto3/botocore version. See the
+[botocore Config reference](https://docs.aws.amazon.com/botocore/latest/reference/config.html)
+and [boto3 transfer configuration](https://docs.aws.amazon.com/boto3/latest/guide/s3.html).
+Invalid configuration is rejected before storage access, including for copy targets.
+
+Explicit `botocore` options override the legacy `storage.boto_config` settings.
+Its `s3` mapping extends the legacy settings and overrides matching keys;
+`region_name` overrides the legacy region. An explicit `proxies` key, including
+`{}` or `null`, bypasses `storage.proxy_resolver`. With `null`, botocore can use
+environment proxy settings; `{}` disables proxies. Without that key, proxy
+resolution works as before.
+
+When `botocore.retries` is absent, internal SDK retries remain disabled. When
+present, the entire block is passed to botocore without the old disabling setting,
+including an empty block or one containing only `mode`. In that case SDK defaults
+and AWS environment/profile settings apply to unspecified retry options.
+`total_max_attempts` includes the initial request and takes precedence over
+`max_attempts`, which counts retries after the initial request.
+These retries apply to individual requests, including `UploadPartCopy`.
+The existing `storage.retry` and `storage.retry_max_attempts` settings still control
+outer ch-backup retries, which may repeat a whole operation. Enabling both levels
+can multiply request attempts and waiting time; budgets are not adjusted automatically.
+
+`transfer` applies to managed server-side copy, file upload and file downloads
+(`copy`, `upload_fileobj`, `download_file`, `download_fileobj`). Its concurrency is
+per transfer, in addition to ch-backup workers. The custom chunked pipelines retain
+their `storage.chunk_size` and `storage.uploading_threads` settings; their S3
+requests still use the `botocore` options. Neither section configures ClickHouse
+or `clickhouse-disks`.
+
+Copy targets inherit these sections from the main configuration. Target config
+files and CLI overrides merge recursively, in that order. An empty mapping does
+not clear inherited fields; set `retries.total_max_attempts: 1` to disable inherited
+SDK retries. For example:
+
+```sh
+ch-backup copy LAST --target-config /etc/yandex/ch-backup/dr.conf \
+    --target-config-parameter storage.module_config.botocore.retries.total_max_attempts 3 \
+    --target-config-parameter storage.module_config.transfer.max_concurrency 4
+```
+
+Cloud-object clients inherit the SDK options of their source or target storage.
+No backup format migration is needed. On rollback, older ch-backup versions ignore
+`storage.module_config` and use their previous SDK settings.
+
 ## Installation
 
 In order to get an up-to-date version of ch-backup, run `make build`. It will produce

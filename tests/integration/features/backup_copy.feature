@@ -49,6 +49,18 @@ Feature: Copy backups to another storage
   Scenario: Copy backup to another path in the same bucket
     Given clickhouse on clickhouse01 has test schema
     And clickhouse01 has test clickhouse data test1
+    And ch-backup configuration on clickhouse01
+    """
+    storage:
+        module_config:
+            botocore:
+                connect_timeout: 10
+                read_timeout: 60
+                max_pool_connections: 16
+                retries: {mode: standard, total_max_attempts: 3}
+            transfer:
+                max_concurrency: 3
+    """
     And we have created clickhouse01 clickhouse backup
     And ch-backup configuration on clickhouse02
     """
@@ -58,13 +70,38 @@ Feature: Copy backups to another storage
     When we execute command on clickhouse01
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy LAST \
-        --target-config-parameter backup.path_root '"ch_backup_copy/"'
+        --target-config-parameter backup.path_root '"ch_backup_copy/"' \
+        --target-config-parameter storage.module_config.botocore.read_timeout 120 \
+        --target-config-parameter storage.module_config.transfer.max_concurrency 2
     """
     Then we got the following backups on clickhouse02
       | num | state   |
       | 0   | created |
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
+
+  Scenario Outline: SDK configuration retries individual multipart copy requests
+    Given ch-backup configuration on clickhouse01
+    """
+    storage:
+        module_config:
+            botocore:
+                proxies: {}
+                retries: {mode: standard}
+            transfer:
+                multipart_threshold: 5242880
+                multipart_chunksize: 5242880
+                max_concurrency: 2
+    """
+    When we verify multipart copy on clickhouse01 with <attempts> SDK attempts
+    """
+    /etc/yandex/ch-backup/ch-backup.conf
+    """
+
+    Examples:
+      | attempts |
+      | 3        |
+      | 1        |
 
   Scenario Outline: Copy <selection> skips backups without data
     Given clickhouse on clickhouse01 has test schema

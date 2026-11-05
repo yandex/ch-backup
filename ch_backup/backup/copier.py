@@ -5,6 +5,7 @@ Copying of backups from one storage to another.
 # pylint: disable=too-many-lines
 
 import copy
+import json
 import os
 from contextlib import contextmanager
 from datetime import datetime
@@ -1937,6 +1938,13 @@ def _storage_cache_key(storage: dict) -> tuple:
         storage_id(storage),
         credentials.get("access_key_id"),
         credentials.get("secret_access_key"),
+        json.dumps(
+            {
+                name: storage.get(name, {})
+                for name in ("boto_config", "module_config", "proxy_resolver")
+            },
+            sort_keys=True,
+        ),
     )
 
 

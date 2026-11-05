@@ -3,11 +3,17 @@
 import argparse
 import shutil
 import subprocess
+from collections import Counter
+from io import BytesIO
 from pathlib import Path
+from threading import Lock
 from typing import cast
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 
+from botocore.awsrequest import AWSResponse
 from click import Command
+from urllib3.response import HTTPResponse
 
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupState
@@ -18,6 +24,8 @@ from ch_backup.clickhouse.disks import (
     ClickHouseTemporaryDisks,
 )
 from ch_backup.clickhouse.object_storage_metadata import parse_object_storage_metadata
+from ch_backup.config import Config
+from ch_backup.storage.engine.s3 import S3RetryingError, S3RetryPolicy, S3StorageEngine
 
 
 def _run_patched_cli(arguments: list[str]) -> None:
@@ -107,6 +115,67 @@ def fail_part_attach(database: str, table_name: str, arguments: list[str]) -> No
         _run_patched_cli(arguments)
 
 
+def retry_multipart_copy(attempts: int, config_path: str) -> None:
+    """Inject one HTTP response, retaining SDK retries and real concurrent S3 I/O."""
+    config = Config(config_path).derive(
+        patch={
+            "storage": {
+                "retry_max_attempts": 1,
+                "module_config": {
+                    "botocore": {"retries": {"total_max_attempts": attempts}}
+                },
+            }
+        }
+    )
+    engine = S3StorageEngine(config["storage"], retry_policy=S3RetryPolicy.DEFAULT)
+    source, target = "module-config/source", f"module-config/copy-{attempts}"
+    data = bytes(range(256)) * (12 * 1024**2 // 256)
+    engine.upload_data(data, source)
+    client = getattr(engine, "_s3_client")
+    requests: Counter = Counter()
+    ranges: set[str] = set()
+    lock = Lock()
+
+    def fail_first_part(request, **_kwargs):
+        query = parse_qs(urlparse(request.url).query)
+        upload_id, part = query["uploadId"][0], query["partNumber"][0]
+        with lock:
+            requests[(upload_id, part)] += 1
+            ranges.add(request.headers["x-amz-copy-source-range"].decode())
+            fail = part == "1" and requests[(upload_id, part)] == 1
+        if fail:
+            body = b"<Error><Code>InternalError</Code><Message>injected retryable error</Message></Error>"
+            return AWSResponse(
+                request.url,
+                500,
+                {"content-type": "application/xml"},
+                HTTPResponse(BytesIO(body), preload_content=False),
+            )
+        return None
+
+    client.meta.events.register("before-send.s3.UploadPartCopy", fail_first_part)
+    try:
+        engine.copy_object(config["storage"]["credentials"]["bucket"], source, target)
+    except S3RetryingError:
+        assert attempts == 1, "SDK retries did not recover multipart copy"
+        assert not engine.path_exists(
+            target
+        ), "Failed copy published a destination object"
+    else:
+        assert attempts > 1, "Copy unexpectedly succeeded without SDK retries"
+        assert engine.download_data(target) == data
+        assert ranges == {
+            "bytes=0-5242879",
+            "bytes=5242880-10485759",
+            "bytes=10485760-12582911",
+        }, ranges
+    assert len({upload_id for upload_id, _ in requests}) == 1, requests
+    assert sum(count for (_, part), count in requests.items() if part == "1") == (
+        2 if attempts > 1 else 1
+    ), requests
+    print("Multipart copy retry and contents verified")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="fault", required=True)
@@ -127,6 +196,9 @@ if __name__ == "__main__":
     attach_part.add_argument("database")
     attach_part.add_argument("table")
     attach_part.add_argument("arguments", nargs=argparse.REMAINDER)
+    multipart_copy = subparsers.add_parser("retry-multipart-copy")
+    multipart_copy.add_argument("attempts", type=int)
+    multipart_copy.add_argument("config_path")
     options = parser.parse_args()
     if options.fault == "corrupt-file":
         corrupt_file(options.path, options.action)
@@ -136,5 +208,7 @@ if __name__ == "__main__":
         drop_frozen_table(options.database, options.table, options.arguments)
     elif options.fault == "interrupt-inplace-copy":
         interrupt_inplace_copy(options.filename, options.arguments)
+    elif options.fault == "retry-multipart-copy":
+        retry_multipart_copy(options.attempts, options.config_path)
     else:
         fail_part_attach(options.database, options.table, options.arguments)

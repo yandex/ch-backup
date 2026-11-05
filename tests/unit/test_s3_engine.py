@@ -121,8 +121,8 @@ def test_proxy_dns_failure_recovers_after_six_attempts(dns_errno: int) -> None:
     getattr(engine, "_retry").sleep_function = Mock()
     factory = getattr(getattr(engine, "_s3_client_factory"), "_s3_client_factory")
     client = Mock()
-    client.download_fileobj.side_effect = lambda _bucket, _key, target: target.write(
-        b"backup data"
+    client.download_fileobj.side_effect = (
+        lambda _bucket, _key, target, **_kwargs: target.write(b"backup data")
     )
     dns_error = socket.gaierror(dns_errno, "DNS lookup failed")
     with (
