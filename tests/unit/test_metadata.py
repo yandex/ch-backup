@@ -896,3 +896,41 @@ class TestCopiedBackupMetadata:
         assert backup.real_size == backup.size == 300
         reloaded = BackupMetadata.load_json(backup.dump_json())
         assert all(not p.link for p in reloaded.get_parts())
+
+
+@pytest.mark.parametrize(
+    "link,stored,owner,stored_name",
+    [
+        (None, None, "current", "all_1_1_0_7"),
+        ("owner", None, "owner", "all_1_1_0_7"),
+        (None, "all_1_1_0", "current", "all_1_1_0"),
+        ("owner", "all_1_1_0", "owner", "all_1_1_0"),
+    ],
+)
+def test_logical_and_stored_addresses_resolve_independently(
+    link, stored, owner, stored_name
+):
+    """
+    The owner and stored-name fields can each be absent independently. Test
+    their fallbacks separately so restoring one legacy field does not
+    accidentally change the requested part identity.
+    """
+    part = PartMetadata(
+        "db2",
+        "table2",
+        "all_1_1_0_7",
+        "c",
+        1,
+        [],
+        True,
+        link=link,
+        link_part_name=stored,
+    )
+    assert part.logical_identity == ("db2", "table2", "all_1_1_0_7")
+    assert part.stored_identity == ("db2", "table2", stored_name)
+    assert part.resolve_stored_reference("current") == (
+        owner,
+        "db2",
+        "table2",
+        stored_name,
+    )

@@ -22,6 +22,9 @@ Feature: Backups with unreadable metadata
     INSERT INTO test_db.test_table SELECT 2, number FROM system.numbers LIMIT 100;
     """
 
+  # Unreadable reference metadata prevents safe deletion, but need not prevent
+  # restore or backup. Check the CLI failure and retained data together so an error
+  # message alone cannot hide a destructive operation.
   Scenario: Unreadable light metadata of a referenced backup blocks only delete and purge
     Given we have created clickhouse01 clickhouse backup
     """
@@ -67,13 +70,17 @@ Feature: Backups with unreadable metadata
     Then command exits with code 1
     And we get response contains
     """
-    Failed to read metadata of backups: old_backup
+    Failed to download backup metadata ch_backup/old_backup/backup_light_struct.json
     """
     When we try to execute command on clickhouse01
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf --config-parameter backup.retain_count 0 purge
     """
     Then command exits with code 1
+    And we get response contains
+    """
+    Failed to download backup metadata ch_backup/old_backup/backup_light_struct.json
+    """
     When we try to execute command on clickhouse01
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf delete old_backup

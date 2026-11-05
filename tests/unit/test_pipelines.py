@@ -278,3 +278,24 @@ def test_tar_rejects_incomplete_long_name(tmp_path):
     stage(header.tobuf(format=tarfile.GNU_FORMAT)[:530], 0)
     with pytest.raises(ValueError, match="Truncated TAR"):
         stage.on_done()
+
+
+@pytest.mark.parametrize("compress", [False, True])
+@pytest.mark.parametrize("encrypt", [False, True])
+def test_empty_cloud_metadata_archive_round_trip(compress, encrypt):
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["encryption"]["key"] = "a" * 32
+    writer = PipelineBuilder(config).build_read_data_tarball_stage([], [])
+    if compress:
+        writer.build_compress_stage()
+    if encrypt:
+        writer.build_encrypt_stage()
+    writer.build_collect_data_stage()
+    archive = run_and_return_first(writer.pipeline())
+    reader = PipelineBuilder(config).build_iterable_stage([archive])
+    if encrypt:
+        reader.build_decrypt_stage()
+    if compress:
+        reader.build_decompress_stage()
+    reader.build_unpack_data_tarball_stage()
+    assert not run_and_collect_all(reader.pipeline())

@@ -881,3 +881,100 @@ def test_detached_path_is_direct_child_on_table_disk_with_same_storage_path(
     for name in ("../all_1_1_0", str(table_path / "all_1_1_0")):
         with pytest.raises(ClickhouseBackupError, match="Invalid detached part"):
             ch_ctl.get_detached_part_path(table, backing_disk.name, name)
+
+
+@pytest.fixture(name="detached_candidate")
+def fixture_detached_candidate(tmp_path: Path) -> tuple[Path, DetachedPartMetadata]:
+    part_path = tmp_path / "broken_all_1_1_0"
+    part_path.mkdir()
+    (part_path / "checksums.txt").write_bytes(b"checksums")
+    return part_path, DetachedPartMetadata(
+        "db",
+        "table",
+        part_path.name,
+        "broken",
+        md5(b"checksums").hexdigest(),  # nosec
+        BLOCKSIZE,
+        ["checksums.txt"],
+        True,
+        "default",
+    )
+
+
+def test_detached_match_rejects_missing_directory(detached_candidate):
+    """
+    A detached part can disappear before reuse. Treating its missing directory
+    as a non-match lets restore obtain the part from the backup.
+    """
+    part_path, part = detached_candidate
+
+    assert not ClickhouseCTL.detached_part_matches(part, str(part_path / "missing"))
+
+
+@pytest.mark.parametrize(
+    "operation", ["list_dir_files", "calc_aligned_files_size", "_get_part_checksum"]
+)
+def test_detached_match_rejects_unreadable_files(detached_candidate, operation):
+    """
+    A detached candidate can become unreadable during any filesystem check.
+    Reject it instead of reusing data whose contents could not be verified.
+    """
+    part_path, part = detached_candidate
+    with mock.patch(
+        f"ch_backup.clickhouse.control.{operation}", side_effect=OSError("unreadable")
+    ):
+        assert not ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+
+def test_detached_match_does_not_hide_non_filesystem_errors(detached_candidate):
+    """
+    Catching every exception would hide invalid checksum data or programming
+    errors as ordinary cache misses. Only expected filesystem failures should
+    become non-matches.
+    """
+    part_path, part = detached_candidate
+    with mock.patch(
+        "ch_backup.clickhouse.control._get_part_checksum",
+        side_effect=ValueError("invalid checksum data"),
+    ):
+        with pytest.raises(ValueError, match="invalid checksum data"):
+            ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+
+@pytest.mark.parametrize("object_storage", [False, True])
+def test_detached_match_skips_checksum_when_backup_has_none(
+    detached_candidate, object_storage
+):
+    """
+    Without a recorded checksum, computing one cannot establish equality.
+    Matching files and size must remain usable without an unnecessary local or
+    cloud checksum read.
+    """
+    part_path, part = detached_candidate
+    part.object_storage = object_storage
+    part.raw_metadata.checksum = ""
+    with (
+        mock.patch(
+            "ch_backup.clickhouse.control._get_part_checksum",
+            side_effect=AssertionError("No checksum is required"),
+        ),
+        mock.patch(
+            "ch_backup.clickhouse.control._get_cloud_part_checksum_and_size",
+            side_effect=AssertionError("No checksum is required"),
+        ),
+    ):
+        assert ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+
+@pytest.mark.parametrize(
+    "field,value", [("files", ["missing.bin"]), ("size", 2 * BLOCKSIZE)]
+)
+def test_detached_match_rejects_names_or_aligned_size(detached_candidate, field, value):
+    """
+    Equal checksum-file contents alone do not prove that a detached directory
+    contains the expected files. A different file list or stored size makes the
+    candidate unsafe to reuse.
+    """
+    path, part = detached_candidate
+    setattr(part.raw_metadata, field, value)
+    assert not ClickhouseCTL.detached_part_matches(part, str(path))
