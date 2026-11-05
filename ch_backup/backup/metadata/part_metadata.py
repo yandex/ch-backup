@@ -99,7 +99,7 @@ class PartMetadata(Slotted):
 
     @property
     def logical_identity(self) -> tuple[str, str, str]:
-        """Return database, table, and logical part name, independent of file ownership."""
+        """Identify the requested part so reused files do not transfer restore progress."""
         return self.database, self.table, self.name
 
     @property

@@ -26,6 +26,7 @@ from nacl.exceptions import CryptoError
 from ch_backup import logging
 from ch_backup.backup.metadata import (
     BackupMetadata,
+    BackupState,
     DetachedPartMetadata,
     PartMetadata,
     sanitize_backup_name,
@@ -373,7 +374,7 @@ class BackupLayout:
 
         backup_name = backup_meta.get_sanitized_name()
         compression = backup_meta.cloud_storage.compressed
-        remote_path = _disk_metadata_path(
+        remote_path = cloud_storage_metadata_archive_path(
             self.get_backup_path(backup_name),
             table.database,
             table.name,
@@ -535,11 +536,21 @@ class BackupLayout:
             raise StorageError(f"Failed to download backup metadata {path}") from e
 
     def get_backup(
-        self, backup_name: str, use_light_meta: bool = False
+        self,
+        backup_name: str,
+        use_light_meta: bool = False,
+        *,
+        for_reference: bool = False,
     ) -> BackupMetadata | None:
         """
         Download and return backup metadata.
         """
+        if for_reference:
+            legacy_path = os.path.join(
+                self.get_backup_path(backup_name), "legacy_cloud_owner.json"
+            )
+            if self._storage_loader.path_exists(legacy_path):
+                return self._load_metadata(legacy_path, False)
         path = (
             self._backup_light_metadata_path(backup_name)
             if use_light_meta
@@ -551,11 +562,28 @@ class BackupLayout:
 
         return self._load_metadata(path, not use_light_meta)
 
+    def preserve_legacy_cloud_owner(self, backup: BackupMetadata) -> None:
+        """Keep old unversioned links readable when a generation replaces their owner."""
+        path = os.path.join(
+            self.get_backup_path(backup.name), "legacy_cloud_owner.json"
+        )
+        if not self._storage_loader.path_exists(path):
+            self._storage_loader.upload_data(backup.dump_json(), remote_path=path)
+
+    def update_legacy_cloud_owner(self, backup: BackupMetadata) -> None:
+        """Persist partial legacy cleanup so later retries cannot revive removed parts."""
+        path = os.path.join(
+            self.get_backup_path(backup.name), "legacy_cloud_owner.json"
+        )
+        if self._storage_loader.path_exists(path):
+            self._storage_loader.upload_data(backup.dump_json(), remote_path=path)
+
     def get_backups(
         self,
         use_light_meta: bool = False,
         *,
         unreadable: dict[str, str] | None = None,
+        include_generations: bool = False,
         excluded_backup_names: frozenset[str] = frozenset(),
     ) -> list[BackupMetadata]:
         """
@@ -589,7 +617,7 @@ class BackupLayout:
                 unreadable[name] = f"{type(error).__name__}: {message}"
                 logging.exception("Failed to read metadata of backup {}", name)
                 continue
-            if backup:
+            if backup and (include_generations or not backup.generation_of):
                 backups.append(backup)
 
         return sorted(backups, key=lambda b: b.start_time, reverse=True)
@@ -1008,7 +1036,7 @@ class BackupLayout:
             )
         backup_path = self.get_backup_path(backup_name)
         # Check if metadata is stored as 'disks/s3.tar.gz' for backwards compatibility
-        legacy_archive_path = _disk_metadata_path(
+        legacy_archive_path = cloud_storage_metadata_archive_path(
             backup_path, None, None, disk_name, compression
         )
         if self._storage_loader.path_exists(legacy_archive_path):
@@ -1039,7 +1067,7 @@ class BackupLayout:
             return existing_archive_paths
 
         requested_archive_paths = {
-            _disk_metadata_path(
+            cloud_storage_metadata_archive_path(
                 backup_path,
                 table.database,
                 table.name,
@@ -1088,7 +1116,9 @@ class BackupLayout:
         backup_path = self.get_cloud_storage_path(backup_name)
         return any(
             self._storage_loader.path_exists(
-                _disk_metadata_path(backup_path, database, table, disk_name, compressed)
+                cloud_storage_metadata_archive_path(
+                    backup_path, database, table, disk_name, compressed
+                )
             )
             for compressed in (True, False)
         )
@@ -1116,9 +1146,28 @@ class BackupLayout:
 
         Reject keys outside the copy's prefix. Archive deletion is a separate
         step, so the returned keys identify payload objects only.
+        Prefix listings could include another cluster's objects with the same backup name.
         """
+        if backup_meta.generation_of and backup_meta.state not in (
+            BackupState.CREATED,
+            BackupState.PARTIALLY_DELETED,
+        ):
+            path = os.path.join(
+                self.get_backup_path(backup_meta.name), "cloud_objects.json"
+            )
+            keys = json.loads(self._storage_loader.download_data(path))
+            if not isinstance(keys, list) or any(
+                not isinstance(key, str)
+                or not key.startswith(object_prefix + "/")
+                or any(component in (".", "..") for component in key.split("/"))
+                for key in keys
+            ):
+                raise ConfigurationError(
+                    "Cloud generation cleanup manifest contains an unsafe key"
+                )
+            return sorted(set(keys))
         object_keys_to_delete: set[str] = set()
-        for disk_name in backup_meta.select_cloud_disks_for_cleanup():
+        for disk_name in backup_meta.select_disks_with_stored_cloud_parts():
             archive_paths = self.list_cloud_storage_metadata_archives(
                 backup_meta.get_sanitized_name(),
                 disk_name,
@@ -1170,7 +1219,7 @@ class BackupLayout:
         and replacement archive contents, avoiding a second metadata download.
         """
         deletion_plan = _CloudPartDeletionPlan(backup, retained_part_identities)
-        for disk_name in backup.select_cloud_disks_for_cleanup():
+        for disk_name in backup.select_disks_with_stored_cloud_parts():
             if backup.cloud_storage.data_copied:
                 object_prefix = self.get_cloud_storage_data_path(backup.name, disk_name)
             else:
@@ -1202,6 +1251,7 @@ class BackupLayout:
                 payload_storage["bulk_delete_chunk_size"],
             ):
                 payload_engine.delete_files(object_key_batch)
+            # Preserve object references until deletion succeeds, so failures remain retryable.
             for archive_path, retained_metadata_files in archive_replacements.items():
                 # Keep an empty archive as evidence that this disk was cleaned.
                 # A later failure must not make retry indistinguishable from
@@ -1696,7 +1746,7 @@ def _detached_part_path(
     )
 
 
-def _disk_metadata_path(
+def cloud_storage_metadata_archive_path(
     backup_path: str,
     db_name: str | None,
     table_name: str | None,
@@ -1809,6 +1859,7 @@ class _CloudPartDeletionPlan:
 
     def require_metadata_for_retained_parts(self) -> None:
         """Reject deletion when a retained part stored by this backup has no metadata."""
+        # Missing metadata could hide shared objects that deletion must preserve.
         required_part_identities = {
             part.logical_identity
             for part in self.backup.get_parts()

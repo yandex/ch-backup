@@ -126,6 +126,8 @@ class BackupMetadata:
         self.cloud_storage: CloudStorageMetadata = CloudStorageMetadata()
         # Location of the storage the backup was copied from (for backups created by "copy" command).
         self.copied_from: dict | None = None
+        self.cloud_generation: str | None = None
+        self.generation_of: str | None = None
         self.copy_scopes: dict[CopyScope, CopyScopeStatus] = {}
         self.copy_updated_at: datetime | None = None
         self._skipped_data_counts = (0, 0)
@@ -202,6 +204,10 @@ class BackupMetadata:
             databases = self._databases_with_legacy_part_links()
 
         meta: dict[str, Any] = {}
+        if self.cloud_generation:
+            meta["cloud_generation"] = self.cloud_generation
+        if self.generation_of:
+            meta["generation_of"] = self.generation_of
         if self.copied_from:
             meta["copied_from"] = self.copied_from
         if self.copy_scopes or self.copy_updated_at:
@@ -397,6 +403,8 @@ class BackupMetadata:
             backup.encrypted = meta.get("encrypted", True)
             backup.metadata_encrypted = meta.get("metadata_encrypted")
             backup.copied_from = meta.get("copied_from")
+            backup.cloud_generation = meta.get("cloud_generation")
+            backup.generation_of = meta.get("generation_of")
             backup.copy_scopes = {}
             copy_meta = meta.get("copy") or {}
             for scope in CopyScope:
@@ -600,7 +608,7 @@ class BackupMetadata:
         if not part.link:
             self.real_size += part.size
 
-    def select_cloud_disks_for_cleanup(self) -> list[str]:
+    def select_disks_with_stored_cloud_parts(self) -> list[str]:
         """Select disks that may contain cloud parts stored by this backup.
 
         A disk containing only links has no parts to delete here. Include disks

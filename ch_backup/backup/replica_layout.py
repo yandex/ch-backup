@@ -75,7 +75,11 @@ class ReplicaLayout(BackupLayout):
         self._access_statements: list[str] = []
 
     def get_backup(
-        self, backup_name: str, use_light_meta: bool = False
+        self,
+        backup_name: str,
+        use_light_meta: bool = False,
+        *,
+        for_reference: bool = False,
     ) -> BackupMetadata:
         """
         Read the requested objects of the replica as a backup without data.

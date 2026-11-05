@@ -23,6 +23,8 @@ import xmltodict
 from ch_backup import logging
 from ch_backup.backup.cloud_storage_decryption import (
     CloudStorageDecryption,
+    _prefixes_overlap,
+    _same_storage,
     resolve_decryption_staging,
 )
 from ch_backup.backup.layout import BackupLayout, table_shadow_relpath
@@ -36,8 +38,12 @@ from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.models import Disk, FrozenPart, Table
 from ch_backup.config import Config
+from ch_backup.encryption import validate_cloud_storage_data_encryption_config
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
-from ch_backup.storage.object_copy import get_s3_disk_location, make_storage_config
+from ch_backup.storage.object_copy import (
+    get_s3_disk_location,
+    make_storage_config,
+)
 from ch_backup.util import (
     is_equal_s3_endpoints,
     s3_uri_from_path_style_to_virtual_hosted,
@@ -269,6 +275,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         self._source_endpoint: str = source_endpoint or ""
         if (
             backup_meta.cloud_storage.requires_source_bucket
+            and backup_meta.select_disks_with_stored_cloud_parts()
             and source_bucket is None
             and not skip_cloud_storage
         ):
@@ -292,16 +299,69 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         """Create temporary disks and finish their asynchronous metadata loads."""
         self._read_configured_disks()
         if not self._skip_cloud_storage:
-            for disk_name in self._backup_meta.cloud_storage.disks:
-                self._create_temporary_disk(
-                    self._backup_meta,
-                    disk_name,
-                    self._desired_tables,
+            owners: list[
+                tuple[
+                    BackupMetadata,
+                    str,
+                    Sequence[TableMetadata] | Literal["all"],
+                    str | None,
+                ]
+            ] = [
+                (self._backup_meta, disk, self._desired_tables, None)
+                for disk in self._backup_meta.select_disks_with_stored_cloud_parts()
+            ]
+            owners.extend(
+                (owner, disk, tables, owner.name)
+                for owner, disk, tables in self._linked_backups_data()
+            )
+            staging_mappings: list[tuple] = []
+            for owner, disk, _tables, _link in owners:
+                encryption = owner.cloud_storage.data_encryption
+                if encryption != self._backup_meta.cloud_storage.data_encryption:
+                    raise ClickHouseDisksException(
+                        "Cloud owner and child encryption metadata differ"
+                    )
+                if encryption is None:
+                    continue
+                validate_cloud_storage_data_encryption_config(self._config, encryption)
+                disk_config = self._source_disk_config(owner, disk)
+                source_storage, source_path = self._source_storage(
+                    owner, disk_config, disk
                 )
-            for backup_meta, disk_name, tables in self._linked_backups_data():
-                self._create_temporary_disk(
-                    backup_meta, disk_name, tables, link=backup_meta.name
+                staging_storage, staging_path = resolve_decryption_staging(
+                    self._config, source_storage, source_path, self._disks[disk]
                 )
+                mapping = (
+                    staging_storage,
+                    staging_path.strip("/"),
+                    source_storage,
+                    source_path.strip("/"),
+                )
+                for previous in staging_mappings:
+                    if (
+                        _same_storage(mapping[0], previous[0])
+                        and _prefixes_overlap(mapping[1], previous[1])
+                        and not (
+                            mapping[1] == previous[1]
+                            and _same_storage(mapping[2], previous[2])
+                            and mapping[3] == previous[3]
+                        )
+                    ):
+                        raise ClickHouseDisksException(
+                            "Cloud owners have overlapping decryption staging paths"
+                        )
+                staging_mappings.append(mapping)
+            # Cleanup of one owner's staging must not delete another owner's ciphertext.
+            for staging_storage, staging_path, _, _ in staging_mappings:
+                for _, _, source_storage, source_path in staging_mappings:
+                    if _same_storage(
+                        staging_storage, source_storage
+                    ) and _prefixes_overlap(staging_path, source_path):
+                        raise ClickHouseDisksException(
+                            "Decryption staging overlaps a cloud owner's encrypted source"
+                        )
+            for owner, disk, tables, link in owners:
+                self._create_temporary_disk(owner, disk, tables, link=link)
         self._backup_layout.wait()
         self._ch_availible_disks = self._ch_ctl.get_disks()
         self._render_ch_disks_config()
@@ -356,9 +416,12 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
 
         for backup_name, disks in links.items():
             backup_meta = self._backup_layout.get_backup(
-                backup_name, use_light_meta=True
+                backup_name, use_light_meta=True, for_reference=True
             )
-            if backup_meta is None or not backup_meta.cloud_storage.data_copied:
+            if backup_meta is None or not (
+                backup_meta.cloud_storage.data_copied
+                or backup_meta.cloud_storage.source
+            ):
                 raise ClickHouseDisksException(
                     f'Backup "{backup_name}" holding data of deduplicated parts'
                     " is missing or holds no copied data"
@@ -481,7 +544,23 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
 
         disk_config = copy.copy(self._disks[disk_name])
         endpoint = urlparse(disk_config["endpoint"])
-        source_endpoint_url = self._source_endpoint or self._metadata_source_endpoint
+        source_bucket, source_path, source_endpoint_url = (
+            self._source_bucket,
+            self._source_path,
+            self._source_endpoint or self._metadata_source_endpoint,
+        )
+        if (
+            backup_meta.name != self._backup_meta.name
+            and backup_meta.cloud_storage.source
+        ):
+            recorded_location = backup_meta.cloud_storage.source
+            source_bucket, source_path, source_endpoint_url = (
+                recorded_location["bucket"],
+                recorded_location["path"],
+                self._source_endpoint
+                or recorded_location["endpoint_url"]
+                or "https://s3.amazonaws.com",
+            )
         if source_endpoint_url:
             source_endpoint = urlparse(
                 source_endpoint_url
@@ -529,8 +608,8 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
             )
         disk_config["endpoint"] = os.path.join(
             f"{endpoint.scheme}://{endpoint.netloc}",
-            self._source_bucket,
-            self._source_path,
+            source_bucket,
+            source_path,
             "",
         )
         return disk_config

@@ -376,6 +376,7 @@ class ClickhouseBackup:
         ):
             if (
                 self._context.backup_meta.cloud_storage.requires_source_bucket
+                and self._context.backup_meta.select_disks_with_stored_cloud_parts()
                 and not cloud_storage_source
             ):
                 raise ClickhouseBackupError(
@@ -570,7 +571,9 @@ class ClickhouseBackup:
         with self._context.locker(operation="DELETE"):
             # Other backups must be readable: their references protect shared data.
             backups = self._context.backup_layout.get_backups(
-                use_light_meta=True, excluded_backup_names=frozenset({backup_name})
+                use_light_meta=True,
+                excluded_backup_names=frozenset({backup_name}),
+                include_generations=True,
             )
             try:
                 requested_backup = self._context.backup_layout.get_backup(
@@ -590,6 +593,14 @@ class ClickhouseBackup:
                 backups.sort(key=lambda backup: backup.start_time, reverse=True)
 
             for i, backup in enumerate(backups):
+                if backup.generation_of:
+                    if backup.generation_of != backup_name and _is_being_copied(
+                        backup, copying_since
+                    ):
+                        retained_backups.append(backup)
+                    else:
+                        deleting_backups.append(backup)
+                    continue
                 if backup.name == backup_name:
                     deleting_backups.append(backup)
                     continue
@@ -605,6 +616,7 @@ class ClickhouseBackup:
                 else:
                     retained_backups.append(backup)
 
+            _retain_pending_cloud_generations(retained_backups, deleting_backups)
             dedup_references = collect_dedup_references_for_batch_backup_deletion(
                 layout=self._context.backup_layout,
                 retained_backups_light_meta=retained_backups,
@@ -711,7 +723,15 @@ class ClickhouseBackup:
 
         with self._context.locker(operation="PURGE"):
             # Use light metadata in backups iteration to avoid high memory usage.
-            for backup in self._context.backup_layout.get_backups(use_light_meta=True):
+            for backup in self._context.backup_layout.get_backups(
+                use_light_meta=True, include_generations=True
+            ):
+                if backup.generation_of:
+                    if _is_being_copied(backup, copying_since):
+                        retained_backups.append(backup)
+                    else:
+                        deleting_backups.append(backup)
+                    continue
                 if retain_count is not None and retain_count > 0:
                     logging.info(
                         "Preserving backup per retain count policy: {}, state {}",
@@ -757,6 +777,7 @@ class ClickhouseBackup:
                     deleting_backups.remove(complete_backup)
                     retained_backups.append(complete_backup)
 
+            _retain_pending_cloud_generations(retained_backups, deleting_backups)
             dedup_references = collect_dedup_references_for_batch_backup_deletion(
                 layout=self._context.backup_layout,
                 retained_backups_light_meta=retained_backups,
@@ -828,7 +849,9 @@ class ClickhouseBackup:
         light metadata when full metadata is unavailable.
         """
         try:
-            full_metadata = self._context.backup_layout.get_backup(light_metadata.name)
+            full_metadata = self._context.backup_layout.get_backup(
+                light_metadata.name, for_reference=True
+            )
         except StorageError:
             if dedup_references:
                 raise
@@ -853,9 +876,12 @@ class ClickhouseBackup:
 
         Retain loaded metadata and cloud deletion callbacks so execution uses
         the data validated here without downloading it again.
+        A bad later backup must not cause earlier backups to be deleted.
         """
         prepared_deletions = []
-        for light_metadata in backups_to_delete:
+        for light_metadata in sorted(
+            backups_to_delete, key=lambda backup: bool(backup.generation_of)
+        ):
             retained_part_references = dedup_references[light_metadata.name]
             backup, metadata_is_light = self._load_metadata_for_deletion(
                 light_metadata, retained_part_references
@@ -896,6 +922,7 @@ class ClickhouseBackup:
                 logging.info("Removing backup data entirely")
                 if cloud_cleanup_action:
                     cloud_cleanup_action()
+                    # Persist cleanup before archive deletion can remove the retry inputs.
                     self._context.backup_layout.upload_backup_metadata(
                         backup, light_only=metadata_is_light
                     )
@@ -941,6 +968,7 @@ class ClickhouseBackup:
             self._context.backup_layout.wait()
             self._system_unfreeze(backup)
             backup.state = BackupState.PARTIALLY_DELETED
+            self._context.backup_layout.update_legacy_cloud_owner(backup)
             self._context.backup_layout.upload_backup_metadata(
                 backup, light_only=metadata_is_light
             )
@@ -988,6 +1016,8 @@ class ClickhouseBackup:
         Preserve referenced parts. Return None when no separate cloud action is
         needed or deletion of the external payload is disabled.
         """
+        if backup.cloud_generation and not backup.generation_of:
+            return None
         external_target = self._resolve_external_cloud_deletion_target(
             backup, delete_cloud_storage_data
         )
@@ -1051,6 +1081,7 @@ class ClickhouseBackup:
         Return None when the backup has no external copy location or external
         deletion is disabled. Otherwise, check the recorded location against
         the configured endpoint, bucket, and backup-prefix constraints.
+        Trusted metadata supplies destinations so purge need not configure each again.
         """
         recorded_location = backup.cloud_storage.source
         if not recorded_location:
@@ -1118,6 +1149,7 @@ class ClickhouseBackup:
                     sanitize_backup_name(backup.name),
                 )
             ]
+            # Exact-key cleanup permits objects and archives to share the backup directory.
             if object_prefix != backup_directory_prefixes[0] and any(
                 backup_prefix == object_prefix
                 or backup_prefix.startswith(object_prefix + "/")
@@ -1405,6 +1437,7 @@ def _is_complete(backup: BackupMetadata) -> bool:
     """
     return (
         backup.state == BackupState.CREATED
+        and not backup.generation_of
         and not backup.schema_only
         and not any(backup.count_skipped_data_tables())
     )
@@ -1438,3 +1471,22 @@ def _is_being_copied(backup: BackupMetadata, since: datetime | None) -> bool:
         return False
     updated_at = backup.copy_updated_at
     return updated_at is not None and updated_at >= since
+
+
+def _retain_pending_cloud_generations(
+    retained: builtins.list[BackupMetadata], deleting: builtins.list[BackupMetadata]
+) -> None:
+    """A retained partial copy still needs its transferred objects, beyond the lease window.
+
+    Its part links name the source until publication, so ordinary link collection
+    cannot protect the pending target generation. Keep that generation whole.
+    """
+    pending_names = {
+        backup.cloud_generation
+        for backup in retained
+        if backup.state in (BackupState.CREATING, BackupState.FAILED)
+    }
+    for generation in builtins.list(deleting):
+        if generation.generation_of and generation.name in pending_names:
+            deleting.remove(generation)
+            retained.append(generation)
