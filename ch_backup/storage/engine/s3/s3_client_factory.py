@@ -121,6 +121,8 @@ class S3ClientCachedFactory:
         self._thread_state.client = None
 
 
+_MAX_CACHED_FACTORIES = 16
+
 # ProcessExecPool uses spawn, so each worker owns its sessions and connections.
 _FACTORIES: list[tuple[dict, S3ClientCachedFactory]] = []
 _FACTORIES_LOCK = threading.Lock()
@@ -137,5 +139,6 @@ def get_cached_s3_client_factory(config: dict) -> S3ClientCachedFactory:
         snapshot = deepcopy(config)
         factory = S3ClientCachedFactory(S3ClientFactory(snapshot))
         _FACTORIES.append((snapshot, factory))
-        del _FACTORIES[:-16]
+        # Remove older entries from the front, keeping the most recently used ones.
+        del _FACTORIES[:-_MAX_CACHED_FACTORIES]
         return factory
