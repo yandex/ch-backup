@@ -322,7 +322,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # How often idle pipeline threads poll their queues, in seconds (pypeln "TIMEOUT").
         # Smaller values cost CPU, larger ones make every pipeline finish
         # about "number of stages * interval" later.
-        "queue_poll_interval": 0.0001,
+        "queue_poll_interval": 0.01,
     },
     "main": {
         "user": "clickhouse",

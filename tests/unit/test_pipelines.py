@@ -219,12 +219,12 @@ def test_pipeline_builder_applies_queue_poll_interval(
 ) -> None:
     monkeypatch.setattr(pypeln_utils, "TIMEOUT", pypeln_utils.TIMEOUT)
     config = copy.deepcopy(DEFAULT_CONFIG)
-    config["pipeline"]["queue_poll_interval"] = 0.01
+    config["pipeline"]["queue_poll_interval"] = 0.001
 
     builder = PipelineBuilder(config).build_iterable_stage([b"a", b"b"])
     builder.build_collect_data_stage()
 
-    assert pypeln_utils.TIMEOUT == 0.01
+    assert pypeln_utils.TIMEOUT == 0.001
     assert run_and_return_first(builder.pipeline()) == b"ab"
 
 
