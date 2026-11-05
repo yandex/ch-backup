@@ -166,7 +166,13 @@ class ClickhouseBackup:
                 or selected.select_disks_with_stored_cloud_parts()
             ):
                 owner_names.add(selected.name)
-            if selected.cloud_generation:
+            # A fully deduplicated copy can outlive its empty generation.
+            # Part links below identify required owners; an unfinished copy
+            # also needs its generation even before it has published parts.
+            if selected.cloud_generation and (
+                selected.cloud_generation in backups
+                or selected.state in (BackupState.CREATING, BackupState.FAILED)
+            ):
                 owner_names.add(selected.cloud_generation)
             owner_names.update(
                 part.link
