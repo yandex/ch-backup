@@ -99,6 +99,16 @@ def test_shared_s3_client_reset_and_config_isolation(
         get_storage_engine(config).upload_data(b"other", "other")
         assert other_client.put_object.call_count == 1
         assert session.call_count == 2
+        assert (
+            session.call_args.kwargs["aws_secret_access_key"]
+            == config["credentials"]["secret_access_key"]
+        )
+        assert (
+            session.return_value.client.call_args.kwargs["config"].s3[
+                "addressing_style"
+            ]
+            == config["boto_config"]["addressing_style"]
+        )
 
 
 def test_proxy_discovery_opens_a_new_connection() -> None:
