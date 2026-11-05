@@ -5,6 +5,7 @@ Clickhouse-disks controls temporary cloud storage disks management.
 # pylint: disable=too-many-lines
 
 import copy
+import hashlib
 import os
 import shlex
 import shutil
@@ -1152,10 +1153,12 @@ def _get_tmp_disk_name(disk_name: str, backup_name: str | None = None) -> str:
     Return name of the temporary disk used to restore data of a given disk.
 
     A backup name is set for a disk reading data of another backup, where data
-    of deduplicated parts is left.
+    of deduplicated parts is left. ClickHouse disk identifiers cannot contain
+    the leading dot in generation names. A digest keeps the identifier short
+    and avoids merging owner names that differ only in punctuation.
     """
     if backup_name:
-        return f"{disk_name}_source_{sanitize_backup_name(backup_name)}"
+        return f"{disk_name}_source_{hashlib.sha256(backup_name.encode()).hexdigest()}"
 
     return f"{disk_name}_source"
 
