@@ -307,7 +307,8 @@ def _same_storage(first: dict, second: dict) -> bool:
     second_id = storage_id(second)
     return (
         first_id[0] == second_id[0]
-        and str(first_id[1]).rstrip("/") == str(second_id[1]).rstrip("/")
+        and str(first_id[1] or "https://s3.amazonaws.com").rstrip("/")
+        == str(second_id[1] or "https://s3.amazonaws.com").rstrip("/")
         and first_id[2] == second_id[2]
     )
 
