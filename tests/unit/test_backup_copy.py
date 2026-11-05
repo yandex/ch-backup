@@ -2392,16 +2392,12 @@ def test_copy_probe_failure_can_fall_back_to_streaming(keep_going: bool) -> None
     with patch.object(
         FakeEngine, "try_copy_object", side_effect=[RuntimeError("probe failed"), True]
     ) as probe:
-        if keep_going:
-            assert ctx.copy(keep_going=True, report=report) == (["b1"], [])
-            assert not report.backups[0].errors
-            assert report.backups[0].objects_copied == 2
-            assert probe.call_count == 2
-            assert len(ctx.target_layout.copied) == 1
-            assert all(not e.server_side for e in ctx.target_layout.copied)
-        else:
-            with pytest.raises(RuntimeError, match="probe failed"):
-                ctx.copy(report=report)
+        assert ctx.copy(keep_going=keep_going, report=report) == (["b1"], [])
+        assert not report.backups[0].errors
+        assert report.backups[0].objects_copied == 2
+        assert probe.call_count == 2
+        assert len(ctx.target_layout.copied) == 1
+        assert all(not e.server_side for e in ctx.target_layout.copied)
 
 
 def test_copy_counts_server_side_probe_once() -> None:

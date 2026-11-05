@@ -1908,7 +1908,6 @@ class BackupCopier:
                 except Exception as e:
                     if (
                         self._server_side_copy_mode == ServerSideCopyMode.STRICT
-                        or not self._keep_going
                         or is_broken_executor(e)
                     ):
                         raise

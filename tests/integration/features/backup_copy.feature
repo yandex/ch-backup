@@ -47,7 +47,7 @@ Feature: Copy backups to another storage
       | --server-side-copy-mode disabled |
       | --server-side-copy-mode strict   |
 
-  Scenario: Strict copy retries temporary probe errors and resumes after exhaustion
+  Scenario: Copy retries temporary probe errors and respects the selected mode
     Given clickhouse on clickhouse01 has test schema
     And clickhouse01 has test clickhouse data test1
     And we have created clickhouse01 clickhouse backup
@@ -81,6 +81,17 @@ Feature: Copy backups to another storage
     """
     -c /etc/yandex/ch-backup/ch-backup.conf copy retry --server-side-copy-mode strict
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
+    """
+    Then command exits with code 0
+    And we get response contains
+    """
+    retry: copied
+    """
+    When we try to execute ch-backup on clickhouse01 with 3 SlowDown errors
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf copy retry --server-side-copy-mode auto
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
+        --target-config-parameter backup.path_root '"ch_backup_auto/"'
     """
     Then command exits with code 0
     And we get response contains
