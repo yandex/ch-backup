@@ -1,7 +1,8 @@
-"""Always-broken proxy, with opt-in deterministic copy faults for integration tests."""
+"""S3 test proxy that fails every second UploadPartCopy request."""
 
 import http.client
 import threading
+from itertools import count
 from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlsplit
 from wsgiref.simple_server import WSGIRequestHandler, WSGIServer
@@ -9,56 +10,13 @@ from wsgiref.simple_server import WSGIRequestHandler, WSGIServer
 import bottle
 from bottle import HTTPResponse
 
-STATE = {"config": None, "requests": [], "resolutions": 0, "failures": 0}
+PART_REQUESTS = count(1)
 LOCK = threading.Lock()
 
 
-@bottle.post("/__fault__/config")
-def configure():
-    with LOCK:
-        STATE.update(config=bottle.request.json, requests=[], resolutions=0, failures=0)
-    return {"configured": True}
-
-
-@bottle.get("/__fault__/state")
-def state():
-    with LOCK:
-        return {
-            "requests": list(STATE["requests"]),
-            "resolutions": STATE["resolutions"],
-        }
-
-
-@bottle.get("/__fault__/resolve")
+@bottle.get("/resolve")
 def resolve():
-    with LOCK:
-        STATE["resolutions"] += 1
-        config = STATE["config"]
-        if config.get("rotate") and STATE["failures"]:
-            return "proxy01"
     return "broken-proxy01"
-
-
-def error_response(status, code):
-    return HTTPResponse(
-        status=status,
-        body="<Error><Code>{}</Code><Message>injected multipart copy failure</Message></Error>".format(
-            code
-        ),
-        headers={"Content-Type": "application/xml"},
-    )
-
-
-def operation(method, query, headers):
-    if method == "POST":
-        return (
-            "CreateMultipartUpload" if "uploads" in query else "CompleteMultipartUpload"
-        )
-    if "uploadId" in query:
-        return "AbortMultipartUpload" if method == "DELETE" else "UploadPartCopy"
-    if "X-Amz-Copy-Source" in headers:
-        return "CopyObject"
-    return method
 
 
 @bottle.route("<path:path>", method="GET")
@@ -69,38 +27,24 @@ def operation(method, query, headers):
 def index(path):
     request = bottle.request
     query = parse_qs(request.query_string, keep_blank_values=True)
-    op = operation(request.method, query, request.headers)
-    record = {
-        "operation": op,
-        "path": path,
-        "upload_id": query.get("uploadId", [None])[0],
-        "part_number": int(query.get("partNumber", [0])[0]),
-        "range": request.headers.get("X-Amz-Copy-Source-Range"),
-        "source": request.headers.get("X-Amz-Copy-Source"),
-    }
-    with LOCK:
-        config = STATE["config"]
-        if config is None:
-            return error_response(500, "InternalError")
-        if path == config["path"]:
-            STATE["requests"].append(record)
-            for rule in config["rules"]:
-                if (
-                    op != rule["operation"]
-                    or rule.get("part_number", 0) != record["part_number"]
-                ):
-                    continue
-                remaining = rule["failures"]
-                if remaining:
-                    if remaining > 0:
-                        rule["failures"] -= 1
-                    STATE["failures"] += 1
-                    record["injected"] = True
-                    return error_response(rule["status"], rule["code"])
+    if (
+        request.method == "PUT"
+        and "uploadId" in query
+        and "X-Amz-Copy-Source" in request.headers
+    ):
+        # Count parts separately so other parallel requests cannot hide a fault.
+        with LOCK:
+            fail = next(PART_REQUESTS) % 2 == 0
+        if fail:
+            return HTTPResponse(
+                status=500,
+                body="<Error><Code>InternalError</Code>"
+                "<Message>injected UploadPartCopy failure</Message></Error>",
+                headers={"Content-Type": "application/xml"},
+            )
 
-    # Only used in the isolated HTTP test network. Preserve Host/signature and
-    # all S3 headers; do not log credentials or Authorization.
-    target = urlsplit("http://" + request.headers["Host"])
+    # Forward only to the configured test storage; Host must not choose a destination.
+    target = urlsplit("{{ conf.s3.endpoint }}")
     connection = http.client.HTTPConnection(target.hostname, target.port, timeout=60)
     headers = {
         key: value

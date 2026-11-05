@@ -195,7 +195,10 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
         self, source_bucket: str, source_path: str, remote_path: str
     ) -> bool:
         """
-        Try to copy object on the server side. Return False if S3 service rejected the request.
+        Try to copy an object on the server side.
+
+        Return False on a non-retryable S3 rejection before multipart initiation.
+        Exhausted retries and failures of an initiated multipart transfer propagate.
         """
         try:
             self._copy_object(source_bucket, source_path, remote_path)

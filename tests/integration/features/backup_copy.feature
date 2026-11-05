@@ -8,41 +8,51 @@ Feature: Copy backups to another storage
     And a working clickhouse on clickhouse02
 
   @require_version_22.8
-  Scenario Outline: Multipart copy retries only the failed segment
-    Given a multipart copy backup
-    And multipart copy faults
+  Scenario: Multipart copy retries through a broken proxy
+    Given we have executed queries on clickhouse01
     """
-    status: <status>
-    rotate: <rotate>
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.big (n UInt64, data UInt64) ENGINE=MergeTree ORDER BY n;
+    INSERT INTO test_db.big SELECT number, rand64() FROM numbers(3000000)
+        SETTINGS max_threads=1, max_insert_threads=1;
+    OPTIMIZE TABLE test_db.big FINAL;
     """
-    When we copy the multipart backup in "ordinary" mode
-    Then only the failed multipart segment was retried
-    And the copied multipart backup restores its data
-
-    Examples:
-      | status | rotate |
-      | 500    | false  |
-      | 503    | false  |
-      | 200    | false  |
-      | 503    | true   |
-
-  @require_version_22.8
-  Scenario Outline: Multipart copy aborts after exhausting the segment budget
-    Given a multipart copy backup
-    And multipart copy faults
+    And we have created clickhouse01 clickhouse backup
     """
-    permanent: true
-    abort_failure: <abort_failure>
+    name: multipart
     """
-    When we copy the multipart backup in "<mode>" mode
-    Then the multipart failure was reported without restarting the object
-
-    Examples:
-      | mode       | abort_failure |
-      | ordinary   | false         |
-      | keep-going | false         |
-      | keep-going | true          |
-      | probe      | false         |
+    And ch-backup configuration on clickhouse01
+    """
+    storage:
+        proxy_resolver:
+            uri: http://broken-proxy01:4080/resolve
+        retry:
+            backup:
+                max_attempts: 10
+                max_interval: 0
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    storage:
+        credentials:
+            bucket: ch-backup-copy
+    """
+    When we save data part checksums in context on clickhouse01
+    And we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy multipart \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
+    """
+    And we execute command on clickhouse01
+    """
+    grep 'injected UploadPartCopy failure' /var/log/ch-backup/ch-backup.log
+    """
+    And we execute command on clickhouse01
+    """
+    ! grep 'objects are copied through ch-backup' /var/log/ch-backup/ch-backup.log
+    """
+    And we restore clickhouse backup #0 to clickhouse02
+    Then data part checksums equal to saved ones on clickhouse02
 
   Scenario Outline: Copy backup to another bucket without encryption keys
     Given clickhouse on clickhouse01 has test schema

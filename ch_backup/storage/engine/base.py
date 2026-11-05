@@ -150,6 +150,10 @@ class PipeLineCompatibleStorageEngine(StorageEngine):
         self, source_bucket: str, source_path: str, remote_path: str
     ) -> bool:
         """
-        Try to copy object on the server side. Return False if the storage service rejected the request.
+        Try to copy an object on the server side.
+
+        Return False when the service rejects the request before a multipart
+        transfer is initiated. Raise on exhausted retries or a failed initiated
+        transfer so the caller does not restart the object through streamed copy.
         """
         pass
