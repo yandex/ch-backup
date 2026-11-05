@@ -433,3 +433,67 @@ def test_part_dedup_info_quotes_all_string_values(link_part_name):
         f"({literal},{literal},{literal},{literal},{literal_link},{literal},"
         f"42,[{literal},''],1,{literal},0,1)"
     )
+
+
+@pytest.mark.parametrize(
+    "current,stored,physical,expected",
+    [
+        ("all_1_1_0", "all_1_1_0", "", "all_1_1_0"),
+        ("all_1_1_0_7", "all_1_1_0_3", "", "all_1_1_0_3"),
+        ("all_1_1_0_7", "all_1_1_0_3", "all_1_1_0", "all_1_1_0"),
+        ("broken", "broken", "", "broken"),
+        ("all_1_1_0", "other_1_1_0", "", None),
+        ("all_1_1_0", "all_1_2_0", "", None),
+        ("all_1_1_0", "all_1_1_1", "", None),
+    ],
+)
+def test_dedup_result_preserves_logical_name_and_physical_owner(
+    current, stored, physical, expected
+):
+    """
+    Mutation renaming and chained links can give one part distinct requested
+    and stored names. Check the deduplication result so it retains the
+    requested identity and resolves the final stored owner.
+    """
+    context = Mock()
+    context.ch_ctl.get_deduplication_info.return_value = [
+        {
+            **_dedup_row(stored),
+            "current_name": current,
+            "link_part_name": physical,
+            "verified": True,
+        }
+    ]
+    parts = deduplicate_parts(context, "db1", "table1", {}, {})
+    if expected is None:
+        assert not parts
+    else:
+        assert list(parts) == [current]
+        assert parts[current].resolve_stored_reference("current") == (
+            DEDUP_BACKUP_NAME,
+            "db1",
+            "table1",
+            expected,
+        )
+        assert parts[current].name == current
+
+
+@pytest.mark.parametrize(
+    "current,stored",
+    [("broken", "other"), ("all_1_1_0", "broken"), ("broken", "all_1_1_0")],
+)
+def test_dedup_rejects_unequal_unparseable_names(current, stored):
+    """
+    Unequal unparsable names provide no evidence of mutation-only equivalence.
+    Matching checksums alone must not turn them into a deduplication link.
+    """
+    context = Mock()
+    context.ch_ctl.get_deduplication_info.return_value = [
+        {**_dedup_row(stored), "current_name": current, "verified": True}
+    ]
+    try:
+        parts = deduplicate_parts(context, "db1", "table1", {}, {})
+    except ValueError:
+        # Rejecting malformed input and returning no match both prevent reuse.
+        return
+    assert not parts

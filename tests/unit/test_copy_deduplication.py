@@ -6,11 +6,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from ch_backup.backup.copy_deduplication import _part_key
 from ch_backup.backup.layout import (
     get_data_part_file_names,
     get_data_part_relative_dirs,
 )
-from ch_backup.backup.metadata import BackupState, CopyScope, CopyScopeStatus
+from ch_backup.backup.metadata import (
+    BackupState,
+    CopyScope,
+    CopyScopeStatus,
+    PartMetadata,
+)
 from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.exceptions import ClickhouseBackupError
 from tests.unit.test_backup_copy import CopyTestContext, _backup, _part, _with_files
@@ -265,3 +271,55 @@ def test_incomplete_owner_requires_completed_files(
         "owner" if state != BackupState.DELETING and status == "completed" else None
     )
     assert ctx.target_layout.backups["new"].get_parts()[0].link == expected
+
+
+@pytest.mark.parametrize(
+    "change,equal",
+    [
+        ({"name": "all_1_1_0_7"}, True),
+        ({"files": ["b", "a"]}, True),
+        ({"link": "other", "link_part_name": "all_1_1_0_3"}, True),
+        ({"database": "other"}, False),
+        ({"table": "other"}, False),
+        ({"name": "all_1_2_0"}, False),
+        ({"name": "all_1_1_1"}, False),
+        ({"size": 101}, False),
+        ({"files": ["a", "b", "b"]}, False),
+    ],
+)
+def test_local_reuse_ignores_only_mutation_order_and_source_owner(change, equal):
+    """
+    The same local payload can have a different mutation suffix, file-list
+    order or source owner. The key permits those changes while separating
+    different addresses, ranges, sizes and file multiplicities.
+    """
+    fields: dict = dict(
+        database="db",
+        table="table",
+        name="all_1_1_0",
+        checksum="c",
+        size=100,
+        files=["a", "b"],
+        tarball=True,
+    )
+    assert (
+        _part_key(PartMetadata(**fields))
+        == _part_key(PartMetadata(**{**fields, **change}))
+    ) is equal
+
+
+@pytest.mark.parametrize(
+    "left,right,equal",
+    [(["a", "bc"], ["ab", "c"], False), (["a", "bc"], ["bc", "a"], True)],
+)
+def test_file_list_boundaries_do_not_alias(left, right, equal):
+    """
+    Concatenating filenames would confuse [a, bc] with [ab, c]. Preserve file
+    boundaries while allowing order changes; unparsable part names can match
+    only when their names are identical.
+    """
+    first = PartMetadata("db", "t", "broken", "c", 1, left, True)
+    second = PartMetadata("db", "t", "broken", "c", 1, right, True)
+    assert (_part_key(first) == _part_key(second)) is equal
+    second.name = "other"
+    assert _part_key(first) != _part_key(second)

@@ -55,7 +55,9 @@ class Backup:
         for db_obj in self._metadata["databases"].values():
             for table_obj in db_obj["tables"].values():
                 for part_obj in table_obj["parts"].values():
-                    if part_obj["link"]:
+                    if part_obj["link"] and normalize_backup_link(
+                        part_obj["link"]
+                    ) != self.meta.get("cloud_generation"):
                         count += 1
         return count
 
@@ -68,7 +70,9 @@ class Backup:
         for db_obj in self._metadata["databases"].values():
             for table_obj in db_obj["tables"].values():
                 for part_obj in table_obj["parts"].values():
-                    if not part_obj["link"]:
+                    if not part_obj["link"] or normalize_backup_link(
+                        part_obj["link"]
+                    ) == self.meta.get("cloud_generation"):
                         count += 1
                 count += sum(
                     len(parts) for parts in table_obj.get("detached_parts", {}).values()
