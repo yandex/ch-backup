@@ -1,4 +1,6 @@
 import copy
+import io
+import tarfile
 import threading
 from collections.abc import Callable, Iterator
 from typing import Any
@@ -7,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pypeln.thread import Worker
 
+from ch_backup.compression import get_compression
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.encryption import get_encryption
 from ch_backup.storage import StorageLoader
@@ -16,6 +19,10 @@ from ch_backup.storage.async_pipeline.pipelines import (
     run,
     run_and_collect_all,
     run_and_return_first,
+)
+from ch_backup.storage.async_pipeline.stages.filesystem.write_files_stage import (
+    UnpackTarballStage,
+    WriteFilesStage,
 )
 
 
@@ -204,3 +211,70 @@ def test_empty_pipeline_finishes() -> None:
     builder = PipelineBuilder(DEFAULT_CONFIG).build_iterable_stage([])
 
     assert not run_and_collect_all(builder.pipeline())
+
+
+def test_unpack_data_tarball_larger_than_buffer() -> None:
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["filesystem"].update(buffer_size=64 * 1024, chunk_size=16 * 1024)
+    files = [(f"part_{i}/column.bin", bytes([i % 256]) * 4096) for i in range(100)]
+    tar = io.BytesIO()
+    with tarfile.open(fileobj=tar, mode="w") as archive:
+        for name, data in files:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+        tarball = tar.getvalue()[: archive.offset]
+    compressor = get_compression(config["compression"]["type"])
+    compressed = compressor.compress(tarball) + compressor.flush_compress()
+    assert len(compressed) < config["filesystem"]["buffer_size"] < len(tarball)
+
+    builder = PipelineBuilder(config).build_iterable_stage([compressed])
+    builder.build_decompress_stage().build_unpack_data_tarball_stage()
+
+    assert run_and_collect_all(builder.pipeline()) == files
+
+
+@pytest.mark.parametrize("cut", [1, 511, 512, 562, 613, 1023])
+@pytest.mark.parametrize("disk", [False, True])
+def test_tar_rejects_truncated_header_payload_or_padding(tmp_path, cut, disk):
+    header = tarfile.TarInfo("data.bin")
+    header.size = 100
+    stream = header.tobuf(format=tarfile.GNU_FORMAT) + b"x" * 100 + b"\0" * 412
+    stage = (
+        WriteFilesStage({}, tmp_path, 4096) if disk else UnpackTarballStage({}, 4096)
+    )
+    stage(stream[:cut], 0)
+    with pytest.raises(ValueError, match="Truncated TAR"):
+        list(stage.on_done() or [])
+
+
+@pytest.mark.parametrize("name", ["data.bin", "длинное_имя/" * 20 + "file"])
+def test_tar_accepts_complete_files_without_end_blocks(tmp_path, name):
+    header = tarfile.TarInfo(name)
+    header.size = 100
+    stream = header.tobuf(format=tarfile.GNU_FORMAT) + b"x" * 100 + b"\0" * 412
+    stage = WriteFilesStage({}, tmp_path, 4096)
+    for pos in range(0, len(stream), 71):
+        stage(stream[pos : pos + 71], pos)
+    stage.on_done()
+    assert (tmp_path / name).read_bytes() == b"x" * 100
+
+
+def test_tar_accepts_legacy_final_file_without_padding(tmp_path):
+    # Before 3dd4904a, a 513-byte file with filesystem.chunk_size=513 was
+    # written as a header and a full read chunk, without the 511 padding bytes.
+    header = tarfile.TarInfo("checksums.txt")
+    header.size = 513
+    data = b"x" * header.size
+    stage = WriteFilesStage({}, tmp_path, 4096)
+    stage(header.tobuf() + data, 0)
+    stage.on_done()
+    assert (tmp_path / header.name).read_bytes() == data
+
+
+def test_tar_rejects_incomplete_long_name(tmp_path):
+    header = tarfile.TarInfo("long_name" * 30)
+    stage = WriteFilesStage({}, tmp_path, 4096)
+    stage(header.tobuf(format=tarfile.GNU_FORMAT)[:530], 0)
+    with pytest.raises(ValueError, match="Truncated TAR"):
+        stage.on_done()

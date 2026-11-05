@@ -211,10 +211,18 @@ def step_multipart_failed(context):
             )
             == 1
         ), report
-        for path in target.list_objects("ch_backup/multipart/copy_context/"):
-            assert context.multipart_key.encode() not in gzip.decompress(
-                target.download_data(path)
-            )
+        prefix = "ch_backup/multipart/copy_context/"
+        for path in target.list_objects(prefix):
+            # Confirmations are directly below the fingerprint; manifest, source
+            # metadata and failure lists also mention objects that were not copied.
+            if path[len(prefix) :].count("/") == 1:
+                assert context.multipart_key.encode() not in gzip.decompress(
+                    target.download_data(path)
+                )
+            elif path.endswith("/failed/files.jsonl.gz"):
+                assert context.multipart_key.encode() in gzip.decompress(
+                    target.download_data(path)
+                )
         if context.multipart_mode == "keep-going":
             # Fail-fast can also report interrupted jobs; keep-going must finish
             # independent objects without breaking the process pool.

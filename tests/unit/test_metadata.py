@@ -14,6 +14,8 @@ from ch_backup.backup.metadata import (
     BackupState,
     BackupStorageFormat,
     CloudStorageMetadata,
+    CopyScope,
+    CopyScopeStatus,
     DetachedPartMetadata,
     PartMetadata,
     normalize_backup_link,
@@ -834,6 +836,28 @@ class TestCopiedBackupMetadata:
         dump = backup.dump()
         assert "copied_from" not in dump["meta"]
         assert "source" not in dump["cloud_storage"]
+
+    @pytest.mark.parametrize("light", [False, True])
+    def test_copy_progress_round_trip(self, light: bool) -> None:
+        """Preserve the copy JSON format while ignoring unknown scopes and statuses."""
+        progress = {
+            "scopes": {"files": "completed", "cloud_storage": "pending"},
+            "updated_at": "2018-10-17 21:03:00 +0000",
+        }
+        backup = BackupMetadata.load(self._metadata(meta={"copy": progress}))
+        assert backup.copy_scopes == {
+            CopyScope.FILES: CopyScopeStatus.COMPLETED,
+            CopyScope.CLOUD_STORAGE: CopyScopeStatus.PENDING,
+        }
+        assert backup.copy_updated_at is not None
+        assert backup.dump(light=light)["meta"]["copy"] == progress
+        progress["scopes"] = {
+            "files": "completed",
+            "cloud_storage": "future",
+            "other": "completed",
+        }
+        backup = BackupMetadata.load(self._metadata(meta={"copy": progress}))
+        assert backup.copy_scopes == {CopyScope.FILES: CopyScopeStatus.COMPLETED}
 
     def test_copy_fields_round_trip(self) -> None:
         copied_from = {

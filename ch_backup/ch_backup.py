@@ -28,6 +28,8 @@ from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
+    CopyScope,
+    CopyScopeStatus,
     TableMetadata,
     sanitize_backup_name,
 )
@@ -40,6 +42,7 @@ from ch_backup.clickhouse.metadata_cleaner import MetadataCleaner, select_replic
 from ch_backup.clickhouse.models import Database, Table
 from ch_backup.clickhouse.part_checksums import CLICKHOUSE_BINARY
 from ch_backup.config import Config, as_datetime
+from ch_backup.encryption import validate_cloud_storage_data_encryption_config
 from ch_backup.exceptions import (
     BackupNotFound,
     ClickhouseBackupError,
@@ -314,7 +317,7 @@ class ClickhouseBackup:
             " them by data_skipped_reason and skipped_parts."
         )
 
-    # pylint: disable=too-many-arguments,duplicate-code,too-many-positional-arguments,too-many-branches,too-many-locals
+    # pylint: disable=too-many-arguments,duplicate-code,too-many-positional-arguments,too-many-branches,too-many-locals,too-many-statements
     def restore(
         self,
         sources: BackupSources,
@@ -340,6 +343,15 @@ class ClickhouseBackup:
         """
         logging.info(f"Restore sources: {sources}")
         self._context.backup_meta = self._get_backup(backup_name)
+        if (
+            sources.data
+            and not skip_cloud_storage
+            and self._context.backup_meta.cloud_storage.data_encryption is not None
+        ):
+            validate_cloud_storage_data_encryption_config(
+                self._config,
+                self._context.backup_meta.cloud_storage.data_encryption,
+            )
         data_skipped_tables, incomplete_tables = (
             self._context.backup_meta.get_skipped_data_tables()
         )
@@ -562,6 +574,7 @@ class ClickhouseBackup:
         deleting_backups = []
         retained_backups = []
         unreadable: dict[str, str] = {}
+        copying_since = self._copying_since()
         with self._context.locker(operation="DELETE"):
             # Use light metadata in backups iteration to avoid high memory usage.
             for i, backup in enumerate(self.list(unreadable=unreadable)):
@@ -570,7 +583,13 @@ class ClickhouseBackup:
                     found = True
                     continue
 
-                if purge_partial and backup.state != BackupState.CREATED and i != 0:
+                if (
+                    purge_partial
+                    and backup.state != BackupState.CREATED
+                    and not _is_partial_copy(backup)
+                    and i != 0
+                    and not _is_being_copied(backup, copying_since)
+                ):
                     deleting_backups.append(backup)
                 else:
                     retained_backups.append(backup)
@@ -619,6 +638,7 @@ class ClickhouseBackup:
         """
         Copy backups to the storage specified in the target config.
         If backup names are not specified, all backups in the state "created" are copied.
+        Copy scopes are taken from the target configuration, all of them by default.
 
         Return names of copied backups and names of backups skipped as already copied.
         The optional report also receives partial results when copying raises.
@@ -654,9 +674,9 @@ class ClickhouseBackup:
         """
         Purge backups.
 
-        When every retained backup that is created holds incomplete table data,
-        the newest complete backup is kept anyway: it may hold the last copy of
-        the data the retained backups lack.
+        If a created backup or partial copy is retained but none is complete,
+        keep the newest complete backup: it may hold the last copy of data
+        the retained backups lack.
         """
         retain_time = self._context.config["retain_time"]
         retain_count = self._context.config["retain_count"]
@@ -673,18 +693,19 @@ class ClickhouseBackup:
 
         retained_backups: list[BackupMetadata] = []
         deleting_backups: list[BackupMetadata] = []
+        copying_since = self._copying_since()
 
         with self._context.locker(operation="PURGE"):
             # Use light metadata in backups iteration to avoid high memory usage.
             for backup in self._context.backup_layout.get_backups(use_light_meta=True):
-                if retain_count > 0:
+                if retain_count is not None and retain_count > 0:
                     logging.info(
                         "Preserving backup per retain count policy: {}, state {}",
                         backup.name,
                         backup.state,
                     )
                     retained_backups.append(backup)
-                    if backup.state == BackupState.CREATED:
+                    if backup.state == BackupState.CREATED or _is_partial_copy(backup):
                         retain_count -= 1
                     continue
 
@@ -697,16 +718,26 @@ class ClickhouseBackup:
                     retained_backups.append(backup)
                     continue
 
+                if _is_being_copied(backup, copying_since):
+                    logging.info(
+                        "Preserving copy of backup that is being copied: {}, state {}",
+                        backup.name,
+                        backup.state,
+                    )
+                    retained_backups.append(backup)
+                    continue
+
                 deleting_backups.append(backup)
 
             if any(
-                backup.state == BackupState.CREATED for backup in retained_backups
+                backup.state == BackupState.CREATED or _is_partial_copy(backup)
+                for backup in retained_backups
             ) and not any(map(_is_complete, retained_backups)):
                 complete_backup = next(filter(_is_complete, deleting_backups), None)
                 if complete_backup:
                     logging.info(
                         "Preserving the newest complete backup, the retained ones"
-                        " hold incomplete table data: {}",
+                        " hold incomplete data: {}",
                         complete_backup.name,
                     )
                     deleting_backups.remove(complete_backup)
@@ -760,6 +791,11 @@ class ClickhouseBackup:
         self._context.backup_layout.wait()
 
         return True
+
+    def _copying_since(self) -> datetime | None:
+        """Return the time after which an incomplete copy saved by the copy command is kept."""
+        retain_time = self._context.config.get("retain_incomplete_copy_time")
+        return now() - timedelta(**retain_time) if retain_time else None
 
     def _delete(
         self, backup_light_meta: BackupMetadata, dedup_references: DedupReferences
@@ -1041,7 +1077,7 @@ class ClickhouseBackup:
                 )
 
             if sources.data and self._context.restore_context.has_failed_parts():
-                msg = "Some parts are failed to attach"
+                msg = "Some parts failed to restore"
                 logging.warning(msg)
 
                 if self._context.config["restore_fail_on_attach_error"]:
@@ -1138,3 +1174,25 @@ def _zookeeper_roots_differ(ch_config: dict, zk_config: dict) -> bool:
     """
     ch_root = (ch_config.get("zookeeper") or {}).get("root") or ""
     return ch_root.rstrip("/") != (zk_config.get("root_path") or "").rstrip("/")
+
+
+def _is_partial_copy(backup: BackupMetadata) -> bool:
+    """Check for copied files with cloud storage still pending or failed."""
+    return (
+        backup.state in (BackupState.CREATING, BackupState.FAILED)
+        and backup.copy_scopes.get(CopyScope.FILES) == CopyScopeStatus.COMPLETED
+        and backup.copy_scopes.get(CopyScope.CLOUD_STORAGE)
+        in (CopyScopeStatus.PENDING, CopyScopeStatus.FAILED)
+    )
+
+
+def _is_being_copied(backup: BackupMetadata, since: datetime | None) -> bool:
+    """Check whether an incomplete copy needs temporary retention."""
+    if (
+        since is None
+        or backup.state not in (BackupState.CREATING, BackupState.FAILED)
+        or _is_partial_copy(backup)
+    ):
+        return False
+    updated_at = backup.copy_updated_at
+    return updated_at is not None and updated_at >= since

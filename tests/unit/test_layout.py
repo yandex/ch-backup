@@ -4,16 +4,26 @@ import copy
 import os
 from collections import Counter
 from datetime import datetime
+from threading import Event
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from ch_backup.backup.layout import BackupLayout
-from ch_backup.backup.metadata import BackupMetadata, PartMetadata
+from ch_backup.backup.metadata import (
+    BackupMetadata,
+    BackupState,
+    CopyScope,
+    CopyScopeStatus,
+    PartMetadata,
+)
 from ch_backup.backup.metadata.table_metadata import TableMetadata
+from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.clickhouse.models import Disk, Table
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import StorageError
+from ch_backup.storage.async_pipeline import pipeline_executor
+from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.storage.engine.s3 import S3RetryingError
 
 
@@ -25,6 +35,89 @@ def make_layout() -> BackupLayout:
         layout = BackupLayout(config)  # type: ignore[arg-type]
     setattr(layout, "_storage_loader", MagicMock())
     return layout
+
+
+@pytest.mark.parametrize("filename", ["../outside/file", "/outside/file", "link/file"])
+def test_legacy_part_rejects_unsafe_manifest_before_download(tmp_path, filename):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "link").symlink_to(tmp_path / "outside", target_is_directory=True)
+    if filename.startswith("/"):
+        filename = str(tmp_path / filename.lstrip("/"))
+    layout = make_layout()
+    part = PartMetadata("db", "t", "all_1_1_0", "", 1, ["p.proj/a", filename], False)
+    with (
+        patch.object(layout, "_storage_loader") as storage,
+        pytest.raises(StorageError, match="Invalid part filename"),
+    ):
+        layout.download_data_part(MagicMock(), part, str(staging), MagicMock())
+    storage.download_file.assert_not_called()
+    assert not (staging / "p.proj").exists()
+    assert not (tmp_path / "outside").exists()
+
+
+@pytest.mark.parametrize("failure", [None, "first", "both", "submit"])
+# pylint: disable=protected-access
+def test_legacy_part_completes_only_after_all_files(tmp_path, monkeypatch, failure):
+    # Current integration backups use TAR; legacy parts have separate futures.
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["backup"]["path_root"] = "ch_backup"
+    config["multiprocessing"]["workers"] = 0
+    layout = BackupLayout(config)  # type: ignore[arg-type]
+    layout._storage_loader._engine = MagicMock()
+    backup = BackupMetadata("backup", "2", "23.3", "%Y-%m-%d")
+    part = PartMetadata("db", "tbl", "all_1_1_0", "", 1, ["a", "b"], False)
+    first_collected = Event()
+    completed: list[PartMetadata] = []
+    errors: list[str] = []
+
+    def on_error(failed_part, error):
+        assert failed_part is part
+        errors.append(str(error))
+        first_collected.set()
+
+    def download(_config, remote_path, local_path, *_args):
+        if remote_path.endswith("/b"):
+            assert first_collected.wait(10), "first file was not collected"
+            if failure == "both":
+                raise OSError("later error")
+        elif failure in ("first", "both"):
+            raise OSError("first error")
+        with open(local_path, "w", encoding="utf-8") as stream:
+            stream.write(remote_path[-1])
+
+    def submit_file(job_id, pipeline, *args, callback, **kwargs):
+        def done():
+            callback()
+            if str(tmp_path / "a") in job_id:
+                assert not completed, "part completed before its last file"
+                first_collected.set()
+
+        if failure == "submit" and str(tmp_path / "b") in job_id:
+            raise OSError("submission error")
+        return submit(job_id, pipeline, *args, callback=done, **kwargs)
+
+    monkeypatch.setattr(pipeline_executor, "download_file_pipeline", download)
+    with ThreadExecPool(2) as pool:
+        submit = pool.submit
+        monkeypatch.setattr(pool, "submit", submit_file)
+        monkeypatch.setattr(layout._storage_loader._ploader, "_exec_pool", pool)
+        try:
+            layout.download_data_part(
+                backup, part, str(tmp_path), completed.append, on_error
+            )
+        except OSError as error:
+            assert failure == "submit" and str(error) == "submission error"
+        layout.wait(keep_going=True)
+
+    assert completed == ([] if failure else [part])
+    assert errors == (
+        ["submission error" if failure == "submit" else "first error"]
+        if failure
+        else []
+    )
+    if not failure:
+        assert [(tmp_path / name).read_text() for name in part.files] == part.files
 
 
 @pytest.mark.parametrize("name", ["../handler/日本語", "foo%2Fbar"])
@@ -109,6 +202,38 @@ def test_list_failure_is_not_treated_as_unreadable_metadata():
     with pytest.raises(S3RetryingError, match="LIST failed"):
         layout.get_backups(True, unreadable=unreadable)
     assert not unreadable
+
+
+@pytest.mark.parametrize("full_metadata", [None, "invalid metadata"])
+def test_list_keeps_copies_with_unreadable_full_metadata(full_metadata):
+    """Listing copies needs only light metadata, even when a full file is corrupt."""
+    layout = make_layout()
+    storage = MagicMock()
+    setattr(layout, "_storage_loader", storage)
+    copied = BackupMetadata("base", "2", "26.6", "%Y-%m-%d %H:%M:%S %z")
+    copied.state = BackupState.CREATED
+    copied.copied_from = {"bucket": "source"}
+    copied.copy_scopes = {CopyScope.FILES: CopyScopeStatus.COMPLETED}
+    copied.copy_updated_at = datetime.fromisoformat("2026-10-30T10:00:00+03:00")
+    objects = {"ch_backup/base/backup_light_struct.json": copied.dump_json(light=True)}
+    if full_metadata is not None:
+        objects["ch_backup/base/backup_struct.json"] = full_metadata
+    storage.path_exists.side_effect = objects.__contains__
+    storage.list_dir.return_value = ["base"]
+    storage.download_data.side_effect = lambda path, **_: objects[path]
+    backup = ClickhouseBackup.__new__(ClickhouseBackup)
+    backup.__dict__["_context"] = MagicMock(backup_layout=layout)
+    unreadable: dict[str, str] = {}
+
+    listed = backup.list(unreadable=unreadable)
+
+    assert not unreadable
+    assert [item.name for item in listed] == ["base"]
+    assert listed[0].copy_scopes == copied.copy_scopes
+    assert listed[0].copy_updated_at == copied.copy_updated_at
+    storage.download_data.assert_called_once_with(
+        "ch_backup/base/backup_light_struct.json", encoding=None
+    )
 
 
 class TestCloudStorageMetadataRemotePaths:

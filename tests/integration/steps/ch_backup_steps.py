@@ -40,6 +40,7 @@ def step_create_backup(context, node):
     name_regexp = name_regexp.replace("{timestamp}", "[0-9]{8}T[0-9]{6}")
     name_regexp = name_regexp.replace("{uuid}", "[0-9a-f-]{36}")
     assert_that(name, matches_regexp(name_regexp))
+    context.last_created_backup_name = name
 
 
 @when("we try to create {node:w} clickhouse backup")
@@ -116,9 +117,30 @@ def step_set_backup_file(context, path, node, backup_id):
     ch_backup.set_backup_file_data(backup_id, path, data=context.text.strip().encode())
 
 
+@when('we save and truncate file "{path}" in {node:w} backup #{backup_id:d}')
+def step_save_truncated_backup_file(context, path, node, backup_id):
+    manager = BackupManager(context, node)
+    name = manager.normalize_id(backup_id)
+    data = manager.get_backup_file_data(name, path)
+    assert len(data) > 1024
+    context.saved_backup_file = (node, name, path, data)
+    manager.set_backup_file_data(name, path, data[:-200])
+
+
+@when("we restore the saved backup file")
+def step_restore_backup_file(context):
+    node, name, path, data = context.saved_backup_file
+    manager = BackupManager(context, node)
+    manager.set_backup_file_data(name, path, data)
+    assert manager.get_backup_file_data(name, path) == data
+
+
 @when("we restore clickhouse backup #{backup_id:d} to {node:w}")
 @when('we restore clickhouse backup "{backup_id}" to {node:w}')
-def step_restore_backup(context, backup_id, node):
+@when("we restore the last created clickhouse backup to {node:w}")
+def step_restore_backup(context, node, backup_id=None):
+    if backup_id is None:
+        backup_id = context.last_created_backup_name
     options = get_step_data(context)
     result = BackupManager(context, node).restore(backup_id, **options)
     assert_that(result, matches_regexp("^$"))
@@ -204,10 +226,15 @@ def step_no_backups(context, node):
     )
 
 
+@then("we got the following readable backups on {node:w}")
+def step_check_readable_backups_conditions(context, node):
+    step_check_backups_conditions(context, node, allow_unreadable=True)
+
+
 @then("we got the following backups on {node:w}")
-def step_check_backups_conditions(context, node):
+def step_check_backups_conditions(context, node, allow_unreadable=False):
     ch_backup = BackupManager(context, node)
-    backup_ids = ch_backup.get_backup_ids()
+    backup_ids = ch_backup.get_backup_ids(allow_unreadable=allow_unreadable)
 
     backup_count = len(backup_ids)
     expected_backup_count = len(context.table.rows)
@@ -339,3 +366,16 @@ def step_get_ch_backup_version(context, node):
         equal_to(context.version),
         f"Ch-backup version is {BackupManager(context, node).version()}, expected {context.version}",
     )
+
+
+@then('part "{part}" of {database:w}.{table:w} has restore state "{state}" on {node:w}')
+def step_part_restore_state(context, part, database, table, state, node):
+    # pylint: disable=too-many-positional-arguments
+    result = get_container(context, node).exec_run(
+        ["cat", "/tmp/ch_backup_restore_state.json"], user="root"
+    )
+    assert result.exit_code == 0, result.output
+    saved = json.loads(result.output)
+    assert saved["databases"][database][table][part] == state, saved
+    failures = saved["failed"].get(database, {}).get(table, {}).get("failed_parts", {})
+    assert (part in failures) == (state == "invalid"), failures

@@ -10,6 +10,8 @@ from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
+    CopyScope,
+    CopyScopeStatus,
     PartMetadata,
     split_part_name,
 )
@@ -101,7 +103,14 @@ class CopyDeduplication:
         return (
             backup.start_time is not None
             and self.cutoff <= backup.start_time <= self.command_start
-            and backup.state in (BackupState.CREATED, BackupState.PARTIALLY_DELETED)
+            and (
+                backup.state in (BackupState.CREATED, BackupState.PARTIALLY_DELETED)
+                or (
+                    backup.state in (BackupState.CREATING, BackupState.FAILED)
+                    and backup.copy_scopes.get(CopyScope.FILES)
+                    == CopyScopeStatus.COMPLETED
+                )
+            )
             and not backup.schema_only
         )
 
@@ -131,7 +140,7 @@ class CopyDeduplication:
             del backup, parts
 
     def add_backup(self, backup: BackupMetadata, *, published: bool = False) -> None:
-        """New owners are trusted only after their data and CREATED metadata are published."""
+        """Add owners whose backup or files scope has been published successfully."""
         if not self.eligible(backup):
             return
         self._index_parts(backup, _local_parts(backup), published=published)
@@ -139,6 +148,8 @@ class CopyDeduplication:
     def _index_parts(
         self, backup: BackupMetadata, tables: PartsByTable, *, published: bool
     ) -> None:
+        """Check incomplete owners' files and track every owner that can be restarted."""
+        published = published and backup.state == BackupState.CREATED
         for (database, table), parts in tables.items():
             # List once per table, release its file inventory before moving to the next.
             files = (
@@ -152,9 +163,7 @@ class CopyDeduplication:
                 ):
                     continue
                 candidates = self._parts[key]
-                # Only PARTIALLY_DELETED owners can be restarted in this command;
-                # existing CREATED targets and newly published owners are skipped.
-                if backup.state == BackupState.PARTIALLY_DELETED:
+                if backup.state != BackupState.CREATED:
                     self._backup_keys[backup.name].add(key)
                 candidates.append(
                     _StoredPart(backup.name, backup.start_time, part.name)

@@ -2,11 +2,13 @@
 Cli unit tests.
 """
 
+# pylint: disable=too-many-lines
+
 import json
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from click import BadParameter, Command, Context, Group
@@ -20,7 +22,7 @@ from ch_backup.backup.sources import BackupSources
 from ch_backup.clickhouse.models import Database
 from ch_backup.config import DEFAULT_CONFIG, Config
 from ch_backup.exceptions import ConfigurationError, StorageError, TerminatingSignal
-from tests.unit.test_backup_copy import CopyTestContext, _backup
+from tests.unit.test_backup_copy import CopyTestContext, _backup, _part
 from tests.unit.utils import parametrize
 
 
@@ -40,7 +42,7 @@ def test_copy_command_writes_report_on_success_error_and_signal(
     backup = copy_backup
     report_path = tmp_path / "report.json"
 
-    def copy(_target, _names, *, keep_going, report, command_start):
+    def copy(_target, _names, *, keep_going, report, command_start, **_):
         assert keep_going
         assert command_start.tzinfo is not None
         report.backups.append(
@@ -136,6 +138,218 @@ def test_copy_command_passes_resume(
     assert target_config["copy"]["resume"] is resume
 
 
+def test_copy_command_masks_config_parameter_secrets_in_log(
+    copy_backup: MagicMock,
+) -> None:
+    backup = copy_backup
+    group = Group()
+    group.add_command(cli.copy_command)
+    secret = "c" * 32
+
+    with patch("ch_backup.cli.logging.info") as log_info:
+        result = CliRunner().invoke(
+            group,
+            [
+                "copy",
+                "--all",
+                "--target-config-parameter",
+                "cloud_storage.data_encryption.key",
+                json.dumps(secret),
+                "--target-config-parameter",
+                "storage.credentials",
+                json.dumps(
+                    {
+                        "access_key_id": "visible",
+                        "secret_access_key": "also-secret",
+                    }
+                ),
+            ],
+            obj={"backup": backup},
+        )
+
+    assert result.exit_code == 0
+    logged = str(log_info.mock_calls)
+    assert secret not in logged
+    assert "also-secret" not in logged
+    assert "visible" in logged
+    assert "[HIDDEN]" in logged
+
+
+@pytest.mark.parametrize(
+    "args,expected", [([], "full"), (["--no-only-with-data"], "schema")]
+)
+def test_copy_last_skips_empty_backups(
+    args: list[str], expected: str, copy_backup: MagicMock
+) -> None:
+    """LAST is resolved to the latest backup with data parts unless told otherwise."""
+    schema_backup = _backup("schema")
+    schema_backup.schema_only = True
+    copy_backup.list.return_value = [
+        schema_backup,
+        _backup("no-parts"),
+        _backup("full", parts={"all_1_1_0": _part()}),
+    ]
+
+    result = CliRunner().invoke(
+        Group(commands=[cli.copy_command]),
+        ["copy", "LAST", *args],
+        obj={"backup": copy_backup},
+    )
+
+    assert result.exit_code == 0, result.output
+    assert copy_backup.copy.call_args.args[1] == [expected]
+
+
+def test_copy_last_fails_with_only_empty_backups(copy_backup: MagicMock) -> None:
+    """LAST is not resolved when no backup has data parts."""
+    schema_backup = _backup("schema")
+    schema_backup.schema_only = True
+    copy_backup.list.return_value = [schema_backup, _backup("no-parts")]
+
+    result = CliRunner().invoke(
+        Group(commands=[cli.copy_command]),
+        ["copy", "LAST"],
+        obj={"backup": copy_backup},
+    )
+
+    assert result.exit_code == 2
+    assert "There are no backups with data." in result.output
+    copy_backup.copy.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "args,scopes",
+    [
+        ([], ()),
+        (["--scope", "files"], ("files",)),
+        (
+            ["--scope", "cloud_storage", "--scope", "files"],
+            ("cloud_storage", "files"),
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "configured", [None, ["files"], ["cloud_storage"], ["files", "files"]]
+)
+def test_copy_command_passes_scopes(
+    args: list[str], scopes: tuple, configured: list[str] | None, copy_backup: MagicMock
+) -> None:
+    """CLI scopes override the configured scopes, including the default."""
+    backup = copy_backup
+    if configured is not None:
+        backup.config["copy"]["scopes"] = configured
+
+    def copy(_target, _names, *, report, **_):
+        report.backups.append(
+            BackupCopyResult(
+                "b1",
+                status="partial",
+                backup_state="creating",
+                scopes={"files": "completed", "cloud_storage": "pending"},
+            )
+        )
+        return ["b1"], []
+
+    backup.copy.side_effect = copy
+    group = Group()
+    group.add_command(cli.copy_command)
+
+    result = CliRunner().invoke(group, ["copy", "--all", *args], obj={"backup": backup})
+
+    assert result.exit_code == 0
+    assert backup.copy.call_args.args[0]["copy"]["scopes"] == list(
+        scopes or backup.config["copy"]["scopes"]
+    )
+    assert "b1: partial, the copy is creating in target storage" in result.output
+    assert "scopes: files completed, cloud_storage pending" in result.output
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_copy_command_takes_last_copy_from_target_without_files_scope(
+    copy_backup: MagicMock,
+    configured: bool,
+) -> None:
+    """Configured cloud-only copying resolves LAST in the target like the CLI flag."""
+    backup = copy_backup
+    if configured:
+        backup.config["copy"]["scopes"] = ["cloud_storage"]
+    backup.copy.return_value = (["b1"], [])
+    group = Group()
+    group.add_command(cli.copy_command)
+
+    result = CliRunner().invoke(
+        group,
+        ["copy", "LAST", *([] if configured else ["--scope", "cloud_storage"])],
+        obj={"backup": backup},
+    )
+
+    assert result.exit_code == 0
+    backup.list.assert_not_called()
+    assert backup.copy.call_args.args[1] == ["LAST"]
+
+
+@pytest.mark.parametrize("level", range(4))
+def test_copy_scopes_config_precedence(copy_backup, tmp_path, level):
+    """Resolve scopes from main config, target config, overrides, then CLI flags."""
+    main = tmp_path / "main.yaml"
+    target = tmp_path / "target.yaml"
+    main.write_text("copy:\n  scopes: [cloud_storage]\n")
+    target.write_text("copy:\n  scopes: [files]\n")
+    copy_backup.config = Config(str(main))
+    copy_backup.list.return_value = [_backup("latest", parts={"p": _part()})]
+    args = ["copy", "LAST"]
+    if level >= 1:
+        args += ["--target-config", str(target)]
+    if level >= 2:
+        args += ["--target-config-parameter", "copy.scopes", '["cloud_storage"]']
+    if level >= 3:
+        args += ["--scope", "files"]
+
+    result = _invoke(cli.copy_command, args, copy_backup)
+
+    assert result.exit_code == 0, result.output
+    expected = "files" if level in (1, 3) else "cloud_storage"
+    config, names = copy_backup.copy.call_args.args
+    assert config["copy"]["scopes"] == [expected]
+    assert names == (["latest"] if expected == "files" else ["LAST"])
+    assert copy_backup.list.called == (expected == "files")
+    assert copy_backup.config["copy"]["scopes"] == ["cloud_storage"]
+
+
+@pytest.mark.parametrize(
+    "value", [None, [], {}, "files", ["data"], ["files", "data"], [None], [1], [[]]]
+)
+@pytest.mark.parametrize("override", [False, True])
+def test_copy_rejects_invalid_configured_scopes(copy_backup, value, override):
+    """Reject invalid effective scopes before storage access; CLI may override them."""
+    copy_backup.config["copy"]["scopes"] = value
+    args = ["copy", "LAST", *(["--scope", "cloud_storage"] if override else [])]
+
+    result = _invoke(cli.copy_command, args, copy_backup)
+
+    copy_backup.list.assert_not_called()
+    if override:
+        assert result.exit_code == 0, result.output
+        assert copy_backup.copy.call_args.args[0]["copy"]["scopes"] == ["cloud_storage"]
+    else:
+        assert isinstance(result.exception, ConfigurationError)
+        assert "copy.scopes" in str(result.exception)
+        copy_backup.copy.assert_not_called()
+
+
+def test_copy_command_rejects_unknown_scope() -> None:
+    backup = MagicMock()
+    group = Group()
+    group.add_command(cli.copy_command)
+
+    result = CliRunner().invoke(
+        group, ["copy", "--all", "--scope", "data"], obj={"backup": backup}
+    )
+
+    assert result.exit_code == 2
+    backup.copy.assert_not_called()
+
+
 @pytest.mark.parametrize("state", [None, BackupState.FAILED])
 @pytest.mark.parametrize("keep_going", [False, True])
 def test_copy_named_validation_failure_has_report_row(
@@ -144,7 +358,7 @@ def test_copy_named_validation_failure_has_report_row(
     ctx = CopyTestContext([_backup("requested", state=state)] if state else [])
     backup = copy_backup
 
-    def copy(_target, names, *, keep_going, report, command_start):
+    def copy(_target, names, *, keep_going, report, command_start, **_):
         assert command_start.tzinfo is not None
         return ctx.copy(names, keep_going=keep_going, report=report)
 
@@ -173,7 +387,7 @@ def test_copy_window_cli_override_before_last_lookup(copy_backup, days, monkeypa
 
     def list_backups(*_args, **_kwargs):
         clock[0] += timedelta(seconds=30)
-        return [_backup("selected")]
+        return [_backup("selected", parts={"all_1_1_0": _part()})]
 
     copy_backup.config["copy"]["deduplication_age_limit"] = {"days": 7}
     copy_backup.list.side_effect = list_backups
@@ -510,6 +724,7 @@ def test_list_command_with_unreadable_metadata(format_, flags):
     if format_ == "json":
         rows = json.loads(result.stdout)
         assert [row["name"] for row in rows] == ["good", "broken"]
+        assert all(row["copy"] is None for row in rows)
         assert rows[0]["metadata_error"] is None
         assert rows[1]["state"] == "unknown"
         assert rows[1]["metadata_error"] == "S3RetryingError: InternalError"
@@ -523,6 +738,70 @@ def test_list_command_with_unreadable_metadata(format_, flags):
             value in result.stdout
             for value in ("good", "broken", "unknown", "InternalError")
         )
+        lines = result.stdout.splitlines()
+        start, end = lines[0].index("copy"), lines[0].index("metadata_error")
+        assert all(not line[start:end].strip() for line in lines[2:])
+
+
+@pytest.mark.parametrize("format_", ["json", "table"])
+@pytest.mark.parametrize("with_updated_at", [False, True])
+@pytest.mark.parametrize(
+    "state,status",
+    [("creating", "pending"), ("created", "completed"), ("failed", "failed")],
+)
+def test_list_command_reports_copy(format_, with_updated_at, state, status):
+    """Show saved copy scopes and timestamp without changing the backup state."""
+    metadata = BackupMetadata("copied", "2", "26.6", "%Y-%m-%d %H:%M:%S.%f %z").dump(
+        light=True
+    )
+    copy: dict = {"scopes": {"files": "completed", "cloud_storage": status}}
+    updated_at = "2026-10-30 10:00:00.123456 +0300"
+    if with_updated_at:
+        copy["updated_at"] = updated_at
+    metadata["meta"].update(state=state, copy=copy)
+    backup = MagicMock()
+
+    def list_backups(_state, *, unreadable):
+        """Return a copy and a regular backup alongside unreadable metadata."""
+        unreadable["broken"] = "StorageError: unreadable metadata"
+        return [
+            BackupMetadata.load(metadata),
+            BackupMetadata("regular", "2", "26.6", "%Y-%m-%d"),
+        ]
+
+    backup.list.side_effect = list_backups
+
+    result = _invoke(cli.list_command, ["list", "-av", "--format", format_], backup)
+
+    assert result.exit_code == 0, result.output
+    if format_ == "json":
+        rows = json.loads(result.stdout)
+        assert [row["name"] for row in rows] == ["copied", "regular", "broken"]
+        assert rows[0]["state"] == state
+        assert [row["copy"] for row in rows] == [copy, None, None]
+    else:
+        lines = result.stdout.splitlines()
+        assert lines[2].split()[1] == state
+        start, end = lines[0].index("copy"), lines[0].index("metadata_error")
+        cell = "\n".join(line[start:end].rstrip() for line in lines[2:])
+        assert cell == (
+            f"files: completed\ncloud_storage: {status}"
+            + (f"\n\nupdated_at: {updated_at}" if with_updated_at else "")
+            + "\n\n"
+        )
+
+
+def test_list_command_without_verbose():
+    """Keep the plain list limited to backup names even when copy metadata exists."""
+    copied = BackupMetadata("copied", "2", "26.6", "%Y-%m-%d")
+    copied.copy_updated_at = datetime(2026, 10, 30, tzinfo=timezone.utc)
+    backup = MagicMock()
+    backup.list.return_value = [copied]
+
+    result = _invoke(cli.list_command, ["list", "-a"], backup)
+
+    assert result.exit_code == 0
+    assert result.stdout == "copied\n"
 
 
 @pytest.mark.parametrize("format_", ["json", "table"])
@@ -717,3 +996,40 @@ def test_http_handlers_from_config() -> None:
     assert backup_mock.backup.call_args.args[0] == BackupSources.for_backup(
         http_handlers=True
     )
+
+
+@pytest.mark.parametrize("configured", [False, True])
+@pytest.mark.parametrize("override", [None, False, True])
+def test_copy_only_with_data_config_and_cli(copy_backup, configured, override):
+    """CLI overrides the configured filter for both LAST and --all."""
+    copy_backup.config["copy"]["only_with_data"] = configured
+    copy_backup.list.return_value = [
+        _backup("empty"),
+        _backup("data", parts={"all_1_1_0": _part()}),
+    ]
+    args = (
+        []
+        if override is None
+        else ["--only-with-data" if override else "--no-only-with-data"]
+    )
+    expected = configured if override is None else override
+    for selection in ["LAST", "--all"]:
+        result = _invoke(cli.copy_command, ["copy", selection, *args], copy_backup)
+        assert result.exit_code == 0, result.output
+        config, names = copy_backup.copy.call_args.args
+        assert config["copy"]["only_with_data"] is expected
+        assert names == (
+            None if selection == "--all" else ["data" if expected else "empty"]
+        )
+
+
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, None, [], {}])
+@pytest.mark.parametrize("selection", ["LAST", "--all"])
+def test_copy_rejects_non_boolean_only_with_data(copy_backup, value, selection):
+    """Reject invalid filter settings before listing or copying backups."""
+    copy_backup.config["copy"]["only_with_data"] = value
+    result = _invoke(cli.copy_command, ["copy", selection], copy_backup)
+    assert isinstance(result.exception, ConfigurationError)
+    assert str(result.exception) == "copy.only_with_data must be a boolean"
+    copy_backup.list.assert_not_called()
+    copy_backup.copy.assert_not_called()

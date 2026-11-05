@@ -347,13 +347,24 @@ class BackupManager:
             self._config_path,
         )
 
-    def get_backup_ids(self, list_all: bool = True) -> Sequence[str]:
+    def get_backup_ids(
+        self, list_all: bool = True, *, allow_unreadable: bool = False
+    ) -> Sequence[str]:
         """
         Get list of existing backup entries / identifiers.
         """
-        cmd = "list" if not list_all else "list -a"
+        # A partial listing must not silently change the meaning of backup #N.
+        cmd = "list -v --format=json"
+        if list_all:
+            cmd += " -a"
+        if not allow_unreadable:
+            cmd += " --include-unreadable"
         output = self._exec(cmd)
-        return list(filter(None, output.split("\n")))
+        return [
+            backup["name"]
+            for backup in json.loads(output)
+            if backup.get("metadata_error") is None
+        ]
 
     def get_backup(self, backup_id: BackupId) -> Backup:
         """
@@ -508,6 +519,13 @@ class BackupManager:
             os.path.join(backup.get_backup_path(self._path_root), path)
         )
 
+    def get_backup_file_data(self, backup_id: BackupId, path: str) -> bytes:
+        """Read a backup object for reversible fault injection."""
+        backup = self.get_backup(backup_id)
+        return self._s3_client.download_data(
+            os.path.join(backup.get_backup_path(self._path_root), path)
+        )
+
     def set_backup_file_data(self, backup_id: BackupId, path: str, data: bytes) -> None:
         """
         Set particular file data in backup (useful for fault injection).
@@ -611,7 +629,12 @@ class BackupManager:
 
     def normalize_id(self, backup_id: BackupId) -> str:
         if isinstance(backup_id, int):
-            return self.get_backup_ids()[backup_id]
+            backup_ids = self.get_backup_ids()
+            assert -len(backup_ids) <= backup_id < len(backup_ids), (
+                f"Backup #{backup_id} is unavailable on {self._container.name}: "
+                f"found {len(backup_ids)} backups: {backup_ids}"
+            )
+            return backup_ids[backup_id]
         return backup_id
 
 

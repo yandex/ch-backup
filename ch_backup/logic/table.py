@@ -18,9 +18,9 @@ from typing import Iterable, Sequence
 from uuid import uuid4
 
 from ch_backup import logging
-from ch_backup.backup.deduplication import deduplicate_parts
+from ch_backup.backup.deduplication import StoredFiles, deduplicate_parts
 from ch_backup.backup.metadata import DetachedPartMetadata, PartMetadata, TableMetadata
-from ch_backup.backup.metadata.table_metadata import DataSkippedReason
+from ch_backup.backup.metadata.table_metadata import DataSkippedReason, split_part_name
 from ch_backup.backup.restore_context import PartState
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.client import ClickhouseError
@@ -35,6 +35,7 @@ from ch_backup.clickhouse.schema import (
 )
 from ch_backup.exceptions import ClickhouseBackupError, is_broken_executor
 from ch_backup.logic.backup_manager import BackupManager
+from ch_backup.logic.part_restore import LocalPartRestorer
 from ch_backup.logic.storage_schema_restore import (
     StorageSchemaRestore,
     restore_disk_name,
@@ -860,6 +861,7 @@ class TableBackup(BackupManager):
             desired_tables=tables_meta,
             use_local_copy=use_inplace_cloud_restore,
             skip_cloud_storage=skip_cloud_storage,
+            keep_going=keep_going,
         ) as disks:
             self._restore_data(
                 context,
@@ -1041,7 +1043,7 @@ class TableBackup(BackupManager):
         logging.debug('Uploading table data for "{}"."{}"', table.database, table.name)
 
         upload_observer = UploadPartObserver(context)
-        stored_files: dict[tuple[str, str, str], dict[str, dict[str, int]]] = {}
+        stored_files: StoredFiles = {}
         skip_failed_part = (
             partial(TableBackup._skip_failed_part, context, table)
             if context.config["keep_going"]
@@ -1774,7 +1776,7 @@ class TableBackup(BackupManager):
         keep_going: bool,
         storage_disks: dict[tuple[str, str], tuple[str, ...]] | None = None,
     ) -> None:
-        # pylint: disable=too-many-branches
+        # pylint: disable=too-many-branches,too-many-locals
         logging.info("Restoring tables data")
         for table_meta in tables:
             cloud_storage_parts = []
@@ -1822,7 +1824,40 @@ class TableBackup(BackupManager):
                 table: Table = context.ch_ctl.get_table(
                     table_meta.database, table_meta.name
                 )  # type: ignore
-                attach_parts = []
+                attach_parts: list[PartMetadata] = []
+                failed_parts: set[str] = set()
+
+                # Both pools collect these callbacks before the next table.
+                # pylint: disable=cell-var-from-loop
+                def downloaded(part: PartMetadata) -> None:
+                    context.restore_context.change_part_state(
+                        PartState.DOWNLOADED, part
+                    )
+                    attach_parts.append(part)
+
+                def download_failed(part: PartMetadata, error: BaseException) -> None:
+                    if not isinstance(error, Exception) or part.name in failed_parts:
+                        return
+                    failed_parts.add(part.name)
+                    context.restore_context.add_failed_part(part, error)
+                    context.restore_context.change_part_state(PartState.INVALID, part)
+                    logging.warning(
+                        'Restoring part {} of "{}"."{}" from backup {} failed: {}',
+                        part.name,
+                        part.database,
+                        part.table,
+                        context.backup_meta.name,
+                        repr(error),
+                    )
+
+                # pylint: enable=cell-var-from-loop
+                local_parts = LocalPartRestorer(
+                    context.backup_layout,
+                    context.backup_meta,
+                    keep_going=keep_going,
+                    on_success=downloaded,
+                    on_error=download_failed,
+                )
                 for part in table_meta.get_parts():
                     if context.restore_context.part_restored(part):
                         if part.disk_name in context.backup_meta.cloud_storage.disks:
@@ -1834,9 +1869,12 @@ class TableBackup(BackupManager):
                         )
                         continue
 
-                    if context.restore_context.part_downloaded(part):
+                    if (
+                        part.disk_name in context.backup_meta.cloud_storage.disks
+                        and context.restore_context.part_downloaded(part)
+                    ):
                         logging.debug(
-                            f"{table.database}.{table.name} part {part.name} already downloading, only attach it"
+                            f"{table.database}.{table.name} part {part.name} already downloaded, only attach it"
                         )
                         attach_parts.append(part)
                         continue
@@ -1858,23 +1896,13 @@ class TableBackup(BackupManager):
                                 restore_disk_name(table, part.disk_name, storage_disks),
                                 part.name,
                             )
-                            context.backup_layout.download_data_part(
-                                context.backup_meta,
-                                part,
-                                fs_part_path,
-                                callback=partial(
-                                    context.restore_context.change_part_state,
-                                    PartState.DOWNLOADED,
-                                ),
+                            context.restore_context.change_part_state(
+                                PartState.NOT_DOWNLOADED, part
                             )
-
-                        attach_parts.append(part)
-                    except Exception:
-                        if keep_going:
-                            logging.exception(
-                                f"Restore of part {part.name} failed, skipping due to --keep-going flag"
-                            )
-                        else:
+                            local_parts.download(part, fs_part_path)
+                    except Exception as error:
+                        download_failed(part, error)
+                        if not keep_going or is_broken_executor(error):
                             raise
 
                 disks.copy_parts(
@@ -1884,26 +1912,18 @@ class TableBackup(BackupManager):
                         "cloud_storage_restore_workers"
                     ],
                     keep_going,
-                    part_callback=partial(
-                        context.restore_context.change_part_state, PartState.DOWNLOADED
-                    ),
+                    part_callback=downloaded,
+                    on_error=download_failed,
                 )
 
-                context.backup_layout.wait(keep_going)
-                # Setting state with callback is not possible if part is not stored
-                # as a single file, because there are multiple async download tasks
-                # per part. Currently all uploading parts are stored as tarball,
-                # this is done only for backward compatibility.
-                # TODO: It can probably be removed already.
-                for part in attach_parts:
-                    if not part.tarball:
-                        context.restore_context.change_part_state(
-                            PartState.DOWNLOADED, part
-                        )
+                local_parts.wait()
 
                 context.ch_ctl.chown_detached_table_parts(
                     table, context.restore_context
                 )
+                # Downloads finish out of order, but ATTACH assigns new block
+                # numbers. Preserve the original order for ReplacingMergeTree.
+                attach_parts.sort(key=lambda part: split_part_name(part.name))
                 for part in attach_parts:
                     logging.debug(
                         'Attaching "{}.{}" part: {}',
@@ -2068,15 +2088,6 @@ class TableBackup(BackupManager):
         directory with different contents is preserved and the first free
         ``_tryN`` name is used instead.
         """
-        if (
-            not part.name
-            or part.name in {".", ".."}
-            or os.path.basename(part.name) != part.name
-        ):
-            raise ClickhouseBackupError(
-                f'Invalid detached part directory name: "{part.name}"'
-            )
-
         for try_no in count():
             restore_part = (
                 part if try_no == 0 else part.with_name(f"{part.name}_try{try_no}")

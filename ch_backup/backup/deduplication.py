@@ -98,6 +98,9 @@ DatabaseDedupReferences = dict[str, TableDedupReferences]
 
 DedupReferences = dict[str, DatabaseDedupReferences]
 
+TableFiles = dict[str, dict[str, int]]
+StoredFiles = dict[tuple[str, str, str], TableFiles]
+
 
 def _create_empty_dedup_references() -> DedupReferences:
     """
@@ -302,7 +305,7 @@ def _part_data_exists(
     part: PartMetadata,
     cloud_storage: bool,
     checked_tables: dict[tuple[str, str], bool],
-    stored_files: dict[tuple[str, str, str], dict[str, dict[str, int]]],
+    stored_files: StoredFiles,
 ) -> bool:
     """
     Check that data of a part is really present in the backup holding it.
@@ -335,7 +338,7 @@ def deduplicate_parts(
     database: str,
     table: str,
     frozen_parts: dict[str, FrozenPart],
-    stored_files: dict[tuple[str, str, str], dict[str, dict[str, int]]],
+    stored_files: StoredFiles,
     *,
     cloud_storage: bool = False,
 ) -> dict[str, PartMetadata]:

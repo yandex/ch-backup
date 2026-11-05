@@ -31,6 +31,7 @@ from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.disks import (
     CH_DISK_CONFIG_PATH,
     ClickHouseBackupDisks,
+    ClickHouseDiskManager,
     ClickHouseDisksException,
     ClickHouseTemporaryDisks,
     _ch_disks_remove,
@@ -222,6 +223,7 @@ def test_temporary_disk(clickhouse_config, disk_name, source, temp_config):
     context.backup_layout = unittest.mock.MagicMock()
     context.backup_meta = unittest.mock.MagicMock()
     context.backup_meta.cloud_storage.data_copied = False
+    context.backup_meta.cloud_storage.data_encryption = None
     with unittest.mock.patch(
         "builtins.open",
         new=unittest.mock.mock_open(read_data=clickhouse_config),
@@ -312,6 +314,7 @@ def _make_linked_backup_meta(backup_name: str) -> unittest.mock.MagicMock:
     backup_meta.name = backup_name
     backup_meta.get_sanitized_name.return_value = backup_name
     backup_meta.cloud_storage.data_copied = True
+    backup_meta.cloud_storage.data_encryption = None
     return backup_meta
 
 
@@ -333,6 +336,7 @@ def _make_temporary_disks(
     context.backup_meta.cloud_storage.disks = cloud_storage_disks or []  # type: ignore[misc]
     context.backup_meta.cloud_storage.enabled = bool(cloud_storage_disks)  # type: ignore[misc]
     context.backup_meta.cloud_storage.data_copied = data_copied  # type: ignore[misc]
+    context.backup_meta.cloud_storage.data_encryption = None  # type: ignore[misc]
     context.backup_meta.cloud_storage.requires_source_bucket = (  # type: ignore[misc]
         bool(cloud_storage_disks) and not data_copied
     )
@@ -1035,6 +1039,24 @@ def test_restore_reads_copied_data_from_the_backup_bucket():
     )
 
 
+def test_restore_failure_cleans_decryption_staging():
+    # pylint: disable=protected-access
+    disk_manager = _make_temporary_disks(
+        BACKUP_DISK_CLICKHOUSE_CONFIG,
+        cloud_storage_disks=["object_storage"],
+        data_copied=True,
+        source_bucket=None,
+    )
+    disk_manager._backup_meta.cloud_storage.data_encryption = {"type": "nacl"}
+    decryption = unittest.mock.MagicMock()
+    disk_manager._decryption = decryption
+
+    error = RuntimeError("restore failed")
+    with unittest.mock.patch.object(ClickHouseDiskManager, "_cleanup"):
+        disk_manager._cleanup(RuntimeError, error)
+    decryption.cleanup.assert_called_once_with()
+
+
 LINKED_BACKUP_NAME = "20251231T000000"
 
 
@@ -1231,6 +1253,15 @@ def test_restore_replaces_incomplete_part_without_nesting(
             destination /= source.name
         shutil.copytree(source, destination)
 
+    def os_copy(_tag, exe, common_args):
+        """Copy like GNU cp, which ignores a trailing slash of the source unlike BSD cp."""
+        assert exe == "/bin/cp"
+        _, from_path, to_path = common_args
+        destination = Path(to_path)
+        if destination.exists():
+            destination /= Path(from_path).name
+        shutil.copytree(from_path, destination)
+
     with (
         unittest.mock.patch(
             "ch_backup.clickhouse.disks._ch_disks_remove", side_effect=remove_objects
@@ -1238,6 +1269,7 @@ def test_restore_replaces_incomplete_part_without_nesting(
         unittest.mock.patch(
             "ch_backup.clickhouse.disks._ch_disks_copy", side_effect=copy_objects
         ) as copy_command,
+        unittest.mock.patch("ch_backup.clickhouse.disks._exec", side_effect=os_copy),
     ):
         manager._run_copy_command(manager._backup_meta, table, part)
 

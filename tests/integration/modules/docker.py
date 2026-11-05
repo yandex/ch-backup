@@ -23,13 +23,10 @@ def get_containers(context: ContextT) -> Sequence[Container]:
     """
     Get containers.
     """
-    containers = []
-    for container in DOCKER_API.containers.list(all=True):
-        networks = container.attrs["NetworkSettings"]["Networks"]
-        if context.conf["network_name"] in networks:
-            containers.append(container)
-
-    return containers
+    return DOCKER_API.containers.list(
+        all=True,
+        filters={"label": f"{ENVIRONMENT_LABEL}={context.conf['network_name']}"},
+    )
 
 
 def get_container(context: ContextT, prefix: str) -> Container:

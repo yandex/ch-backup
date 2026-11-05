@@ -2,6 +2,8 @@
 ClickhouseBackup unit tests.
 """
 
+# pylint: disable=too-many-lines
+
 from collections import defaultdict
 from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime, timedelta, timezone
@@ -17,6 +19,8 @@ from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
     CloudStorageMetadata,
+    CopyScope,
+    CopyScopeStatus,
     PartMetadata,
     TableMetadata,
 )
@@ -157,6 +161,7 @@ def test_restore_checks_parts_backup(
     backup.__dict__["_context"] = context
     backup_meta = MagicMock()
     backup_meta.schema_only = parts_schema_only
+    backup_meta.cloud_storage.data_encryption = None
     backup_meta.get_databases.return_value = []
     backup_meta.get_skipped_data_tables.return_value = ([], [])
     sources = BackupSources.for_restore(
@@ -567,7 +572,7 @@ def test_referenced_delete_persists_partial_state() -> None:
 
 def _readable_backup(name: str, link: str | None = None) -> Mock:
     """Mock light metadata of a readable backup with one part linked to link."""
-    meta = Mock(state=BackupState.CREATED)
+    meta = Mock(state=BackupState.CREATED, copy_scopes={})
     meta.name = name
     part = Mock(link=link, database="db", table="table", deduplicated_part_name="p")
     meta.get_databases.return_value = ["db"]
@@ -581,6 +586,7 @@ def _light_backup(
     """Mock light metadata of a created backup started age_days ago."""
     meta = Mock(
         state=BackupState.CREATED,
+        copy_scopes={},
         start_time=util.now() - timedelta(days=age_days),
         schema_only=schema_only,
     )
@@ -589,11 +595,20 @@ def _light_backup(
     return meta
 
 
-def _purge(backups: list[Mock], retain_count: int, retain_time: dict) -> list[str]:
+def _purge(
+    backups: list[Mock],
+    retain_count: int | None,
+    retain_time: dict,
+    retain_incomplete_copy_time: dict | None = None,
+) -> list[str]:
     """Helper: purge backups listed newest first and return the deleted ones."""
     backup, context = _backup_with_context()
     context.locker = MagicMock()
-    context.config = {"retain_time": retain_time, "retain_count": retain_count}
+    context.config = {
+        "retain_time": retain_time,
+        "retain_count": retain_count,
+        "retain_incomplete_copy_time": retain_incomplete_copy_time,
+    }
     context.backup_layout.get_backups.return_value = backups
     with (
         patch(
@@ -668,6 +683,255 @@ def test_deleted_incomplete_backup_does_not_keep_a_complete_one() -> None:
         "incomplete",
         "older",
     ]
+
+
+def _copy(backup: Mock, updated_days: int | None) -> Mock:
+    """Make the backup a copy that is not completed, saved by copying updated_days ago."""
+    backup.state = BackupState.CREATING
+    backup.copy_updated_at = (
+        None if updated_days is None else util.now() - timedelta(days=updated_days)
+    )
+    return backup
+
+
+@pytest.fixture(
+    name="partial_copy",
+    params=[
+        (state, cloud_status)
+        for state in (BackupState.CREATING, BackupState.FAILED)
+        for cloud_status in ("pending", "failed")
+    ],
+)
+def partial_copy_fixture(request: pytest.FixtureRequest) -> Mock:
+    """Return an old files-only copy referencing another backup's data."""
+    backup = _copy(_readable_backup("partial", link="owner"), updated_days=10)
+    backup.state, cloud_status = request.param
+    backup.start_time = util.now() - timedelta(days=30)
+    backup.schema_only = False
+    backup.count_skipped_data_tables.return_value = (0, 0)
+    backup.configure_mock(
+        copy_scopes={
+            CopyScope.FILES: CopyScopeStatus.COMPLETED,
+            CopyScope.CLOUD_STORAGE: CopyScopeStatus(cloud_status),
+        }
+    )
+    return backup
+
+
+def test_partial_copy_counts_like_created(partial_copy: Mock) -> None:
+    """Created backups and partial copies share the retention count."""
+    backups = [
+        _light_backup("newest", 0),
+        partial_copy,
+        _light_backup("older", 31),
+    ]
+
+    assert _purge(backups, retain_count=2, retain_time={}) == ["older"]
+
+
+@pytest.mark.parametrize("retain_count", [None, 0, 1])
+def test_partial_copy_uses_retain_time(
+    partial_copy: Mock, retain_count: int | None
+) -> None:
+    """Partial copies follow ordinary retention regardless of the copy timestamp."""
+    backups = [_light_backup("newest", 0), partial_copy]
+
+    assert not _purge(
+        backups,
+        retain_count=retain_count,
+        retain_time={"days": 35},
+        retain_incomplete_copy_time={"days": 7},
+    )
+    assert _purge(
+        backups,
+        retain_count=retain_count,
+        retain_time={"days": 7},
+        retain_incomplete_copy_time={"days": 365},
+    ) == ["partial"]
+
+
+def test_partial_copy_retention_time_boundary(partial_copy: Mock) -> None:
+    """Keep a copy exactly at the age limit, even without a copy timestamp."""
+    current_time = util.now()
+    partial_copy.start_time = current_time - timedelta(days=30)
+    partial_copy.copy_updated_at = None
+    with patch("ch_backup.ch_backup.now", return_value=current_time):
+        assert not _purge([partial_copy], retain_count=None, retain_time={"days": 30})
+        partial_copy.start_time -= timedelta(microseconds=1)
+        assert _purge([partial_copy], retain_count=None, retain_time={"days": 30}) == [
+            "partial"
+        ]
+    assert not _purge([partial_copy], retain_count=None, retain_time={})
+
+
+def test_partial_copy_does_not_replace_complete_backup(partial_copy: Mock) -> None:
+    """A retained partial copy cannot replace the full data missing from backups."""
+    backups = [
+        _light_backup("incomplete", 0, incomplete=True),
+        partial_copy,
+        _light_backup("complete", 31),
+        _light_backup("older", 32),
+    ]
+
+    assert _purge(backups, retain_count=2, retain_time={}) == ["older"]
+    assert _purge(backups[1:], retain_count=1, retain_time={}) == ["older"]
+
+
+@pytest.mark.parametrize("retain_count,retain_time", [(1, {}), (0, {"days": 35})])
+def test_retained_partial_copy_keeps_newest_complete_backup(
+    partial_copy: Mock, retain_count: int, retain_time: dict
+) -> None:
+    """Keep the newest complete backup while retaining only partial copies."""
+    backups = [
+        partial_copy,
+        _light_backup("complete", 40),
+        _light_backup("older", 41),
+    ]
+
+    assert _purge(backups, retain_count=retain_count, retain_time=retain_time) == [
+        "older"
+    ]
+    assert _purge(backups, retain_count=0, retain_time={"days": 7}) == [
+        "partial",
+        "complete",
+        "older",
+    ]
+
+
+@pytest.mark.parametrize("operation", ["purge", "delete"])
+def test_partial_copy_keeps_references(partial_copy: Mock, operation: str) -> None:
+    """Keeping a partial copy also protects the data parts it links to."""
+    backup, context = _backup_with_context()
+    context.locker = MagicMock()
+    context.config = {
+        "retain_count": 2,
+        "retain_time": {},
+        "retain_incomplete_copy_time": {"days": 7},
+    }
+    owner = _readable_backup("owner")
+    context.backup_layout.get_backups.return_value = [
+        _readable_backup("newest"),
+        partial_copy,
+        owner,
+    ]
+    context.backup_layout.reload_backup.side_effect = lambda meta, **_: meta
+
+    with patch.object(backup, "_delete", return_value=("owner", None)) as delete:
+        if operation == "purge":
+            assert backup.purge() == (["owner"], None)
+        else:
+            assert backup.delete("owner", purge_partial=True) == ("owner", None)
+
+    delete.assert_called_once_with(owner, {"db": {"table": {"p"}}})
+
+
+@pytest.mark.parametrize("purge_partial", [False, True])
+def test_partial_copy_can_be_deleted_explicitly(
+    partial_copy: Mock, purge_partial: bool
+) -> None:
+    """Explicit deletion of a partial copy is allowed with either purge option."""
+    backup, context = _backup_with_context()
+    context.locker = MagicMock()
+    context.config = {"retain_incomplete_copy_time": {"days": 7}}
+    context.backup_layout.get_backups.return_value = [
+        _readable_backup("newest"),
+        partial_copy,
+    ]
+    context.backup_layout.reload_backup.side_effect = lambda meta, **_: meta
+
+    with patch.object(backup, "_delete", return_value=("partial", None)) as delete:
+        backup.delete("partial", purge_partial=purge_partial)
+
+    delete.assert_called_once_with(partial_copy, {})
+
+
+@pytest.mark.parametrize("state", [BackupState.CREATING, BackupState.FAILED])
+@pytest.mark.parametrize(
+    "scopes",
+    [
+        None,
+        {},
+        {"files": "pending", "cloud_storage": "pending"},
+        {"files": "failed", "cloud_storage": "pending"},
+        {"files": "completed"},
+        {"files": "completed", "cloud_storage": "unknown"},
+        {"files": "completed", "cloud_storage": "completed"},
+    ],
+)
+def test_other_incomplete_copies_keep_temporary_retention(
+    state: BackupState, scopes: dict | None
+) -> None:
+    """Other incomplete copies neither consume retention count nor lose grace time."""
+    copy = _copy(_light_backup("copy", 30), updated_days=1)
+    copy.state = state
+    metadata = BackupMetadata(
+        "copy", "test", "test", DEFAULT_CONFIG["backup"]["time_format"]
+    ).dump(light=True)
+    metadata["meta"]["copy"] = {"scopes": scopes} if scopes is not None else None
+    copy.configure_mock(copy_scopes=BackupMetadata.load(metadata).copy_scopes)
+    assert not _purge(
+        [copy, _light_backup("older", 31)], retain_count=1, retain_time={}
+    )
+    assert not _purge(
+        [copy], retain_count=0, retain_time={}, retain_incomplete_copy_time={"days": 7}
+    )
+    assert _purge([copy], retain_count=0, retain_time={}) == ["copy"]
+
+
+@pytest.mark.parametrize("state", [BackupState.DELETING, BackupState.PARTIALLY_DELETED])
+def test_copy_scopes_do_not_protect_deleted_backups(state: BackupState) -> None:
+    """Old copy statuses cannot prevent cleanup after deletion has started."""
+    copy = _copy(_light_backup("copy", 30), updated_days=1)
+    copy.state = state
+    copy.configure_mock(
+        copy_scopes={
+            CopyScope.FILES: CopyScopeStatus.COMPLETED,
+            CopyScope.CLOUD_STORAGE: CopyScopeStatus.PENDING,
+        }
+    )
+    assert not _purge(
+        [copy, _light_backup("older", 31)], retain_count=1, retain_time={}
+    )
+    assert _purge(
+        [copy], retain_count=0, retain_time={}, retain_incomplete_copy_time={"days": 7}
+    ) == ["copy"]
+
+
+def test_purge_keeps_copies_being_copied() -> None:
+    """An incomplete copy is kept while copying goes on."""
+    backups = [
+        _light_backup("complete", 0),
+        _copy(_light_backup("recent", 30), updated_days=1),
+        _copy(_light_backup("stale", 31), updated_days=10),
+        _copy(_light_backup("unknown", 32), updated_days=None),
+    ]
+
+    assert _purge(
+        backups, retain_count=1, retain_time={}, retain_incomplete_copy_time={"days": 7}
+    ) == ["stale", "unknown"]
+    assert _purge(backups, retain_count=1, retain_time={}) == [
+        "recent",
+        "stale",
+        "unknown",
+    ]
+
+
+def test_purge_partial_keeps_copies_being_copied() -> None:
+    """delete --purge-partial keeps other incomplete copies while copying goes on."""
+    backup, context = _backup_with_context()
+    context.locker = MagicMock()
+    context.config = {"retain_incomplete_copy_time": {"days": 7}}
+    recent = _copy(_readable_backup("recent"), updated_days=1)
+    stale = _copy(_readable_backup("stale"), updated_days=10)
+    context.backup_layout.get_backups.side_effect = _get_backups_with_unreadable(
+        _readable_backup("newest"), recent, stale
+    )
+    context.backup_layout.reload_backup.side_effect = lambda meta, **_: meta
+
+    with patch.object(backup, "_delete", return_value=("stale", None)) as delete:
+        backup.delete("broken", purge_partial=True)
+
+    assert [call.args[0] for call in delete.call_args_list] == [stale]
 
 
 def test_purge_by_age_keeps_nothing_old_without_incomplete_backups() -> None:
