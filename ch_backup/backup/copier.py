@@ -309,7 +309,12 @@ class BackupCopier:
                     raise
                 names[sanitize_backup_name(name)] = name
         if self._target_deduplication is not None:
-            self._target_deduplication.load(candidates)
+            self._target_deduplication.load(
+                candidates,
+                workers=self._target_config["multiprocessing"][
+                    "full_metadata_read_threads"
+                ],
+            )
         return names
 
     @contextmanager
