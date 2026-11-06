@@ -54,7 +54,7 @@ def server_side_copy_possible(src_storage: dict, dst_storage: dict) -> bool:
 
 def make_storage_config(
     base: dict,
-    endpoint_url: str,
+    endpoint_url: str | None,
     bucket: str,
     access_key_id: str | None,
     secret_access_key: str | None,

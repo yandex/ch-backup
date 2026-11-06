@@ -9,7 +9,11 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from ch_backup.backup.layout import BackupLayout
+from ch_backup.backup.layout import (
+    BackupLayout,
+    cloud_storage_metadata_archive_path,
+    identify_cloud_part_from_archive_entry,
+)
 from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
@@ -19,7 +23,7 @@ from ch_backup.backup.metadata import (
 )
 from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.ch_backup import ClickhouseBackup
-from ch_backup.clickhouse.models import Disk, Table
+from ch_backup.clickhouse.models import Database, Disk, Table
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import StorageError
 from ch_backup.storage.async_pipeline import pipeline_executor
@@ -172,7 +176,10 @@ def test_list_collects_read_errors_only_when_requested(operation):
     good = BackupMetadata("good", "2", "26.6", "%Y-%m-%d")
     error = S3RetryingError("\n\nInternalError\nTraceback details")
 
+    checked_paths = []
+
     def path_exists(path):
+        checked_paths.append(path)
         if "/broken/" in path and operation == "head":
             raise error
         return "/missing/" not in path
@@ -190,6 +197,13 @@ def test_list_collects_read_errors_only_when_requested(operation):
     unreadable: dict[str, str] = {}
     assert [b.name for b in layout.get_backups(True, unreadable=unreadable)] == ["good"]
     assert unreadable == {"broken": "S3RetryingError: InternalError"}
+
+    checked_paths.clear()
+    assert [
+        b.name
+        for b in layout.get_backups(True, excluded_backup_names=frozenset({"broken"}))
+    ] == ["good"]
+    assert all("/broken/" not in path for path in checked_paths)
 
 
 def test_list_failure_is_not_treated_as_unreadable_metadata():
@@ -265,7 +279,7 @@ class TestCloudStorageMetadataRemotePaths:
             f"{backup_path}/disks/{source_disk_name}/db2/table4.tar",
         ]
 
-        remote_paths = layout.get_cloud_storage_metadata_remote_paths(
+        remote_paths = layout.list_cloud_storage_metadata_archives(
             backup_name,
             source_disk_name,
             compression=False,
@@ -620,3 +634,79 @@ class TestTableDataFiles:
         storage.get_file_size.assert_called_once_with(
             "ch_backup/b1/data/db1/t1/all_1_1_0/all_1_1_0.tar"
         )
+
+
+def test_linked_part_operations_use_owner_and_stored_name(tmp_path):
+    # pylint: disable=protected-access
+    """
+    After mutation renaming, the requested path may not contain any bytes.
+    Exercise listing, validation and download against the stored owner while
+    preserving the name needed by restore progress.
+    """
+    layout = make_layout()
+    storage = layout._storage_loader = MagicMock()
+    part = PartMetadata(
+        "db1",
+        "t1",
+        "all_1_1_0_7",
+        "c",
+        1024,
+        ["data.bin"],
+        True,
+        link="owner",
+        link_part_name="all_1_1_0",
+        encrypted=False,
+    )
+    backup = BackupMetadata("current", "2", "26.8", "%Y-%m-%d")
+    expected_path = "ch_backup/owner/data/db1/t1/all_1_1_0/all_1_1_0.tar"
+    storage.list_dir.return_value = ["all_1_1_0.tar"]
+    storage.get_file_size.return_value = layout._target_part_size(part, encrypted=False)
+
+    assert layout.get_data_part_files(backup.name, part) == [expected_path]
+    assert layout.check_data_part(backup.name, part)
+    storage.get_file_size.assert_called_once_with(expected_path)
+
+    layout.download_data_part(backup, part, str(tmp_path), lambda _: None)
+    assert storage.download_files.call_args.kwargs["remote_path"] == expected_path
+    assert part.name == "all_1_1_0_7"
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize(
+    "table_name,table_uuid", [("table-one", "uuid-one"), ("table.two", "uuid-two")]
+)
+def test_cloud_manifest_part_identity_distinguishes_tables(
+    legacy, table_name, table_uuid
+):
+    """
+    Different tables can contain identically named parts. Resolve the table
+    from each archive layout, including UUID and projection paths, so cleanup
+    does not protect or delete another table's objects.
+    """
+    backup = BackupMetadata("backup", "2", "26.8", "%Y-%m-%d")
+    backup.add_database(Database("db-name", "Atomic", None, None, None))
+    for name, uuid in [("table-one", "uuid-one"), ("table.two", "uuid-two")]:
+        table = TableMetadata("db-name", name, "MergeTree", uuid)
+        table.add_part(
+            PartMetadata(
+                "db-name", name, "all_1_1_0", "checksum", 1, [], False, disk_name="s3"
+            )
+        )
+        backup.add_table(table)
+    archive = cloud_storage_metadata_archive_path(
+        "ch_backup/backup",
+        None if legacy else "db-name",
+        None if legacy else table_name,
+        "s3",
+        True,
+    )
+    name = (
+        f"store/abc/{table_uuid}/all_1_1_0/projection.proj/data.bin"
+        if legacy
+        else "all_1_1_0/data.bin"
+    )
+    assert identify_cloud_part_from_archive_entry(backup, "s3", archive, name) == (
+        "db-name",
+        table_name,
+        "all_1_1_0",
+    )

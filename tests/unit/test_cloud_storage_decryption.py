@@ -79,3 +79,16 @@ def test_decryption_staging_validates_credentials(staging: dict, message: str) -
 
     with pytest.raises(ConfigurationError, match=message):
         resolve_decryption_staging(config, source, "source", disk)
+
+
+def test_aws_default_endpoint_cannot_hide_staging_source_overlap():
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["restore"]["cloud_storage"]["decryption_staging"]["path"] = "copies/backup"
+    source = make_storage_config(config["storage"], None, "bucket", "access", "secret")
+    disk = {
+        "endpoint": "https://s3.amazonaws.com/bucket/data/",
+        "access_key_id": "access",
+        "secret_access_key": "secret",
+    }
+    with pytest.raises(ConfigurationError, match="must not overlap"):
+        resolve_decryption_staging(config, source, "copies/backup", disk)
