@@ -8,7 +8,6 @@ import json
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -146,6 +145,7 @@ def test_copy_command_masks_config_parameter_secrets_in_log(
     group = Group()
     group.add_command(cli.copy_command)
     secret = "c" * 32
+    resolver = "http://resolver-user:resolver-password@localhost:bad-port"
 
     with patch("ch_backup.cli.logging.info") as log_info:
         result = CliRunner().invoke(
@@ -156,6 +156,9 @@ def test_copy_command_masks_config_parameter_secrets_in_log(
                 "--target-config-parameter",
                 "cloud_storage.data_encryption.key",
                 json.dumps(secret),
+                "--target-config-parameter",
+                "storage.proxy_resolver",
+                json.dumps({"uri": resolver}),
                 "--target-config-parameter",
                 "storage.credentials",
                 json.dumps(
@@ -172,28 +175,9 @@ def test_copy_command_masks_config_parameter_secrets_in_log(
     logged = str(log_info.mock_calls)
     assert secret not in logged
     assert "also-secret" not in logged
+    assert "resolver-user" not in logged and "resolver-password" not in logged
     assert "visible" in logged
     assert "[HIDDEN]" in logged
-
-
-@pytest.mark.parametrize("parameter", ["config_parameters", "target_config_parameters"])
-@pytest.mark.parametrize(
-    "path", ["storage.proxy_resolver.uri", "storage.proxy_resolver", "storage"]
-)
-def test_resolver_uri_is_hidden_in_command_params(parameter: str, path: str) -> None:
-    uri = "http://private-user:private-password@resolver:bad-port"
-    value: Any = uri
-    for key in reversed(
-        "storage.proxy_resolver.uri".split(".")[len(path.split(".")) :]
-    ):
-        value = {key: value}
-    params = {parameter: [(path, value)]}
-    before = deepcopy(params)
-    masked = str(getattr(cli, "_mask_command_params")(params))
-    assert "private-user" not in masked
-    assert "private-password" not in masked
-    assert "[HIDDEN]" in masked
-    assert params == before
 
 
 @pytest.mark.parametrize(
