@@ -14,6 +14,7 @@ import pytest
 from botocore.exceptions import ClientError
 
 from ch_backup.config import DEFAULT_CONFIG
+from ch_backup.exceptions import ConfigurationError
 from ch_backup.storage.async_pipeline.pipelines import copy_object_pipeline
 from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.engine.s3 import s3_client_factory
@@ -73,7 +74,10 @@ def test_shared_s3_client_reset_and_config_isolation(
 ) -> None:
     monkeypatch.setattr(s3_client_factory, "_FACTORIES", [])
     config = copy.deepcopy(DEFAULT_CONFIG["storage"])
+    config["client_ttl"] = 1
     config["retry_max_interval"] = 0
+    now = Mock(return_value=0.0)
+    monkeypatch.setattr(s3_client_factory, "monotonic", now)
     with patch.object(s3_client_factory.boto3.session, "Session") as session:
         old_client, new_client, other_client = Mock(), Mock(), Mock()
         session.return_value.client.side_effect = [old_client, new_client, other_client]
@@ -109,6 +113,27 @@ def test_shared_s3_client_reset_and_config_isolation(
             ]
             == config["boto_config"]["addressing_style"]
         )
+        with pytest.raises(ConfigurationError, match=r"storage\.client_ttl"):
+            get_storage_engine({**config, "client_ttl": True})
+
+        refreshed = Mock()
+        session.return_value.client.side_effect = [
+            s3_client_factory.S3BalancerUnknownHost("proxy discovery failed"),
+            refreshed,
+        ]
+        now.return_value = config["client_ttl"] / 2
+        second.upload_data(b"before expiry", "before-expiry")
+        assert session.return_value.client.call_count == 3
+        now.return_value = config["client_ttl"]
+        second.upload_data(b"failed refresh", "failed-refresh")
+        second.upload_data(b"reuse", "reuse")
+        assert session.return_value.client.call_count == 4
+        assert new_client.put_object.call_count == 5
+        now.return_value += config["client_ttl"]
+        second.upload_data(b"refreshed", "refreshed")
+        assert session.return_value.client.call_count == 5
+        assert refreshed.put_object.call_count == 1
+        assert session.call_count == 2
 
 
 def test_proxy_discovery_opens_a_new_connection() -> None:

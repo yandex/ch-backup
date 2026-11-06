@@ -11,6 +11,7 @@ import requests
 from botocore.exceptions import ClientError
 
 from ch_backup import logging
+from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import StorageError
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
 from ch_backup.storage.engine.s3.s3_client_factory import (
@@ -44,7 +45,10 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
     ) -> None:
         max_attempts, max_interval = resolve_s3_retry_config(config, retry_policy)
         self._s3_client_factory = client_factory or S3ClientCachedFactory(
-            S3ClientFactory(config)
+            S3ClientFactory(config),
+            client_ttl=config.get(
+                "client_ttl", DEFAULT_CONFIG["storage"]["client_ttl"]
+            ),
         )
         self._s3_bucket_name = config["credentials"]["bucket"]
 
