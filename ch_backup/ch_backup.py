@@ -63,6 +63,7 @@ from ch_backup.logic.workload_entities import WorkloadEntitiesBackup
 from ch_backup.storage.async_pipeline.stages import EncryptStage
 from ch_backup.storage.engine.s3 import validate_s3_retry_config
 from ch_backup.storage.engine.s3.s3_config import validate_s3_module_config
+from ch_backup.storage.object_copy import parse_server_side_copy_mode
 from ch_backup.util import cached_property, now, utcnow
 from ch_backup.version import get_version
 
@@ -98,6 +99,7 @@ class ClickhouseBackup:
 
     @staticmethod
     def _validate_config(config: Config) -> None:
+        parse_server_side_copy_mode(config["copy"]["server_side_copy_mode"])
         copy_deduplication_cutoff(config["copy"], utcnow())
         start_time = as_datetime(config["backup"].get("deduplication_start_time"))
         if start_time is not None and start_time > utcnow():

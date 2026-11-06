@@ -56,6 +56,8 @@ class PipelineBuilder:
     def __init__(self, config: dict) -> None:
         self._config = config
         self._stages: list[PypelnStage] = []
+        # Process-wide pypeln setting, set per pipeline since spawned workers do not inherit it.
+        pypeln_utils.TIMEOUT = config["pipeline"]["queue_poll_interval"]
 
     def build_iterable_stage(self, iterable: Iterable[Any]) -> "PipelineBuilder":
         """

@@ -255,31 +255,42 @@ class BackupMetadata:
 
     def _databases_with_legacy_part_links(self) -> dict[str, dict]:
         """
-        Return a deep-copy of ``self._databases`` where every part's ``link``
+        Return a copy of ``self._databases`` where every part's ``link``
         field is rewritten from a plain backup name (new format) to a full
         storage path (legacy format).
 
         Required for backward compatibility with ch-backup versions that
         still read the ``link`` field as a full storage path.
+
+        Dictionaries of databases, tables and parts are copied, so the result
+        can be changed without changing the metadata. Other values, such as
+        lists of part files, are shared: deep copying of them took most of the
+        time of saving metadata of a large backup.
         """
         # ``self.path`` is in the form "<path_root>/<backup_name>". Strip the
         # backup name to obtain the path root that prefixes any source backup.
         path_root = os.path.dirname(self.path) if self.path else ""
 
-        databases = copy.deepcopy(self._databases)
         # Defensive: in some test fixtures ``_databases`` may be an empty list.
-        if not isinstance(databases, dict):
-            return databases
-        for db in databases.values():
-            for table in db.get("tables", {}).values():
-                for part in table.get("parts", {}).values():
+        if not isinstance(self._databases, dict):
+            return copy.deepcopy(self._databases)
+        databases = {}
+        for db_name, raw_db in self._databases.items():
+            db = databases[db_name] = dict(raw_db)
+            if "tables" not in db:
+                continue
+            tables = db["tables"] = {}
+            for table_name, raw_table in raw_db["tables"].items():
+                table = tables[table_name] = dict(raw_table)
+                if "parts" not in table:
+                    continue
+                parts = table["parts"] = {}
+                for part_name, raw_part in raw_table["parts"].items():
+                    part = parts[part_name] = dict(raw_part)
                     link = part.get("link")
-                    if not link:
-                        continue
                     # Skip already legacy-formatted links (defensive).
-                    if "/" in link:
-                        continue
-                    part["link"] = os.path.join(path_root, link) if path_root else link
+                    if link and "/" not in link and path_root:
+                        part["link"] = os.path.join(path_root, link)
         return databases
 
     def dump_json(
@@ -433,8 +444,20 @@ class BackupMetadata:
     def load_json(cls, data):
         """
         Deserialize backup metadata from JSON representation.
+
+        Equal names of part files are loaded as one string object. Lists of files
+        make up most of the metadata of a large backup, and the same names repeat
+        in parts of a table. Every part keeps its own list.
         """
-        return cls.load(json.loads(data))
+        names: dict[str, str] = {}
+
+        def share_file_names(obj: dict) -> dict:
+            files = obj.get("files")
+            if isinstance(files, list) and "checksum" in obj:
+                obj["files"] = [names.setdefault(name, name) for name in files]
+            return obj
+
+        return cls.load(json.loads(data, object_hook=share_file_names))
 
     def get_databases(self) -> Sequence[str]:
         """

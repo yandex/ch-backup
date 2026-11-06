@@ -395,7 +395,7 @@ def test_copy_backup_with_detached_object_storage_metadata() -> None:
         )
     )
     ctx = CopyTestContext([backup])
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     _with_files(
         ctx,
         "b1",
@@ -415,7 +415,7 @@ def test_copy_backup_with_detached_object_storage_metadata() -> None:
 
 def test_copy_backup() -> None:
     ctx = CopyTestContext([_backup("b1", parts={"all_1_1_0": _part()})])
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     _with_files(
         ctx,
         "b1",
@@ -452,7 +452,9 @@ def test_copy_backup() -> None:
 @pytest.mark.parametrize("server_side", [False, True])
 def test_copy_skips_prefix_folder_marker(server_side: bool) -> None:
     ctx = CopyTestContext([_backup("b1")])
-    ctx.target_config["copy"]["server_side_copy"] = server_side
+    ctx.target_config["copy"]["server_side_copy_mode"] = (
+        "auto" if server_side else "disabled"
+    )
     _with_files(ctx, "b1", {"": 0, "metadata/a.tar": 10, "metadata/empty": 0})
 
     assert ctx.copy(["b1"]) == (["b1"], [])
@@ -508,7 +510,7 @@ def test_no_server_side_copy_with_different_credentials() -> None:
 
 def test_server_side_copy_cache_respects_credentials() -> None:
     ctx = _cloud_storage_context()
-    ctx.target_config["copy"]["server_side_copy"] = True
+    ctx.target_config["copy"]["server_side_copy_mode"] = "auto"
     ctx.target_config["copy"]["cloud_storage"]["target"]["bucket"] = DST_BUCKET
     ctx.ch_config.config["storage_configuration"]["disks"]["s3"][
         "endpoint"
@@ -630,7 +632,9 @@ def test_retry_recopies_existing_objects(
     if state:
         target_backup.state = state
     ctx = CopyTestContext([backup], [target_backup] if state else [])
-    ctx.target_config["copy"]["server_side_copy"] = server_side
+    ctx.target_config["copy"]["server_side_copy_mode"] = (
+        "auto" if server_side else "disabled"
+    )
     _with_files(ctx, "b1", {"metadata/a.tar": 1, "metadata/b.tar": 2})
     # Same size does not establish that these are the source object's contents.
     ctx.dst_objects["ch_backup_copy/b1/metadata/a.tar"] = 1
@@ -665,7 +669,7 @@ def test_failed_copying() -> None:
     ctx = CopyTestContext([_backup("b1")])
     ctx.target_layout.copy_error = RuntimeError("network error")
     _with_files(ctx, "b1", {"metadata/a.tar": 1})
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
 
     with pytest.raises(RuntimeError):
         ctx.copy(["b1"])
@@ -749,7 +753,7 @@ def test_same_storage() -> None:
 
 def test_same_bucket_different_path_root() -> None:
     ctx = CopyTestContext([_backup("b1")], target_bucket=SRC_BUCKET)
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     _with_files(ctx, "b1", {"metadata/a.tar": 1})
 
     assert ctx.copy(["b1"]) == (["b1"], [])
@@ -783,7 +787,7 @@ def test_linked_parts_are_copied_into_backup(
         },
     )
     ctx = CopyTestContext([b1, b2])
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     data_dir = f"data/{stored_database}/t1"
     target_data_dir = f"data/{target_database}/t1"
     _with_files(
@@ -832,7 +836,7 @@ def test_links_to_copied_backups_are_kept() -> None:
         },
     )
     ctx = CopyTestContext([b1, b2])
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     _with_files(
         ctx,
         "b1",
@@ -865,7 +869,7 @@ def test_links_are_not_kept_if_part_differs_in_target() -> None:
     )
     target_b1 = _backup("b1", parts={"all_1_1_0": _part(checksum="other")})
     ctx = CopyTestContext([b1, b2], [target_b1])
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     _with_files(ctx, "b1", {"data/db1/t1/all_1_1_0/all_1_1_0.tar": 101})
 
     ctx.copy(["b2"])
@@ -898,7 +902,7 @@ def test_copy_partial_linked_part_files_and_retry(
     ctx = CopyTestContext(
         [_backup("child", database="my-db", parts={"all_1_1_0_2": part})]
     )
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     part_dir = f"data/{stored_database}/t1/all_1_1_0"
     _with_files(ctx, "owner", {f"{part_dir}/data.bin": 100})
     report = CopyReport()
@@ -955,7 +959,7 @@ def test_copy_linked_part_prefers_complete_legacy_directory() -> None:
     ctx = CopyTestContext(
         [_backup("child", database="my-db", parts={"all_1_1_0": part})]
     )
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     _with_files(
         ctx,
         "owner",
@@ -982,7 +986,7 @@ def _object_storage_metadata(*objects: tuple[str, int], version: int = 3) -> byt
 
 def _cloud_storage_context(backup_name: str = "b1") -> CopyTestContext:
     ctx = CopyTestContext([_backup(backup_name, cloud_storage_disks=["s3"])])
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     ctx.target_config["copy"]["cloud_storage"]["target"]["bucket"] = "disk-copy"
     ctx.target_config["copy"]["cloud_storage"]["target"]["path"] = "copies/"
     ctx.ch_config.config = {
@@ -1271,7 +1275,7 @@ def test_unmappable_full_key_override_fails_before_writes(
     override: str, key: str, known_prefix: bool, error: str
 ) -> None:
     ctx = _cloud_storage_context()
-    ctx.target_config["copy"]["server_side_copy"] = True
+    ctx.target_config["copy"]["server_side_copy_mode"] = "auto"
     ctx.target_config["copy"]["cloud_storage"]["source"].update(
         bucket="source", path=override
     )
@@ -1318,7 +1322,7 @@ def test_explicit_cloud_source_without_disk_configuration(version: int) -> None:
 
 def test_copy_rejects_unconfigured_stored_endpoint_before_requests() -> None:
     ctx = _cloud_storage_context()
-    ctx.target_config["copy"]["server_side_copy"] = True
+    ctx.target_config["copy"]["server_side_copy_mode"] = "auto"
     # Bucket/path overrides must not authorize the endpoint from metadata.
     ctx.target_config["copy"]["cloud_storage"]["source"].update(
         bucket="source", path="data"
@@ -1385,7 +1389,7 @@ def test_cloud_storage_recopies_existing_objects() -> None:
 )
 def test_unsafe_cloud_keys_fail_before_any_writes(version: int, key: str) -> None:
     ctx = _cloud_storage_context()
-    ctx.target_config["copy"]["server_side_copy"] = True
+    ctx.target_config["copy"]["server_side_copy_mode"] = "auto"
     ctx.layout.cloud_storage_files["ch_backup/b1/disks/s3/db1/t1.tar.gz"] = [
         ("part/data.bin", _object_storage_metadata((key, 1000), version=version)),
     ]
@@ -1669,7 +1673,7 @@ def test_full_cloud_storage_copy(
     owner.state = BackupState.PARTIALLY_DELETED
     ctx = CopyTestContext([backup, owner])
     ctx.target_config["copy"]["cloud_storage"]["source"]["path"] = source_path_override
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     source_name = "base" if linked else "backup_1"
     prefix = f"ch_backup/{source_name}/cloud_storage/s3"
     key = f"{prefix}/xyz/data" if version == 5 else "xyz/data"
@@ -1760,7 +1764,7 @@ def test_full_cloud_storage_copy_separates_disk_prefixes() -> None:
     )
     backup.cloud_storage.data_copied = True
     ctx = CopyTestContext([backup])
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     for part in backup.get_parts():
         ctx.layout.cloud_storage_files[
             f"ch_backup/b1/disks/{part.disk_name}/db1/t1.tar.gz"
@@ -1802,7 +1806,7 @@ def test_copy_reports_partial_results_and_continues(keep_going: bool) -> None:
             for i in range(1, 4)
         ]
     )
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     for name in ("b1", "b2", "b3"):
         _with_files(ctx, name, {"metadata/a.tar": 1, "metadata/b.tar": 2})
     ctx.target_layout.object_errors["ch_backup/b2/metadata/a.tar"] = RuntimeError(
@@ -2026,7 +2030,7 @@ def test_copy_planning_errors_preserve_independent_work_and_allow_retry() -> Non
             _backup("healthy"),
         ]
     )
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     _with_files(ctx, "broken", {"metadata/a.tar": 1, "metadata/b.tar": 2})
     _with_files(ctx, "available", {"data/db1/t1/all_3_3_0/all_3_3_0.tar": 100})
     report = CopyReport()
@@ -2139,7 +2143,7 @@ def test_unreadable_target_dependency_uses_source_data(
     )
     owner.cloud_storage.data_copied = child.cloud_storage.data_copied = full_cloud
     ctx = CopyTestContext([owner, child], [owner])
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     if full_cloud:
         _with_files(ctx, "owner", {"cloud_storage/s3/xyz/data": 101})
         ctx.layout.cloud_storage_files["ch_backup/owner/disks/s3/db1/t1.tar.gz"] = [
@@ -2261,7 +2265,7 @@ def test_copy_materializes_links_after_owner_copy_fails() -> None:
         parts={"all_1_1_0": _part(link="b1")},
     )
     ctx = CopyTestContext([owner, linked])
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     _with_files(
         ctx, "b1", {"metadata/a.tar": 1, "data/db1/t1/all_1_1_0/all_1_1_0.tar": 100}
     )
@@ -2308,7 +2312,7 @@ def test_copy_reuses_only_successfully_materialized_parts(
     for backup in backups:
         backup.cloud_storage.data_copied = cloud
     ctx = CopyTestContext(backups)
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     part_path = (
         "cloud_storage/s3/data" if cloud else f"data/db1/t1/{names[0]}/{names[0]}.tar"
     )
@@ -2374,7 +2378,7 @@ def test_copy_reuses_materialized_parts_from_skipped_backup(
             ),
         ]
     )
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     _with_files(ctx, "a", {"data/db1/t1/all_1_1_0/all_1_1_0.tar": 100})
     assert ctx.copy(["b"]) == (["b"], [])
     ctx.target_layout.copied.clear()
@@ -2390,16 +2394,14 @@ def test_copy_probe_failure_can_fall_back_to_streaming(keep_going: bool) -> None
     _with_files(ctx, "b1", {"metadata/a.tar": 1, "metadata/b.tar": 2})
     report = CopyReport()
     with patch.object(
-        FakeEngine, "try_copy_object", side_effect=RuntimeError("probe failed")
-    ):
-        if keep_going:
-            assert ctx.copy(keep_going=True, report=report) == (["b1"], [])
-            assert not report.backups[0].errors
-            assert report.backups[0].objects_copied == 2
-            assert all(not e.server_side for e in ctx.target_layout.copied)
-        else:
-            with pytest.raises(RuntimeError, match="probe failed"):
-                ctx.copy(report=report)
+        FakeEngine, "try_copy_object", side_effect=[RuntimeError("probe failed"), True]
+    ) as probe:
+        assert ctx.copy(keep_going=keep_going, report=report) == (["b1"], [])
+        assert not report.backups[0].errors
+        assert report.backups[0].objects_copied == 2
+        assert probe.call_count == 2
+        assert len(ctx.target_layout.copied) == 1
+        assert all(not e.server_side for e in ctx.target_layout.copied)
 
 
 def test_copy_counts_server_side_probe_once() -> None:
@@ -2502,7 +2504,7 @@ def test_copy_records_synchronous_cloud_metadata_validation_failure(
 
 def test_failed_metadata_save_preserves_copy_error_and_clears_cache() -> None:
     ctx = CopyTestContext([_backup("b1")])
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     _with_files(ctx, "b1", {"metadata/a.tar": 1})
     ctx.target_layout.copy_error = RuntimeError("primary copy error")
     report = CopyReport()
@@ -2547,7 +2549,7 @@ def test_failed_metadata_save_preserves_copy_error_and_clears_cache() -> None:
 
 def test_copy_signal_marks_current_backup_and_stops_keep_going() -> None:
     ctx = CopyTestContext([_backup("b1"), _backup("b2")])
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     report = CopyReport()
     with patch.object(
         ctx.target_layout, "copy_objects", side_effect=TerminatingSignal("interrupted")
@@ -2652,7 +2654,7 @@ def _interrupted_copy(
 ) -> CopyTestContext:
     """Copy one object of two before the other one fails."""
     ctx = CopyTestContext([_backup("b1")])
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     ctx.target_layout.store = ctx.store
     _with_files(ctx, "b1", {"metadata/a.tar": 1, "metadata/b.tar": 2})
     ctx.target_layout.object_errors["ch_backup/b1/metadata/b.tar"] = error
@@ -2819,7 +2821,7 @@ def test_resume_recopies_cloud_storage_objects_when_encryption_changes() -> None
 
 def test_copy_does_not_copy_copy_context_of_source() -> None:
     ctx = CopyTestContext([_backup("b1")])
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     _with_files(
         ctx,
         "b1",
@@ -3403,7 +3405,7 @@ def test_files_scope_copies_backup_with_copied_cloud_storage_data() -> None:
     )
     backup.cloud_storage.data_copied = True
     ctx = CopyTestContext([backup])
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     ctx.layout.cloud_storage_files["ch_backup/b1/disks/s3/db1/t1.tar.gz"] = [
         (
             "store/abc/uuid/all_1_1_0/data.bin",
@@ -3471,7 +3473,7 @@ def test_cloud_storage_parts_of_incomplete_copies_are_copied() -> None:
     copied_owner.state = BackupState.CREATING
     ctx = CopyTestContext([owner, backup], target_backups=[copied_owner])
     ctx.target_layout.store = ctx.store
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     ctx.layout.cloud_storage_files["ch_backup/base/disks/s3/db1/t1.tar.gz"] = [
         (
             "store/abc/uuid/all_1_1_0/data.bin",
