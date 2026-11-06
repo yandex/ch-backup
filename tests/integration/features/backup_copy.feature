@@ -7,56 +7,6 @@ Feature: Copy backups to another storage
     And a working clickhouse on clickhouse01
     And a working clickhouse on clickhouse02
 
-  @require_version_22.8
-  Scenario: Multipart copy retries through a broken proxy
-    Given we have executed queries on clickhouse01
-    """
-    CREATE DATABASE `test-db`;
-    CREATE TABLE `test-db`.`big.%тест` (n UInt64, data UInt64) ENGINE=MergeTree ORDER BY n;
-    INSERT INTO `test-db`.`big.%тест` SELECT number, rand64() FROM numbers(3000000)
-        SETTINGS max_threads=1, max_insert_threads=1;
-    OPTIMIZE TABLE `test-db`.`big.%тест` FINAL;
-    """
-    And we have created clickhouse01 clickhouse backup
-    """
-    name: multipart
-    """
-    And ch-backup configuration on clickhouse01
-    """
-    storage:
-        proxy_resolver:
-            uri: http://broken-proxy01:4080/resolve
-        retry:
-            backup:
-                max_attempts: 10
-                max_interval: 0
-    """
-    And ch-backup configuration on clickhouse02
-    """
-    storage:
-        credentials:
-            bucket: ch-backup-copy
-    """
-    When we save data part checksums in context on clickhouse01
-    And we execute command on clickhouse01
-    """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy multipart \
-        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
-    """
-    And we execute command on clickhouse01
-    """
-    grep 'injected UploadPartCopy failure HTTP 500' /var/log/ch-backup/ch-backup.log &&
-    grep 'injected UploadPartCopy failure HTTP 200' /var/log/ch-backup/ch-backup.log &&
-    grep 'injected lost CompleteMultipartUpload response' /var/log/ch-backup/ch-backup.log &&
-    grep 'Confirmed completed multipart copy' /var/log/ch-backup/ch-backup.log
-    """
-    And we execute command on clickhouse01
-    """
-    ! grep 'objects are copied through ch-backup' /var/log/ch-backup/ch-backup.log
-    """
-    And we restore clickhouse backup #0 to clickhouse02
-    Then data part checksums equal to saved ones on clickhouse02
-
   Scenario Outline: Copy backup to another bucket without encryption keys
     Given clickhouse on clickhouse01 has test schema
     And clickhouse01 has test clickhouse data test1

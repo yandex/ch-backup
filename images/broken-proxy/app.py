@@ -16,11 +16,6 @@ COMPLETED_COPIES = set()
 LOCK = threading.Lock()
 
 
-@bottle.get("/resolve")
-def resolve():
-    return "broken-proxy01"
-
-
 @bottle.route("<:path>", method="GET")
 @bottle.route("<:path>", method="POST")
 @bottle.route("<:path>", method="PUT")

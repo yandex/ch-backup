@@ -261,12 +261,6 @@ Behavior and limitations:
   are copied on the server side. Otherwise, data is streamed through ch-backup. Server-side copy can be
   disabled with `--no-server-side-copy`. It is disabled automatically for cloud-storage objects
   transformed by encryption or decryption.
-  Multipart server-side copies retry individual requests within the configured S3 retry budget.
-  If the completion response is lost, ch-backup checks the target object's size and a unique
-  `ch-backup-copy-id` S3 user metadata value set when starting that transfer. Only a match confirms
-  completion; an existing object of the same size alone is insufficient. If the check cannot confirm
-  completion, the copy fails and cleanup is attempted, without restarting the object or streaming it.
-  The marker stays on the S3 object; the backup metadata format and compatibility are unchanged.
 - The copy becomes valid (gets the state `created`) only after all its data is copied. If copying is
   interrupted, the copy remains in the state `creating` or `failed`, and the next run of the command
   resumes it. Confirmed copies are recorded in the copy context, a journal kept in the target storage
