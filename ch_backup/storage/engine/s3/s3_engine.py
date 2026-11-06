@@ -17,6 +17,7 @@ from ch_backup.storage.engine.s3.s3_client_factory import (
     S3ClientCachedFactory,
     S3ClientFactory,
 )
+from ch_backup.storage.engine.s3.s3_config import build_transfer_config
 from ch_backup.storage.engine.s3.s3_multipart_uploader import S3MultipartUploader
 from ch_backup.storage.engine.s3.s3_retry import (
     RetryExponential,
@@ -44,6 +45,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
         client_factory: S3ClientCachedFactory | None = None,
     ) -> None:
         max_attempts, max_interval = resolve_s3_retry_config(config, retry_policy)
+        self._transfer_config = build_transfer_config(config)
         self._s3_client_factory = client_factory or S3ClientCachedFactory(
             S3ClientFactory(config),
             client_ttl=config["client_ttl"],
@@ -71,7 +73,9 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
     def upload_file(self, local_path: str, remote_path: str) -> str:
         remote_path = remote_path.lstrip("/")
         with open(local_path, "rb") as data:
-            self._s3_client.upload_fileobj(data, self._s3_bucket_name, remote_path)
+            self._s3_client.upload_fileobj(
+                data, self._s3_bucket_name, remote_path, Config=self._transfer_config
+            )
         return remote_path
 
     def upload_data(self, data: bytes, remote_path: str) -> str:
@@ -83,12 +87,16 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
 
     def download_file(self, remote_path: str, local_path: str) -> None:
         remote_path = remote_path.lstrip("/")
-        self._s3_client.download_file(self._s3_bucket_name, remote_path, local_path)
+        self._s3_client.download_file(
+            self._s3_bucket_name, remote_path, local_path, Config=self._transfer_config
+        )
 
     def download_data(self, remote_path):
         remote_path = remote_path.lstrip("/")
         with TemporaryFile() as fileobj:
-            self._s3_client.download_fileobj(self._s3_bucket_name, remote_path, fileobj)
+            self._s3_client.download_fileobj(
+                self._s3_bucket_name, remote_path, fileobj, Config=self._transfer_config
+            )
             fileobj.seek(0)
             data = fileobj.read()
         return data
@@ -221,6 +229,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
             CopySource={"Bucket": source_bucket, "Key": source_path.lstrip("/")},
             Bucket=self._s3_bucket_name,
             Key=remote_path.lstrip("/"),
+            Config=self._transfer_config,
         )
 
     def path_exists(self, remote_path: str, is_dir: bool = False) -> bool:

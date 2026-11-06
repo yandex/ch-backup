@@ -15,6 +15,7 @@ from botocore.config import Config
 from ch_backup import logging
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import ConfigurationError
+from ch_backup.storage.engine.s3.s3_config import build_botocore_config
 from ch_backup.type_hints.boto3.s3 import S3Client
 
 _MAX_CACHED_FACTORIES = 16
@@ -50,6 +51,7 @@ class S3ClientFactory:
     def __init__(self, config: dict):
         credentials_config = config["credentials"]
         self._config = config
+        self._botocore_config = build_botocore_config(config)
         self._s3_session = boto3.session.Session(
             aws_access_key_id=credentials_config["access_key_id"],
             aws_secret_access_key=credentials_config["secret_access_key"],
@@ -90,22 +92,21 @@ class S3ClientFactory:
         Creates S3 client.
         """
         credentials_config = self._config["credentials"]
-        boto_config = self._config["boto_config"]
+        boto_config = deepcopy(self._botocore_config)
+        if "proxies" not in self._config.get("module_config", {}).get("botocore", {}):
+            boto_config = boto_config.merge(
+                Config(
+                    proxies=self._resolve_proxies(
+                        self._config.get("proxy_resolver", {}).get("uri"),
+                        self._config.get("proxy_resolver", {}).get("proxy_port"),
+                    )
+                )
+            )
 
         return self._s3_session.client(
             service_name="s3",
             endpoint_url=credentials_config["endpoint_url"],
-            config=Config(
-                s3={
-                    "addressing_style": boto_config["addressing_style"],
-                    "region_name": boto_config["region_name"],
-                },
-                proxies=self._resolve_proxies(
-                    self._config.get("proxy_resolver", {}).get("uri"),
-                    self._config.get("proxy_resolver", {}).get("proxy_port"),
-                ),
-                retries={"max_attempts": 0},  # Disable internal retrying mechanism.
-            ),
+            config=boto_config,
         )
 
 

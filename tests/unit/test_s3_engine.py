@@ -1,11 +1,12 @@
 """
-Unit tests for S3StorageEngine retries.
+Unit tests for S3StorageEngine.
 """
 
 import socket
 import ssl
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
 
@@ -38,6 +39,42 @@ def _engine(
     config: dict = {**DEFAULT_CONFIG["storage"], **storage}  # type: ignore[dict-item]
     config["credentials"] = {**config["credentials"], "bucket": "bucket"}
     return S3StorageEngine(config, retry_policy=retry_policy)
+
+
+def test_module_config_is_passed_to_sdk(tmp_path: Path) -> None:
+    options: dict[str, dict[str, Any]] = {
+        "botocore": {
+            "read_timeout": 120,
+            "retries": {"mode": "standard", "total_max_attempts": 3},
+            "proxies": {},
+        },
+        "transfer": {"multipart_chunksize": 16777216, "max_concurrency": 4},
+    }
+    with patch(
+        "ch_backup.storage.engine.s3.s3_client_factory.boto3.session.Session"
+    ) as session_class:
+        engine = _engine(module_config=options)
+        local_path = tmp_path / "data"
+        local_path.write_bytes(b"backup data")
+        engine.upload_file(str(local_path), "uploaded")
+        engine.download_file("downloaded", str(local_path))
+        engine.download_data("metadata")
+        engine.copy_object("source-bucket", "source", "target")
+
+    session = session_class.return_value
+    botocore_config = session.client.call_args.kwargs["config"]
+    for name, value in options["botocore"].items():
+        assert getattr(botocore_config, name) == value
+    client = session.client.return_value
+    for method in (
+        client.upload_fileobj,
+        client.download_file,
+        client.download_fileobj,
+        client.copy,
+    ):
+        transfer_config = method.call_args.kwargs["Config"]
+        for name, value in options["transfer"].items():
+            assert getattr(transfer_config, name) == value
 
 
 @pytest.mark.parametrize("max_attempts", [1, 3])
@@ -121,8 +158,8 @@ def test_proxy_dns_failure_recovers_after_six_attempts(dns_errno: int) -> None:
     getattr(engine, "_retry").sleep_function = Mock()
     factory = getattr(getattr(engine, "_s3_client_factory"), "_s3_client_factory")
     client = Mock()
-    client.download_fileobj.side_effect = lambda _bucket, _key, target: target.write(
-        b"backup data"
+    client.download_fileobj.side_effect = (
+        lambda _bucket, _key, target, **_kwargs: target.write(b"backup data")
     )
     dns_error = socket.gaierror(dns_errno, "DNS lookup failed")
     with (
