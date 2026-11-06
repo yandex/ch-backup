@@ -139,9 +139,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "deduplication_age_limit": {"days": 0},
         # strict requires server-side copy without fallback: any failed object makes the command
         # fail even with --keep-going. Incompatible with copy.cloud_storage.encrypt_data=true.
-        # auto tries server-side copy between S3 storages with the same endpoint and credentials.
-        # If unavailable or a probe fails after retries, the object is streamed through ch-backup.
-        # Objects requiring encryption/decryption are also streamed in auto mode.
+        # auto uses server-side copy when possible, falling back to streaming through ch-backup.
         # disabled always streams objects through ch-backup.
         "server_side_copy_mode": "auto",
         "resume": True,
