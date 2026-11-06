@@ -239,15 +239,10 @@ def _mask_command_params(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _mask_value(value: Any, name: str | None = None) -> Any:
-    if name and "proxies" in name.split("."):
-        return _HIDDEN
     if name and name.rsplit(".", 1)[-1].lower() in _SECRET_PARAMETER_NAMES:
         return _HIDDEN
     if isinstance(value, dict):
-        return {
-            key: _mask_value(item, f"{name}.{key}" if name else key)
-            for key, item in value.items()
-        }
+        return {key: _mask_value(item, key) for key, item in value.items()}
     if isinstance(value, list):
         return [_mask_value(item) for item in value]
     if isinstance(value, tuple):

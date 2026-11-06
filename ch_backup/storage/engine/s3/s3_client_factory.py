@@ -5,32 +5,14 @@ S3 client factory.
 import socket
 import threading
 from copy import deepcopy
-from urllib.parse import urlsplit
 
 import boto3
 import requests
-from botocore import httpsession
 from botocore.config import Config
 
 from ch_backup import logging
 from ch_backup.storage.engine.s3.s3_config import build_botocore_config
 from ch_backup.type_hints.boto3.s3 import S3Client
-
-
-def _mask_proxy_url(proxy_url: str) -> str:
-    """Replace the entire userinfo without matching credentials elsewhere."""
-    parsed = urlsplit(proxy_url)
-    if "@" not in parsed.netloc:
-        return proxy_url
-    host = parsed.netloc.rsplit("@", 1)[1]
-    return parsed._replace(netloc=f"***:***@{host}").geturl()
-
-
-# Botocore < 1.36 masks with str.replace: a password such as "http" replaces
-# the scheme and remains exposed. Fix the SDK's error formatter at its source,
-# before endpoint/retry logging, retaining the original exception and its cause.
-# This is process-wide so every SDK client uses the same safe formatter.
-httpsession.mask_proxy_url = _mask_proxy_url
 
 
 class S3BalancerUnknownHost(ValueError):

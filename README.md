@@ -115,10 +115,11 @@ storage:
             max_concurrency: 4
 ```
 
-Proxy URLs and the types of known `proxies_config` options are checked before
-storage access. Proxy addresses without a scheme remain supported; `null` or an
-empty string for a proxy entry disables it. Unknown `proxies_config` keys are
-passed through to the installed SDK.
+Options are passed to the installed SDK's `Config` and `TransferConfig`
+constructors, which perform their own validation. Omitted options keep the
+existing defaults. Explicit `retries` replace the default disabled SDK retries;
+explicit `proxies` override `storage.proxy_resolver`. These settings also apply
+to copy targets and cloud-storage clients.
 
 ## Installation
 
