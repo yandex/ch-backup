@@ -1,4 +1,4 @@
-"""S3 test proxy that fails every second UploadPartCopy request."""
+"""S3 test proxy injecting part errors and lost multipart completion replies."""
 
 import http.client
 import threading
@@ -11,6 +11,8 @@ import bottle
 from bottle import HTTPResponse
 
 PART_REQUESTS = count(1)
+COPY_UPLOADS = set()
+COMPLETED_COPIES = set()
 LOCK = threading.Lock()
 
 
@@ -27,6 +29,18 @@ def resolve():
 def index():
     request = bottle.request
     query = parse_qs(request.query_string, keep_blank_values=True)
+    if request.method == "POST" and "uploadId" in query:
+        with LOCK:
+            completed = query["uploadId"][0] in COMPLETED_COPIES
+            COMPLETED_COPIES.discard(query["uploadId"][0])
+        if completed:
+            # SeaweedFS accepts duplicate Complete requests; emulate S3's
+            # NoSuchUpload after a lost success response to test reconciliation.
+            return HTTPResponse(
+                status=404,
+                body="<Error><Code>NoSuchUpload</Code></Error>",
+                headers={"Content-Type": "application/xml"},
+            )
     if (
         request.method == "PUT"
         and "uploadId" in query
@@ -34,12 +48,16 @@ def index():
     ):
         # Count parts separately so other parallel requests cannot hide a fault.
         with LOCK:
-            fail = next(PART_REQUESTS) % 2 == 0
-        if fail:
+            part_request = next(PART_REQUESTS)
+            COPY_UPLOADS.add(query["uploadId"][0])
+        if part_request % 2 == 0:
+            status = 200 if part_request % 4 == 0 else 500
             return HTTPResponse(
-                status=500,
+                status=status,
                 body="<Error><Code>InternalError</Code>"
-                "<Message>injected UploadPartCopy failure</Message></Error>",
+                "<Message>injected UploadPartCopy failure HTTP {}</Message></Error>".format(
+                    status
+                ),
                 headers={"Content-Type": "application/xml"},
             )
 
@@ -63,6 +81,21 @@ def index():
         )
         response = connection.getresponse()
         data = response.read()
+        if request.method == "POST" and "uploadId" in query and response.status == 200:
+            with LOCK:
+                lose_response = query["uploadId"][0] in COPY_UPLOADS
+                COPY_UPLOADS.discard(query["uploadId"][0])
+                if lose_response:
+                    COMPLETED_COPIES.add(query["uploadId"][0])
+            if lose_response:
+                # The backend has completed the copy, but the caller receives a
+                # gateway failure. Retrying Complete must not copy all parts again.
+                return HTTPResponse(
+                    status=502,
+                    body="<Error><Code>InternalError</Code>"
+                    "<Message>injected lost CompleteMultipartUpload response</Message></Error>",
+                    headers={"Content-Type": "application/xml"},
+                )
         response_headers = {
             key: value
             for key, value in response.getheaders()

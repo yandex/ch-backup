@@ -45,7 +45,10 @@ Feature: Copy backups to another storage
     """
     And we execute command on clickhouse01
     """
-    grep 'injected UploadPartCopy failure' /var/log/ch-backup/ch-backup.log
+    grep 'injected UploadPartCopy failure HTTP 500' /var/log/ch-backup/ch-backup.log &&
+    grep 'injected UploadPartCopy failure HTTP 200' /var/log/ch-backup/ch-backup.log &&
+    grep 'injected lost CompleteMultipartUpload response' /var/log/ch-backup/ch-backup.log &&
+    grep 'Confirmed completed multipart copy' /var/log/ch-backup/ch-backup.log
     """
     And we execute command on clickhouse01
     """
