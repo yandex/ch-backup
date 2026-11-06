@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
+from botocore.client import BaseClient
 from botocore.exceptions import ClientError
 from click import Command
 
@@ -19,7 +20,6 @@ from ch_backup.clickhouse.disks import (
     ClickHouseTemporaryDisks,
 )
 from ch_backup.clickhouse.object_storage_metadata import parse_object_storage_metadata
-from ch_backup.storage.engine.s3.s3_engine import S3StorageEngine
 
 
 def _run_patched_cli(arguments: list[str]) -> None:
@@ -59,15 +59,18 @@ def fail_backup_publication(backup_name: str, arguments: list[str]) -> None:
 
 def fail_server_side_copy(error_count: int, arguments: list[str]) -> None:
     """Inject SlowDown responses into the first object's server-side copy."""
-    copy_object = S3StorageEngine._copy_object  # pylint: disable=protected-access
+    make_api_call = BaseClient._make_api_call  # pylint: disable=protected-access
     first_source = None
     attempts = 0
 
-    def fail_first(engine, source_bucket, source_path, remote_path):
+    def fail_first(client, operation_name, api_params):
         nonlocal first_source, attempts
+        if operation_name != "CopyObject":
+            return make_api_call(client, operation_name, api_params)
+        source = api_params["CopySource"]
         if first_source is None:
-            first_source = source_path
-        if source_path == first_source:
+            first_source = source
+        if source == first_source:
             attempts += 1
             if attempts <= error_count:
                 raise ClientError(
@@ -77,9 +80,9 @@ def fail_server_side_copy(error_count: int, arguments: list[str]) -> None:
                     },
                     "CopyObject",
                 )
-        return copy_object(engine, source_bucket, source_path, remote_path)
+        return make_api_call(client, operation_name, api_params)
 
-    with patch.object(S3StorageEngine, "_copy_object", fail_first):
+    with patch.object(BaseClient, "_make_api_call", fail_first):
         _run_patched_cli(arguments)
 
 

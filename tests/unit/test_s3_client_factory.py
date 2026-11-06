@@ -59,7 +59,7 @@ def test_copy_pipelines_reuse_s3_clients(
         assert session.return_value.client.call_count == session.call_count
 
     destination = reader if server_side else writer
-    assert destination.copy.call_count == (3 if server_side else 0)
+    assert destination.copy_object.call_count == (3 if server_side else 0)
     assert [call.kwargs["Body"] for call in destination.put_object.call_args_list] == (
         [b""] if server_side else [data, data, data, b""]
     )

@@ -71,6 +71,7 @@ from ch_backup.exceptions import (
 )
 from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
+from ch_backup.storage.engine.s3.s3_copy_client import S3MultipartCopyError
 from ch_backup.storage.object_copy import (
     CopyEntry,
     ServerSideCopyMode,
@@ -1868,13 +1869,14 @@ class BackupCopier:
             except Exception as e:
                 if (
                     self._server_side_copy_mode != ServerSideCopyMode.STRICT
-                    or is_broken_executor(e)
-                ):
+                    and not isinstance(e, S3MultipartCopyError)
+                ) or is_broken_executor(e):
                     raise
                 if on_error is not None:
                     on_error(entry, e)
                 if not self._keep_going:
                     raise
+                logging.warning("Server-side copy failed: {}", e)
                 continue
             if resolved is not None:
                 yield resolved
@@ -1906,8 +1908,11 @@ class BackupCopier:
                         entry.dst_path,
                     )
                 except Exception as e:
+                    # An initiated multipart transfer must not restart through
+                    # streamed copy, even in auto mode.
                     if (
                         self._server_side_copy_mode == ServerSideCopyMode.STRICT
+                        or isinstance(e, S3MultipartCopyError)
                         or is_broken_executor(e)
                     ):
                         raise

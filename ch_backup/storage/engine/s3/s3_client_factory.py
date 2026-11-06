@@ -13,6 +13,8 @@ from urllib.parse import urlsplit
 import boto3
 import requests
 from botocore.config import Config
+from botocore.endpoint import convert_to_response_dict
+from botocore.parsers import create_parser
 
 from ch_backup import logging
 from ch_backup.config import DEFAULT_CONFIG
@@ -37,6 +39,28 @@ def _validate_client_ttl(client_ttl: float) -> float:
             "storage.client_ttl must be a finite positive number of seconds"
         )
     return client_ttl
+
+
+def _repair_copy_error_response(response: Any, operation: Any, **_kwargs: Any) -> None:
+    """Keep embedded S3 errors readable on older supported botocore versions."""
+    if response is None:
+        return
+    http_response, parsed = response
+    # Older botocore detects HTTP 200 errors only after parsing, changes the
+    # HTTP status to 500, but leaves a success-shaped result without Error.Code.
+    # Run after that handler and parse again with the corrected status. Newer
+    # versions already normalize before parsing and need no repair.
+    if (
+        http_response.status_code >= 300
+        and parsed.get("ResponseMetadata", {}).get("HTTPStatusCode") == 200
+    ):
+        parsed.clear()
+        parsed.update(
+            create_parser(operation.metadata["protocol"]).parse(
+                convert_to_response_dict(http_response, operation),
+                operation.output_shape,
+            )
+        )
 
 
 def _mask_url_credentials(url: str) -> str:
@@ -139,11 +163,16 @@ class S3ClientFactory:
                 )
             )
 
-        return self._s3_session.client(
+        client = self._s3_session.client(
             service_name="s3",
             endpoint_url=credentials_config["endpoint_url"],
             config=boto_config,
         )
+        for operation in ("CopyObject", "UploadPartCopy", "CompleteMultipartUpload"):
+            client.meta.events.register(
+                f"needs-retry.s3.{operation}", _repair_copy_error_response
+            )
+        return client
 
 
 class S3ClientCachedFactory:
