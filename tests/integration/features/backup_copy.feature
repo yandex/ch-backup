@@ -19,7 +19,7 @@ Feature: Copy backups to another storage
     """
     When we execute command on clickhouse01
     """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf --config-parameter encryption.key null copy LAST <options> \
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf --config-parameter encryption.key null copy LAST --target-config-parameter copy.server_side_copy_mode '"<mode>"' \
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
     """
     Then we get response contains
@@ -33,7 +33,7 @@ Feature: Copy backups to another storage
     Then we got same clickhouse data at clickhouse01 clickhouse02
     When we execute command on clickhouse01
     """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf --config-parameter encryption.key null copy LAST <options> \
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf --config-parameter encryption.key null copy LAST --target-config-parameter copy.server_side_copy_mode '"<mode>"' \
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
     """
     Then we get response contains
@@ -42,9 +42,64 @@ Feature: Copy backups to another storage
     """
 
     Examples:
-      | options               |
-      | --server-side-copy    |
-      | --no-server-side-copy |
+      | mode     |
+      | auto     |
+      | disabled |
+      | strict   |
+
+  Scenario: Copy retries temporary probe errors and respects the selected mode
+    Given clickhouse on clickhouse01 has test schema
+    And clickhouse01 has test clickhouse data test1
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: retry
+    """
+    And ch-backup configuration on clickhouse01
+    """
+    copy:
+        server_side_copy_mode: strict
+    storage:
+        proxy_resolver: {uri: null}
+        retry:
+            backup: {max_attempts: 3, max_interval: 0}
+    """
+    When we try to execute ch-backup on clickhouse01 with 3 SlowDown errors
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf copy retry --keep-going
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
+        --report-path /tmp/copy-report.json
+    """
+    Then command exits with code 1
+    And failed copy report "/tmp/copy-report.json" on clickhouse01 has results
+    """
+    retry:
+      status: failed
+      partial_copy: true
+      error_count: 1
+      error_stage: copy
+      error_sources: true
+    """
+    When we try to execute ch-backup on clickhouse01 with 2 SlowDown errors
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf copy retry
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
+    """
+    Then command exits with code 0
+    And we get response contains
+    """
+    retry: copied
+    """
+    When we try to execute ch-backup on clickhouse01 with 3 SlowDown errors
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf copy retry --target-config-parameter copy.server_side_copy_mode '"auto"'
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
+        --target-config-parameter backup.path_root '"ch_backup_auto/"'
+    """
+    Then command exits with code 0
+    And we get response contains
+    """
+    retry: copied
+    """
 
   Scenario: Copy backup to another path in the same bucket
     Given clickhouse on clickhouse01 has test schema
@@ -198,7 +253,7 @@ Feature: Copy backups to another storage
     """
     When we execute command on clickhouse01
     """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy a_owner <copy_mode> \
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy a_owner --target-config-parameter copy.server_side_copy_mode '"<copy_mode>"' \
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
         --target-config-parameter copy.deduplication_age_limit.days 90
     """
@@ -224,7 +279,7 @@ Feature: Copy backups to another storage
       | 1   | created | 1          | 0          |
     When we execute command on clickhouse01
     """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf --config-parameter encryption.key null copy b_renewed <copy_mode> \
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf --config-parameter encryption.key null copy b_renewed --target-config-parameter copy.server_side_copy_mode '"<copy_mode>"' \
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
         --target-config-parameter copy.deduplication_age_limit.days 90
     """
@@ -265,9 +320,9 @@ Feature: Copy backups to another storage
     Then s3 bucket ch-backup-copy contains 0 objects
 
     Examples:
-      | copy_mode             | remove_owner   |
-      | --server-side-copy    | delete a_owner |
-      | --no-server-side-copy | purge          |
+      | copy_mode | remove_owner   |
+      | auto      | delete a_owner |
+      | disabled  | purge          |
 
   Scenario: Copy keeps links to parts of a copy that fails to be published
     Given we have executed queries on clickhouse01
@@ -427,7 +482,7 @@ Feature: Copy backups to another storage
     """
 
   @require_version_22.8
-  Scenario: Copy keeps going after object failures and leaves the incomplete backup failed
+  Scenario Outline: Copy keeps going after object failures with <copy_mode>
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE test_db;
@@ -459,7 +514,7 @@ Feature: Copy backups to another storage
     And we try to execute command on clickhouse01
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy --all --keep-going \
-        --no-server-side-copy \
+        --target-config-parameter copy.server_side_copy_mode '"<copy_mode>"' \
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
         --target-cloud-storage-bucket cloud-storage-02 \
         --report-path /tmp/copy-report.json
@@ -478,6 +533,11 @@ Feature: Copy backups to another storage
       error_sources: true
     b_local: {status: copied}
     """
+
+    Examples:
+      | copy_mode |
+      | disabled  |
+      | strict    |
 
   Scenario: Copy isolates corrupt target metadata
     Given clickhouse on clickhouse01 has test schema
@@ -648,7 +708,7 @@ Feature: Copy backups to another storage
     And we try to execute command on clickhouse01
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy cloud --keep-going \
-        --no-server-side-copy \
+        --target-config-parameter copy.server_side_copy_mode '"disabled"' \
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
         --target-cloud-storage-bucket cloud-storage-02 \
         --report-path /tmp/copy-report.json
@@ -673,7 +733,7 @@ Feature: Copy backups to another storage
     And we execute command on clickhouse01
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy cloud --keep-going \
-        --no-server-side-copy \
+        --target-config-parameter copy.server_side_copy_mode '"disabled"' \
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
         --target-cloud-storage-bucket cloud-storage-02 \
         --report-path /tmp/copy-retry-report.json
@@ -826,7 +886,7 @@ Feature: Copy backups to another storage
     """
     When we execute command on clickhouse01
     """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy LAST --scope files --server-side-copy \
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy LAST --scope files --target-config-parameter copy.server_side_copy_mode '"auto"' \
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
     """
     Then we get response contains
@@ -869,7 +929,7 @@ Feature: Copy backups to another storage
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf \
         --config-parameter storage.credentials.bucket '"missing-bucket"' \
         copy LAST --scope cloud_storage --keep-going \
-        --no-server-side-copy \
+        --target-config-parameter copy.server_side_copy_mode '"disabled"' \
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
         --target-cloud-storage-bucket cloud-storage-02 \
         --target-cloud-storage-path copy

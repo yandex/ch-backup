@@ -154,6 +154,6 @@ class PipeLineCompatibleStorageEngine(StorageEngine):
 
         Return False when the service rejects the request before a multipart
         transfer is initiated. Raise on exhausted retries or a failed initiated
-        transfer so the caller does not restart the object through streamed copy.
+        transfer; the caller's copy mode determines fallback before initiation.
         """
         pass

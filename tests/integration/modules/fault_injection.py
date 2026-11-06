@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
+from botocore.client import BaseClient
+from botocore.exceptions import ClientError
 from click import Command
 
 from ch_backup.backup.layout import BackupLayout
@@ -52,6 +54,35 @@ def fail_backup_publication(backup_name: str, arguments: list[str]) -> None:
         return upload(layout, backup, *args, **kwargs)
 
     with patch.object(BackupLayout, "upload_backup_metadata", fail_owner):
+        _run_patched_cli(arguments)
+
+
+def fail_server_side_copy(error_count: int, arguments: list[str]) -> None:
+    """Inject SlowDown responses into the first object's server-side copy."""
+    make_api_call = BaseClient._make_api_call  # pylint: disable=protected-access
+    first_source = None
+    attempts = 0
+
+    def fail_first(client, operation_name, api_params):
+        nonlocal first_source, attempts
+        if operation_name != "CopyObject":
+            return make_api_call(client, operation_name, api_params)
+        source = api_params["CopySource"]
+        if first_source is None:
+            first_source = source
+        if source == first_source:
+            attempts += 1
+            if attempts <= error_count:
+                raise ClientError(
+                    {
+                        "Error": {"Code": "SlowDown", "Message": "injected throttling"},
+                        "ResponseMetadata": {"HTTPStatusCode": 503},
+                    },
+                    "CopyObject",
+                )
+        return make_api_call(client, operation_name, api_params)
+
+    with patch.object(BaseClient, "_make_api_call", fail_first):
         _run_patched_cli(arguments)
 
 
@@ -116,6 +147,9 @@ if __name__ == "__main__":
     publication = subparsers.add_parser("fail-backup-publication")
     publication.add_argument("backup_name")
     publication.add_argument("arguments", nargs=argparse.REMAINDER)
+    server_side_copy = subparsers.add_parser("fail-server-side-copy")
+    server_side_copy.add_argument("error_count", type=int)
+    server_side_copy.add_argument("arguments", nargs=argparse.REMAINDER)
     drop_table = subparsers.add_parser("drop-frozen-table")
     drop_table.add_argument("database")
     drop_table.add_argument("table")
@@ -132,6 +166,8 @@ if __name__ == "__main__":
         corrupt_file(options.path, options.action)
     elif options.fault == "fail-backup-publication":
         fail_backup_publication(options.backup_name, options.arguments)
+    elif options.fault == "fail-server-side-copy":
+        fail_server_side_copy(options.error_count, options.arguments)
     elif options.fault == "drop-frozen-table":
         drop_frozen_table(options.database, options.table, options.arguments)
     elif options.fault == "interrupt-inplace-copy":

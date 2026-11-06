@@ -138,6 +138,72 @@ def test_copy_command_passes_resume(
     assert target_config["copy"]["resume"] is resume
 
 
+@pytest.mark.parametrize(
+    "options,settings,exit_code,error",
+    [
+        (
+            [],
+            {},
+            0,
+            None,
+        ),
+        (
+            [],
+            {"server_side_copy_mode": "disabled"},
+            0,
+            None,
+        ),
+        (
+            ["--target-config-parameter", "copy.server_side_copy_mode", '"strict"'],
+            {"server_side_copy_mode": "disabled"},
+            0,
+            None,
+        ),
+        (
+            [],
+            {
+                "server_side_copy_mode": "strict",
+                "cloud_storage": {"encrypt_data": True},
+            },
+            1,
+            "Strict server-side copy is incompatible with copy.cloud_storage.encrypt_data",
+        ),
+    ],
+)
+def test_copy_server_side_copy_mode(
+    copy_backup: MagicMock,
+    options: list[str],
+    settings: dict,
+    exit_code: int,
+    error: str | None,
+) -> None:
+    ctx = CopyTestContext([_backup("b1")])
+    ctx.src_objects["ch_backup/b1/metadata/a.tar"] = 1
+    copy_backup.config.merge({"copy": settings})
+
+    def copy(target, names, *, report, **_):
+        ctx.target_config["copy"] = deepcopy(target["copy"])
+        with patch(
+            "ch_backup.backup.copier.get_storage_engine", side_effect=ctx.store.engine
+        ):
+            return ctx.make_copier().copy(names, report=report)
+
+    copy_backup.copy.side_effect = copy
+    result = _invoke(cli.copy_command, ["copy", "b1", *options], copy_backup)
+
+    assert result.exit_code == exit_code, result.output + result.stderr
+    if error:
+        assert error in result.stderr
+        assert not ctx.target_layout.uploaded
+    else:
+        expected = (
+            "strict" if options else settings.get("server_side_copy_mode", "auto")
+        )
+        assert len(ctx.store.probes) == int(expected != "disabled")
+        if expected == "disabled":
+            assert [entry.server_side for entry in ctx.target_layout.copied] == [False]
+
+
 def test_copy_command_masks_config_parameter_secrets_in_log(
     copy_backup: MagicMock,
 ) -> None:

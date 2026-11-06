@@ -29,6 +29,7 @@ from ch_backup.storage.engine.s3.s3_retry import (
     S3RetryingError,
     S3RetryMeta,
     S3RetryPolicy,
+    is_retryable_s3_error,
     resolve_s3_retry_config,
 )
 from ch_backup.type_hints.boto3.s3 import S3Client
@@ -41,9 +42,18 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
 
     DEFAULT_DOWNLOAD_PART_LEN = 128 * 1024 * 1024
 
-    def __init__(self, config: dict, retry_policy: S3RetryPolicy | None = None) -> None:
+    def __init__(
+        self,
+        config: dict,
+        retry_policy: S3RetryPolicy | None = None,
+        *,
+        client_factory: S3ClientCachedFactory | None = None,
+    ) -> None:
         max_attempts, max_interval = resolve_s3_retry_config(config, retry_policy)
-        self._s3_client_factory = S3ClientCachedFactory(S3ClientFactory(config))
+        self._s3_client_factory = client_factory or S3ClientCachedFactory(
+            S3ClientFactory(config),
+            client_ttl=config["client_ttl"],
+        )
         self._s3_bucket_name = config["credentials"]["bucket"]
 
         self._multipart_uploader = S3MultipartUploader(
@@ -204,6 +214,8 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
             self._copy_object(source_bucket, source_path, remote_path)
             return True
         except ClientError as e:
+            if is_retryable_s3_error(e):
+                raise
             logging.warning(
                 "Server-side copy of '{}' from bucket '{}' failed: {}",
                 source_path,
