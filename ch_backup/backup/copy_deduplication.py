@@ -1,9 +1,8 @@
 """Target-local part ownership for an independent backup-copy window."""
 
 from collections import defaultdict, deque
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future
 from datetime import datetime, timedelta
-from functools import partial
 from hashlib import blake2b
 from itertools import islice
 from typing import NamedTuple
@@ -18,8 +17,8 @@ from ch_backup.backup.metadata import (
     PartMetadata,
     split_part_name,
 )
-from ch_backup.command_context import get_current_command, run_with_command_context
 from ch_backup.exceptions import ConfigurationError, is_broken_executor
+from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 
 PartsByTable = dict[tuple[str, str], list[tuple[tuple, PartMetadata]]]
 
@@ -120,16 +119,11 @@ class CopyDeduplication:
 
     def load(self, backups: list[BackupMetadata], *, workers: int = 1) -> None:
         """Prefetch at most workers full metadata, indexing candidates sequentially."""
-        command = get_current_command()
-        with ThreadPoolExecutor(max_workers=workers) as pool:
+        with ThreadExecPool(workers) as pool:
             reads = (
                 (
                     summary.name,
-                    pool.submit(
-                        run_with_command_context,
-                        command,
-                        partial(self._layout.get_backup, summary.name),
-                    ),
+                    pool.submit_future(self._layout.get_backup, summary.name),
                 )
                 for summary in backups
             )

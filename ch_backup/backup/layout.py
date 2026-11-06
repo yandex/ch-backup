@@ -6,7 +6,7 @@ Management of backup data layout.
 
 import json
 import os
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, wait
 from contextlib import contextmanager
 from functools import partial
 from io import IOBase
@@ -39,7 +39,6 @@ from ch_backup.clickhouse.object_storage_metadata import (
     ObjectStorageMetadataError,
     parse_object_storage_metadata,
 )
-from ch_backup.command_context import get_current_command, run_with_command_context
 from ch_backup.config import Config
 from ch_backup.encryption import get_encryption_class
 from ch_backup.exceptions import (
@@ -49,6 +48,7 @@ from ch_backup.exceptions import (
     is_broken_executor,
 )
 from ch_backup.storage import StorageLoader
+from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.storage.engine.s3 import S3RetryingError
 from ch_backup.storage.object_copy import CopyEntry
 from ch_backup.util import (
@@ -80,20 +80,19 @@ def read_metadata_in_batches(
     Bound metadata retained in futures instead of submitting the whole inventory.
     """
     names = iter(names)
-    command = get_current_command()
     while batch := list(islice(names, workers)):
-        with ThreadPoolExecutor(max_workers=workers) as pool:
+        with ThreadExecPool(workers) as pool:
             reads = [
                 (
                     name,
-                    pool.submit(
-                        run_with_command_context,
-                        command,
-                        partial(layout.get_backup, name, use_light_meta=use_light_meta),
+                    pool.submit_future(
+                        layout.get_backup, name, use_light_meta=use_light_meta
                     ),
                 )
                 for name in batch
             ]
+            # ExecPool.shutdown() cancels queued futures; drain the batch first.
+            wait(future for _, future in reads)
         yield from reads
         del reads
 
