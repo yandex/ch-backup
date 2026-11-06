@@ -211,6 +211,7 @@ def test_copy_command_masks_config_parameter_secrets_in_log(
     group = Group()
     group.add_command(cli.copy_command)
     secret = "c" * 32
+    resolver = "http://resolver-user:resolver-password@localhost:bad-port"
 
     with patch("ch_backup.cli.logging.info") as log_info:
         result = CliRunner().invoke(
@@ -221,6 +222,9 @@ def test_copy_command_masks_config_parameter_secrets_in_log(
                 "--target-config-parameter",
                 "cloud_storage.data_encryption.key",
                 json.dumps(secret),
+                "--target-config-parameter",
+                "storage.proxy_resolver",
+                json.dumps({"uri": resolver}),
                 "--target-config-parameter",
                 "storage.credentials",
                 json.dumps(
@@ -237,6 +241,7 @@ def test_copy_command_masks_config_parameter_secrets_in_log(
     logged = str(log_info.mock_calls)
     assert secret not in logged
     assert "also-secret" not in logged
+    assert "resolver-user" not in logged and "resolver-password" not in logged
     assert "visible" in logged
     assert "[HIDDEN]" in logged
 
