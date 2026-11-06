@@ -299,6 +299,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # The number of processes allocating for data processing. If set to 0, all processing will be performed
         # in the main process.
         "workers": 4,
+        # The number of threads for reading source/target light metadata at copy startup.
+        "metadata_read_threads": 4,
+        # Full metadata held at once while building the copy deduplication index.
+        "full_metadata_read_threads": 2,
         # The number of processes for parts restoring from S3 disks.
         "cloud_storage_restore_workers": 4,
         # The number of threads for copying data of S3 disks into the backup.

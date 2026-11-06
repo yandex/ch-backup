@@ -1,8 +1,10 @@
 """Target-local part ownership for an independent backup-copy window."""
 
-from collections import defaultdict
+from collections import defaultdict, deque
+from concurrent.futures import Future
 from datetime import datetime, timedelta
 from hashlib import blake2b
+from itertools import islice
 from typing import NamedTuple
 
 from ch_backup import logging
@@ -16,6 +18,7 @@ from ch_backup.backup.metadata import (
     split_part_name,
 )
 from ch_backup.exceptions import ConfigurationError, is_broken_executor
+from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 
 PartsByTable = dict[tuple[str, str], list[tuple[tuple, PartMetadata]]]
 
@@ -87,7 +90,7 @@ def _local_parts(backup: BackupMetadata) -> PartsByTable:
 
 
 class CopyDeduplication:
-    """Index verified physical local parts, without retaining complete backup metadata."""
+    """Index verified physical local parts without keeping full metadata in the index."""
 
     def __init__(
         self, layout: BackupLayout, cutoff: datetime, command_start: datetime
@@ -114,30 +117,42 @@ class CopyDeduplication:
             and not backup.schema_only
         )
 
-    def load(self, backups: list[BackupMetadata]) -> None:
-        """Read each eligible full metadata once; an optional unreadable candidate is skipped."""
-        for summary in backups:
-            try:
-                backup = self._layout.get_backup(summary.name)
-                if (
-                    backup is None
-                    or backup.name != summary.name
-                    or not self.eligible(backup)
-                ):
-                    continue
-                parts = _local_parts(backup)
-            except Exception as exc:
-                if is_broken_executor(exc):
-                    raise
-                logging.warning(
-                    "Cannot read copy deduplication candidate {}, skipping it ({})",
+    def load(self, backups: list[BackupMetadata], *, workers: int = 1) -> None:
+        """Prefetch at most workers full metadata, indexing candidates sequentially."""
+        with ThreadExecPool(workers) as pool:
+            reads = (
+                (
                     summary.name,
-                    type(exc).__name__,
+                    pool.submit_future(self._layout.get_backup, summary.name),
                 )
-                continue
-            # Storage/executor errors in the shared inventory operation stay fatal.
-            self._index_parts(backup, parts, published=False)
-            del backup, parts
+                for summary in backups
+            )
+            pending = deque(islice(reads, workers))
+            while pending:
+                name, future = pending.popleft()
+                self._load_candidate(name, future)
+                del future
+                pending.extend(islice(reads, 1))
+
+    def _load_candidate(self, name: str, future: Future[BackupMetadata | None]) -> None:
+        """Index one candidate, skipping optional metadata read or parse errors."""
+        try:
+            backup = future.result()
+            if backup is None or backup.name != name or not self.eligible(backup):
+                return
+            parts = _local_parts(backup)
+        except Exception as exc:
+            del future
+            if is_broken_executor(exc):
+                raise
+            logging.warning(
+                "Cannot read copy deduplication candidate {}, skipping it ({})",
+                name,
+                type(exc).__name__,
+            )
+            return
+        # Storage/executor errors in the shared inventory operation stay fatal.
+        self._index_parts(backup, parts, published=False)
 
     def add_backup(self, backup: BackupMetadata, *, published: bool = False) -> None:
         """Add owners whose backup or files scope has been published successfully."""

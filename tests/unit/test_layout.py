@@ -3,13 +3,14 @@
 import copy
 import os
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from threading import Event
+from threading import Barrier, Event
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from ch_backup.backup.layout import BackupLayout
+from ch_backup.backup.layout import BackupLayout, read_metadata_in_batches
 from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
@@ -20,6 +21,7 @@ from ch_backup.backup.metadata import (
 from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.clickhouse.models import Disk, Table
+from ch_backup.command_context import command_context, get_current_command
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import StorageError
 from ch_backup.storage.async_pipeline import pipeline_executor
@@ -35,6 +37,90 @@ def make_layout() -> BackupLayout:
         layout = BackupLayout(config)  # type: ignore[arg-type]
     setattr(layout, "_storage_loader", MagicMock())
     return layout
+
+
+@pytest.mark.parametrize("use_light_meta", [False, True])
+@pytest.mark.parametrize("workers", [1, 2, 4])
+def test_metadata_reads_are_parallel_bounded_and_ordered(use_light_meta, workers):
+    layout = make_layout()
+    names = [f"b{i}" for i in range(workers * 2)]
+    barrier = Barrier(workers)
+
+    def read(name, use_light_meta=False):
+        assert use_light_meta is light
+        assert get_current_command() == "copy"
+        # All reads of the batch must start before any can finish.
+        barrier.wait(timeout=10)
+        return BackupMetadata(name, "2", "26.6", "%Y-%m-%d")
+
+    light = use_light_meta
+    with (
+        command_context("copy"),
+        patch.object(layout, "get_backup", side_effect=read) as get_backup,
+        ThreadExecPool(workers) as pool,
+    ):
+        reads = read_metadata_in_batches(
+            layout, names, pool=pool, workers=workers, use_light_meta=use_light_meta
+        )
+        name, future = next(reads)
+        assert name == names[0]
+        backup = future.result()
+        assert backup is not None and backup.name == name
+        assert get_backup.call_count == workers
+        assert [name] + [name for name, future in reads if future.result()] == names
+        assert get_backup.call_count == workers * 2
+
+
+def test_metadata_reads_preserve_missing_and_errors_and_drain_on_early_exit():
+    layout = make_layout()
+    failure = StorageError("unreadable metadata")
+    finished = []
+    last_started, release_last, consumer_failed, done = (
+        Event(),
+        Event(),
+        Event(),
+        Event(),
+    )
+
+    def read(name, **_kwargs):
+        try:
+            if name == "last":
+                last_started.set()
+                assert release_last.wait(10)
+            if name == "broken":
+                raise failure
+        finally:
+            finished.append(name)
+
+    def consume():
+        with ThreadExecPool(4) as pool:
+            reads = read_metadata_in_batches(
+                layout, ["missing", "broken", "unused", "last"], pool=pool, workers=4
+            )
+            name, future = next(reads)
+            assert name == "missing" and future.result() is None
+            assert last_started.wait(10)
+            assert "last" not in finished
+            name, future = next(reads)
+            assert name == "broken"
+            try:
+                future.result()
+            finally:
+                consumer_failed.set()
+
+    with patch.object(layout, "get_backup", side_effect=read):
+        with ThreadPoolExecutor(max_workers=1) as consumer:
+            loading = consumer.submit(consume)
+            loading.add_done_callback(lambda _: done.set())
+            try:
+                assert consumer_failed.wait(10)
+                assert not done.wait(0.05)
+            finally:
+                release_last.set()
+            with pytest.raises(StorageError) as raised:
+                loading.result(timeout=10)
+            assert raised.value is failure
+    assert sorted(finished) == ["broken", "last", "missing", "unused"]
 
 
 @pytest.mark.parametrize("filename", ["../outside/file", "/outside/file", "link/file"])

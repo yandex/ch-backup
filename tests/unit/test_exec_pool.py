@@ -29,6 +29,23 @@ def _assert_command_context(expected: str) -> None:
     assert get_current_command() == expected
 
 
+@pytest.mark.parametrize("pool_type", [ThreadExecPool, ProcessExecPool])
+def test_pool_propagates_context_for_tracked_and_untracked_jobs(
+    pool_type: type[ThreadExecPool] | type[ProcessExecPool],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(logging.logger._core, "handlers", {})  # type: ignore[attr-defined]
+    with pool_type(1) as pool:
+        with command_context("copy"):
+            future = pool.submit_future(get_current_command)
+        assert future.result(timeout=10) == "copy"
+        assert not pool._future_to_job
+        with command_context("backup"):
+            pool.submit("backup", _assert_command_context, "backup")
+        pool.wait_all()
+        assert pool.submit_future(get_current_command).result(timeout=10) is None
+
+
 @pytest.mark.parametrize("workers", [0, 2])
 def test_pipeline_callbacks_collect_errors_and_allow_next_batch(
     workers: int, monkeypatch: pytest.MonkeyPatch
