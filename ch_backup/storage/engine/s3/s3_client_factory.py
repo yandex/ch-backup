@@ -4,13 +4,36 @@ S3 client factory.
 
 import socket
 import threading
+from copy import deepcopy
+from sys import float_info
+from time import monotonic
 
 import boto3
 import requests
 from botocore.config import Config
 
 from ch_backup import logging
+from ch_backup.config import DEFAULT_CONFIG
+from ch_backup.exceptions import ConfigurationError
 from ch_backup.type_hints.boto3.s3 import S3Client
+
+_MAX_CACHED_FACTORIES = 16
+
+# ProcessExecPool uses spawn, so each worker owns its sessions and connections.
+_FACTORIES: list[tuple[dict, "S3ClientCachedFactory"]] = []
+_FACTORIES_LOCK = threading.Lock()
+
+
+def _validate_client_ttl(client_ttl: float) -> float:
+    if (
+        isinstance(client_ttl, bool)
+        or not isinstance(client_ttl, (int, float))
+        or not 0 < client_ttl <= float_info.max
+    ):
+        raise ConfigurationError(
+            "storage.client_ttl must be a finite positive number of seconds"
+        )
+    return client_ttl
 
 
 class S3BalancerUnknownHost(ValueError):
@@ -91,7 +114,14 @@ class S3ClientCachedFactory:
     Thread safe S3 client factory returning cached client or creating new.
     """
 
-    def __init__(self, s3_client_factory: S3ClientFactory) -> None:
+    def __init__(
+        self,
+        s3_client_factory: S3ClientFactory,
+        *,
+        client_ttl: float = DEFAULT_CONFIG["storage"]["client_ttl"],
+    ) -> None:
+        self._client_ttl = _validate_client_ttl(client_ttl)
+        self._next_client_refresh_at = 0.0
         self._s3_client_factory = s3_client_factory
         self._cached_s3_client: S3Client | None = None
         self._lock = threading.Lock()
@@ -104,7 +134,13 @@ class S3ClientCachedFactory:
         # Failed discovery must not invalidate a client created by another worker.
         self._thread_state.client = None
         with self._lock:
-            if not cached or self._cached_s3_client is None:
+            if (
+                not cached
+                or self._cached_s3_client is None
+                or monotonic() >= self._next_client_refresh_at
+            ):
+                # Schedule the next refresh even if this attempt fails.
+                self._next_client_refresh_at = monotonic() + self._client_ttl
                 self._cached_s3_client = self._s3_client_factory.create_s3_client()
             self._thread_state.client = self._cached_s3_client
             return self._cached_s3_client
@@ -118,3 +154,24 @@ class S3ClientCachedFactory:
             if client is not None and self._cached_s3_client is client:
                 self._cached_s3_client = None
         self._thread_state.client = None
+
+
+def get_cached_s3_client_factory(config: dict) -> S3ClientCachedFactory:
+    """Return the process-local factory shared by engines with an equal config."""
+    client_ttl = _validate_client_ttl(config["client_ttl"])
+    with _FACTORIES_LOCK:
+        for index, (cached_config, factory) in enumerate(_FACTORIES):
+            if config == cached_config:
+                # Move this factory to the end to mark it as most recently used.
+                _FACTORIES.append(_FACTORIES.pop(index))
+                return factory
+        # Keep the cache key and factory independent of caller mutations.
+        snapshot = deepcopy(config)
+        factory = S3ClientCachedFactory(
+            S3ClientFactory(snapshot),
+            client_ttl=client_ttl,
+        )
+        _FACTORIES.append((snapshot, factory))
+        # Remove older entries from the front, keeping the most recently used ones.
+        del _FACTORIES[:-_MAX_CACHED_FACTORIES]
+        return factory

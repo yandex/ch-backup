@@ -48,7 +48,7 @@ def _context(source_part=None, owners=None):
         owners[0].start_time = owners[0].end_time = source.start_time
     ctx = CopyTestContext([source], owners)
     ctx.target_config["copy"]["deduplication_age_limit"] = {"days": 7}
-    ctx.target_config["copy"]["server_side_copy"] = False
+    ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     for owner in owners:
         for path, size in _files(owner, ctx.target_layout).items():
             ctx.dst_objects[f"ch_backup_copy/{owner.name}/{path}"] = size
