@@ -68,6 +68,7 @@ from ch_backup.exceptions import (
     TerminatingSignal,
     is_broken_executor,
 )
+from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
 from ch_backup.storage.object_copy import (
@@ -280,34 +281,36 @@ class BackupCopier:
         """Reserve unreadable target names without blocking independent backups."""
         names = {}
         candidates = []
-        for name, read in read_metadata_in_batches(
-            self._target_layout,
-            self._target_layout.get_backup_names(),
-            workers=self._metadata_read_threads,
-            use_light_meta=True,
-        ):
-            try:
-                backup = read.result()
-                if backup is None:
-                    continue
-                if backup.name != name:
-                    raise ClickhouseBackupError(
-                        f'Target backup metadata name does not match "{name}"'
-                    )
-                names[backup.get_sanitized_name()] = name
-                if (
-                    self._target_deduplication is not None
-                    and self._target_deduplication.eligible(backup)
-                ):
-                    candidates.append(backup)
-            except Exception as e:
-                if name not in results:
-                    results[name] = BackupCopyResult(name)
-                    self._report.backups.append(results[name])
-                results[name].add_error(e, "target_selection")
-                if not self._keep_going or is_broken_executor(e):
-                    raise
-                names[sanitize_backup_name(name)] = name
+        with ThreadExecPool(self._metadata_read_threads) as pool:
+            for name, read in read_metadata_in_batches(
+                self._target_layout,
+                self._target_layout.get_backup_names(),
+                pool=pool,
+                workers=self._metadata_read_threads,
+                use_light_meta=True,
+            ):
+                try:
+                    backup = read.result()
+                    if backup is None:
+                        continue
+                    if backup.name != name:
+                        raise ClickhouseBackupError(
+                            f'Target backup metadata name does not match "{name}"'
+                        )
+                    names[backup.get_sanitized_name()] = name
+                    if (
+                        self._target_deduplication is not None
+                        and self._target_deduplication.eligible(backup)
+                    ):
+                        candidates.append(backup)
+                except Exception as e:
+                    if name not in results:
+                        results[name] = BackupCopyResult(name)
+                        self._report.backups.append(results[name])
+                    results[name].add_error(e, "target_selection")
+                    if not self._keep_going or is_broken_executor(e):
+                        raise
+                    names[sanitize_backup_name(name)] = name
         if self._target_deduplication is not None:
             self._target_deduplication.load(
                 candidates,
@@ -396,38 +399,45 @@ class BackupCopier:
         )
         results = {name: BackupCopyResult(name) for name in dict.fromkeys(names)}
         self._report.backups.extend(results.values())
-        for name, read in read_metadata_in_batches(
-            layout, results, workers=self._metadata_read_threads, use_light_meta=True
-        ):
-            result = results[name]
-            try:
-                backup = read.result()
-                if backup_names is None and (
-                    not backup
-                    or (
-                        not _ready_for_cloud_storage_copy(backup)
-                        if staged
-                        else backup.state != BackupState.CREATED
-                    )
-                    or (self._copy_config["only_with_data"] and backup.is_empty())
-                ):
-                    self._report.backups.remove(result)
-                    continue
-                if not backup:
-                    raise (
-                        _files_scope_required(name) if staged else BackupNotFound(name)
-                    )
-                if not staged:
-                    _check_backup_state(backup)
-                if backup.name != name:
-                    raise ClickhouseBackupError(
-                        f'Backup metadata name does not match "{name}"'
-                    )
-                backups.append(backup)
-            except Exception as e:
-                result.add_error(e, "selection")
-                if not self._keep_going or is_broken_executor(e):
-                    raise
+        with ThreadExecPool(self._metadata_read_threads) as pool:
+            for name, read in read_metadata_in_batches(
+                layout,
+                results,
+                pool=pool,
+                workers=self._metadata_read_threads,
+                use_light_meta=True,
+            ):
+                result = results[name]
+                try:
+                    backup = read.result()
+                    if backup_names is None and (
+                        not backup
+                        or (
+                            not _ready_for_cloud_storage_copy(backup)
+                            if staged
+                            else backup.state != BackupState.CREATED
+                        )
+                        or (self._copy_config["only_with_data"] and backup.is_empty())
+                    ):
+                        self._report.backups.remove(result)
+                        continue
+                    if not backup:
+                        raise (
+                            _files_scope_required(name)
+                            if staged
+                            else BackupNotFound(name)
+                        )
+                    if not staged:
+                        _check_backup_state(backup)
+                    if backup.name != name:
+                        raise ClickhouseBackupError(
+                            f'Backup metadata name does not match "{name}"'
+                        )
+                    backups.append(backup)
+                except Exception as e:
+                    result.add_error(e, "selection")
+                    if not self._keep_going or is_broken_executor(e):
+                        raise
 
         # Older backups are copied first, so deduplicated data parts of newer backups
         # can be linked to the copies of older ones.

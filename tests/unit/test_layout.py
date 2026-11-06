@@ -57,9 +57,10 @@ def test_metadata_reads_are_parallel_bounded_and_ordered(use_light_meta, workers
     with (
         command_context("copy"),
         patch.object(layout, "get_backup", side_effect=read) as get_backup,
+        ThreadExecPool(workers) as pool,
     ):
         reads = read_metadata_in_batches(
-            layout, names, workers=workers, use_light_meta=use_light_meta
+            layout, names, pool=pool, workers=workers, use_light_meta=use_light_meta
         )
         name, future = next(reads)
         assert name == names[0]
@@ -70,11 +71,16 @@ def test_metadata_reads_are_parallel_bounded_and_ordered(use_light_meta, workers
         assert get_backup.call_count == workers * 2
 
 
-def test_metadata_reads_preserve_missing_and_errors_and_finish_before_yield():
+def test_metadata_reads_preserve_missing_and_errors_and_drain_on_early_exit():
     layout = make_layout()
     failure = StorageError("unreadable metadata")
     finished = []
-    last_started, release_last, yielded = Event(), Event(), Event()
+    last_started, release_last, consumer_failed, done = (
+        Event(),
+        Event(),
+        Event(),
+        Event(),
+    )
 
     def read(name, **_kwargs):
         try:
@@ -86,27 +92,35 @@ def test_metadata_reads_preserve_missing_and_errors_and_finish_before_yield():
         finally:
             finished.append(name)
 
-    with patch.object(layout, "get_backup", side_effect=read):
-        reads = read_metadata_in_batches(
-            layout, ["missing", "broken", "unused", "last"], workers=4
-        )
-        with ThreadPoolExecutor(max_workers=1) as consumer:
-            first = consumer.submit(next, reads)
-            first.add_done_callback(lambda _: yielded.set())
+    def consume():
+        with ThreadExecPool(4) as pool:
+            reads = read_metadata_in_batches(
+                layout, ["missing", "broken", "unused", "last"], pool=pool, workers=4
+            )
+            name, future = next(reads)
+            assert name == "missing" and future.result() is None
+            assert last_started.wait(10)
+            assert "last" not in finished
+            name, future = next(reads)
+            assert name == "broken"
             try:
-                assert last_started.wait(10)
-                assert not yielded.wait(0.05)
+                future.result()
+            finally:
+                consumer_failed.set()
+
+    with patch.object(layout, "get_backup", side_effect=read):
+        with ThreadPoolExecutor(max_workers=1) as consumer:
+            loading = consumer.submit(consume)
+            loading.add_done_callback(lambda _: done.set())
+            try:
+                assert consumer_failed.wait(10)
+                assert not done.wait(0.05)
             finally:
                 release_last.set()
-            name, future = first.result(timeout=10)
-        assert name == "missing" and future.result() is None
-        assert sorted(finished) == ["broken", "last", "missing", "unused"]
-        name, future = next(reads)
-        assert name == "broken"
-        with pytest.raises(StorageError) as raised:
-            future.result()
-        assert raised.value is failure
-        del reads
+            with pytest.raises(StorageError) as raised:
+                loading.result(timeout=10)
+            assert raised.value is failure
+    assert sorted(finished) == ["broken", "last", "missing", "unused"]
 
 
 @pytest.mark.parametrize("filename", ["../outside/file", "/outside/file", "link/file"])

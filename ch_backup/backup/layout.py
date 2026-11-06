@@ -6,7 +6,7 @@ Management of backup data layout.
 
 import json
 import os
-from concurrent.futures import Future, wait
+from concurrent.futures import Future
 from contextlib import contextmanager
 from functools import partial
 from io import IOBase
@@ -71,28 +71,22 @@ def read_metadata_in_batches(
     layout: "BackupLayout",
     names: Iterable[str],
     *,
+    pool: ThreadExecPool,
     workers: int,
     use_light_meta: bool = False,
 ) -> Iterator[tuple[str, Future[BackupMetadata | None]]]:
-    """Read metadata in bounded batches, preserving order and per-backup errors.
-
-    Finish each batch before yielding, so early exit of the consumer leaves no background reads.
-    Bound metadata retained in futures instead of submitting the whole inventory.
-    """
+    """Submit batches; the caller owns the pool and awaits each future before advancing."""
     names = iter(names)
     while batch := list(islice(names, workers)):
-        with ThreadExecPool(workers) as pool:
-            reads = [
-                (
-                    name,
-                    pool.submit_future(
-                        layout.get_backup, name, use_light_meta=use_light_meta
-                    ),
-                )
-                for name in batch
-            ]
-            # ExecPool.shutdown() cancels queued futures; drain the batch first.
-            wait(future for _, future in reads)
+        reads = [
+            (
+                name,
+                pool.submit_future(
+                    layout.get_backup, name, use_light_meta=use_light_meta
+                ),
+            )
+            for name in batch
+        ]
         yield from reads
         del reads
 
