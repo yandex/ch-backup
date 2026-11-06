@@ -44,6 +44,7 @@ from .config import DEFAULT_CONFIG, Config
 from .logic.partial_restore import PartialRestoreFilter
 from .params import JsonParamType, KeyValues, List, String, TimeSpan
 from .profile import profile
+from .storage.object_copy import parse_server_side_copy_mode
 from .util import (
     chown_dir_contents,
     drop_privileges,
@@ -1041,12 +1042,6 @@ def delete_command(
         "The same as --config-parameter, but for the target configuration.",
     ),
     option(
-        "--server-side-copy/--no-server-side-copy",
-        default=None,
-        help="Copy objects on the server side if source and target buckets belong to the same "
-        "S3 service and are accessible with the same credentials. Enabled by default.",
-    ),
-    option(
         "--resume/--no-resume",
         default=None,
         help="Skip objects confirmed by previous runs of copying and still present in the target "
@@ -1086,7 +1081,6 @@ def copy_command(
     all_: bool,
     target_config: str | None,
     target_config_parameters: Iterable[tuple[str, dict]],
-    server_side_copy: bool | None,
     resume: bool | None,
     target_cloud_storage_bucket: str | None,
     target_cloud_storage_path: str | None,
@@ -1107,8 +1101,6 @@ def copy_command(
         copy_config: dict = {"cloud_storage": {"source": {}, "target": {}}}
         if scopes:
             copy_config["scopes"] = list(scopes)
-        if server_side_copy is not None:
-            copy_config["server_side_copy"] = server_side_copy
         if only_with_data is not None:
             copy_config["only_with_data"] = only_with_data
         if resume is not None:
@@ -1128,6 +1120,7 @@ def copy_command(
         )
         target_cfg.merge({"copy": copy_config})
         # Validate before resolving LAST, which already lists the source storage.
+        parse_server_side_copy_mode(target_cfg["copy"]["server_side_copy_mode"])
         if not isinstance(target_cfg["copy"]["only_with_data"], bool):
             raise ConfigurationError("copy.only_with_data must be a boolean")
         copy_deduplication_cutoff(target_cfg["copy"], command_start)

@@ -178,6 +178,21 @@ Commands:
   show     Show details for a particular backup.
 ```
 
+### S3 client lifetime
+
+`storage.client_ttl` sets the client refresh interval in seconds (default: 300).
+It must be a finite positive number:
+
+```yaml
+storage:
+  client_ttl: 300
+```
+
+Clients are refreshed on their next use after this interval, repeating proxy discovery.
+Transfers already in progress continue with their existing client. If refresh fails,
+the error uses the operation's retry budget; a retry can reuse the existing client
+until the next refresh deadline.
+
 ### Copying backups to another storage
 
 `ch-backup copy` copies a backup (or selected created backups with `--all`) to another S3 bucket,
@@ -199,13 +214,16 @@ ch-backup copy --all --keep-going --target-config /etc/yandex/ch-backup/dr.conf 
 
 # Copy files of the backup on the server side first, then stream data of object storage disks,
 # possibly from another host without access to the source storage.
-ch-backup copy LAST --scope files --server-side-copy --target-config /etc/yandex/ch-backup/dr.conf
-ch-backup copy LAST --scope cloud_storage --keep-going --no-server-side-copy \
-    --target-config /etc/yandex/ch-backup/dr.conf
+ch-backup copy LAST --scope files --target-config /etc/yandex/ch-backup/dr.conf
+ch-backup copy LAST --scope cloud_storage --keep-going --target-config /etc/yandex/ch-backup/dr.conf \
+    --target-config-parameter copy.server_side_copy_mode '"disabled"'
 ```
 
 ```yaml
 # /etc/yandex/ch-backup/dr.conf
+copy:
+    # strict | auto | disabled
+    server_side_copy_mode: auto
 storage:
     credentials:
         endpoint_url: https://s3.other.example
@@ -257,10 +275,17 @@ Behavior and limitations:
   the file list in the selected backup without reading the owner's metadata.
   To start an independent series of keyless-copyable backups,
   set `backup.deduplication_start_time` to the beginning of the series when enabling the new format.
-- If both buckets belong to the same S3 service and are accessible with the same credentials, objects
-  are copied on the server side. Otherwise, data is streamed through ch-backup. Server-side copy can be
-  disabled with `--no-server-side-copy`. It is disabled automatically for cloud-storage objects
-  transformed by encryption or decryption.
+- `copy.server_side_copy_mode` selects `strict`, `auto` (the default) or `disabled`. In `auto`, objects are copied
+  on the server side if both buckets belong to the same S3 service and are accessible with the same
+  credentials; otherwise, data is streamed through ch-backup. `disabled` always streams objects.
+  Objects transformed by encryption or decryption are streamed in `auto` mode. The setting is read
+  from the merged target configuration and can be overridden with
+  `--target-config-parameter copy.server_side_copy_mode '"strict"'`.
+- `copy.server_side_copy_mode: strict` forbids streaming objects through ch-backup. If an object cannot
+  be copied on the server side, it is reported as failed; `--keep-going` continues independent
+  objects and backups, but the command still exits with an error. The mode is incompatible with
+  `copy.cloud_storage.encrypt_data=true`. Already encrypted objects can be copied unchanged.
+  Reading, rewriting and publishing backup metadata still uses ch-backup.
 - The copy becomes valid (gets the state `created`) only after all its data is copied. If copying is
   interrupted, the copy remains in the state `creating` or `failed`, and the next run of the command
   resumes it. Confirmed copies are recorded in the copy context, a journal kept in the target storage
@@ -288,7 +313,7 @@ Behavior and limitations:
   `copy: {scopes: [cloud_storage]}` selects only object storage copying. The list must be non-empty.
   The setting is read from the merged target configuration, so it can be set in the main config,
   `--target-config` or `--target-config-parameter copy.scopes '["files"]'`.
-  Each run chooses its own copy mode with `--[no-]server-side-copy`. `files`
+  Each run chooses its own copy mode with `copy.server_side_copy_mode`. `files`
   also copies the original disk metadata into
   `<backup>/copy_context/<id>/source/` and saves the list of its objects in
   `<backup>/copy_context/<id>/manifest/files.jsonl.gz` (locations and sizes, without credentials). A

@@ -64,6 +64,7 @@ from ch_backup.exceptions import (
     BackupNotFound,
     ClickhouseBackupError,
     ConfigurationError,
+    StorageError,
     TerminatingSignal,
     is_broken_executor,
 )
@@ -71,8 +72,10 @@ from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
 from ch_backup.storage.object_copy import (
     CopyEntry,
+    ServerSideCopyMode,
     get_s3_disk_location,
     make_storage_config,
+    parse_server_side_copy_mode,
     server_side_copy_possible,
     storage_id,
 )
@@ -170,6 +173,7 @@ class BackupCopier:
         self._server_side_copy: dict[tuple, bool] = {}
         self._copy_context: CopyContext | None = None
         self._keep_going = False
+        self._server_side_copy_mode = ServerSideCopyMode.AUTO
         self._scopes: tuple[CopyScope, ...] = tuple(CopyScope)
         self._report = CopyReport()
 
@@ -188,6 +192,7 @@ class BackupCopier:
         A copy with scopes left to copy is reported as partial and stays "creating".
         With keep_going, attempt every viable backup before raising an aggregate error.
         Copy scopes are taken from the target configuration, all of them by default.
+        The server-side copy mode is taken from the target configuration.
         """
         self._keep_going = keep_going
         self._report = report if report is not None else CopyReport()
@@ -315,6 +320,16 @@ class BackupCopier:
 
     def _validate_configs(self, command_start: datetime) -> None:
         """Validate copy settings before selecting backups or writing objects."""
+        self._server_side_copy_mode = parse_server_side_copy_mode(
+            self._copy_config["server_side_copy_mode"]
+        )
+        if (
+            self._server_side_copy_mode == ServerSideCopyMode.STRICT
+            and self._encrypt_cloud_storage_data
+        ):
+            raise ConfigurationError(
+                "Strict server-side copy is incompatible with copy.cloud_storage.encrypt_data"
+            )
         self._scopes = parse_copy_scopes(self._copy_config["scopes"])
         if not isinstance(self._copy_config["only_with_data"], bool):
             raise ConfigurationError("copy.only_with_data must be a boolean")
@@ -1698,8 +1713,6 @@ class BackupCopier:
         context = self._copy_context
         assert context is not None
         errors = len(result.errors)
-        entries = self._resolve_copy_mode(plan.entries, result)
-
         logging.info(
             "Copying {} objects ({} bytes)",
             len(plan.entries),
@@ -1732,7 +1745,7 @@ class BackupCopier:
 
         try:
             self._target_layout.copy_objects(
-                entries,
+                self._resolve_copy_mode(plan.entries, result, on_error=failed),
                 keep_going=self._keep_going,
                 callback=completed,
                 on_error=failed,
@@ -1833,7 +1846,10 @@ class BackupCopier:
                 context.record_archive(self._target_storage, path, files, size)
 
     def _resolve_copy_mode(
-        self, entries: list[CopyEntry], copy_result: BackupCopyResult | None = None
+        self,
+        entries: list[CopyEntry],
+        copy_result: BackupCopyResult | None = None,
+        on_error: Callable[[CopyEntry, BaseException], None] | None = None,
     ) -> Iterator[CopyEntry]:
         """
         Mark objects that can be copied on the server side.
@@ -1841,25 +1857,47 @@ class BackupCopier:
         Availability of server-side copy is checked by copying the first object of each pair
         of source and target buckets with the same credentials. Such objects are excluded from the result.
         """
-        if not self._copy_config["server_side_copy"]:
+        if self._server_side_copy_mode == ServerSideCopyMode.DISABLED:
             yield from entries
             return
 
         for entry in entries:
-            if (
-                entry.encrypt
-                or entry.decrypt
-                or not server_side_copy_possible(entry.src_storage, entry.dst_storage)
-            ):
-                yield entry._replace(server_side=False)
+            try:
+                resolved = self._resolve_object_copy_mode(entry, copy_result)
+            except Exception as e:
+                if (
+                    self._server_side_copy_mode != ServerSideCopyMode.STRICT
+                    or is_broken_executor(e)
+                ):
+                    raise
+                if on_error is not None:
+                    on_error(entry, e)
+                if not self._keep_going:
+                    raise
                 continue
+            if resolved is not None:
+                yield resolved
 
-            pair = (storage_id(entry.src_storage), storage_id(entry.dst_storage))
-            cache_key = (
-                _storage_cache_key(entry.src_storage),
-                _storage_cache_key(entry.dst_storage),
-            )
-            if cache_key not in self._server_side_copy:
+    def _resolve_object_copy_mode(
+        self, entry: CopyEntry, copy_result: BackupCopyResult | None
+    ) -> CopyEntry | None:
+        """Resolve one object's mode, returning None when the probe already copied it."""
+        if entry.encrypt or entry.decrypt:
+            if self._server_side_copy_mode == ServerSideCopyMode.STRICT:
+                raise StorageError(
+                    "Transformed objects cannot be copied on the server side"
+                )
+            return entry._replace(server_side=False)
+
+        pair = (storage_id(entry.src_storage), storage_id(entry.dst_storage))
+        cache_key = (
+            _storage_cache_key(entry.src_storage),
+            _storage_cache_key(entry.dst_storage),
+        )
+        available = self._server_side_copy.get(cache_key)
+        if available is None:
+            available = False
+            if server_side_copy_possible(entry.src_storage, entry.dst_storage):
                 try:
                     available = self._engine(entry.dst_storage).try_copy_object(
                         entry.src_storage["credentials"]["bucket"],
@@ -1867,29 +1905,38 @@ class BackupCopier:
                         entry.dst_path,
                     )
                 except Exception as e:
-                    if not self._keep_going or is_broken_executor(e):
+                    if (
+                        self._server_side_copy_mode == ServerSideCopyMode.STRICT
+                        or is_broken_executor(e)
+                    ):
                         raise
                     logging.warning(
                         "Server-side copy probe failed, using streamed copy: {}", e
                     )
-                    available = False
-                self._server_side_copy[cache_key] = available
-                if available:
-                    if copy_result is not None:
-                        copy_result.completed(entry.size)
-                    if self._copy_context is not None:
-                        self._copy_context.record(entry)
-                    logging.info(
-                        "Objects are copied on the server side from {} to {}",
-                        *pair,
-                    )
-                    continue
+                    # A failed probe does not establish that this pair cannot copy server-side.
+                    return entry._replace(server_side=False)
+            self._server_side_copy[cache_key] = available
+            if available:
+                if copy_result is not None:
+                    copy_result.completed(entry.size)
+                if self._copy_context is not None:
+                    self._copy_context.record(entry)
+                logging.info(
+                    "Objects are copied on the server side from {} to {}",
+                    *pair,
+                )
+                return None
+            if self._server_side_copy_mode != ServerSideCopyMode.STRICT:
                 logging.warning(
                     "Server-side copy from {} to {} is not available, objects are copied through ch-backup",
                     *pair,
                 )
 
-            yield entry._replace(server_side=self._server_side_copy[cache_key])
+        if self._server_side_copy_mode == ServerSideCopyMode.STRICT and not available:
+            raise StorageError(
+                f"Server-side copy from {pair[0]} to {pair[1]} is not available"
+            )
+        return entry._replace(server_side=available)
 
     def _list_target_objects(
         self, backup: BackupMetadata, plan: _CopyPlan

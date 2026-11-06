@@ -137,9 +137,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "only_with_data": True,
         # Independent target window for local parts; zero preserves source-link reuse only.
         "deduplication_age_limit": {"days": 0},
-        # Copy objects on the server side if source and target buckets belong to the same S3 service
-        # and are accessible with the same credentials.
-        "server_side_copy": True,
+        # strict requires server-side copy without fallback: any failed object makes the command
+        # fail even with --keep-going. Incompatible with copy.cloud_storage.encrypt_data=true.
+        # auto uses server-side copy when possible, falling back to streaming through ch-backup.
+        # disabled always streams objects through ch-backup.
+        "server_side_copy_mode": "auto",
         "resume": True,
         # Copying of data stored on object storage (S3) disks.
         "cloud_storage": {
@@ -208,6 +210,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
             # HTTP connect and read timeout, in seconds (not a total DNS/request deadline).
             "timeout": 10,
         },
+        # Refresh cached S3 clients and proxy discovery at this interval, in seconds.
+        "client_ttl": _as_seconds("5 min"),
         "disable_ssl_warnings": True,
         # Chunk size used when uploading / downloading data, in bytes.
         "chunk_size": parse_size("8 MiB"),
