@@ -96,6 +96,31 @@ the command reports those failures with a nonzero exit status. A shared Keeper
 metadata conflict stops the restore immediately. The behavior without
 `--skip-cloud-storage` is unchanged.
 
+## S3 SDK configuration
+
+`storage.module_config` passes options to botocore and boto3 managed transfers:
+
+```yaml
+storage:
+    module_config:
+        botocore:
+            connect_timeout: 10
+            read_timeout: 120
+            retries:
+                mode: standard
+                total_max_attempts: 3
+        transfer:
+            multipart_threshold: 16777216
+            multipart_chunksize: 16777216
+            max_concurrency: 4
+```
+
+Options are passed to the installed SDK's `Config` and `TransferConfig`
+constructors, which perform their own validation. Omitted options keep the
+existing defaults. Explicit `retries` replace the default disabled SDK retries;
+explicit `proxies` override `storage.proxy_resolver`. These settings also apply
+to copy targets and cloud-storage clients.
+
 ## Installation
 
 In order to get an up-to-date version of ch-backup, run `make build`. It will produce

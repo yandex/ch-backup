@@ -202,6 +202,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "addressing_style": "auto",
             "region_name": "us-east-1",
         },
+        # Keyword arguments passed directly to the corresponding SDK constructors.
+        "module_config": {
+            "botocore": {},
+            "transfer": {},
+        },
         # Service that provides proxy connection settings at runtime. For example, it can be used
         # to facilitate direct access to S3 servers bypassing balancer.
         "proxy_resolver": {
