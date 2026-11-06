@@ -158,9 +158,7 @@ class S3ClientCachedFactory:
 
 def get_cached_s3_client_factory(config: dict) -> S3ClientCachedFactory:
     """Return the process-local factory shared by engines with an equal config."""
-    client_ttl = _validate_client_ttl(
-        config.get("client_ttl", DEFAULT_CONFIG["storage"]["client_ttl"])
-    )
+    client_ttl = _validate_client_ttl(config["client_ttl"])
     with _FACTORIES_LOCK:
         for index, (cached_config, factory) in enumerate(_FACTORIES):
             if config == cached_config:
