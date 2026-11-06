@@ -75,6 +75,7 @@ from ch_backup.storage.object_copy import (
     ServerSideCopyMode,
     get_s3_disk_location,
     make_storage_config,
+    parse_server_side_copy_mode,
     server_side_copy_possible,
     storage_id,
 )
@@ -181,7 +182,6 @@ class BackupCopier:
         backup_names: Sequence[str] | None = None,
         *,
         keep_going: bool = False,
-        server_side_copy_mode: ServerSideCopyMode = ServerSideCopyMode.AUTO,
         report: CopyReport | None = None,
         command_start: datetime | None = None,
     ) -> tuple[list[str], list[str]]:
@@ -192,10 +192,9 @@ class BackupCopier:
         A copy with scopes left to copy is reported as partial and stays "creating".
         With keep_going, attempt every viable backup before raising an aggregate error.
         Copy scopes are taken from the target configuration, all of them by default.
-        In auto mode, copy.server_side_copy enables server-side copying with fallback.
+        The server-side copy mode is taken from the target configuration.
         """
         self._keep_going = keep_going
-        self._server_side_copy_mode = server_side_copy_mode
         self._report = report if report is not None else CopyReport()
         self._report.error = None
         self._report.backups.clear()
@@ -321,6 +320,9 @@ class BackupCopier:
 
     def _validate_configs(self, command_start: datetime) -> None:
         """Validate copy settings before selecting backups or writing objects."""
+        self._server_side_copy_mode = parse_server_side_copy_mode(
+            self._copy_config["server_side_copy_mode"]
+        )
         if (
             self._server_side_copy_mode == ServerSideCopyMode.STRICT
             and self._encrypt_cloud_storage_data
@@ -1855,10 +1857,7 @@ class BackupCopier:
         Availability of server-side copy is checked by copying the first object of each pair
         of source and target buckets with the same credentials. Such objects are excluded from the result.
         """
-        if self._server_side_copy_mode == ServerSideCopyMode.DISABLED or (
-            self._server_side_copy_mode == ServerSideCopyMode.AUTO
-            and not self._copy_config["server_side_copy"]
-        ):
+        if self._server_side_copy_mode == ServerSideCopyMode.DISABLED:
             yield from entries
             return
 

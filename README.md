@@ -199,13 +199,16 @@ ch-backup copy --all --keep-going --target-config /etc/yandex/ch-backup/dr.conf 
 
 # Copy files of the backup on the server side first, then stream data of object storage disks,
 # possibly from another host without access to the source storage.
-ch-backup copy LAST --scope files --server-side-copy-mode auto --target-config /etc/yandex/ch-backup/dr.conf
-ch-backup copy LAST --scope cloud_storage --keep-going --server-side-copy-mode disabled \
-    --target-config /etc/yandex/ch-backup/dr.conf
+ch-backup copy LAST --scope files --target-config /etc/yandex/ch-backup/dr.conf
+ch-backup copy LAST --scope cloud_storage --keep-going --target-config /etc/yandex/ch-backup/dr.conf \
+    --target-config-parameter copy.server_side_copy_mode '"disabled"'
 ```
 
 ```yaml
 # /etc/yandex/ch-backup/dr.conf
+copy:
+    # strict | auto | disabled
+    server_side_copy_mode: auto
 storage:
     credentials:
         endpoint_url: https://s3.other.example
@@ -257,13 +260,13 @@ Behavior and limitations:
   the file list in the selected backup without reading the owner's metadata.
   To start an independent series of keyless-copyable backups,
   set `backup.deduplication_start_time` to the beginning of the series when enabling the new format.
-- `--server-side-copy-mode` selects `strict`, `auto` or `disabled`. In `auto`, objects are copied
+- `copy.server_side_copy_mode` selects `strict`, `auto` (the default) or `disabled`. In `auto`, objects are copied
   on the server side if both buckets belong to the same S3 service and are accessible with the same
   credentials; otherwise, data is streamed through ch-backup. `disabled` always streams objects.
-  The default is `auto`, which respects `copy.server_side_copy` (`true` by default): setting it
-  to `false` disables server-side copying in this mode. `strict` and `disabled` override that
-  setting. Objects transformed by encryption or decryption are streamed in `auto` mode.
-- `--server-side-copy-mode strict` forbids streaming objects through ch-backup. If an object cannot
+  Objects transformed by encryption or decryption are streamed in `auto` mode. The setting is read
+  from the merged target configuration and can be overridden with
+  `--target-config-parameter copy.server_side_copy_mode '"strict"'`.
+- `copy.server_side_copy_mode: strict` forbids streaming objects through ch-backup. If an object cannot
   be copied on the server side, it is reported as failed; `--keep-going` continues independent
   objects and backups, but the command still exits with an error. The mode is incompatible with
   `copy.cloud_storage.encrypt_data=true`. Already encrypted objects can be copied unchanged.
@@ -295,7 +298,7 @@ Behavior and limitations:
   `copy: {scopes: [cloud_storage]}` selects only object storage copying. The list must be non-empty.
   The setting is read from the merged target configuration, so it can be set in the main config,
   `--target-config` or `--target-config-parameter copy.scopes '["files"]'`.
-  Each run chooses its own copy mode with `--server-side-copy-mode`. `files`
+  Each run chooses its own copy mode with `copy.server_side_copy_mode`. `files`
   also copies the original disk metadata into
   `<backup>/copy_context/<id>/source/` and saves the list of its objects in
   `<backup>/copy_context/<id>/manifest/files.jsonl.gz` (locations and sizes, without credentials). A

@@ -5,8 +5,10 @@ Copying of objects between storages.
 import copy
 import re
 from enum import Enum
-from typing import NamedTuple
+from typing import Any, NamedTuple
 from urllib.parse import urlparse
+
+from ch_backup.exceptions import ConfigurationError
 
 
 class ServerSideCopyMode(str, Enum):
@@ -17,8 +19,19 @@ class ServerSideCopyMode(str, Enum):
     DISABLED = "disabled"
 
     def __str__(self) -> str:
-        """Display the CLI value in help and logs."""
+        """Display the configuration value in logs."""
         return self.value
+
+
+def parse_server_side_copy_mode(value: Any) -> ServerSideCopyMode:
+    """Validate the configured server-side copy mode."""
+    try:
+        return ServerSideCopyMode(value)
+    except (TypeError, ValueError) as e:
+        choices = ", ".join(mode.value for mode in ServerSideCopyMode)
+        raise ConfigurationError(
+            f"copy.server_side_copy_mode must be one of: {choices}"
+        ) from e
 
 
 class CopyEntry(NamedTuple):

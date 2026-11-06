@@ -137,9 +137,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "only_with_data": True,
         # Independent target window for local parts; zero preserves source-link reuse only.
         "deduplication_age_limit": {"days": 0},
-        # Copy objects on the server side if source and target buckets belong to the same S3 service
-        # and are accessible with the same credentials.
-        "server_side_copy": True,
+        # strict forbids fallback; auto allows fallback; disabled streams through ch-backup.
+        "server_side_copy_mode": "auto",
         "resume": True,
         # Copying of data stored on object storage (S3) disks.
         "cloud_storage": {

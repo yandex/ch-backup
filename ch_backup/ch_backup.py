@@ -62,7 +62,7 @@ from ch_backup.logic.udf import UDFBackup
 from ch_backup.logic.workload_entities import WorkloadEntitiesBackup
 from ch_backup.storage.async_pipeline.stages import EncryptStage
 from ch_backup.storage.engine.s3 import validate_s3_retry_config
-from ch_backup.storage.object_copy import ServerSideCopyMode
+from ch_backup.storage.object_copy import parse_server_side_copy_mode
 from ch_backup.util import cached_property, now, utcnow
 from ch_backup.version import get_version
 
@@ -98,6 +98,7 @@ class ClickhouseBackup:
 
     @staticmethod
     def _validate_config(config: Config) -> None:
+        parse_server_side_copy_mode(config["copy"]["server_side_copy_mode"])
         copy_deduplication_cutoff(config["copy"], utcnow())
         start_time = as_datetime(config["backup"].get("deduplication_start_time"))
         if start_time is not None and start_time > utcnow():
@@ -633,7 +634,6 @@ class ClickhouseBackup:
         backup_names: Sequence[str] | None = None,
         *,
         keep_going: bool = False,
-        server_side_copy_mode: ServerSideCopyMode = ServerSideCopyMode.AUTO,
         report: CopyReport | None = None,
         command_start: datetime | None = None,
     ) -> tuple[Sequence[str], Sequence[str]]:
@@ -664,7 +664,6 @@ class ClickhouseBackup:
                 return copier.copy(
                     backup_names,
                     keep_going=keep_going,
-                    server_side_copy_mode=server_side_copy_mode,
                     report=report,
                     command_start=command_start,
                 )
