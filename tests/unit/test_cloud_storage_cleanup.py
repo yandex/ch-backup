@@ -3,8 +3,10 @@
 # pylint: disable=protected-access
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import timedelta
+from threading import Barrier, Event
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import MagicMock, call, patch
@@ -22,6 +24,7 @@ from ch_backup.backup.metadata import (
 )
 from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.clickhouse.models import Database
+from ch_backup.command_context import command_context, get_current_command
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import ConfigurationError, InvalidBackupStruct, StorageError
 from ch_backup.storage.engine.s3 import S3StorageEngine
@@ -305,7 +308,24 @@ def test_late_cloud_validation_failure_leaves_entire_batch_unchanged(
         later.cloud_storage.source["endpoint_url"] = "https://untrusted.test"
     c.records[later.name] = later.dump_json()
     before = dict(c.records)
-    with pytest.raises((ConfigurationError, InvalidBackupStruct)):
+    reads_started = Barrier(2)
+    read = c.layout.get_backup.side_effect
+
+    def concurrent_read(name, use_light_meta=False, **kwargs):
+        if (
+            invalid != "referenced_owner"
+            and not use_light_meta
+            and name in (c.meta.name, later.name)
+        ):
+            assert get_current_command() == operation
+            reads_started.wait(timeout=5)
+        return read(name, use_light_meta=use_light_meta, **kwargs)
+
+    c.layout.get_backup.side_effect = concurrent_read
+    with (
+        command_context(operation),
+        pytest.raises((ConfigurationError, InvalidBackupStruct)),
+    ):
         if operation == "delete":
             c.manager.delete(
                 "backup1", purge_partial=True, delete_cloud_storage_data=True
@@ -318,6 +338,71 @@ def test_late_cloud_validation_failure_leaves_entire_batch_unchanged(
     c.layout.delete_backup.assert_not_called()
     c.layout.upload_backup_metadata.assert_not_called()
     c.context.ch_ctl.system_unfreeze.assert_not_called()
+
+
+@pytest.mark.parametrize("unreadable", [False, True])
+def test_retained_reference_reads_are_parallel_and_fail_closed(cleanup, unreadable):
+    """A failed retained manifest cannot authorize deletion of shared stored parts."""
+    c = cleanup
+    children = []
+    for name in ("child1", "child2"):
+        child = deepcopy(c.meta)
+        child.name = name
+        child.add_part(
+            PartMetadata(
+                "db",
+                "table",
+                "all_1_1_0_7",
+                "c",
+                1,
+                [],
+                False,
+                link=c.meta.name,
+                link_part_name="all_1_1_0",
+            )
+        )
+        children.append(child)
+    barrier, finished = Barrier(2), []
+    failed, release, done = Event(), Event(), Event()
+
+    def reload(backup, **_):
+        try:
+            assert get_current_command() == "delete"
+            barrier.wait(timeout=5)
+            if unreadable and backup.name == "child1":
+                failed.set()
+                raise StorageError("unreadable retained metadata")
+            if unreadable:
+                assert release.wait(5)
+            return backup
+        finally:
+            finished.append(backup.name)
+
+    c.layout.reload_backup.side_effect = reload
+
+    def collect():
+        with command_context("delete"):
+            return collect_dedup_references_for_batch_backup_deletion(
+                c.layout, children, {c.meta.name}, workers=2
+            )
+
+    if unreadable:
+        with ThreadPoolExecutor(1) as consumer:
+            result = consumer.submit(collect)
+            result.add_done_callback(lambda _: done.set())
+            try:
+                assert failed.wait(5)
+                assert not done.wait(0.05)
+            finally:
+                release.set()
+            with pytest.raises(StorageError, match="unreadable retained metadata"):
+                result.result(timeout=5)
+    else:
+        references = collect()
+        assert references[c.meta.name] == {"db": {"table": {"all_1_1_0"}}}
+    assert sorted(finished) == ["child1", "child2"]
+    c.layout.upload_backup_metadata.assert_not_called()
+    c.layout.delete_backup.assert_not_called()
 
 
 @pytest.mark.parametrize(

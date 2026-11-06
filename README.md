@@ -360,6 +360,12 @@ Behavior and limitations:
   and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.
   Locking remains optional; the local file lock retains its shared semantics.
   Without this coordination, do not run copy concurrently with delete or purge on the same storage.
+- Cloud-owner discovery, retained-reference scanning, and deletion preparation overlap metadata
+  reads to reduce time spent waiting under storage locks. Set `multiprocessing.full_metadata_read_threads`
+  to control the read window (default: `2`; `1` reads sequentially). Copy uses the target setting.
+  Owner selection and cleanup planning remain ordered; the entire deletion batch is validated before
+  any deletion. The window bounds pending reads, not retained deletion plans. Cloud-owner validation
+  can also hold one public manifest: its full metadata is authoritative if a light-metadata write failed.
 - By default, deduplicated data parts of the backup are stored in older backups. If such a backup is already
   present in the target storage, the deduplication link is kept. A link to a local part is also kept
   if the copy of that backup is not completed but already holds files of the part, e.g. after its

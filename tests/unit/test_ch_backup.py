@@ -422,6 +422,7 @@ def _backup_with_context(
     ]
 
     backup = ClickhouseBackup.__new__(ClickhouseBackup)
+    backup.__dict__["_config"] = deepcopy(DEFAULT_CONFIG)
     backup.__dict__["_context"] = context
     return backup, context
 
