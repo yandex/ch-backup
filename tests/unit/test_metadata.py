@@ -896,3 +896,27 @@ class TestCopiedBackupMetadata:
         assert backup.real_size == backup.size == 300
         reloaded = BackupMetadata.load_json(backup.dump_json())
         assert all(not p.link for p in reloaded.get_parts())
+
+    def test_load_json_shares_file_names(self) -> None:
+        backup = BackupMetadata.load_json(json.dumps(self._metadata()))
+
+        parts = backup.get_parts()
+        assert parts[0].files == parts[1].files == ["data.bin"]
+        assert parts[0].files is not parts[1].files
+        assert parts[0].files[0] is parts[1].files[0]
+
+    def test_dump_keeps_metadata_unchanged(self) -> None:
+        backup = BackupMetadata.load(self._metadata())
+        backup.add_table(TableMetadata("db1", "t2", "MergeTree", None))
+        part = backup.find_part("db1", "t1", "all_2_2_0")
+        assert part
+        backup.link_part(part, "20181015T210300", part.name)
+
+        dumped = json.loads(backup.dump_json(database="db1", table="t1"))
+
+        assert list(dumped["databases"]["db1"]["tables"]) == ["t1"]
+        dumped_part = dumped["databases"]["db1"]["tables"]["t1"]["parts"]["all_2_2_0"]
+        assert dumped_part["link"] == "ch_backup/20181015T210300"
+        raw_part = backup.get_table("db1", "t1").raw_metadata["parts"]["all_2_2_0"]
+        assert raw_part["link"] == "20181015T210300"
+        assert [table.name for table in backup.get_tables()] == ["t1", "t2"]
