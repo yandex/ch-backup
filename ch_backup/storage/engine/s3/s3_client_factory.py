@@ -7,6 +7,8 @@ import threading
 from copy import deepcopy
 from sys import float_info
 from time import monotonic
+from typing import Any
+from urllib.parse import urlsplit
 
 import boto3
 import requests
@@ -37,6 +39,29 @@ def _validate_client_ttl(client_ttl: float) -> float:
     return client_ttl
 
 
+def _mask_url_credentials(url: str) -> str:
+    """Replace the entire userinfo without matching credentials elsewhere."""
+    parsed = urlsplit(url)
+    if "@" not in parsed.netloc:
+        return url
+    host = parsed.netloc.rsplit("@", 1)[1]
+    return parsed._replace(netloc=f"***:***@{host}").geturl()
+
+
+class _ProxyResolverSession(requests.Session):
+    """Keep URL credentials out of transport errors and response URLs."""
+
+    def send(
+        self, request: requests.PreparedRequest, **kwargs: Any
+    ) -> requests.Response:
+        # Requests has already applied URL/netrc auth to the headers. Mask the
+        # userinfo, including on redirects, before errors can expose it. Retain
+        # its presence: older Requests uses netloc when looking up netrc auth.
+        if request.url:
+            request.url = _mask_url_credentials(request.url)
+        return super().send(request, **kwargs)
+
+
 class S3BalancerUnknownHost(ValueError):
     """
     Used in case S3 balancer implementation returned an unknown host.
@@ -58,29 +83,40 @@ class S3ClientFactory:
             region_name=self._config["boto_config"]["region_name"],
         )
 
-    def _resolve_proxies(self, resolver_path: str, proxy_port: int) -> dict | None:
+    def _resolve_proxies(
+        self, resolver_path: str | None, proxy_port: int
+    ) -> dict | None:
         """
         Get a proxy once; failures share the S3 operation's retry budget.
         """
         if resolver_path is None:
             return None
-        # requests.get creates and closes a separate Session on every call.
-        # Keep a fresh connection so the balancer can select another proxy.
-        with requests.get(
-            resolver_path,
-            timeout=self._config.get("proxy_resolver", {}).get("timeout", 10),
-        ) as req:
-            req.raise_for_status()
-            host = req.text.strip()
+        error = "storage.proxy_resolver.uri: invalid resolver request configuration"
+        if not isinstance(resolver_path, str):
+            raise ConfigurationError(error)
+        try:
+            # Keep a fresh connection so the balancer can select another proxy.
+            with _ProxyResolverSession() as session:
+                with session.get(
+                    resolver_path,
+                    timeout=self._config.get("proxy_resolver", {}).get("timeout", 10),
+                ) as req:
+                    req.raise_for_status()
+                    host = req.text.strip()
+        except ValueError:
+            # URL parsing and auth preparation errors may contain credentials.
+            # HTTP/network/TLS errors keep their types and the existing retries.
+            raise ConfigurationError(error) from None
+        safe_resolver_path = _mask_url_credentials(resolver_path.lstrip())
         logging.debug(
-            "S3 proxy resolver {} returned hostname {!r}", resolver_path, host
+            "S3 proxy resolver {} returned hostname {!r}", safe_resolver_path, host
         )
         # Try to resolve hostname to check the output
         try:
             socket.getaddrinfo(host, 0)
         except socket.gaierror as e:
             raise S3BalancerUnknownHost(
-                f'{resolver_path} returned unknown hostname: "{host}"; DNS error: {e}'
+                f'{safe_resolver_path} returned unknown hostname: "{host}"; DNS error: {e}'
             )
         return {
             "http": f"{host}:{proxy_port}",
