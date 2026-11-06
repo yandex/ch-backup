@@ -178,6 +178,21 @@ Commands:
   show     Show details for a particular backup.
 ```
 
+### S3 client lifetime
+
+`storage.client_ttl` sets the client refresh interval in seconds (default: 300).
+It must be a finite positive number:
+
+```yaml
+storage:
+  client_ttl: 300
+```
+
+Clients are refreshed on their next use after this interval, repeating proxy discovery.
+Transfers already in progress continue with their existing client. If refresh fails,
+the error uses the operation's retry budget; a retry can reuse the existing client
+until the next refresh deadline.
+
 ### Copying backups to another storage
 
 `ch-backup copy` copies a backup (or selected created backups with `--all`) to another S3 bucket,

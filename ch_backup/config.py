@@ -210,6 +210,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
             # HTTP connect and read timeout, in seconds (not a total DNS/request deadline).
             "timeout": 10,
         },
+        # Refresh cached S3 clients and proxy discovery at this interval, in seconds.
+        "client_ttl": _as_seconds("5 min"),
         "disable_ssl_warnings": True,
         # Chunk size used when uploading / downloading data, in bytes.
         "chunk_size": parse_size("8 MiB"),
