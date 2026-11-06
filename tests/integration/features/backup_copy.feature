@@ -11,11 +11,11 @@ Feature: Copy backups to another storage
   Scenario: Multipart copy retries through a broken proxy
     Given we have executed queries on clickhouse01
     """
-    CREATE DATABASE test_db;
-    CREATE TABLE test_db.big (n UInt64, data UInt64) ENGINE=MergeTree ORDER BY n;
-    INSERT INTO test_db.big SELECT number, rand64() FROM numbers(3000000)
+    CREATE DATABASE `test-db`;
+    CREATE TABLE `test-db`.`big.%тест` (n UInt64, data UInt64) ENGINE=MergeTree ORDER BY n;
+    INSERT INTO `test-db`.`big.%тест` SELECT number, rand64() FROM numbers(3000000)
         SETTINGS max_threads=1, max_insert_threads=1;
-    OPTIMIZE TABLE test_db.big FINAL;
+    OPTIMIZE TABLE `test-db`.`big.%тест` FINAL;
     """
     And we have created clickhouse01 clickhouse backup
     """

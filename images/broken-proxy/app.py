@@ -19,12 +19,12 @@ def resolve():
     return "broken-proxy01"
 
 
-@bottle.route("<path:path>", method="GET")
-@bottle.route("<path:path>", method="POST")
-@bottle.route("<path:path>", method="PUT")
-@bottle.route("<path:path>", method="DELETE")
-@bottle.route("<path:path>", method="HEAD")
-def index(path):
+@bottle.route("<:path>", method="GET")
+@bottle.route("<:path>", method="POST")
+@bottle.route("<:path>", method="PUT")
+@bottle.route("<:path>", method="DELETE")
+@bottle.route("<:path>", method="HEAD")
+def index():
     request = bottle.request
     query = parse_qs(request.query_string, keep_blank_values=True)
     if (
@@ -57,7 +57,7 @@ def index(path):
     try:
         connection.request(
             request.method,
-            path + ("?" + request.query_string if request.query_string else ""),
+            request.environ["RAW_URI"],
             body=body,
             headers=headers,
         )
@@ -82,7 +82,11 @@ class ProxyHandler(WSGIRequestHandler):
         # Forward proxies receive absolute request targets; WSGI expects a path.
         target = urlsplit(self.path)
         self.path = target.path + ("?" + target.query if target.query else "")
-        return super().get_environ()
+        environ = super().get_environ()
+        # PATH_INFO is decoded by WSGI. Forward the original escapes so S3 keys
+        # containing literal percent sequences are not decoded a second time.
+        environ["RAW_URI"] = self.path
+        return environ
 
 
 bottle.run(
