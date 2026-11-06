@@ -44,20 +44,50 @@ def _number(value: Any, path: str, *, integer: bool, minimum: int = 1) -> None:
 
 def _validate_proxy_urls(proxies: dict | None) -> None:
     for proxy_url in (proxies or {}).values():
-        if not isinstance(proxy_url, str):
+        # Botocore accepts null and an empty string to disable a proxy.
+        if proxy_url is None or proxy_url == "":
             continue
+        error = f"{_PREFIX}.botocore.proxies: invalid proxy URL"
+        if not isinstance(proxy_url, str):
+            raise ConfigurationError(error)
+        if "://" in proxy_url and not proxy_url.startswith(("http://", "https://")):
+            raise ConfigurationError(error)
         # Match botocore's handling of proxy addresses without a scheme.
         if proxy_url.startswith("//"):
             proxy_url = f"http:{proxy_url}"
         elif not proxy_url.startswith(("http:", "https:")):
             proxy_url = f"http://{proxy_url}"
         try:
-            parse_url(proxy_url)
+            parsed = parse_url(proxy_url)
         except LocationParseError:
             # SDK request logging would expose credentials in the parser error.
+            raise ConfigurationError(error) from None
+        if not parsed.host or any(char.isspace() for char in parsed.host):
+            raise ConfigurationError(error)
+
+
+def _validate_proxy_settings(settings: dict | None) -> None:
+    if settings is None:
+        return
+    prefix = f"{_PREFIX}.botocore.proxies_config"
+    ca_bundle = settings.get("proxy_ca_bundle")
+    if ca_bundle is not None and not isinstance(ca_bundle, str):
+        raise ConfigurationError(f"{prefix}.proxy_ca_bundle must be a string or null")
+    client_cert = settings.get("proxy_client_cert")
+    if client_cert is not None and not isinstance(client_cert, str):
+        if not (
+            isinstance(client_cert, tuple)
+            and len(client_cert) == 2
+            and all(isinstance(path, str) for path in client_cert)
+        ):
             raise ConfigurationError(
-                f"{_PREFIX}.botocore.proxies: invalid proxy URL"
-            ) from None
+                f"{prefix}.proxy_client_cert must be a string, a pair of strings or null"
+            )
+    forwarding = settings.get("proxy_use_forwarding_for_https")
+    if forwarding is not None and not isinstance(forwarding, bool):
+        raise ConfigurationError(
+            f"{prefix}.proxy_use_forwarding_for_https must be a boolean or null"
+        )
 
 
 def build_botocore_config(storage: dict) -> Config:
@@ -68,6 +98,7 @@ def build_botocore_config(storage: dict) -> Config:
         if name in options and options[name] is not None:
             _mapping(options[name], f"{prefix}.{name}")
     _validate_proxy_urls(options.get("proxies"))
+    _validate_proxy_settings(options.get("proxies_config"))
     for name in ("connect_timeout", "read_timeout"):
         if name in options and options[name] is not None:
             value = options[name]

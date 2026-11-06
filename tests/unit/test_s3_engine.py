@@ -5,6 +5,7 @@ Unit tests for S3StorageEngine.
 import socket
 import ssl
 import threading
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest.mock import Mock, patch
@@ -14,7 +15,8 @@ import requests
 from botocore.exceptions import ClientError
 from botocore.exceptions import SSLError as BotoSSLError
 from urllib3 import HTTPConnectionPool
-from urllib3.exceptions import MaxRetryError
+from urllib3.connection import HTTPConnection
+from urllib3.exceptions import MaxRetryError, NewConnectionError
 from urllib3.exceptions import SSLError as Urllib3SSLError
 from urllib3.util.ssl_match_hostname import CertificateError as Urllib3CertificateError
 
@@ -63,6 +65,54 @@ def test_module_config_is_passed_to_sdk() -> None:
     ):
         for name, value in options[module].items():
             assert getattr(config, name) == value
+
+
+@pytest.mark.parametrize(
+    "username,password", [("proxy-user", "http"), ("http", "proxy-secret")]
+)
+def test_proxy_credentials_are_hidden_before_sdk_logging(
+    username: str, password: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    proxy = f"http://{username}:{password}@localhost:8080"
+    safe_proxy = "http://***:***@localhost:8080"
+    engine = _engine(
+        credentials={
+            "access_key_id": "dummy",
+            "secret_access_key": "dummy",
+            "endpoint_url": "http://localhost:9000",
+        },
+        module_config={
+            "botocore": {"proxies": {"http": proxy}, "retries": {"max_attempts": 1}}
+        },
+        retry_max_attempts=2,
+        retry_max_interval=0,
+    )
+    caplog.set_level("DEBUG", logger="botocore")
+    # Exercise urllib3 and botocore's real proxy-error path without network I/O.
+    with (
+        patch(
+            "botocore.awsrequest.AWSHTTPConnection._new_conn",
+            side_effect=NewConnectionError(
+                HTTPConnection("localhost"), "Connection refused"
+            ),
+        ),
+        patch("ch_backup.storage.engine.s3.s3_retry.logging.debug") as retry_log,
+        pytest.raises(S3RetryingError) as exc,
+    ):
+        engine.path_exists("object")
+
+    assert (
+        str(exc.value)
+        == f'Failed to make S3 operation: Failed to connect to proxy URL: "{safe_proxy}"'
+    )
+    for output in (
+        caplog.text,
+        str(retry_log.call_args_list),
+        "".join(traceback.format_exception(exc.value)),
+    ):
+        assert safe_proxy in output
+        assert f":{password}@" not in output
+        assert f"//{username}:" not in output
 
 
 @pytest.mark.parametrize("max_attempts", [1, 3])

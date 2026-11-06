@@ -115,6 +115,11 @@ storage:
             max_concurrency: 4
 ```
 
+Proxy URLs and the types of known `proxies_config` options are checked before
+storage access. Proxy addresses without a scheme remain supported; `null` or an
+empty string for a proxy entry disables it. Unknown `proxies_config` keys are
+passed through to the installed SDK.
+
 ## Installation
 
 In order to get an up-to-date version of ch-backup, run `make build`. It will produce
