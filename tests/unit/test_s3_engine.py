@@ -127,7 +127,7 @@ def test_proxy_dns_failure_recovers_after_six_attempts(dns_errno: int) -> None:
     dns_error = socket.gaierror(dns_errno, "DNS lookup failed")
     with (
         patch(
-            "ch_backup.storage.engine.s3.s3_client_factory.requests.get",
+            "ch_backup.storage.engine.s3.s3_client_factory.requests.Session.get",
             side_effect=[_response(text=f"proxy-{i}.example\n") for i in range(7)],
         ) as get,
         patch(
@@ -160,7 +160,7 @@ def test_proxy_dns_failure_uses_one_retry_budget(max_attempts: int) -> None:
     )
     with (
         patch(
-            "ch_backup.storage.engine.s3.s3_client_factory.requests.get",
+            "ch_backup.storage.engine.s3.s3_client_factory.requests.Session.get",
             side_effect=lambda *args, **kwargs: _response(),
         ) as get,
         patch(
