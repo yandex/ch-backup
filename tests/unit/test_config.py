@@ -151,22 +151,30 @@ def test_derive_without_changes(tmp_path: Path) -> None:
     assert config["backup"]["path_root"] == "ch_backup"
 
 
-def test_copy_window_rejected_before_context_or_locks(tmp_path):
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("deduplication_age_limit", {"days": -1}),
+        ("server_side_copy_mode", None),
+        ("server_side_copy_mode", "enabled"),
+    ],
+)
+def test_invalid_copy_config_rejected_before_context_or_locks(tmp_path, key, value):
     path = tmp_path / "config.yaml"
     path.write_text("")
     config = Config(str(path))
     backup = ClickhouseBackup(config)
-    invalid = config.derive(patch={"copy": {"deduplication_age_limit": {"days": -1}}})
+    invalid = config.derive(patch={"copy": {key: value}})
     with (
         patch("ch_backup.ch_backup.BackupContext") as context,
         patch("ch_backup.ch_backup.BackupLayout") as layout,
         patch("ch_backup.ch_backup.storage_locks") as locks,
     ):
-        with pytest.raises(ConfigurationError, match="copy.deduplication_age_limit"):
+        with pytest.raises(ConfigurationError, match=f"copy.{key}"):
             ClickhouseBackup(invalid)
-        with pytest.raises(ConfigurationError, match="copy.deduplication_age_limit"):
+        with pytest.raises(ConfigurationError, match=f"copy.{key}"):
             backup.reload_config(invalid)
-        with pytest.raises(ConfigurationError, match="copy.deduplication_age_limit"):
+        with pytest.raises(ConfigurationError, match=f"copy.{key}"):
             backup.copy(invalid, ["new"])
         context.assert_not_called()
         layout.assert_not_called()
