@@ -571,10 +571,12 @@ def test_referenced_delete_persists_partial_state() -> None:
 
 
 def _readable_backup(name: str, link: str | None = None) -> Mock:
-    """Mock light metadata of a readable backup with one part linked to link."""
+    """Mock backup reads, but use real part metadata to resolve retention references."""
     meta = Mock(state=BackupState.CREATED, copy_scopes={})
     meta.name = name
-    part = Mock(link=link, database="db", table="table", deduplicated_part_name="p")
+    part = PartMetadata(
+        "db", "table", "p", "checksum", 1, ["data.bin"], True, link=link
+    )
     meta.get_databases.return_value = ["db"]
     meta.get_tables.return_value = [Mock(get_parts=Mock(return_value=[part]))]
     return meta

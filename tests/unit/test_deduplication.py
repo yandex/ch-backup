@@ -433,3 +433,54 @@ def test_part_dedup_info_quotes_all_string_values(link_part_name):
         f"({literal},{literal},{literal},{literal},{literal_link},{literal},"
         f"42,[{literal},''],1,{literal},0,1)"
     )
+
+
+@pytest.mark.parametrize(
+    "current,stored,physical,expected,allow_parse_error",
+    [
+        ("all_1_1_0", "all_1_1_0", "", "all_1_1_0", False),
+        ("all_1_1_0_7", "all_1_1_0_3", "", "all_1_1_0_3", False),
+        ("all_1_1_0_7", "all_1_1_0_3", "all_1_1_0", "all_1_1_0", False),
+        ("broken", "broken", "", "broken", False),
+        ("all_1_1_0", "other_1_1_0", "", None, False),
+        ("all_1_1_0", "all_1_2_0", "", None, False),
+        ("all_1_1_0", "all_1_1_1", "", None, False),
+        ("broken", "other", "", None, True),
+        ("all_1_1_0", "broken", "", None, True),
+        ("broken", "all_1_1_0", "", None, True),
+    ],
+)
+def test_dedup_result_preserves_logical_name_and_physical_owner(
+    current, stored, physical, expected, allow_parse_error
+):
+    """
+    Mutation renaming and chained links can give one part distinct requested
+    and stored names. Check the deduplication result so it retains the
+    requested identity and resolves the final stored owner. Unequal malformed
+    names may raise ValueError or yield no match, but cannot authorize a link.
+    """
+    context = Mock()
+    context.ch_ctl.get_deduplication_info.return_value = [
+        {
+            **_dedup_row(stored),
+            "current_name": current,
+            "link_part_name": physical,
+            "verified": True,
+        }
+    ]
+    try:
+        parts = deduplicate_parts(context, "db1", "table1", {}, {})
+    except ValueError:
+        assert allow_parse_error
+        return
+    if expected is None:
+        assert not parts
+    else:
+        assert list(parts) == [current]
+        assert parts[current].resolve_stored_reference("current") == (
+            DEDUP_BACKUP_NAME,
+            "db1",
+            "table1",
+            expected,
+        )
+        assert parts[current].name == current

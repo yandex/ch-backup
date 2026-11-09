@@ -232,18 +232,17 @@ def _populate_dedup_info(
                     ):
                         continue
 
-                    if part.link:
-                        backup_name = part.link
-                        if backup_name not in dedup_backup_names:
-                            continue
-                    else:
-                        backup_name = backup.name
+                    owner_backup_name, _, _, _ = part.resolve_stored_reference(
+                        backup.name
+                    )
+                    if part.link and owner_backup_name not in dedup_backup_names:
+                        continue
 
                     part_dedup = PartDedupInfo(
                         database=db.name,
                         table=table.name,
                         name=part.name,
-                        backup_name=backup_name,
+                        backup_name=owner_backup_name,
                         checksum=part.checksum,
                         size=part.size,
                         files=part.files,
@@ -454,10 +453,15 @@ def collect_dedup_references_for_batch_backup_deletion(
                     if not part.link:
                         continue
 
-                    if part.link not in deleting_backup_names:
+                    owner_backup_name, _, _, _ = part.resolve_stored_reference(
+                        backup.name
+                    )
+                    if owner_backup_name not in deleting_backup_names:
                         continue
 
-                    _add_part_to_dedup_references(dedup_references[part.link], part)
+                    _add_part_to_dedup_references(
+                        dedup_references[owner_backup_name], part
+                    )
 
     return dedup_references
 
@@ -465,4 +469,5 @@ def collect_dedup_references_for_batch_backup_deletion(
 def _add_part_to_dedup_references(
     dedup_references: DedupReferences, part: PartMetadata
 ) -> None:
-    dedup_references[part.database][part.table].add(part.deduplicated_part_name)
+    database_name, table_name, stored_part_name = part.stored_identity
+    dedup_references[database_name][table_name].add(stored_part_name)

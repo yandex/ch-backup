@@ -1,4 +1,5 @@
 import errno
+from contextlib import AbstractContextManager, nullcontext
 from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE
@@ -822,7 +823,11 @@ def test_detached_part_matches_local_backup_metadata(tmp_path: Path) -> None:
     assert not ClickhouseCTL.detached_part_matches(part, str(part_path))
 
     part.raw_metadata.checksum = ""
-    assert ClickhouseCTL.detached_part_matches(part, str(part_path))
+    with mock.patch(
+        "ch_backup.clickhouse.control._get_part_checksum",
+        side_effect=AssertionError("No checksum is required"),
+    ):
+        assert ClickhouseCTL.detached_part_matches(part, str(part_path))
 
 
 def test_detached_part_matches_object_storage_metadata(tmp_path: Path) -> None:
@@ -847,6 +852,13 @@ def test_detached_part_matches_object_storage_metadata(tmp_path: Path) -> None:
         "5\n1\t370\n370\tstore/other-key\n0\n0\n", encoding="utf-8"
     )
     assert not ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+    part.raw_metadata.checksum = ""
+    with mock.patch(
+        "ch_backup.clickhouse.control._get_cloud_part_checksum_and_size",
+        side_effect=AssertionError("No checksum is required"),
+    ):
+        assert ClickhouseCTL.detached_part_matches(part, str(part_path))
 
 
 def test_detached_path_is_direct_child_on_table_disk_with_same_storage_path(
@@ -881,3 +893,70 @@ def test_detached_path_is_direct_child_on_table_disk_with_same_storage_path(
     for name in ("../all_1_1_0", str(table_path / "all_1_1_0")):
         with pytest.raises(ClickhouseBackupError, match="Invalid detached part"):
             ch_ctl.get_detached_part_path(table, backing_disk.name, name)
+
+
+@pytest.fixture(name="detached_candidate")
+def fixture_detached_candidate(tmp_path: Path) -> tuple[Path, DetachedPartMetadata]:
+    part_path = tmp_path / "broken_all_1_1_0"
+    part_path.mkdir()
+    (part_path / "checksums.txt").write_bytes(b"checksums")
+    return part_path, DetachedPartMetadata(
+        "db",
+        "table",
+        part_path.name,
+        "broken",
+        md5(b"checksums").hexdigest(),  # nosec
+        BLOCKSIZE,
+        ["checksums.txt"],
+        True,
+        "default",
+    )
+
+
+def test_detached_match_rejects_missing_directory(detached_candidate):
+    """A vanished directory must not be accepted as an already restored part."""
+    part_path, part = detached_candidate
+    assert ClickhouseCTL.detached_part_matches(part, str(part_path))
+    (part_path / "checksums.txt").unlink()
+    part_path.rmdir()
+
+    assert not ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+
+@pytest.mark.parametrize(
+    "operation,error",
+    [
+        ("list_dir_files", OSError),
+        ("calc_aligned_files_size", OSError),
+        ("_get_part_checksum", OSError),
+        ("_get_part_checksum", ValueError),
+    ],
+)
+def test_detached_match_handles_validation_errors(detached_candidate, operation, error):
+    """
+    Unreadable files cannot authorize reuse. Other validation errors must
+    propagate instead of being hidden as ordinary filesystem misses.
+    """
+    part_path, part = detached_candidate
+    expected_error: AbstractContextManager = nullcontext()
+    if error is ValueError:
+        expected_error = pytest.raises(ValueError)
+    with (
+        mock.patch(f"ch_backup.clickhouse.control.{operation}", side_effect=error()),
+        expected_error,
+    ):
+        assert not ClickhouseCTL.detached_part_matches(part, str(part_path))
+
+
+@pytest.mark.parametrize(
+    "field,value", [("files", ["missing.bin"]), ("size", 2 * BLOCKSIZE)]
+)
+def test_detached_match_rejects_names_or_aligned_size(detached_candidate, field, value):
+    """
+    Equal checksum-file contents alone do not prove that a detached directory
+    contains the expected files. A different file list or stored size makes the
+    candidate unsafe to reuse.
+    """
+    path, part = detached_candidate
+    setattr(part.raw_metadata, field, value)
+    assert not ClickhouseCTL.detached_part_matches(part, str(path))
