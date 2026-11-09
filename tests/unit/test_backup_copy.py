@@ -3800,6 +3800,62 @@ def test_cloud_storage_selection_only_with_data(only_with_data, names):
     assert not skipped
 
 
+@pytest.mark.parametrize("separate_runs", [False, True])
+def test_cloud_copy_reuses_unchanged_parts(separate_runs: bool) -> None:
+    ctx = _cloud_storage_context("day1")
+    part = {**_part(), "disk_name": "s3", "tarball": False}
+    ctx.layout.backups = {
+        "day1": _backup(
+            "day1",
+            parts={"all_1_1_0": part, "all_3_3_0": {**part, "checksum": "third"}},
+            cloud_storage_disks=["s3"],
+        ),
+        "day2": _backup(
+            "day2",
+            start_time="2026-01-02 00:00:00 +0000",
+            parts={"all_1_1_0": part, "all_4_4_0": {**part, "checksum": "fourth"}},
+            cloud_storage_disks=["s3"],
+        ),
+    }
+    for name, numbers in [("day1", [1, 3]), ("day2", [1, 4])]:
+        _with_files(ctx, name, {"disks/s3/db1/t1.tar.gz": 50})
+        ctx.layout.cloud_storage_files[f"ch_backup/{name}/disks/s3/db1/t1.tar.gz"] = [
+            (
+                f"store/abc/uuid/all_{number}_{number}_0/data.bin",
+                _object_storage_metadata((f"data/xyz/object-{number}", 100), version=5),
+            )
+            for number in numbers
+        ]
+
+    if separate_runs:
+        assert ctx.copy(["day1"]) == (["day1"], [])
+        assert ctx.copy(["day2"]) == (["day2"], [])
+    else:
+        assert ctx.copy() == (["day1", "day2"], [])
+
+    objects = [
+        entry.dst_path
+        for entry in ctx.target_layout.copied
+        if entry.dst_storage["credentials"]["bucket"] == "disk-copy"
+    ]
+    assert sorted(objects) == sorted(
+        [
+            f"copies/{_cloud_name(ctx, 'day1')}/xyz/object-1",
+            f"copies/{_cloud_name(ctx, 'day1')}/xyz/object-3",
+            f"copies/{_cloud_name(ctx, 'day2')}/xyz/object-4",
+        ]
+    )
+    copied = ctx.target_layout.backups["day2"]
+    copied_parts = {part.name: part for part in copied.get_parts()}
+    assert copied_parts["all_1_1_0"].link == _cloud_name(ctx, "day1")
+    assert copied_parts["all_4_4_0"].link == _cloud_name(ctx, "day2")
+    assert copied.real_size == 100
+    files = ctx.target_layout.cloud_storage_files[
+        f"ch_backup_copy/{_cloud_name(ctx, 'day2')}/disks/s3/db1/t1.tar.gz"
+    ]
+    assert [name for name, _data in files] == ["store/abc/uuid/all_4_4_0/data.bin"]
+
+
 def _linked_cloud_copy_context() -> CopyTestContext:
     ctx = _cloud_storage_context("child")
     ctx.target_layout.store = ctx.store
@@ -3874,6 +3930,95 @@ def test_cloud_copy_materializes_a_missing_owner(staged: bool) -> None:
     assert f"copies/{_cloud_name(ctx, 'child')}/xyz/data".encode() in files[0][1]
 
 
+@pytest.mark.parametrize(
+    "state,difference",
+    [
+        (BackupState.CREATED, None),
+        (BackupState.PARTIALLY_DELETED, None),
+        (BackupState.FAILED, None),
+        (BackupState.CREATED, "objects"),
+        (BackupState.CREATED, "uuid"),
+        (BackupState.CREATED, "bucket"),
+        (BackupState.CREATED, "prefix"),
+        (BackupState.CREATED, "outside_prefix"),
+        (BackupState.CREATED, "legacy"),
+    ],
+)
+def test_cloud_copy_reuses_only_complete_owning_parts(
+    state: BackupState, difference: str | None
+) -> None:
+    ctx = _cloud_storage_context("child")
+    part = {**_part(), "disk_name": "s3", "tarball": False}
+    ctx.layout.backups["child"] = _backup(
+        "child", parts={"all_1_1_0_2": part}, cloud_storage_disks=["s3"]
+    )
+    ctx.layout.cloud_storage_files.clear()
+    ctx.layout.cloud_storage_files.update(
+        {
+            "ch_backup/child/disks/s3/db1/t1.tar.gz": [
+                (
+                    "store/abc/uuid/all_1_1_0_2/data.bin",
+                    _object_storage_metadata(("xyz/data", 100)),
+                )
+            ]
+        }
+    )
+    _with_files(ctx, "child", {"disks/s3/db1/t1.tar.gz": 50})
+    ctx.layout.backups["owner"] = _backup(
+        "owner",
+        parts={"all_1_1_0": dict(part)},
+        cloud_storage_disks=["s3"],
+        table_uuid="different" if difference == "uuid" else None,
+    )
+    ctx.layout.cloud_storage_files["ch_backup/owner/disks/s3/db1/t1.tar.gz"] = [
+        (
+            "store/abc/uuid/all_1_1_0/data.bin",
+            _object_storage_metadata(
+                ("xyz/other" if difference == "objects" else "xyz/data", 100)
+            ),
+        )
+    ]
+    _with_files(ctx, "owner", {"disks/s3/db1/t1.tar.gz": 50})
+    assert ctx.copy(["owner"]) == (["owner"], [])
+    ctx.target_layout.copied.clear()
+    owner = ctx.target_layout.backups[_cloud_name(ctx, "owner")]
+    owner.state = state
+    raw = owner.get_table("db1", "t1").raw_metadata["parts"]["all_1_1_0"]
+    raw["checksum"] = "different-freeze"
+    if difference == "legacy":
+        del raw["cloud_storage_fingerprint"]
+    assert owner.cloud_storage.source is not None
+    if difference == "outside_prefix":
+        ctx.layout.cloud_storage_files["ch_backup/child/disks/s3/db1/t1.tar.gz"] = [
+            (
+                "store/abc/uuid/all_1_1_0_2/data.bin",
+                _object_storage_metadata(("xyz/data", 100), version=5),
+            )
+        ]
+    elif difference == "bucket":
+        owner.cloud_storage.source["bucket"] = "different"
+    elif difference == "prefix":
+        owner.cloud_storage.source["path"] = "different/owner"
+    ctx.target_layout.backups[owner.name] = owner
+
+    assert ctx.copy(["child"]) == (["child"], [])
+
+    copied_part = ctx.target_layout.backups["child"].get_parts()[0]
+    if state == BackupState.FAILED or difference:
+        assert copied_part.link == _cloud_name(ctx, "child")
+        assert any(
+            e.dst_path == f"copies/{_cloud_name(ctx, 'child')}/xyz/data"
+            for e in ctx.target_layout.copied
+        )
+    else:
+        assert copied_part.link == _cloud_name(ctx, "owner")
+        assert copied_part.link_part_name == "all_1_1_0"
+        assert not any(
+            e.dst_storage["credentials"]["bucket"] == "disk-copy"
+            for e in ctx.target_layout.copied
+        )
+
+
 def test_cloud_copy_keeps_owned_metadata_when_materializing_a_link() -> None:
     ctx = _linked_cloud_copy_context()
     child = ctx.layout.backups["child"]
@@ -3922,6 +4067,47 @@ def test_cloud_copy_keeps_owned_metadata_when_materializing_a_link() -> None:
         ("copies/owner/xyz/data", f"copies/{_cloud_name(ctx, 'child')}/xyz/data"),
         ("copies/child/xyz/owned", f"copies/{_cloud_name(ctx, 'child')}/xyz/owned"),
     }
+
+
+@pytest.mark.parametrize("namespace", ["bucket", "prefix"])
+def test_cloud_copy_does_not_share_equal_suffixes_from_different_sources(namespace):
+    ctx = _cloud_storage_context("day1")
+    part = {**_part(), "disk_name": "s3", "tarball": False}
+    for index, name in enumerate(("day1", "day2")):
+        backup = _backup(
+            name,
+            start_time=f"2026-01-0{index+1} 00:00:00 +0000",
+            parts={"all_1_1_0": dict(part)},
+            cloud_storage_disks=["s3"],
+        )
+        bucket = name if namespace == "bucket" else "source"
+        prefix = name if namespace == "prefix" else "data"
+        backup.cloud_storage.source = {
+            "endpoint_url": ENDPOINT,
+            "bucket": bucket,
+            "path": prefix,
+        }
+        ctx.layout.backups[name] = backup
+        ctx.layout.cloud_storage_files[f"ch_backup/{name}/disks/s3/db1/t1.tar.gz"] = [
+            (
+                "store/abc/uuid/all_1_1_0/data.bin",
+                _object_storage_metadata((prefix + "/xyz/data", 100), version=5),
+            )
+        ]
+    assert ctx.copy(["day1", "day2"]) == (["day1", "day2"], [])
+    copied = ctx.target_layout.backups["day2"]
+    assert copied.get_parts()[0].link == copied.cloud_generation
+    assert any(
+        entry.dst_path == f"copies/{_cloud_name(ctx, 'day2')}/xyz/data"
+        for entry in ctx.target_layout.copied
+    )
+    fingerprints = [
+        ctx.target_layout.backups[name]
+        .get_table("db1", "t1")
+        .raw_metadata["parts"]["all_1_1_0"]["cloud_storage_fingerprint"]
+        for name in ("day1", "day2")
+    ]
+    assert fingerprints[0] != fingerprints[1]
 
 
 @pytest.mark.parametrize("in_backup", [False, True])

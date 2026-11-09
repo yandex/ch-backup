@@ -28,6 +28,7 @@ class SourceOwner(TypedDict):
 
     cloud_storage: dict[str, Any]
     tables: list[tuple[str, str, str | None]]
+    fingerprints: list[tuple[str, str, str, str]]
     data_paths: dict[str, str]
 
 

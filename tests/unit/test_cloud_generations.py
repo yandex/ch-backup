@@ -8,10 +8,18 @@ from unittest.mock import patch
 
 import pytest
 
+from ch_backup.backup.copier import _cloud_part_reuse_key
+from ch_backup.backup.deduplication import (
+    collect_dedup_references_for_batch_backup_deletion,
+)
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, BackupState
-from ch_backup.encryption import get_cloud_storage_data_encryption_metadata
-from ch_backup.exceptions import StorageError
+from ch_backup.encryption import (
+    get_cloud_storage_data_encryption_config,
+    get_cloud_storage_data_encryption_metadata,
+    get_encryption,
+)
+from ch_backup.exceptions import ClickhouseBackupError, StorageError
 from tests.unit.test_backup_copy import (
     UnavailableLayout,
     _backup,
@@ -118,6 +126,87 @@ def test_separate_scopes_reuse_pending_generation():
     )
 
 
+def _add_same_source(ctx, name):
+
+    backup = copy.deepcopy(ctx.layout.backups["owner"])
+    backup.name = name
+    ctx.layout.backups[name] = backup
+    ctx.layout.cloud_storage_files[f"ch_backup/{name}/disks/s3/db1/t1.tar.gz"] = list(
+        ctx.layout.cloud_storage_files["ch_backup/owner/disks/s3/db1/t1.tar.gz"]
+    )
+    _with_files(ctx, name, {"disks/s3/db1/t1.tar.gz": 50})
+
+
+@pytest.mark.parametrize("difference", [None, "key", "chunk_size", "plaintext"])
+def test_reuse_requires_requested_encryption_representation(difference):
+    ctx = _generation_context()
+    _add_same_source(ctx, "child")
+    ctx.copy(["owner"])
+    owner_generation = ctx.target_layout.backups["owner"].cloud_generation
+    if difference == "key":
+        ctx.target_config["cloud_storage"]["data_encryption"]["key"] = "b" * 32
+    elif difference == "chunk_size":
+        ctx.target_config["cloud_storage"]["data_encryption"]["chunk_size"] = 128
+    elif difference == "plaintext":
+        ctx.target_config["copy"]["cloud_storage"]["encrypt_data"] = False
+    ctx.target_layout.copied.clear()
+    ctx.copy(["child"])
+    child = ctx.target_layout.backups["child"]
+    assert child.get_parts()[0].link == (
+        child.cloud_generation if difference else owner_generation
+    )
+    payload = [
+        entry
+        for entry in ctx.target_layout.copied
+        if entry.dst_storage["credentials"]["bucket"] == "disk-copy"
+    ]
+    assert bool(payload) == bool(difference)
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_child_decrypts_original_bytes_after_owner_replacement(interrupted):
+
+    ctx = _generation_context()
+    _add_same_source(ctx, "child")
+    ctx.target_config["cloud_storage"]["data_encryption"]["key"] = "a" * 32
+    plaintext = {"data/xyz/aaa": b"A" * 1000, "data/xyz/bbb": b"B" * 10}
+    ciphertext = {}
+    copy_metadata = ctx.target_layout._copy_content
+
+    def transfer(entry):
+        copy_metadata(entry)
+        if entry.dst_storage["credentials"]["bucket"] == "disk-copy":
+            settings = get_cloud_storage_data_encryption_config(ctx.target_config)
+            ciphertext[entry.dst_path] = get_encryption(
+                settings["type"], settings
+            ).encrypt(plaintext[entry.src_path])
+            if interrupted and settings["key"] == "b" * 32:
+                raise RuntimeError("transfer interrupted")
+
+    with patch.object(ctx.target_layout, "_copy_content", side_effect=transfer):
+        ctx.copy(["owner"])
+        ctx.copy(["child"])
+        child = copy.deepcopy(ctx.target_layout.backups["child"])
+        old_name = child.get_parts()[0].link
+        old_owner = copy.deepcopy(ctx.target_layout.backups[old_name])
+        old_key = old_owner.cloud_storage.source["path"] + "/xyz/aaa"
+        old_bytes = ciphertext[old_key]
+        ctx.target_config["cloud_storage"]["data_encryption"]["key"] = "b" * 32
+        ctx.target_config["copy"]["resume"] = False
+        if interrupted:
+            with pytest.raises(RuntimeError, match="transfer interrupted"):
+                ctx.copy(["owner"])
+        else:
+            ctx.copy(["owner"])
+    assert ctx.target_layout.backups["child"].dump() == child.dump()
+    assert ctx.target_layout.backups[old_name].dump() == old_owner.dump()
+    assert ciphertext[old_key] == old_bytes
+    assert (
+        get_encryption("nacl", {"key": "a" * 32}).decrypt(old_bytes)
+        == plaintext["data/xyz/aaa"]
+    )
+
+
 def test_pending_policy_change_does_not_overwrite_previous_attempt():
     ctx = _generation_context()
     ctx.target_layout.object_errors["data/xyz/bbb"] = RuntimeError("failed")
@@ -129,6 +218,31 @@ def test_pending_policy_change_does_not_overwrite_previous_attempt():
     ctx.copy(["owner"])
     assert ctx.target_layout.backups["owner"].cloud_generation != previous
     assert previous in ctx.target_layout.backups
+
+
+def test_retained_children_protect_only_their_generation():
+
+    ctx = _generation_context()
+    _add_same_source(ctx, "child")
+    ctx.copy(["owner", "child"])
+    child = ctx.target_layout.backups["child"]
+    original = child.get_parts()[0].link
+    ctx.target_config["cloud_storage"]["data_encryption"]["key"] = "b" * 32
+    ctx.target_config["copy"]["resume"] = False
+    ctx.copy(["owner"])
+    replacement = ctx.target_layout.backups["owner"].cloud_generation
+    ctx.target_layout.reload_backup = lambda backup, **_: ctx.target_layout.get_backup(
+        backup.name
+    )
+    refs = collect_dedup_references_for_batch_backup_deletion(
+        ctx.target_layout, [child], {original, replacement, "owner"}
+    )
+    assert refs[original]["db1"]["t1"] == {"all_1_1_0"}
+    assert not refs[replacement]
+    assert not refs["owner"]
+    assert not collect_dedup_references_for_batch_backup_deletion(
+        ctx.target_layout, [], {original}
+    )[original]
 
 
 def test_generation_records_do_not_appear_in_user_listings():
@@ -173,6 +287,45 @@ def test_legacy_owner_snapshot_is_not_redirected_by_publication():
     owner = layout.get_backup("owner", for_reference=True)
     assert owner is not None and owner.cloud_storage.source is not None
     assert owner.cloud_storage.source["bucket"] == "old"
+
+
+def test_failed_publication_cannot_offer_a_retryable_owner():
+
+    ctx = _generation_context()
+    _add_same_source(ctx, "child")
+    upload = ctx.target_layout.upload_backup_metadata
+
+    def fail_publication(backup):
+        if backup.name == "owner" and backup.state == BackupState.CREATED:
+            raise RuntimeError("public manifest failed")
+        upload(backup)
+
+    with patch.object(
+        ctx.target_layout, "upload_backup_metadata", side_effect=fail_publication
+    ):
+        with pytest.raises(RuntimeError, match="public manifest failed"):
+            ctx.copy(["owner"])
+    unpublished = ctx.target_layout.backups["owner"].cloud_generation
+    ctx.copy(["child"])
+    assert ctx.target_layout.backups["child"].get_parts()[0].link != unpublished
+    ctx.copy(["owner"])
+    assert ctx.target_layout.backups["owner"].cloud_generation != unpublished
+
+
+def test_same_policy_restart_replaces_own_generation():
+    ctx = _generation_context()
+    _add_same_source(ctx, "child")
+    ctx.copy(["owner"])
+    original = ctx.target_layout.backups["owner"].cloud_generation
+    ctx.target_config["copy"]["resume"] = False
+    ctx.target_layout.copied.clear()
+    ctx.copy(["owner"])
+    current = ctx.target_layout.backups["owner"].cloud_generation
+    assert current != original
+    assert ctx.target_layout.backups["owner"].get_parts()[0].link == current
+    assert any(entry.encrypt for entry in ctx.target_layout.copied)
+    ctx.copy(["child"])
+    assert ctx.target_layout.backups["child"].get_parts()[0].link == current
 
 
 def test_full_cloud_copy_rejects_inconsistent_owner_encryption():
@@ -268,3 +421,166 @@ def test_interrupted_generation_cleanup_uses_planned_keys_before_archives_exist(
     objects = ctx.store.bucket("disk-copy")
     assert prefix + "/xyz/aaa" in objects
     assert prefix + "/xyz/bbb" not in objects
+
+
+@pytest.mark.parametrize(
+    "field,value,equal",
+    [
+        ("name", "all_1_1_0_7", True),
+        ("database", "other", False),
+        ("table", "other", False),
+        ("disk_name", "other", False),
+        ("name", "all_1_2_0", False),
+        ("name", "all_1_1_1", False),
+        ("encrypted", False, False),
+    ],
+)
+def test_cloud_reuse_requires_part_address_and_format(field, value, equal):
+    """
+    Equal object fingerprints do not make parts from different tables, block
+    ranges or storage formats interchangeable. Mutation-only renaming remains
+    eligible for reuse.
+    """
+    part = _generation_context().layout.backups["owner"].get_parts()[0]
+    original = _cloud_part_reuse_key(part, "uuid", "fingerprint", None)
+    if field in ("name", "database", "table"):
+        setattr(part, field, value)
+    else:
+        setattr(part.raw_metadata, field, value)
+    assert (
+        _cloud_part_reuse_key(part, "uuid", "fingerprint", None) == original
+    ) is equal
+
+
+@pytest.mark.parametrize("field", ["version", "type", "key_id", "chunk_size"])
+def test_cloud_reuse_requires_complete_encryption_descriptor(field):
+    """
+    A reference to ciphertext is useful only with a compatible representation.
+    Comparing every descriptor field and rejecting missing fields prevents an
+    unknown representation from being treated as compatible.
+    """
+    ctx = _generation_context()
+    part = ctx.layout.backups["owner"].get_parts()[0]
+    representation = get_cloud_storage_data_encryption_metadata(
+        ctx.config["encryption"]
+    )
+    original = _cloud_part_reuse_key(part, None, "f", representation)
+    different = {**representation, field: "different"}
+    assert _cloud_part_reuse_key(part, None, "f", different) != original
+    del different[field]
+    with pytest.raises(ClickhouseBackupError, match="Incomplete"):
+        _cloud_part_reuse_key(part, None, "f", different)
+
+
+def test_unparseable_target_candidate_cannot_authorize_cloud_reuse():
+    """
+    A stored candidate with an unparsable name cannot establish mutation
+    equivalence. Copy must materialize a complete replacement instead of linking
+    to that candidate or publishing a reference without payload.
+    """
+    ctx = _generation_context()
+    _add_same_source(ctx, "child")
+    ctx.copy(["owner"])
+    generation = ctx.target_layout.backups[
+        ctx.target_layout.backups["owner"].cloud_generation
+    ]
+    parts = generation.get_table("db1", "t1").raw_metadata["parts"]
+    parts["broken"] = parts.pop("all_1_1_0")
+    ctx.target_layout.copied.clear()
+    assert ctx.copy(["child"]) == (["child"], [])
+    child = ctx.target_layout.backups["child"]
+    assert child.state == BackupState.CREATED
+    assert child.cloud_generation != generation.name
+    replacement = ctx.target_layout.backups[child.cloud_generation]
+    assert replacement.state == BackupState.CREATED
+    assert replacement.generation_of == "child"
+    assert child.get_parts()[0].resolve_stored_reference("child") == (
+        replacement.name,
+        "db1",
+        "t1",
+        "all_1_1_0",
+    )
+    assert replacement.get_parts()[0].link is None
+    assert {
+        (entry.src_path, entry.dst_path)
+        for entry in ctx.target_layout.copied
+        if entry.dst_storage["credentials"]["bucket"] == "disk-copy"
+    } == {
+        ("data/xyz/aaa", f"copies/{replacement.name}/xyz/aaa"),
+        ("data/xyz/bbb", f"copies/{replacement.name}/xyz/bbb"),
+    }
+    assert {
+        path
+        for path in ctx.store.bucket("disk-copy")
+        if path.startswith(f"copies/{replacement.name}/")
+    } == {
+        f"copies/{replacement.name}/xyz/aaa",
+        f"copies/{replacement.name}/xyz/bbb",
+    }
+
+
+@pytest.mark.parametrize(
+    "difference", [None, "size", "inline", "filename", "endpoint", "override"]
+)
+def test_cloud_fingerprint_tracks_objects_instead_of_archive_encoding(difference):
+    """
+    Archive encoding and entry order can change without changing the files.
+    Reuse should survive those changes but stop when file content or source
+    provenance changes, including an explicit override of a saved fingerprint.
+    """
+    ctx = _generation_context()
+    ctx.target_config["copy"]["cloud_storage"]["encrypt_data"] = False
+    _add_same_source(ctx, "child")
+    ctx.copy(["owner"])
+    owner = ctx.target_layout.backups["owner"].cloud_generation
+    archive = "ch_backup/child/disks/s3/db1/t1.tar.gz"
+    files = [
+        (
+            "store/abc/uuid/all_1_1_0/checksums.txt",
+            _object_storage_metadata(("data/xyz/bbb", 10), version=5),
+        ),
+        (
+            "store/abc/uuid/all_1_1_0/data.bin",
+            _object_storage_metadata(
+                ("data/xyz/aaa", 999 if difference == "size" else 1000), version=5
+            ),
+        ),
+    ]
+    if difference == "inline":
+        files[1] = (files[1][0], files[1][1][:-1] + b"inline\n")
+    elif difference == "filename":
+        files[1] = (files[1][0].replace("data.bin", "other.bin"), files[1][1])
+    elif difference == "endpoint":
+        ctx.ch_config.config["storage_configuration"]["disks"]["s3"][
+            "endpoint"
+        ] = "http://another:9000/cloud-storage/data/"
+    elif difference == "override":
+        raw = (
+            ctx.layout.backups["child"]
+            .get_table("db1", "t1")
+            .raw_metadata["parts"]["all_1_1_0"]
+        )
+        raw["cloud_storage_fingerprint"] = (
+            ctx.target_layout.backups[owner]
+            .get_table("db1", "t1")
+            .raw_metadata["parts"]["all_1_1_0"]["cloud_storage_fingerprint"]
+        )
+        ctx.target_config["copy"]["cloud_storage"]["source"]["path"] = "other"
+    ctx.layout.cloud_storage_files[archive] = files
+    ctx.target_layout.copied.clear()
+    ctx.copy(["child"])
+    child = ctx.target_layout.backups["child"]
+    assert child.get_parts()[0].link == (
+        child.cloud_generation if difference else owner
+    )
+    payload = [
+        entry
+        for entry in ctx.target_layout.copied
+        if entry.dst_storage["credentials"]["bucket"] == "disk-copy"
+    ]
+    assert bool(payload) is bool(difference)
+    if difference == "override":
+        assert {entry.src_path for entry in payload} == {
+            "other/xyz/aaa",
+            "other/xyz/bbb",
+        }

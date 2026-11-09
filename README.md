@@ -397,6 +397,16 @@ Behavior and limitations:
   if the copy of that backup is not completed but already holds files of the part, e.g. after its
   scope `files`, as deduplication of new backups does. Otherwise, the data part is copied
   into the copied backup. `--all` copies older backups first, so deduplication is kept in the target storage.
+- Freeze metadata and mutation names can change while cloud objects remain unchanged.
+  Comparing only that metadata would transfer the same data again. Cloud copies instead fingerprint
+  the original object references, including their storage namespace, so equal suffixes in different
+  buckets or prefixes cannot authorize reuse. These fingerprints identify references, not content.
+  Equal source data can still require different ciphertext. Restore uses one configured key, so reuse
+  also requires the same key identifier, algorithm, version, and chunk size, or plaintext on both sides.
+  A mismatch copies the source instead of linking an incompatible owner.
+  Existing children keep superseded generations, but new links select current published owners so they
+  do not perpetuate an old representation after replacement. Recopy excludes its own previous generation
+  because reusing it would defeat the requested replacement.
 - Changing only a cloud payload prefix does not change the disk archive's address in backup storage.
   Recopying that archive could redirect an existing child's object references, even without encryption.
   Replacing encrypted payload could also leave children expecting the old key. A revision check could

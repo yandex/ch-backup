@@ -5,10 +5,12 @@ Copying of backups from one storage to another.
 # pylint: disable=too-many-lines
 
 import copy
+import hashlib
 import json
 import os
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from itertools import chain
@@ -49,6 +51,7 @@ from ch_backup.backup.metadata import (
     parse_copy_scopes,
     sanitize_backup_name,
 )
+from ch_backup.backup.metadata.table_metadata import split_part_name
 from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.object_storage_metadata import (
     FROZEN_METADATA_FNAME,
@@ -86,6 +89,13 @@ from ch_backup.storage.object_copy import (
     storage_id,
 )
 from ch_backup.util import now, utcnow
+
+
+@dataclass(frozen=True, slots=True)
+class _CloudPartOwner:
+    reference: tuple[str, str, str, str]
+    checksum: str
+    copied_backup_name: str
 
 
 class _RewrittenTarball(NamedTuple):
@@ -202,8 +212,10 @@ class BackupCopier:
         self._cloud_generation: str | None = None
         self._generation_attempt: dict | None = None
         self._published_target: BackupMetadata | None = None
+        self._cloud_storage_parts: dict[tuple, _CloudPartOwner] | None = None
         self._source_owners: dict[str, SourceOwner] = {}
         self._current_cloud_generations: dict[str, str | None] = {}
+        self._source_cloud_fingerprints: dict[str, dict[tuple[str, str, str], str]] = {}
         # Availability of server-side copy for bucket pairs with particular credentials.
         self._server_side_copy: dict[tuple, bool] = {}
         self._copy_context: CopyContext | None = None
@@ -235,6 +247,8 @@ class BackupCopier:
         self._report.backups.clear()
         self._materialized_parts.clear()
         self._target_table_files.clear()
+        self._cloud_storage_parts = None
+        self._source_cloud_fingerprints.clear()
         try:
             self._validate_configs(utcnow() if command_start is None else command_start)
             backups = self._select_backups(backup_names)
@@ -631,6 +645,7 @@ class BackupCopier:
 
         if backup.cloud_storage.enabled:
             self._begin_cloud_generation(backup, target_meta)
+            self._cloud_storage_parts = None
         previous = dict(target_backup.copy_scopes) if target_backup else {}
         plan: _CopyPlan = {scope: _ScopePlan() for scope in CopyScope}
         planners = {
@@ -1238,6 +1253,12 @@ class BackupCopier:
                         disk: self._layout.get_cloud_storage_data_path(owner.name, disk)
                         for disk in {part.disk_name for part in parts}
                     }
+                    fingerprints = self._cloud_storage_part_fingerprints(owner)
+                    record["fingerprints"] = [
+                        (*part.stored_identity, fingerprints[part.stored_identity])
+                        for part in parts
+                        if part.stored_identity in fingerprints
+                    ]
                 self._source_owners[owner_name] = record
 
     def _prepare_cloud_owner(
@@ -1267,6 +1288,7 @@ class BackupCopier:
                 (db, table, owner.get_table(db, table).uuid)
                 for db, table in sorted(tables)
             ],
+            "fingerprints": [],
             "data_paths": {},
         }
         archives: set[str] = set()
@@ -1279,6 +1301,11 @@ class BackupCopier:
                     [owner.get_table(part.database, part.table)],
                 )
             )
+            raw = owner.get_table(part.database, part.table).raw_metadata["parts"][
+                part.deduplicated_part_name
+            ]
+            if fingerprint := raw.get("cloud_storage_fingerprint"):
+                record["fingerprints"].append((*part.stored_identity, fingerprint))
         if not archives:
             raise ClickhouseBackupError(
                 f'Cloud metadata of owner "{owner_name}" is missing'
@@ -1384,6 +1411,10 @@ class BackupCopier:
         for db, table_name, table_uuid in record["tables"]:
             data["databases"][db]["tables"][table_name]["uuid"] = table_uuid
         owner = BackupMetadata.load(data)
+        fingerprints = {
+            (db, table, name): value
+            for db, table, name, value in record["fingerprints"]
+        }
         for part in backup.get_parts():
             if (
                 part.link != owner_name
@@ -1397,6 +1428,8 @@ class BackupCopier:
             )
             raw["link"] = None
             raw["link_part_name"] = None
+            if fingerprint := fingerprints.get(part.stored_identity):
+                raw["cloud_storage_fingerprint"] = fingerprint
             owner.get_table(part.database, part.table).raw_metadata["parts"][
                 part.deduplicated_part_name
             ] = raw
@@ -1574,9 +1607,14 @@ class BackupCopier:
         if target.state != BackupState.CREATED:
             return
         if target.cloud_generation:
+            generation = self._target_layout.get_backup(target.cloud_generation)
+            if generation:
+                self._remember_cloud_storage_parts(generation)
             published = self._target_layout.get_backup(target.name)
             if published:
                 target = published
+        else:
+            self._remember_cloud_storage_parts(target)
         for part in source.get_parts():
             if not part.link:
                 continue
@@ -1895,6 +1933,129 @@ class BackupCopier:
             else data
         )
 
+    def _cloud_storage_part_fingerprints(
+        self,
+        backup: BackupMetadata,
+        layout: BackupLayout | None = None,
+        metadata_name: str | None = None,
+    ) -> dict[tuple[str, str, str], str]:
+        """Keep original object identity across freeze metadata changes and later copies."""
+        if backup.name in self._source_cloud_fingerprints:
+            return self._source_cloud_fingerprints[backup.name]
+        fingerprints = {}
+        for part in backup.get_parts():
+            if fingerprint := self._stored_cloud_fingerprint(backup, part):
+                fingerprints[part.logical_identity] = fingerprint
+        for disk in backup.cloud_storage.disks:
+            references, invalid = self._disk_part_references(
+                backup,
+                layout or self._layout,
+                metadata_name or backup.get_sanitized_name(),
+                disk,
+            )
+            for identity, files in references.items():
+                if identity not in invalid and identity not in fingerprints:
+                    fingerprints[identity] = (
+                        "v1:"
+                        + hashlib.sha256(
+                            json.dumps(sorted(files), separators=(",", ":")).encode()
+                        ).hexdigest()
+                    )
+        self._source_cloud_fingerprints[backup.name] = fingerprints
+        return fingerprints
+
+    def _stored_cloud_fingerprint(
+        self, backup: BackupMetadata, part: PartMetadata
+    ) -> str | None:
+        if any(
+            self._copy_config["cloud_storage"]["source"].get(key) is not None
+            for key in ("endpoint_url", "bucket", "path")
+        ):
+            return None
+        return (
+            backup.get_table(part.database, part.table)
+            .raw_metadata["parts"][part.name]
+            .get("cloud_storage_fingerprint")
+        )
+
+    def _disk_part_references(
+        self,
+        backup: BackupMetadata,
+        layout: BackupLayout,
+        metadata_name: str,
+        disk: str,
+    ) -> tuple[dict[tuple[str, str, str], list[tuple]], set[tuple[str, str, str]]]:
+        references: dict[tuple[str, str, str], list[tuple]] = {}
+        invalid: set[tuple[str, str, str]] = set()
+        for archive in layout.list_cloud_storage_metadata_archives(
+            metadata_name,
+            disk,
+            backup.cloud_storage.compressed,
+            "all",
+        ):
+            try:
+                files = layout.read_cloud_storage_metadata_archive(backup, archive)
+            except Exception as error:
+                if is_broken_executor(error):
+                    raise
+                # The normal planner reports unreadable archives and handles keep-going.
+                invalid.update(
+                    part.logical_identity
+                    for part in backup.get_parts()
+                    if part.disk_name == disk
+                )
+                continue
+            for name, data in files:
+                if os.path.basename(name) == FROZEN_METADATA_FNAME:
+                    continue
+                identity = identify_cloud_part_from_archive_entry(
+                    backup, disk, archive, name
+                )
+                part = backup.find_part(*identity) if identity else None
+                if (
+                    identity is None
+                    or part is None
+                    or part.link
+                    or self._stored_cloud_fingerprint(backup, part)
+                ):
+                    continue
+                try:
+                    references.setdefault(identity, []).append(
+                        self._cloud_file_reference(backup, part, name, data)
+                    )
+                except ClickhouseBackupError:
+                    invalid.add(identity)
+        return references, invalid
+
+    def _cloud_file_reference(
+        self,
+        backup: BackupMetadata,
+        part: PartMetadata,
+        name: str,
+        data: bytes,
+    ) -> tuple:
+        metadata = parse_object_storage_metadata(data)
+        storage, prefix, override = (
+            (
+                self._storage,
+                self._layout.get_cloud_storage_data_path(backup.name, part.disk_name),
+                None,
+            )
+            if backup.cloud_storage.data_copied
+            else self._get_source_cloud_storage(backup, part.disk_name)
+        )
+        objects = tuple(
+            (
+                storage_id(storage),
+                _cloud_storage_object_paths(
+                    obj, metadata.full_object_keys, prefix, override
+                )[0],
+                obj.size,
+            )
+            for obj in metadata.objects
+        )
+        return name.split(part.name + "/", 1)[1], objects, metadata.inline_data
+
     def _is_current_cloud_generation(self, generation: BackupMetadata) -> bool:
         """Old generations serve existing children; new links select the published replacement."""
         name = generation.generation_of
@@ -1910,6 +2071,96 @@ class BackupCopier:
                 else None
             )
         return self._current_cloud_generations[name] == generation.name
+
+    def _remember_cloud_storage_parts(self, backup: BackupMetadata) -> None:
+        if (
+            self._cloud_storage_parts is None
+            or not backup.cloud_storage.source
+            or not backup.generation_of
+        ):
+            return
+        if not self._is_current_cloud_generation(backup):
+            return
+        if backup.state not in (BackupState.CREATED, BackupState.PARTIALLY_DELETED):
+            return
+        storage, prefix = self._get_target_cloud_storage()
+        source = backup.cloud_storage.source
+        if (
+            (source.get("endpoint_url") or "").rstrip("/")
+            != (storage["credentials"]["endpoint_url"] or "").rstrip("/")
+            or source["bucket"] != storage["credentials"]["bucket"]
+            or _key(source["path"]).rstrip("/") != os.path.join(prefix, backup.name)
+        ):
+            return
+        for part in backup.get_parts():
+            raw = backup.get_table(part.database, part.table).raw_metadata["parts"][
+                part.name
+            ]
+            fingerprint = raw.get("cloud_storage_fingerprint")
+            if not part.link and fingerprint:
+                self._cloud_storage_parts.setdefault(
+                    _cloud_part_reuse_key(
+                        part,
+                        backup.get_table(part.database, part.table).uuid,
+                        fingerprint,
+                        backup.cloud_storage.data_encryption,
+                    ),
+                    _CloudPartOwner(
+                        (backup.name, *part.logical_identity),
+                        part.checksum,
+                        backup.generation_of,
+                    ),
+                )
+
+    def _link_cloud_storage_parts(
+        self,
+        backup: BackupMetadata,
+        target: BackupMetadata,
+        layout: BackupLayout,
+        metadata_name: str,
+    ) -> None:
+        if self._cloud_storage_parts is None:
+            self._cloud_storage_parts = {}
+            for name in self._target_layout.get_backup_names():
+                try:
+                    owner_backup = self._target_layout.get_backup(name)
+                    if owner_backup:
+                        self._remember_cloud_storage_parts(owner_backup)
+                except Exception as error:
+                    if is_broken_executor(error):
+                        raise
+                    logging.warning(
+                        "Cannot use target backup {} for cloud part deduplication: {}",
+                        name,
+                        error,
+                    )
+        references = self._cloud_storage_part_fingerprints(
+            backup, layout, metadata_name
+        )
+        for part in backup.get_parts():
+            identity = part.logical_identity
+            if identity not in references:
+                continue
+            raw = target.get_table(part.database, part.table).raw_metadata["parts"][
+                part.name
+            ]
+            raw["cloud_storage_fingerprint"] = references[identity]
+            owner = self._cloud_storage_parts.get(
+                _cloud_part_reuse_key(
+                    part,
+                    backup.get_table(part.database, part.table).uuid,
+                    references[identity],
+                    self._target_data_encryption,
+                )
+            )
+            if owner and owner.copied_backup_name != backup.name:
+                target.link_part(
+                    part,
+                    owner.reference[0],
+                    owner.reference[3],
+                )
+                # Existing link validation requires the physical owner's checksum.
+                raw["checksum"] = owner.checksum
 
     # pylint: disable=too-many-locals
     def _plan_cloud_storage_objects(
@@ -1951,6 +2202,7 @@ class BackupCopier:
         )
         sizes = self._get_source_backup_files(name, layout, storage)
 
+        self._link_cloud_storage_parts(backup, target_meta, layout, name)
         entries: dict[str, CopyEntry] = {}
         for disk_name in backup.cloud_storage.disks:
             with self._planning_step(result, disk_name):
@@ -2159,6 +2411,21 @@ class BackupCopier:
             part.disk_name,
             backup.cloud_storage.compressed,
         )
+        raw = source.backup.get_table(part.database, part.table).raw_metadata["parts"][
+            part.deduplicated_part_name
+        ]
+        fingerprint = (
+            raw.get("cloud_storage_fingerprint")
+            if CopyScope.FILES not in self._scopes
+            and source.backup.cloud_storage.data_copied
+            else self._cloud_storage_part_fingerprints(
+                source.backup, source.layout, source.metadata_name
+            ).get(part.stored_identity)
+        )
+        if fingerprint:
+            target.get_table(part.database, part.table).raw_metadata["parts"][
+                part.name
+            ]["cloud_storage_fingerprint"] = fingerprint
         target.unlink_part(part)
         return _RewrittenTarball(destination, files), entries
 
@@ -2865,3 +3132,32 @@ def _key(path: str | None) -> str:
     Return object key for the path.
     """
     return (path or "").lstrip("/")
+
+
+def _cloud_part_reuse_key(
+    part: PartMetadata,
+    table_uuid: str | None,
+    fingerprint: str,
+    encryption: dict | None,
+) -> tuple:
+    """Keep original object identity separate from the requested stored representation."""
+    representation = (
+        None
+        if encryption is None
+        else tuple(
+            encryption.get(field)
+            for field in ("version", "type", "chunk_size", "key_id")
+        )
+    )
+    if representation is not None and any(value is None for value in representation):
+        raise ClickhouseBackupError("Incomplete cloud data encryption identity")
+    return (
+        part.database,
+        part.table,
+        table_uuid,
+        part.disk_name,
+        split_part_name(part.name)[:4],
+        part.encrypted,
+        fingerprint,
+        representation,
+    )
