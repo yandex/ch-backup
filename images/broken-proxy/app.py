@@ -1,29 +1,26 @@
-"""S3 test proxy with deterministic multipart copy failures and request logs."""
+"""Fail the second copy part with HTTP 503, then an embedded HTTP 200 error."""
 
 import http.client
 import json
 import logging
 import threading
 from collections import Counter
-from pathlib import Path
 from socketserver import ThreadingMixIn
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 from wsgiref.simple_server import WSGIRequestHandler, WSGIServer
-from xml.etree import ElementTree
 
 import bottle
 from bottle import HTTPResponse
 
 PART_REQUESTS = Counter()
-FAULT_PATH = None
 LOCK = threading.Lock()
 
 
-def log_request(event, status, upload_id=None):
+def log_request(event, status):
     """Record multipart identity without credentials, signed queries or bodies."""
     request = bottle.request
-    query = parse_qs(request.query_string, keep_blank_values=True)
-    upload_id = upload_id or query.get("uploadId", [None])[0]
+    query = request.query
+    upload_id = query.get("uploadId")
     operation = request.method
     if "uploads" in query and request.method == "POST":
         operation = "CreateMultipartUpload"
@@ -44,7 +41,7 @@ def log_request(event, status, upload_id=None):
                 "operation": operation,
                 "path": urlsplit(request.environ["RAW_URI"]).path,
                 "upload_id": upload_id,
-                "part_number": query.get("partNumber", [None])[0],
+                "part_number": query.get("partNumber"),
                 "copy_source_range": request.headers.get("X-Amz-Copy-Source-Range"),
                 "status": status,
             }
@@ -59,44 +56,24 @@ def log_request(event, status, upload_id=None):
 @bottle.route("<:path>", method="HEAD")
 def index():
     request = bottle.request
-    query = parse_qs(request.query_string, keep_blank_values=True)
-    # Tests write this local file through Docker, without a public control API.
-    fault_file = Path("/tmp/copy-fault.json")
-    fault = (
-        json.loads(fault_file.read_text())
-        if fault_file.exists()
-        else {"failures": 2, "status": 503}
-    )
-    if fault and "uploadId" in query:
-        global FAULT_PATH
-        path = urlsplit(request.environ["RAW_URI"]).path
+    upload_id = request.query.get("uploadId")
+    if (
+        request.method == "PUT"
+        and upload_id
+        and request.query.get("partNumber") == "2"
+        and "X-Amz-Copy-Source" in request.headers
+    ):
+        # Count this part alone so concurrent requests cannot consume its faults.
         with LOCK:
-            if request.method == "PUT" and "X-Amz-Copy-Source" in request.headers:
-                if FAULT_PATH is None:
-                    FAULT_PATH = path
-                part = query["partNumber"][0]
-                identity = (query["uploadId"][0], part)
-                PART_REQUESTS[identity] += 1
-                fail_part = (
-                    path == FAULT_PATH
-                    and part == "2"
-                    and PART_REQUESTS[identity] <= fault["failures"]
-                )
-            else:
-                fail_part = False
-        fail_abort = (
-            request.method == "DELETE"
-            and path == FAULT_PATH
-            and fault.get("abort_status", 204) != 204
-        )
-        if fail_part or fail_abort:
-            status = fault["status"] if fail_part else fault["abort_status"]
-            operation = "UploadPartCopy" if fail_part else "AbortMultipartUpload"
-            log_request("injected_part_error" if fail_part else "injected_abort_error", status)
+            PART_REQUESTS[upload_id] += 1
+            attempt = PART_REQUESTS[upload_id]
+        if attempt <= 2:
+            status = 503 if attempt == 1 else 200
+            log_request("injected_part_error", status)
             return HTTPResponse(
                 status=status,
                 body="<Error><Code>InternalError</Code>"
-                "<Message>injected {} failure</Message></Error>".format(operation),
+                "<Message>injected UploadPartCopy failure</Message></Error>",
                 headers={"Content-Type": "application/xml"},
             )
 
@@ -120,26 +97,12 @@ def index():
         )
         response = connection.getresponse()
         data = response.read()
-        upload_id = None
-        if request.method == "POST" and "uploads" in query and response.status == 200:
-            try:
-                upload_id = next(
-                    (
-                        node.text
-                        for node in ElementTree.fromstring(data).iter()
-                        if node.tag.rsplit("}", 1)[-1] == "UploadId"
-                    ),
-                    None,
-                )
-            except ElementTree.ParseError:
-                # Logging must not change how an invalid backend reply is forwarded.
-                pass
         response_headers = {
             key: value
             for key, value in response.getheaders()
             if key.lower() not in ("connection", "transfer-encoding")
         }
-        log_request("forwarded", response.status, upload_id)
+        log_request("forwarded", response.status)
         return HTTPResponse(status=response.status, body=data, headers=response_headers)
     finally:
         connection.close()
