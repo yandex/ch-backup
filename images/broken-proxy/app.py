@@ -1,11 +1,14 @@
 """S3 test proxy injecting part errors and lost multipart completion replies."""
 
 import http.client
+import json
+import logging
 import threading
 from itertools import count
 from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlsplit
 from wsgiref.simple_server import WSGIRequestHandler, WSGIServer
+from xml.etree import ElementTree
 
 import bottle
 from bottle import HTTPResponse
@@ -14,6 +17,39 @@ PART_REQUESTS = count(1)
 COPY_UPLOADS = set()
 COMPLETED_COPIES = set()
 LOCK = threading.Lock()
+
+
+def log_request(event, status, upload_id=None):
+    """Record multipart identity without credentials, signed queries or bodies."""
+    request = bottle.request
+    query = parse_qs(request.query_string, keep_blank_values=True)
+    upload_id = upload_id or query.get("uploadId", [None])[0]
+    operation = request.method
+    if "uploads" in query and request.method == "POST":
+        operation = "CreateMultipartUpload"
+    elif upload_id:
+        operation = {
+            "PUT": (
+                "UploadPartCopy"
+                if "X-Amz-Copy-Source" in request.headers
+                else "UploadPart"
+            ),
+            "POST": "CompleteMultipartUpload",
+            "DELETE": "AbortMultipartUpload",
+        }.get(request.method, request.method)
+    logging.info(
+        json.dumps(
+            {
+                "event": event,
+                "operation": operation,
+                "path": urlsplit(request.environ["RAW_URI"]).path,
+                "upload_id": upload_id,
+                "part_number": query.get("partNumber", [None])[0],
+                "copy_source_range": request.headers.get("X-Amz-Copy-Source-Range"),
+                "status": status,
+            }
+        )
+    )
 
 
 @bottle.route("<:path>", method="GET")
@@ -31,6 +67,7 @@ def index():
         if completed:
             # SeaweedFS accepts duplicate Complete requests; emulate S3's
             # NoSuchUpload after a lost success response to test reconciliation.
+            log_request("injected_no_such_upload", 404)
             return HTTPResponse(
                 status=404,
                 body="<Error><Code>NoSuchUpload</Code></Error>",
@@ -47,6 +84,7 @@ def index():
             COPY_UPLOADS.add(query["uploadId"][0])
         if part_request % 2 == 0:
             status = 200 if part_request % 4 == 0 else 500
+            log_request("injected_part_error", status)
             return HTTPResponse(
                 status=status,
                 body="<Error><Code>InternalError</Code>"
@@ -76,6 +114,20 @@ def index():
         )
         response = connection.getresponse()
         data = response.read()
+        upload_id = None
+        if request.method == "POST" and "uploads" in query and response.status == 200:
+            try:
+                upload_id = next(
+                    (
+                        node.text
+                        for node in ElementTree.fromstring(data).iter()
+                        if node.tag.rsplit("}", 1)[-1] == "UploadId"
+                    ),
+                    None,
+                )
+            except ElementTree.ParseError:
+                # Logging must not change how an invalid backend reply is forwarded.
+                pass
         if request.method == "POST" and "uploadId" in query and response.status == 200:
             with LOCK:
                 lose_response = query["uploadId"][0] in COPY_UPLOADS
@@ -85,6 +137,7 @@ def index():
             if lose_response:
                 # The backend has completed the copy, but the caller receives a
                 # gateway failure. Retrying Complete must not copy all parts again.
+                log_request("injected_lost_complete_response", 502)
                 return HTTPResponse(
                     status=502,
                     body="<Error><Code>InternalError</Code>"
@@ -96,6 +149,7 @@ def index():
             for key, value in response.getheaders()
             if key.lower() not in ("connection", "transfer-encoding")
         }
+        log_request("forwarded", response.status, upload_id)
         return HTTPResponse(status=response.status, body=data, headers=response_headers)
     finally:
         connection.close()
@@ -106,6 +160,10 @@ class ThreadedServer(ThreadingMixIn, WSGIServer):
 
 
 class ProxyHandler(WSGIRequestHandler):
+    def log_request(self, code="-", size="-"):
+        # Structured records above replace access logs, which expose signed queries.
+        pass
+
     def get_environ(self):
         # Forward proxies receive absolute request targets; WSGI expects a path.
         target = urlsplit(self.path)
@@ -117,6 +175,8 @@ class ProxyHandler(WSGIRequestHandler):
         return environ
 
 
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+logging.info(json.dumps({"event": "proxy_started"}))
 bottle.run(
     host="0.0.0.0",
     port=4080,
