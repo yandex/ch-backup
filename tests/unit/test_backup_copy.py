@@ -20,7 +20,12 @@ from ch_backup.backup.copier import BackupCopier
 from ch_backup.backup.copy_context import CopyContext
 from ch_backup.backup.copy_report import CopyReport, print_copy_report
 from ch_backup.backup.layout import BackupLayout
-from ch_backup.backup.metadata import BackupMetadata, BackupState, DetachedPartMetadata
+from ch_backup.backup.metadata import (
+    BackupMetadata,
+    BackupState,
+    DetachedPartMetadata,
+    PartMetadata,
+)
 from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageSource
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.encryption import (
@@ -217,7 +222,14 @@ class FakeLayout:
     def upload_cloud_storage_metadata_files(
         self, backup_meta, remote_path, files, callback=None, on_error=None
     ):
-        error = self.metadata_errors.get(remote_path)
+        error = next(
+            (
+                error
+                for suffix, error in self.metadata_errors.items()
+                if remote_path.endswith(suffix)
+            ),
+            None,
+        )
         if error:
             if on_error:
                 on_error(error)
@@ -3516,8 +3528,8 @@ def test_incomplete_cloud_storage_planning_keeps_failed_objects() -> None:
     # pylint: disable-next=protected-access
     plan_objects = BackupCopier._plan_cloud_storage_objects
 
-    def incomplete(self, backup, plan, result):
-        plan_objects(self, backup, plan, result)
+    def incomplete(self, backup, target, plan, result):
+        plan_objects(self, backup, target, plan, result)
         result.add_error(StorageError("SlowDown"), "planning")
 
     with patch.object(BackupCopier, "_plan_cloud_storage_objects", incomplete):
@@ -3677,3 +3689,251 @@ def test_failed_objects_copied_by_interrupted_run_are_not_listed() -> None:
     assert not ctx.target_layout.copied
     assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
     assert _failed_objects(ctx) is None
+
+
+def _linked_cloud_copy_context() -> CopyTestContext:
+    ctx = _cloud_storage_context("child")
+    ctx.target_layout.store = ctx.store
+    original = {**_part(), "disk_name": "s3", "tarball": False}
+    owner = _backup("owner", parts={"all_1_1_0": original}, cloud_storage_disks=["s3"])
+    owner.cloud_storage.source = {
+        "endpoint_url": ENDPOINT,
+        "bucket": "disk-copy",
+        "path": "copies/owner",
+    }
+    child = _backup(
+        "child",
+        parts={
+            "all_1_1_0_2": {**original, "link": "owner", "link_part_name": "all_1_1_0"}
+        },
+        cloud_storage_disks=["s3"],
+    )
+    child.cloud_storage.source = None
+    ctx.layout.backups = {"owner": owner, "child": child}
+    ctx.layout.cloud_storage_files.clear()
+    ctx.layout.cloud_storage_files.update(
+        {
+            "ch_backup/owner/disks/s3/db1/t1.tar.gz": [
+                (
+                    "store/abc/uuid/all_1_1_0/data.bin",
+                    _object_storage_metadata(("copies/owner/xyz/data", 100), version=5),
+                )
+            ]
+        }
+    )
+    _with_files(ctx, "owner", {"disks/s3/db1/t1.tar.gz": 50})
+    ctx.ch_config.config = {}
+    ctx.target_config["copy"]["cloud_storage"]["target"]["bucket"] = "third-disk"
+
+    return ctx
+
+
+def test_cloud_copy_materializes_a_missing_owner() -> None:
+    ctx = _linked_cloud_copy_context()
+    assert ctx.copy(["child"]) == (["child"], [])
+
+    entries = [
+        e
+        for e in ctx.target_layout.copied
+        if e.dst_storage["credentials"]["bucket"] == "third-disk"
+    ]
+    assert [
+        (e.src_storage["credentials"]["bucket"], e.src_path, e.dst_path)
+        for e in entries
+    ] == [
+        (
+            "disk-copy",
+            "copies/owner/xyz/data",
+            "copies/child/xyz/data",
+        )
+    ]
+    copied = ctx.target_layout.backups["child"]
+    assert copied.get_parts()[0].link is None
+    assert copied.get_parts()[0].link_part_name is None
+    files = ctx.target_layout.cloud_storage_files[
+        "ch_backup_copy/child/disks/s3/db1/t1.tar.gz"
+    ]
+    assert files[0][0] == "store/abc/uuid/all_1_1_0_2/data.bin"
+    assert "copies/child/xyz/data".encode() in files[0][1]
+
+
+def test_cloud_copy_keeps_owned_metadata_when_materializing_a_link() -> None:
+    ctx = _linked_cloud_copy_context()
+    child = ctx.layout.backups["child"]
+    child.cloud_storage.source = {
+        "endpoint_url": ENDPOINT,
+        "bucket": "disk-copy",
+        "path": "copies/child",
+    }
+    child.add_part(
+        PartMetadata(
+            "db1",
+            "t1",
+            "all_2_2_0",
+            "owned-checksum",
+            100,
+            ["data.bin"],
+            False,
+            disk_name="s3",
+        )
+    )
+    ctx.layout.cloud_storage_files["ch_backup/child/disks/s3/db1/t1.tar.gz"] = [
+        (
+            "store/abc/uuid/all_2_2_0/data.bin",
+            _object_storage_metadata(("xyz/owned", 100)),
+        )
+    ]
+
+    assert ctx.copy(["child"]) == (["child"], [])
+
+    files = ctx.target_layout.cloud_storage_files[
+        "ch_backup_copy/child/disks/s3/db1/t1.tar.gz"
+    ]
+    assert {name for name, _data in files} == {
+        "store/abc/uuid/all_1_1_0_2/data.bin",
+        "store/abc/uuid/all_2_2_0/data.bin",
+    }
+    assert all(
+        part.link is None for part in ctx.target_layout.backups["child"].get_parts()
+    )
+    assert {
+        (entry.src_path, entry.dst_path)
+        for entry in ctx.target_layout.copied
+        if entry.dst_storage["credentials"]["bucket"] == "third-disk"
+    } == {
+        ("copies/owner/xyz/data", "copies/child/xyz/data"),
+        ("copies/child/xyz/owned", "copies/child/xyz/owned"),
+    }
+
+
+@pytest.mark.parametrize(
+    "change,equal",
+    [
+        ({"name": "all_1_1_0_7"}, True),
+        ({"link_part_name": None}, True),
+        ({"link": "other"}, False),
+        ({"database": "other"}, False),
+        ({"table": "other"}, False),
+        ({"link_part_name": "all_1_1_0_3"}, False),
+        ({"disk_name": "other"}, False),
+        ({"tarball": False}, False),
+        ({"encrypted": False}, False),
+    ],
+)
+def test_materialized_reuse_resolves_the_same_stored_dependency(change, equal):
+    # pylint: disable=protected-access
+    """
+    Mutation renaming can leave the source dependency unchanged. The reuse key
+    must distinguish changes to the stored dependency or its format without
+    treating every requested name as new data.
+    """
+    fields: dict = dict(
+        database="db",
+        table="t",
+        name="all_1_1_0",
+        checksum="c",
+        size=1,
+        files=[],
+        tarball=True,
+        link="owner",
+        link_part_name="all_1_1_0",
+        encrypted=True,
+    )
+    first = PartMetadata(**fields)
+    second = PartMetadata(**{**fields, **change})
+    assert (
+        BackupCopier._materialized_part_key(first)
+        == BackupCopier._materialized_part_key(second)
+    ) is equal
+    first.raw_metadata.link_part_name = None
+    first.name = "all_1_1_0_9"
+    assert BackupCopier._materialized_part_key(
+        first
+    ) != BackupCopier._materialized_part_key(second)
+
+
+@pytest.mark.parametrize(
+    "field,value,valid",
+    [
+        ("name", "all_1_1_0_7", False),
+        ("table", "other", False),
+        ("database", "other", False),
+        ("link", "other", False),
+        ("checksum", "other", False),
+        ("disk_name", "other", True),
+        ("tarball", False, True),
+        ("encrypted", False, True),
+    ],
+)
+def test_existing_link_checks_stored_address_without_reinterpreting_format(
+    field, value, valid
+):
+    # pylint: disable=protected-access
+    """
+    An existing link identifies stored bytes through its owner and checksum.
+    Requiring the requesting part to repeat the owner's storage format would
+    reject valid links; accepting another stored address would read the wrong
+    part.
+    """
+    owner = _backup(
+        "owner",
+        database="other" if field == "database" else "db1",
+        parts={value if field == "name" else "all_1_1_0": _part()},
+    )
+    raw = owner.dump()
+    if field == "table":
+        tables = raw["databases"]["db1"]["tables"]
+        tables["other"] = tables.pop("t1")
+    elif field not in ("name", "database"):
+        raw["databases"]["db1"]["tables"]["t1"]["parts"]["all_1_1_0"][field] = value
+    ctx = CopyTestContext([], [BackupMetadata.load(raw)])
+    requested = PartMetadata(
+        "db1",
+        "t1",
+        "all_1_1_0_7",
+        "checksum1",
+        100,
+        [],
+        True,
+        link="owner",
+        link_part_name="all_1_1_0",
+    )
+    assert ctx.make_copier()._is_link_valid_in_target(requested) is valid
+
+
+@pytest.mark.parametrize(
+    "change,reusable",
+    [
+        ({}, True),
+        ({"name": "all_1_1_0"}, False),
+        ({"checksum": "other"}, False),
+        ({"disk_name": "other"}, False),
+        ({"tarball": False}, False),
+        ({"encrypted": False}, False),
+    ],
+)
+def test_materialized_owner_index_checks_the_published_part(change, reusable):
+    # pylint: disable=protected-access
+    """
+    A matching source key does not prove that the target contains a compatible
+    copy. This exercises registration and reuse together so an incompatible
+    published part cannot become an alternative owner.
+    """
+    source = _backup(
+        "child",
+        parts={"all_1_1_0_7": _part(link="owner", link_part_name="all_1_1_0")},
+    )
+    stored = {**_part(), **change}
+    target = _backup("child", parts={stored.pop("name", "all_1_1_0_7"): stored})
+    copier = CopyTestContext([], [target]).make_copier()
+    copier._remember_materialized_parts(source, target)
+    next_backup = _backup(
+        "next",
+        parts={"all_1_1_0_9": _part(link="owner", link_part_name="all_1_1_0")},
+    )
+    requested = next_backup.get_parts()[0]
+    assert copier._reuse_materialized_part(requested, next_backup) is reusable
+    result = next_backup.get_parts()[0]
+    assert (result.link, result.deduplicated_part_name) == (
+        ("child", "all_1_1_0_7") if reusable else ("owner", "all_1_1_0")
+    )

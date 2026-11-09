@@ -1147,7 +1147,7 @@ class BackupLayout:
         step, so the returned keys identify payload objects only.
         """
         object_keys_to_delete: set[str] = set()
-        for disk_name in backup_meta.select_cloud_disks_for_cleanup():
+        for disk_name in backup_meta.select_disks_with_stored_cloud_parts():
             archive_paths = self.list_cloud_storage_metadata_archives(
                 backup_meta.get_sanitized_name(),
                 disk_name,
@@ -1199,7 +1199,7 @@ class BackupLayout:
         and replacement archive contents, avoiding a second metadata download.
         """
         deletion_plan = _CloudPartDeletionPlan(backup, retained_part_identities)
-        for disk_name in backup.select_cloud_disks_for_cleanup():
+        for disk_name in backup.select_disks_with_stored_cloud_parts():
             if backup.cloud_storage.data_copied:
                 object_prefix = self.get_cloud_storage_data_path(backup.name, disk_name)
             else:

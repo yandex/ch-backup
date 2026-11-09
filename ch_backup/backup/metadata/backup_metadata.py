@@ -623,7 +623,7 @@ class BackupMetadata:
         if not part.link:
             self.real_size += part.size
 
-    def select_cloud_disks_for_cleanup(self) -> list[str]:
+    def select_disks_with_stored_cloud_parts(self) -> list[str]:
         """Select disks that may contain cloud parts stored by this backup.
 
         A disk containing only links has no parts to delete here. Include disks

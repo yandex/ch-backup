@@ -380,6 +380,7 @@ class ClickhouseBackup:
         ):
             if (
                 self._context.backup_meta.cloud_storage.requires_source_bucket
+                and self._context.backup_meta.select_disks_with_stored_cloud_parts()
                 and not cloud_storage_source
             ):
                 raise ClickhouseBackupError(

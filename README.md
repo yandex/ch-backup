@@ -397,6 +397,10 @@ Behavior and limitations:
   if the copy of that backup is not completed but already holds files of the part, e.g. after its
   scope `files`, as deduplication of new backups does. Otherwise, the data part is copied
   into the copied backup. `--all` copies older backups first, so deduplication is kept in the target storage.
+- A copied backup can link to cloud parts stored by an older backup. That older backup may be absent from the destination.
+  Copy keeps a link only when the destination contains the referenced part with compatible encryption.
+  Otherwise, it copies the older backup's objects and disk metadata into the copied backup.
+  Restore resolves each linked part through the backup that stores it. Separate decryption directories prevent owners from overwriting each other's temporary files.
 - Set `copy.deduplication_age_limit: {days: 90}` in the target configuration to enable an
   independent deduplication window for active parts on local disks. The default `{days: 0}`
   disables this additional lookup; a zero duration keeps the existing source-link behavior.
@@ -452,9 +456,12 @@ Behavior and limitations:
   creating the temporary ClickHouse disk. By default staging uses the destination disk's
   endpoint, bucket and credentials; disks without static credentials use the storage SDK's
   normal environment/provider chain. Overriding the staging endpoint or bucket requires both
-  `access_key_id` and `secret_access_key`. The staging path is exclusive to one restore and must
-  not overlap the encrypted source prefix in the same bucket, because ch-backup removes everything
-  below it before and after restore. Reserve staging capacity for the full restored cloud-storage
+  `access_key_id` and `secret_access_key`. The staging path is a parent directory: each owner/disk
+  pair gets a stable subdirectory, so one path supports restores with several owners. Only those
+  subdirectories are cleared before and after restore; they must not overlap encrypted sources.
+  Serialize restores that use the same owner/disk staging location. Leftovers from older versions
+  directly under the parent path require manual cleanup after those restores stop.
+  Reserve staging capacity for the full restored cloud-storage
   data volume. Decryption and downloading disk metadata a second time make this restore slower than
   an unencrypted cloud-data restore.
   To use a separate worker, provide source endpoint, bucket, path and credentials explicitly;
