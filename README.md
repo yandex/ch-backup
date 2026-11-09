@@ -384,6 +384,13 @@ Behavior and limitations:
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
   and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.
   Locking remains optional; the local file lock retains its shared semantics.
+- Set `multiprocessing.metadata_read_threads` in the target configuration to control parallel
+  source and target light-metadata reads at copy startup (default: `4`, positive integer).
+  Each batch holds at most this many reads; set `1` for sequential reading.
+- `multiprocessing.full_metadata_read_threads` in the target configuration controls
+  full-metadata prefetch for `copy.deduplication_age_limit` (default: `2`). The limit includes
+  the candidate being indexed and queued reads; indexing remains sequential. Set `1` for
+  sequential loading. Increasing it retains more full metadata in memory.
 - By default, deduplicated data parts of the backup are stored in older backups. If such a backup is already
   present in the target storage, the deduplication link is kept. A link to a local part is also kept
   if the copy of that backup is not completed but already holds files of the part, e.g. after its
