@@ -9,7 +9,6 @@ from tempfile import TemporaryFile
 from typing import Sequence
 
 import requests
-from boto3.s3.inject import copy as managed_copy
 from botocore.exceptions import ClientError
 
 from ch_backup import logging
@@ -21,10 +20,6 @@ from ch_backup.storage.engine.s3.s3_client_factory import (
     get_cached_s3_client_factory,
 )
 from ch_backup.storage.engine.s3.s3_config import build_transfer_config
-from ch_backup.storage.engine.s3.s3_copy_client import (
-    S3CopyClient,
-    S3MultipartCopyError,
-)
 from ch_backup.storage.engine.s3.s3_multipart_uploader import S3MultipartUploader
 from ch_backup.storage.engine.s3.s3_retry import (
     RetryExponential,
@@ -59,8 +54,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
         )
         self._copy_client_config: dict | None = None
         if "retries" not in config.get("module_config", {}).get("botocore", {}):
-            # Only managed copy needs SDK retries by default. Other operations
-            # retain their ch-backup budgets without nested SDK attempts.
+            # Copy uses SDK retries; other operations retain their outer retry budgets.
             self._copy_client_config = deepcopy(config)
             self._copy_client_config.setdefault("module_config", {}).setdefault(
                 "botocore", {}
@@ -208,7 +202,6 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
 
         return result
 
-    @S3RetryMeta.no_retry
     def copy_object(
         self, source_bucket: str, source_path: str, remote_path: str
     ) -> None:
@@ -217,15 +210,11 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
         """
         self._copy_object(source_bucket, source_path, remote_path)
 
-    @S3RetryMeta.no_retry
     def try_copy_object(
         self, source_bucket: str, source_path: str, remote_path: str
     ) -> bool:
         """
-        Try to copy an object on the server side.
-
-        Return False on a non-retryable S3 rejection before multipart initiation.
-        Exhausted retries and failures of an initiated multipart transfer propagate.
+        Try server-side copy, retrying temporary errors. Return False on permanent rejection.
         """
         try:
             self._copy_object(source_bucket, source_path, remote_path)
@@ -244,26 +233,20 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
     def _copy_object(
         self, source_bucket: str, source_path: str, remote_path: str
     ) -> None:
-        # Botocore retries individual requests using module_config.botocore.retries.
-        # Keep one client and upload throughout; never retry the managed transfer.
-        client = S3CopyClient(self.get_client(for_copy=True))
-        try:
-            managed_copy(
-                client,
-                CopySource={"Bucket": source_bucket, "Key": source_path.lstrip("/")},
-                Bucket=self._s3_bucket_name,
-                Key=remote_path.lstrip("/"),
-                Config=self._transfer_config,
-            )
-        except Exception as error:
-            # SDK failures after initiation (e.g. an incomplete part response) also
-            # must not make the probe restart the object through streamed copy.
-            if client.upload_id is not None:
-                raise S3MultipartCopyError(
-                    f"Multipart copy failed for s3://{self._s3_bucket_name}/{remote_path.lstrip('/')} "
-                    f"(UploadId {client.upload_id}): {error}"
-                ) from error
-            raise
+        # Managed copy uses UploadPartCopy for large objects.
+        client = (
+            self._s3_client
+            if self._copy_client_config is None
+            else get_cached_s3_client_factory(
+                self._copy_client_config
+            ).create_s3_client()
+        )
+        client.copy(
+            CopySource={"Bucket": source_bucket, "Key": source_path.lstrip("/")},
+            Bucket=self._s3_bucket_name,
+            Key=remote_path.lstrip("/"),
+            Config=self._transfer_config,
+        )
 
     def path_exists(self, remote_path: str, is_dir: bool = False) -> bool:
         """
@@ -389,12 +372,8 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
             Bucket=self._s3_bucket_name, Key=remote_path
         )["ContentLength"]
 
-    def get_client(self, *, for_copy: bool = False) -> S3Client:
+    def get_client(self):
         """
         Return S3 raw client.
         """
-        if for_copy and self._copy_client_config is not None:
-            return get_cached_s3_client_factory(
-                self._copy_client_config
-            ).create_s3_client()
         return self._s3_client

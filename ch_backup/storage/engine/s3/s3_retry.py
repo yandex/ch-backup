@@ -188,21 +188,16 @@ class S3RetryMeta(ABCMeta):
     def __new__(mcs, name, bases, attrs):  # pylint: disable=arguments-differ
         new_attrs = {}
         for attr_name, attr_value in attrs.items():
+            # Managed copy retries individual requests in botocore, not the whole object.
             if (
                 not attr_name.startswith("_")
+                and attr_name not in ("copy_object", "try_copy_object")
                 and isfunction(attr_value)
-                and not getattr(attr_value, "_s3_retry_disabled", False)
             ):
                 attr_value = mcs.retry_wrapper(mcs.s3_exception_wrapper(attr_value))
             new_attrs[attr_name] = attr_value
 
         return super().__new__(mcs, name, bases, new_attrs)
-
-    @staticmethod
-    def no_retry(func: Callable[..., RT]) -> Callable[..., RT]:
-        """Use SDK retries without retrying the whole operation."""
-        setattr(func, "_s3_retry_disabled", True)
-        return func
 
     @classmethod
     def retry_wrapper(mcs, func: Callable[..., RT]) -> Callable[..., RT]:

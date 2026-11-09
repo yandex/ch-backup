@@ -62,9 +62,6 @@ Feature: Copy backups to another storage
         proxy_resolver: {uri: null}
         retry:
             backup: {max_attempts: 3, max_interval: 0}
-        module_config:
-            botocore:
-                retries: {mode: standard, total_max_attempts: 3}
     """
     When we try to execute ch-backup on clickhouse01 with 3 SlowDown errors
     """

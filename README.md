@@ -121,19 +121,10 @@ existing defaults. Explicit `retries` replace the SDK retry defaults;
 explicit `proxies` override `storage.proxy_resolver`. These settings also apply
 to copy targets and cloud-storage clients.
 
-Server-side copy defaults to botocore's `standard` mode with three total attempts
-per request. An explicit `storage.module_config.botocore.retries` in the target
-configuration overrides this default, including `total_max_attempts: 1` to disable
-retries. Other operations keep SDK retries disabled by default and use the
-`storage.retry` budgets. Those budgets do not restart a server-side copy operation.
-Botocore repeats a failed `UploadPartCopy` with the same upload ID, part number
-and byte range, retaining completed parts. Retries use the same client and proxy.
-After a multipart transfer starts, a failure is reported without restarting the
-object or falling back to streamed copy, including in `auto` mode. The SDK attempts
-to abort the upload, and ch-backup logs whether cleanup succeeded. With
-`--keep-going`, independent objects continue, but the command still fails.
-Ambiguous create or completion responses retain the SDK's behavior; a lost
-completion reply can report a failure even when the destination object exists.
+Server-side copy uses SDK retries only, defaulting to `standard` mode with three
+total attempts per request. Set `storage.module_config.botocore.retries` in the
+target configuration to override this default. Other operations keep SDK retries
+disabled by default and use the `storage.retry` budgets.
 
 ## Installation
 

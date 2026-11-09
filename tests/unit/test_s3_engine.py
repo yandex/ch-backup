@@ -50,12 +50,9 @@ def test_module_config_is_passed_to_sdk(tmp_path: Path) -> None:
         },
         "transfer": {"multipart_chunksize": 16777216, "max_concurrency": 4},
     }
-    with (
-        patch(
-            "ch_backup.storage.engine.s3.s3_client_factory.boto3.session.Session"
-        ) as session_class,
-        patch("ch_backup.storage.engine.s3.s3_engine.managed_copy") as managed_copy,
-    ):
+    with patch(
+        "ch_backup.storage.engine.s3.s3_client_factory.boto3.session.Session"
+    ) as session_class:
         engine = _engine(module_config=options)
         local_path = tmp_path / "data"
         local_path.write_bytes(b"backup data")
@@ -73,7 +70,7 @@ def test_module_config_is_passed_to_sdk(tmp_path: Path) -> None:
         client.upload_fileobj,
         client.download_file,
         client.download_fileobj,
-        managed_copy,
+        client.copy,
     ):
         transfer_config = method.call_args.kwargs["Config"]
         for name, value in options["transfer"].items():
