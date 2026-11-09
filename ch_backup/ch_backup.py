@@ -25,7 +25,7 @@ from ch_backup.backup.deduplication import (
     collect_dedup_info,
     collect_dedup_references_for_batch_backup_deletion,
 )
-from ch_backup.backup.layout import BackupLayout
+from ch_backup.backup.layout import BackupLayout, prefetch_metadata
 from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
@@ -730,6 +730,7 @@ class ClickhouseBackup:
             dedup_references = collect_dedup_references_for_batch_backup_deletion(
                 layout=self._context.backup_layout,
                 retained_backups_light_meta=retained_backups,
+                workers=self._config["multiprocessing"]["full_metadata_read_threads"],
                 deleting_backup_names={
                     backup_name,
                     *(b.name for b in deleting_backups),
@@ -896,6 +897,7 @@ class ClickhouseBackup:
             dedup_references = collect_dedup_references_for_batch_backup_deletion(
                 layout=self._context.backup_layout,
                 retained_backups_light_meta=retained_backups,
+                workers=self._config["multiprocessing"]["full_metadata_read_threads"],
                 deleting_backup_names={b.name for b in deleting_backups},
             )
 
@@ -994,17 +996,28 @@ class ClickhouseBackup:
         A bad later backup must not cause earlier backups to be deleted.
         """
         prepared_deletions = []
-        for light_metadata in sorted(
+        ordered_backups = sorted(
             backups_to_delete, key=lambda backup: bool(backup.generation_of)
-        ):
-            retained_part_references = dedup_references[light_metadata.name]
-            backup, metadata_is_light = self._load_metadata_for_deletion(
-                light_metadata, retained_part_references
+        )
+        reads = (
+            partial(
+                self._load_metadata_for_deletion, backup, dedup_references[backup.name]
             )
-            cloud_cleanup_action = self._choose_cloud_cleanup_action(
-                backup, retained_part_references, delete_cloud_storage_data
-            )
-            prepared_deletions.append((backup, metadata_is_light, cloud_cleanup_action))
+            for backup in ordered_backups
+        )
+        workers = self._config["multiprocessing"]["full_metadata_read_threads"]
+        with prefetch_metadata(reads, workers) as futures:
+            for light_metadata, future in zip(ordered_backups, futures):
+                backup, metadata_is_light = future.result()
+                cloud_cleanup_action = self._choose_cloud_cleanup_action(
+                    backup,
+                    dedup_references[light_metadata.name],
+                    delete_cloud_storage_data,
+                )
+                prepared_deletions.append(
+                    (backup, metadata_is_light, cloud_cleanup_action)
+                )
+                del future
         logging.info(
             "Deletion batch validated: backups={}, cloud_cleanup_actions={}; no deletion started during validation",
             len(prepared_deletions),

@@ -39,6 +39,7 @@ from ch_backup.backup.layout import (
     get_data_part_file_names,
     get_data_part_relative_dirs,
     identify_cloud_part_from_archive_entry,
+    prefetch_metadata,
     read_metadata_in_batches,
 )
 from ch_backup.backup.metadata import (
@@ -2204,18 +2205,17 @@ class BackupCopier:
                     ),
                 )
 
-    def _link_cloud_storage_parts(
-        self,
-        backup: BackupMetadata,
-        target: BackupMetadata,
-        layout: BackupLayout,
-        metadata_name: str,
-    ) -> None:
-        if self._cloud_storage_parts is None:
-            self._cloud_storage_parts = {}
-            for name in self._target_layout.get_backup_names():
+    def _index_cloud_storage_part_owners(self) -> None:
+        """Overlap reads without changing which compatible owner is selected first."""
+        self._cloud_storage_parts = {}
+        names = self._target_layout.get_backup_names()
+        reads = (partial(self._target_layout.get_backup, name) for name in names)
+        workers = self._target_config["multiprocessing"]["full_metadata_read_threads"]
+        with prefetch_metadata(reads, workers) as futures:
+            for name, future in zip(names, futures):
+                owner_backup = None
                 try:
-                    owner_backup = self._target_layout.get_backup(name)
+                    owner_backup = future.result()
                     if owner_backup:
                         self._remember_cloud_storage_parts(owner_backup)
                 except Exception as error:
@@ -2226,6 +2226,19 @@ class BackupCopier:
                         name,
                         error,
                     )
+                finally:
+                    del owner_backup, future
+
+    def _link_cloud_storage_parts(
+        self,
+        backup: BackupMetadata,
+        target: BackupMetadata,
+        layout: BackupLayout,
+        metadata_name: str,
+    ) -> None:
+        if self._cloud_storage_parts is None:
+            self._index_cloud_storage_part_owners()
+        assert self._cloud_storage_parts is not None
         references = self._cloud_storage_part_fingerprints(
             backup, layout, metadata_name
         )

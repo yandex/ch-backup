@@ -1,6 +1,9 @@
 """Generation publication must preserve the representation used by old children."""
 
 import copy
+import weakref
+from concurrent.futures import BrokenExecutor
+from threading import Barrier, Event, get_ident
 
 # These tests adapt in-memory transport and exercise the public copy flows.
 # pylint: disable=protected-access
@@ -15,6 +18,7 @@ from ch_backup.backup.deduplication import (
 )
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, BackupState
+from ch_backup.command_context import command_context, get_current_command
 from ch_backup.encryption import (
     get_cloud_storage_data_encryption_config,
     get_cloud_storage_data_encryption_metadata,
@@ -73,6 +77,80 @@ def test_current_generation_check_uses_full_publication_manifest():
         assert copier._is_current_cloud_generation(generation)
         generation.name = "previous"
         assert not copier._is_current_cloud_generation(generation)
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_cloud_owner_prefetch_bounds_metadata_and_preserves_order(workers, monkeypatch):
+    """Parallel reads must not change the first compatible owner or retain old manifests."""
+    ctx = _generation_context()
+    ctx.target_config["multiprocessing"]["full_metadata_read_threads"] = workers
+    names = [f"owner{i}" for i in range(workers * 2)]
+    copier = ctx.make_copier()
+    barrier, refill_started = Barrier(workers), Event()
+    references, indexed = [], []
+    main_thread = get_ident()
+
+    def read(name):
+        assert get_current_command() == "copy"
+        backup = _backup(name)
+        references.append(weakref.ref(backup))
+        if name == names[workers]:
+            refill_started.set()
+        barrier.wait(timeout=10)
+        return backup
+
+    def index(backup):
+        assert get_ident() == main_thread
+        indexed.append(backup.name)
+        if workers > 1 and len(indexed) == 2:
+            assert refill_started.wait(10)
+        assert sum(ref() is not None for ref in references) <= workers
+
+    # A Mock would retain the metadata arguments and hide their actual lifetime.
+    monkeypatch.setattr(ctx.target_layout, "get_backup_names", lambda: names)
+    monkeypatch.setattr(ctx.target_layout, "get_backup", read)
+    monkeypatch.setattr(copier, "_remember_cloud_storage_parts", index)
+    with command_context("copy"):
+        copier._index_cloud_storage_part_owners()
+    assert indexed == names
+    assert all(ref() is None for ref in references)
+
+
+@pytest.mark.parametrize("failure_at", ["read", "index", "executor"])
+def test_cloud_owner_prefetch_preserves_optional_candidate_errors(
+    failure_at, monkeypatch
+):
+    """Bad candidates can be skipped; a broken executor must still stop the copy."""
+    ctx = _generation_context()
+    copier = ctx.make_copier()
+    failure = StorageError("candidate unavailable")
+    if failure_at == "executor":
+        failure.__cause__ = BrokenExecutor("pool unavailable")
+    indexed = []
+
+    def read(name):
+        if name == "broken" and failure_at != "index":
+            raise failure
+        return _backup(name)
+
+    def index(backup):
+        if backup.name == "broken":
+            raise failure
+        indexed.append(backup.name)
+
+    monkeypatch.setattr(
+        ctx.target_layout, "get_backup_names", lambda: ["broken", "good"]
+    )
+    monkeypatch.setattr(ctx.target_layout, "get_backup", read)
+    monkeypatch.setattr(copier, "_remember_cloud_storage_parts", index)
+    if failure_at == "executor":
+        with pytest.raises(StorageError) as raised:
+            copier._index_cloud_storage_part_owners()
+        assert raised.value is failure
+        assert not indexed
+    else:
+        copier._index_cloud_storage_part_owners()
+        assert indexed == ["good"]
 
 
 def test_owner_recopy_keeps_previous_generation_and_key():

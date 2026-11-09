@@ -6,7 +6,8 @@ Management of backup data layout.
 
 import json
 import os
-from concurrent.futures import Future
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from functools import partial
 from io import IOBase
@@ -16,10 +17,12 @@ from typing import (
     Any,
     BinaryIO,
     Callable,
+    Generator,
     Iterable,
     Iterator,
     Literal,
     Sequence,
+    TypeVar,
 )
 from urllib.parse import quote
 
@@ -41,6 +44,7 @@ from ch_backup.clickhouse.object_storage_metadata import (
     ObjectStorageMetadataError,
     parse_object_storage_metadata,
 )
+from ch_backup.command_context import get_current_command, run_with_command_context
 from ch_backup.config import Config
 from ch_backup.encryption import get_encryption_class
 from ch_backup.exceptions import (
@@ -70,6 +74,34 @@ COMPRESSED_EXTENSION = ".gz"
 CLOUD_STORAGE_METADATA_DIR = "disks"
 CLOUD_STORAGE_DATA_DIR = "cloud_storage"
 MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE = 1024 * 1024
+
+_MetadataResult = TypeVar("_MetadataResult")
+
+
+@contextmanager
+def prefetch_metadata(
+    reads: Iterable[Callable[[], _MetadataResult]], workers: int
+) -> Generator[Iterator[Future[_MetadataResult]], None, None]:
+    """Overlap a bounded window of reads while the caller processes results in order.
+
+    Await and release each future before advancing. The caller decides whether a
+    read error is fatal; exiting this context drains running reads and cancels
+    queued work before a storage lock can be released.
+    """
+    pool = ThreadPoolExecutor(workers)
+    command = get_current_command()
+    tasks = (pool.submit(run_with_command_context, command, read) for read in reads)
+    try:
+        pending = deque(islice(tasks, workers))
+
+        def ordered_reads() -> Iterator[Future[_MetadataResult]]:
+            while pending:
+                yield pending.popleft()
+                pending.extend(islice(tasks, 1))
+
+        yield ordered_reads()
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
 
 
 def read_metadata_in_batches(

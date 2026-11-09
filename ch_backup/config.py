@@ -311,7 +311,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "workers": 4,
         # The number of threads for reading source/target light metadata at copy startup.
         "metadata_read_threads": 4,
-        # Full metadata held at once while building the copy deduplication index.
+        # Concurrent full-metadata reads for copy deduplication and cleanup.
         "full_metadata_read_threads": 2,
         # The number of processes for parts restoring from S3 disks.
         "cloud_storage_restore_workers": 4,

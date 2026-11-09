@@ -388,10 +388,17 @@ Behavior and limitations:
 - Set `multiprocessing.metadata_read_threads` in the target configuration to control parallel
   source and target light-metadata reads at copy startup (default: `4`, positive integer).
   Each batch holds at most this many reads; set `1` for sequential reading.
-- `multiprocessing.full_metadata_read_threads` in the target configuration controls
-  full-metadata prefetch for `copy.deduplication_age_limit` (default: `2`). The limit includes
-  the candidate being indexed and queued reads; indexing remains sequential. Set `1` for
-  sequential loading. Increasing it retains more full metadata in memory.
+- Sequential metadata reads add waiting time while copy or cleanup holds storage locks.
+  Loading every candidate at once would retain full metadata in proportion to the backup count.
+  Copy deduplication, cloud-owner discovery, retained-reference scanning, and deletion preparation
+  therefore overlap reads within a bounded window. Set `multiprocessing.full_metadata_read_threads`
+  to control that window (default: `2`). Use `1` for sequential reads. Copy uses the target setting.
+  Results are processed in order so network timing cannot change which compatible owner is selected first.
+  Cleanup still validates the entire batch before deletion. Concurrent reads do not authorize early mutation.
+  Readers finish before locks are released, so background work cannot outlive the operation's protection.
+  The window includes the candidate being processed and queued reads, but does not bound retained deletion plans.
+  Cloud-owner validation can also hold one public manifest. It uses full metadata because publication can
+  succeed before a later light-metadata write fails.
 - By default, deduplicated data parts of the backup are stored in older backups. If such a backup is already
   present in the target storage, the deduplication link is kept. A link to a local part is also kept
   if the copy of that backup is not completed but already holds files of the part, e.g. after its
