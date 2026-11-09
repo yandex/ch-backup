@@ -401,6 +401,10 @@ Behavior and limitations:
   Copy keeps a link only when the destination contains the referenced part with compatible encryption.
   Otherwise, it copies the older backup's objects and disk metadata into the copied backup.
   Restore resolves each linked part through the backup that stores it. Separate decryption directories prevent owners from overwriting each other's temporary files.
+- The `cloud_storage` scope can run after the `files` scope without access to the source backup storage.
+  The `files` scope therefore saves the linked owners' metadata and any required payload held in backup storage.
+  It preserves those bytes unchanged so the later `cloud_storage` scope does not encrypt them twice.
+  An interrupted cloud copy keeps the original links until the retry completes.
 - Set `copy.deduplication_age_limit: {days: 90}` in the target configuration to enable an
   independent deduplication window for active parts on local disks. The default `{days: 0}`
   disables this additional lookup; a zero duration keeps the existing source-link behavior.

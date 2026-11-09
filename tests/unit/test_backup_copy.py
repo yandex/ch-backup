@@ -3728,9 +3728,17 @@ def _linked_cloud_copy_context() -> CopyTestContext:
     return ctx
 
 
-def test_cloud_copy_materializes_a_missing_owner() -> None:
+@pytest.mark.parametrize("staged", [False, True])
+def test_cloud_copy_materializes_a_missing_owner(staged: bool) -> None:
     ctx = _linked_cloud_copy_context()
-    assert ctx.copy(["child"]) == (["child"], [])
+    if staged:
+        ctx.copy(["child"], scopes=["files"])
+        ctx.layout = UnavailableLayout()  # type: ignore[assignment]
+        ctx.target_layout.source = None
+    assert ctx.copy(["child"], scopes=["cloud_storage"] if staged else None) == (
+        ["child"],
+        [],
+    )
 
     entries = [
         e
@@ -3804,6 +3812,55 @@ def test_cloud_copy_keeps_owned_metadata_when_materializing_a_link() -> None:
         ("copies/owner/xyz/data", "copies/child/xyz/data"),
         ("copies/child/xyz/owned", "copies/child/xyz/owned"),
     }
+
+
+@pytest.mark.parametrize("in_backup", [False, True])
+def test_staged_cloud_owner_retry_needs_no_source_backup(in_backup: bool) -> None:
+    ctx = _linked_cloud_copy_context()
+    archive = "ch_backup/owner/disks/s3/db1/t1.tar.gz"
+    if in_backup:
+        owner = ctx.layout.backups["owner"]
+        owner.cloud_storage.data_copied = True
+        owner.cloud_storage.source = None
+        ctx.layout.cloud_storage_files[archive] = [
+            (
+                "store/abc/uuid/all_1_1_0/data.bin",
+                _object_storage_metadata(("xyz/data", 100)),
+            )
+        ]
+        _with_files(
+            ctx,
+            "owner",
+            {"disks/s3/db1/t1.tar.gz": 50, "cloud_storage/s3/xyz/data": 100},
+        )
+    ctx.copy(["child"], scopes=["files"])
+    staged_payload = [
+        e.dst_path for e in ctx.target_layout.copied if "/cloud_storage/" in e.dst_path
+    ]
+    assert bool(staged_payload) == in_backup
+    ctx.layout = UnavailableLayout()  # type: ignore[assignment]
+    ctx.target_layout.source = None
+    payload = staged_payload[0] if in_backup else "copies/owner/xyz/data"
+    ctx.target_layout.object_errors[payload] = StorageError("interrupted")
+
+    with pytest.raises(ClickhouseBackupError):
+        ctx.copy(["child"], scopes=["cloud_storage"], keep_going=True)
+    failed = ctx.target_layout.backups["child"]
+    assert failed.state == BackupState.FAILED
+    assert failed.get_parts()[0].link == "owner"
+    assert failed.cloud_storage.source is None
+
+    ctx.target_layout.object_errors.clear()
+    ctx.copy(["child"], scopes=["cloud_storage"])
+    copied = ctx.target_layout.backups["child"]
+    assert copied.state == BackupState.CREATED
+    assert copied.get_parts()[0].link is None
+    assert copied.cloud_storage.source is not None
+    assert copied.cloud_storage.source["bucket"] == "third-disk"
+    assert any(
+        e.src_path == payload and e.dst_path == "copies/child/xyz/data"
+        for e in ctx.target_layout.copied
+    )
 
 
 @pytest.mark.parametrize(
@@ -3937,3 +3994,71 @@ def test_materialized_owner_index_checks_the_published_part(change, reusable):
     assert (result.link, result.deduplicated_part_name) == (
         ("child", "all_1_1_0_7") if reusable else ("owner", "all_1_1_0")
     )
+
+
+def test_full_cloud_copy_rejects_inconsistent_owner_encryption():
+    ctx = _linked_cloud_copy_context()
+    child = ctx.layout.backups["child"]
+    owner = ctx.layout.backups["owner"]
+    child.cloud_storage.data_copied = owner.cloud_storage.data_copied = True
+    owner.cloud_storage.source = None
+    owner.cloud_storage.data_encryption = get_cloud_storage_data_encryption_metadata(
+        ctx.config["encryption"]
+    )
+    with pytest.raises(Exception, match="encryption metadata differ"):
+        ctx.copy(["child"])
+    assert not ctx.target_layout.copied
+
+
+@pytest.mark.parametrize("encrypted_source", [False, True])
+def test_staged_owner_payload_is_forwarded_unchanged(encrypted_source):
+    ctx = _linked_cloud_copy_context()
+    owner = ctx.layout.backups["owner"]
+    child = ctx.layout.backups["child"]
+    owner.cloud_storage.data_copied = True
+    owner.cloud_storage.source = None
+    if encrypted_source:
+        encryption = get_cloud_storage_data_encryption_metadata(
+            ctx.config["encryption"]
+        )
+        owner.cloud_storage.data_encryption = encryption
+        child.cloud_storage.data_encryption = encryption
+        ctx.target_config["cloud_storage"]["data_encryption"]["key"] = None
+    else:
+        ctx.target_config["copy"]["cloud_storage"]["encrypt_data"] = True
+    prefix = "ch_backup/owner/cloud_storage/s3"
+    ctx.layout.cloud_storage_files["ch_backup/owner/disks/s3/db1/t1.tar.gz"] = [
+        (
+            "store/abc/uuid/all_1_1_0/data.bin",
+            _object_storage_metadata((prefix + "/xyz/data", 100), version=5),
+        )
+    ]
+    _with_files(
+        ctx,
+        "owner",
+        {
+            "disks/s3/db1/t1.tar.gz": 50,
+            "cloud_storage/s3/xyz/data": 140 if encrypted_source else 100,
+        },
+    )
+    ctx.copy(["child"], scopes=["files"])
+    staged = [
+        entry
+        for entry in ctx.target_layout.copied
+        if entry.src_path == prefix + "/xyz/data"
+    ]
+    assert len(staged) == 1
+    assert not staged[0].encrypt
+    assert staged[0].dst_size == (140 if encrypted_source else 100)
+    ctx.layout = UnavailableLayout()  # type: ignore[assignment]
+    ctx.target_layout.source = None
+    ctx.target_layout.copied.clear()
+    ctx.copy(["child"], scopes=["cloud_storage"])
+    payload = [
+        entry
+        for entry in ctx.target_layout.copied
+        if entry.src_path == staged[0].dst_path
+    ]
+    assert len(payload) == 1
+    assert payload[0].encrypt is not encrypted_source
+    assert payload[0].dst_size == 140
