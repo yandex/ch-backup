@@ -20,11 +20,8 @@ from ch_backup.backup.copier import BackupCopier
 from ch_backup.backup.copy_context import CopyContext
 from ch_backup.backup.copy_report import CopyReport, print_copy_report
 from ch_backup.backup.layout import BackupLayout
-from ch_backup.backup.metadata import (
-    BackupMetadata,
-    BackupState,
-    DetachedPartMetadata,
-)
+from ch_backup.backup.metadata import BackupMetadata, BackupState, DetachedPartMetadata
+from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageSource
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.encryption import (
     get_cloud_storage_data_encryption_metadata,
@@ -199,14 +196,20 @@ class FakeLayout:
                     layout.metadata_files()[entry.src_path]
                 )
 
-    def get_cloud_storage_metadata_remote_paths(
+    def list_cloud_storage_metadata_archives(
         self, backup_name, disk_name, compression, desired_tables
     ):
-        prefix = os.path.join(self.get_backup_path(backup_name), "disks", disk_name)
-        return sorted(p for p in self.metadata_files() if p.startswith(prefix))
+        metadata_directory = os.path.join(
+            self.get_backup_path(backup_name), "disks", disk_name
+        )
+        return sorted(
+            archive_path
+            for archive_path in self.metadata_files()
+            if archive_path.startswith(metadata_directory)
+        )
 
-    def get_cloud_storage_metadata_files(self, backup_meta, remote_path):
-        return list(self.metadata_files()[remote_path])
+    def read_cloud_storage_metadata_archive(self, backup_meta, archive_path):
+        return list(self.metadata_files()[archive_path])
 
     def metadata_files(self) -> dict[str, list[tuple[str, bytes]]]:
         return {**self.copied_files, **self.cloud_storage_files}
@@ -1172,7 +1175,7 @@ def test_cloud_source_overrides_are_independent(
     version: int, virtual_host: bool, stored_source: bool, overrides: dict
 ) -> None:
     ctx = _cloud_storage_context()
-    base = {
+    base: CloudStorageSource = {
         "endpoint_url": "http://minio:9000",
         "bucket": "cloud-storage",
         "path": "data",
@@ -3139,30 +3142,6 @@ def test_files_scope_lists_failed_objects() -> None:
     assert _failed_objects(ctx) is None
 
 
-def test_failed_objects_copied_by_interrupted_run_are_not_listed() -> None:
-    ctx = _scoped_context()
-    ctx.target_layout.object_errors["data/xyz/bbb"] = StorageError("SlowDown")
-    with pytest.raises(ClickhouseBackupError):
-        ctx.copy(["b1"], keep_going=True)
-    failed = {
-        key: data
-        for key, data in ctx.store.data.items()
-        if key[1].endswith("/failed/cloud_storage.jsonl.gz")
-    }
-    target = ctx.target_layout.backups["b1"]
-    ctx.target_layout.object_errors.clear()
-    ctx.copy(["b1"], scopes=["cloud_storage"])
-    ctx.store.data.update(failed)
-    ctx.target_layout.backups["b1"] = target
-    ctx.target_layout.copied.clear()
-
-    ctx.copy(["b1"], scopes=["cloud_storage"])
-
-    assert not ctx.target_layout.copied
-    assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
-    assert _failed_objects(ctx) is None
-
-
 def test_completed_scope_with_deleted_objects_is_copied_again() -> None:
     ctx = _scoped_context()
     path = "ch_backup_copy/b1/metadata/a.tar"
@@ -3277,8 +3256,8 @@ def test_files_scope_needs_no_settings_of_object_storage() -> None:
 
     with patch.object(
         ctx.layout,
-        "get_cloud_storage_metadata_files",
-        wraps=ctx.layout.get_cloud_storage_metadata_files,
+        "read_cloud_storage_metadata_archive",
+        wraps=ctx.layout.read_cloud_storage_metadata_archive,
     ) as download:
         ctx.copy(["b1"], scopes=["files"])
         bucket, target["bucket"] = target["bucket"], None
@@ -3608,7 +3587,7 @@ def test_cloud_retry_retains_original_source(publication_failure: bool) -> None:
     """Keep the original cloud source until publication, including failed publication retries."""
     ctx = _scoped_context(version=5)
     ctx.target_config["copy"]["cloud_storage"]["encrypt_data"] = True
-    source = {
+    source: CloudStorageSource = {
         "endpoint_url": "http://minio:9000",
         "bucket": "cloud-storage",
         "path": "data",
@@ -3674,3 +3653,27 @@ def test_cloud_storage_selection_only_with_data(only_with_data, names):
     expected = ["b1"] if only_with_data else (["empty"] if names else ["b1", "empty"])
     assert copied == expected
     assert not skipped
+
+
+def test_failed_objects_copied_by_interrupted_run_are_not_listed() -> None:
+    ctx = _scoped_context()
+    ctx.target_layout.object_errors["data/xyz/bbb"] = StorageError("SlowDown")
+    with pytest.raises(ClickhouseBackupError):
+        ctx.copy(["b1"], keep_going=True)
+    failed = {
+        key: data
+        for key, data in ctx.store.data.items()
+        if key[1].endswith("/failed/cloud_storage.jsonl.gz")
+    }
+    target = ctx.target_layout.backups["b1"]
+    ctx.target_layout.object_errors.clear()
+    ctx.copy(["b1"], scopes=["cloud_storage"])
+    ctx.store.data.update(failed)
+    ctx.target_layout.backups["b1"] = target
+    ctx.target_layout.copied.clear()
+
+    ctx.copy(["b1"], scopes=["cloud_storage"])
+
+    assert not ctx.target_layout.copied
+    assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
+    assert _failed_objects(ctx) is None

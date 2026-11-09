@@ -69,6 +69,12 @@ def upload_data_tarball_pipeline(
     """
     assert len(file_names) == len(data_list)
 
+    if not file_names and not compress:
+        # An empty stream never reaches the uploader, leaving stale references.
+        # Empty plaintext has no encrypted chunks, so both modes store zero bytes.
+        get_storage_engine(config["storage"]).upload_data(b"", remote_path)
+        return
+
     builder = PipelineBuilder(config)
 
     estimated_size = calc_aligned_data_size(data_list, alignment=BLOCKSIZE)

@@ -36,6 +36,7 @@ from ch_backup.clickhouse.disks import (
     ClickHouseTemporaryDisks,
     _ch_disks_remove,
     _exec,
+    _get_tmp_disk_name,
     _open_config_file,
     _render_disks_config,
 )
@@ -336,6 +337,7 @@ def _make_temporary_disks(
     context.backup_meta.cloud_storage.disks = cloud_storage_disks or []  # type: ignore[misc]
     context.backup_meta.cloud_storage.enabled = bool(cloud_storage_disks)  # type: ignore[misc]
     context.backup_meta.cloud_storage.data_copied = data_copied  # type: ignore[misc]
+    context.backup_meta.cloud_storage.source = None
     context.backup_meta.cloud_storage.data_encryption = None  # type: ignore[misc]
     context.backup_meta.cloud_storage.requires_source_bucket = (  # type: ignore[misc]
         bool(cloud_storage_disks) and not data_copied
@@ -1058,6 +1060,7 @@ def test_restore_failure_cleans_decryption_staging():
 
 
 LINKED_BACKUP_NAME = "20251231T000000"
+LINKED_BACKUP_DISK_NAME = _get_tmp_disk_name("object_storage", LINKED_BACKUP_NAME)
 
 
 def _make_linked_part(

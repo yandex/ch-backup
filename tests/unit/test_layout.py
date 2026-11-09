@@ -10,7 +10,10 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from ch_backup.backup.layout import BackupLayout, read_metadata_in_batches
+from ch_backup.backup.layout import (
+    BackupLayout,
+    read_metadata_in_batches,
+)
 from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
@@ -258,7 +261,10 @@ def test_list_collects_read_errors_only_when_requested(operation):
     good = BackupMetadata("good", "2", "26.6", "%Y-%m-%d")
     error = S3RetryingError("\n\nInternalError\nTraceback details")
 
+    checked_paths = []
+
     def path_exists(path):
+        checked_paths.append(path)
         if "/broken/" in path and operation == "head":
             raise error
         return "/missing/" not in path
@@ -276,6 +282,13 @@ def test_list_collects_read_errors_only_when_requested(operation):
     unreadable: dict[str, str] = {}
     assert [b.name for b in layout.get_backups(True, unreadable=unreadable)] == ["good"]
     assert unreadable == {"broken": "S3RetryingError: InternalError"}
+
+    checked_paths.clear()
+    assert [
+        b.name
+        for b in layout.get_backups(True, excluded_backup_names=frozenset({"broken"}))
+    ] == ["good"]
+    assert all("/broken/" not in path for path in checked_paths)
 
 
 def test_list_failure_is_not_treated_as_unreadable_metadata():
@@ -351,7 +364,7 @@ class TestCloudStorageMetadataRemotePaths:
             f"{backup_path}/disks/{source_disk_name}/db2/table4.tar",
         ]
 
-        remote_paths = layout.get_cloud_storage_metadata_remote_paths(
+        remote_paths = layout.list_cloud_storage_metadata_archives(
             backup_name,
             source_disk_name,
             compression=False,

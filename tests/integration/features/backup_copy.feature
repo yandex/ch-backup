@@ -1024,8 +1024,10 @@ Feature: Copy backups to another storage
       | configured source bucket | cloud-storage-02 | {{ conf.s3.access_key_id }} | {{ conf.s3.access_secret_key }} | cloud-storage-02 | copy/87654321T123456_decrypted |
       | another bucket           | cloud-storage-01 | {{ conf.s3.access_key_id }} | {{ conf.s3.access_secret_key }} | cloud-storage-01 | copy/87654321T123456           |
 
+  # A copy prefix can contain foreign objects, and cleanup is optional.
+  # Exercise both CLI choices against real storage and restore the original backup.
   @require_version_22.8
-  Scenario: Deleting copy of backup with data on S3 disk doesn't affect the source backup
+  Scenario Outline: Deleting an S3 copy with cleanup <cleanup> preserves unrelated data
     Given ch-backup configuration on clickhouse02
     """
     storage:
@@ -1058,13 +1060,33 @@ Feature: Copy backups to another storage
         --target-cloud-storage-bucket cloud-storage-02 \
         --target-cloud-storage-path copy
     """
+    And we save S3 object keys in bucket cloud-storage-02 with prefix "copy/12345678T123456/"
+    And we put object in S3
+    """
+    bucket: cloud-storage-02
+    path: copy/12345678T123456/foreign
+    data: keep
+    """
+    And we put object in S3
+    """
+    bucket: cloud-storage-02
+    path: copy/12345678T123456-neighbor/keep
+    data: keep
+    """
     And we execute command on clickhouse01
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf \
         --config-parameter storage.credentials.bucket '"ch-backup-copy"' \
-        delete 12345678T123456
+        delete 12345678T123456 <delete_option>
     """
     Then s3 bucket ch-backup-copy contains no objects with prefix "ch_backup/12345678T123456/"
+    And saved S3 objects are <objects>
+    And an object in S3 contains
+    """
+    bucket: cloud-storage-02
+    path: copy/12345678T123456-neighbor/keep
+    data: keep
+    """
     And we got the following backups on clickhouse02
       | num | name            | state   |
       | 0   | 12345678T123456  | created |
@@ -1086,6 +1108,11 @@ Feature: Copy backups to another storage
     """
     20
     """
+
+    Examples:
+      | cleanup  | delete_option               | objects  |
+      | disabled |                             | retained |
+      | enabled  | --delete-cloud-storage-data | deleted  |
 
   Scenario Outline: Copy respects the <held_lock> storage lock
     Given clickhouse on clickhouse01 has test schema

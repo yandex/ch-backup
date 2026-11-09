@@ -378,12 +378,13 @@ Behavior and limitations:
   the scope becomes `failed`; the next run of the scope copies only unconfirmed objects. The list is
   rewritten by each run of the scope in which objects fail and removed once the scope completes.
   Disk metadata that cannot be planned is not copied, so it never overwrites rewritten disk
-  metadata; a later run copies it. Copy scopes of one backup one after another: the local lock
-  serializes runs on one host, runs on different hosts require `lock.zk_flock`.
+  metadata; a later run copies it. Run copy scopes of one backup sequentially. The shared local file
+  lock does not serialize runs; use matching ZooKeeper locks or serialize operations externally.
 - Copy acquires the configured source and target locks through completion, including retries and
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
   and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.
   Locking remains optional; the local file lock retains its shared semantics.
+  Without this coordination, do not run copy concurrently with delete or purge on the same storage.
 - Set `multiprocessing.metadata_read_threads` in the target configuration to control parallel
   source and target light-metadata reads at copy startup (default: `4`, positive integer).
   Each batch holds at most this many reads; set `1` for sequential reading.
@@ -470,10 +471,30 @@ Behavior and limitations:
   For version-5 metadata containing full object keys, a source path override replaces the original
   prefix from stored source metadata or disk configuration. Copy fails before writing if that prefix
   is unknown or a key is outside it. Without a path override, full keys are read as stored.
-  Restore of the copy uses the copied objects by default; they must be accessible with credentials of the
-  object storage disk of the host where the backup is restored. Note that these objects are not removed
-  when the copy is deleted, and they're stored for each copied backup separately.
-  Restore preserves the HTTP/HTTPS scheme of the stored endpoint. Its `--cloud-storage-source-endpoint`
+  Restore of the copy uses the copied objects by default. They need credentials from the
+  object storage disk of the host where the backup is restored.
+  Deleting metadata alone leaves external copied data behind. Deleting an entire prefix could remove
+  another cluster's objects, and deleting every recorded object could break surviving backups that share it.
+  `delete` and `purge` therefore select exact keys and exclude objects referenced by retained parts.
+  Add `--delete-cloud-storage-data` to request this cleanup. The default retains external objects,
+  preserving the existing deletion behavior. Original source data is preserved.
+  Copies can record different destinations. Reading those destinations from metadata lets one purge
+  clean them without configuring each location again. This gives metadata writers deletion authority
+  within the credentials' permissions, so those writers must be trusted. Cleanup uses backup-storage
+  credentials by default. Configure `copy.cloud_storage.target` for separate credentials or another endpoint.
+  Encrypted disk metadata needs its original key because its object references determine which keys are safe to delete.
+  An invalid later backup should not cause earlier deletions, so cleanup validates the whole batch before mutation.
+  Storage failures can still leave partial progress. Cleanup retains object references and archives until they
+  are no longer needed for retry. Retry after correcting the failure.
+  A concurrent copy could add references after cleanup checks them. Use matching ZooKeeper locks or external
+  serialization to prevent that race. The shared local lock does not serialize these operations.
+  A recorded endpoint could direct configured credentials to another service. Restore therefore accepts it
+  only when its origin matches a configured disk or backup-storage endpoint, or an explicit
+  `--cloud-storage-source-endpoint` override. A null endpoint selects the AWS default.
+  Treating it as an omitted override would incorrectly return to the original disk endpoint.
+  In-place restore would leave live tables using backup-owned objects. Later backup cleanup could delete
+  those objects, so copied cloud data requires ordinary restore.
+  Restore preserves the HTTP/HTTPS scheme of the selected endpoint. Its `--cloud-storage-source-endpoint`
   option accepts a full HTTP(S) URL or `host[:port]`; the latter uses the original disk's scheme.
 - ClickHouse 26.8+ SQL-defined HTTP handlers are included in full backups; use `--http-handlers` with backup
   or restore handlers only.

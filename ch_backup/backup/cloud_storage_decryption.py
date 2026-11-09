@@ -64,14 +64,14 @@ class CloudStorageDecryption:
             staging[1].add(staging_path)
 
         entries: dict[str, CopyEntry] = {}
-        remote_paths = self._layout.get_cloud_storage_metadata_remote_paths(
+        remote_paths = self._layout.list_cloud_storage_metadata_archives(
             backup.get_sanitized_name(),
             disk_name,
             backup.cloud_storage.compressed,
             desired_tables,
         )
         for remote_path in remote_paths:
-            for file_name, data in self._layout.get_cloud_storage_metadata_files(
+            for file_name, data in self._layout.read_cloud_storage_metadata_archive(
                 backup, remote_path
             ):
                 if os.path.basename(file_name) == FROZEN_METADATA_FNAME:
