@@ -7,6 +7,7 @@ Copying of backups from one storage to another.
 import copy
 import json
 import os
+import uuid
 from contextlib import contextmanager
 from datetime import datetime
 from functools import partial
@@ -198,7 +199,11 @@ class BackupCopier:
         self._materialized_parts: dict[tuple, tuple[str, str]] = {}
         self._target_deduplication: CopyDeduplication | None = None
         self._target_data_encryption: dict | None = None
+        self._cloud_generation: str | None = None
+        self._generation_attempt: dict | None = None
+        self._published_target: BackupMetadata | None = None
         self._source_owners: dict[str, SourceOwner] = {}
+        self._current_cloud_generations: dict[str, str | None] = {}
         # Availability of server-side copy for bucket pairs with particular credentials.
         self._server_side_copy: dict[tuple, bool] = {}
         self._copy_context: CopyContext | None = None
@@ -453,6 +458,7 @@ class BackupCopier:
                     backup = read.result()
                     if backup_names is None and (
                         not backup
+                        or backup.generation_of
                         or (
                             not _ready_for_cloud_storage_copy(backup)
                             if staged
@@ -501,10 +507,32 @@ class BackupCopier:
         """
         self._source_backup_files.clear()
         self._source_owners.clear()
+        self._current_cloud_generations.clear()
         self._target_backups.clear()
         target_backup = self._target_layout.get_backup(
-            backup_name, use_light_meta=CopyScope.FILES in self._scopes
+            backup_name, use_light_meta=False
         )
+        self._published_target = target_backup
+        self._cloud_generation = None
+        self._generation_attempt = None
+        if target_backup and target_backup.cloud_storage.enabled:
+            context = CopyContext(
+                self._engine(self._target_storage),
+                self._target_layout.get_backup_path(backup_name),
+                target_backup,
+            )
+            attempt = context.load_generation_attempt()
+            if (
+                attempt
+                and attempt.get("metadata")
+                and not (
+                    target_backup.state == BackupState.CREATED
+                    and target_backup.cloud_generation == attempt.get("name")
+                )
+            ):
+                pending = BackupMetadata.load(attempt["metadata"])
+                if pending.state != BackupState.CREATED:
+                    target_backup = pending
         backup = self._get_source_backup(backup_name, target_backup)
         if backup.name != backup_name:
             raise ClickhouseBackupError(
@@ -530,7 +558,9 @@ class BackupCopier:
                 raise ClickhouseBackupError(
                     f"Backup {backup_name} already exists in target storage and it is not a copy of the source backup"
                 )
-            if target_backup.state == BackupState.CREATED:
+            if target_backup.state == BackupState.CREATED and (
+                self._copy_config["resume"] or not backup.cloud_storage.enabled
+            ):
                 if (
                     target_backup.cloud_storage.data_encryption
                     != target_data_encryption
@@ -599,6 +629,8 @@ class BackupCopier:
         ):
             self._copy_context.load()
 
+        if backup.cloud_storage.enabled:
+            self._begin_cloud_generation(backup, target_meta)
         previous = dict(target_backup.copy_scopes) if target_backup else {}
         plan: _CopyPlan = {scope: _ScopePlan() for scope in CopyScope}
         planners = {
@@ -620,6 +652,15 @@ class BackupCopier:
             result.add_error(e, "validation")
             raise
 
+        if (
+            self._cloud_generation
+            and not result.errors
+            and (
+                backup.cloud_storage.data_copied
+                or CopyScope.CLOUD_STORAGE in self._scopes
+            )
+        ):
+            self._save_generation_cleanup_manifest(target_meta, plan)
         result.objects_total = sum(plan[scope].count() for scope in self._scopes)
         self._source_backup_files.clear()
         self._transfer_backup(
@@ -631,6 +672,141 @@ class BackupCopier:
             result,
         )
         return True
+
+    def _begin_cloud_generation(
+        self, source: BackupMetadata, target: BackupMetadata
+    ) -> None:
+        """Persist a representation identity; invocation IDs cannot survive scope retries."""
+        assert self._copy_context is not None
+        location = None
+        if source.cloud_storage.data_copied or CopyScope.CLOUD_STORAGE in self._scopes:
+            storage, prefix = (
+                (self._target_storage, self._target_layout.get_backup_path(source.name))
+                if source.cloud_storage.data_copied
+                else self._get_target_cloud_storage()
+            )
+            location = {"storage": list(storage_id(storage)), "prefix": prefix}
+        policy = {"location": location, "data_encryption": self._target_data_encryption}
+        previous = self._copy_context.load_generation_attempt()
+        if previous:
+            stored = self._target_layout.get_backup(previous["name"])
+            if stored and all(
+                stored.copy_scopes.get(scope) == CopyScopeStatus.COMPLETED
+                for scope in CopyScope
+            ):
+                # Publication can fail after the owner is sealed. Never reopen its paths.
+                previous = None
+        if previous and previous.get("policy", {}).get("location") is None:
+            previous["policy"]["location"] = location
+        if previous and location is None:
+            policy["location"] = previous.get("policy", {}).get("location")
+        if (
+            previous
+            and previous.get("policy") == policy
+            and not (
+                self._published_target
+                and self._published_target.state == BackupState.CREATED
+                and self._published_target.cloud_generation == previous.get("name")
+            )
+            and (
+                not previous.get("metadata")
+                or previous["metadata"]["meta"]["state"] != BackupState.CREATED.value
+            )
+        ):
+            attempt = previous
+        else:
+            attempt = {
+                "name": ".cloud_generation_" + uuid.uuid4().hex,
+                "policy": policy,
+            }
+        name = attempt["name"]
+        if (
+            not isinstance(name, str)
+            or len(name) != 50
+            or not name.startswith(".cloud_generation_")
+            or any(c not in "0123456789abcdef" for c in name[18:])
+        ):
+            raise ClickhouseBackupError("Invalid pending cloud generation name")
+        self._cloud_generation = name
+        self._generation_attempt = attempt
+        target.cloud_generation = name
+        target.generation_of = None
+        self._copy_context.save_generation_attempt(attempt)
+        if self._published_target and not self._published_target.cloud_generation:
+            original = self._target_layout.get_backup(source.name)
+            if original and original.state in (
+                BackupState.CREATED,
+                BackupState.PARTIALLY_DELETED,
+                BackupState.FAILED,
+            ):
+                self._target_layout.preserve_legacy_cloud_owner(original)
+
+    def _save_generation_cleanup_manifest(
+        self, target: BackupMetadata, plan: _CopyPlan
+    ) -> None:
+        """Record exact destinations before transfer so interrupted copies can be reclaimed."""
+        assert self._cloud_generation is not None
+        pending = copy.deepcopy(target)
+        pending.name = self._cloud_generation
+        pending.path = self._target_layout.get_backup_path(pending.name)
+        pending.generation_of = target.name
+        pending.cloud_generation = None
+        pending.copy_updated_at = now()
+        pending.copy_scopes = {}
+        if target.cloud_storage.requires_source_bucket:
+            storage, prefix = self._get_target_cloud_storage()
+            pending.cloud_storage.source = {
+                "endpoint_url": storage["credentials"]["endpoint_url"],
+                "bucket": storage["credentials"]["bucket"],
+                "path": os.path.join(prefix, pending.name),
+            }
+            keys = sorted(
+                {
+                    entry.dst_path
+                    for scope in plan.values()
+                    for entry in scope.entries
+                    if storage_id(entry.dst_storage) == storage_id(storage)
+                    and entry.dst_path.startswith(
+                        pending.cloud_storage.source["path"] + "/"
+                    )
+                }
+            )
+            engine = self._engine(self._target_storage)
+            manifest_path = os.path.join(pending.path, "cloud_objects.json")
+            # A files-only pass has no payload plan and must retain a previous cloud manifest.
+            if (
+                CopyScope.CLOUD_STORAGE in self._scopes
+                or manifest_path not in engine.list_dir_with_sizes(pending.path)
+            ):
+                engine.upload_data(json.dumps(keys).encode(), manifest_path)
+        self._target_layout.upload_backup_metadata(pending)
+
+    def _publish_cloud_generation(self, target: BackupMetadata) -> BackupMetadata:
+        """Publish the owner before its links, preserving old generations on replacement."""
+        assert self._cloud_generation is not None
+        owner = copy.deepcopy(target)
+        owner.name = self._cloud_generation
+        owner.path = self._target_layout.get_backup_path(owner.name)
+        owner.generation_of = target.name
+        owner.cloud_generation = None
+        owner.cloud_storage.retain_disks(
+            set(target.select_disks_with_stored_cloud_parts())
+        )
+        for table in owner.get_tables():
+            for name, raw in list(table.raw_metadata["parts"].items()):
+                if (
+                    raw.get("link")
+                    or raw.get("disk_name") not in owner.cloud_storage.disks
+                ):
+                    del table.raw_metadata["parts"][name]
+            table.raw_metadata.get("detached_parts", {}).clear()
+        self._target_layout.upload_backup_metadata(owner)
+        published = copy.deepcopy(target)
+        for part in published.get_parts():
+            if not part.link and part.disk_name in published.cloud_storage.disks:
+                published.link_part(part, owner.name, part.name)
+        published.real_size = target.real_size
+        return published
 
     def _get_source_backup(
         self, backup_name: str, target_backup: BackupMetadata | None
@@ -820,7 +996,7 @@ class BackupCopier:
             target_meta.cloud_storage.source = {
                 "endpoint_url": storage["credentials"]["endpoint_url"],
                 "bucket": storage["credentials"]["bucket"],
-                "path": os.path.join(path, target_meta.name),
+                "path": os.path.join(path, self._cloud_generation or target_meta.name),
             }
         scopes = {scope.value: status.value for scope, status in statuses.items()}
         target_meta.copy_scopes = dict(statuses)
@@ -849,7 +1025,29 @@ class BackupCopier:
                     ]
                 )
             published.cloud_storage.source = source.cloud_storage.source
+        if self._generation_attempt is not None:
+            assert self._copy_context is not None
+            if published.state == BackupState.CREATED:
+                published = self._publish_cloud_generation(published)
+            else:
+                self._generation_attempt["metadata"] = published.dump()
+                self._copy_context.save_generation_attempt(self._generation_attempt)
+            if (
+                published.state != BackupState.CREATED
+                and self._published_target
+                and self._published_target.state
+                in (BackupState.CREATED, BackupState.PARTIALLY_DELETED)
+            ):
+                result.backup_state = target_meta.state.value
+                return
         self._target_layout.upload_backup_metadata(published)
+        if (
+            self._generation_attempt is not None
+            and published.state == BackupState.CREATED
+        ):
+            self._generation_attempt["metadata"] = published.dump()
+            assert self._copy_context is not None
+            self._copy_context.save_generation_attempt(self._generation_attempt)
         result.backup_state = target_meta.state.value
 
     def _scope_statuses(
@@ -896,7 +1094,9 @@ class BackupCopier:
             (self._target_storage, self._target_layout.get_backup_path(backup.name)),
             (
                 self._target_storage,
-                self._target_layout.get_cloud_storage_path(backup.name),
+                self._target_layout.get_cloud_storage_path(
+                    self._cloud_generation or backup.name
+                ),
             ),
         ]
         if (
@@ -904,7 +1104,9 @@ class BackupCopier:
             and plan[CopyScope.CLOUD_STORAGE].entries
         ):
             storage, path = self._get_target_cloud_storage()
-            prefixes.append((storage, os.path.join(path, backup.name)))
+            prefixes.append(
+                (storage, os.path.join(path, self._cloud_generation or backup.name))
+            )
         return prefixes
 
     def _validate_destinations(self, backup: BackupMetadata, plan: _CopyPlan) -> None:
@@ -964,6 +1166,7 @@ class BackupCopier:
             BACKUP_META_FNAME,
             BACKUP_LIGHT_META_FNAME,
             COPY_CONTEXT_DIR,
+            "legacy_cloud_owner.json",
         }
         if backup.cloud_storage.data_copied:
             # Plan these from disk metadata, including objects held by older backups.
@@ -1041,7 +1244,7 @@ class BackupCopier:
         self, owner_name: str, parts: list[PartMetadata]
     ) -> tuple[BackupMetadata, SourceOwner, set[str]]:
         """Validate owner references and collect the missing metadata."""
-        owner = self._layout.get_backup(owner_name)
+        owner = self._layout.get_backup(owner_name, for_reference=True)
         if owner is None or not (
             owner.cloud_storage.data_copied or owner.cloud_storage.source
         ):
@@ -1370,6 +1573,10 @@ class BackupCopier:
         """Only publish alternative owners after their complete backup is CREATED."""
         if target.state != BackupState.CREATED:
             return
+        if target.cloud_generation:
+            published = self._target_layout.get_backup(target.name)
+            if published:
+                target = published
         for part in source.get_parts():
             if not part.link:
                 continue
@@ -1420,7 +1627,7 @@ class BackupCopier:
         if part.link not in self._target_backups:
             try:
                 self._target_backups[part.link] = self._target_layout.get_backup(
-                    part.link
+                    part.link, for_reference=True
                 )
             except Exception as e:
                 if not self._keep_going or is_broken_executor(e):
@@ -1510,7 +1717,7 @@ class BackupCopier:
                 ):
                     dst_prefix = _key(
                         self._target_layout.get_cloud_storage_data_path(
-                            backup.name, disk_name
+                            self._cloud_generation or backup.name, disk_name
                         )
                     )
                     files = self._full_cloud_storage_metadata(
@@ -1525,7 +1732,9 @@ class BackupCopier:
                     )
                     if files:
                         remote_path = cloud_storage_metadata_archive_path(
-                            self._target_layout.get_cloud_storage_path(backup.name),
+                            self._target_layout.get_cloud_storage_path(
+                                self._cloud_generation or backup.name
+                            ),
                             table.database,
                             table.name,
                             disk_name,
@@ -1564,7 +1773,7 @@ class BackupCopier:
                 source = (
                     backup
                     if source_name == backup.name
-                    else self._layout.get_backup(source_name)
+                    else self._layout.get_backup(source_name, for_reference=True)
                 )
                 if source is None or not source.cloud_storage.data_copied:
                     raise ClickhouseBackupError(
@@ -1686,6 +1895,22 @@ class BackupCopier:
             else data
         )
 
+    def _is_current_cloud_generation(self, generation: BackupMetadata) -> bool:
+        """Old generations serve existing children; new links select the published replacement."""
+        name = generation.generation_of
+        if not name:
+            return False
+        if name not in self._current_cloud_generations:
+            current = self._target_layout.get_backup(name)
+            self._current_cloud_generations[name] = (
+                current.cloud_generation
+                if current
+                and current.state
+                in (BackupState.CREATED, BackupState.PARTIALLY_DELETED)
+                else None
+            )
+        return self._current_cloud_generations[name] == generation.name
+
     # pylint: disable=too-many-locals
     def _plan_cloud_storage_objects(
         self,
@@ -1707,7 +1932,7 @@ class BackupCopier:
         from the copy context, so the source storage is not accessed.
         """
         target_storage, target_path = self._get_target_cloud_storage()
-        dst_prefix = os.path.join(target_path, backup.name)
+        dst_prefix = os.path.join(target_path, self._cloud_generation or backup.name)
         source_name = os.path.join(backup.name, source_dir(backup))
         layout, storage, name = (
             (self._layout, self._storage, backup.get_sanitized_name())
@@ -1719,7 +1944,9 @@ class BackupCopier:
             self._target_layout.get_backup_path(source_name), "disks"
         )
         dst_dir = os.path.join(
-            self._target_layout.get_cloud_storage_path(backup.name),
+            self._target_layout.get_cloud_storage_path(
+                self._cloud_generation or backup.name
+            ),
             "disks",
         )
         sizes = self._get_source_backup_files(name, layout, storage)
@@ -1845,6 +2072,7 @@ class BackupCopier:
         stored = owner.find_part(part.database, part.table, part.deduplicated_part_name)
         return bool(
             stored
+            and self._is_current_cloud_generation(owner)
             and owner.cloud_storage.data_encryption == self._target_data_encryption
             and stored.disk_name == part.disk_name
             and part.disk_name in owner.cloud_storage.disks
@@ -1859,7 +2087,7 @@ class BackupCopier:
         source = (
             self._staged_cloud_owner(backup, part.link)
             if staged
-            else self._layout.get_backup(part.link)
+            else self._layout.get_backup(part.link, for_reference=True)
         )
         layout = self._target_layout if staged else self._layout
         metadata_name = (
@@ -1920,10 +2148,12 @@ class BackupCopier:
     ) -> tuple[_RewrittenTarball, list[CopyEntry]]:
         source = self._cloud_part_source(backup, part)
         files, entries = self._materialized_cloud_files(
-            source, part, backup.name, result
+            source, part, self._cloud_generation or backup.name, result
         )
         destination = cloud_storage_metadata_archive_path(
-            self._target_layout.get_cloud_storage_path(backup.name),
+            self._target_layout.get_cloud_storage_path(
+                self._cloud_generation or backup.name
+            ),
             part.database,
             part.table,
             part.disk_name,
@@ -2317,7 +2547,9 @@ class BackupCopier:
                 self._target_storage,
                 _key(
                     os.path.join(
-                        self._target_layout.get_cloud_storage_path(backup.name),
+                        self._target_layout.get_cloud_storage_path(
+                            self._cloud_generation or backup.name
+                        ),
                         "disks",
                     )
                 ),

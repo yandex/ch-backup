@@ -130,7 +130,7 @@ class CopyContext:
             logging.warning("Failed to list copy context {}: {}", self._path, e)
             return
         for path in paths:
-            if os.path.dirname(path) != self._path:
+            if os.path.dirname(path) != self._path or not path.endswith(".jsonl.gz"):
                 continue
             try:
                 lines = gzip.decompress(self._engine.download_data(path)).splitlines()
@@ -176,6 +176,19 @@ class CopyContext:
                 self._engine.delete_file(path)
         except Exception as e:
             logging.warning("Failed to save list of failed objects {}: {}", path, e)
+
+    def load_generation_attempt(self) -> dict | None:
+        """Read the pending representation separately from the published backup."""
+        path = os.path.join(self._path, "generation.json")
+        if path not in self._engine.list_dir_with_sizes(self._path):
+            return None
+        return json.loads(self._engine.download_data(path))
+
+    def save_generation_attempt(self, attempt: dict) -> None:
+        """Persist output policy and retry inputs before writing generation objects."""
+        self._engine.upload_data(
+            json.dumps(attempt).encode(), os.path.join(self._path, "generation.json")
+        )
 
     def save_source_owners(self, owners: dict[str, SourceOwner]) -> None:
         """Save dependency information before publishing completion of the files scope."""

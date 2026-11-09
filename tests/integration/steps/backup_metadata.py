@@ -64,6 +64,15 @@ def step_backup_state(context, metadata_type, node, backup_name, bucket, state):
     assert backup.state.value == state, backup.state
 
 
+@when(
+    'we save the cloud generation of {node:w} backup "{backup_name}" in bucket "{bucket}"'
+)
+def step_save_cloud_generation(context, node, backup_name, bucket):
+    backup = BackupStorage(context, node, bucket).layout.get_backup(backup_name)
+    assert backup is not None and backup.cloud_generation
+    context.cloud_generation = backup.cloud_generation
+
+
 @when('we delete data objects of {node:w} backup "{backup_name}"')
 def step_delete_backup_data(context, node, backup_name):
     storage = BackupStorage(context, node)
@@ -134,3 +143,45 @@ def step_local_part_layout(context, node, backup_name, layout):
     assert layout in {"tar", "legacy"}
     if layout == "legacy":
         BackupStorage(context, node).rewrite_per_file_parts(backup_name)
+
+
+@given(
+    'native cloud backups "{names}" from {source_node:w} are legacy copies on {target_node:w}'
+)
+def step_seed_legacy_cloud_copies(context, names, source_node, target_node):
+    source = BackupStorage(context, source_node)
+    target = BackupStorage(context, target_node)
+    assert (
+        source.config["storage"]["credentials"]["bucket"]
+        != target.config["storage"]["credentials"]["bucket"]
+    )
+    context.legacy_cloud_objects = {}
+    for name in names.split(","):
+        backup = source.layout.get_backup(name)
+        assert backup is not None and backup.cloud_storage.data_copied
+        assert backup.cloud_generation is None
+        for path, data in source.raw_objects(name).items():
+            target.engine.upload_data(data, path)
+            if "/disks/" in path or "/cloud_storage/" in path:
+                context.legacy_cloud_objects[path] = data
+        # Pre-generation copies retained native paths and recorded their source.
+        backup.copied_from = {
+            "endpoint_url": source.node_config["storage"]["credentials"][
+                "endpoint_url"
+            ],
+            "bucket": source.config["storage"]["credentials"]["bucket"],
+            "path_root": source.config["backup"]["path_root"],
+        }
+        target.layout.upload_backup_metadata(backup)
+    child = target.layout.get_backup(names.split(",")[-1])
+    assert child is not None and any(
+        part.link == names.split(",")[0] for part in child.get_parts()
+    )
+    assert context.legacy_cloud_objects
+
+
+@then("legacy cloud archives and payload on {node:w} are unchanged")
+def step_legacy_cloud_objects_unchanged(context, node):
+    storage = BackupStorage(context, node)
+    for path, data in context.legacy_cloud_objects.items():
+        assert storage.engine.download_data(path) == data, path

@@ -722,10 +722,11 @@ Feature: Copy backups to another storage
       error_stage: planning
       error_sources_contain: [../invalid1, ../invalid2]
     """
-    And an object in S3 contains
+    When we save the cloud generation of clickhouse01 backup "cloud" in bucket "ch-backup-copy"
+    Then an object in S3 contains
     """
     bucket: cloud-storage-02
-    path: cloud/keepgoing-probe
+    path: {{ cloud_generation }}/keepgoing-probe
     data: abc
     """
     And full metadata of clickhouse01 backup "cloud" in bucket "ch-backup-copy" has state "failed"
@@ -1015,14 +1016,15 @@ Feature: Copy backups to another storage
     """
     (20,90)
     """
-    And s3 bucket cloud-storage-02 contains objects with prefix "copy/87654321T123456"
+    When we save the cloud generation of clickhouse02 backup "87654321T123456" in bucket "ch-backup-copy"
+    Then s3 bucket cloud-storage-02 contains objects with prefix "copy/{{ cloud_generation }}/"
     And s3 bucket <cleanup_bucket> contains no objects with prefix "<cleanup_prefix>"
 
     Examples:
       | staging                   | staging_bucket   | staging_access_key_id      | staging_secret_access_key      | cleanup_bucket   | cleanup_prefix                 |
-      | destination disk         | null             | null                       | null                           | cloud-storage-02 | copy/87654321T123456_decrypted |
-      | configured source bucket | cloud-storage-02 | {{ conf.s3.access_key_id }} | {{ conf.s3.access_secret_key }} | cloud-storage-02 | copy/87654321T123456_decrypted |
-      | another bucket           | cloud-storage-01 | {{ conf.s3.access_key_id }} | {{ conf.s3.access_secret_key }} | cloud-storage-01 | copy/87654321T123456           |
+      | destination disk         | null             | null                       | null                           | cloud-storage-02 | copy/{{ cloud_generation }}_decrypted/ |
+      | configured source bucket | cloud-storage-02 | {{ conf.s3.access_key_id }} | {{ conf.s3.access_secret_key }} | cloud-storage-02 | copy/{{ cloud_generation }}_decrypted/ |
+      | another bucket           | cloud-storage-01 | {{ conf.s3.access_key_id }} | {{ conf.s3.access_secret_key }} | cloud-storage-01 | copy/{{ cloud_generation }}/           |
 
   # A copy prefix can contain foreign objects, and cleanup is optional.
   # Exercise both CLI choices against real storage and restore the original backup.
@@ -1060,17 +1062,18 @@ Feature: Copy backups to another storage
         --target-cloud-storage-bucket cloud-storage-02 \
         --target-cloud-storage-path copy
     """
-    And we save S3 object keys in bucket cloud-storage-02 with prefix "copy/12345678T123456/"
+    And we save the cloud generation of clickhouse01 backup "12345678T123456" in bucket "ch-backup-copy"
+    And we save S3 object keys in bucket cloud-storage-02 with prefix "copy/{{ cloud_generation }}/"
     And we put object in S3
     """
     bucket: cloud-storage-02
-    path: copy/12345678T123456/foreign
+    path: copy/{{ cloud_generation }}/foreign
     data: keep
     """
     And we put object in S3
     """
     bucket: cloud-storage-02
-    path: copy/12345678T123456-neighbor/keep
+    path: copy/{{ cloud_generation }}-neighbor/keep
     data: keep
     """
     And we execute command on clickhouse01
@@ -1084,7 +1087,7 @@ Feature: Copy backups to another storage
     And an object in S3 contains
     """
     bucket: cloud-storage-02
-    path: copy/12345678T123456-neighbor/keep
+    path: copy/{{ cloud_generation }}-neighbor/keep
     data: keep
     """
     And we got the following backups on clickhouse02

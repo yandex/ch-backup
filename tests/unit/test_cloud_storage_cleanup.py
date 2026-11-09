@@ -2,11 +2,12 @@
 
 # pylint: disable=protected-access
 
+import json
 from copy import deepcopy
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -279,6 +280,7 @@ def fixture_cleanup(monkeypatch):
     monkeypatch.setattr(layout, "delete_backup", MagicMock(side_effect=delete_backup))
     monkeypatch.setattr(layout, "delete_data_parts", MagicMock())
     monkeypatch.setattr(layout, "delete_detached_parts", MagicMock())
+    monkeypatch.setattr(layout, "update_legacy_cloud_owner", MagicMock())
     context = MagicMock(backup_layout=layout)
     context.config = config["backup"]
     manager = ClickhouseBackup(config)  # type: ignore[arg-type]
@@ -419,11 +421,11 @@ def test_cleanup_selects_recorded_keys_and_skips_link_only_disks(
 
 
 @pytest.mark.parametrize(
-    "operation",
-    ["delete", "purge"],
+    "operation,pending_generation",
+    [("delete", False), ("purge", False), ("delete", True)],
 )
 def test_whole_cleanup_reloads_retry_metadata_after_late_batch_failure(
-    cleanup, operation
+    cleanup, operation, pending_generation
 ):
     """
     A later batch can fail after earlier objects are gone. Recreating the
@@ -432,6 +434,14 @@ def test_whole_cleanup_reloads_retry_metadata_after_late_batch_failure(
     """
     c = cleanup
     calls = []
+    if pending_generation:
+        c.meta.generation_of = "original"
+        c.meta.state = BackupState.FAILED
+        c.records[c.meta.name] = c.meta.dump_json()
+        c.archives.clear()
+        manifest_path = "ch_backup/backup1/cloud_objects.json"
+        manifests = {manifest_path: json.dumps(["copies/backup1/" + k for k in "abc"])}
+        c.loader.download_data.side_effect = manifests.__getitem__
 
     def delete(keys):
         calls.append(list(keys))
@@ -452,6 +462,9 @@ def test_whole_cleanup_reloads_retry_metadata_after_late_batch_failure(
     assert failed.cloud_storage.source["path"] == "copies/backup1"
     assert c.objects == {"copies/backup1/c", "copies/backup1/foreign"}
     c.layout.delete_backup.assert_not_called()
+    if pending_generation:
+        assert failed.generation_of == "original"
+        assert manifest_path in manifests
     retry = ClickhouseBackup(c.config)
     retry.__dict__["_context"] = c.context
     assert retry.delete(
@@ -460,6 +473,8 @@ def test_whole_cleanup_reloads_retry_metadata_after_late_batch_failure(
     assert calls == [["copies/backup1/a", "copies/backup1/b"], ["copies/backup1/c"]] * 2
     assert c.objects == {"copies/backup1/foreign"}
     assert not c.records
+    if pending_generation:
+        assert c.loader.download_data.call_args_list == [call(manifest_path)] * 2
     c.context.ch_ctl.system_unfreeze.assert_not_called()
 
 
@@ -673,6 +688,37 @@ def test_cleanup_uses_explicit_credentials_with_recorded_bucket(cleanup):
         "access_key_id": "dummy-key",
         "secret_access_key": "dummy-secret",
     }
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        None,
+        {},
+        [1],
+        ["elsewhere/a"],
+        ["copies/backup1/../a"],
+        ["copies/backup1/./a"],
+        "unreadable",
+    ],
+)
+def test_interrupted_generation_rejects_unsafe_or_missing_manifest(cleanup, manifest):
+    """
+    Before disk archives exist, the generation manifest is the only deletion
+    inventory. Missing or unsafe entries must stop cleanup rather than
+    authorize deletion outside the generation.
+    """
+    c = cleanup
+    c.meta.generation_of = "original"
+    c.meta.state = BackupState.FAILED
+    if manifest == "unreadable":
+        c.loader.download_data.side_effect = StorageError("missing manifest")
+    else:
+        c.loader.download_data.return_value = json.dumps(manifest)
+    with pytest.raises((ConfigurationError, StorageError)):
+        c.manager._choose_cloud_cleanup_action(c.meta, {}, True)
+    c.engine.delete_files.assert_not_called()
+    c.layout.upload_backup_metadata.assert_not_called()
 
 
 def test_s3_per_key_error_keeps_cleanup_metadata_for_retry(cleanup):

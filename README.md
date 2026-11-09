@@ -322,11 +322,11 @@ Behavior and limitations:
   objects. Other objects are overwritten. If the target listing or a context file cannot be read, the
   affected objects are copied again. `objects_skipped` in the report counts skipped objects. Before
   copying, resuming holds the listing of the target backup in memory, comparable to the object plan.
-  `--no-resume` (or `copy.resume: false`) ignores records of previous runs and overwrites all objects;
+  `--no-resume` (or `copy.resume: false`) ignores records of previous runs and copies all selected objects;
   the run still records confirmed copies, so an interrupted run should be repeated with `--no-resume`
   to overwrite every object.
   The context is not copied with the backup and is deleted together with it.
-  Completed backups are skipped.
+  Completed backups are skipped with `--resume`. For cloud backups, `--no-resume` starts a replacement generation.
   When a linked part has already been materialized in a successfully copied backup, subsequent
   backups reuse that copy, including mutation-renamed parts and full cloud-storage backups.
 - Copying consists of two scopes: `files` copies files of the backup, `cloud_storage` copies data
@@ -397,14 +397,22 @@ Behavior and limitations:
   if the copy of that backup is not completed but already holds files of the part, e.g. after its
   scope `files`, as deduplication of new backups does. Otherwise, the data part is copied
   into the copied backup. `--all` copies older backups first, so deduplication is kept in the target storage.
-- A copied backup can link to cloud parts stored by an older backup. That older backup may be absent from the destination.
-  Copy keeps a link only when the destination contains the referenced part with compatible encryption.
-  Otherwise, it copies the older backup's objects and disk metadata into the copied backup.
-  Restore resolves each linked part through the backup that stores it. Separate decryption directories prevent owners from overwriting each other's temporary files.
-- The `cloud_storage` scope can run after the `files` scope without access to the source backup storage.
-  The `files` scope therefore saves the linked owners' metadata and any required payload held in backup storage.
-  It preserves those bytes unchanged so the later `cloud_storage` scope does not encrypt them twice.
-  An interrupted cloud copy keeps the original links until the retry completes.
+- Changing only a cloud payload prefix does not change the disk archive's address in backup storage.
+  Recopying that archive could redirect an existing child's object references, even without encryption.
+  Replacing encrypted payload could also leave children expecting the old key. A revision check could
+  detect replacement, but could not recover overwritten bytes.
+  Copy therefore preserves cloud archives and payload together in separate generations. Part links name
+  a generation and retain its location and encryption descriptor. The public backup keeps its name.
+  Publishing before both scopes complete could expose missing data, so publication follows their confirmation.
+  A failed replacement leaves the previous published backup usable.
+  The files scope stages owner payload unchanged because encryption there would cause the later cloud scope to encrypt it twice.
+  Retries and separate scopes reuse a pending generation only when their output policy agrees.
+  Otherwise, retry could overwrite one representation with another. A changed policy starts another generation.
+  Old unversioned links cannot name a generation, so a preserved owner snapshot keeps their original paths usable.
+  `delete` and `purge` protect referenced generation parts and reclaim them after the last reference.
+  Generations represent stored versions, not additional user backups, so ordinary listings exclude them.
+  Every writer and cleanup process sharing the storage must understand generations. Older versions cannot
+  enforce these retention rules, and no format gate currently prevents their use.
 - Set `copy.deduplication_age_limit: {days: 90}` in the target configuration to enable an
   independent deduplication window for active parts on local disks. The default `{days: 0}`
   disables this additional lookup; a zero duration keeps the existing source-link behavior.
@@ -438,7 +446,7 @@ Behavior and limitations:
   are needed; restore and deletion use the normal full-backup behavior.
 - Backups without `--copy-cloud-storage-data` reference objects in the bucket of the S3 disk. These
   objects are copied to the bucket set with `--target-cloud-storage-bucket` under
-  `<--target-cloud-storage-path>/<backup name>/`, so the copy doesn't depend on the source cluster.
+  `<--target-cloud-storage-path>/<generation name>/`, so the copy doesn't depend on the source cluster.
   The location of the source objects is taken from ClickHouse configuration of the disk (so the command
   should be run on a host of the source cluster), or it can be set with `--cloud-storage-source-bucket` and
   `--cloud-storage-source-path`. Credentials can be overridden in the `copy.cloud_storage` config section.

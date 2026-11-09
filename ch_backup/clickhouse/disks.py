@@ -385,7 +385,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
 
         for backup_name, disks in links.items():
             backup_meta = self._backup_layout.get_backup(
-                backup_name, use_light_meta=True
+                backup_name, use_light_meta=True, for_reference=True
             )
             if backup_meta is None or not (
                 backup_meta.cloud_storage.data_copied

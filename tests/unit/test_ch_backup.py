@@ -1352,3 +1352,28 @@ def test_nothing_is_reported_when_all_data_is_backed_up() -> None:
     context.backup_meta.count_skipped_data_tables.return_value = (0, 0)
 
     assert backup._skipped_data_message() is None  # pylint: disable=protected-access
+
+
+def test_partial_copy_keeps_public_complete_backup_instead_of_generation(partial_copy):
+    generation = _light_backup("generation", 30)
+    generation.generation_of = "complete"
+    complete = _light_backup("complete", 30)
+    complete.cloud_generation = generation.name
+    assert _purge(
+        [partial_copy, generation, complete], retain_count=1, retain_time={}
+    ) == ["generation"]
+
+
+def test_retained_partial_copy_keeps_pending_generation_after_grace_period(
+    partial_copy,
+):
+    generation = _copy(_light_backup("pending-generation", 30), updated_days=30)
+    generation.generation_of = partial_copy.name
+    generation.copy_scopes = {}
+    partial_copy.cloud_generation = generation.name
+    assert not _purge(
+        [partial_copy, generation],
+        retain_count=1,
+        retain_time={},
+        retain_incomplete_copy_time={"days": 7},
+    )

@@ -199,3 +199,99 @@ Feature: Backward compatibility support for old backups
     # Restore must succeed — the referenced data parts must still be present in S3.
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
+
+  # Legacy children still reference the public owner after recopy changes its metadata.
+  # Remove source fallback to prove that preserved legacy bytes remain usable until
+  # the last child is removed, while the replacement restores independently.
+  @require_version_24.1
+  Scenario: Recopy preserves a legacy cloud owner until its last child is removed
+    Given ch-backup configuration on clickhouse01
+    """
+    backup:
+        deduplicate_parts: true
+    cloud_storage:
+        copy_data: true
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    storage:
+        credentials:
+            bucket: ch-backup-copy
+    backup:
+        retain_count: 0
+        retain_time:
+            days: 0
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE legacy_cloud;
+    CREATE TABLE legacy_cloud.data (n UInt32) ENGINE = MergeTree ORDER BY n
+    SETTINGS storage_policy = 's3';
+    INSERT INTO legacy_cloud.data SELECT number FROM numbers(20);
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: legacy_owner
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: legacy_child
+    """
+    And native cloud backups "legacy_owner,legacy_child" from clickhouse01 are legacy copies on clickhouse02
+    When we restore clickhouse backup "legacy_child" to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy legacy_owner --no-resume \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
+    """
+    And we save the cloud generation of clickhouse02 backup "legacy_owner" in bucket "ch-backup-copy"
+    Then legacy cloud archives and payload on clickhouse02 are unchanged
+    When we delete all objects in s3 bucket cloud-storage-01
+    And we delete all objects in s3 bucket ch-backup
+    And we execute query on clickhouse02
+    """
+    DROP DATABASE legacy_cloud SYNC
+    """
+    And we drop restore context at clickhouse02
+    And we restore clickhouse backup "legacy_owner" to clickhouse02
+    And we execute query on clickhouse02
+    """
+    SELECT count(), sum(n) FROM legacy_cloud.data
+    """
+    Then we get response
+    """
+    20	190
+    """
+    When we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf delete legacy_owner --delete-cloud-storage-data
+    """
+    Then legacy cloud archives and payload on clickhouse02 are unchanged
+    When we execute query on clickhouse02
+    """
+    DROP DATABASE legacy_cloud SYNC
+    """
+    And we drop restore context at clickhouse02
+    And we restore clickhouse backup "legacy_child" to clickhouse02
+    And we execute query on clickhouse02
+    """
+    SELECT count(), sum(n) FROM legacy_cloud.data
+    """
+    Then we get response
+    """
+    20	190
+    """
+    When we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf purge --delete-cloud-storage-data
+    """
+    Then s3 bucket ch-backup-copy contains 0 objects
+    When we execute query on clickhouse02
+    """
+    SELECT count(), sum(n) FROM legacy_cloud.data
+    """
+    Then we get response
+    """
+    20	190
+    """
