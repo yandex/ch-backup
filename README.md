@@ -658,6 +658,14 @@ can be used to pass additional arguments to underlying `behave` invocation.
 For example, `make test-integration BEHAVE_ARGS='-i ssl_support'` executes
 tests that belongs to SSL support feature (`ssl_support.feature`).
 
+After every executed scenario, including successful ones, the runner saves
+`ch-backup.log`, `boto.log` and `clickhouse-server.err.log` from ClickHouse
+containers, plus the broken proxy's stdout/stderr. Logs are collected before
+containers are reset, under `staging/logs/saved-logs/` for serial runs. Each
+container instance has its own directory, so later scenarios do not overwrite
+earlier ones. Files not created by a scenario are omitted. Full container logs,
+configuration and S3 exports are still collected on failure.
+
 #### Parallel integration tests on one Docker host
 
 ```bash
@@ -702,10 +710,11 @@ Results are printed at startup under `staging/parallel/<run-id>/results/`:
   IDs and actual ClickHouse versions. Features not started after a failure have
   status `not_run`, distinct from version skips.
 - Per-feature directories: full `behave.log` and standard Behave `junit/` reports,
-  including skipped scenarios. Failure-only stage diagnostics are written to
-  `stage-failures.jsonl`; worker logs and container diagnostics are retained for
-  failed runs. Exit codes, report completeness and stage failures determine the
-  result; unfinished scenarios cannot turn a run green.
+  including skipped scenarios. `saved-logs/` contains the selected container logs
+  described above, on both success and failure. Failure-only stage diagnostics
+  are written to `stage-failures.jsonl`; worker logs and container diagnostics
+  are retained for failed runs. Exit codes, report completeness and stage failures
+  determine the result; unfinished scenarios cannot turn a run green.
 
 All twelve existing CI combinations use three slots. JUnit and diagnostics are
 uploaded on both success and failure with run-attempt-specific artifact names.
