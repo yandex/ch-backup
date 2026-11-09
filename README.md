@@ -539,6 +539,38 @@ Behavior and limitations:
   shared parents or resources can affect other entities. Type conflicts and server restrictions
   abort restore; concurrent workload/resource DDL is unsupported.
 
+### Inspecting cloud copy and cleanup
+
+Shared objects can outlive the backup that first stored them. A remaining prefix alone cannot show
+whether data is still required or cleanup failed. To identify owners and the backups that retain them,
+run this command against the target storage:
+
+```bash
+ch-backup show BACKUP --cloud-owners --pretty
+```
+
+The command accepts a backup name, an internal generation name, or a deleted backup name with surviving generations.
+It reports locations, encryption descriptors without keys, current and pending generations, direct dependents,
+and pending copies. Missing or unreadable metadata could hide dependents, so the command reports
+`references_complete: false` and exits with code 2. Concurrent operations can change this diagnostic snapshot.
+An empty list does not authorize deletion.
+
+A failed copy command does not prove that publication failed. The manifest write can succeed before
+its response or a later journal write fails. Copy reports therefore distinguish `unconfirmed` publication
+from acknowledged `published` output, even when the command fails. `pending` means publication was not attempted.
+`previous_preserved` means a failed replacement left the previous public version intact.
+Reports identify the attempted generation and whether it was allocated or resumed.
+The JSON fields `cloud_parts_reused` and `cloud_parts_to_copy` describe the part plan.
+They remain separate from `objects_skipped`, which counts transfers confirmed by resume.
+Reuse avoids a transfer, while resume recognizes one already completed.
+
+Deletion can fail after some requests succeed. INFO logs therefore separate planned object-key deletions,
+acknowledged deletions, and completed archive rewrites, and identify the backups that retain shared parts.
+A failed request can still have partial effects. A successful deletion acknowledgment does not prove the key existed.
+These counters cannot measure reclaimed objects or bytes, and copy counters cannot measure physical storage savings.
+DEBUG logs explain individual reuse and materialization decisions. Restore logs identify owner and staging locations.
+Staging cleanup failures are ERROR messages because decrypted data can remain after restore fails.
+
 ### Backup targets in configuration
 
 What the `backup` command saves can be set in the configuration file instead of command

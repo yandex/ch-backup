@@ -371,6 +371,11 @@ def list_command(
 @argument("name", metavar="BACKUP")
 @option("--pretty", is_flag=True, default=False, help="Pretty output.")
 @option(
+    "--cloud-owners",
+    is_flag=True,
+    help="Show cloud generations, locations, and retaining backups. Also accepts an internal generation name.",
+)
+@option(
     "-d",
     "--database",
     type=str,
@@ -390,8 +395,19 @@ def show_command(
     pretty: bool,
     database: str | None,
     table: str | None,
+    cloud_owners: bool = False,
 ) -> None:
     """Show details for a particular backup."""
+    if cloud_owners:
+        if database or table:
+            ctx.fail("--cloud-owners cannot be combined with database or table filters")
+        if name == "LAST":
+            name = _validate_and_resolve_name(ctx, ch_backup, name)
+        inspection = ch_backup.inspect_cloud_owners(name)
+        print(json.dumps(inspection, indent=2 if pretty else None))
+        if not inspection["references_complete"]:
+            ctx.exit(2)
+        return
     name = _validate_and_resolve_name(ctx, ch_backup, name)
 
     try:

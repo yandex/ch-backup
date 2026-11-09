@@ -425,7 +425,7 @@ def test_cleanup_selects_recorded_keys_and_skips_link_only_disks(
     [("delete", False), ("purge", False), ("delete", True)],
 )
 def test_whole_cleanup_reloads_retry_metadata_after_late_batch_failure(
-    cleanup, operation, pending_generation
+    cleanup, messages, operation, pending_generation
 ):
     """
     A later batch can fail after earlier objects are gone. Recreating the
@@ -461,6 +461,9 @@ def test_whole_cleanup_reloads_retry_metadata_after_late_batch_failure(
     assert failed.state == BackupState.FAILED
     assert failed.cloud_storage.source["path"] == "copies/backup1"
     assert c.objects == {"copies/backup1/c", "copies/backup1/foreign"}
+    output = "\n".join(record["message"] for record in messages)
+    assert "confirmed=2" in output and "planned=3" in output
+    assert "cleanup failed" in output and "cleanup completed" not in output
     c.layout.delete_backup.assert_not_called()
     if pending_generation:
         assert failed.generation_of == "original"
@@ -520,7 +523,7 @@ def test_external_cleanup_requires_readable_light_metadata(cleanup):
     "failure", ["payload", "archive", "archive_ack", "after_retain"]
 )
 def test_partial_cleanup_preserves_shared_objects_and_retries_archive_rewrites(
-    cleanup, failure
+    cleanup, messages, failure
 ):
     """
     Retained and discarded parts can share objects, while payload deletion,
@@ -588,6 +591,11 @@ def test_partial_cleanup_preserves_shared_objects_and_retries_archive_rewrites(
         assert c.archives[archive] == (
             [retained] if failure == "archive_ack" else original_archive
         )
+        output = "\n".join(record["message"] for record in messages)
+        assert "cleanup completed" not in output
+        if failure in ("archive", "archive_ack"):
+            assert "protected=1" in output and "confirmed=2" in output
+            assert "archives_rewritten=0/1" in output
         c.pending.clear()
     c.engine.delete_files.side_effect = c.objects.difference_update
     c.loader.wait.side_effect = c.commit_archives

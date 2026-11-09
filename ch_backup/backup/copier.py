@@ -644,7 +644,7 @@ class BackupCopier:
             self._copy_context.load()
 
         if backup.cloud_storage.enabled:
-            self._begin_cloud_generation(backup, target_meta)
+            self._begin_cloud_generation(backup, target_meta, result)
             self._cloud_storage_parts = None
         previous = dict(target_backup.copy_scopes) if target_backup else {}
         plan: _CopyPlan = {scope: _ScopePlan() for scope in CopyScope}
@@ -676,6 +676,24 @@ class BackupCopier:
             )
         ):
             self._save_generation_cleanup_manifest(target_meta, plan)
+        if self._cloud_generation:
+            result.cloud_parts_reused = sum(
+                1
+                for part in target_meta.get_parts()
+                if part.disk_name in backup.cloud_storage.disks and part.link
+            )
+            result.cloud_parts_to_copy = sum(
+                1
+                for part in target_meta.get_parts()
+                if part.disk_name in backup.cloud_storage.disks and not part.link
+            )
+            logging.info(
+                "Cloud part plan for backup {}: reused={}, to_copy={}, planning_errors={}",
+                backup.name,
+                result.cloud_parts_reused,
+                result.cloud_parts_to_copy,
+                len(result.errors),
+            )
         result.objects_total = sum(plan[scope].count() for scope in self._scopes)
         self._source_backup_files.clear()
         self._transfer_backup(
@@ -689,7 +707,7 @@ class BackupCopier:
         return True
 
     def _begin_cloud_generation(
-        self, source: BackupMetadata, target: BackupMetadata
+        self, source: BackupMetadata, target: BackupMetadata, result: BackupCopyResult
     ) -> None:
         """Persist a representation identity; invocation IDs cannot survive scope retries."""
         assert self._copy_context is not None
@@ -703,7 +721,9 @@ class BackupCopier:
             location = {"storage": list(storage_id(storage)), "prefix": prefix}
         policy = {"location": location, "data_encryption": self._target_data_encryption}
         previous = self._copy_context.load_generation_attempt()
+        reason = "new_copy"
         if previous:
+            reason = "policy_changed"
             stored = self._target_layout.get_backup(previous["name"])
             if stored and all(
                 stored.copy_scopes.get(scope) == CopyScopeStatus.COMPLETED
@@ -711,6 +731,7 @@ class BackupCopier:
             ):
                 # Publication can fail after the owner is sealed. Never reopen its paths.
                 previous = None
+                reason = "previous_generation_sealed"
         if previous and previous.get("policy", {}).get("location") is None:
             previous["policy"]["location"] = location
         if previous and location is None:
@@ -729,7 +750,10 @@ class BackupCopier:
             )
         ):
             attempt = previous
+            result.generation_action = "resumed"
+            reason = "compatible_pending_generation"
         else:
+            result.generation_action = "allocated"
             attempt = {
                 "name": ".cloud_generation_" + uuid.uuid4().hex,
                 "policy": policy,
@@ -747,6 +771,19 @@ class BackupCopier:
         target.cloud_generation = name
         target.generation_of = None
         self._copy_context.save_generation_attempt(attempt)
+        result.cloud_generation = name
+        result.previous_cloud_generation = (
+            self._published_target.cloud_generation if self._published_target else None
+        )
+        result.generation_publication = "pending"
+        logging.info(
+            "Cloud generation {} for backup {}: generation={}, previous={}, reason={}",
+            result.generation_action,
+            source.name,
+            name,
+            result.previous_cloud_generation,
+            reason,
+        )
         if self._published_target and not self._published_target.cloud_generation:
             original = self._target_layout.get_backup(source.name)
             if original and original.state in (
@@ -1044,6 +1081,11 @@ class BackupCopier:
             assert self._copy_context is not None
             if published.state == BackupState.CREATED:
                 published = self._publish_cloud_generation(published)
+                logging.info(
+                    "Cloud generation sealed: backup={}, generation={}",
+                    source.name,
+                    self._cloud_generation,
+                )
             else:
                 self._generation_attempt["metadata"] = published.dump()
                 self._copy_context.save_generation_attempt(self._generation_attempt)
@@ -1053,13 +1095,49 @@ class BackupCopier:
                 and self._published_target.state
                 in (BackupState.CREATED, BackupState.PARTIALLY_DELETED)
             ):
+                if result.generation_publication == "unconfirmed":
+                    logging.warning(
+                        "Cloud publication unconfirmed: backup={}, generation={}; "
+                        "inspect the full public manifest before deciding which generation is current",
+                        source.name,
+                        self._cloud_generation,
+                    )
+                elif result.generation_publication == "published":
+                    logging.warning(
+                        "Copy failed after cloud generation publication: backup={}, generation={}; "
+                        "the replacement is already published",
+                        source.name,
+                        self._cloud_generation,
+                    )
+                elif published.state == BackupState.FAILED:
+                    result.generation_publication = "previous_preserved"
+                    logging.info(
+                        "Cloud replacement failed; previous generation preserved: "
+                        "backup={}, generation={}, attempted={}",
+                        source.name,
+                        self._published_target.cloud_generation or "legacy",
+                        self._cloud_generation,
+                    )
                 result.backup_state = target_meta.state.value
                 return
+        if (
+            self._generation_attempt is not None
+            and published.state == BackupState.CREATED
+        ):
+            # A failed response can follow a successful full-manifest write.
+            result.generation_publication = "unconfirmed"
         self._target_layout.upload_backup_metadata(published)
         if (
             self._generation_attempt is not None
             and published.state == BackupState.CREATED
         ):
+            result.generation_publication = "published"
+            logging.info(
+                "Cloud generation published: backup={}, generation={}, previous={}",
+                source.name,
+                self._cloud_generation,
+                result.previous_cloud_generation,
+            )
             self._generation_attempt["metadata"] = published.dump()
             assert self._copy_context is not None
             self._copy_context.save_generation_attempt(self._generation_attempt)
@@ -1800,9 +1878,23 @@ class BackupCopier:
             if part.link and self._cloud_part_is_in_target(part):
                 target_owner = self._target_backups[part.link]
                 if target_owner and target_owner.cloud_storage.data_copied:
+                    logging.debug(
+                        "Cloud part reuse: backup={}, part={}/{}/{}, owner={}",
+                        backup.name,
+                        *part.logical_identity,
+                        part.link,
+                    )
                     continue
             if part.link and self._reuse_materialized_part(part, target_meta):
                 continue
+            if part.link:
+                logging.debug(
+                    "Cloud part materialization: backup={}, part={}/{}/{}, source_owner={}, "
+                    "reason=no_usable_target_owner",
+                    backup.name,
+                    *part.logical_identity,
+                    part.link,
+                )
             sources.setdefault(part.link or backup.name, []).append(part)
 
         files = []
@@ -2161,6 +2253,24 @@ class BackupCopier:
                 )
                 # Existing link validation requires the physical owner's checksum.
                 raw["checksum"] = owner.checksum
+                logging.debug(
+                    "Cloud part reuse: backup={}, part={}/{}/{}, owner={}, stored_part={}",
+                    backup.name,
+                    *part.logical_identity,
+                    owner.reference[0],
+                    owner.reference[3],
+                )
+            else:
+                logging.debug(
+                    "Cloud part copy required: backup={}, part={}/{}/{}, reason={}",
+                    backup.name,
+                    *part.logical_identity,
+                    (
+                        "replace_own_generation"
+                        if owner
+                        else "no_compatible_current_owner"
+                    ),
+                )
 
     # pylint: disable=too-many-locals
     def _plan_cloud_storage_objects(
@@ -2304,6 +2414,13 @@ class BackupCopier:
                 stored = target_meta.find_part(*part.logical_identity)
                 if stored and self._cloud_part_is_in_target(stored):
                     continue
+                logging.debug(
+                    "Cloud part materialization: backup={}, part={}/{}/{}, source_owner={}, "
+                    "reason=no_usable_target_owner",
+                    backup.name,
+                    *part.logical_identity,
+                    part.link,
+                )
                 with self._planning_step(
                     result,
                     f"{part.link}/{part.database}/{part.table}/{part.deduplicated_part_name}",

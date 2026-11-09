@@ -9,6 +9,7 @@ from unittest.mock import patch
 import pytest
 
 from ch_backup.backup.copier import _cloud_part_reuse_key
+from ch_backup.backup.copy_report import CopyReport
 from ch_backup.backup.deduplication import (
     collect_dedup_references_for_batch_backup_deletion,
 )
@@ -99,27 +100,41 @@ def test_owner_recopy_keeps_previous_generation_and_key():
     )
 
 
-def test_failed_replacement_keeps_published_manifest():
+def test_failed_replacement_keeps_published_manifest(messages):
+    """A failed replacement leaves the published owner usable and reports that fact."""
     ctx = _generation_context()
     ctx.copy(["owner"])
     published = copy.deepcopy(ctx.target_layout.backups["owner"])
     ctx.target_config["copy"]["resume"] = False
     ctx.target_config["cloud_storage"]["data_encryption"]["key"] = "b" * 32
     ctx.target_layout.copy_error = RuntimeError("interrupted replacement")
+    report = CopyReport()
     with pytest.raises(Exception, match="interrupted replacement|Failed to copy"):
-        ctx.copy(["owner"])
+        ctx.copy(["owner"], report=report)
     assert ctx.target_layout.backups["owner"].dump() == published.dump()
+    assert report.backups[0].generation_publication == "previous_preserved"
+    assert any(
+        published.cloud_generation in record["message"]
+        and "preserved" in record["message"]
+        for record in messages
+    )
 
 
 def test_separate_scopes_reuse_pending_generation():
+    """Separate scopes resume the same generation and report publication only at completion."""
     ctx = _generation_context()
-    ctx.copy(["owner"], scopes=["files"])
+    first, resumed = CopyReport(), CopyReport()
+    ctx.copy(["owner"], scopes=["files"], report=first)
     pending = ctx.target_layout.backups["owner"].cloud_generation
     assert pending
-    ctx.copy(["owner"], scopes=["cloud_storage"])
+    assert first.backups[0].generation_publication == "pending"
+    ctx.copy(["owner"], scopes=["cloud_storage"], report=resumed)
     published = ctx.target_layout.backups["owner"]
     assert published.state == BackupState.CREATED
     assert published.cloud_generation == pending
+    assert resumed.backups[0].generation_action == "resumed"
+    assert resumed.backups[0].cloud_generation == first.backups[0].cloud_generation
+    assert resumed.backups[0].generation_publication == "published"
     assert (
         published.cloud_storage.data_encryption
         == get_cloud_storage_data_encryption_metadata(ctx.target_config["encryption"])
