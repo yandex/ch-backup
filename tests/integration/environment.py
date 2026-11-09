@@ -59,6 +59,12 @@ def after_step(context, step):
             pdb.post_mortem(step.exc_traceback)
 
 
+def after_scenario(context, scenario):
+    """Keep selected logs on success, before the next scenario resets containers."""
+    if scenario.status != "skipped":
+        save_logs(context, full=False)
+
+
 def after_all(context):
     """
     Top-level cleanup function.
