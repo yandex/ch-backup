@@ -6,9 +6,11 @@ Management of backup data layout.
 
 import json
 import os
+from concurrent.futures import Future
 from contextlib import contextmanager
 from functools import partial
 from io import IOBase
+from itertools import islice
 from pathlib import Path
 from typing import (
     Any,
@@ -46,6 +48,7 @@ from ch_backup.exceptions import (
     is_broken_executor,
 )
 from ch_backup.storage import StorageLoader
+from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.storage.engine.s3 import S3RetryingError
 from ch_backup.storage.object_copy import CopyEntry
 from ch_backup.util import (
@@ -62,6 +65,30 @@ COMPRESSED_EXTENSION = ".gz"
 CLOUD_STORAGE_METADATA_DIR = "disks"
 CLOUD_STORAGE_DATA_DIR = "cloud_storage"
 MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE = 1024 * 1024
+
+
+def read_metadata_in_batches(
+    layout: "BackupLayout",
+    names: Iterable[str],
+    *,
+    pool: ThreadExecPool,
+    workers: int,
+    use_light_meta: bool = False,
+) -> Iterator[tuple[str, Future[BackupMetadata | None]]]:
+    """Submit batches; the caller owns the pool and awaits each future before advancing."""
+    names = iter(names)
+    while batch := list(islice(names, workers)):
+        reads = [
+            (
+                name,
+                pool.submit_future(
+                    layout.get_backup, name, use_light_meta=use_light_meta
+                ),
+            )
+            for name in batch
+        ]
+        yield from reads
+        del reads
 
 
 # pylint: disable=too-many-public-methods

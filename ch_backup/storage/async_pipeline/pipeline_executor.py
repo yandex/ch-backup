@@ -12,7 +12,6 @@ from typing import (
     Sequence,
 )
 
-from ch_backup.command_context import get_current_command, run_with_command_context
 from ch_backup.exceptions import TerminatingSignal
 from ch_backup.profile import profile
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
@@ -321,8 +320,6 @@ class PipelineExecutor:
         """
         Run pipeline inplace or schedule for exec in process pool
         """
-        pipeline = partial(run_with_command_context, get_current_command(), pipeline)
-
         try:
             if is_async and self._exec_pool:
                 return self._exec_pool.submit(

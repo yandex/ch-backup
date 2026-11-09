@@ -1,18 +1,24 @@
 """Independent target deduplication in backup copy."""
 
+import weakref
+from concurrent.futures import BrokenExecutor, ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from threading import Barrier, Event, get_ident
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from ch_backup.backup import copy_deduplication
+from ch_backup.backup.copy_deduplication import CopyDeduplication
 from ch_backup.backup.layout import (
     get_data_part_file_names,
     get_data_part_relative_dirs,
 )
 from ch_backup.backup.metadata import BackupState, CopyScope, CopyScopeStatus
 from ch_backup.ch_backup import ClickhouseBackup
-from ch_backup.exceptions import ClickhouseBackupError
+from ch_backup.command_context import command_context, get_current_command
+from ch_backup.exceptions import ClickhouseBackupError, StorageError
 from tests.unit.test_backup_copy import CopyTestContext, _backup, _part, _with_files
 
 NOW = datetime(2026, 10, 22, tzinfo=timezone.utc)
@@ -49,6 +55,120 @@ def _context(source_part=None, owners=None):
     part = source.get_parts()[0]
     _with_files(ctx, part.link or source.name, _files(source, ctx.layout))
     return ctx
+
+
+@pytest.mark.parametrize("workers", [1, 2, 3])
+def test_full_metadata_prefetch_is_bounded_and_indexed_in_order(workers, monkeypatch):
+    owners = [_backup(f"owner{i}", parts={PART: _part()}) for i in range(workers * 2)]
+    for owner in owners:
+        owner.start_time = NOW - timedelta(days=1)
+    ctx = _context(owners=owners)
+    index = CopyDeduplication(ctx.target_layout, NOW - timedelta(days=7), NOW)
+    barrier = Barrier(workers)
+    refill_started = Event()
+    main_thread = get_ident()
+    references, indexed = [], []
+    get_backup = ctx.target_layout.get_backup
+    index_parts = index._index_parts  # pylint: disable=protected-access
+
+    def read(name, use_light_meta=False):
+        assert not use_light_meta
+        assert get_current_command() == "copy"
+        backup = get_backup(name)
+        references.append(weakref.ref(backup))
+        if name == f"owner{workers}":
+            refill_started.set()
+        barrier.wait(timeout=10)
+        return backup
+
+    def add(backup, *args, **kwargs):
+        assert get_ident() == main_thread
+        indexed.append(backup.name)
+        if workers > 1 and len(indexed) == 2:
+            assert refill_started.wait(10)
+        assert sum(ref() is not None for ref in references) <= workers
+        index_parts(backup, *args, **kwargs)
+
+    # A Mock would retain all metadata objects in call_args_list.
+    monkeypatch.setattr(index, "_index_parts", add)
+    with (
+        command_context("copy"),
+        patch.object(ctx.target_layout, "get_backup", side_effect=read),
+    ):
+        index.load(owners, workers=workers)
+
+    assert indexed == [owner.name for owner in owners]
+    assert all(ref() is None for ref in references)
+    stored = index.find_part(owners[0].get_parts()[0], "new")
+    assert stored is not None and stored.backup_name == owners[-1].name
+
+
+@pytest.mark.parametrize("stage", ["read", "parse", "executor", "index"])
+def test_full_metadata_prefetch_preserves_error_policy_and_drains_reads(stage):
+    owners = [_backup(name, parts={PART: _part()}) for name in ("broken", "good")]
+    for owner in owners:
+        owner.start_time = NOW - timedelta(days=1)
+    ctx = _context(owners=owners)
+    index = CopyDeduplication(ctx.target_layout, NOW - timedelta(days=7), NOW)
+    failure = StorageError("candidate failure")
+    if stage == "executor":
+        failure.__cause__ = BrokenExecutor("unavailable")
+    barrier = Barrier(2)
+    events = {
+        name: Event() for name in ("good_started", "release_good", "error_seen", "done")
+    }
+    finished, indexed = [], []
+    get_backup = ctx.target_layout.get_backup
+    local_parts = copy_deduplication._local_parts  # pylint: disable=protected-access
+
+    def read(name, **_kwargs):
+        try:
+            barrier.wait(timeout=10)
+            if name == "good":
+                events["good_started"].set()
+                assert events["release_good"].wait(10)
+            if name == "broken" and stage in ("read", "executor"):
+                events["error_seen"].set()
+                raise failure
+            return get_backup(name)
+        finally:
+            finished.append(name)
+
+    def parse(backup):
+        if backup.name == "broken" and stage == "parse":
+            events["error_seen"].set()
+            raise failure
+        return local_parts(backup)
+
+    def add(backup, *_args, **_kwargs):
+        if backup.name == "broken" and stage == "index":
+            events["error_seen"].set()
+            raise failure
+        indexed.append(backup.name)
+
+    with (
+        patch.object(ctx.target_layout, "get_backup", side_effect=read),
+        patch.object(copy_deduplication, "_local_parts", side_effect=parse),
+        patch.object(index, "_index_parts", side_effect=add),
+    ):
+        with ThreadPoolExecutor(max_workers=1) as consumer:
+            loading = consumer.submit(index.load, owners, workers=2)
+            loading.add_done_callback(lambda _: events["done"].set())
+            try:
+                assert events["good_started"].wait(10)
+                assert events["error_seen"].wait(10)
+                assert not events["done"].wait(0.05)
+            finally:
+                events["release_good"].set()
+            if stage in ("executor", "index"):
+                with pytest.raises(StorageError) as raised:
+                    loading.result(timeout=10)
+                assert raised.value is failure
+            else:
+                loading.result(timeout=10)
+
+    assert sorted(finished) == ["broken", "good"]
+    assert indexed == (["good"] if stage in ("read", "parse") else [])
 
 
 @pytest.mark.parametrize(
