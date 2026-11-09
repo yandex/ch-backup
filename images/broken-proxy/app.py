@@ -1,10 +1,11 @@
-"""S3 test proxy injecting part errors and lost multipart completion replies."""
+"""S3 test proxy with deterministic multipart copy failures and request logs."""
 
 import http.client
 import json
 import logging
 import threading
-from itertools import count
+from collections import Counter
+from pathlib import Path
 from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlsplit
 from wsgiref.simple_server import WSGIRequestHandler, WSGIServer
@@ -13,9 +14,8 @@ from xml.etree import ElementTree
 import bottle
 from bottle import HTTPResponse
 
-PART_REQUESTS = count(1)
-COPY_UPLOADS = set()
-COMPLETED_COPIES = set()
+PART_REQUESTS = Counter()
+FAULT_PATH = None
 LOCK = threading.Lock()
 
 
@@ -60,37 +60,43 @@ def log_request(event, status, upload_id=None):
 def index():
     request = bottle.request
     query = parse_qs(request.query_string, keep_blank_values=True)
-    if request.method == "POST" and "uploadId" in query:
+    # Tests write this local file through Docker, without a public control API.
+    fault_file = Path("/tmp/copy-fault.json")
+    fault = (
+        json.loads(fault_file.read_text())
+        if fault_file.exists()
+        else {"failures": 2, "status": 503}
+    )
+    if fault and "uploadId" in query:
+        global FAULT_PATH
+        path = urlsplit(request.environ["RAW_URI"]).path
         with LOCK:
-            completed = query["uploadId"][0] in COMPLETED_COPIES
-            COMPLETED_COPIES.discard(query["uploadId"][0])
-        if completed:
-            # SeaweedFS accepts duplicate Complete requests; emulate S3's
-            # NoSuchUpload after a lost success response to test reconciliation.
-            log_request("injected_no_such_upload", 404)
-            return HTTPResponse(
-                status=404,
-                body="<Error><Code>NoSuchUpload</Code></Error>",
-                headers={"Content-Type": "application/xml"},
-            )
-    if (
-        request.method == "PUT"
-        and "uploadId" in query
-        and "X-Amz-Copy-Source" in request.headers
-    ):
-        # Count parts separately so other parallel requests cannot hide a fault.
-        with LOCK:
-            part_request = next(PART_REQUESTS)
-            COPY_UPLOADS.add(query["uploadId"][0])
-        if part_request % 2 == 0:
-            status = 200 if part_request % 4 == 0 else 500
-            log_request("injected_part_error", status)
+            if request.method == "PUT" and "X-Amz-Copy-Source" in request.headers:
+                if FAULT_PATH is None:
+                    FAULT_PATH = path
+                part = query["partNumber"][0]
+                identity = (query["uploadId"][0], part)
+                PART_REQUESTS[identity] += 1
+                fail_part = (
+                    path == FAULT_PATH
+                    and part == "2"
+                    and PART_REQUESTS[identity] <= fault["failures"]
+                )
+            else:
+                fail_part = False
+        fail_abort = (
+            request.method == "DELETE"
+            and path == FAULT_PATH
+            and fault.get("abort_status", 204) != 204
+        )
+        if fail_part or fail_abort:
+            status = fault["status"] if fail_part else fault["abort_status"]
+            operation = "UploadPartCopy" if fail_part else "AbortMultipartUpload"
+            log_request("injected_part_error" if fail_part else "injected_abort_error", status)
             return HTTPResponse(
                 status=status,
                 body="<Error><Code>InternalError</Code>"
-                "<Message>injected UploadPartCopy failure HTTP {}</Message></Error>".format(
-                    status
-                ),
+                "<Message>injected {} failure</Message></Error>".format(operation),
                 headers={"Content-Type": "application/xml"},
             )
 
@@ -128,22 +134,6 @@ def index():
             except ElementTree.ParseError:
                 # Logging must not change how an invalid backend reply is forwarded.
                 pass
-        if request.method == "POST" and "uploadId" in query and response.status == 200:
-            with LOCK:
-                lose_response = query["uploadId"][0] in COPY_UPLOADS
-                COPY_UPLOADS.discard(query["uploadId"][0])
-                if lose_response:
-                    COMPLETED_COPIES.add(query["uploadId"][0])
-            if lose_response:
-                # The backend has completed the copy, but the caller receives a
-                # gateway failure. Retrying Complete must not copy all parts again.
-                log_request("injected_lost_complete_response", 502)
-                return HTTPResponse(
-                    status=502,
-                    body="<Error><Code>InternalError</Code>"
-                    "<Message>injected lost CompleteMultipartUpload response</Message></Error>",
-                    headers={"Content-Type": "application/xml"},
-                )
         response_headers = {
             key: value
             for key, value in response.getheaders()

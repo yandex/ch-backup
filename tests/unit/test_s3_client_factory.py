@@ -55,12 +55,14 @@ def test_copy_pipelines_reuse_s3_clients(
             DEFAULT_CONFIG,
             entry._replace(size=0, dst_size=0, dst_path="empty", server_side=False),
         )
-        assert session.call_count == (1 if server_side else 2)
+        # Default managed copy uses a separate cached SDK retry configuration;
+        # the empty-object PUT still uses the regular destination client.
+        assert session.call_count == 2
         assert session.return_value.client.call_count == session.call_count
 
     destination = reader if server_side else writer
     assert destination.copy_object.call_count == (3 if server_side else 0)
-    assert [call.kwargs["Body"] for call in destination.put_object.call_args_list] == (
+    assert [call.kwargs["Body"] for call in writer.put_object.call_args_list] == (
         [b""] if server_side else [data, data, data, b""]
     )
 

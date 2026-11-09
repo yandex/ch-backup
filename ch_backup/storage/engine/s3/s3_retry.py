@@ -200,7 +200,7 @@ class S3RetryMeta(ABCMeta):
 
     @staticmethod
     def no_retry(func: Callable[..., RT]) -> Callable[..., RT]:
-        """Leave orchestration methods with their own request retries unwrapped."""
+        """Use SDK retries without retrying the whole operation."""
         setattr(func, "_s3_retry_disabled", True)
         return func
 

@@ -41,39 +41,27 @@ def _engine(
     return S3StorageEngine(config, retry_policy=retry_policy)
 
 
-@pytest.mark.parametrize("use_threads", [False, True])
-def test_module_config_is_passed_to_sdk(tmp_path: Path, use_threads: bool) -> None:
+def test_module_config_is_passed_to_sdk(tmp_path: Path) -> None:
     options: dict[str, dict[str, Any]] = {
         "botocore": {
             "read_timeout": 120,
             "retries": {"mode": "standard", "total_max_attempts": 3},
             "proxies": {},
         },
-        "transfer": {
-            "multipart_chunksize": 16777216,
-            "max_concurrency": 4,
-            "use_threads": use_threads,
-        },
+        "transfer": {"multipart_chunksize": 16777216, "max_concurrency": 4},
     }
-    copy_threads = []
-
-    def upload_part_copy(**_kwargs):
-        copy_threads.append(threading.get_ident())
-        return {"CopyPartResult": {"ETag": "part"}}
-
-    with patch(
-        "ch_backup.storage.engine.s3.s3_client_factory.boto3.session.Session"
-    ) as session_class:
+    with (
+        patch(
+            "ch_backup.storage.engine.s3.s3_client_factory.boto3.session.Session"
+        ) as session_class,
+        patch("ch_backup.storage.engine.s3.s3_engine.managed_copy") as managed_copy,
+    ):
         engine = _engine(module_config=options)
         local_path = tmp_path / "data"
         local_path.write_bytes(b"backup data")
         engine.upload_file(str(local_path), "uploaded")
         engine.download_file("downloaded", str(local_path))
         engine.download_data("metadata")
-        client = session_class.return_value.client.return_value
-        client.head_object.return_value = {"ContentLength": 16777217}
-        client.create_multipart_upload.return_value = {"UploadId": "copy"}
-        client.upload_part_copy.side_effect = upload_part_copy
         engine.copy_object("source-bucket", "source", "target")
 
     session = session_class.return_value
@@ -85,21 +73,11 @@ def test_module_config_is_passed_to_sdk(tmp_path: Path, use_threads: bool) -> No
         client.upload_fileobj,
         client.download_file,
         client.download_fileobj,
+        managed_copy,
     ):
         transfer_config = method.call_args.kwargs["Config"]
         for name, value in options["transfer"].items():
             assert getattr(transfer_config, name) == value
-    assert sorted(
-        (call.kwargs["PartNumber"], call.kwargs["CopySourceRange"])
-        for call in client.upload_part_copy.call_args_list
-    ) == [(1, "bytes=0-16777215"), (2, "bytes=16777216-16777216")]
-    assert client.complete_multipart_upload.call_args.kwargs["MultipartUpload"] == {
-        "Parts": [{"ETag": "part", "PartNumber": 1}, {"ETag": "part", "PartNumber": 2}]
-    }
-    assert all(
-        (thread_id != threading.get_ident()) == use_threads
-        for thread_id in copy_threads
-    )
 
 
 @pytest.mark.parametrize("max_attempts", [1, 3])

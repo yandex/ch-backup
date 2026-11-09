@@ -1,15 +1,17 @@
 """Faults that must run inside the ClickHouse container."""
 
 import argparse
+import io
 import shutil
 import subprocess
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
-from botocore.client import BaseClient
-from botocore.exceptions import ClientError
+from botocore.awsrequest import AWSResponse
+from botocore.httpsession import URLLib3Session
 from click import Command
+from urllib3.response import HTTPResponse
 
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupState
@@ -59,30 +61,36 @@ def fail_backup_publication(backup_name: str, arguments: list[str]) -> None:
 
 def fail_server_side_copy(error_count: int, arguments: list[str]) -> None:
     """Inject SlowDown responses into the first object's server-side copy."""
-    make_api_call = BaseClient._make_api_call  # pylint: disable=protected-access
+    send = URLLib3Session.send
     first_source = None
     attempts = 0
 
-    def fail_first(client, operation_name, api_params):
+    def fail_first(session, request):
         nonlocal first_source, attempts
-        if operation_name != "CopyObject":
-            return make_api_call(client, operation_name, api_params)
-        source = api_params["CopySource"]
+        source = request.headers.get("x-amz-copy-source")
+        if source is None or "uploadId=" in request.url:
+            return send(session, request)
         if first_source is None:
             first_source = source
         if source == first_source:
             attempts += 1
             if attempts <= error_count:
-                raise ClientError(
-                    {
-                        "Error": {"Code": "SlowDown", "Message": "injected throttling"},
-                        "ResponseMetadata": {"HTTPStatusCode": 503},
-                    },
-                    "CopyObject",
+                return AWSResponse(
+                    request.url,
+                    503,
+                    {"content-type": "application/xml"},
+                    HTTPResponse(
+                        body=io.BytesIO(
+                            b"<Error><Code>SlowDown</Code>"
+                            b"<Message>injected throttling</Message></Error>"
+                        ),
+                        preload_content=False,
+                    ),
                 )
-        return make_api_call(client, operation_name, api_params)
+        return send(session, request)
 
-    with patch.object(BaseClient, "_make_api_call", fail_first):
+    # Inject below the SDK retry loop, so this exercises real botocore retries.
+    with patch.object(URLLib3Session, "send", fail_first):
         _run_patched_cli(arguments)
 
 
