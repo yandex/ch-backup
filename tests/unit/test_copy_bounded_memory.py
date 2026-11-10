@@ -9,6 +9,7 @@ import json
 import subprocess
 import sys
 import tarfile
+import threading
 from collections import Counter
 from pathlib import Path
 from unittest.mock import patch
@@ -18,9 +19,11 @@ import pytest
 from ch_backup.backup.copier import _add_cloud_storage_copy_entry
 from ch_backup.backup.copy_context import _archive_record
 from ch_backup.backup.copy_index import CopyEntries, CopyIndex, EntryIndex
+from ch_backup.compression.base import BaseCompression
 from ch_backup.compression.gzip import GZIPCompression
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.exceptions import ClickhouseBackupError, StorageError
+from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.storage.async_pipeline.pipeline_builder import PipelineBuilder
 from ch_backup.storage.async_pipeline.pipelines import run_and_collect_all
 from ch_backup.storage.metadata_archive import MetadataArchive, spool_metadata
@@ -370,3 +373,50 @@ def test_decompression_stops_at_gzip_eof(suffix: bytes) -> None:
         "== GZIPCompression().decompress(encoded) == data"
     )
     subprocess.run([sys.executable, "-c", script], check=True, timeout=10)
+
+
+class LegacyCompression(BaseCompression):
+    """Implement only the original compression extension contract."""
+
+    def compress(self, data: bytes) -> bytes:
+        """Keep input unchanged."""
+        return data
+
+    def decompress(self, data: bytes) -> bytes:
+        """Decode input without implementing the new chunk API."""
+        return data
+
+    def flush_compress(self) -> bytes:
+        """Return no buffered input."""
+        return b""
+
+    def flush_decompress(self) -> bytes:
+        """Return no buffered output."""
+        return b""
+
+
+@pytest.mark.parametrize("data", [b"", b"abcdefg"])
+def test_legacy_compression_subclass(data: bytes) -> None:
+    """Old subclasses remain concrete and get a compatible chunk adapter."""
+    compressor = LegacyCompression()
+    chunks = list(compressor.decompress_chunks(data, 3))
+    assert b"".join(chunks) == data
+    assert all(len(chunk) <= 3 for chunk in chunks)
+    with pytest.raises(ValueError):
+        list(compressor.decompress_chunks(data, 0))
+
+
+def test_copy_completion_callbacks_run_in_collecting_thread() -> None:
+    """Worker completion must not run journal callbacks concurrently in pool threads."""
+    owner = threading.get_ident()
+    callbacks: list[int] = []
+    with ThreadExecPool(2) as pool:
+        for index in range(10):
+            pool.submit(
+                str(index),
+                str,
+                index,
+                callback=lambda: callbacks.append(threading.get_ident()),
+            )
+        pool.wait_all()
+    assert callbacks == [owner] * 10

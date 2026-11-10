@@ -1335,8 +1335,10 @@ class BackupCopier:
                     [table],
                 ):
                     with self._planning_step(copy_result, remote_path):
-                        metadata_files = self._layout.get_cloud_storage_metadata_files(
-                            source, remote_path
+                        metadata_files = (
+                            self._layout.download_cloud_storage_metadata_archive(
+                                source, remote_path
+                            )
                         )
                         for file_name, data in metadata_files:
                             with self._planning_step(
@@ -1477,7 +1479,7 @@ class BackupCopier:
                         errors = len(result.errors)
                         relative_path = _key(remote_path)[len(disks_dir) + 1 :]
                         dst_path = os.path.join(dst_dir, relative_path)
-                        source_files = layout.get_cloud_storage_metadata_files(
+                        source_files = layout.download_cloud_storage_metadata_archive(
                             backup, remote_path
                         )
                         files = MetadataArchive()

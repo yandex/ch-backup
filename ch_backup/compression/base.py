@@ -42,6 +42,10 @@ class BaseCompression(metaclass=ABCMeta):
         """
         pass
 
-    @abstractmethod
     def decompress_chunks(self, data: bytes, chunk_size: int) -> Iterator[bytes]:
-        """Decompress input without allocating an unbounded output chunk."""
+        """Split legacy decoder output; override to also bound decompression memory."""
+        if chunk_size <= 0:
+            raise ValueError("Decompression chunk size must be positive")
+        output = self.decompress(data)
+        for offset in range(0, len(output), chunk_size):
+            yield output[offset : offset + chunk_size]

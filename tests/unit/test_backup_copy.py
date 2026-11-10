@@ -215,7 +215,7 @@ class FakeLayout:
         prefix = os.path.join(self.get_backup_path(backup_name), "disks", disk_name)
         return sorted(p for p in self.metadata_files() if p.startswith(prefix))
 
-    def get_cloud_storage_metadata_files(self, backup_meta, remote_path):
+    def download_cloud_storage_metadata_archive(self, backup_meta, remote_path):
         return list(self.metadata_files()[remote_path])
 
     def metadata_files(self) -> dict[str, list[tuple[str, bytes]]]:
@@ -3302,8 +3302,8 @@ def test_files_scope_needs_no_settings_of_object_storage() -> None:
 
     with patch.object(
         ctx.layout,
-        "get_cloud_storage_metadata_files",
-        wraps=ctx.layout.get_cloud_storage_metadata_files,
+        "download_cloud_storage_metadata_archive",
+        wraps=ctx.layout.download_cloud_storage_metadata_archive,
     ) as download:
         ctx.copy(["b1"], scopes=["files"])
         bucket, target["bucket"] = target["bucket"], None

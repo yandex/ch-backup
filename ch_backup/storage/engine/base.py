@@ -137,7 +137,7 @@ class PipeLineCompatibleStorageEngine(StorageEngine):
         pass
 
     def iter_dir_with_sizes(self, remote_path: str) -> Iterator[tuple[str, int]]:
-        """Iterate a listing; engines with pagination override this fallback."""
+        """Adapt legacy engines; override to avoid materializing the entire listing."""
         yield from self.list_dir_with_sizes(remote_path).items()
 
     @abstractmethod

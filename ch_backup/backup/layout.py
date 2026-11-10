@@ -1106,6 +1106,14 @@ class BackupLayout:
 
     def get_cloud_storage_metadata_files(
         self, backup_meta: BackupMetadata, remote_path: str
+    ) -> list[tuple[str, bytes]]:
+        """Return metadata as a mutable list; copy uses the disk-backed archive API."""
+        return list(
+            self.download_cloud_storage_metadata_archive(backup_meta, remote_path)
+        )
+
+    def download_cloud_storage_metadata_archive(
+        self, backup_meta: BackupMetadata, remote_path: str
     ) -> MetadataArchive:
         """
         Download tarball with cloud storage metadata and return its files as (file_name, data) pairs.

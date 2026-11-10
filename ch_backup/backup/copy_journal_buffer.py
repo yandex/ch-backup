@@ -10,7 +10,7 @@ MAX_CHUNK_BYTES = 16 * 1024 * 1024
 
 
 class JournalBuffer:
-    """Append confirmations to one private spool and acknowledge uploaded prefixes."""
+    """Spool confirmations owned by the collecting thread, like CopyContext callbacks."""
 
     def __init__(self) -> None:
         """Create an empty spool with independent read and write positions."""

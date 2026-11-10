@@ -30,6 +30,7 @@ from ch_backup.storage.async_pipeline.pipelines import decrypt_data_pipeline
 from ch_backup.storage.async_pipeline.stages.filesystem.read_files_tarball_stage import (
     ReadFilesTarballScanStage,
 )
+from ch_backup.storage.metadata_archive import spool_metadata
 
 KEY = "a" * 32
 
@@ -285,3 +286,20 @@ def test_large_frozen_metadata_is_rejected_with_bounded_read(tmp_path: Path) -> 
                 next(stream)
         reader.read.assert_called_once_with(MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE + 1)
         assert source.tell() == MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE + 1
+
+
+def test_cloud_metadata_legacy_list_api() -> None:
+    """Keep indexing and mutation available without changing the disk-backed archive."""
+    layout = make_layout()
+    archive = spool_metadata([("part/data.bin", b"data")])
+    with patch.object(
+        layout, "download_cloud_storage_metadata_archive", return_value=archive
+    ):
+        files = layout.get_cloud_storage_metadata_files(
+            make_backup(), "disks/table.tar"
+        )
+    assert isinstance(files, list)
+    assert files[0] == ("part/data.bin", b"data")
+    files.append(("part/extra", b"extra"))
+    files[0] = ("changed", b"changed")
+    assert list(archive) == [("part/data.bin", b"data")]
