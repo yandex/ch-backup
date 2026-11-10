@@ -6,6 +6,7 @@ import io
 import os
 import re
 import tarfile
+import tempfile
 from typing import Sequence
 from urllib.parse import urlparse
 
@@ -71,31 +72,31 @@ def put_file(container: Container, data: bytes, path: str) -> None:
     container.put_archive(path="/", data=tar_stream.getvalue())
 
 
-def copy_container_dir(
+def copy_container_path(
     container: Container,
-    container_dir: str,
+    container_path: str,
     local_dir: str,
     exclude_pattern: str = None,
 ) -> None:
     """
-    Save docker directory.
+    Save a container file or directory without buffering its archive in memory.
     """
-    archive, _ = container.get_archive(container_dir)
+    archive, _ = container.get_archive(container_path)
 
-    buffer = io.BytesIO()
-    for chunk in archive:
-        buffer.write(chunk)
-    buffer.seek(0)
+    with tempfile.TemporaryFile(dir=local_dir) as buffer:
+        for chunk in archive:
+            buffer.write(chunk)
+        buffer.seek(0)
 
-    with tarfile.open(mode="r", fileobj=buffer) as tar:
-        members: list[tarfile.TarInfo] = []
-        for member in tar.getmembers():
-            if member.type == tarfile.SYMTYPE:
-                continue
-            if exclude_pattern and re.search(exclude_pattern, member.name):
-                continue
-            members.append(member)
-        tar.extractall(path=local_dir, members=members)
+        with tarfile.open(mode="r", fileobj=buffer) as tar:
+            members: list[tarfile.TarInfo] = []
+            for member in tar.getmembers():
+                if member.type == tarfile.SYMTYPE:
+                    continue
+                if exclude_pattern and re.search(exclude_pattern, member.name):
+                    continue
+                members.append(member)
+            tar.extractall(path=local_dir, members=members)
 
 
 @utils.env_stage("create", fail=True)
