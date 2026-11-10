@@ -3,14 +3,16 @@ S3 retry helper metaclass.
 """
 
 import ssl
+import sys
 from abc import ABCMeta
+from collections import Counter
 from enum import Enum
 from functools import wraps
 from http.client import HTTPException
 from inspect import isfunction
 from random import uniform
 from time import sleep
-from typing import TYPE_CHECKING, Any, Callable, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Iterator, NamedTuple, TypeVar
 
 import requests
 from botocore.exceptions import BotoCoreError, ClientError
@@ -28,6 +30,20 @@ if TYPE_CHECKING:
     )
 
 RT = TypeVar("RT")
+
+
+class FailureKind(str, Enum):
+    """Supported categories of configured S3 failures."""
+
+    ERROR_CODE = "error_codes"
+    EXCEPTION = "exceptions"
+
+
+class FailureKey(NamedTuple):
+    """Identify a configured S3 error code or exception type."""
+
+    kind: FailureKind
+    name: str
 
 
 class S3RetryPolicy(str, Enum):
@@ -107,6 +123,47 @@ def validate_s3_retry_config(config: dict) -> None:
     """Validate base values and every command-specific S3 retry policy."""
     for retry_policy in S3RetryPolicy:
         resolve_s3_retry_config(config, retry_policy)
+        resolve_s3_failure_limits(config, retry_policy)
+
+
+def resolve_s3_failure_limits(
+    config: dict, retry_policy: S3RetryPolicy | None = None
+) -> dict[FailureKey, int]:
+    """Read command-local failure limits without importing configured exception types."""
+    retry_policy = retry_policy or get_s3_retry_policy()
+    limits = (
+        config.get("retry", {}).get(retry_policy.value, {}).get("failure_limits", {})
+    )
+    path = f"storage.retry.{retry_policy.value}.failure_limits"
+    if not isinstance(limits, dict) or limits.keys() - {
+        kind.value for kind in FailureKind
+    }:
+        raise ConfigurationError(
+            f"{path} only supports error_codes and exceptions mappings"
+        )
+    result = {}
+    for kind, entries in limits.items():
+        failure_kind = FailureKind(kind)
+        if not isinstance(entries, dict):
+            raise ConfigurationError(f"{path}.{kind} must be a mapping")
+        for name, limit in entries.items():
+            if not isinstance(name, str) or not name or name != name.strip():
+                raise ConfigurationError(
+                    f"{path}.{kind} keys must be nonempty strings without surrounding whitespace"
+                )
+            if failure_kind is FailureKind.EXCEPTION and (
+                "." not in name
+                or not all(part.isidentifier() for part in name.split("."))
+            ):
+                raise ConfigurationError(
+                    f"{path}.{kind} keys must be fully qualified type names"
+                )
+            if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+                raise ConfigurationError(
+                    f"{path}.{kind}.{name} must be a positive integer"
+                )
+            result[FailureKey(failure_kind, name)] = limit
+    return result
 
 
 def is_retryable_s3_error(error: ClientError) -> bool:
@@ -149,8 +206,10 @@ def is_retryable_s3_error(error: ClientError) -> bool:
     return status is None or status in (408, 429) or status >= 500
 
 
-def is_certificate_error(error: BaseException) -> bool:
-    """Find verification failures inside Requests/urllib3/botocore wrappers."""
+def _exception_chain(
+    error: BaseException, *, include_context: bool = True
+) -> Iterator[BaseException]:
+    """Walk Requests/urllib3/botocore wrappers, including cyclic exception chains."""
     pending = [error]
     seen: set[int] = set()
     while pending:
@@ -158,19 +217,55 @@ def is_certificate_error(error: BaseException) -> bool:
         if id(current) in seen:
             continue
         seen.add(id(current))
-        if isinstance(current, (ssl.CertificateError, Urllib3CertificateError)):
-            return True
+        yield current
         # Requests keeps urllib3 errors in args; urllib3 keeps the cause in reason.
         # Botocore also stores the original exception in kwargs['error'].
         nested = (
             *current.args,
             current.__cause__,
-            current.__context__,
+            current.__context__ if include_context else None,
             getattr(current, "reason", None),
             getattr(current, "kwargs", {}).get("error"),
         )
         pending.extend(item for item in nested if isinstance(item, BaseException))
-    return False
+
+
+def is_certificate_error(error: BaseException) -> bool:
+    """Find verification failures inside Requests/urllib3/botocore wrappers."""
+    return any(
+        isinstance(item, (ssl.CertificateError, Urllib3CertificateError))
+        for item in _exception_chain(error)
+    )
+
+
+def _failure_keys(
+    error: BaseException, limits: dict[FailureKey, int]
+) -> set[FailureKey]:
+    keys = set()
+    # An implicit context may belong to an unrelated error handled by a caller.
+    for item in _exception_chain(error, include_context=False):
+        if isinstance(item, ClientError):
+            code = item.response.get("Error", {}).get("Code")
+            if isinstance(code, str):
+                keys.add(FailureKey(FailureKind.ERROR_CODE, code))
+        keys.update(
+            FailureKey(FailureKind.EXCEPTION, f"{cls.__module__}.{cls.__qualname__}")
+            for cls in type(item).__mro__
+        )
+    # Resolve public aliases without importing modules from configuration.
+    for key in limits:
+        if key.kind is FailureKind.EXCEPTION:
+            module, _, attribute = key.name.rpartition(".")
+            cls = getattr(sys.modules.get(module), "__dict__", {}).get(attribute)
+            if (
+                isinstance(cls, type)
+                and FailureKey(
+                    FailureKind.EXCEPTION, f"{cls.__module__}.{cls.__qualname__}"
+                )
+                in keys
+            ):
+                keys.add(key)
+    return keys
 
 
 class S3RetryingError(Exception):
@@ -237,7 +332,7 @@ class S3RetryMeta(ABCMeta):
                     if code == 507 or (code not in (408, 429) and code < 500):
                         raise
                 self._s3_client_factory.reset()  # pylint: disable=protected-access
-                raise S3RetryingError(f"Failed to make S3 operation: {str(e)}")
+                raise S3RetryingError(f"Failed to make S3 operation: {str(e)}") from e
 
         return wrapper
 
@@ -282,6 +377,7 @@ class RetryExponential:
         multiplier: float = 0.5,
         sleep_function: Callable = sleep,
         verbose: bool = True,
+        failure_limits: dict[FailureKey, int] | None = None,
     ) -> None:
         self.exception_types = exception_types
         self.max_attempts = max_attempts
@@ -289,6 +385,7 @@ class RetryExponential:
         self.multiplier = multiplier
         self.sleep_function = sleep_function
         self.verbose = verbose
+        self.failure_limits = failure_limits or {}
 
     def calculate_sleep_time(self, attempt):
         """
@@ -308,6 +405,7 @@ class RetryExponential:
         therefore we can use it from the multiple threads.
         """
         attempts = 0
+        failures: Counter[FailureKey] = Counter()
 
         while attempts < self.max_attempts:
             try:
@@ -319,6 +417,21 @@ class RetryExponential:
                     raise exc
 
                 attempts += 1
+                # Count each matching failure once; changing error types does not reset it.
+                if self.failure_limits:
+                    for key in (
+                        _failure_keys(exc, self.failure_limits)
+                        & self.failure_limits.keys()
+                    ):
+                        failures[key] += 1
+                        if failures[key] >= self.failure_limits[key]:
+                            logging.warning(
+                                "S3 failure limit reached: {}.{} = {}",
+                                key.kind.value,
+                                key.name,
+                                failures[key],
+                            )
+                            raise exc
                 # No attempts left.
                 if attempts == self.max_attempts:
                     raise exc

@@ -25,6 +25,7 @@ from ch_backup.storage.engine.s3.s3_retry import (
     S3RetryMeta,
     S3RetryPolicy,
     is_retryable_s3_error,
+    resolve_s3_failure_limits,
     resolve_s3_retry_config,
 )
 from ch_backup.type_hints.boto3.s3 import S3Client
@@ -63,7 +64,10 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
         self._bulk_delete_enabled = config.get("bulk_delete_enabled", True)
 
         self._retry = RetryExponential(
-            S3RetryingError, max_attempts=max_attempts, max_interval=max_interval
+            S3RetryingError,
+            max_attempts=max_attempts,
+            max_interval=max_interval,
+            failure_limits=resolve_s3_failure_limits(config, retry_policy),
         )
 
     @property
