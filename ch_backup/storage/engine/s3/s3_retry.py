@@ -10,6 +10,7 @@ from enum import Enum
 from functools import wraps
 from http.client import HTTPException
 from inspect import isfunction
+from math import isfinite
 from random import uniform
 from time import sleep
 from typing import TYPE_CHECKING, Any, Callable, Iterator, NamedTuple, TypeVar
@@ -44,6 +45,13 @@ class FailureKey(NamedTuple):
 
     kind: FailureKind
     name: str
+
+
+class FailureLimit(NamedTuple):
+    """Retry limits for a matching failure; omitted interval inherits the policy."""
+
+    max_attempts: int
+    max_interval: float | None = None
 
 
 class S3RetryPolicy(str, Enum):
@@ -128,7 +136,7 @@ def validate_s3_retry_config(config: dict) -> None:
 
 def resolve_s3_failure_limits(
     config: dict, retry_policy: S3RetryPolicy | None = None
-) -> dict[FailureKey, int]:
+) -> dict[FailureKey, FailureLimit]:
     """Read command-local failure limits without importing configured exception types."""
     retry_policy = retry_policy or get_s3_retry_policy()
     limits = (
@@ -158,11 +166,34 @@ def resolve_s3_failure_limits(
                 raise ConfigurationError(
                     f"{path}.{kind} keys must be fully qualified type names"
                 )
-            if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            options = limit if isinstance(limit, dict) else {"max_attempts": limit}
+            if options.keys() - {"max_attempts", "max_interval"}:
                 raise ConfigurationError(
-                    f"{path}.{kind}.{name} must be a positive integer"
+                    f"{path}.{kind}.{name} only supports max_attempts and max_interval"
                 )
-            result[FailureKey(failure_kind, name)] = limit
+            max_attempts = options.get("max_attempts")
+            max_interval = options.get("max_interval")
+            if (
+                isinstance(max_attempts, bool)
+                or not isinstance(max_attempts, int)
+                or max_attempts < 1
+            ):
+                raise ConfigurationError(
+                    f"{path}.{kind}.{name}.max_attempts must be a positive integer"
+                )
+            interval_valid = (
+                isinstance(max_interval, (int, float))
+                and not isinstance(max_interval, bool)
+                and max_interval >= 0
+                and (not isinstance(max_interval, float) or isfinite(max_interval))
+            )
+            if "max_interval" in options and not interval_valid:
+                raise ConfigurationError(
+                    f"{path}.{kind}.{name}.max_interval must be a finite nonnegative number"
+                )
+            result[FailureKey(failure_kind, name)] = FailureLimit(
+                max_attempts, max_interval
+            )
     return result
 
 
@@ -239,7 +270,7 @@ def is_certificate_error(error: BaseException) -> bool:
 
 
 def _failure_keys(
-    error: BaseException, limits: dict[FailureKey, int]
+    error: BaseException, limits: dict[FailureKey, FailureLimit]
 ) -> set[FailureKey]:
     keys = set()
     # An implicit context may belong to an unrelated error handled by a caller.
@@ -377,7 +408,7 @@ class RetryExponential:
         multiplier: float = 0.5,
         sleep_function: Callable = sleep,
         verbose: bool = True,
-        failure_limits: dict[FailureKey, int] | None = None,
+        failure_limits: dict[FailureKey, FailureLimit] | None = None,
     ) -> None:
         self.exception_types = exception_types
         self.max_attempts = max_attempts
@@ -387,14 +418,17 @@ class RetryExponential:
         self.verbose = verbose
         self.failure_limits = failure_limits or {}
 
-    def calculate_sleep_time(self, attempt):
+    def calculate_sleep_time(
+        self, attempt: int, max_interval: float | None = None
+    ) -> float:
         """
         Calculate time to sleep.
         Follow https://aws.amazon.com/ru/blogs/architecture/exponential-backoff-and-jitter/
         """
 
         high_value = (2**attempt) * self.multiplier
-        return uniform(0, min(high_value, self.max_interval))  # nosec
+        interval = self.max_interval if max_interval is None else max_interval
+        return uniform(0, min(high_value, interval))  # nosec
 
     def __call__(self, fn, *args, **kwargs):
         """
@@ -417,14 +451,16 @@ class RetryExponential:
                     raise exc
 
                 attempts += 1
+                intervals = []
                 # Count each matching failure once; changing error types does not reset it.
                 if self.failure_limits:
                     for key in (
                         _failure_keys(exc, self.failure_limits)
                         & self.failure_limits.keys()
                     ):
+                        limit = self.failure_limits[key]
                         failures[key] += 1
-                        if failures[key] >= self.failure_limits[key]:
+                        if failures[key] >= limit.max_attempts:
                             logging.warning(
                                 "S3 failure limit reached: {}.{} = {}",
                                 key.kind.value,
@@ -432,11 +468,15 @@ class RetryExponential:
                                 failures[key],
                             )
                             raise exc
+                        if limit.max_interval is not None:
+                            intervals.append(limit.max_interval)
                 # No attempts left.
                 if attempts == self.max_attempts:
                     raise exc
 
-                time_to_sleep = self.calculate_sleep_time(attempts)
+                time_to_sleep = self.calculate_sleep_time(
+                    attempts, min(intervals, default=None)
+                )
                 if self.verbose:
                     logging.debug(
                         "Exponential retry {}.{} in {}, attempt: {}, reason: {}",

@@ -110,7 +110,9 @@ storage:
                 error_codes:
                     InternalError: 3
                 exceptions:
-                    http.client.IncompleteRead: 3
+                    http.client.IncompleteRead:
+                        max_attempts: 3
+                        max_interval: 5
 ```
 
 Add S3 `Error.Code` strings to `error_codes`, or fully qualified exception names to
@@ -123,6 +125,11 @@ Unlisted errors such as `SlowDown` retain the total attempt budget; permanent er
 remain nonretryable. The same block works for `list`, `backup` and `default`, without
 inheritance between policies. SDK retries below are independent. Without
 `failure_limits`, retry behavior is unchanged.
+
+A number sets only the attempt limit. The extended form requires `max_attempts`
+and optionally overrides `max_interval` (seconds) for that failure. Parent
+exception types match subclasses. If several matching rules specify an interval,
+the smallest one is used; unlisted errors keep the policy interval.
 
 ## S3 SDK configuration
 
