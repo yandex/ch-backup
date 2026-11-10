@@ -10,13 +10,14 @@ import json
 import os
 from concurrent.futures import BrokenExecutor
 from functools import partial
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from ch_backup import logging as ch_logging
-from ch_backup.backup.copier import BackupCopier
+from ch_backup.backup.copier import BackupCopier, _RewrittenTarball
 from ch_backup.backup.copy_context import CopyContext
 from ch_backup.backup.copy_report import CopyReport, print_copy_report
 from ch_backup.backup.layout import BackupLayout
@@ -60,6 +61,15 @@ class FakeEngine:
         if prefix in self._store.list_errors:
             raise StorageError(f"Failed to list {prefix}")
         return {k: v for k, v in self._objects.items() if k.startswith(prefix)}
+
+    def iter_dir_with_sizes(self, remote_path):
+        """Expose the paginated engine contract for the in-memory fixture."""
+        yield from self.list_dir_with_sizes(remote_path).items()
+
+    def download_file(self, remote_path, local_path):
+        """Save an object to the requested scratch file."""
+        with open(local_path, "wb") as output:
+            output.write(self.download_data(remote_path))
 
     def upload_data(self, data: bytes, remote_path: str) -> str:
         self._objects[remote_path] = len(data)
@@ -1586,6 +1596,20 @@ def test_cloud_storage_disk_endpoints(
     assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
 
 
+@pytest.fixture
+def sealed_rewritten_archives(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Require planners to release archive descriptors before retaining their paths."""
+
+    def retain(path, files):
+        """Check the completed archive remains readable after its writer closes."""
+        assert files._file.closed  # pylint: disable=protected-access
+        assert Path(files.path()).is_file()
+        return _RewrittenTarball(path, files)
+
+    monkeypatch.setattr("ch_backup.backup.copier._RewrittenTarball", retain)
+
+
+@pytest.mark.usefixtures("sealed_rewritten_archives")
 def test_cloud_storage_full_object_keys() -> None:
     ctx = _cloud_storage_context()
     tarball = "ch_backup/b1/disks/s3/db1/t1.tar.gz"
@@ -1648,6 +1672,7 @@ def test_cloud_storage_unsupported_metadata() -> None:
 
 @pytest.mark.parametrize("version", [3, 5])
 @pytest.mark.parametrize("linked", [False, True])
+@pytest.mark.usefixtures("sealed_rewritten_archives")
 @pytest.mark.parametrize("source_path_override", [None, "other/path"])
 def test_full_cloud_storage_copy(
     version: int, linked: bool, source_path_override: str | None

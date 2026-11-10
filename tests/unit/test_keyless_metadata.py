@@ -74,9 +74,19 @@ def test_read_plaintext_without_initializing_crypto():
 
 def test_upload_public_metadata_preserves_data_encryption():
     layout = make_layout()
+    full = []
+
+    def capture(path, remote_path):
+        """Read metadata while the upload still owns the temporary file."""
+        assert remote_path.endswith("backup_struct.json")
+        full.append(json.loads(Path(path).read_bytes()))
+
+    get_loader(layout).upload_file.side_effect = capture
     layout.upload_backup_metadata(make_backup())
     calls = get_loader(layout).upload_data.call_args_list
-    assert len(calls) == 2
+    assert len(calls) == 1
+    assert full[0]["meta"]["encrypted"] is True
+    assert full[0]["meta"]["metadata_encrypted"] is False
     for uploaded in calls:
         assert not uploaded.kwargs.get("encryption", False)
         meta = json.loads(uploaded.args[0])["meta"]
@@ -101,11 +111,12 @@ def test_failed_full_metadata_upload_preserves_legacy_format():
     layout = make_layout()
     backup = make_backup()
     backup.metadata_encrypted = True
-    get_loader(layout).upload_data.side_effect = StorageError("upload failed")
+    get_loader(layout).upload_file.side_effect = StorageError("upload failed")
     with pytest.raises(StorageError):
         layout.upload_backup_metadata(backup)
     assert backup.metadata_encrypted is True
-    get_loader(layout).upload_data.assert_called_once()
+    get_loader(layout).upload_file.assert_called_once()
+    get_loader(layout).upload_data.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -169,12 +180,12 @@ def test_rewritten_cloud_metadata_is_checked_before_upload(data, safe, encrypted
     files = [("store/part/data.bin", data)]
     if safe or encrypted:
         layout.upload_cloud_storage_metadata_files(backup, "disks/table.tar", files)
-        get_loader(layout).upload_data_tarball.assert_called_once()
+        get_loader(layout).upload_metadata_archive.assert_called_once()
     else:
         with pytest.raises(StorageError, match="Cannot publish unencrypted") as error:
             layout.upload_cloud_storage_metadata_files(backup, "disks/table.tar", files)
         assert "SECRET" not in str(error.value)
-        get_loader(layout).upload_data_tarball.assert_not_called()
+        get_loader(layout).upload_metadata_archive.assert_not_called()
 
 
 @pytest.mark.parametrize(

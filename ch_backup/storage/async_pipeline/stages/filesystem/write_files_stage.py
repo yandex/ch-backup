@@ -145,14 +145,15 @@ class TarStreamProcessorBase(Handler):
         return True
 
     def on_done(self) -> Any:
+        tarinfo = self._tarinfo
         self._on_file_complete()
         # Early writers omitted all final padding if the last read filled a chunk.
         # Accept only a complete regular file with its entire padding outstanding.
         if (
             self._state == State.SKIP_BYTES
-            and self._tarinfo is not None
-            and self._tarinfo.isreg()
-            and self._bytes_to_process == -self._tarinfo.size % BLOCKSIZE
+            and tarinfo is not None
+            and tarinfo.isreg()
+            and self._bytes_to_process == -tarinfo.size % BLOCKSIZE
         ):
             return
         if (
@@ -194,15 +195,27 @@ class UnpackTarballStage(TarStreamProcessorBase):
     Unpack TAR stream to in-memory data pairs (filename, data).
     """
 
-    def __init__(self, config: dict, buffer_size: int) -> None:
+    def __init__(
+        self, config: dict, buffer_size: int, include_empty: bool = False
+    ) -> None:
+        """Collect completed files, optionally preserving empty metadata members."""
         super().__init__(config, buffer_size)
+        self._include_empty = include_empty
         self._current_data: bytearray = bytearray()
         self._results: list[tuple[str, bytes]] = []
 
     def _on_file_complete(self) -> None:
-        if self._current_data and self._tarinfo:
+        if self._tarinfo and (
+            self._current_data
+            or (
+                self._include_empty
+                and self._tarinfo.isfile()
+                and self._tarinfo.size == 0
+            )
+        ):
             self._results.append((self._tarinfo.name, bytes(self._current_data)))
             self._current_data = bytearray()
+            self._tarinfo = None
 
     def _on_file_start(self) -> None:
         self._current_data = bytearray()
@@ -212,4 +225,9 @@ class UnpackTarballStage(TarStreamProcessorBase):
 
     def on_done(self) -> Iterator[tuple[str, bytes]]:
         super().on_done()
-        yield from self._results
+        yield from self.take_files()
+
+    def take_files(self) -> list[tuple[str, bytes]]:
+        """Release files completed by the last input chunk."""
+        files, self._results = self._results, []
+        return files

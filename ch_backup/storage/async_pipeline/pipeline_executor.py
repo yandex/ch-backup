@@ -101,6 +101,10 @@ class PipelineExecutor:
         encryption: bool,
         delete: bool,
         params: dict,
+        *,
+        compression: bool = False,
+        callback: Callable | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         """
         Upload file from local filesystem.
@@ -114,12 +118,13 @@ class PipelineExecutor:
             remote_path,
             encryption,
             delete_after=delete,
+            compress=compression,
         )
 
         if params.get("skip_deleted", False):
             pipeline = partial(suppress_exceptions, pipeline, [FileNotFoundError])
 
-        self._exec_pipeline(job_id, pipeline, is_async)
+        self._exec_pipeline(job_id, pipeline, is_async, callback, on_error)
 
     # pylint: disable=too-many-positional-arguments
     def upload_files_tarball_scan(

@@ -10,10 +10,14 @@ import time
 import uuid
 from tempfile import NamedTemporaryFile
 from types import TracebackType
+from typing import Iterable
 
 from ch_backup import logging
+from ch_backup.backup.copy_index import CopyEntries, CopyIndex
+from ch_backup.backup.copy_journal_buffer import MAX_RECORD_BYTES, JournalBuffer
 from ch_backup.backup.metadata import BackupMetadata, CopyScope
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
+from ch_backup.storage.metadata_archive import MetadataArchive, MetadataFiles
 from ch_backup.storage.object_copy import CopyEntry, storage_id
 
 COPY_CONTEXT_DIR = "copy_context"
@@ -105,8 +109,8 @@ class CopyContext:
         self._flush_interval = flush_interval
         self._flushed_at = time.monotonic()
         self._flushed_size = 0
-        self._buffer: list[str] = []
-        self._recorded: set[bytes] = set()
+        self._buffer = JournalBuffer()
+        self._recorded: CopyIndex[bytes, bool] = CopyIndex()
         self._data_encryption = data_encryption
 
     def has_records(self) -> bool:
@@ -115,8 +119,11 @@ class CopyContext:
 
     def load(self) -> None:
         """Read records of previous runs, skipping files that cannot be read."""
+        paths: CopyIndex[str, int] = CopyIndex()
         try:
-            paths = sorted(self._engine.list_dir_with_sizes(self._path))
+            for path, size in self._engine.iter_dir_with_sizes(self._path):
+                if os.path.dirname(path) == self._path:
+                    paths[path] = size
         except Exception as e:
             logging.warning("Failed to list copy context {}: {}", self._path, e)
             return
@@ -124,11 +131,16 @@ class CopyContext:
             if os.path.dirname(path) != self._path:
                 continue
             try:
-                lines = gzip.decompress(self._engine.download_data(path)).splitlines()
+                with NamedTemporaryFile() as source:
+                    self._engine.download_file(path, source.name)
+                    with (
+                        gzip.open(source.name, "rb") as stream,
+                        self._recorded.importing(),
+                    ):
+                        for line in _journal_lines(stream):
+                            self._recorded[_digest(line)] = True
             except Exception as e:
                 logging.warning("Skipping unreadable copy context file {}: {}", path, e)
-                continue
-            self._recorded.update(_digest(line) for line in lines if line)
         logging.info(
             "Read {} records of copy context {}", len(self._recorded), self._path
         )
@@ -138,7 +150,7 @@ class CopyContext:
         return _digest(_record(entry, self._data_encryption)) in self._recorded
 
     def is_archive_recorded(
-        self, storage: dict, path: str, files: list[tuple[str, bytes]], size: int | None
+        self, storage: dict, path: str, files: MetadataFiles, size: int | None
     ) -> bool:
         """Check that upload of the rewritten metadata tarball of this size was confirmed by a previous run."""
         return _digest(_archive_record(storage, path, files, size)) in self._recorded
@@ -152,7 +164,7 @@ class CopyContext:
         self._buffer.append(_record(entry, self._data_encryption).decode())
 
     def record_archive(
-        self, storage: dict, path: str, files: list[tuple[str, bytes]], size: int
+        self, storage: dict, path: str, files: MetadataFiles, size: int
     ) -> None:
         """Remember the confirmed upload of the rewritten metadata tarball until the next flush."""
         self._buffer.append(_archive_record(storage, path, files, size).decode())
@@ -168,27 +180,33 @@ class CopyContext:
         except Exception as e:
             logging.warning("Failed to save list of failed objects {}: {}", path, e)
 
-    def save_manifest(self, scope: CopyScope, entries: list[CopyEntry]) -> None:
-        """Save locations and sizes of all objects of the scope, without credentials."""
-        self._engine.upload_data(
-            gzip.compress(b"".join(_record(entry) + b"\n" for entry in entries)),
-            os.path.join(self._path, MANIFEST_DIR, f"{scope.value}.jsonl.gz"),
-        )
+    def save_manifest(self, scope: CopyScope, entries: Iterable[CopyEntry]) -> None:
+        """Stream the object manifest without credentials into a compressed file."""
+        with NamedTemporaryFile() as target:
+            with gzip.open(target.name, "wb") as stream:
+                for entry in entries:
+                    stream.write(_record(entry) + b"\n")
+            self._engine.upload_file(
+                target.name,
+                os.path.join(self._path, MANIFEST_DIR, f"{scope.value}.jsonl.gz"),
+            )
 
-    def load_manifest(self, scope: CopyScope) -> list[CopyEntry]:
-        """Return objects of the scope saved by a previous run, with storages identified only."""
-        data = self._engine.download_data(
-            os.path.join(self._path, MANIFEST_DIR, f"{scope.value}.jsonl.gz")
-        )
-        entries = []
+    def load_manifest(self, scope: CopyScope) -> CopyEntries:
+        """Import the saved manifest without keeping all locations in memory."""
+        entries = CopyEntries()
         storages: dict[tuple, dict] = {}
-        for line in gzip.decompress(data).splitlines():
-            if line:
-                src, src_path, dst, dst_path, size = json.loads(line)
-                src, dst = (
-                    storages.setdefault(tuple(i), _storage(i)) for i in (src, dst)
-                )
-                entries.append(CopyEntry(src, dst, src_path, dst_path, size, size))
+        with NamedTemporaryFile() as source:
+            self._engine.download_file(
+                os.path.join(self._path, MANIFEST_DIR, f"{scope.value}.jsonl.gz"),
+                source.name,
+            )
+            with gzip.open(source.name, "rb") as stream:
+                for line in _journal_lines(stream):
+                    src, src_path, dst, dst_path, size = json.loads(line)
+                    src, dst = (
+                        storages.setdefault(tuple(i), _storage(i)) for i in (src, dst)
+                    )
+                    entries.append(CopyEntry(src, dst, src_path, dst_path, size, size))
         return entries
 
     def flush(self, force: bool = False) -> None:
@@ -204,18 +222,35 @@ class CopyContext:
             and time.monotonic() - self._flushed_at < self._flush_interval
         ):
             return
-        self._index += 1
-        path = os.path.join(self._path, f"{self._run_id}-{self._index:08d}.jsonl.gz")
-        data = gzip.compress(("\n".join(self._buffer) + "\n").encode())
-        self._flushed_at = time.monotonic()
-        self._flushed_size = len(self._buffer)
-        try:
-            self._engine.upload_data(data, path)
-        except Exception as e:
-            logging.warning("Failed to save copy context {}: {}", path, e)
-            return
-        self._buffer.clear()
-        self._flushed_size = 0
+        while self._buffer:
+            self._index += 1
+            path = os.path.join(
+                self._path, f"{self._run_id}-{self._index:08d}.jsonl.gz"
+            )
+            self._flushed_at = time.monotonic()
+            self._flushed_size = len(self._buffer)
+            with NamedTemporaryFile() as target:
+                with gzip.open(target.name, "wb") as stream:
+                    count, position = self._buffer.write_chunk(stream, self._flush_size)
+                try:
+                    self._engine.upload_file(target.name, path)
+                except Exception as e:
+                    logging.warning("Failed to save copy context {}: {}", path, e)
+                    return
+            self._buffer.discard(count, position)
+            self._flushed_size = 0
+            if not force:
+                return
+
+
+def _journal_lines(stream):
+    """Read bounded journal records and reject oversized or damaged input."""
+    while line := stream.readline(MAX_RECORD_BYTES + 1):
+        if len(line) > MAX_RECORD_BYTES:
+            raise ValueError("Copy journal record exceeds its size limit")
+        line = line.rstrip(b"\r\n")
+        if line:
+            yield line
 
 
 def source_dir(backup: BackupMetadata) -> str:
@@ -253,9 +288,13 @@ def _record(entry: CopyEntry, data_encryption: dict | None = None) -> bytes:
 
 
 def _archive_record(
-    storage: dict, path: str, files: list[tuple[str, bytes]], size: int | None
+    storage: dict, path: str, files: MetadataFiles, size: int | None
 ) -> bytes:
     """Serialize target location, size and content of the rewritten metadata tarball."""
+    if isinstance(files, MetadataArchive):
+        return json.dumps(
+            [storage_id(storage), path, size, files.content_digest()]
+        ).encode()
     content = hashlib.blake2b(digest_size=16)
     for name, data in files:
         content.update(json.dumps([name, len(data)]).encode())

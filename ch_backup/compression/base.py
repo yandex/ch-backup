@@ -3,6 +3,7 @@ Base compression classes module
 """
 
 from abc import ABCMeta, abstractmethod
+from typing import Iterator
 
 
 class BaseCompression(metaclass=ABCMeta):
@@ -40,3 +41,7 @@ class BaseCompression(metaclass=ABCMeta):
         Return all buffered decompressed data
         """
         pass
+
+    @abstractmethod
+    def decompress_chunks(self, data: bytes, chunk_size: int) -> Iterator[bytes]:
+        """Decompress input without allocating an unbounded output chunk."""

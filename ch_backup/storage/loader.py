@@ -79,6 +79,29 @@ class StorageLoader:
         return remote_path
 
     # pylint: disable=too-many-positional-arguments
+    def upload_metadata_archive(
+        self,
+        local_path: str,
+        remote_path: str,
+        encryption: bool,
+        compression: bool,
+        callback: Callable | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
+    ) -> None:
+        """Upload a spooled tar by path, without pickling its files."""
+        self._ploader.upload_file(
+            local_path,
+            remote_path,
+            is_async=True,
+            encryption=encryption,
+            delete=False,
+            params={},
+            compression=compression,
+            callback=callback,
+            on_error=on_error,
+        )
+
+    # pylint: disable=too-many-positional-arguments
     def upload_file(
         self,
         local_path,

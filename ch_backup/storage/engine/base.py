@@ -3,7 +3,7 @@ Interfaces for storage engines.
 """
 
 from abc import ABCMeta, abstractmethod
-from typing import Sequence
+from typing import Iterator, Sequence
 
 
 class StorageEngine(metaclass=ABCMeta):
@@ -135,6 +135,10 @@ class PipeLineCompatibleStorageEngine(StorageEngine):
         Return sizes of all objects under the remote path (recursively) keyed by object key.
         """
         pass
+
+    def iter_dir_with_sizes(self, remote_path: str) -> Iterator[tuple[str, int]]:
+        """Iterate a listing; engines with pagination override this fallback."""
+        yield from self.list_dir_with_sizes(remote_path).items()
 
     @abstractmethod
     def copy_object(

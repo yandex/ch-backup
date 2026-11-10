@@ -83,7 +83,7 @@ def step_prepend_object_references(context, node, backup_name):
     path = layout.get_cloud_storage_metadata_remote_paths(
         backup_name, conf["disk"], backup.cloud_storage.compressed, "all"
     )[0]
-    files = layout.get_cloud_storage_metadata_files(backup, path)
+    files = list(layout.get_cloud_storage_metadata_files(backup, path))
     saved = getattr(context, "saved_cloud_metadata", {})
     assert (node, backup_name, path) not in saved, f"Metadata already saved: {path}"
     saved[node, backup_name, path] = files.copy()

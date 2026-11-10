@@ -32,6 +32,15 @@ class MemoryEngine:
         prefix = remote_path.strip("/") + "/"
         return {k: len(v) for k, v in self.objects.items() if k.startswith(prefix)}
 
+    def iter_dir_with_sizes(self, remote_path):
+        """Expose the paginated engine contract for the in-memory fixture."""
+        yield from self.list_dir_with_sizes(remote_path).items()
+
+    def download_file(self, remote_path, local_path):
+        """Save an object to the requested scratch file."""
+        with open(local_path, "wb") as output:
+            output.write(self.download_data(remote_path))
+
     def upload_data(self, data: bytes, remote_path: str) -> str:
         if self.upload_error:
             raise self.upload_error

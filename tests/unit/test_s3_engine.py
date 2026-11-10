@@ -482,3 +482,29 @@ def test_failed_s3_request_replaces_its_own_cached_client() -> None:
     assert source.create_s3_client.call_count == 2
     broken.download_fileobj.assert_called_once()
     healthy.download_fileobj.assert_called_once()
+
+
+@pytest.mark.parametrize("failure_page", [0, 1])
+def test_streamed_listing_retries_failed_page(failure_page: int) -> None:
+    """Retry a temporary failure without duplicating already yielded keys."""
+    engine = _engine(retry_max_attempts=2)
+    getattr(engine, "_retry").sleep_function = Mock()
+    client = Mock()
+    pages = [
+        {"Contents": [{"Key": "prefix/a", "Size": 1}], "IsTruncated": True},
+        {"Contents": [{"Key": "prefix/b", "Size": 2}], "IsTruncated": False},
+    ]
+    responses: list = list(pages)
+    responses.insert(
+        failure_page, ClientError({"Error": {"Code": "InternalError"}}, "ListObjects")
+    )
+    client.list_objects.side_effect = responses
+    factory = Mock(create_s3_client=Mock(return_value=client))
+    setattr(engine, "_s3_client_factory", factory)
+    assert list(engine.iter_dir_with_sizes("prefix")) == [
+        ("prefix/a", 1),
+        ("prefix/b", 2),
+    ]
+    assert client.list_objects.call_count == 3
+    factory.reset.assert_called_once()
+    assert client.list_objects.call_args.kwargs["Marker"] == "prefix/a"

@@ -2,6 +2,7 @@
 GZIP compression module
 """
 
+from typing import Iterator
 from zlib import (
     DEFLATED,
     Z_DEFAULT_COMPRESSION,
@@ -38,6 +39,18 @@ class GZIPCompression(BaseCompression):
         Decompress given data
         """
         return self._decompressobj.decompress(data)
+
+    def decompress_chunks(self, data: bytes, chunk_size: int) -> Iterator[bytes]:
+        """Drain compressed input and buffered output in bounded chunks."""
+        if chunk_size <= 0:
+            raise ValueError("Decompression chunk size must be positive")
+        while True:
+            chunk = self._decompressobj.decompress(data, chunk_size)
+            data = self._decompressobj.unconsumed_tail
+            if chunk:
+                yield chunk
+            if self._decompressobj.eof or (not data and len(chunk) < chunk_size):
+                return
 
     def flush_compress(self) -> bytes:
         """
