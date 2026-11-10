@@ -172,6 +172,7 @@ def test_invalid_retry_limits_are_rejected(storage: dict) -> None:
     [
         (["InternalError"] * 3, 3, False),
         (["InternalError"] * 2, 3, True),
+        # With a 60-attempt budget, SlowDown must not reset the InternalError counter.
         (["InternalError"] + ["SlowDown"] * 50 + ["InternalError"] * 2, 53, False),
         (["SlowDown"] * 59, 60, True),
         (["SlowDown"] * 60, 60, False),
@@ -279,6 +280,17 @@ def test_s3_failure_limits(
 )
 def test_invalid_s3_failure_limits(limits: Any) -> None:
     storage = {"retry": {"restore": {"failure_limits": limits}}}
+    with (
+        patch("ch_backup.storage.engine.s3.s3_engine.S3ClientFactory") as factory,
+        patch(
+            "ch_backup.storage.engine.s3.s3_engine.build_transfer_config"
+        ) as transfer,
+        pytest.raises(ConfigurationError, match="storage.retry.restore.failure_limits"),
+    ):
+        _engine(S3RetryPolicy.RESTORE, **storage)
+
+    factory.assert_not_called()
+    transfer.assert_not_called()
     with pytest.raises(
         ConfigurationError, match="storage.retry.restore.failure_limits"
     ):

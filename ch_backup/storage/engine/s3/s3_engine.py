@@ -46,6 +46,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
         client_factory: S3ClientCachedFactory | None = None,
     ) -> None:
         max_attempts, max_interval = resolve_s3_retry_config(config, retry_policy)
+        failure_limits = resolve_s3_failure_limits(config, retry_policy)
         self._transfer_config = build_transfer_config(config)
         self._s3_client_factory = client_factory or S3ClientCachedFactory(
             S3ClientFactory(config),
@@ -67,7 +68,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
             S3RetryingError,
             max_attempts=max_attempts,
             max_interval=max_interval,
-            failure_limits=resolve_s3_failure_limits(config, retry_policy),
+            failure_limits=failure_limits,
         )
 
     @property
