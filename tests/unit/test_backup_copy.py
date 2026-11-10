@@ -229,7 +229,7 @@ class FakeLayout:
             if on_error:
                 on_error(error)
             raise error
-        self.cloud_storage_files[remote_path] = files
+        self.cloud_storage_files[remote_path] = list(files)
         if self.store:
             self.store.buckets.setdefault(("s3", ENDPOINT, DST_BUCKET), {})[
                 remote_path

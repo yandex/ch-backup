@@ -61,7 +61,7 @@ class CopyIndex(MutableMapping[K, V], Generic[K, V]):
         self._writes = 0
         self._importing = False
         self._db.execute("PRAGMA synchronous=OFF")
-        self._db.execute("PRAGMA cache_size=-2048")
+        self._db.execute("PRAGMA cache_size=-65536")
         self._db.execute("PRAGMA temp_store=FILE")
         self._db.execute("PRAGMA mmap_size=0")
         self._db.execute(

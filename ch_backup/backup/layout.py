@@ -1147,8 +1147,9 @@ class BackupLayout:
                 if callback:
                     callback()
 
-            self._storage_loader.upload_metadata_archive(
+            self._storage_loader.upload_file(
                 local_path=archive.path(),
+                is_async=True,
                 remote_path=remote_path,
                 encryption=backup_meta.cloud_storage.encrypted,
                 compression=backup_meta.cloud_storage.compressed,

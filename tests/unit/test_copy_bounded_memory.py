@@ -64,7 +64,6 @@ def test_metadata_spool_preserves_long_names_empty_files_and_digest() -> None:
     archive = spool_metadata(iter(files))
     assert len(archive) == 2
     assert list(archive) == files
-    assert archive[-1] == files[-1]
     assert _archive_record(STORAGE, "archive", archive, 123) == _archive_record(
         STORAGE, "archive", files, 123
     )
@@ -105,7 +104,7 @@ def test_entry_index_rejects_cross_part_conflicts_and_keeps_secrets_in_memory() 
     index._db.commit()
     path = Path(index._db.execute("PRAGMA database_list").fetchone()[2])
     assert b"DO_NOT_PERSIST" not in path.read_bytes()
-    assert index._db.execute("PRAGMA cache_size").fetchone()[0] == -2048
+    assert index._db.execute("PRAGMA cache_size").fetchone()[0] == -65536
     assert index._db.execute("PRAGMA mmap_size").fetchone()[0] == 0
     assert index._db.execute("PRAGMA synchronous").fetchone()[0] == 0
     assert index._db.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
@@ -170,7 +169,7 @@ def test_index_batches_commits(deduplicate: bool) -> None:
     assert statements["COMMIT"] == 1
     assert len(index) == 65537
     assert index[65536] == _entry("65536")
-    assert index._db.execute("PRAGMA cache_size").fetchone()[0] == -2048
+    assert index._db.execute("PRAGMA cache_size").fetchone()[0] == -65536
     assert index._db.execute("PRAGMA mmap_size").fetchone()[0] == 0
     assert index._db.execute("PRAGMA synchronous").fetchone()[0] == 0
     assert index._db.execute("PRAGMA journal_mode").fetchone()[0] == "delete"

@@ -180,12 +180,12 @@ def test_rewritten_cloud_metadata_is_checked_before_upload(data, safe, encrypted
     files = [("store/part/data.bin", data)]
     if safe or encrypted:
         layout.upload_cloud_storage_metadata_files(backup, "disks/table.tar", files)
-        get_loader(layout).upload_metadata_archive.assert_called_once()
+        get_loader(layout).upload_file.assert_called_once()
     else:
         with pytest.raises(StorageError, match="Cannot publish unencrypted") as error:
             layout.upload_cloud_storage_metadata_files(backup, "disks/table.tar", files)
         assert "SECRET" not in str(error.value)
-        get_loader(layout).upload_metadata_archive.assert_not_called()
+        get_loader(layout).upload_file.assert_not_called()
 
 
 @pytest.mark.parametrize(

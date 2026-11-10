@@ -107,12 +107,12 @@ class _ScopePlan:
     def __init__(self) -> None:
         """Start an empty, unplanned copy scope."""
         self.entries = CopyEntries()
-        self.rewritten_metadata: list[_RewrittenTarball] = []
+        self.rewritten_cloud_storage_metadata: list[_RewrittenTarball] = []
         self.planned = False
 
     def count(self) -> int:
         """Return the number of objects and rewritten metadata tarballs."""
-        return len(self.entries) + len(self.rewritten_metadata)
+        return len(self.entries) + len(self.rewritten_cloud_storage_metadata)
 
 
 _CopyPlan = dict[CopyScope, _ScopePlan]
@@ -868,7 +868,7 @@ class BackupCopier:
                 ((entry.dst_storage, entry.dst_path) for entry in scope_plan.entries),
                 (
                     (self._target_storage, path)
-                    for path, _ in scope_plan.rewritten_metadata
+                    for path, _ in scope_plan.rewritten_cloud_storage_metadata
                 ),
             )
             for scope_plan in plan.values()
@@ -1284,7 +1284,7 @@ class BackupCopier:
                             quote(table.name, safe="") + extension,
                         )
                         files.path()
-                        plan.rewritten_metadata.append(
+                        plan.rewritten_cloud_storage_metadata.append(
                             _RewrittenTarball(remote_path, files)
                         )
         plan.entries.extend_index(entries)
@@ -1506,7 +1506,7 @@ class BackupCopier:
 
                         if rewritten:
                             files.path()
-                            plan.rewritten_metadata.append(
+                            plan.rewritten_cloud_storage_metadata.append(
                                 _RewrittenTarball(dst_path, files)
                             )
                         elif len(result.errors) == errors:
@@ -1677,9 +1677,9 @@ class BackupCopier:
             if scope in self._scopes and not self._copy_config["resume"]:
                 continue
             scope_plan.entries = scope_plan.entries.filtered(pending)
-            scope_plan.rewritten_metadata = [
+            scope_plan.rewritten_cloud_storage_metadata = [
                 _RewrittenTarball(path, files)
-                for path, files in scope_plan.rewritten_metadata
+                for path, files in scope_plan.rewritten_cloud_storage_metadata
                 if not context.is_archive_recorded(
                     self._target_storage,
                     path,
@@ -1786,7 +1786,9 @@ class BackupCopier:
                 callback=completed,
                 on_error=failed,
             )
-            for index, (remote_path, files) in enumerate(plan.rewritten_metadata, 1):
+            for index, (remote_path, files) in enumerate(
+                plan.rewritten_cloud_storage_metadata, 1
+            ):
                 errors_before_upload = len(result.errors)
                 try:
                     self._target_layout.upload_cloud_storage_metadata_files(

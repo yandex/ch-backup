@@ -125,7 +125,7 @@ def step_restore_cloud_metadata(context):
         assert backup is not None
         layout.upload_cloud_storage_metadata_files(backup, path, files)
         layout.wait()
-        assert layout.get_cloud_storage_metadata_files(backup, path) == files
+        assert list(layout.get_cloud_storage_metadata_files(backup, path)) == files
     context.saved_cloud_metadata = {}
 
 

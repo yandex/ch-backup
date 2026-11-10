@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import weakref
-from itertools import islice
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import IO, Iterable, Iterator
@@ -68,23 +67,6 @@ class MetadataArchive:
         if self._count is None:
             self._count = sum(1 for _ in self)
         return self._count
-
-    def __getitem__(self, index: int) -> tuple[str, bytes]:
-        """Read one file without retaining an index of all names."""
-        if index < 0:
-            index += len(self)
-        if index < 0:
-            raise IndexError(index)
-        try:
-            return next(islice(iter(self), index, None))
-        except StopIteration as error:
-            raise IndexError(index) from error
-
-    def __eq__(self, other: object) -> bool:
-        """Compare content without materializing either archive."""
-        if not isinstance(other, (MetadataArchive, list)):
-            return NotImplemented
-        return len(self) == len(other) and all(a == b for a, b in zip(self, other))
 
     def content_digest(self) -> str:
         """Return the journal digest in the original file order."""
