@@ -96,6 +96,41 @@ the command reports those failures with a nonzero exit status. A shared Keeper
 metadata conflict stops the restore immediately. The behavior without
 `--skip-cloud-storage` is unchanged.
 
+## S3 retry limits
+
+Limit selected failures while keeping the usual retry budget for other errors:
+
+```yaml
+storage:
+    retry:
+        restore:
+            max_attempts: 60
+            max_interval: 60
+            failure_limits:
+                error_codes:
+                    InternalError: 3
+                exceptions:
+                    http.client.IncompleteRead:
+                        max_attempts: 3
+                        max_interval: 5
+```
+
+Add S3 `Error.Code` strings to `error_codes`, or fully qualified exception names to
+`exceptions`. Public aliases from loaded modules, such as `socket.timeout` and
+`requests.ConnectionError`, also work. Matching includes base classes, explicit
+causes and SDK wrappers, without importing classes
+or matching messages. Rules count failures cumulatively per public S3 method call
+(each download range separately), stopping immediately at the configured limit.
+Unlisted errors such as `SlowDown` retain the total attempt budget; permanent errors
+remain nonretryable. The same block works for `list`, `backup` and `default`, without
+inheritance between policies. SDK retries below are independent. Without
+`failure_limits`, retry behavior is unchanged.
+
+A number sets only the attempt limit. The extended form requires `max_attempts`
+and optionally overrides `max_interval` (seconds) for that failure. Parent
+exception types match subclasses. If several matching rules specify an interval,
+the smallest one is used; unlisted errors keep the policy interval.
+
 ## S3 SDK configuration
 
 `storage.module_config` passes options to botocore and boto3 managed transfers:
