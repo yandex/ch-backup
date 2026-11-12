@@ -18,6 +18,7 @@ from ch_backup.backup.metadata import (
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.models import Database, FrozenPart, Table
 from ch_backup.config import as_datetime
+from ch_backup.exceptions import BrokenBackupMetadata, InvalidBackupStruct
 from ch_backup.util import Slotted, sql_string_literal, utcnow
 
 
@@ -437,6 +438,7 @@ def collect_dedup_references_for_batch_backup_deletion(
     layout: BackupLayout,
     retained_backups_light_meta: list[BackupMetadata],
     deleting_backup_names: set[str],
+    ignore_broken_metadata: bool = False,
 ) -> dict[str, DedupReferences]:
     """
     Collect deduplication information for deleting multiple backups. It contains names of data parts that should
@@ -447,19 +449,46 @@ def collect_dedup_references_for_batch_backup_deletion(
     )
 
     for backup in retained_backups_light_meta:
-        backup = layout.reload_backup(backup, use_light_meta=False)
-        for db_name in backup.get_databases():
-            for table in backup.get_tables(db_name):
-                for part in table.get_parts():
-                    if not part.link:
-                        continue
-
-                    if part.link not in deleting_backup_names:
-                        continue
-
-                    _add_part_to_dedup_references(dedup_references[part.link], part)
+        try:
+            backup = layout.reload_backup(backup, use_light_meta=False)
+            parts = _get_referenced_parts(backup, deleting_backup_names)
+        except BrokenBackupMetadata:
+            if not ignore_broken_metadata:
+                raise
+            logging.warning("Ignoring unknown references of backup {}", backup.name)
+            continue
+        for part in parts:
+            assert part.link is not None
+            _add_part_to_dedup_references(dedup_references[part.link], part)
 
     return dedup_references
+
+
+def _get_referenced_parts(
+    backup: BackupMetadata, deleting_backup_names: set[str]
+) -> list[PartMetadata]:
+    """Parse references completely before applying any from this backup."""
+    try:
+        parts = [
+            part
+            for table in backup.get_tables()
+            for part in table.get_parts()
+            if part.link and part.link in deleting_backup_names
+        ]
+        for part in parts:
+            if not isinstance(part.deduplicated_part_name, str):
+                raise TypeError("Referenced part name must be a string")
+        return parts
+    except (
+        KeyError,
+        TypeError,
+        AttributeError,
+        ValueError,
+        InvalidBackupStruct,
+    ) as error:
+        raise BrokenBackupMetadata(
+            f"Invalid data part metadata in backup {backup.name}"
+        ) from error
 
 
 def _add_part_to_dedup_references(

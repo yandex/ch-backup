@@ -42,7 +42,10 @@ from ch_backup.clickhouse.object_storage_metadata import (
 from ch_backup.config import Config
 from ch_backup.encryption import get_encryption_class
 from ch_backup.exceptions import (
+    BackupMetadataNameMismatch,
+    BrokenBackupMetadata,
     ConfigurationError,
+    InvalidBackupStruct,
     StorageError,
     TerminatingSignal,
     is_broken_executor,
@@ -545,6 +548,8 @@ class BackupLayout:
             backup = BackupMetadata.load_json(data)
             backup.metadata_encrypted = True
             return backup
+        except (InvalidBackupStruct, json.JSONDecodeError, UnicodeDecodeError) as e:
+            raise BrokenBackupMetadata(f"Invalid backup metadata {path}") from e
         except CryptoError as e:
             raise StorageError(
                 f"Failed to decrypt legacy backup metadata {path}: "
@@ -572,13 +577,19 @@ class BackupLayout:
         if not self._storage_loader.path_exists(path):
             return None
 
-        return self._load_metadata(path, not use_light_meta)
+        backup = self._load_metadata(path, not use_light_meta)
+        if backup.name != backup_name:
+            raise BackupMetadataNameMismatch(
+                f"Backup metadata name {backup.name!r} does not match directory {backup_name!r}"
+            )
+        return backup
 
     def get_backups(
         self,
         use_light_meta: bool = False,
         *,
         unreadable: dict[str, str] | None = None,
+        for_deletion: bool = False,
     ) -> list[BackupMetadata]:
         """
         Return list of existing backups sorted by start_time in descent order.
@@ -590,6 +601,7 @@ class BackupLayout:
         )
 
         backups = []
+        missing = []
         for name in self.get_backup_names():
             logging.debug(
                 "Collecting {} of backup: {}",
@@ -597,8 +609,15 @@ class BackupLayout:
                 name,
             )
             try:
-                backup = self.get_backup(name, use_light_meta)
+                if for_deletion:
+                    backup = self._get_deletion_backup(name)
+                    if backup is None:
+                        missing.append(name)
+                else:
+                    backup = self.get_backup(name, use_light_meta)
             except (StorageError, S3RetryingError) as exc:
+                if for_deletion:
+                    raise
                 if unreadable is None:
                     raise
                 error: BaseException = exc
@@ -611,7 +630,58 @@ class BackupLayout:
             if backup:
                 backups.append(backup)
 
+        for name in missing:
+            owners = [
+                b
+                for b in backups
+                if b.name != name
+                and sanitize_backup_name(b.name) == name
+                and b.cloud_storage.enabled
+            ]
+            if owners:
+                entries = self._storage_loader.list_dir(self.get_backup_path(name))
+                if entries and all(
+                    entry.rstrip("/")
+                    in (CLOUD_STORAGE_METADATA_DIR, CLOUD_STORAGE_DATA_DIR, ".")
+                    for entry in entries
+                ):
+                    continue
+            self._handle_broken_metadata(
+                BrokenBackupMetadata(f"Backup {name} has no readable metadata")
+            )
         return sorted(backups, key=lambda b: b.start_time, reverse=True)
+
+    def _handle_broken_metadata(self, error: BrokenBackupMetadata) -> None:
+        """Apply the explicit policy only to missing or invalid metadata."""
+        if self._config.get("broken_metadata_policy", "stop") != "ignore":
+            raise error
+        logging.warning("Ignoring backup with broken metadata: {}", error)
+
+    def _get_deletion_backup(self, name: str) -> BackupMetadata | None:
+        """Read light metadata with full fallback, preserving storage failures."""
+        light_error = None
+        try:
+            backup = self.get_backup(name, use_light_meta=True)
+            if backup is not None:
+                return backup
+        except BackupMetadataNameMismatch:
+            raise
+        except (StorageError, S3RetryingError) as error:
+            light_error = error
+        try:
+            backup = self.get_backup(name)
+        except BrokenBackupMetadata as error:
+            if light_error and not isinstance(light_error, BrokenBackupMetadata):
+                raise light_error
+            self._handle_broken_metadata(error)
+            return None
+        if (
+            backup is None
+            and light_error
+            and not isinstance(light_error, BrokenBackupMetadata)
+        ):
+            raise light_error
+        return backup
 
     def reload_backup(
         self, backup: BackupMetadata, use_light_meta: bool = False
@@ -619,13 +689,10 @@ class BackupLayout:
         """
         Reload backup metadata.
         """
-        path = (
-            self._backup_light_metadata_path(backup.name)
-            if use_light_meta
-            else self._backup_metadata_path(backup.name)
-        )
-
-        return self._load_metadata(path, not use_light_meta)
+        loaded = self.get_backup(backup.name, use_light_meta)
+        if loaded is None:
+            raise BrokenBackupMetadata(f"Metadata is missing for backup {backup.name}")
+        return loaded
 
     def get_database_create_statement(
         self, backup_meta: BackupMetadata, db_name: str

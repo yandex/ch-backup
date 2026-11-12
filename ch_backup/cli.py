@@ -32,7 +32,7 @@ from humanfriendly import format_timespan
 from tabulate import tabulate
 
 from ch_backup.command_context import command_context
-from ch_backup.exceptions import ConfigurationError, TerminatingSignal
+from ch_backup.exceptions import BackupNotFound, ConfigurationError, TerminatingSignal
 
 from . import logging
 from .backup.copy_deduplication import copy_deduplication_cutoff
@@ -963,16 +963,14 @@ def delete_command(
 ) -> None:
     """Delete particular backup."""
     try:
-        name = _validate_and_resolve_name(ctx, ch_backup, name)
-    except Exception:
+        deleted_backup_name, msg = ch_backup.delete(name, purge_partial)
+    except BackupNotFound as error:
         if force:
             logging.info(
                 f"Attempt to delete a non-existent backup '{name}' was skipped"
             )
             return
-        raise
-
-    deleted_backup_name, msg = ch_backup.delete(name, purge_partial)
+        ctx.fail(str(error))
 
     if msg:
         print(msg, file=sys.stderr, flush=True)

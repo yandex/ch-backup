@@ -45,6 +45,7 @@ from ch_backup.config import Config, as_datetime
 from ch_backup.encryption import validate_cloud_storage_data_encryption_config
 from ch_backup.exceptions import (
     BackupNotFound,
+    BrokenBackupMetadata,
     ClickhouseBackupError,
     InvalidBackupStruct,
     StorageError,
@@ -99,6 +100,11 @@ class ClickhouseBackup:
 
     @staticmethod
     def _validate_config(config: Config) -> None:
+        if config["backup"].get("broken_metadata_policy", "stop") not in (
+            "stop",
+            "ignore",
+        ):
+            raise ValueError("backup.broken_metadata_policy must be stop or ignore")
         parse_server_side_copy_mode(config["copy"]["server_side_copy_mode"])
         copy_deduplication_cutoff(config["copy"], utcnow())
         start_time = as_datetime(config["backup"].get("deduplication_start_time"))
@@ -581,7 +587,14 @@ class ClickhouseBackup:
         copying_since = self._copying_since()
         with self._context.locker(operation="DELETE"):
             # Use light metadata in backups iteration to avoid high memory usage.
-            for i, backup in enumerate(self.list(unreadable=unreadable)):
+            backups = self._context.backup_layout.get_backups(
+                use_light_meta=True, unreadable=unreadable, for_deletion=True
+            )
+            if backup_name == "LAST":
+                if not backups:
+                    raise BackupNotFound(backup_name)
+                backup_name = backups[0].name
+            for i, backup in enumerate(backups):
                 if backup.name == backup_name:
                     deleting_backups.append(backup)
                     found = True
@@ -608,6 +621,10 @@ class ClickhouseBackup:
             dedup_references = collect_dedup_references_for_batch_backup_deletion(
                 layout=self._context.backup_layout,
                 retained_backups_light_meta=retained_backups,
+                ignore_broken_metadata=self._context.config.get(
+                    "broken_metadata_policy"
+                )
+                == "ignore",
                 deleting_backup_names={
                     backup_name,
                     *(b.name for b in deleting_backups),
@@ -701,7 +718,9 @@ class ClickhouseBackup:
 
         with self._context.locker(operation="PURGE"):
             # Use light metadata in backups iteration to avoid high memory usage.
-            for backup in self._context.backup_layout.get_backups(use_light_meta=True):
+            for backup in self._context.backup_layout.get_backups(
+                use_light_meta=True, for_deletion=True
+            ):
                 if retain_count is not None and retain_count > 0:
                     logging.info(
                         "Preserving backup per retain count policy: {}, state {}",
@@ -750,6 +769,10 @@ class ClickhouseBackup:
             dedup_references = collect_dedup_references_for_batch_backup_deletion(
                 layout=self._context.backup_layout,
                 retained_backups_light_meta=retained_backups,
+                ignore_broken_metadata=self._context.config.get(
+                    "broken_metadata_policy"
+                )
+                == "ignore",
                 deleting_backup_names={b.name for b in deleting_backups},
             )
 
@@ -818,7 +841,7 @@ class ClickhouseBackup:
 
         try:
             backup = self._context.backup_layout.get_backup(backup_light_meta.name)
-        except StorageError:
+        except BrokenBackupMetadata:
             if dedup_references:
                 raise
             logging.exception(
