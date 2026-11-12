@@ -6,16 +6,17 @@ import socket
 import ssl
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from http.client import IncompleteRead
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
 import requests
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ResponseStreamingError
 from botocore.exceptions import SSLError as BotoSSLError
 from urllib3 import HTTPConnectionPool
-from urllib3.exceptions import MaxRetryError
+from urllib3.exceptions import MaxRetryError, ProtocolError
 from urllib3.exceptions import SSLError as Urllib3SSLError
 from urllib3.util.ssl_match_hostname import CertificateError as Urllib3CertificateError
 
@@ -29,6 +30,12 @@ from ch_backup.storage.engine.s3 import (
 from ch_backup.storage.engine.s3.s3_client_factory import (
     S3BalancerUnknownHost,
     S3ClientCachedFactory,
+)
+from ch_backup.storage.engine.s3.s3_retry import (
+    FailureKey,
+    FailureKind,
+    FailureLimit,
+    validate_s3_retry_config,
 )
 
 
@@ -107,6 +114,9 @@ def test_retry_max_attempts_from_config(max_attempts: int) -> None:
 
 def test_retry_policy_overrides_base_limits() -> None:
     retry_config = {
+        "default": {
+            "failure_limits": {"error_codes": {"InternalError": {"max_attempts": 1}}}
+        },
         S3RetryPolicy.LIST.value: {"max_attempts": 2},
         S3RetryPolicy.BACKUP.value: {"max_interval": 3},
     }
@@ -128,6 +138,11 @@ def test_retry_policy_overrides_base_limits() -> None:
             "_retry",
         )
         assert (retry.max_attempts, retry.max_interval) == expected
+        assert retry.failure_limits == (
+            {FailureKey(FailureKind.ERROR_CODE, "InternalError"): FailureLimit(1)}
+            if retry_policy == S3RetryPolicy.DEFAULT
+            else {}
+        )
 
 
 @pytest.mark.parametrize(
@@ -142,6 +157,244 @@ def test_invalid_retry_limits_are_rejected(storage: dict) -> None:
     """Retry limits that would end retries without an error or crash sleep are rejected."""
     with pytest.raises(ConfigurationError, match="storage.retry_max_attempts"):
         _engine(**storage)
+
+
+@pytest.mark.parametrize("max_attempts", [2, 60])
+@pytest.mark.parametrize("policy", [S3RetryPolicy.RESTORE, S3RetryPolicy.DEFAULT])
+@pytest.mark.parametrize(
+    "exception_name, cause_type",
+    [
+        ("http.client.IncompleteRead", IncompleteRead),
+        ("http.client.HTTPException", IncompleteRead),
+        ("socket.timeout", TimeoutError),
+        ("requests.ConnectionError", requests.exceptions.ConnectionError),
+    ],
+)
+@pytest.mark.parametrize(
+    "errors, expected_calls, succeeds",
+    [
+        (["InternalError"] * 3, 3, False),
+        (["InternalError"] * 2, 3, True),
+        # With a 60-attempt budget, SlowDown must not reset the InternalError counter.
+        (["InternalError"] + ["SlowDown"] * 50 + ["InternalError"] * 2, 53, False),
+        (["SlowDown"] * 59, 60, True),
+        (["SlowDown"] * 60, 60, False),
+        (["IncompleteRead"] * 3, 3, False),
+        (["message"] * 3, 4, True),
+        (["AccessDenied"], 1, False),
+    ],
+)
+def test_s3_failure_limits(
+    errors: list[str],
+    expected_calls: int,
+    succeeds: bool,
+    max_attempts: int,
+    policy: S3RetryPolicy,
+    *,
+    exception_name: str,
+    cause_type: type[Exception],
+) -> None:
+    succeeds = succeeds and expected_calls <= max_attempts
+    expected_calls = min(expected_calls, max_attempts)
+    engine = _engine(
+        policy,
+        retry={
+            policy.value: {
+                "max_attempts": max_attempts,
+                "failure_limits": {
+                    "error_codes": {"InternalError": 3},
+                    "exceptions": {
+                        exception_name: {"max_attempts": 3, "max_interval": 5}
+                    },
+                },
+            }
+        },
+    )
+    sleep = Mock()
+    getattr(engine, "_retry").sleep_function = sleep
+    responses = []
+    for code in errors:
+        response: Any
+        if code in ("IncompleteRead", "message"):
+            cause = (
+                cause_type(b"x", 7)
+                if code == "IncompleteRead"
+                else RuntimeError("IncompleteRead")
+            )
+            cause.__cause__ = cause  # Exercise cycle protection and deduplication.
+            if code == "message":
+                cause.__context__ = ClientError(
+                    {"Error": {"Code": "InternalError"}}, "GetObject"
+                )
+            response = {
+                "Body": Mock(
+                    read=Mock(
+                        side_effect=ResponseStreamingError(
+                            error=ProtocolError("broken", cause)
+                        )
+                    )
+                )
+            }
+        else:
+            response = ClientError({"Error": {"Code": code}}, "GetObject")
+        responses.append(response)
+    client = Mock()
+    client.head_object.return_value = {"ContentLength": 2, "ETag": "etag"}
+    factory = Mock(create_s3_client=Mock(return_value=client))
+    setattr(engine, "_s3_client_factory", factory)
+    download_id = engine.create_multipart_download("path")
+    # A second range repeats the scenario to check that counters are per operation.
+    for range_start in range(2):
+        client.get_object.reset_mock()
+        factory.reset.reset_mock()
+        sleep.reset_mock()
+        client.get_object.side_effect = responses + [
+            {"Body": Mock(read=Mock(return_value=b"x"))}
+        ]
+        if succeeds:
+            assert engine.download_part(download_id, part_len=1) == b"x"
+        else:
+            with pytest.raises(
+                ClientError if errors[0] == "AccessDenied" else S3RetryingError
+            ):
+                engine.download_part(download_id, part_len=1)
+        assert client.get_object.call_count == expected_calls
+        assert sleep.call_count == expected_calls - 1
+        assert factory.reset.call_count == expected_calls - int(succeeds) - int(
+            errors[0] == "AccessDenied"
+        )
+        start = range_start if succeeds else 0
+        assert all(
+            call.kwargs["Range"] == f"bytes={start}-{start}"
+            for call in client.get_object.call_args_list
+        )
+
+
+@pytest.mark.parametrize(
+    "interval, expected",
+    [(0, [0, 0]), (0.5, [0.5, 0.5]), (5, [5, 5]), (120, [64, 120])],
+)
+@pytest.mark.parametrize(
+    "kind, name, error, parent",
+    [
+        (
+            FailureKind.ERROR_CODE,
+            "InternalError",
+            ClientError({"Error": {"Code": "InternalError"}}, "GetObject"),
+            None,
+        ),
+        (
+            FailureKind.EXCEPTION,
+            "http.client.IncompleteRead",
+            ResponseStreamingError(error=IncompleteRead(b"x", 7)),
+            "http.client.HTTPException",
+        ),
+        (
+            FailureKind.EXCEPTION,
+            "socket.timeout",
+            ResponseStreamingError(error=TimeoutError()),
+            "builtins.OSError",
+        ),
+        (
+            FailureKind.EXCEPTION,
+            "requests.ConnectionError",
+            ResponseStreamingError(error=requests.ConnectionError()),
+            "builtins.OSError",
+        ),
+    ],
+)
+def test_s3_failure_intervals(
+    interval: float,
+    expected: list[float],
+    *,
+    kind: FailureKind,
+    name: str,
+    error: Exception,
+    parent: str | None,
+) -> None:
+    rules: dict[str, Any] = {"error_codes": {"SlowDown": {"max_attempts": 60}}}
+    rules.setdefault(kind.value, {})[name] = {
+        "max_attempts": 3,
+        "max_interval": interval,
+    }
+    if parent:
+        rules.setdefault("exceptions", {})[parent] = {
+            "max_attempts": 10,
+            "max_interval": 150,
+        }
+    engine = _engine(
+        S3RetryPolicy.RESTORE,
+        retry={
+            "restore": {
+                "max_attempts": 60,
+                "max_interval": 60,
+                "failure_limits": rules,
+            }
+        },
+    )
+    slowdown = ClientError({"Error": {"Code": "SlowDown"}}, "GetObject")
+    client = Mock(
+        download_fileobj=Mock(
+            side_effect=[slowdown] * 6 + [error] * 2 + [slowdown, None]
+        )
+    )
+    setattr(
+        engine, "_s3_client_factory", Mock(create_s3_client=Mock(return_value=client))
+    )
+    sleep = Mock()
+    getattr(engine, "_retry").sleep_function = sleep
+    with patch(
+        "ch_backup.storage.engine.s3.s3_retry.uniform",
+        side_effect=lambda _low, high: high,
+    ):
+        assert engine.download_data("path") == b""
+    expected = [1, 2, 4, 8, 16, 32, *expected, 60]
+    assert [call.args[0] for call in sleep.call_args_list] == expected
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [
+        None,
+        [],
+        {"other": {}},
+        {"error_codes": []},
+        {"error_codes": {500: 3}},
+        {"error_codes": {"InternalError ": 3}},
+        {"exceptions": {"IncompleteRead": 3}},
+        *({"error_codes": {"InternalError": limit}} for limit in (True, 0, -1, 1.5)),
+        *(
+            {"exceptions": {"http.client.IncompleteRead": options}}
+            for options in [
+                {},
+                {"max_interval": 5},
+                {"max_attempts": 3, "interval": 5},
+                *({"max_attempts": value} for value in (True, 0, 1.5)),
+                *(
+                    {"max_attempts": 3, "max_interval": value}
+                    for value in (None, True, -1, "5", float("nan"), float("inf"))
+                ),
+            ]
+        ),
+    ],
+)
+def test_invalid_s3_failure_limits(limits: Any) -> None:
+    storage = {"retry": {"restore": {"failure_limits": limits}}}
+    with (
+        patch("ch_backup.storage.engine.s3.s3_engine.S3ClientFactory") as factory,
+        patch(
+            "ch_backup.storage.engine.s3.s3_engine.build_transfer_config"
+        ) as transfer,
+        pytest.raises(ConfigurationError, match="storage.retry.restore.failure_limits"),
+    ):
+        _engine(S3RetryPolicy.RESTORE, **storage)
+
+    factory.assert_not_called()
+    transfer.assert_not_called()
+    with pytest.raises(
+        ConfigurationError, match="storage.retry.restore.failure_limits"
+    ):
+        validate_s3_retry_config(storage)
 
 
 def _response(status: int = 200, text: str = "proxy.example\n") -> requests.Response:
