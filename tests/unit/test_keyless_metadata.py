@@ -302,4 +302,4 @@ def test_cloud_metadata_legacy_list_api() -> None:
     assert files[0] == ("part/data.bin", b"data")
     files.append(("part/extra", b"extra"))
     files[0] = ("changed", b"changed")
-    assert list(archive) == [("part/data.bin", b"data")]
+    assert archive.read_batch() == ([("part/data.bin", b"data")], None)

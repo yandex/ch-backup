@@ -5,7 +5,7 @@ S3 storage engine.
 import os
 import time
 from tempfile import TemporaryFile
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Sequence
 
 import requests
 from botocore.exceptions import ClientError
@@ -180,41 +180,29 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
 
         return contents
 
-    def list_dir_with_sizes(self, remote_path: str) -> dict[str, int]:
-        """
-        Return sizes of all objects under the remote path (recursively) keyed by object key.
-        """
-        remote_path = remote_path.strip("/") + "/"
-        result = {}
-        paginator = self._s3_client.get_paginator("list_objects")
-        for page in paginator.paginate(Bucket=self._s3_bucket_name, Prefix=remote_path):
-            for item in page.get("Contents", []):
-                result[item["Key"]] = item["Size"]
-        return result
-
-    def list_dir_page(self, prefix: str, marker: str) -> Mapping[str, Any]:
-        """Read one page under the engine's retry and client-reset policy."""
-        return self._s3_client.list_objects(
-            Bucket=self._s3_bucket_name, Prefix=prefix, Marker=marker
-        )
-
-    def iter_dir_with_sizes(self, remote_path: str) -> Iterator[tuple[str, int]]:
-        """Yield each page once, retrying requests before exposing its entries."""
+    def read_listing_page(
+        self, remote_path: str, continuation: str | None = None
+    ) -> tuple[list[tuple[str, int]], str | None]:
+        """Read one page with request-level retries and reject invalid continuation."""
         prefix = remote_path.strip("/") + "/"
-        marker = ""
-        while True:
-            page = self.list_dir_page(prefix, marker)
-            contents = page.get("Contents", [])
-            for item in contents:
-                yield item["Key"], item["Size"]
-            if not page.get("IsTruncated"):
-                return
-            next_marker = page.get("NextMarker") or (
-                contents[-1]["Key"] if contents else None
-            )
-            if not next_marker or next_marker == marker:
-                raise ValueError("S3 listing did not advance its marker")
-            marker = next_marker
+        if continuation is not None and (
+            not continuation.startswith(prefix) or continuation <= prefix
+        ):
+            raise ValueError("Invalid S3 listing continuation")
+        page = self._s3_client.list_objects(
+            Bucket=self._s3_bucket_name, Prefix=prefix, Marker=continuation or ""
+        )
+        entries = [(item["Key"], item["Size"]) for item in page.get("Contents", [])]
+        if not page.get("IsTruncated"):
+            return entries, None
+        marker = page.get("NextMarker") or (entries[-1][0] if entries else None)
+        if (
+            not marker
+            or not marker.startswith(prefix)
+            or marker <= (continuation or prefix)
+        ):
+            raise ValueError("S3 listing did not advance its marker")
+        return entries, marker
 
     def copy_object(
         self, source_bucket: str, source_path: str, remote_path: str

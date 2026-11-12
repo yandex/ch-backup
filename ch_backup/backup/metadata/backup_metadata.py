@@ -298,10 +298,10 @@ class BackupMetadata:
         return databases
 
     def iter_json(self) -> Iterator[str]:
-        """Serialize full metadata one part at a time without copying the database tree."""
+        """Serialize without copying the database tree; copy parts only to convert links."""
         encoder = json.JSONEncoder(separators=(",", ":"))
         path_root = os.path.dirname(self.path) if self.path else ""
-        yield from _encode_legacy_json(
+        yield from _iter_json_with_legacy_part_links(
             self.dump(_copy_databases=False), encoder, path_root, ()
         )
 
@@ -796,19 +796,19 @@ class BackupMetadata:
         return result
 
 
-def _encode_legacy_json(
-    value: Any, encoder: json.JSONEncoder, path_root: str, path: tuple[str, ...]
+def _iter_json_with_legacy_part_links(
+    value: Any, encoder: json.JSONEncoder, path_root: str, field_path: tuple[str, ...]
 ) -> Iterator[str]:
-    """Rewrite legacy part links only while encoding the corresponding part."""
-    walk = not path or path[0] == "databases"
-    if len(path) >= 3:
-        walk = walk and path[2] == "tables"
-    if len(path) >= 5:
-        walk = walk and path[4] == "parts"
-    if not isinstance(value, dict) or not walk:
+    """Convert links along databases/<db>/tables/<table>/parts/<part> while encoding."""
+    contains_part_metadata = not field_path or field_path[0] == "databases"
+    if len(field_path) >= 3:
+        contains_part_metadata = contains_part_metadata and field_path[2] == "tables"
+    if len(field_path) >= 5:
+        contains_part_metadata = contains_part_metadata and field_path[4] == "parts"
+    if not isinstance(value, dict) or not contains_part_metadata:
         yield from encoder.iterencode(value)
         return
-    if len(path) == 6:
+    if len(field_path) == 6:
         link = value.get("link")
         if link and "/" not in link and path_root:
             value = {**value, "link": os.path.join(path_root, link)}
@@ -820,5 +820,7 @@ def _encode_legacy_json(
             yield ","
         yield encoder.encode(key)
         yield ":"
-        yield from _encode_legacy_json(child, encoder, path_root, (*path, key))
+        yield from _iter_json_with_legacy_part_links(
+            child, encoder, path_root, (*field_path, key)
+        )
     yield "}"

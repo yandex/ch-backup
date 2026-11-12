@@ -11,7 +11,7 @@ import os
 from concurrent.futures import BrokenExecutor
 from functools import partial
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -37,6 +37,11 @@ from ch_backup.exceptions import (
     StorageError,
     TerminatingSignal,
 )
+from ch_backup.storage.metadata_archive import (
+    MetadataFiles,
+    TemporaryMetadataArchive,
+    spool_metadata,
+)
 from ch_backup.storage.object_copy import CopyEntry, storage_id
 from ch_backup.util import now
 
@@ -57,14 +62,29 @@ class FakeEngine:
         self._objects = store.buckets.setdefault(self._id, {})
 
     def list_dir_with_sizes(self, remote_path: str) -> dict[str, int]:
+        """Collect all pages for callers that need a complete fixture listing."""
+        result: dict[str, int] = {}
+        continuation = None
+        while True:
+            page, continuation = self.read_listing_page(remote_path, continuation)
+            result.update(page)
+            if continuation is None:
+                return result
+
+    def read_listing_page(
+        self, remote_path: str, continuation: str | None = None
+    ) -> tuple[list[tuple[str, int]], str | None]:
+        """Read at most 128 fixture objects after the continuation key."""
         prefix = remote_path.strip("/") + "/"
         if prefix in self._store.list_errors:
             raise StorageError(f"Failed to list {prefix}")
-        return {k: v for k, v in self._objects.items() if k.startswith(prefix)}
-
-    def iter_dir_with_sizes(self, remote_path):
-        """Expose the paginated engine contract for the in-memory fixture."""
-        yield from self.list_dir_with_sizes(remote_path).items()
+        entries = sorted(
+            (k, v)
+            for k, v in self._objects.items()
+            if k.startswith(prefix) and (continuation is None or k > continuation)
+        )
+        page = entries[:128]
+        return page, page[-1][0] if len(entries) > 128 else None
 
     def download_file(self, remote_path, local_path):
         """Save an object to the requested scratch file."""
@@ -216,24 +236,39 @@ class FakeLayout:
         return sorted(p for p in self.metadata_files() if p.startswith(prefix))
 
     def download_cloud_storage_metadata_archive(self, backup_meta, remote_path):
-        return list(self.metadata_files()[remote_path])
+        return spool_metadata(self.metadata_files()[remote_path])
 
     def metadata_files(self) -> dict[str, list[tuple[str, bytes]]]:
         return {**self.copied_files, **self.cloud_storage_files}
 
     def upload_cloud_storage_metadata_files(
-        self, backup_meta, remote_path, files, callback=None, on_error=None
-    ):
+        self,
+        backup_meta: BackupMetadata,
+        remote_path: str,
+        files: MetadataFiles,
+        callback: Callable[[], None] | None = None,
+        on_error: Callable[[Exception], None] | None = None,
+    ) -> None:
         error = self.metadata_errors.get(remote_path)
         if error:
             if on_error:
                 on_error(error)
             raise error
-        self.cloud_storage_files[remote_path] = list(files)
+        if isinstance(files, TemporaryMetadataArchive):
+            materialized = []
+            continuation = None
+            while True:
+                batch, continuation = files.read_batch(continuation)
+                materialized.extend(batch)
+                if continuation is None:
+                    break
+        else:
+            materialized = list(files)
+        self.cloud_storage_files[remote_path] = materialized
         if self.store:
             self.store.buckets.setdefault(("s3", ENDPOINT, DST_BUCKET), {})[
                 remote_path
-            ] = sum(len(data) for _, data in files)
+            ] = sum(len(data) for _, data in materialized)
         if callback:
             callback()
 
@@ -1602,7 +1637,7 @@ def sealed_rewritten_archives(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def retain(path, files):
         """Check the completed archive remains readable after its writer closes."""
-        assert files._file.closed  # pylint: disable=protected-access
+        assert isinstance(files, TemporaryMetadataArchive)
         assert Path(files.path()).is_file()
         return _RewrittenTarball(path, files)
 

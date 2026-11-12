@@ -9,34 +9,42 @@ MAX_RECORD_BYTES = 1024 * 1024
 MAX_CHUNK_BYTES = 16 * 1024 * 1024
 
 
-class JournalBuffer:
-    """Spool confirmations owned by the collecting thread, like CopyContext callbacks."""
+class PendingJournalRecords:
+    """Keep pending journal records in a temporary file.
+
+    Only the collecting thread accesses this object. Records remain pending
+    until their upload succeeds.
+    """
 
     def __init__(self) -> None:
-        """Create an empty spool with independent read and write positions."""
-        self._file = TemporaryFile()
-        self._position = 0
-        self._count = 0
+        """Create an empty records file with no prepared upload batch."""
+        self._records_file = TemporaryFile()
+        self._pending_start = 0
+        self._pending_count = 0
+        self._prepared_batch: tuple[int, int] | None = None
 
     def append(self, record: str) -> None:
         """Persist one pending confirmation without retaining it in RAM."""
         data = record.encode() + b"\n"
         if len(data) > MAX_RECORD_BYTES:
             raise ValueError("Copy journal record exceeds its size limit")
-        self._file.seek(0, os.SEEK_END)
-        self._file.write(data)
-        self._count += 1
+        self._records_file.seek(0, os.SEEK_END)
+        self._records_file.write(data)
+        self._pending_count += 1
 
     def __len__(self) -> int:
         """Return the number of unacknowledged records."""
-        return self._count
+        return self._pending_count
 
-    def write_chunk(self, output: BinaryIO | GzipFile, records: int) -> tuple[int, int]:
-        """Copy a bounded prefix into the compressed upload file."""
-        self._file.seek(self._position)
+    def write_pending_batch(
+        self, output: BinaryIO | GzipFile, max_records: int
+    ) -> None:
+        """Prepare a bounded batch without acknowledging its records."""
+        self._prepared_batch = None
+        self._records_file.seek(self._pending_start)
         count = size = 0
-        while count < max(1, records) and size < MAX_CHUNK_BYTES:
-            line = self._file.readline(MAX_RECORD_BYTES + 1)
+        while count < max(1, max_records) and size < MAX_CHUNK_BYTES:
+            line = self._records_file.readline(MAX_RECORD_BYTES + 1)
             if not line:
                 break
             if len(line) > MAX_RECORD_BYTES:
@@ -44,13 +52,18 @@ class JournalBuffer:
             output.write(line)
             count += 1
             size += len(line)
-        return count, self._file.tell()
+        if count:
+            self._prepared_batch = count, self._records_file.tell()
 
-    def discard(self, count: int, position: int) -> None:
-        """Release only the prefix whose upload succeeded."""
-        self._count -= count
-        self._position = position
-        if not self._count:
-            self._file.seek(0)
-            self._file.truncate()
-            self._position = 0
+    def acknowledge_uploaded(self) -> None:
+        """Consume one prepared batch after its upload succeeds."""
+        if self._prepared_batch is None:
+            raise RuntimeError("No prepared journal batch to acknowledge")
+        count, position = self._prepared_batch
+        self._prepared_batch = None
+        self._pending_count -= count
+        self._pending_start = position
+        if not self._pending_count:
+            self._records_file.seek(0)
+            self._records_file.truncate()
+            self._pending_start = 0

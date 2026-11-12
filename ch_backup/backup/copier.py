@@ -7,11 +7,9 @@ Copying of backups from one storage to another.
 import copy
 import json
 import os
-from collections.abc import MutableMapping
 from contextlib import contextmanager
 from datetime import datetime
 from functools import partial
-from itertools import chain
 from pathlib import PurePosixPath
 from typing import Callable, Iterator, NamedTuple, Sequence
 from urllib.parse import quote
@@ -75,7 +73,11 @@ from ch_backup.exceptions import (
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
-from ch_backup.storage.metadata_archive import MetadataArchive, MetadataFiles
+from ch_backup.storage.metadata_archive import (
+    MetadataArchiveWriter,
+    MetadataFiles,
+    TemporaryMetadataArchive,
+)
 from ch_backup.storage.object_copy import (
     CopyEntry,
     ServerSideCopyMode,
@@ -174,7 +176,7 @@ class BackupCopier:
         self._target_backups: dict[str, BackupMetadata | None] = {}
         self._target_table_files: StoredFiles = {}
         # Files of backups in source storage used to resolve deduplication links.
-        self._source_backup_files: dict[str, CopyIndex[str, int]] = {}
+        self._source_backup_files: dict[str, CopyIndex] = {}
         # Original part identity -> successfully materialized target owner and name.
         self._materialized_parts: dict[tuple, tuple[str, str]] = {}
         self._target_deduplication: CopyDeduplication | None = None
@@ -863,17 +865,9 @@ class BackupCopier:
         prefixes = self._target_prefixes(backup, plan)
         for _, prefix in prefixes:
             _validate_relative_key(_key(prefix).rstrip("/"))
-        destinations = chain.from_iterable(
-            chain(
-                ((entry.dst_storage, entry.dst_path) for entry in scope_plan.entries),
-                (
-                    (self._target_storage, path)
-                    for path, _ in scope_plan.rewritten_cloud_storage_metadata
-                ),
-            )
-            for scope_plan in plan.values()
-        )
-        for storage, path in destinations:
+
+        def validate(storage: dict, path: str) -> None:
+            """Reject destinations outside the expected target prefixes."""
             key = _key(path)
             _validate_relative_key(key)
             if not any(
@@ -884,6 +878,19 @@ class BackupCopier:
                 raise ClickhouseBackupError(
                     f'Copy destination "{path}" is outside the target backup prefixes'
                 )
+
+        for scope_plan in plan.values():
+            continuation = None
+            while True:
+                batch, continuation = scope_plan.entries.read_batch(
+                    continuation, limit=128
+                )
+                for entry in batch:
+                    validate(entry.dst_storage, entry.dst_path)
+                if continuation is None:
+                    break
+            for path, _ in scope_plan.rewritten_cloud_storage_metadata:
+                validate(self._target_storage, path)
 
     def _make_target_metadata(self, backup: BackupMetadata) -> BackupMetadata:
         """Prepare creating metadata, preserving the original source of a staged copy."""
@@ -931,21 +938,25 @@ class BackupCopier:
         )
         name = backup.get_sanitized_name()
         src_dir = _key(self._layout.get_backup_path(name)).rstrip("/")
-        for file_path, size in self._get_source_backup_files(name).items():
-            if not file_path.startswith("disks/") or file_path.endswith("/"):
-                continue
-            with self._planning_step(result, f"{src_dir}/{file_path}"):
-                _validate_relative_key(file_path)
-                plan.entries.append(
-                    CopyEntry(
-                        self._storage,
-                        self._target_storage,
-                        f"{src_dir}/{file_path}",
-                        os.path.join(dst_dir, file_path),
-                        size,
-                        size,
+        files = self._get_source_backup_files(name)
+        position = 0
+        while batch := files.read_batch(after=position, limit=128):
+            for position, file_path, blob in batch:
+                size = int(blob)
+                if not file_path.startswith("disks/") or file_path.endswith("/"):
+                    continue
+                with self._planning_step(result, f"{src_dir}/{file_path}"):
+                    _validate_relative_key(file_path)
+                    plan.entries.append(
+                        CopyEntry(
+                            self._storage,
+                            self._target_storage,
+                            f"{src_dir}/{file_path}",
+                            os.path.join(dst_dir, file_path),
+                            size,
+                            size,
+                        )
                     )
-                )
 
     def _plan_directory(
         self,
@@ -954,28 +965,33 @@ class BackupCopier:
         result: BackupCopyResult,
         exclude: set[str],
     ) -> None:
+        """Plan source files outside excluded top-level paths."""
         src_dir = _key(self._layout.get_backup_path(relative_path)).rstrip("/")
         dst_dir = self._target_layout.get_backup_path(relative_path)
 
-        for file_path, size in self._get_source_backup_files(relative_path).items():
-            # S3 consoles may create a zero-byte object for the directory itself.
-            if not file_path and size == 0:
-                continue
-            if file_path.split("/", 1)[0] in exclude:
-                continue
-            path = f"{src_dir}/{file_path}"
-            with self._planning_step(result, path):
-                _validate_relative_key(file_path)
-                plan.entries.append(
-                    CopyEntry(
-                        self._storage,
-                        self._target_storage,
-                        path,
-                        os.path.join(dst_dir, file_path),
-                        size,
-                        size,
+        files = self._get_source_backup_files(relative_path)
+        position = 0
+        while batch := files.read_batch(after=position, limit=128):
+            for position, file_path, blob in batch:
+                size = int(blob)
+                # S3 consoles may create a zero-byte object for the directory itself.
+                if not file_path and size == 0:
+                    continue
+                if file_path.split("/", 1)[0] in exclude:
+                    continue
+                path = f"{src_dir}/{file_path}"
+                with self._planning_step(result, path):
+                    _validate_relative_key(file_path)
+                    plan.entries.append(
+                        CopyEntry(
+                            self._storage,
+                            self._target_storage,
+                            path,
+                            os.path.join(dst_dir, file_path),
+                            size,
+                            size,
+                        )
                     )
-                )
 
     def _plan_linked_parts(
         self,
@@ -1011,10 +1027,8 @@ class BackupCopier:
         if excluded_dirs:
             # Drop only the matched local part directories, preserving schema, detached and cloud data.
             prefix = _key(self._layout.get_backup_path(backup.name)).rstrip("/") + "/"
-            plan.entries = CopyEntries(
-                entry
-                for entry in plan.entries
-                if not entry.src_path.startswith(prefix)
+            plan.entries = plan.entries.filtered(
+                lambda entry: not entry.src_path.startswith(prefix)
                 or not any(
                     str(parent) in excluded_dirs
                     for parent in PurePosixPath(
@@ -1044,7 +1058,9 @@ class BackupCopier:
         file_names = get_data_part_file_names(part)
         part_dirs = get_data_part_relative_dirs(part)
         for part_dir in part_dirs:
-            if all(os.path.join(part_dir, f) in source_files for f in file_names):
+            if all(
+                source_files.contains(os.path.join(part_dir, f)) for f in file_names
+            ):
                 break
         else:
             if not self._keep_going:
@@ -1057,7 +1073,7 @@ class BackupCopier:
             part_dir = max(
                 part_dirs,
                 key=lambda path: sum(
-                    os.path.join(path, f) in source_files for f in file_names
+                    source_files.contains(os.path.join(path, f)) for f in file_names
                 ),
             )
 
@@ -1081,7 +1097,8 @@ class BackupCopier:
                 result, os.path.join(part.link, part_dir, file_name)
             ):
                 _validate_relative_key(file_name)
-                if os.path.join(part_dir, file_name) not in source_files:
+                size = _listed_size(source_files, os.path.join(part_dir, file_name))
+                if size is None:
                     raise ClickhouseBackupError(
                         f'File "{file_name}" of part "{part.name}" of table '
                         f'"{part.database}"."{part.table}" deduplicated with backup '
@@ -1094,8 +1111,8 @@ class BackupCopier:
                         self._target_storage,
                         os.path.join(src_dir, file_name),
                         os.path.join(dst_dir, dst_file_name),
-                        source_files[os.path.join(part_dir, file_name)],
-                        source_files[os.path.join(part_dir, file_name)],
+                        size,
+                        size,
                     )
                 )
         if len(result.errors) == error_count:
@@ -1216,7 +1233,7 @@ class BackupCopier:
         backup_name: str,
         layout: BackupLayout | None = None,
         storage: dict | None = None,
-    ) -> CopyIndex[str, int]:
+    ) -> CopyIndex:
         """
         Return sizes of files of the backup in source storage keyed by path relative to backup directory.
 
@@ -1226,11 +1243,16 @@ class BackupCopier:
         if backup_name not in self._source_backup_files:
             layout = layout or self._layout
             backup_dir = _key(layout.get_backup_path(backup_name)).rstrip("/")
-            files: CopyIndex[str, int] = CopyIndex()
-            for path, size in self._engine(
-                storage or self._storage
-            ).iter_dir_with_sizes(backup_dir):
-                files[path[len(backup_dir) + 1 :]] = size
+            files = CopyIndex()
+            continuation = None
+            while True:
+                page, continuation = self._engine(
+                    storage or self._storage
+                ).read_listing_page(backup_dir, continuation)
+                for path, size in page:
+                    files.put(path[len(backup_dir) + 1 :], str(size).encode("ascii"))
+                if continuation is None:
+                    break
             self._source_backup_files[backup_name] = files
         return self._source_backup_files[backup_name]
 
@@ -1248,7 +1270,7 @@ class BackupCopier:
         Materialize linked parts whose owning backup is absent at the destination.
         Each disk keeps its own object prefix, as expected by full-backup restore.
         """
-        entries: EntryIndex[str] = EntryIndex()
+        entries: EntryIndex = EntryIndex()
         for table in backup.get_tables():
             for disk_name in backup.cloud_storage.disks:
                 parts = [p for p in table.get_parts() if p.disk_name == disk_name]
@@ -1272,7 +1294,7 @@ class BackupCopier:
                         entries,
                         result,
                     )
-                    if files:
+                    if files.count_files():
                         extension = (
                             ".tar.gz" if backup.cloud_storage.compressed else ".tar"
                         )
@@ -1283,7 +1305,6 @@ class BackupCopier:
                             quote(table.database, safe=""),
                             quote(table.name, safe="") + extension,
                         )
-                        files.path()
                         plan.rewritten_cloud_storage_metadata.append(
                             _RewrittenTarball(remote_path, files)
                         )
@@ -1298,9 +1319,10 @@ class BackupCopier:
         disk_name: str,
         parts: list[PartMetadata],
         dst_prefix: str,
-        entries: MutableMapping[str, CopyEntry],
+        entries: EntryIndex,
         copy_result: BackupCopyResult,
-    ) -> MetadataArchive:
+    ) -> TemporaryMetadataArchive:
+        """Rewrite metadata and plan objects from each owning backup."""
         sources: dict[str, list[PartMetadata]] = {}
         for part in parts:
             if part.link and self._is_link_valid_in_target(part):
@@ -1311,7 +1333,7 @@ class BackupCopier:
                 continue
             sources.setdefault(part.link or backup.name, []).append(part)
 
-        files = MetadataArchive()
+        writer = MetadataArchiveWriter()
         for source_name, source_parts in sources.items():
             with self._planning_step(copy_result, source_name):
                 source = (
@@ -1340,39 +1362,46 @@ class BackupCopier:
                                 source, remote_path
                             )
                         )
-                        for file_name, data in metadata_files:
-                            with self._planning_step(
-                                copy_result, f"{remote_path}:{file_name}"
-                            ):
-                                components = file_name.split("/")
-                                # A part may contain projection subdirectories; match its directory
-                                # anywhere above the file rather than just its immediate parent.
-                                index = next(
-                                    (
-                                        i
-                                        for i, name in enumerate(components[:-1])
-                                        if name in names
-                                    ),
-                                    None,
-                                )
-                                if index is None:
-                                    continue
-                                part = names[components[index]]
-                                found.add(part.name)
-                                components[index] = part.name
-                                data = self._plan_metadata_objects(
-                                    data,
-                                    file_name,
-                                    remote_path,
-                                    self._storage,
-                                    src_prefix,
-                                    self._target_storage,
-                                    dst_prefix,
-                                    entries,
-                                    copy_result,
-                                    source_data_encryption=source.cloud_storage.data_encryption,
-                                )
-                                files.append(("/".join(components), data))
+                        continuation = None
+                        while True:
+                            batch, continuation = metadata_files.read_batch(
+                                continuation
+                            )
+                            for file_name, data in batch:
+                                with self._planning_step(
+                                    copy_result, f"{remote_path}:{file_name}"
+                                ):
+                                    components = file_name.split("/")
+                                    # A part may contain projection subdirectories; match its directory
+                                    # anywhere above the file rather than just its immediate parent.
+                                    index = next(
+                                        (
+                                            i
+                                            for i, name in enumerate(components[:-1])
+                                            if name in names
+                                        ),
+                                        None,
+                                    )
+                                    if index is None:
+                                        continue
+                                    part = names[components[index]]
+                                    found.add(part.name)
+                                    components[index] = part.name
+                                    data = self._plan_metadata_objects(
+                                        data,
+                                        file_name,
+                                        remote_path,
+                                        self._storage,
+                                        src_prefix,
+                                        self._target_storage,
+                                        dst_prefix,
+                                        entries,
+                                        copy_result,
+                                        source_data_encryption=source.cloud_storage.data_encryption,
+                                    )
+                                    writer.append(("/".join(components), data))
+                            if continuation is None:
+                                break
                 for part in source_parts:
                     with self._planning_step(copy_result, f"{source_name}/{part.name}"):
                         if part.name not in found:
@@ -1381,7 +1410,7 @@ class BackupCopier:
                             )
                         if part.link:
                             target_meta.unlink_part(part)
-        return files
+        return writer.finish()
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
     def _plan_metadata_objects(
@@ -1393,12 +1422,13 @@ class BackupCopier:
         src_prefix: str | None,
         dst_storage: dict,
         dst_prefix: str,
-        entries: MutableMapping[str, CopyEntry],
+        entries: EntryIndex,
         result: BackupCopyResult,
         *,
         source_data_encryption: dict | None = None,
         src_path_override: str | None = None,
     ) -> bytes:
+        """Plan referenced objects and rewrite their destination keys."""
         _validate_relative_key(file_name)
         if os.path.basename(file_name) == FROZEN_METADATA_FNAME:
             return data
@@ -1466,7 +1496,7 @@ class BackupCopier:
         )
         sizes = self._get_source_backup_files(name, layout, storage)
 
-        entries: EntryIndex[str] = EntryIndex()
+        entries: EntryIndex = EntryIndex()
         for disk_name in backup.cloud_storage.disks:
             with self._planning_step(result, disk_name):
                 src_storage, src_prefix, src_path_override = (
@@ -1482,44 +1512,52 @@ class BackupCopier:
                         source_files = layout.download_cloud_storage_metadata_archive(
                             backup, remote_path
                         )
-                        files = MetadataArchive()
+                        writer = MetadataArchiveWriter()
                         rewritten = False
-                        for file_name, data in source_files:
-                            rewritten_data = data
-                            with self._planning_step(
-                                result, f"{remote_path}:{file_name}"
-                            ):
-                                rewritten_data = self._plan_metadata_objects(
-                                    data,
-                                    file_name,
-                                    remote_path,
-                                    src_storage,
-                                    src_prefix,
-                                    target_storage,
-                                    dst_prefix,
-                                    entries,
-                                    result,
-                                    source_data_encryption=backup.cloud_storage.data_encryption,
-                                    src_path_override=src_path_override,
-                                )
-                                if rewritten_data != data:
-                                    rewritten = True
-                            files.append((file_name, rewritten_data))
+                        continuation = None
+                        while True:
+                            batch, continuation = source_files.read_batch(continuation)
+                            for file_name, data in batch:
+                                rewritten_data = data
+                                with self._planning_step(
+                                    result, f"{remote_path}:{file_name}"
+                                ):
+                                    rewritten_data = self._plan_metadata_objects(
+                                        data,
+                                        file_name,
+                                        remote_path,
+                                        src_storage,
+                                        src_prefix,
+                                        target_storage,
+                                        dst_prefix,
+                                        entries,
+                                        result,
+                                        source_data_encryption=backup.cloud_storage.data_encryption,
+                                        src_path_override=src_path_override,
+                                    )
+                                    if rewritten_data != data:
+                                        rewritten = True
+                                writer.append((file_name, rewritten_data))
+                            if continuation is None:
+                                break
+                        files = writer.finish()
 
                         if rewritten:
-                            files.path()
                             plan.rewritten_cloud_storage_metadata.append(
                                 _RewrittenTarball(dst_path, files)
                             )
                         elif len(result.errors) == errors:
+                            size = _listed_size(sizes, f"disks/{relative_path}")
+                            if size is None:
+                                raise KeyError(f"disks/{relative_path}")
                             plan.entries.append(
                                 CopyEntry(
                                     self._target_storage,
                                     self._target_storage,
                                     os.path.join(source_disks_dir, relative_path),
                                     dst_path,
-                                    sizes[f"disks/{relative_path}"],
-                                    sizes[f"disks/{relative_path}"],
+                                    size,
+                                    size,
                                 )
                             )
 
@@ -1667,13 +1705,17 @@ class BackupCopier:
         if not context.has_records():
             return
         listing = self._list_target_objects(backup, plan)
-        target_id = storage_id(self._target_storage)
 
-        def pending(entry: CopyEntry, sizes: CopyIndex[tuple, int] = listing) -> bool:
+        def pending(entry: CopyEntry, sizes: CopyIndex = listing) -> bool:
             """Keep objects unless both their target size and journal record match."""
-            return sizes.get(
-                (storage_id(entry.dst_storage), _key(entry.dst_path))
-            ) != entry.dst_size or not context.is_recorded(entry)
+            blob = sizes.get(
+                json.dumps([storage_id(entry.dst_storage), _key(entry.dst_path)])
+            )
+            return (
+                blob is None
+                or int(blob) != entry.dst_size
+                or not context.is_recorded(entry)
+            )
 
         for scope, scope_plan in plan.items():
             if scope in self._scopes and not self._copy_config["resume"]:
@@ -1686,7 +1728,10 @@ class BackupCopier:
                     self._target_storage,
                     path,
                     files,
-                    listing.get((target_id, _key(path))),
+                    _listed_size(
+                        listing,
+                        json.dumps([storage_id(self._target_storage), _key(path)]),
+                    ),
                 )
             ]
         del listing, pending
@@ -1735,7 +1780,7 @@ class BackupCopier:
                     context.save_failures(scope, failures)
         return plan.planned and len(result.errors) == errors
 
-    # pylint: disable=too-many-locals
+    # pylint: disable=too-many-locals,too-many-statements
     def _copy_objects(
         self,
         backup: BackupMetadata,
@@ -1751,11 +1796,14 @@ class BackupCopier:
         context = self._copy_context
         assert context is not None
         errors = len(result.errors)
-        logging.info(
-            "Copying {} objects ({} bytes)",
-            len(plan.entries),
-            sum(entry.size for entry in plan.entries),
-        )
+        total_size = 0
+        continuation = None
+        while True:
+            batch, continuation = plan.entries.read_batch(continuation, limit=128)
+            total_size += sum(entry.size for entry in batch)
+            if continuation is None:
+                break
+        logging.info("Copying {} objects ({} bytes)", len(plan.entries), total_size)
 
         def completed(entry: CopyEntry) -> None:
             """Count the copied object and record it in the copy context."""
@@ -1879,7 +1927,7 @@ class BackupCopier:
             )
             return
         for path, files in archives:
-            size = sizes.get(_key(path))
+            size = _listed_size(sizes, _key(path))
             if size is not None:
                 context.record_archive(self._target_storage, path, files, size)
 
@@ -1895,26 +1943,33 @@ class BackupCopier:
         Availability of server-side copy is checked by copying the first object of each pair
         of source and target buckets with the same credentials. Such objects are excluded from the result.
         """
-        if self._server_side_copy_mode == ServerSideCopyMode.DISABLED:
-            yield from entries
-            return
-
-        for entry in entries:
-            try:
-                resolved = self._resolve_object_copy_mode(entry, copy_result)
-            except Exception as e:
-                if (
-                    self._server_side_copy_mode != ServerSideCopyMode.STRICT
-                    or is_broken_executor(e)
-                ):
-                    raise
-                if on_error is not None:
-                    on_error(entry, e)
-                if not self._keep_going:
-                    raise
-                continue
-            if resolved is not None:
-                yield resolved
+        continuation = None
+        while True:
+            if isinstance(entries, CopyEntries):
+                batch, continuation = entries.read_batch(continuation, limit=128)
+            else:
+                batch = entries
+            for entry in batch:
+                if self._server_side_copy_mode == ServerSideCopyMode.DISABLED:
+                    yield entry
+                    continue
+                try:
+                    resolved = self._resolve_object_copy_mode(entry, copy_result)
+                except Exception as e:
+                    if (
+                        self._server_side_copy_mode != ServerSideCopyMode.STRICT
+                        or is_broken_executor(e)
+                    ):
+                        raise
+                    if on_error is not None:
+                        on_error(entry, e)
+                    if not self._keep_going:
+                        raise
+                    continue
+                if resolved is not None:
+                    yield resolved
+            if continuation is None:
+                break
 
     def _resolve_object_copy_mode(
         self, entry: CopyEntry, copy_result: BackupCopyResult | None
@@ -1978,13 +2033,13 @@ class BackupCopier:
 
     def _list_target_objects(
         self, backup: BackupMetadata, plan: _CopyPlan
-    ) -> CopyIndex[tuple, int]:
+    ) -> CopyIndex:
         """
         Return sizes of objects of the copied backup in target storages.
 
         On failure nothing is returned, so all objects are copied again.
         """
-        listing: CopyIndex[tuple, int] = CopyIndex()
+        listing: CopyIndex = CopyIndex()
         listed = set()
         try:
             for storage, prefix in self._target_prefixes(backup, plan):
@@ -1992,8 +2047,17 @@ class BackupCopier:
                 if key in listed:
                     continue
                 listed.add(key)
-                for path, size in self._engine(storage).iter_dir_with_sizes(key[1]):
-                    listing[(key[0], path)] = size
+                continuation = None
+                while True:
+                    page, continuation = self._engine(storage).read_listing_page(
+                        key[1], continuation
+                    )
+                    for path, size in page:
+                        listing.put(
+                            json.dumps([key[0], path]), str(size).encode("ascii")
+                        )
+                    if continuation is None:
+                        break
         except Exception as e:
             if is_broken_executor(e):
                 raise
@@ -2005,14 +2069,22 @@ class BackupCopier:
             listing.clear()
         return listing
 
-    def _list(self, storage: dict, prefix: str) -> CopyIndex[str, int]:
+    def _list(self, storage: dict, prefix: str) -> CopyIndex:
         """Index a listing without retaining all keys in RAM."""
-        listing: CopyIndex[str, int] = CopyIndex()
-        for path, size in self._engine(storage).iter_dir_with_sizes(prefix):
-            listing[path] = size
+        listing: CopyIndex = CopyIndex()
+        continuation = None
+        while True:
+            page, continuation = self._engine(storage).read_listing_page(
+                prefix, continuation
+            )
+            for path, size in page:
+                listing.put(path, str(size).encode("ascii"))
+            if continuation is None:
+                break
         return listing
 
     def _engine(self, storage: dict) -> PipeLineCompatibleStorageEngine:
+        """Reuse a client for the same storage credentials and configuration."""
         key = _storage_cache_key(storage)
         if key not in self._engines:
             self._engines[key] = get_storage_engine(storage)
@@ -2118,15 +2190,9 @@ def _validate_relative_key(key: str) -> None:
         raise ClickhouseBackupError(f'Unsafe copy object key "{key}"')
 
 
-def _add_cloud_storage_copy_entry(
-    entries: MutableMapping[str, CopyEntry], entry: CopyEntry
-) -> None:
+def _add_cloud_storage_copy_entry(entries: EntryIndex, entry: CopyEntry) -> None:
     """Deduplicate object destinations and reject conflicting sources or sizes."""
-    planned = (
-        entries.get_or_insert(entry.dst_path, entry)
-        if isinstance(entries, EntryIndex)
-        else entries.setdefault(entry.dst_path, entry)
-    )
+    planned = entries.get_or_insert(entry.dst_path, entry)
     if (storage_id(planned.src_storage), planned.src_path, planned.size) != (
         storage_id(entry.src_storage),
         entry.src_path,
@@ -2175,3 +2241,9 @@ def _key(path: str | None) -> str:
     Return object key for the path.
     """
     return (path or "").lstrip("/")
+
+
+def _listed_size(index: CopyIndex, key: str) -> int | None:
+    """Decode a listed size while preserving absent objects."""
+    blob = index.get(key)
+    return None if blob is None else int(blob)

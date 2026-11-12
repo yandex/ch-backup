@@ -205,17 +205,18 @@ class UnpackTarballStage(TarStreamProcessorBase):
         self._results: list[tuple[str, bytes]] = []
 
     def _on_file_complete(self) -> None:
-        if self._tarinfo and (
-            self._current_data
-            or (
-                self._include_empty
-                and self._tarinfo.isfile()
-                and self._tarinfo.size == 0
-            )
-        ):
-            self._results.append((self._tarinfo.name, bytes(self._current_data)))
-            self._current_data = bytearray()
-            self._tarinfo = None
+        """Emit a completed member and clear its state."""
+        tarinfo = self._tarinfo
+        if tarinfo is None:
+            return
+        include_empty_file = (
+            self._include_empty and tarinfo.isfile() and tarinfo.size == 0
+        )
+        if not self._current_data and not include_empty_file:
+            return
+        self._results.append((tarinfo.name, bytes(self._current_data)))
+        self._current_data = bytearray()
+        self._tarinfo = None
 
     def _on_file_start(self) -> None:
         self._current_data = bytearray()

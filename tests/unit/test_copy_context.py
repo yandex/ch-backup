@@ -29,12 +29,27 @@ class MemoryEngine:
         self.upload_error: Exception | None = None
 
     def list_dir_with_sizes(self, remote_path: str) -> dict[str, int]:
-        prefix = remote_path.strip("/") + "/"
-        return {k: len(v) for k, v in self.objects.items() if k.startswith(prefix)}
+        """Collect all pages for callers that need a complete fixture listing."""
+        result: dict[str, int] = {}
+        continuation = None
+        while True:
+            page, continuation = self.read_listing_page(remote_path, continuation)
+            result.update(page)
+            if continuation is None:
+                return result
 
-    def iter_dir_with_sizes(self, remote_path):
-        """Expose the paginated engine contract for the in-memory fixture."""
-        yield from self.list_dir_with_sizes(remote_path).items()
+    def read_listing_page(
+        self, remote_path: str, continuation: str | None = None
+    ) -> tuple[list[tuple[str, int]], str | None]:
+        """Read at most 128 fixture objects after the continuation key."""
+        prefix = remote_path.strip("/") + "/"
+        entries = sorted(
+            (k, len(v))
+            for k, v in self.objects.items()
+            if k.startswith(prefix) and (continuation is None or k > continuation)
+        )
+        page = entries[:128]
+        return page, page[-1][0] if len(entries) > 128 else None
 
     def download_file(self, remote_path, local_path):
         """Save an object to the requested scratch file."""
@@ -238,5 +253,7 @@ def test_manifest_keeps_locations_without_credentials() -> None:
     assert not resumed.has_records()
     assert b"secret" not in gzip.decompress(next(iter(engine.objects.values())))
     loaded = resumed.load_manifest(CopyScope.FILES)
-    assert [(e.src_path, e.dst_path, e.size) for e in loaded] == [("src/a", "dst/a", 3)]
-    assert [storage_id(e.src_storage) for e in loaded] == [storage_id(storage)]
+    batch, continuation = loaded.read_batch(limit=128)
+    assert continuation is None
+    assert [(e.src_path, e.dst_path, e.size) for e in batch] == [("src/a", "dst/a", 3)]
+    assert [storage_id(e.src_storage) for e in batch] == [storage_id(storage)]

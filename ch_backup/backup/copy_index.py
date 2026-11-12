@@ -4,23 +4,13 @@ import json
 import sqlite3
 import threading
 import weakref
-from collections.abc import (
-    Callable,
-    ItemsView,
-    Iterable,
-    Iterator,
-    MutableMapping,
-    ValuesView,
-)
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
-from itertools import islice
+from dataclasses import dataclass
 from tempfile import NamedTemporaryFile
-from typing import IO, Any, Generic, TypeVar
+from typing import IO
 
 from ch_backup.storage.object_copy import CopyEntry
-
-K = TypeVar("K")
-V = TypeVar("V")
 
 _COMMIT_BATCH_SIZE = 65536
 
@@ -31,32 +21,15 @@ def _close_index(connection: sqlite3.Connection, file: IO[bytes]) -> None:
     file.close()
 
 
-def _pack_key(key: Any) -> bytes:
-    """Encode digest bytes and structured object keys without executable formats."""
-    return b"b" + key if isinstance(key, bytes) else b"j" + json.dumps(key).encode()
-
-
-def _unpack_key(data: bytes) -> Any:
-    """Recreate hashable keys written to the private index."""
-    return data[1:] if data[:1] == b"b" else _tuple_key(json.loads(data[1:]))
-
-
-def _tuple_key(value):
-    """Restore nested tuple identities from JSON arrays."""
-    return (
-        tuple(_tuple_key(item) for item in value) if isinstance(value, list) else value
-    )
-
-
-class CopyIndex(MutableMapping[K, V], Generic[K, V]):
-    """Keep arbitrary internal records on disk with a bounded page cache."""
+class CopyIndex:
+    """Store string addresses and blobs on disk with a bounded page cache."""
 
     def __init__(self) -> None:
-        """Create a disposable index; rollback is required, power-loss durability is not."""
+        """Create a disposable index with rollback but no power-loss durability."""
         # pylint: disable-next=consider-using-with
         file = NamedTemporaryFile()
         self._db = sqlite3.connect(file.name, check_same_thread=False)
-        self._lock = threading.RLock()
+        self._lock = threading.Lock()
         self._count = 0
         self._writes = 0
         self._importing = False
@@ -65,45 +38,46 @@ class CopyIndex(MutableMapping[K, V], Generic[K, V]):
         self._db.execute("PRAGMA temp_store=FILE")
         self._db.execute("PRAGMA mmap_size=0")
         self._db.execute(
-            "CREATE TABLE records (key BLOB PRIMARY KEY, value BLOB NOT NULL)"
+            "CREATE TABLE records (key TEXT PRIMARY KEY, value BLOB NOT NULL)"
         )
         self._cleanup = weakref.finalize(self, _close_index, self._db, file)
 
-    def _encode(self, value: V) -> bytes:
-        """Serialize an internal value into the private scratch database."""
-        return json.dumps(value).encode()
-
-    def _decode(self, value: bytes) -> V:
-        """Read only records written by this process to its own index."""
-        return json.loads(value)
-
-    def __getitem__(self, key: K) -> V:
-        """Look up a record without caching all keys."""
+    def get(self, key: str) -> bytes | None:
+        """Read a blob, returning None when its address is absent."""
         with self._lock:
             row = self._db.execute(
-                "SELECT value FROM records WHERE key=?",
-                (_pack_key(key),),
+                "SELECT value FROM records WHERE key=?", (key,)
             ).fetchone()
-        if row is None:
-            raise KeyError(key)
-        return self._decode(row[0])
+        return None if row is None else row[0]
 
-    def __setitem__(self, key: K, value: V) -> None:
-        """Store a record and commit bounded groups of writes."""
-        encoded = _pack_key(key)
+    def contains(self, key: str) -> bool:
+        """Check whether an address exists."""
+        return self.get(key) is not None
+
+    def put(self, key: str, value: bytes) -> None:
+        """Store a blob without changing its insertion position on updates."""
         with self._lock:
-            data = self._encode(value)
             cursor = self._db.execute(
-                "INSERT OR IGNORE INTO records VALUES (?, ?)",
-                (encoded, data),
+                "INSERT OR IGNORE INTO records VALUES (?, ?)", (key, value)
             )
             self._count += cursor.rowcount
             if not cursor.rowcount:
-                self._db.execute(
-                    "UPDATE records SET value=? WHERE key=?",
-                    (data, encoded),
-                )
+                self._db.execute("UPDATE records SET value=? WHERE key=?", (value, key))
             self._written()
+
+    def put_if_absent(self, key: str, value: bytes) -> bytes | None:
+        """Insert a blob or read the existing blob under the same lock."""
+        with self._lock:
+            cursor = self._db.execute(
+                "INSERT OR IGNORE INTO records VALUES (?, ?)", (key, value)
+            )
+            if cursor.rowcount:
+                self._count += 1
+                self._written()
+                return None
+            return self._db.execute(
+                "SELECT value FROM records WHERE key=?", (key,)
+            ).fetchone()[0]
 
     def _written(self) -> None:
         """Commit groups of writes without accumulating records in Python."""
@@ -112,48 +86,23 @@ class CopyIndex(MutableMapping[K, V], Generic[K, V]):
             self._db.commit()
             self._writes = 0
 
-    def __delitem__(self, key: K) -> None:
-        """Remove one record."""
+    def read_batch(self, after: int, limit: int) -> list[tuple[int, str, bytes]]:
+        """Materialize one bounded batch in insertion order, then release the lock."""
+        if limit <= 0:
+            raise ValueError("Copy index batch limit must be positive")
         with self._lock:
             cursor = self._db.execute(
-                "DELETE FROM records WHERE key=?", (_pack_key(key),)
+                "SELECT rowid, key, value FROM records WHERE rowid>? ORDER BY rowid LIMIT ?",
+                (after, limit),
             )
-            if not cursor.rowcount:
-                raise KeyError(key)
-            self._count -= 1
-
-    def __iter__(self) -> Iterator[K]:
-        """Read keys in insertion order."""
-        for key, _ in self._rows():
-            yield _unpack_key(key)
-
-    def values(self) -> ValuesView[V]:
-        """Read values in batches without looking up each key again."""
-        return _CopyValuesView(self)
-
-    def items(self) -> ItemsView[K, V]:
-        """Read key-value pairs directly from each batch."""
-        return _CopyItemsView(self)
-
-    def _rows(self) -> Iterator[tuple[bytes, bytes]]:
-        """Release the connection lock between bounded result batches."""
-        position = 0
-        while True:
-            with self._lock:
-                cursor = self._db.execute(
-                    "SELECT rowid, key, value FROM records WHERE rowid>? ORDER BY rowid LIMIT 128",
-                    (position,),
-                )
-                rows = cursor.fetchall()
-                cursor.close()
-            if not rows:
-                return
-            for position, key, value in rows:
-                yield key, value
+            rows = cursor.fetchall()
+            cursor.close()
+        return rows
 
     def __len__(self) -> int:
-        """Return the maintained row count without querying from sampler threads."""
-        return self._count
+        """Return the maintained row count."""
+        with self._lock:
+            return self._count
 
     def clear(self) -> None:
         """Forget all records after verification."""
@@ -165,51 +114,32 @@ class CopyIndex(MutableMapping[K, V], Generic[K, V]):
     @contextmanager
     def importing(self):
         """Discard a whole damaged journal chunk, including its valid prefix."""
-        self._db.commit()
-        count = self._count
-        self._importing = True
+        with self._lock:
+            self._db.commit()
+            count = self._count
+            self._importing = True
         try:
             yield
-            self._db.commit()
+            with self._lock:
+                self._db.commit()
         except BaseException:
-            self._db.rollback()
-            self._count = count
+            with self._lock:
+                self._db.rollback()
+                self._count = count
             raise
         finally:
-            self._importing = False
-            self._writes = 0
+            with self._lock:
+                self._importing = False
+                self._writes = 0
 
 
-class _CopyValuesView(ValuesView[V]):
-    """Keep the mapping view behavior while scanning stored values directly."""
-
-    _mapping: CopyIndex[Any, V]
-
-    def __iter__(self) -> Iterator[V]:
-        """Decode one value at a time from bounded batches."""
-        # pylint: disable=protected-access
-        for _, value in self._mapping._rows():
-            yield self._mapping._decode(value)
-
-
-class _CopyItemsView(ItemsView[K, V]):
-    """Keep the mapping view behavior while scanning stored records directly."""
-
-    _mapping: CopyIndex[K, V]
-
-    def __iter__(self) -> Iterator[tuple[K, V]]:
-        """Decode key-value pairs in insertion order."""
-        # pylint: disable=protected-access
-        for key, value in self._mapping._rows():
-            yield _unpack_key(key), self._mapping._decode(value)
-
-
-class EntryIndex(CopyIndex[K, CopyEntry]):
-    """Store paths and sizes while keeping storage credentials only in memory."""
+class EntryIndex:
+    """Store copy entries while keeping storage configurations only in memory."""
 
     def __init__(self) -> None:
         """Share each storage configuration across all of its entries."""
-        super().__init__()
+        self._index = CopyIndex()
+        self._lock = threading.Lock()
         self._storages: list[dict] = []
         self._storage_ids: dict[int, int] = {}
 
@@ -221,33 +151,61 @@ class EntryIndex(CopyIndex[K, CopyEntry]):
             self._storages.append(storage)
         return self._storage_ids[key]
 
-    def _encode(self, value: CopyEntry) -> bytes:
-        """Keep only identifiers, object keys and size on disk."""
+    def _encode(self, entry: CopyEntry) -> bytes:
+        """Keep only storage identifiers, paths and entry fields on disk."""
         return json.dumps(
             (
-                self._storage(value.src_storage),
-                self._storage(value.dst_storage),
-                *value[2:],
-            ),
+                self._storage(entry.src_storage),
+                self._storage(entry.dst_storage),
+                *entry[2:],
+            )
         ).encode()
 
-    def _decode(self, value: bytes) -> CopyEntry:
+    def _decode(self, blob: bytes) -> CopyEntry:
         """Attach the original in-memory configurations to one entry."""
-        source, target, *fields = json.loads(value)
+        source, target, *fields = json.loads(blob)
         return CopyEntry(self._storages[source], self._storages[target], *fields)
 
-    def get_or_insert(self, key: K, entry: CopyEntry) -> CopyEntry:
-        """Read the existing entry only when its key is already present."""
+    def put(self, key: str, entry: CopyEntry) -> None:
+        """Store an entry without changing its insertion position on updates."""
         with self._lock:
-            cursor = self._db.execute(
-                "INSERT OR IGNORE INTO records VALUES (?, ?)",
-                (_pack_key(key), self._encode(entry)),
-            )
-            if cursor.rowcount:
-                self._count += 1
-                self._written()
-                return entry
-            return self[key]
+            self._index.put(key, self._encode(entry))
+
+    def get_or_insert(self, key: str, entry: CopyEntry) -> CopyEntry:
+        """Decode only duplicates and return new entries without another lookup."""
+        with self._lock:
+            existing = self._index.put_if_absent(key, self._encode(entry))
+            return entry if existing is None else self._decode(existing)
+
+    def read_batch(self, after: int, limit: int) -> list[tuple[int, str, CopyEntry]]:
+        """Read and decode one bounded batch of entries."""
+        return [
+            (position, key, self._decode(blob))
+            for position, key, blob in self._index.read_batch(after, limit)
+        ]
+
+    def __len__(self) -> int:
+        """Return the number of stored entries."""
+        return len(self._index)
+
+
+@dataclass(frozen=True)
+class CopyEntriesCursor:
+    """Locate the next read within an ordered plan's stored segments."""
+
+    segment: int = 0
+    after: "int | _FilteredCursor" = 0
+
+
+@dataclass(frozen=True)
+class _FilteredCursor:
+    """Resume source and exclusion scans after every examined entry."""
+
+    source: CopyEntriesCursor | None = None
+    position: int = 0
+    range_after: int = 0
+    start: int = 0
+    end: int = 0
 
 
 class CopyEntries:
@@ -255,7 +213,7 @@ class CopyEntries:
 
     def __init__(self, entries: Iterable[CopyEntry] = ()) -> None:
         """Append initial entries without collecting the iterable."""
-        self._index: EntryIndex[int] = EntryIndex()
+        self._index = EntryIndex()
         self._segments: list[EntryIndex | _FilteredEntries] = [self._index]
         self.extend(entries)
 
@@ -264,10 +222,10 @@ class CopyEntries:
         if self._segments[-1] is not self._index:
             self._index = EntryIndex()
             self._segments.append(self._index)
-        self._index[len(self._index)] = entry
+        self._index.put(str(len(self._index)), entry)
 
     def extend(self, entries: Iterable[CopyEntry]) -> None:
-        """Append entries in order."""
+        """Append in-memory entries in order."""
         for entry in entries:
             self.append(entry)
 
@@ -277,19 +235,25 @@ class CopyEntries:
 
     def filtered(self, keep: Callable[[CopyEntry], bool]) -> "CopyEntries":
         """Index excluded ranges without rewriting or mutating the source plan."""
-        excluded: CopyIndex[int, int] = CopyIndex()
+        excluded = CopyIndex()
         start = None
-        removed = 0
-        for position, entry in enumerate(self):
-            if not keep(entry):
-                removed += 1
-                if start is None:
-                    start = position
-            elif start is not None:
-                excluded[start] = position
-                start = None
+        removed = position = 0
+        continuation = None
+        while True:
+            batch, continuation = self.read_batch(continuation, limit=128)
+            for entry in batch:
+                if not keep(entry):
+                    removed += 1
+                    if start is None:
+                        start = position
+                elif start is not None:
+                    excluded.put(str(start), str(position).encode("ascii"))
+                    start = None
+                position += 1
+            if continuation is None:
+                break
         if start is not None:
-            excluded[start] = len(self)
+            excluded.put(str(start), str(position).encode("ascii"))
         result = CopyEntries()
         result.extend_index(_FilteredEntries(self, excluded, removed))
         return result
@@ -298,19 +262,41 @@ class CopyEntries:
         """Return the number of planned objects."""
         return sum(len(segment) for segment in self._segments)
 
-    def __iter__(self) -> Iterator[CopyEntry]:
-        """Read bounded batches from the plan."""
-        for segment in self._segments:
-            yield from segment.values()
+    def read_batch(
+        self, continuation: CopyEntriesCursor | None = None, limit: int = 128
+    ) -> tuple[list[CopyEntry], CopyEntriesCursor | None]:
+        """Read a bounded segment batch; only a None cursor marks completion."""
+        if limit <= 0:
+            raise ValueError("Copy plan batch limit must be positive")
+        cursor = continuation or CopyEntriesCursor()
+        if cursor.segment >= len(self._segments):
+            return [], None
+        segment = self._segments[cursor.segment]
+        if isinstance(segment, EntryIndex):
+            assert isinstance(cursor.after, int)
+            rows = segment.read_batch(cursor.after, limit)
+            batch = [entry for _, _, entry in rows]
+            after: int | _FilteredCursor | None = (
+                rows[-1][0] if len(rows) == limit else None
+            )
+        else:
+            batch, after = segment.read_batch(
+                cursor.after if isinstance(cursor.after, _FilteredCursor) else None,
+                limit,
+            )
+        if after is not None:
+            return batch, CopyEntriesCursor(cursor.segment, after)
+        following = cursor.segment + 1
+        return batch, (
+            CopyEntriesCursor(following) if following < len(self._segments) else None
+        )
 
 
 class _FilteredEntries:
     """Read the original plan alongside sorted excluded ranges."""
 
-    def __init__(
-        self, source: CopyEntries, excluded: CopyIndex[int, int], removed: int
-    ) -> None:
-        """Keep the source alive and freeze the number of entries being filtered."""
+    def __init__(self, source: CopyEntries, excluded: CopyIndex, removed: int) -> None:
+        """Keep the source alive and freeze the number of filtered entries."""
         self._source = source
         self._excluded = excluded
         self._size = len(source)
@@ -320,18 +306,40 @@ class _FilteredEntries:
         """Return the remaining count without scanning either index."""
         return self._count
 
-    def values(self) -> Iterator[CopyEntry]:
-        """Merge two bounded streams without querying the index for each object."""
-        if not self:
-            return
-        source = islice(self._source, self._size)
-        if not self._excluded:
-            yield from source
-            return
-        ranges = iter(self._excluded.items())
-        start, end = next(ranges, (self._size, self._size))
-        for position, entry in enumerate(source):
-            if position >= end:
-                start, end = next(ranges, (self._size, self._size))
+    def read_batch(
+        self, continuation: _FilteredCursor | None, limit: int
+    ) -> tuple[list[CopyEntry], _FilteredCursor | None]:
+        """Advance through bounded source records, including excluded entries."""
+        cursor = continuation or _FilteredCursor()
+        if not self._count or cursor.position >= self._size:
+            return [], None
+        entries, source = self._source.read_batch(
+            cursor.source, min(limit, self._size - cursor.position)
+        )
+        position, range_after, start, end = (
+            cursor.position,
+            cursor.range_after,
+            cursor.start,
+            cursor.end,
+        )
+        ranges: Iterator[tuple[int, str, bytes]] = iter(())
+        batch = []
+        for entry in entries:
+            while position >= end:
+                row = next(ranges, None)
+                if row is None:
+                    ranges = iter(self._excluded.read_batch(range_after, limit))
+                    row = next(ranges, None)
+                if row is None:
+                    start, end = self._size, self._size + 1
+                else:
+                    range_after, first, last = row
+                    start, end = int(first), int(last)
             if position < start:
-                yield entry
+                batch.append(entry)
+            position += 1
+        return batch, (
+            _FilteredCursor(source, position, range_after, start, end)
+            if source is not None and position < self._size
+            else None
+        )
