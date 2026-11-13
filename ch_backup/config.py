@@ -176,7 +176,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # by the copy command. Unset values inherit endpoint, bucket and credentials
         # from the destination ClickHouse disk. An unset path is selected safely at
         # restore time depending on whether source and staging buckets are the same.
-        # All objects under the exclusive staging path are removed before and after restore.
+        # The path is a staging root. Each owner/disk uses a separate subdirectory;
+        # only allocated subdirectories are removed before and after restore.
         # An explicitly configured endpoint or bucket requires both credentials.
         "cloud_storage": {
             "decryption_staging": {
@@ -310,7 +311,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "workers": 4,
         # The number of threads for reading source/target light metadata at copy startup.
         "metadata_read_threads": 4,
-        # Full metadata held at once while building the copy deduplication index.
+        # Concurrent full-metadata reads for copy deduplication and cleanup.
         "full_metadata_read_threads": 2,
         # The number of processes for parts restoring from S3 disks.
         "cloud_storage_restore_workers": 4,

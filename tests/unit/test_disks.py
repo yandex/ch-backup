@@ -9,6 +9,7 @@ import copy
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -24,7 +25,7 @@ import pytest
 import xmltodict
 
 from ch_backup.backup.layout import BackupLayout
-from ch_backup.backup.metadata import PartMetadata, TableMetadata
+from ch_backup.backup.metadata import BackupMetadata, PartMetadata, TableMetadata
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.config import ClickhouseConfig
@@ -36,13 +37,29 @@ from ch_backup.clickhouse.disks import (
     ClickHouseTemporaryDisks,
     _ch_disks_remove,
     _exec,
+    _get_tmp_disk_name,
     _open_config_file,
     _render_disks_config,
 )
 from ch_backup.clickhouse.models import Disk, FrozenPart, Table
 from ch_backup.config import DEFAULT_CONFIG, Config
+from ch_backup.encryption import get_cloud_storage_data_encryption_metadata
 from ch_backup.logic.table import TableBackup
 from tests.unit.utils import assert_equal, parametrize
+
+
+def test_temporary_disk_names_accept_generation_owners_without_collisions():
+    owners = [
+        ".cloud_generation_" + "a" * 32,
+        "_cloud_generation_" + "a" * 32,
+        "backup-a",
+        "backup_a",
+        "a" * 200,
+    ]
+    names = [_get_tmp_disk_name("s3", owner) for owner in owners]
+    assert all(re.fullmatch(r"[A-Za-z0-9_]+", name) for name in names)
+    assert len(set(names)) == len(owners)
+    assert all(len(name) < 100 for name in names)
 
 
 @pytest.mark.parametrize(
@@ -313,6 +330,7 @@ def _make_linked_backup_meta(backup_name: str) -> unittest.mock.MagicMock:
     backup_meta = unittest.mock.MagicMock()
     backup_meta.name = backup_name
     backup_meta.get_sanitized_name.return_value = backup_name
+    backup_meta.cloud_storage.source = None
     backup_meta.cloud_storage.data_copied = True
     backup_meta.cloud_storage.data_encryption = None
     return backup_meta
@@ -328,25 +346,9 @@ def _make_temporary_disks(
     skip_cloud_storage: bool = False,
 ) -> ClickHouseTemporaryDisks:
     """Helper: build ClickHouseTemporaryDisks with mocked dependencies."""
-    context = _make_context(_make_backup_storage_config(), clickhouse_config_xml)
-    context.backup_layout = _make_backup_layout(_make_backup_storage_config())
-    context.backup_layout.get_backup.side_effect = lambda name, **_: (
-        _make_linked_backup_meta(name)
+    context = _make_temporary_context(
+        clickhouse_config_xml, cloud_storage_disks, data_copied, parts
     )
-    context.backup_meta.cloud_storage.disks = cloud_storage_disks or []  # type: ignore[misc]
-    context.backup_meta.cloud_storage.enabled = bool(cloud_storage_disks)  # type: ignore[misc]
-    context.backup_meta.cloud_storage.data_copied = data_copied  # type: ignore[misc]
-    context.backup_meta.cloud_storage.data_encryption = None  # type: ignore[misc]
-    context.backup_meta.cloud_storage.requires_source_bucket = (  # type: ignore[misc]
-        bool(cloud_storage_disks) and not data_copied
-    )
-
-    table = unittest.mock.MagicMock()
-    table.database = "db1"
-    table.name = "table1"
-    table.get_parts.return_value = list(parts)
-    context.backup_meta.get_databases.return_value = ["db1"]  # type: ignore[attr-defined]
-    context.backup_meta.get_tables.return_value = [table]  # type: ignore[attr-defined]
 
     return ClickHouseTemporaryDisks(
         context.ch_ctl,
@@ -1058,6 +1060,7 @@ def test_restore_failure_cleans_decryption_staging():
 
 
 LINKED_BACKUP_NAME = "20251231T000000"
+LINKED_BACKUP_DISK_NAME = _get_tmp_disk_name("object_storage", LINKED_BACKUP_NAME)
 
 
 def _make_linked_part(
@@ -1097,13 +1100,13 @@ def test_restore_creates_a_disk_per_backup_holding_data():
 
     config_path = (
         "/etc/clickhouse-server/config.d/"
-        f"cloud_storage_tmp_disk_object_storage_source_{LINKED_BACKUP_NAME}.xml"
+        f"cloud_storage_tmp_disk_{LINKED_BACKUP_DISK_NAME}.xml"
     )
     disks = xmltodict.parse(written[config_path], disable_entities=False)["clickhouse"][
         "storage_configuration"
     ]["disks"]
     assert_equal(
-        disks[f"object_storage_source_{LINKED_BACKUP_NAME}"]["endpoint"],
+        disks[LINKED_BACKUP_DISK_NAME]["endpoint"],
         f"https://minio:9000/backup-bucket/ch_backup/{LINKED_BACKUP_NAME}"
         "/cloud_storage/object_storage/",
     )
@@ -1154,7 +1157,7 @@ def test_restore_copies_a_deduplicated_part_from_its_own_backup(part, tmp_path):
         parts=[part],
     )
     target_disk = Disk("object_storage", str(tmp_path / "target"), "s3")
-    source_disk_name = f"object_storage_source_{LINKED_BACKUP_NAME}"
+    source_disk_name = LINKED_BACKUP_DISK_NAME
     # pylint: disable=protected-access
     disk_manager._ch_availible_disks = {
         "object_storage": target_disk,
@@ -1186,7 +1189,7 @@ def fixture_part_copy(tmp_path):
     part = _make_linked_part(name="all_1_1_0_2", link_part_name="all_1_1_0")
     manager = _make_temporary_disks(BACKUP_DISK_CLICKHOUSE_CONFIG, parts=[part])
     target_disk = Disk("object_storage", str(tmp_path / "target"), "s3")
-    source_name = f"object_storage_source_{LINKED_BACKUP_NAME}"
+    source_name = LINKED_BACKUP_DISK_NAME
     source_disk = Disk(source_name, str(tmp_path / "source"), "s3")
     # pylint: disable=protected-access
     manager._ch_availible_disks = {
@@ -1450,3 +1453,218 @@ def test_restore_fails_when_the_backup_holding_data_is_gone():
             assert False, "Expected ClickHouseDisksException was not raised"
         except ClickHouseDisksException as exc:
             assert LINKED_BACKUP_NAME in str(exc)
+
+
+@pytest.mark.parametrize(
+    "trusted,override,has_current_parts",
+    [
+        (False, None, True),
+        (True, None, True),
+        (False, "https://replacement.example", True),
+        (True, None, False),
+    ],
+)
+def test_restore_linked_external_part_uses_its_owners_location(
+    trusted, override, has_current_parts
+):
+    """
+    A linked part can belong to a different endpoint and prefix from the
+    requested backup. Resolve its owner's location, and reject an untrusted
+    endpoint before decryption or unsafe disk configuration.
+    An all-linked backup needs no source location of its own.
+    """
+    parts = [_make_linked_part()]
+    if has_current_parts:
+        parts.append(
+            PartMetadata(
+                "db1",
+                "table1",
+                "all_2_2_0",
+                "other",
+                1,
+                [],
+                False,
+                disk_name="object_storage",
+            )
+        )
+    context = _make_temporary_context(
+        BACKUP_DISK_CLICKHOUSE_CONFIG,
+        cloud_storage_disks=["object_storage"],
+        data_copied=False,
+        parts=parts,
+    )
+    owner = _make_linked_backup_meta(LINKED_BACKUP_NAME)
+    owner.cloud_storage.data_copied = False
+    owner.cloud_storage.source = {
+        "endpoint_url": "https://owner.example.test:9000",
+        "bucket": "owner-bucket",
+        "path": "copies/owner",
+    }
+    if trusted:
+        context.config_root["storage"]["credentials"]["endpoint_url"] = (
+            owner.cloud_storage.source["endpoint_url"]
+        )
+    layout = _make_backup_layout(_make_backup_storage_config())
+    layout.get_backup.return_value = owner
+    disk_manager = ClickHouseTemporaryDisks(
+        context.ch_ctl,
+        layout,
+        context.config_root,
+        context.backup_meta,
+        "current-bucket" if has_current_parts else None,
+        "copies/current" if has_current_parts else None,
+        override,
+        context.ch_config,
+    )
+
+    if not trusted and not override:
+        with (
+            _capture_config_files() as (written, _removed),
+            unittest.mock.patch(
+                "ch_backup.clickhouse.disks.CloudStorageDecryption"
+            ) as decrypt,
+        ):
+            with pytest.raises(ClickHouseDisksException, match="endpoint"):
+                with disk_manager:
+                    pass
+        decrypt.assert_not_called()
+        assert all("owner.example.test" not in content for content in written.values())
+        return
+
+    with _capture_config_files() as (written, _removed):
+        with disk_manager:
+            pass
+
+    disks = xmltodict.parse(written[CH_DISK_CONFIG_PATH], disable_entities=False)[
+        "clickhouse"
+    ]["storage_configuration"]["disks"]
+    if has_current_parts:
+        assert disks["object_storage_source"]["endpoint"] == (
+            f"{override or 'https://localhost'}/current-bucket/copies/current/"
+        )
+    else:
+        assert "object_storage_source" not in disks
+    assert (
+        disks[LINKED_BACKUP_DISK_NAME]["endpoint"]
+        == f"{override or 'https://owner.example.test:9000'}/owner-bucket/copies/owner/"
+    )
+
+
+def _make_temporary_context(
+    clickhouse_config_xml: str,
+    cloud_storage_disks: list[str] | None,
+    data_copied: bool,
+    parts: Sequence[PartMetadata],
+) -> BackupContext:
+    context = _make_context(_make_backup_storage_config(), clickhouse_config_xml)
+    context.backup_layout = _make_backup_layout(_make_backup_storage_config())
+    context.backup_layout.get_backup.side_effect = lambda name, **_: (
+        _make_linked_backup_meta(name)
+    )
+    context.backup_meta.cloud_storage.disks = cloud_storage_disks or []  # type: ignore[misc]
+    context.backup_meta.cloud_storage.enabled = bool(cloud_storage_disks)  # type: ignore[misc]
+    context.backup_meta.cloud_storage.data_copied = data_copied  # type: ignore[misc]
+    context.backup_meta.cloud_storage.source = None
+    context.backup_meta.cloud_storage.data_encryption = None  # type: ignore[misc]
+    context.backup_meta.cloud_storage.requires_source_bucket = (  # type: ignore[misc]
+        bool(cloud_storage_disks) and not data_copied
+    )
+
+    context.backup_meta.get_parts.return_value = list(parts)  # type: ignore[attr-defined]
+    context.backup_meta.select_disks_with_stored_cloud_parts.side_effect = (  # type: ignore[attr-defined]
+        lambda: BackupMetadata.select_disks_with_stored_cloud_parts(context.backup_meta)
+    )
+
+    table = unittest.mock.MagicMock()
+    table.database = "db1"
+    table.name = "table1"
+    table.get_parts.return_value = list(parts)
+    context.backup_meta.get_databases.return_value = ["db1"]  # type: ignore[attr-defined]
+    context.backup_meta.get_tables.return_value = [table]  # type: ignore[attr-defined]
+
+    return context
+
+
+@pytest.mark.parametrize(
+    "mismatch", ["owner", "configured_key", "staging", "source_overlap"]
+)
+def test_restore_validates_owners_before_creating_disks(mismatch):
+    """Shared roots work; incompatible keys or source overlap fail before disk creation."""
+    # pylint: disable=protected-access
+    parts = [_make_linked_part(), _make_linked_part(name="all_2_2_0")]
+    parts[1].raw_metadata.link = "another_owner"
+    context = _make_temporary_context(
+        BACKUP_DISK_CLICKHOUSE_CONFIG, ["object_storage"], True, parts
+    )
+    context.config_root["encryption"]["key"] = "a" * 32
+    encryption = get_cloud_storage_data_encryption_metadata(
+        context.config_root["encryption"]
+    )
+    context.backup_meta.cloud_storage.data_encryption = encryption
+    owners = {}
+    for part in parts:
+        assert part.link is not None
+        owner = _make_linked_backup_meta(part.link)
+        owner.cloud_storage.data_encryption = dict(encryption)
+        owners[part.link] = owner
+    if mismatch == "owner":
+        owners["another_owner"].cloud_storage.data_encryption["key_id"] = "different"
+    elif mismatch == "configured_key":
+        context.config_root["encryption"]["key"] = "b" * 32
+    elif mismatch == "source_overlap":
+        staging = context.config_root["restore"]["cloud_storage"]["decryption_staging"]
+        staging.update(
+            endpoint_url="https://minio:9000/",
+            bucket="backup-bucket",
+            access_key_id="key",
+            secret_access_key="secret",
+        )
+        owners["another_owner"].cloud_storage.data_copied = False
+        owners["another_owner"].cloud_storage.source = {
+            "endpoint_url": "https://minio:9000/",
+            "bucket": "backup-bucket",
+            "path": f"ch_backup/{LINKED_BACKUP_NAME}/cloud_storage/object_storage_decrypted",
+        }
+    else:
+        context.config_root["restore"]["cloud_storage"]["decryption_staging"][
+            "path"
+        ] = "shared-staging"
+    context.backup_layout.get_backup.side_effect = lambda name, **_: owners[name]  # type: ignore[attr-defined]
+    manager = ClickHouseTemporaryDisks(
+        context.ch_ctl,
+        context.backup_layout,
+        context.config_root,
+        context.backup_meta,
+        None,
+        None,
+        None,
+        context.ch_config,
+    )
+    with (
+        _capture_config_files() as (written, _removed),
+        unittest.mock.patch.object(
+            manager, "_create_temporary_disk", wraps=manager._create_temporary_disk
+        ) as create,
+        unittest.mock.patch(
+            "ch_backup.clickhouse.disks.CloudStorageDecryption"
+        ) as decrypt,
+    ):
+        if mismatch == "staging":
+            with manager:
+                pass
+            assert create.call_count == 2
+            locations = [
+                call.args[3] for call in decrypt.return_value.decrypt.call_args_list
+            ]
+            assert len({location.staging_path for location in locations}) == 2
+            for location in locations:
+                assert location.staging_path.startswith("shared-staging/")
+                assert any(location.staging_path in text for text in written.values())
+            assert decrypt.return_value.rewrite_metadata.call_count == 2
+            decrypt.return_value.cleanup.assert_called_once()
+        else:
+            with pytest.raises(Exception, match="encryption|staging"):
+                with manager:
+                    pass
+            create.assert_not_called()
+            decrypt.assert_not_called()

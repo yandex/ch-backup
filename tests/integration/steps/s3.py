@@ -11,6 +11,7 @@ from tests.integration.modules import s3
 from tests.integration.modules.clickhouse import ClickhouseClient, get_part_path
 from tests.integration.modules.docker import get_container
 from tests.integration.modules.steps import get_step_data
+from tests.integration.modules.templates import render_template
 
 
 @given("a working s3")
@@ -46,6 +47,7 @@ def step_cloud_storage_bucket_contains_files(context, bucket, count):
 
 @then('s3 bucket {bucket} contains objects with prefix "{prefix}"')
 def step_cloud_storage_bucket_contains_prefix(context, bucket, prefix):
+    prefix = render_template(context, prefix)
     s3_client = s3.S3Client(context, bucket)
     objects = s3_client.list_objects(prefix)
     assert_that(
@@ -57,6 +59,7 @@ def step_cloud_storage_bucket_contains_prefix(context, bucket, prefix):
 
 @then('s3 bucket {bucket} contains no objects with prefix "{prefix}"')
 def step_cloud_storage_bucket_has_no_prefix(context, bucket, prefix):
+    prefix = render_template(context, prefix)
     s3_client = s3.S3Client(context, bucket)
     objects = s3_client.list_objects(prefix)
     assert_that(
@@ -239,3 +242,20 @@ def step_saved_s3_objects_unchanged(context):
         assert (
             client.download_data(key) == data
         ), f"Source object changed: {bucket}/{key}"
+
+
+@when('we save S3 object keys in bucket {bucket} with prefix "{prefix}"')
+def step_save_s3_prefix_keys(context, bucket, prefix):
+    prefix = render_template(context, prefix)
+    keys = set(s3.S3Client(context, bucket).list_objects(prefix))
+    assert keys, f"No objects under {prefix}"
+    context.s3_prefix_keys = (bucket, prefix, keys)
+
+
+@then("saved S3 objects are {state:w}")
+def step_saved_s3_objects(context, state):
+    bucket, prefix, saved = context.s3_prefix_keys
+    keys = set(s3.S3Client(context, bucket).list_objects(prefix))
+    assert state in ("retained", "deleted")
+    assert keys & saved == (saved if state == "retained" else set())
+    assert keys - saved == {prefix + "foreign"}

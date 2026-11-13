@@ -24,7 +24,9 @@ from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
     DetachedPartMetadata,
+    PartMetadata,
 )
+from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageSource
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.encryption import (
     get_cloud_storage_data_encryption_metadata,
@@ -72,6 +74,13 @@ class FakeEngine:
 
     def download_data(self, remote_path: str) -> bytes:
         return self._store.data[(self._id, remote_path)]
+
+    def path_exists(self, remote_path: str) -> bool:
+        return remote_path in self._objects
+
+    def delete_files(self, remote_paths):
+        for path in remote_paths:
+            self.delete_file(path)
 
     def delete_file(self, remote_path: str) -> None:
         self._objects.pop(remote_path, None)
@@ -137,6 +146,7 @@ class FakeLayout:
     def get_backup_names(self):
         return list(self.backups)
 
+    preserve_legacy_cloud_owner = BackupLayout.preserve_legacy_cloud_owner
     get_table_data_files = BackupLayout.get_table_data_files
     check_data_part_files = BackupLayout.check_data_part_files
     # Reuse the production tar/encryption size check with the in-memory storage.
@@ -155,7 +165,7 @@ class FakeLayout:
             self.get_cloud_storage_path(backup_name), "cloud_storage", disk_name
         )
 
-    def get_backup(self, backup_name, use_light_meta=False):
+    def get_backup(self, backup_name, use_light_meta=False, *, for_reference=False):
         backup = self.backups.get(backup_name)
         return copy.deepcopy(backup) if backup else None
 
@@ -199,14 +209,20 @@ class FakeLayout:
                     layout.metadata_files()[entry.src_path]
                 )
 
-    def get_cloud_storage_metadata_remote_paths(
+    def list_cloud_storage_metadata_archives(
         self, backup_name, disk_name, compression, desired_tables
     ):
-        prefix = os.path.join(self.get_backup_path(backup_name), "disks", disk_name)
-        return sorted(p for p in self.metadata_files() if p.startswith(prefix))
+        metadata_directory = os.path.join(
+            self.get_backup_path(backup_name), "disks", disk_name
+        )
+        return sorted(
+            archive_path
+            for archive_path in self.metadata_files()
+            if archive_path.startswith(metadata_directory)
+        )
 
-    def get_cloud_storage_metadata_files(self, backup_meta, remote_path):
-        return list(self.metadata_files()[remote_path])
+    def read_cloud_storage_metadata_archive(self, backup_meta, archive_path):
+        return list(self.metadata_files()[archive_path])
 
     def metadata_files(self) -> dict[str, list[tuple[str, bytes]]]:
         return {**self.copied_files, **self.cloud_storage_files}
@@ -214,7 +230,14 @@ class FakeLayout:
     def upload_cloud_storage_metadata_files(
         self, backup_meta, remote_path, files, callback=None, on_error=None
     ):
-        error = self.metadata_errors.get(remote_path)
+        error = next(
+            (
+                error
+                for suffix, error in self.metadata_errors.items()
+                if remote_path.endswith(suffix)
+            ),
+            None,
+        )
         if error:
             if on_error:
                 on_error(error)
@@ -267,6 +290,7 @@ def _backup(
     hostname: str = "host1",
     parts: dict | None = None,
     database: str = "db1",
+    table_uuid: str | None = None,
     cloud_storage_disks: list[str] | None = None,
 ) -> BackupMetadata:
     parts = parts or {}
@@ -292,7 +316,11 @@ def _backup(
                 database: {
                     "engine": "Atomic",
                     "tables": {
-                        "t1": {"engine": "MergeTree", "uuid": None, "parts": parts}
+                        "t1": {
+                            "engine": "MergeTree",
+                            "uuid": table_uuid,
+                            "parts": parts,
+                        }
                     },
                 }
             },
@@ -805,17 +833,17 @@ def test_linked_parts_are_copied_into_backup(
     assert {(e.src_path, e.dst_path, e.size) for e in ctx.target_layout.copied} == {
         (
             f"ch_backup/b2/{data_dir}/all_3_3_0/all_3_3_0.tar",
-            f"ch_backup_copy/b2/{data_dir}/all_3_3_0/all_3_3_0.tar",
+            f"ch_backup_copy/{_cloud_name(ctx, 'b2')}/{data_dir}/all_3_3_0/all_3_3_0.tar",
             103,
         ),
         (
             f"ch_backup/b1/{data_dir}/all_1_1_0/all_1_1_0.tar",
-            f"ch_backup_copy/b2/{target_data_dir}/all_1_1_0/all_1_1_0.tar",
+            f"ch_backup_copy/{_cloud_name(ctx, 'b2')}/{target_data_dir}/all_1_1_0/all_1_1_0.tar",
             101,
         ),
         (
             f"ch_backup/b1/{data_dir}/all_2_2_0/all_2_2_0.tar",
-            f"ch_backup_copy/b2/{target_data_dir}/all_2_2_0_3/all_2_2_0_3.tar",
+            f"ch_backup_copy/{_cloud_name(ctx, 'b2')}/{target_data_dir}/all_2_2_0_3/all_2_2_0_3.tar",
             102,
         ),
     }
@@ -946,7 +974,7 @@ def test_copy_partial_linked_part_files_and_retry(
     assert ctx.copy(keep_going=keep_going, report=report) == (["child"], [])
     target = ctx.target_layout.backups["child"]
     assert target.state == BackupState.CREATED
-    assert target.get_parts()[0].link is None
+    assert target.get_parts()[0].link == target.cloud_generation
     assert target.get_parts()[0].link_part_name is None
     assert report.backups[0].objects_copied == 3
     assert report.backups[0].known_bytes_copied == 103
@@ -1026,7 +1054,6 @@ def _cloud_storage_context(backup_name: str = "b1") -> CopyTestContext:
 @pytest.mark.parametrize("backup_name", ["b1", "backup-1"])
 def test_cloud_storage(backup_name: str) -> None:
     ctx = _cloud_storage_context(backup_name)
-    sanitized_name = backup_name.replace("-", "_")
 
     assert ctx.copy([backup_name]) == ([backup_name], [])
 
@@ -1052,7 +1079,7 @@ def test_cloud_storage(backup_name: str) -> None:
             "data/xyz/aaa",
             "disk-copy",
             ENDPOINT,
-            f"copies/{backup_name}/xyz/aaa",
+            f"copies/{_cloud_name(ctx, backup_name)}/xyz/aaa",
             1000,
         ),
         (
@@ -1062,19 +1089,19 @@ def test_cloud_storage(backup_name: str) -> None:
             "data/xyz/bbb",
             "disk-copy",
             ENDPOINT,
-            f"copies/{backup_name}/xyz/bbb",
+            f"copies/{_cloud_name(ctx, backup_name)}/xyz/bbb",
             10,
         ),
     }
     # Tarballs with cloud storage metadata are copied too.
     assert (
-        f"ch_backup_copy/{sanitized_name}/disks/s3/db1/t1.tar.gz"
+        f"ch_backup_copy/{_cloud_name(ctx, backup_name)}/disks/s3/db1/t1.tar.gz"
         in ctx.copied_paths().values()
     )
     assert ctx.target_layout.backups[backup_name].cloud_storage.source == {
         "endpoint_url": ENDPOINT,
         "bucket": "disk-copy",
-        "path": f"copies/{backup_name}",
+        "path": f"copies/{_cloud_name(ctx, backup_name)}",
     }
 
 
@@ -1128,7 +1155,10 @@ def test_copy_skips_sanitized_disk_prefix_folder_marker() -> None:
 
     copied = ctx.copied_paths()
     assert "ch_backup/backup_1/disks/" not in copied
-    assert "ch_backup_copy/backup_1/disks/s3/db1/t1.tar.gz" in copied.values()
+    assert (
+        f"ch_backup_copy/{_cloud_name(ctx, 'backup-1')}/disks/s3/db1/t1.tar.gz"
+        in copied.values()
+    )
 
 
 def test_cloud_storage_source_override() -> None:
@@ -1172,7 +1202,7 @@ def test_cloud_source_overrides_are_independent(
     version: int, virtual_host: bool, stored_source: bool, overrides: dict
 ) -> None:
     ctx = _cloud_storage_context()
-    base = {
+    base: CloudStorageSource = {
         "endpoint_url": "http://minio:9000",
         "bucket": "cloud-storage",
         "path": "data",
@@ -1213,19 +1243,24 @@ def test_cloud_source_overrides_are_independent(
     assert {e.src_path for e in entries} == {
         os.path.join(expected["path"], key) for key in ("xyz/aaa", "xyz/bbb")
     }
-    assert {e.dst_path for e in entries} == {"copies/b1/xyz/aaa", "copies/b1/xyz/bbb"}
+    assert {e.dst_path for e in entries} == {
+        f"copies/{_cloud_name(ctx, 'b1')}/xyz/aaa",
+        f"copies/{_cloud_name(ctx, 'b1')}/xyz/bbb",
+    }
     for entry in entries:
         credentials = entry.src_storage["credentials"]
         assert credentials["endpoint_url"] == expected["endpoint_url"]
         assert credentials["bucket"] == expected["bucket"]
     if version == 5:
         assert ctx.target_layout.cloud_storage_files[
-            "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
+            f"ch_backup_copy/{_cloud_name(ctx, 'b1')}/disks/s3/db1/t1.tar.gz"
         ] == [
             (
                 "part/data.bin",
                 _object_storage_metadata(
-                    ("copies/b1/xyz/aaa", 1000), ("copies/b1/xyz/bbb", 10), version=5
+                    (f"copies/{_cloud_name(ctx, 'b1')}/xyz/aaa", 1000),
+                    (f"copies/{_cloud_name(ctx, 'b1')}/xyz/bbb", 10),
+                    version=5,
                 ),
             )
         ]
@@ -1258,7 +1293,9 @@ def test_full_key_source_path_override_from_bucket_root(
         (e.src_path, e.dst_path)
         for e in ctx.target_layout.copied
         if e.dst_storage["credentials"]["bucket"] == "disk-copy"
-    ] == [(os.path.join(override, "xyz/aaa"), "copies/b1/xyz/aaa")]
+    ] == [
+        (os.path.join(override, "xyz/aaa"), f"copies/{_cloud_name(ctx, 'b1')}/xyz/aaa")
+    ]
 
 
 @pytest.mark.parametrize("override", ["other/path", ""])
@@ -1344,11 +1381,20 @@ def test_copy_rejects_unconfigured_stored_endpoint_before_requests() -> None:
 
 
 @pytest.mark.parametrize("endpoint_override", [None, "http://other-s3:9000"])
-def test_cloud_storage_of_copied_backup(endpoint_override: str | None) -> None:
+@pytest.mark.parametrize("default_endpoint", [False, True])
+def test_cloud_storage_of_copied_backup(
+    endpoint_override: str | None, default_endpoint: bool
+) -> None:
     ctx = _cloud_storage_context()
     ctx.ch_config.config = {}
+    configured_endpoint = None if default_endpoint else ENDPOINT
+    ctx.config["storage"]["credentials"]["endpoint_url"] = configured_endpoint
+    ctx.target_config["storage"]["credentials"]["endpoint_url"] = configured_endpoint
+    if default_endpoint:
+        ctx.store.buckets[("s3", None, SRC_BUCKET)] = ctx.src_objects
+    source_endpoint = endpoint_override or configured_endpoint
     ctx.layout.backups["b1"].cloud_storage.source = {
-        "endpoint_url": (endpoint_override or ENDPOINT) + "/",
+        "endpoint_url": source_endpoint + "/" if source_endpoint else None,
         "bucket": "copied-disk-data",
         "path": "prev/b1",
     }
@@ -1367,19 +1413,23 @@ def test_cloud_storage_of_copied_backup(endpoint_override: str | None) -> None:
         for e in ctx.target_layout.copied
         if e.dst_storage["credentials"]["bucket"] == "disk-copy"
     } == {
-        (endpoint_override or ENDPOINT, "copied-disk-data", "prev/b1/xyz/aaa"),
-        (endpoint_override or ENDPOINT, "copied-disk-data", "prev/b1/xyz/bbb"),
+        (source_endpoint, "copied-disk-data", "prev/b1/xyz/aaa"),
+        (source_endpoint, "copied-disk-data", "prev/b1/xyz/bbb"),
     }
 
 
 def test_cloud_storage_recopies_existing_objects() -> None:
     ctx = _cloud_storage_context()
-    ctx.store.bucket("disk-copy")["copies/b1/xyz/aaa"] = 1000
+    ctx.store.bucket("disk-copy")[f"copies/{_cloud_name(ctx, 'b1')}/xyz/aaa"] = 1000
 
     ctx.copy(["b1"])
 
-    assert "copies/b1/xyz/aaa" in {e.dst_path for e in ctx.target_layout.copied}
-    assert "copies/b1/xyz/bbb" in {e.dst_path for e in ctx.target_layout.copied}
+    assert f"copies/{_cloud_name(ctx, 'b1')}/xyz/aaa" in {
+        e.dst_path for e in ctx.target_layout.copied
+    }
+    assert f"copies/{_cloud_name(ctx, 'b1')}/xyz/bbb" in {
+        e.dst_path for e in ctx.target_layout.copied
+    }
 
 
 @pytest.mark.parametrize("version", [3, 5])
@@ -1565,19 +1615,28 @@ def test_cloud_storage_disk_endpoints(
             e.dst_path,
         )
         for e in disk_entries
-    } == {(service_endpoint, bucket, source_key, "copies/b1/xyz/aaa")}
+    } == {
+        (
+            service_endpoint,
+            bucket,
+            source_key,
+            f"copies/{_cloud_name(ctx, 'b1')}/xyz/aaa",
+        )
+    }
     assert disk_entries[0].src_storage["credentials"]["access_key_id"] == "disk_key"
     assert (
         disk_entries[0].src_storage["boto_config"]
         == ctx.config["storage"]["boto_config"]
     )
-    target_tarball = "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
+    target_tarball = f"ch_backup_copy/{_cloud_name(ctx, 'b1')}/disks/s3/db1/t1.tar.gz"
     if version == 5:
         assert target_tarball not in {e.dst_path for e in ctx.target_layout.copied}
         assert ctx.target_layout.cloud_storage_files[target_tarball] == [
             (
                 file_name,
-                _object_storage_metadata(("copies/b1/xyz/aaa", 1000), version=5),
+                _object_storage_metadata(
+                    (f"copies/{_cloud_name(ctx, 'b1')}/xyz/aaa", 1000), version=5
+                ),
             )
         ]
     else:
@@ -1611,21 +1670,25 @@ def test_cloud_storage_full_object_keys() -> None:
         for e in ctx.target_layout.copied
         if e.dst_storage["credentials"]["bucket"] == "disk-copy"
     } == {
-        ("data/xyz/aaa", "copies/b1/xyz/aaa"),
-        ("other/xyz/ccc", "copies/b1/other/xyz/ccc"),
-        ("data/xyz/bbb", "copies/b1/xyz/bbb"),
+        ("data/xyz/aaa", f"copies/{_cloud_name(ctx, 'b1')}/xyz/aaa"),
+        ("other/xyz/ccc", f"copies/{_cloud_name(ctx, 'b1')}/other/xyz/ccc"),
+        ("data/xyz/bbb", f"copies/{_cloud_name(ctx, 'b1')}/xyz/bbb"),
     }
     # Tarball is uploaded with rewritten full object keys instead of copying as is.
-    target_tarball = "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
+    target_tarball = f"ch_backup_copy/{_cloud_name(ctx, 'b1')}/disks/s3/db1/t1.tar.gz"
     assert target_tarball not in {e.dst_path for e in ctx.target_layout.copied}
     assert ctx.target_layout.cloud_storage_files[target_tarball] == [
         (
             "store/abc/uuid/all_1_1_0/data.bin",
-            _object_storage_metadata(("copies/b1/xyz/aaa", 1000), version=5),
+            _object_storage_metadata(
+                (f"copies/{_cloud_name(ctx, 'b1')}/xyz/aaa", 1000), version=5
+            ),
         ),
         (
             "store/abc/uuid/all_1_1_0/count.txt",
-            _object_storage_metadata(("copies/b1/other/xyz/ccc", 1), version=5),
+            _object_storage_metadata(
+                (f"copies/{_cloud_name(ctx, 'b1')}/other/xyz/ccc", 1), version=5
+            ),
         ),
         (
             "store/abc/uuid/all_1_1_0/checksums.txt",
@@ -1691,15 +1754,15 @@ def test_full_cloud_storage_copy(
 
     assert ctx.copy([backup.name]) == ([backup.name], [])
 
-    dst_prefix = "ch_backup_copy/backup_1/cloud_storage/s3"
+    dst_prefix = f"ch_backup_copy/{_cloud_name(ctx, 'backup-1')}/cloud_storage/s3"
     assert ctx.copied_paths() == {f"{prefix}/xyz/data": f"{dst_prefix}/xyz/data"}
     target = ctx.target_layout.backups[backup.name]
     assert target.cloud_storage.data_copied
     assert target.cloud_storage.source is None
-    assert target.get_parts()[0].link is None
+    assert target.get_parts()[0].link == target.cloud_generation
     assert target.get_parts()[0].link_part_name is None
     assert ctx.target_layout.cloud_storage_files[
-        "ch_backup_copy/backup_1/disks/s3/db1/t1.tar.gz"
+        f"ch_backup_copy/{_cloud_name(ctx, 'backup-1')}/disks/s3/db1/t1.tar.gz"
     ] == [
         (
             "store/abc/uuid/all_1_1_0_2/data.bin",
@@ -1721,11 +1784,16 @@ def test_full_cloud_storage_copy_keeps_valid_links() -> None:
         cloud_storage_disks=["s3"],
     )
     backup.cloud_storage.data_copied = True
-    ctx = CopyTestContext([base, backup], [base])
+    base.name = ".cloud_generation_" + "1" * 32
+    base.generation_of = "base"
+    backup.get_table("db1", "t1").raw_metadata["parts"]["all_1_1_0"]["link"] = base.name
+    public = _backup("base")
+    public.cloud_generation = base.name
+    ctx = CopyTestContext([base, backup], [base, public])
 
     ctx.copy(["next"])
 
-    assert ctx.target_layout.backups["next"].get_parts()[0].link == "base"
+    assert ctx.target_layout.backups["next"].get_parts()[0].link == base.name
     assert not ctx.target_layout.copied
     assert not ctx.target_layout.cloud_storage_files
 
@@ -1778,7 +1846,7 @@ def test_full_cloud_storage_copy_separates_disk_prefixes() -> None:
     ctx.copy(["b1"])
 
     assert ctx.copied_paths() == {
-        f"ch_backup/b1/cloud_storage/{disk}/same-key": f"ch_backup_copy/b1/cloud_storage/{disk}/same-key"
+        f"ch_backup/b1/cloud_storage/{disk}/same-key": f"ch_backup_copy/{_cloud_name(ctx, 'b1')}/cloud_storage/{disk}/same-key"
         for disk in backup.cloud_storage.disks
     }
 
@@ -1860,7 +1928,7 @@ def test_copy_keep_going_skips_corrupt_source_metadata() -> None:
     report = CopyReport()
     original = ctx.layout.get_backup
 
-    def read(name, use_light_meta=False):
+    def read(name, use_light_meta=False, **kwargs):
         if name == "broken" and use_light_meta:
             raise StorageError("invalid metadata")
         return original(name, use_light_meta)
@@ -1889,7 +1957,7 @@ def test_selection_failure_preserves_unprocessed_candidates(
     failure = StorageError("invalid metadata")
     original = ctx.layout.get_backup
 
-    def read(name, use_light_meta=False):
+    def read(name, use_light_meta=False, **kwargs):
         if name == "b_broken" and use_light_meta:
             raise failure
         return original(name, use_light_meta)
@@ -1921,8 +1989,12 @@ def test_selection_failure_preserves_unprocessed_candidates(
 
 
 def test_selection_excludes_known_ineligible_candidates_from_report() -> None:
+    # Parallel inventory reads must not expose internal generations as copy candidates.
+    generation = _backup(".cloud_generation_" + "1" * 32)
+    generation.generation_of = "healthy"
     ctx = CopyTestContext(
         [
+            generation,
             _backup("failed", state=BackupState.FAILED),
             _backup("healthy"),
             _backup("missing"),
@@ -1931,7 +2003,7 @@ def test_selection_excludes_known_ineligible_candidates_from_report() -> None:
     report = CopyReport()
     original = ctx.layout.get_backup
 
-    def read(name, use_light_meta=False):
+    def read(name, use_light_meta=False, **kwargs):
         return None if name == "missing" else original(name, use_light_meta)
 
     with patch.object(ctx.layout, "get_backup", side_effect=read):
@@ -1945,7 +2017,7 @@ def test_selection_rejects_mismatched_metadata_names(explicit_names: bool) -> No
     report = CopyReport()
     original = ctx.layout.get_backup
 
-    def read(name, use_light_meta=False):
+    def read(name, use_light_meta=False, **kwargs):
         return _backup("different") if name == "b1" else original(name, use_light_meta)
 
     with patch.object(ctx.layout, "get_backup", side_effect=read):
@@ -2074,7 +2146,7 @@ def test_copy_isolates_corrupt_target_metadata(keep_going: bool) -> None:
     )
     original = ctx.target_layout.get_backup
 
-    def read(name, use_light_meta=False):
+    def read(name, use_light_meta=False, **kwargs):
         if name == "b" and use_light_meta:
             raise StorageError("invalid target metadata")
         return original(name, use_light_meta)
@@ -2104,7 +2176,7 @@ def test_unreadable_target_reserves_sanitized_name() -> None:
     )
     original = ctx.target_layout.get_backup
 
-    def read(name, use_light_meta=False):
+    def read(name, use_light_meta=False, **kwargs):
         if name == "backup_1":
             raise StorageError("invalid target metadata")
         return original(name, use_light_meta)
@@ -2153,7 +2225,7 @@ def test_unreadable_target_dependency_uses_source_data(
         _with_files(ctx, "owner", {"data/db1/t1/all_1_1_0/all_1_1_0.tar": 101})
     original = ctx.target_layout.get_backup
 
-    def read(name, use_light_meta=False):
+    def read(name, use_light_meta=False, **kwargs):
         if name == "owner" and not use_light_meta:
             raise StorageError("invalid target full metadata")
         return original(name, use_light_meta)
@@ -2167,7 +2239,9 @@ def test_unreadable_target_dependency_uses_source_data(
             return
         assert ctx.copy(["child"], keep_going=True, report=report) == (["child"], [])
     assert ctx.target_layout.backups["child"].state == BackupState.CREATED
-    assert ctx.target_layout.backups["child"].get_parts()[0].link is None
+    assert ctx.target_layout.backups["child"].get_parts()[0].link == (
+        _cloud_name(ctx, "child") if full_cloud else None
+    )
     assert report.backups[0].known_bytes_copied == 101
     assert not report.backups[0].errors
 
@@ -2241,7 +2315,7 @@ def test_cloud_planning_continues_within_metadata_file_and_retries(
         if full_cloud:
             # Incomplete V5 metadata must not be rewritten with a shortened list.
             assert ctx.target_layout.cloud_storage_files[
-                "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
+                f"ch_backup_copy/{_cloud_name(ctx, 'b1')}/disks/s3/db1/t1.tar.gz"
             ] == [(file_name, data)]
     else:
         assert not ctx.target_layout.uploaded
@@ -2276,7 +2350,7 @@ def test_copy_materializes_links_after_owner_copy_fails() -> None:
         ctx.copy(keep_going=True)
     target = ctx.target_layout.backups["b2"]
     assert target.state == BackupState.CREATED
-    assert target.get_parts()[0].link is None
+    assert target.get_parts()[0].link == target.cloud_generation
     assert any(
         e.dst_path == "ch_backup_copy/b2/data/db1/t1/all_1_1_0/all_1_1_0.tar"
         for e in ctx.target_layout.copied
@@ -2343,7 +2417,11 @@ def test_copy_reuses_only_successfully_materialized_parts(
     target = ctx.target_layout.backups["c"]
     part = target.get_parts()[0]
     assert target.state == BackupState.CREATED
-    assert part.link == (None if materialized_backup_fails else "b")
+    assert part.link == (
+        _cloud_name(ctx, "c" if materialized_backup_fails else "b")
+        if cloud
+        else (None if materialized_backup_fails else "b")
+    )
     assert part.link_part_name == (
         names[1] if renamed and not materialized_backup_fails else None
     )
@@ -2351,7 +2429,9 @@ def test_copy_reuses_only_successfully_materialized_parts(
     copied_to_c = [
         e
         for e in ctx.target_layout.copied
-        if e.dst_path.startswith("ch_backup_copy/c/")
+        if e.dst_path.startswith(
+            f"ch_backup_copy/{_cloud_name(ctx, 'c') if cloud else 'c'}/"
+        )
     ]
     assert bool(copied_to_c) == materialized_backup_fails
 
@@ -2423,12 +2503,11 @@ def test_copy_counts_server_side_probe_once() -> None:
 def test_copy_counts_rewritten_metadata(metadata_failure: bool) -> None:
     ctx = _cloud_storage_context()
     src_path = "ch_backup/b1/disks/s3/db1/t1.tar.gz"
-    dst_path = "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
     ctx.layout.cloud_storage_files[src_path] = [
         ("part/data.bin", _object_storage_metadata(("data/xyz/aaa", 1000), version=5))
     ]
     if metadata_failure:
-        ctx.target_layout.metadata_errors[dst_path] = RuntimeError(
+        ctx.target_layout.metadata_errors["disks/s3/db1/t1.tar.gz"] = RuntimeError(
             "metadata upload failed"
         )
     report = CopyReport()
@@ -2446,7 +2525,10 @@ def test_copy_counts_rewritten_metadata(metadata_failure: bool) -> None:
         result.known_bytes_copied,
     ) == (3, 2 if metadata_failure else 3, int(metadata_failure), 1050)
     if metadata_failure:
-        assert result.errors[0]["target"] == dst_path
+        assert (
+            result.errors[0]["target"]
+            == f"ch_backup_copy/{_cloud_name(ctx, 'b1')}/disks/s3/db1/t1.tar.gz"
+        )
 
 
 @pytest.mark.parametrize("keep_going", [False, True])
@@ -2456,7 +2538,7 @@ def test_copy_records_synchronous_cloud_metadata_validation_failure(
     ctx = _cloud_storage_context()
     ctx.layout.backups["b1"].cloud_storage.encrypted = False
     src_path = "ch_backup/b1/disks/s3/db1/t1.tar.gz"
-    dst_path = "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
+    dst_path = f"ch_backup_copy/{_cloud_name(ctx, 'b1')}/disks/s3/db1/t1.tar.gz"
     ctx.layout.cloud_storage_files[src_path] = [
         ("part/data.bin", _object_storage_metadata(("data/xyz/aaa", 1000), version=5)),
         ("part/count.txt", b"5\n0\t1\n0\n0\n1\n"),
@@ -2478,7 +2560,7 @@ def test_copy_records_synchronous_cloud_metadata_validation_failure(
     assert dst_path not in {entry.dst_path for entry in ctx.target_layout.copied}
     assert dst_path not in ctx.target_layout.cloud_storage_files
     assert ctx.target_layout.backups["b1"].state == BackupState.FAILED
-    assert ctx.target_layout.uploaded[:2] == [
+    assert [item for item in ctx.target_layout.uploaded if item[0] == "b1"][:2] == [
         ("b1", BackupState.CREATING),
         ("b1", BackupState.FAILED),
     ]
@@ -2491,7 +2573,10 @@ def test_copy_records_synchronous_cloud_metadata_validation_failure(
     )
     assert len(failed.errors) == 1
     assert failed.errors[0]["stage"] == "copy_metadata"
-    assert failed.errors[0]["target"] == dst_path
+    assert (
+        failed.errors[0]["target"]
+        == f"ch_backup_copy/{_cloud_name(ctx, 'b1')}/disks/s3/db1/t1.tar.gz"
+    )
     assert "inline file data" in failed.errors[0]["message"]
     assert independent.status == ("copied" if keep_going else "not_processed")
 
@@ -2499,7 +2584,10 @@ def test_copy_records_synchronous_cloud_metadata_validation_failure(
     ctx.layout.cloud_storage_files[src_path].pop()
     assert ctx.copy(["b1"], keep_going=keep_going) == (["b1"], [])
     assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
-    assert dst_path in ctx.target_layout.cloud_storage_files
+    assert (
+        f"ch_backup_copy/{_cloud_name(ctx, 'b1')}/disks/s3/db1/t1.tar.gz"
+        in ctx.target_layout.cloud_storage_files
+    )
 
 
 def test_failed_metadata_save_preserves_copy_error_and_clears_cache() -> None:
@@ -2630,14 +2718,14 @@ def test_copy_continues_other_rewritten_metadata_uploads() -> None:
                 _object_storage_metadata((f"data/xyz/{key}", 1000), version=5),
             )
         ]
-    ctx.target_layout.metadata_errors["ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"] = (
-        RuntimeError("one archive failed")
+    ctx.target_layout.metadata_errors["disks/s3/db1/t1.tar.gz"] = RuntimeError(
+        "one archive failed"
     )
     report = CopyReport()
     with pytest.raises(ClickhouseBackupError):
         ctx.copy(keep_going=True, report=report)
     assert (
-        "ch_backup_copy/b1/disks/s3/db1/t2.tar.gz"
+        f"ch_backup_copy/{_cloud_name(ctx, 'b1')}/disks/s3/db1/t2.tar.gz"
         in ctx.target_layout.cloud_storage_files
     )
     result = report.backups[0]
@@ -2792,7 +2880,9 @@ def test_resume_skips_confirmed_cloud_storage_objects() -> None:
 
     ctx.copy(["b1"])
 
-    assert {e.dst_path for e in ctx.target_layout.copied} == {"copies/b1/xyz/bbb"}
+    assert {e.dst_path for e in ctx.target_layout.copied} == {
+        f"copies/{_cloud_name(ctx, 'b1')}/xyz/bbb"
+    }
 
 
 def test_resume_recopies_cloud_storage_objects_when_encryption_changes() -> None:
@@ -2813,8 +2903,8 @@ def test_resume_recopies_cloud_storage_objects_when_encryption_changes() -> None
         if entry.dst_storage["credentials"]["bucket"] == "disk-copy"
     ]
     assert {entry.dst_path for entry in disk_entries} == {
-        "copies/b1/xyz/aaa",
-        "copies/b1/xyz/bbb",
+        f"copies/{_cloud_name(ctx, 'b1')}/xyz/aaa",
+        f"copies/{_cloud_name(ctx, 'b1')}/xyz/bbb",
     }
     assert all(entry.encrypt for entry in disk_entries)
 
@@ -3033,9 +3123,12 @@ def test_copy_scopes_separately(encrypt: bool) -> None:
     assert (target.cloud_storage.data_encryption is not None) == encrypt
     assert _scopes(target) == {"files": "completed", "cloud_storage": "completed"}
     assert set(ctx.copied_paths().values()) == _disk_objects(ctx) | {
-        "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
+        f"ch_backup_copy/{_cloud_name(ctx, 'b1')}/disks/s3/db1/t1.tar.gz"
     }
-    assert _disk_objects(ctx) == {"copies/b1/xyz/aaa", "copies/b1/xyz/bbb"}
+    assert _disk_objects(ctx) == {
+        f"copies/{_cloud_name(ctx, 'b1')}/xyz/aaa",
+        f"copies/{_cloud_name(ctx, 'b1')}/xyz/bbb",
+    }
     if encrypt:
         assert ctx.copy(["b1"], scopes=["cloud_storage"]) == ([], ["b1"])
 
@@ -3089,7 +3182,7 @@ def test_cloud_storage_scope_lists_failed_objects() -> None:
     assert failed == [
         {
             "src": "data/xyz/bbb",
-            "dst": "copies/b1/xyz/bbb",
+            "dst": f"copies/{_cloud_name(ctx, 'b1')}/xyz/bbb",
             "size": 10,
             "error": "StorageError: SlowDown",
         }
@@ -3100,7 +3193,9 @@ def test_cloud_storage_scope_lists_failed_objects() -> None:
 
     ctx.copy(["b1"], scopes=["cloud_storage"], report=report)
 
-    assert set(ctx.copied_paths().values()) == {"copies/b1/xyz/bbb"}
+    assert set(ctx.copied_paths().values()) == {
+        f"copies/{_cloud_name(ctx, 'b1')}/xyz/bbb"
+    }
     assert report.backups[0].objects_skipped == 2
     assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
     assert _failed_objects(ctx) is None
@@ -3139,7 +3234,7 @@ def test_files_scope_lists_failed_objects() -> None:
     assert _failed_objects(ctx) is None
 
 
-def test_failed_objects_copied_by_interrupted_run_are_not_listed() -> None:
+def test_stale_publication_metadata_allocates_another_generation() -> None:
     ctx = _scoped_context()
     ctx.target_layout.object_errors["data/xyz/bbb"] = StorageError("SlowDown")
     with pytest.raises(ClickhouseBackupError):
@@ -3158,7 +3253,9 @@ def test_failed_objects_copied_by_interrupted_run_are_not_listed() -> None:
 
     ctx.copy(["b1"], scopes=["cloud_storage"])
 
-    assert not ctx.target_layout.copied
+    assert ctx.target_layout.copied
+    assert ctx.target_layout.backups["b1"].cloud_generation != target.cloud_generation
+    assert target.cloud_generation in ctx.target_layout.backups
     assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
     assert _failed_objects(ctx) is None
 
@@ -3186,7 +3283,6 @@ def test_completed_scope_with_changed_rewritten_metadata_is_copied_again(
     replaced: bool,
 ) -> None:
     ctx = _scoped_context(version=5)
-    tarball = "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
     ctx.copy(["b1"], scopes=["files"])
     ctx.dst_objects.pop("ch_backup_copy/b1/metadata/a.tar")
     ctx.copy(["b1"], scopes=["cloud_storage"])
@@ -3194,6 +3290,7 @@ def test_completed_scope_with_changed_rewritten_metadata_is_copied_again(
         "files": "pending",
         "cloud_storage": "completed",
     }
+    tarball = f"ch_backup_copy/{_cloud_name(ctx, 'b1')}/disks/s3/db1/t1.tar.gz"
     uploaded = ctx.target_layout.cloud_storage_files.pop(tarball)
     size = ctx.dst_objects.pop(tarball)
     if replaced:
@@ -3216,10 +3313,10 @@ def test_completed_scope_with_changed_rewritten_metadata_is_copied_again(
 
 def test_resume_skips_confirmed_rewritten_metadata() -> None:
     ctx = _scoped_context(version=5)
-    tarball = "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
     ctx.target_layout.object_errors["data/xyz/aaa"] = StorageError("SlowDown")
     with pytest.raises(ClickhouseBackupError):
         ctx.copy(["b1"], keep_going=True)
+    tarball = f"ch_backup_copy/{_cloud_name(ctx, 'b1')}/disks/s3/db1/t1.tar.gz"
     assert tarball in ctx.target_layout.cloud_storage_files
     ctx.target_layout.object_errors.clear()
     ctx.target_layout.copied.clear()
@@ -3229,14 +3326,16 @@ def test_resume_skips_confirmed_rewritten_metadata() -> None:
     ctx.copy(["b1"], scopes=["cloud_storage"], report=report)
 
     assert tarball not in ctx.target_layout.cloud_storage_files
-    assert set(ctx.copied_paths().values()) == {"copies/b1/xyz/aaa"}
+    assert set(ctx.copied_paths().values()) == {
+        f"copies/{_cloud_name(ctx, 'b1')}/xyz/aaa"
+    }
     assert report.backups[0].objects_skipped == 1
     assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
 
 
 def test_failed_cloud_storage_planning_keeps_rewritten_metadata() -> None:
     ctx = _scoped_context(version=5)
-    tarball = "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
+    tarball = f"ch_backup_copy/{_cloud_name(ctx, 'b1')}/disks/s3/db1/t1.tar.gz"
     disks = ctx.ch_config.config
     ctx.copy(["b1"], scopes=["files"])
     ctx.dst_objects.pop("ch_backup_copy/b1/metadata/a.tar")
@@ -3277,8 +3376,8 @@ def test_files_scope_needs_no_settings_of_object_storage() -> None:
 
     with patch.object(
         ctx.layout,
-        "get_cloud_storage_metadata_files",
-        wraps=ctx.layout.get_cloud_storage_metadata_files,
+        "read_cloud_storage_metadata_archive",
+        wraps=ctx.layout.read_cloud_storage_metadata_archive,
     ) as download:
         ctx.copy(["b1"], scopes=["files"])
         bucket, target["bucket"] = target["bucket"], None
@@ -3311,7 +3410,6 @@ class UnavailableLayout:
 @pytest.mark.parametrize("version", [3, 5])
 def test_cloud_storage_scope_without_source_storage(version: int) -> None:
     ctx = _scoped_context(version=version)
-    tarball = "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz"
     ctx.copy(["b1"], scopes=["files"])
     ctx.layout = UnavailableLayout()  # type: ignore[assignment]
     ctx.target_layout.source = None
@@ -3328,11 +3426,15 @@ def test_cloud_storage_scope_without_source_storage(version: int) -> None:
     target = ctx.target_layout.backups["b1"]
     assert target.state == BackupState.CREATED
     assert _scopes(target) == {"files": "completed", "cloud_storage": "completed"}
+    tarball = f"ch_backup_copy/{_cloud_name(ctx, 'b1')}/disks/s3/db1/t1.tar.gz"
     if version == 5:
-        assert _disk_objects(ctx) == {"copies/b1/xyz/aaa"}
+        assert _disk_objects(ctx) == {f"copies/{_cloud_name(ctx, 'b1')}/xyz/aaa"}
         assert tarball in ctx.target_layout.cloud_storage_files
     else:
-        assert _disk_objects(ctx) == {"copies/b1/xyz/aaa", "copies/b1/xyz/bbb"}
+        assert _disk_objects(ctx) == {
+            f"copies/{_cloud_name(ctx, 'b1')}/xyz/aaa",
+            f"copies/{_cloud_name(ctx, 'b1')}/xyz/bbb",
+        }
         assert tarball in ctx.copied_paths().values()
 
 
@@ -3422,7 +3524,7 @@ def test_files_scope_copies_backup_with_copied_cloud_storage_data() -> None:
     assert target.state == BackupState.CREATED
     assert _scopes(target) == {"files": "completed", "cloud_storage": "completed"}
     assert ctx.copied_paths() == {
-        "ch_backup/b1/cloud_storage/s3/xyz/data": "ch_backup_copy/b1/cloud_storage/s3/xyz/data"
+        "ch_backup/b1/cloud_storage/s3/xyz/data": f"ch_backup_copy/{_cloud_name(ctx, 'b1')}/cloud_storage/s3/xyz/data"
     }
 
 
@@ -3455,7 +3557,10 @@ def test_links_to_local_parts_of_incomplete_copies(stored: bool, window: int) ->
     target = ctx.target_layout.backups["b2"]
     assert target.state == BackupState.CREATED
     assert target.get_parts()[0].link == ("b1" if stored else None)
-    assert (f"ch_backup_copy/b2/{part_file}" in ctx.copied_paths().values()) != stored
+    assert (
+        f"ch_backup_copy/{_cloud_name(ctx, 'b2')}/{part_file}"
+        in ctx.copied_paths().values()
+    ) != stored
 
 
 def test_cloud_storage_parts_of_incomplete_copies_are_copied() -> None:
@@ -3487,8 +3592,11 @@ def test_cloud_storage_parts_of_incomplete_copies_are_copied() -> None:
 
     assert ctx.copy(["b2"]) == (["b2"], [])
 
-    assert ctx.target_layout.backups["b2"].get_parts()[0].link is None
-    assert "ch_backup_copy/b2/cloud_storage/s3/xyz/data" in ctx.copied_paths().values()
+    assert ctx.target_layout.backups["b2"].get_parts()[0].link == _cloud_name(ctx, "b2")
+    assert (
+        f"ch_backup_copy/{_cloud_name(ctx, 'b2')}/cloud_storage/s3/xyz/data"
+        in ctx.copied_paths().values()
+    )
 
 
 def test_disk_metadata_with_planning_errors_is_not_copied_as_is() -> None:
@@ -3501,8 +3609,14 @@ def test_disk_metadata_with_planning_errors_is_not_copied_as_is() -> None:
     with pytest.raises(ClickhouseBackupError):
         ctx.copy(["b1"], keep_going=True)
 
-    assert "ch_backup_copy/b1/disks/s3/db1/t1.tar.gz" not in ctx.copied_paths().values()
-    assert _disk_objects(ctx) == {"copies/b1/xyz/aaa", "copies/b1/xyz/bbb"}
+    assert (
+        f"ch_backup_copy/{_cloud_name(ctx, 'b1')}/disks/s3/db1/t1.tar.gz"
+        not in ctx.copied_paths().values()
+    )
+    assert _disk_objects(ctx) == {
+        f"copies/{_cloud_name(ctx, 'b1')}/xyz/aaa",
+        f"copies/{_cloud_name(ctx, 'b1')}/xyz/bbb",
+    }
 
 
 def test_interrupted_cloud_storage_scope_keeps_failed_objects() -> None:
@@ -3537,15 +3651,17 @@ def test_incomplete_cloud_storage_planning_keeps_failed_objects() -> None:
     # pylint: disable-next=protected-access
     plan_objects = BackupCopier._plan_cloud_storage_objects
 
-    def incomplete(self, backup, plan, result):
-        plan_objects(self, backup, plan, result)
+    def incomplete(self, backup, target, plan, result):
+        plan_objects(self, backup, target, plan, result)
         result.add_error(StorageError("SlowDown"), "planning")
 
     with patch.object(BackupCopier, "_plan_cloud_storage_objects", incomplete):
         with pytest.raises(ClickhouseBackupError):
             ctx.copy(["b1"], scopes=["cloud_storage"], keep_going=True)
 
-    assert set(ctx.copied_paths().values()) == {"copies/b1/xyz/bbb"}
+    assert set(ctx.copied_paths().values()) == {
+        f"copies/{_cloud_name(ctx, 'b1')}/xyz/bbb"
+    }
     assert _failed_objects(ctx) == failed
     assert _scopes(ctx.target_layout.backups["b1"]) == {
         "files": "completed",
@@ -3565,7 +3681,10 @@ def test_scope_without_resume_recopies_its_objects_and_checks_others() -> None:
 
     ctx.copy(["b1"], scopes=["cloud_storage"], report=report)
 
-    assert _disk_objects(ctx) == {"copies/b1/xyz/aaa", "copies/b1/xyz/bbb"}
+    assert _disk_objects(ctx) == {
+        f"copies/{_cloud_name(ctx, 'b1')}/xyz/aaa",
+        f"copies/{_cloud_name(ctx, 'b1')}/xyz/bbb",
+    }
     assert report.backups[0].objects_skipped == 0
     assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
 
@@ -3608,7 +3727,7 @@ def test_cloud_retry_retains_original_source(publication_failure: bool) -> None:
     """Keep the original cloud source until publication, including failed publication retries."""
     ctx = _scoped_context(version=5)
     ctx.target_config["copy"]["cloud_storage"]["encrypt_data"] = True
-    source = {
+    source: CloudStorageSource = {
         "endpoint_url": "http://minio:9000",
         "bucket": "cloud-storage",
         "path": "data",
@@ -3647,7 +3766,7 @@ def test_cloud_retry_retains_original_source(publication_failure: bool) -> None:
     assert target.cloud_storage.source == {
         "endpoint_url": ENDPOINT,
         "bucket": "disk-copy",
-        "path": "copies/b1",
+        "path": f"copies/{_cloud_name(ctx, 'b1')}",
     }
     assert target.cloud_storage.data_encryption is not None
 
@@ -3665,6 +3784,11 @@ def test_cloud_storage_selection_only_with_data(only_with_data, names):
     empty.size = 0
     empty.start_time = data.start_time.replace(year=data.start_time.year + 1)
     ctx.target_layout.backups[empty.name] = empty
+    generation = copy.deepcopy(empty)
+    generation.name = ".cloud_generation_" + "1" * 32
+    generation.generation_of = data.name
+    generation.size = 100
+    ctx.target_layout.backups[generation.name] = generation
     ctx.layout.backups.clear()
     ctx.target_config["copy"]["only_with_data"] = only_with_data
     ctx.target_config["copy"]["scopes"] = ["cloud_storage"]
@@ -3674,3 +3798,502 @@ def test_cloud_storage_selection_only_with_data(only_with_data, names):
     expected = ["b1"] if only_with_data else (["empty"] if names else ["b1", "empty"])
     assert copied == expected
     assert not skipped
+
+
+@pytest.mark.parametrize("separate_runs", [False, True])
+def test_cloud_copy_reuses_unchanged_parts(separate_runs: bool) -> None:
+    ctx = _cloud_storage_context("day1")
+    part = {**_part(), "disk_name": "s3", "tarball": False}
+    ctx.layout.backups = {
+        "day1": _backup(
+            "day1",
+            parts={"all_1_1_0": part, "all_3_3_0": {**part, "checksum": "third"}},
+            cloud_storage_disks=["s3"],
+        ),
+        "day2": _backup(
+            "day2",
+            start_time="2026-01-02 00:00:00 +0000",
+            parts={"all_1_1_0": part, "all_4_4_0": {**part, "checksum": "fourth"}},
+            cloud_storage_disks=["s3"],
+        ),
+    }
+    for name, numbers in [("day1", [1, 3]), ("day2", [1, 4])]:
+        _with_files(ctx, name, {"disks/s3/db1/t1.tar.gz": 50})
+        ctx.layout.cloud_storage_files[f"ch_backup/{name}/disks/s3/db1/t1.tar.gz"] = [
+            (
+                f"store/abc/uuid/all_{number}_{number}_0/data.bin",
+                _object_storage_metadata((f"data/xyz/object-{number}", 100), version=5),
+            )
+            for number in numbers
+        ]
+
+    if separate_runs:
+        assert ctx.copy(["day1"]) == (["day1"], [])
+        assert ctx.copy(["day2"]) == (["day2"], [])
+    else:
+        assert ctx.copy() == (["day1", "day2"], [])
+
+    objects = [
+        entry.dst_path
+        for entry in ctx.target_layout.copied
+        if entry.dst_storage["credentials"]["bucket"] == "disk-copy"
+    ]
+    assert sorted(objects) == sorted(
+        [
+            f"copies/{_cloud_name(ctx, 'day1')}/xyz/object-1",
+            f"copies/{_cloud_name(ctx, 'day1')}/xyz/object-3",
+            f"copies/{_cloud_name(ctx, 'day2')}/xyz/object-4",
+        ]
+    )
+    copied = ctx.target_layout.backups["day2"]
+    copied_parts = {part.name: part for part in copied.get_parts()}
+    assert copied_parts["all_1_1_0"].link == _cloud_name(ctx, "day1")
+    assert copied_parts["all_4_4_0"].link == _cloud_name(ctx, "day2")
+    assert copied.real_size == 100
+    files = ctx.target_layout.cloud_storage_files[
+        f"ch_backup_copy/{_cloud_name(ctx, 'day2')}/disks/s3/db1/t1.tar.gz"
+    ]
+    assert [name for name, _data in files] == ["store/abc/uuid/all_4_4_0/data.bin"]
+
+
+def _linked_cloud_copy_context() -> CopyTestContext:
+    ctx = _cloud_storage_context("child")
+    ctx.target_layout.store = ctx.store
+    original = {**_part(), "disk_name": "s3", "tarball": False}
+    owner = _backup("owner", parts={"all_1_1_0": original}, cloud_storage_disks=["s3"])
+    owner.cloud_storage.source = {
+        "endpoint_url": ENDPOINT,
+        "bucket": "disk-copy",
+        "path": "copies/owner",
+    }
+    child = _backup(
+        "child",
+        parts={
+            "all_1_1_0_2": {**original, "link": "owner", "link_part_name": "all_1_1_0"}
+        },
+        cloud_storage_disks=["s3"],
+    )
+    child.cloud_storage.source = None
+    ctx.layout.backups = {"owner": owner, "child": child}
+    ctx.layout.cloud_storage_files.clear()
+    ctx.layout.cloud_storage_files.update(
+        {
+            "ch_backup/owner/disks/s3/db1/t1.tar.gz": [
+                (
+                    "store/abc/uuid/all_1_1_0/data.bin",
+                    _object_storage_metadata(("copies/owner/xyz/data", 100), version=5),
+                )
+            ]
+        }
+    )
+    _with_files(ctx, "owner", {"disks/s3/db1/t1.tar.gz": 50})
+    ctx.ch_config.config = {}
+    ctx.target_config["copy"]["cloud_storage"]["target"]["bucket"] = "third-disk"
+
+    return ctx
+
+
+@pytest.mark.parametrize("staged", [False, True])
+def test_cloud_copy_materializes_a_missing_owner(staged: bool) -> None:
+    ctx = _linked_cloud_copy_context()
+    if staged:
+        ctx.copy(["child"], scopes=["files"])
+        ctx.layout = UnavailableLayout()  # type: ignore[assignment]
+        ctx.target_layout.source = None
+    assert ctx.copy(["child"], scopes=["cloud_storage"] if staged else None) == (
+        ["child"],
+        [],
+    )
+
+    entries = [
+        e
+        for e in ctx.target_layout.copied
+        if e.dst_storage["credentials"]["bucket"] == "third-disk"
+    ]
+    assert [
+        (e.src_storage["credentials"]["bucket"], e.src_path, e.dst_path)
+        for e in entries
+    ] == [
+        (
+            "disk-copy",
+            "copies/owner/xyz/data",
+            f"copies/{_cloud_name(ctx, 'child')}/xyz/data",
+        )
+    ]
+    copied = ctx.target_layout.backups["child"]
+    assert copied.get_parts()[0].link == copied.cloud_generation
+    assert copied.get_parts()[0].link_part_name is None
+    files = ctx.target_layout.cloud_storage_files[
+        f"ch_backup_copy/{_cloud_name(ctx, 'child')}/disks/s3/db1/t1.tar.gz"
+    ]
+    assert files[0][0] == "store/abc/uuid/all_1_1_0_2/data.bin"
+    assert f"copies/{_cloud_name(ctx, 'child')}/xyz/data".encode() in files[0][1]
+
+
+@pytest.mark.parametrize(
+    "state,difference",
+    [
+        (BackupState.CREATED, None),
+        (BackupState.PARTIALLY_DELETED, None),
+        (BackupState.FAILED, None),
+        (BackupState.CREATED, "objects"),
+        (BackupState.CREATED, "uuid"),
+        (BackupState.CREATED, "bucket"),
+        (BackupState.CREATED, "prefix"),
+        (BackupState.CREATED, "outside_prefix"),
+        (BackupState.CREATED, "legacy"),
+    ],
+)
+def test_cloud_copy_reuses_only_complete_owning_parts(
+    state: BackupState, difference: str | None
+) -> None:
+    ctx = _cloud_storage_context("child")
+    part = {**_part(), "disk_name": "s3", "tarball": False}
+    ctx.layout.backups["child"] = _backup(
+        "child", parts={"all_1_1_0_2": part}, cloud_storage_disks=["s3"]
+    )
+    ctx.layout.cloud_storage_files.clear()
+    ctx.layout.cloud_storage_files.update(
+        {
+            "ch_backup/child/disks/s3/db1/t1.tar.gz": [
+                (
+                    "store/abc/uuid/all_1_1_0_2/data.bin",
+                    _object_storage_metadata(("xyz/data", 100)),
+                )
+            ]
+        }
+    )
+    _with_files(ctx, "child", {"disks/s3/db1/t1.tar.gz": 50})
+    ctx.layout.backups["owner"] = _backup(
+        "owner",
+        parts={"all_1_1_0": dict(part)},
+        cloud_storage_disks=["s3"],
+        table_uuid="different" if difference == "uuid" else None,
+    )
+    ctx.layout.cloud_storage_files["ch_backup/owner/disks/s3/db1/t1.tar.gz"] = [
+        (
+            "store/abc/uuid/all_1_1_0/data.bin",
+            _object_storage_metadata(
+                ("xyz/other" if difference == "objects" else "xyz/data", 100)
+            ),
+        )
+    ]
+    _with_files(ctx, "owner", {"disks/s3/db1/t1.tar.gz": 50})
+    assert ctx.copy(["owner"]) == (["owner"], [])
+    ctx.target_layout.copied.clear()
+    owner = ctx.target_layout.backups[_cloud_name(ctx, "owner")]
+    owner.state = state
+    raw = owner.get_table("db1", "t1").raw_metadata["parts"]["all_1_1_0"]
+    raw["checksum"] = "different-freeze"
+    if difference == "legacy":
+        del raw["cloud_storage_fingerprint"]
+    assert owner.cloud_storage.source is not None
+    if difference == "outside_prefix":
+        ctx.layout.cloud_storage_files["ch_backup/child/disks/s3/db1/t1.tar.gz"] = [
+            (
+                "store/abc/uuid/all_1_1_0_2/data.bin",
+                _object_storage_metadata(("xyz/data", 100), version=5),
+            )
+        ]
+    elif difference == "bucket":
+        owner.cloud_storage.source["bucket"] = "different"
+    elif difference == "prefix":
+        owner.cloud_storage.source["path"] = "different/owner"
+    ctx.target_layout.backups[owner.name] = owner
+
+    assert ctx.copy(["child"]) == (["child"], [])
+
+    copied_part = ctx.target_layout.backups["child"].get_parts()[0]
+    if state == BackupState.FAILED or difference:
+        assert copied_part.link == _cloud_name(ctx, "child")
+        assert any(
+            e.dst_path == f"copies/{_cloud_name(ctx, 'child')}/xyz/data"
+            for e in ctx.target_layout.copied
+        )
+    else:
+        assert copied_part.link == _cloud_name(ctx, "owner")
+        assert copied_part.link_part_name == "all_1_1_0"
+        assert not any(
+            e.dst_storage["credentials"]["bucket"] == "disk-copy"
+            for e in ctx.target_layout.copied
+        )
+
+
+def test_cloud_copy_keeps_owned_metadata_when_materializing_a_link() -> None:
+    ctx = _linked_cloud_copy_context()
+    child = ctx.layout.backups["child"]
+    child.cloud_storage.source = {
+        "endpoint_url": ENDPOINT,
+        "bucket": "disk-copy",
+        "path": "copies/child",
+    }
+    child.add_part(
+        PartMetadata(
+            "db1",
+            "t1",
+            "all_2_2_0",
+            "owned-checksum",
+            100,
+            ["data.bin"],
+            False,
+            disk_name="s3",
+        )
+    )
+    ctx.layout.cloud_storage_files["ch_backup/child/disks/s3/db1/t1.tar.gz"] = [
+        (
+            "store/abc/uuid/all_2_2_0/data.bin",
+            _object_storage_metadata(("xyz/owned", 100)),
+        )
+    ]
+
+    assert ctx.copy(["child"]) == (["child"], [])
+
+    files = ctx.target_layout.cloud_storage_files[
+        f"ch_backup_copy/{_cloud_name(ctx, 'child')}/disks/s3/db1/t1.tar.gz"
+    ]
+    assert {name for name, _data in files} == {
+        "store/abc/uuid/all_1_1_0_2/data.bin",
+        "store/abc/uuid/all_2_2_0/data.bin",
+    }
+    assert all(
+        part.link == _cloud_name(ctx, "child")
+        for part in ctx.target_layout.backups["child"].get_parts()
+    )
+    assert {
+        (entry.src_path, entry.dst_path)
+        for entry in ctx.target_layout.copied
+        if entry.dst_storage["credentials"]["bucket"] == "third-disk"
+    } == {
+        ("copies/owner/xyz/data", f"copies/{_cloud_name(ctx, 'child')}/xyz/data"),
+        ("copies/child/xyz/owned", f"copies/{_cloud_name(ctx, 'child')}/xyz/owned"),
+    }
+
+
+@pytest.mark.parametrize("namespace", ["bucket", "prefix"])
+def test_cloud_copy_does_not_share_equal_suffixes_from_different_sources(namespace):
+    ctx = _cloud_storage_context("day1")
+    part = {**_part(), "disk_name": "s3", "tarball": False}
+    for index, name in enumerate(("day1", "day2")):
+        backup = _backup(
+            name,
+            start_time=f"2026-01-0{index+1} 00:00:00 +0000",
+            parts={"all_1_1_0": dict(part)},
+            cloud_storage_disks=["s3"],
+        )
+        bucket = name if namespace == "bucket" else "source"
+        prefix = name if namespace == "prefix" else "data"
+        backup.cloud_storage.source = {
+            "endpoint_url": ENDPOINT,
+            "bucket": bucket,
+            "path": prefix,
+        }
+        ctx.layout.backups[name] = backup
+        ctx.layout.cloud_storage_files[f"ch_backup/{name}/disks/s3/db1/t1.tar.gz"] = [
+            (
+                "store/abc/uuid/all_1_1_0/data.bin",
+                _object_storage_metadata((prefix + "/xyz/data", 100), version=5),
+            )
+        ]
+    assert ctx.copy(["day1", "day2"]) == (["day1", "day2"], [])
+    copied = ctx.target_layout.backups["day2"]
+    assert copied.get_parts()[0].link == copied.cloud_generation
+    assert any(
+        entry.dst_path == f"copies/{_cloud_name(ctx, 'day2')}/xyz/data"
+        for entry in ctx.target_layout.copied
+    )
+    fingerprints = [
+        ctx.target_layout.backups[name]
+        .get_table("db1", "t1")
+        .raw_metadata["parts"]["all_1_1_0"]["cloud_storage_fingerprint"]
+        for name in ("day1", "day2")
+    ]
+    assert fingerprints[0] != fingerprints[1]
+
+
+@pytest.mark.parametrize("in_backup", [False, True])
+def test_staged_cloud_owner_retry_needs_no_source_backup(in_backup: bool) -> None:
+    ctx = _linked_cloud_copy_context()
+    archive = "ch_backup/owner/disks/s3/db1/t1.tar.gz"
+    if in_backup:
+        owner = ctx.layout.backups["owner"]
+        owner.cloud_storage.data_copied = True
+        owner.cloud_storage.source = None
+        ctx.layout.cloud_storage_files[archive] = [
+            (
+                "store/abc/uuid/all_1_1_0/data.bin",
+                _object_storage_metadata(("xyz/data", 100)),
+            )
+        ]
+        _with_files(
+            ctx,
+            "owner",
+            {"disks/s3/db1/t1.tar.gz": 50, "cloud_storage/s3/xyz/data": 100},
+        )
+    ctx.copy(["child"], scopes=["files"])
+    staged_payload = [
+        e.dst_path for e in ctx.target_layout.copied if "/cloud_storage/" in e.dst_path
+    ]
+    assert bool(staged_payload) == in_backup
+    ctx.layout = UnavailableLayout()  # type: ignore[assignment]
+    ctx.target_layout.source = None
+    payload = staged_payload[0] if in_backup else "copies/owner/xyz/data"
+    ctx.target_layout.object_errors[payload] = StorageError("interrupted")
+
+    with pytest.raises(ClickhouseBackupError):
+        ctx.copy(["child"], scopes=["cloud_storage"], keep_going=True)
+    failed = ctx.target_layout.backups["child"]
+    assert failed.state == BackupState.FAILED
+    assert failed.get_parts()[0].link == "owner"
+    assert failed.cloud_storage.source is None
+
+    ctx.target_layout.object_errors.clear()
+    ctx.copy(["child"], scopes=["cloud_storage"])
+    copied = ctx.target_layout.backups["child"]
+    assert copied.state == BackupState.CREATED
+    assert copied.get_parts()[0].link == copied.cloud_generation
+    assert copied.cloud_storage.source is not None
+    assert copied.cloud_storage.source["bucket"] == "third-disk"
+    assert any(
+        e.src_path == payload
+        and e.dst_path == f"copies/{_cloud_name(ctx, 'child')}/xyz/data"
+        for e in ctx.target_layout.copied
+    )
+
+
+def _cloud_name(ctx: CopyTestContext, name: str) -> str:
+    """Find the physical destination while leaving legacy source fixtures explicit."""
+    backup = ctx.target_layout.backups.get(name)
+    return backup.cloud_generation if backup and backup.cloud_generation else name
+
+
+@pytest.mark.parametrize(
+    "change,equal",
+    [
+        ({"name": "all_1_1_0_7"}, True),
+        ({"link_part_name": None}, True),
+        ({"link": "other"}, False),
+        ({"database": "other"}, False),
+        ({"table": "other"}, False),
+        ({"link_part_name": "all_1_1_0_3"}, False),
+        ({"disk_name": "other"}, False),
+        ({"tarball": False}, False),
+        ({"encrypted": False}, False),
+    ],
+)
+def test_materialized_reuse_resolves_the_same_stored_dependency(change, equal):
+    # pylint: disable=protected-access
+    """
+    Mutation renaming can leave the source dependency unchanged. The reuse key
+    must distinguish changes to the stored dependency or its format without
+    treating every requested name as new data.
+    """
+    fields: dict = dict(
+        database="db",
+        table="t",
+        name="all_1_1_0",
+        checksum="c",
+        size=1,
+        files=[],
+        tarball=True,
+        link="owner",
+        link_part_name="all_1_1_0",
+        encrypted=True,
+    )
+    first = PartMetadata(**fields)
+    second = PartMetadata(**{**fields, **change})
+    assert (
+        BackupCopier._materialized_part_key(first)
+        == BackupCopier._materialized_part_key(second)
+    ) is equal
+    first.raw_metadata.link_part_name = None
+    first.name = "all_1_1_0_9"
+    assert BackupCopier._materialized_part_key(
+        first
+    ) != BackupCopier._materialized_part_key(second)
+
+
+@pytest.mark.parametrize(
+    "field,value,valid",
+    [
+        ("name", "all_1_1_0_7", False),
+        ("table", "other", False),
+        ("database", "other", False),
+        ("link", "other", False),
+        ("checksum", "other", False),
+        ("disk_name", "other", True),
+        ("tarball", False, True),
+        ("encrypted", False, True),
+    ],
+)
+def test_existing_link_checks_stored_address_without_reinterpreting_format(
+    field, value, valid
+):
+    # pylint: disable=protected-access
+    """
+    An existing link identifies stored bytes through its owner and checksum.
+    Requiring the requesting part to repeat the owner's storage format would
+    reject valid links; accepting another stored address would read the wrong
+    part.
+    """
+    owner = _backup(
+        "owner",
+        database="other" if field == "database" else "db1",
+        parts={value if field == "name" else "all_1_1_0": _part()},
+    )
+    raw = owner.dump()
+    if field == "table":
+        tables = raw["databases"]["db1"]["tables"]
+        tables["other"] = tables.pop("t1")
+    elif field not in ("name", "database"):
+        raw["databases"]["db1"]["tables"]["t1"]["parts"]["all_1_1_0"][field] = value
+    ctx = CopyTestContext([], [BackupMetadata.load(raw)])
+    requested = PartMetadata(
+        "db1",
+        "t1",
+        "all_1_1_0_7",
+        "checksum1",
+        100,
+        [],
+        True,
+        link="owner",
+        link_part_name="all_1_1_0",
+    )
+    assert ctx.make_copier()._is_link_valid_in_target(requested) is valid
+
+
+@pytest.mark.parametrize(
+    "change,reusable",
+    [
+        ({}, True),
+        ({"name": "all_1_1_0"}, False),
+        ({"checksum": "other"}, False),
+        ({"disk_name": "other"}, False),
+        ({"tarball": False}, False),
+        ({"encrypted": False}, False),
+    ],
+)
+def test_materialized_owner_index_checks_the_published_part(change, reusable):
+    # pylint: disable=protected-access
+    """
+    A matching source key does not prove that the target contains a compatible
+    copy. This exercises registration and reuse together so an incompatible
+    published part cannot become an alternative owner.
+    """
+    source = _backup(
+        "child",
+        parts={"all_1_1_0_7": _part(link="owner", link_part_name="all_1_1_0")},
+    )
+    stored = {**_part(), **change}
+    target = _backup("child", parts={stored.pop("name", "all_1_1_0_7"): stored})
+    copier = CopyTestContext([], [target]).make_copier()
+    copier._remember_materialized_parts(source, target)
+    next_backup = _backup(
+        "next",
+        parts={"all_1_1_0_9": _part(link="owner", link_part_name="all_1_1_0")},
+    )
+    requested = next_backup.get_parts()[0]
+    assert copier._reuse_materialized_part(requested, next_backup) is reusable
+    result = next_backup.get_parts()[0]
+    assert (result.link, result.deduplicated_part_name) == (
+        ("child", "all_1_1_0_7") if reusable else ("owner", "all_1_1_0")
+    )

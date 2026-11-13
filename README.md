@@ -357,11 +357,11 @@ Behavior and limitations:
   objects. Other objects are overwritten. If the target listing or a context file cannot be read, the
   affected objects are copied again. `objects_skipped` in the report counts skipped objects. Before
   copying, resuming holds the listing of the target backup in memory, comparable to the object plan.
-  `--no-resume` (or `copy.resume: false`) ignores records of previous runs and overwrites all objects;
+  `--no-resume` (or `copy.resume: false`) ignores records of previous runs and copies all selected objects;
   the run still records confirmed copies, so an interrupted run should be repeated with `--no-resume`
   to overwrite every object.
   The context is not copied with the backup and is deleted together with it.
-  Completed backups are skipped.
+  Completed backups are skipped with `--resume`. For cloud backups, `--no-resume` starts a replacement generation.
   When a linked part has already been materialized in a successfully copied backup, subsequent
   backups reuse that copy, including mutation-renamed parts and full cloud-storage backups.
 - Copying consists of two scopes: `files` copies files of the backup, `cloud_storage` copies data
@@ -413,24 +413,36 @@ Behavior and limitations:
   the scope becomes `failed`; the next run of the scope copies only unconfirmed objects. The list is
   rewritten by each run of the scope in which objects fail and removed once the scope completes.
   Disk metadata that cannot be planned is not copied, so it never overwrites rewritten disk
-  metadata; a later run copies it. Copy scopes of one backup one after another: the local lock
-  serializes runs on one host, runs on different hosts require `lock.zk_flock`.
+  metadata; a later run copies it. Run copy scopes of one backup sequentially. The shared local file
+  lock does not serialize runs; use matching ZooKeeper locks or serialize operations externally.
 - Copy acquires the configured source and target locks through completion, including retries and
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
   and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.
   Locking remains optional; the local file lock retains its shared semantics.
+  Without this coordination, do not run copy concurrently with delete or purge on the same storage.
 - Set `multiprocessing.metadata_read_threads` in the target configuration to control parallel
   source and target light-metadata reads at copy startup (default: `4`, positive integer).
   Each batch holds at most this many reads; set `1` for sequential reading.
-- `multiprocessing.full_metadata_read_threads` in the target configuration controls
-  full-metadata prefetch for `copy.deduplication_age_limit` (default: `2`). The limit includes
-  the candidate being indexed and queued reads; indexing remains sequential. Set `1` for
-  sequential loading. Increasing it retains more full metadata in memory.
+- Set `multiprocessing.full_metadata_read_threads` to control concurrent full-metadata reads
+  for copy deduplication and cleanup (default: `2`). Copy uses the target configuration.
+  Use `1` for sequential reads. Higher values can reduce waiting but retain more metadata.
+  This setting limits concurrent reads, not total cleanup memory.
 - By default, deduplicated data parts of the backup are stored in older backups. If such a backup is already
   present in the target storage, the deduplication link is kept. A link to a local part is also kept
   if the copy of that backup is not completed but already holds files of the part, e.g. after its
   scope `files`, as deduplication of new backups does. Otherwise, the data part is copied
   into the copied backup. `--all` copies older backups first, so deduplication is kept in the target storage.
+- Cloud copies reuse unchanged parts when their source references and encryption settings match.
+  Changing the key, algorithm, or chunk size requires another copy. Keep old keys while backups
+  still reference the old encrypted data. Restore does not support multiple keys in one backup.
+- Cloud archives and payload use generations: stored versions that keep existing backup references valid.
+  `copy BACKUP --no-resume` replaces the public backup after copying completes. Existing dependent
+  backups continue to use their old generation, location, and key. Recopy does not migrate them.
+  A failed replacement leaves the previous published version usable. Retries and separate scopes
+  reuse compatible pending generations. Changing the destination or encryption settings starts another.
+  Generations do not appear as ordinary backups. Use `show --cloud-owners` to inspect them.
+  Upgrade every writer and cleanup process sharing the storage before using this layout.
+  Older binaries cannot protect generations, and no format gate prevents mixed-version operation.
 - Set `copy.deduplication_age_limit: {days: 90}` in the target configuration to enable an
   independent deduplication window for active parts on local disks. The default `{days: 0}`
   disables this additional lookup; a zero duration keeps the existing source-link behavior.
@@ -464,7 +476,7 @@ Behavior and limitations:
   are needed; restore and deletion use the normal full-backup behavior.
 - Backups without `--copy-cloud-storage-data` reference objects in the bucket of the S3 disk. These
   objects are copied to the bucket set with `--target-cloud-storage-bucket` under
-  `<--target-cloud-storage-path>/<backup name>/`, so the copy doesn't depend on the source cluster.
+  `<--target-cloud-storage-path>/<generation name>/`, so the copy doesn't depend on the source cluster.
   The location of the source objects is taken from ClickHouse configuration of the disk (so the command
   should be run on a host of the source cluster), or it can be set with `--cloud-storage-source-bucket` and
   `--cloud-storage-source-path`. Credentials can be overridden in the `copy.cloud_storage` config section.
@@ -486,9 +498,12 @@ Behavior and limitations:
   creating the temporary ClickHouse disk. By default staging uses the destination disk's
   endpoint, bucket and credentials; disks without static credentials use the storage SDK's
   normal environment/provider chain. Overriding the staging endpoint or bucket requires both
-  `access_key_id` and `secret_access_key`. The staging path is exclusive to one restore and must
-  not overlap the encrypted source prefix in the same bucket, because ch-backup removes everything
-  below it before and after restore. Reserve staging capacity for the full restored cloud-storage
+  `access_key_id` and `secret_access_key`. The staging path is a parent directory: each owner/disk
+  pair gets a stable subdirectory, so one path supports restores with several owners. Only those
+  subdirectories are cleared before and after restore; they must not overlap encrypted sources.
+  Serialize restores that use the same owner/disk staging location. Leftovers from older versions
+  directly under the parent path require manual cleanup after those restores stop.
+  Reserve staging capacity for the full restored cloud-storage
   data volume. Decryption and downloading disk metadata a second time make this restore slower than
   an unencrypted cloud-data restore.
   To use a separate worker, provide source endpoint, bucket, path and credentials explicitly;
@@ -505,11 +520,12 @@ Behavior and limitations:
   For version-5 metadata containing full object keys, a source path override replaces the original
   prefix from stored source metadata or disk configuration. Copy fails before writing if that prefix
   is unknown or a key is outside it. Without a path override, full keys are read as stored.
-  Restore of the copy uses the copied objects by default; they must be accessible with credentials of the
-  object storage disk of the host where the backup is restored. Note that these objects are not removed
-  when the copy is deleted, and they're stored for each copied backup separately.
-  Restore preserves the HTTP/HTTPS scheme of the stored endpoint. Its `--cloud-storage-source-endpoint`
-  option accepts a full HTTP(S) URL or `host[:port]`; the latter uses the original disk's scheme.
+  Restore of the copy uses its recorded objects with credentials from the destination host's object storage disk.
+  A recorded endpoint must match a configured disk or backup-storage endpoint. To use another endpoint,
+  set `--cloud-storage-source-endpoint` explicitly. A null endpoint selects the AWS default.
+  Restore preserves the selected endpoint's scheme. The override accepts an HTTP(S) URL
+  or `host[:port]`, which uses the original disk's scheme.
+  In-place restore is unsupported for copied cloud data: later backup cleanup could delete objects still used by live tables.
 - ClickHouse 26.8+ SQL-defined HTTP handlers are included in full backups; use `--http-handlers` with backup
   or restore handlers only.
   Export requires `SHOW HANDLERS`, `SELECT ... system.handlers`, and a server setting
@@ -523,6 +539,57 @@ Behavior and limitations:
   target entities are skipped. Parents omitted from the backup must already exist. Replacing
   shared parents or resources can affect other entities. Type conflicts and server restrictions
   abort restore; concurrent workload/resource DDL is unsupported.
+
+### Cleaning up copied cloud data
+
+By default, deleting a copy retains its external cloud objects. To reclaim unreferenced copied
+objects, run these commands with a configuration for the **target backup storage**:
+
+```bash
+# Delete one copy and its unreferenced external objects.
+ch-backup -c target.conf delete BACKUP --delete-cloud-storage-data
+
+# Apply retention rules and clean up unreferenced external objects.
+ch-backup -c target.conf purge --delete-cloud-storage-data
+```
+
+Surviving references keep shared objects, including old generations. Cleanup preserves unrelated
+objects under the same prefix and original source data. It uses backup-storage credentials by default.
+Set `copy.cloud_storage.target` for separate credentials or another endpoint. Encrypted disk metadata
+needs its original key. Metadata writers must be trusted because recorded destinations authorize deletion
+within the credentials' permissions.
+
+Do not run copy concurrently with cleanup unless both use matching ZooKeeper locks or external serialization.
+A bad metadata archive stops the batch before deletion. A storage failure can leave partial progress.
+Correct the reported problem and repeat the command. Retained metadata lets cleanup retry safely.
+
+### Inspecting cloud copy and cleanup
+
+To find why copied data remains, inspect its owners and dependents in the target backup storage:
+
+```bash
+ch-backup -c target.conf show BACKUP --cloud-owners --pretty
+```
+
+`BACKUP` can also be an internal generation name or a deleted backup name with surviving generations.
+Exit code 2 with `references_complete: false` means required metadata is missing or unreadable.
+Resolve that problem before relying on the result. The output is a snapshot, not permission to delete objects manually.
+
+Add `--report-path report.json` to a `copy` command to retain its result, including on failure.
+Check `generation_publication` when a replacement fails:
+
+| Value | Meaning and next step |
+| --- | --- |
+| `pending` | Publication was not attempted. Correct the copy failure and retry. |
+| `previous_preserved` | The previous public backup remains usable. Correct the replacement failure and retry. |
+| `published` | Publication succeeded, even if a later journal write failed. Inspect that later error before retrying. |
+| `unconfirmed` | The response failed, so publication may have succeeded. Inspect `show BACKUP --pretty` in the target storage before deciding what to retry. |
+
+`cloud_parts_reused` counts planned reuse. `objects_skipped` counts transfers confirmed by resume.
+Cleanup logs distinguish planned and acknowledged deletions. These counts do not measure reclaimed storage.
+A staging-cleanup ERROR can mean plaintext remains. Check the reported staging location after resolving the cleanup error.
+
+Implementation rationale: https://github.com/yandex/ch-backup/blob/main/docs/cloud-storage.md
 
 ### Backup targets in configuration
 

@@ -6,8 +6,9 @@ ClickhouseBackup unit tests.
 
 from collections import defaultdict
 from contextlib import AbstractContextManager, nullcontext
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Sequence, cast
+from typing import Sequence, cast
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -24,6 +25,7 @@ from ch_backup.backup.metadata import (
     PartMetadata,
     TableMetadata,
 )
+from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageSource
 from ch_backup.backup.sources import BackupSources
 from ch_backup.ch_backup import (
     CleanZooKeeperMode,
@@ -282,14 +284,20 @@ def _delete_backup_with_cloud_storage(referenced_parts: Sequence[str]) -> MagicM
     dedup_references["db1"]["table1"] = set(referenced_parts)
 
     # pylint: disable=protected-access
-    backup._delete(backup_meta, dedup_references)
+    backup_metadata, metadata_is_light, cloud_cleanup_action = (
+        backup._prepare_deletion_batch(
+            [backup_meta], {backup_meta.name: dedup_references}, False
+        )[0]
+    )
+    backup._execute_backup_deletion(
+        backup_metadata, dedup_references, metadata_is_light, cloud_cleanup_action
+    )
     return backup.__dict__["_context"].backup_layout
 
 
 def test_delete_keeps_cloud_storage_data_in_use_by_other_backups():
     """
-    Object keys are known only from the disk metadata inside the backup, so
-    its cloud storage data is kept whole until the last reference is gone.
+    Shared cloud parts keep the backup's cloud storage directory alive.
     """
     layout = _delete_backup_with_cloud_storage(referenced_parts=["all_1_1_0"])
 
@@ -341,17 +349,42 @@ def test_backup_rejects_a_name_taken_by_its_sanitized_form():
     assert "conflicts with existing backup test_backup" in str(exc.value)
 
 
-def _get_backups_with_unreadable(*readable: Mock) -> Callable[..., list[Mock]]:
-    """Mock get_backups that reports "broken" as unreadable or raises if not asked to."""
+def _report_unreadable_backup_in_listing(*_args, unreadable=None, **_kwargs):
+    """Report broken metadata only when the caller permits a partial listing."""
+    if unreadable is None:
+        raise StorageError("Unreadable light")
+    unreadable["broken"] = "StorageError: Unreadable light"
+    return []
 
-    def get_backups(*_args, unreadable=None, **_kwargs):
-        """Return readable backups and record "broken" as unreadable."""
-        if unreadable is None:
-            raise StorageError("Unreadable light")
-        unreadable["broken"] = "StorageError: Unreadable light"
-        return list(readable)
 
-    return get_backups
+def _mock_backup_reads_with_broken_target(context, *readable_backups):
+    """Expose separate target reads and strict reads of the remaining backups."""
+    for index, backup_metadata in enumerate(readable_backups):
+        backup_metadata.start_time = util.now() - timedelta(days=index)
+
+    def list_readable_backups(*_args, excluded_backup_names=frozenset(), **_kwargs):
+        if "broken" not in excluded_backup_names:
+            raise StorageError("Unreadable light metadata of broken")
+        return [
+            backup_metadata
+            for backup_metadata in readable_backups
+            if backup_metadata.name not in excluded_backup_names
+        ]
+
+    def read_backup_metadata(backup_name, use_light_meta=False, **_):
+        if backup_name == "broken" and use_light_meta:
+            raise StorageError("Unreadable light metadata of broken")
+        return next(
+            (
+                backup_metadata
+                for backup_metadata in readable_backups
+                if backup_metadata.name == backup_name
+            ),
+            None,
+        )
+
+    context.backup_layout.get_backups.side_effect = list_readable_backups
+    context.backup_layout.get_backup.side_effect = read_backup_metadata
 
 
 @pytest.mark.parametrize("force", [False, True])
@@ -367,7 +400,7 @@ def test_backup_skips_unreadable_old_metadata(force, deduplicate_parts):
     }
     context.ch_ctl.get_databases.return_value = []
     context.backup_layout.get_backup_names.return_value = ["broken"]
-    context.backup_layout.get_backups.side_effect = _get_backups_with_unreadable()
+    context.backup_layout.get_backups.side_effect = _report_unreadable_backup_in_listing
     sources = BackupSources(False, False, False, False, False, False)
 
     assert backup.backup(sources, name="new", force=force) == ("new", None)
@@ -389,6 +422,7 @@ def _backup_with_context(
     ]
 
     backup = ClickhouseBackup.__new__(ClickhouseBackup)
+    backup.__dict__["_config"] = deepcopy(DEFAULT_CONFIG)
     backup.__dict__["_context"] = context
     return backup, context
 
@@ -472,13 +506,29 @@ def test_restore_reports_failed_zookeeper_check(error: Exception) -> None:
     assert exc.value.__cause__ is error
 
 
+def _mock_backup_metadata(name: str, **attributes: object) -> Mock:
+    """Unset mock attributes are truthy; ordinary backups have no generation links."""
+    meta = Mock(
+        state=BackupState.CREATED,
+        generation_of=None,
+        cloud_generation=None,
+        **attributes,
+    )
+    meta.name = name
+    return meta
+
+
 def test_delete_without_references_uses_light_metadata() -> None:
     backup, context = _backup_with_context()
     context.locker = MagicMock()
-    light_metadata = Mock(name="old", state=BackupState.CREATED)
-    light_metadata.name = "old"
-    context.backup_layout.get_backups.return_value = [light_metadata]
-    context.backup_layout.get_backup.return_value = None
+    light_metadata = _mock_backup_metadata("old")
+    light_metadata.cloud_storage.source = None
+    context.backup_layout.get_backups.return_value = []
+    context.backup_layout.get_backup.side_effect = (
+        lambda _name, use_light_meta=False, **_: (
+            light_metadata if use_light_meta else None
+        )
+    )
 
     with patch(
         "ch_backup.ch_backup.collect_dedup_references_for_batch_backup_deletion",
@@ -494,13 +544,12 @@ def test_delete_without_references_uses_light_metadata() -> None:
 
 def test_delete_referenced_backup_requires_full_metadata() -> None:
     backup, context = _backup_with_context()
-    light_metadata = Mock(name="old", state=BackupState.CREATED)
-    light_metadata.name = "old"
+    light_metadata = _mock_backup_metadata("old")
     context.backup_layout.get_backup.return_value = None
 
     with pytest.raises(InvalidBackupStruct):
-        backup._delete(  # pylint: disable=protected-access
-            light_metadata, {"db": {"table": {"part"}}}
+        backup._prepare_deletion_batch(  # pylint: disable=protected-access
+            [light_metadata], {"old": {"db": {"table": {"part"}}}}, False
         )
 
     context.backup_layout.delete_backup.assert_not_called()
@@ -510,12 +559,11 @@ def test_delete_referenced_backup_requires_full_metadata() -> None:
 @pytest.mark.parametrize("referenced", [False, True])
 def test_delete_failure_persists_failed_state(referenced: bool) -> None:
     backup, context = _backup_with_context()
-    light_metadata = Mock(name="old", state=BackupState.CREATED)
-    light_metadata.name = "old"
+    light_metadata = _mock_backup_metadata("old")
     light_metadata.exception = None
-    full_metadata = Mock(name="old", state=BackupState.CREATED, exception=None)
-    full_metadata.name = "old"
+    full_metadata = _mock_backup_metadata("old", exception=None)
     full_metadata.get_databases.return_value = []
+    full_metadata.get_tables.return_value = []
     full_metadata.cloud_storage.enabled = False
     full_metadata.count_skipped_data_tables.return_value = (0, 0)
     context.backup_layout.get_backup.return_value = (
@@ -534,8 +582,11 @@ def test_delete_failure_persists_failed_state(referenced: bool) -> None:
     )
 
     with pytest.raises(StorageError) as exc:
-        backup._delete(  # pylint: disable=protected-access
-            light_metadata, {"db": {"table": {"part"}}} if referenced else {}
+        backup._execute_backup_deletion(  # pylint: disable=protected-access
+            full_metadata if referenced else light_metadata,
+            {"db": {"table": {"part"}}} if referenced else {},
+            metadata_is_light=not referenced,
+            cloud_cleanup_action=None,
         )
 
     assert exc.value is error
@@ -548,20 +599,21 @@ def test_delete_failure_persists_failed_state(referenced: bool) -> None:
 
 def test_referenced_delete_persists_partial_state() -> None:
     backup, context = _backup_with_context()
-    light_metadata = Mock(name="old", state=BackupState.CREATED)
-    light_metadata.name = "old"
-    full_metadata = Mock(name="old", state=BackupState.CREATED)
-    full_metadata.name = "old"
+    full_metadata = _mock_backup_metadata("old")
     full_metadata.exception = "Previous deletion failed"
     full_metadata.get_databases.return_value = []
+    full_metadata.get_tables.return_value = []
     full_metadata.cloud_storage.enabled = False
     full_metadata.count_skipped_data_tables.return_value = (0, 0)
     full_metadata.cloud_storage.source = None
     full_metadata.copied_from = None
     context.backup_layout.get_backup.return_value = full_metadata
 
-    result = backup._delete(  # pylint: disable=protected-access
-        light_metadata, {"db": {"table": {"part"}}}
+    result = backup._execute_backup_deletion(  # pylint: disable=protected-access
+        full_metadata,
+        {"db": {"table": {"part"}}},
+        metadata_is_light=False,
+        cloud_cleanup_action=None,
     )
 
     assert result[0] is None
@@ -571,10 +623,12 @@ def test_referenced_delete_persists_partial_state() -> None:
 
 
 def _readable_backup(name: str, link: str | None = None) -> Mock:
-    """Mock light metadata of a readable backup with one part linked to link."""
-    meta = Mock(state=BackupState.CREATED, copy_scopes={})
-    meta.name = name
-    part = Mock(link=link, database="db", table="table", deduplicated_part_name="p")
+    """Mock backup reads, but use real part metadata to resolve retention references."""
+    meta = _mock_backup_metadata(name, copy_scopes={})
+    meta.cloud_storage = CloudStorageMetadata()
+    part = PartMetadata(
+        "db", "table", "p", "checksum", 1, ["data.bin"], True, link=link
+    )
     meta.get_databases.return_value = ["db"]
     meta.get_tables.return_value = [Mock(get_parts=Mock(return_value=[part]))]
     return meta
@@ -584,13 +638,13 @@ def _light_backup(
     name: str, age_days: int, incomplete: bool = False, schema_only: bool = False
 ) -> Mock:
     """Mock light metadata of a created backup started age_days ago."""
-    meta = Mock(
-        state=BackupState.CREATED,
+    meta = _mock_backup_metadata(
+        name,
         copy_scopes={},
         start_time=util.now() - timedelta(days=age_days),
         schema_only=schema_only,
     )
-    meta.name = name
+    meta.cloud_storage = CloudStorageMetadata()
     meta.count_skipped_data_tables.return_value = (0, 1) if incomplete else (0, 0)
     return meta
 
@@ -610,6 +664,9 @@ def _purge(
         "retain_incomplete_copy_time": retain_incomplete_copy_time,
     }
     context.backup_layout.get_backups.return_value = backups
+    context.backup_layout.get_backup.side_effect = lambda name, **_: next(
+        meta for meta in backups if meta.name == name
+    )
     with (
         patch(
             "ch_backup.ch_backup.collect_dedup_references_for_batch_backup_deletion",
@@ -617,8 +674,11 @@ def _purge(
         ),
         patch.object(
             ClickhouseBackup,
-            "_delete",
-            side_effect=lambda meta, _refs: (meta.name, None),
+            "_execute_backup_deletion",
+            side_effect=lambda meta, _refs, _metadata_is_light, _cloud_cleanup_action: (
+                meta.name,
+                None,
+            ),
         ),
     ):
         deleted, _ = backup.purge()
@@ -809,20 +869,32 @@ def test_partial_copy_keeps_references(partial_copy: Mock, operation: str) -> No
         "retain_incomplete_copy_time": {"days": 7},
     }
     owner = _readable_backup("owner")
-    context.backup_layout.get_backups.return_value = [
+    backups = [
         _readable_backup("newest"),
         partial_copy,
         owner,
     ]
+    for index, meta in enumerate(backups):
+        meta.start_time = util.now() - timedelta(days=30 * index)
+    context.backup_layout.get_backups.side_effect = lambda **kwargs: [
+        meta
+        for meta in backups
+        if meta.name not in kwargs.get("excluded_backup_names", ())
+    ]
+    context.backup_layout.get_backup.side_effect = lambda name, **_: next(
+        meta for meta in backups if meta.name == name
+    )
     context.backup_layout.reload_backup.side_effect = lambda meta, **_: meta
 
-    with patch.object(backup, "_delete", return_value=("owner", None)) as delete:
+    with patch.object(
+        backup, "_execute_backup_deletion", return_value=("owner", None)
+    ) as delete:
         if operation == "purge":
             assert backup.purge() == (["owner"], None)
         else:
             assert backup.delete("owner", purge_partial=True) == ("owner", None)
 
-    delete.assert_called_once_with(owner, {"db": {"table": {"p"}}})
+    delete.assert_called_once_with(owner, {"db": {"table": {"p"}}}, False, None)
 
 
 @pytest.mark.parametrize("purge_partial", [False, True])
@@ -833,16 +905,28 @@ def test_partial_copy_can_be_deleted_explicitly(
     backup, context = _backup_with_context()
     context.locker = MagicMock()
     context.config = {"retain_incomplete_copy_time": {"days": 7}}
-    context.backup_layout.get_backups.return_value = [
+    backups = [
         _readable_backup("newest"),
         partial_copy,
     ]
+    for index, meta in enumerate(backups):
+        meta.start_time = util.now() - timedelta(days=30 * index)
+    context.backup_layout.get_backups.side_effect = lambda **kwargs: [
+        meta
+        for meta in backups
+        if meta.name not in kwargs.get("excluded_backup_names", ())
+    ]
+    context.backup_layout.get_backup.side_effect = lambda name, **_: next(
+        meta for meta in backups if meta.name == name
+    )
     context.backup_layout.reload_backup.side_effect = lambda meta, **_: meta
 
-    with patch.object(backup, "_delete", return_value=("partial", None)) as delete:
+    with patch.object(
+        backup, "_execute_backup_deletion", return_value=("partial", None)
+    ) as delete:
         backup.delete("partial", purge_partial=purge_partial)
 
-    delete.assert_called_once_with(partial_copy, {})
+    delete.assert_called_once_with(partial_copy, {}, False, None)
 
 
 @pytest.mark.parametrize("state", [BackupState.CREATING, BackupState.FAILED])
@@ -923,12 +1007,14 @@ def test_purge_partial_keeps_copies_being_copied() -> None:
     context.config = {"retain_incomplete_copy_time": {"days": 7}}
     recent = _copy(_readable_backup("recent"), updated_days=1)
     stale = _copy(_readable_backup("stale"), updated_days=10)
-    context.backup_layout.get_backups.side_effect = _get_backups_with_unreadable(
-        _readable_backup("newest"), recent, stale
+    _mock_backup_reads_with_broken_target(
+        context, _readable_backup("newest"), recent, stale
     )
     context.backup_layout.reload_backup.side_effect = lambda meta, **_: meta
 
-    with patch.object(backup, "_delete", return_value=("stale", None)) as delete:
+    with patch.object(
+        backup, "_execute_backup_deletion", return_value=("stale", None)
+    ) as delete:
         backup.delete("broken", purge_partial=True)
 
     assert [call.args[0] for call in delete.call_args_list] == [stale]
@@ -948,9 +1034,7 @@ def test_delete_fails_on_unreadable_metadata_of_another_backup() -> None:
     """References of an unreadable backup are unknown, so nothing is deleted."""
     backup, context = _backup_with_context()
     context.locker = MagicMock()
-    context.backup_layout.get_backups.side_effect = _get_backups_with_unreadable(
-        _readable_backup("old")
-    )
+    _mock_backup_reads_with_broken_target(context, _readable_backup("old"))
 
     with pytest.raises(StorageError, match="broken"):
         backup.delete("old", purge_partial=False)
@@ -964,7 +1048,7 @@ def test_purge_fails_on_unreadable_metadata() -> None:
     backup, context = _backup_with_context()
     context.locker = MagicMock()
     context.config = {"retain_time": {}, "retain_count": 1}
-    context.backup_layout.get_backups.side_effect = _get_backups_with_unreadable()
+    context.backup_layout.get_backups.side_effect = _report_unreadable_backup_in_listing
 
     with pytest.raises(StorageError, match="Unreadable light"):
         backup.purge()
@@ -977,7 +1061,7 @@ def test_delete_unreadable_backup_without_references() -> None:
     backup, context = _backup_with_context()
     context.locker = MagicMock()
     other = _readable_backup("other")
-    context.backup_layout.get_backups.side_effect = _get_backups_with_unreadable(other)
+    _mock_backup_reads_with_broken_target(context, other)
     context.backup_layout.reload_backup.return_value = other
 
     deleted_name, msg = backup.delete("broken", purge_partial=False)
@@ -1002,12 +1086,12 @@ def test_delete_unreadable_backup_purges_partial_backups() -> None:
     newest = _readable_backup("newest")
     partial = _readable_backup("partial")
     partial.state = BackupState.FAILED
-    context.backup_layout.get_backups.side_effect = _get_backups_with_unreadable(
-        newest, partial
-    )
+    _mock_backup_reads_with_broken_target(context, newest, partial)
     context.backup_layout.reload_backup.side_effect = lambda meta, **_: meta
 
-    with patch.object(backup, "_delete", return_value=("partial", None)) as delete:
+    with patch.object(
+        backup, "_execute_backup_deletion", return_value=("partial", None)
+    ) as delete:
         assert backup.delete("broken", purge_partial=True)[0] == "broken"
 
     delete.assert_called_once()
@@ -1021,12 +1105,12 @@ def test_failed_partial_delete_keeps_unreadable_backup() -> None:
     context.locker = MagicMock()
     partial = _readable_backup("partial", link="broken")
     partial.state = BackupState.FAILED
-    context.backup_layout.get_backups.side_effect = _get_backups_with_unreadable(
-        _readable_backup("newest"), partial
-    )
+    _mock_backup_reads_with_broken_target(context, _readable_backup("newest"), partial)
     context.backup_layout.reload_backup.side_effect = lambda meta, **_: meta
 
-    with patch.object(backup, "_delete", side_effect=StorageError("deletion failed")):
+    with patch.object(
+        backup, "_execute_backup_deletion", side_effect=StorageError("deletion failed")
+    ):
         with pytest.raises(StorageError, match="deletion failed"):
             backup.delete("broken", purge_partial=True)
 
@@ -1038,7 +1122,7 @@ def test_delete_unreadable_backup_with_references_fails() -> None:
     backup, context = _backup_with_context()
     context.locker = MagicMock()
     other = _readable_backup("other", link="broken")
-    context.backup_layout.get_backups.side_effect = _get_backups_with_unreadable(other)
+    _mock_backup_reads_with_broken_target(context, other)
     context.backup_layout.reload_backup.return_value = other
 
     with pytest.raises(ClickhouseBackupError, match="referenced by other backups"):
@@ -1050,12 +1134,17 @@ def test_delete_unreadable_backup_with_references_fails() -> None:
 def test_delete_with_unreadable_full_metadata_without_references() -> None:
     """Unreadable full metadata falls back to light metadata if nothing links to it."""
     backup, context = _backup_with_context()
-    light_metadata = Mock(name="old", state=BackupState.CREATED, copied_from=None)
-    light_metadata.name = "old"
+    light_metadata = _mock_backup_metadata("old", copied_from=None)
     light_metadata.cloud_storage.source = None
     context.backup_layout.get_backup.side_effect = StorageError("Unreadable full")
 
-    result = backup._delete(light_metadata, {})  # pylint: disable=protected-access
+    # pylint: disable=protected-access
+    backup_metadata, metadata_is_light, cloud_cleanup_action = (
+        backup._prepare_deletion_batch([light_metadata], {"old": {}}, False)[0]
+    )
+    result = backup._execute_backup_deletion(
+        backup_metadata, {}, metadata_is_light, cloud_cleanup_action
+    )
 
     assert result == ("old", None)
     context.backup_layout.upload_backup_metadata.assert_called_once_with(
@@ -1067,13 +1156,12 @@ def test_delete_with_unreadable_full_metadata_without_references() -> None:
 def test_delete_with_unreadable_full_metadata_and_references_fails() -> None:
     """Shared parts cannot be told apart without full metadata."""
     backup, context = _backup_with_context()
-    light_metadata = Mock(name="old", state=BackupState.CREATED)
-    light_metadata.name = "old"
+    light_metadata = _mock_backup_metadata("old")
     context.backup_layout.get_backup.side_effect = StorageError("Unreadable full")
 
     with pytest.raises(StorageError, match="Unreadable full"):
-        backup._delete(  # pylint: disable=protected-access
-            light_metadata, {"db": {"table": {"part"}}}
+        backup._prepare_deletion_batch(  # pylint: disable=protected-access
+            [light_metadata], {"old": {"db": {"table": {"part"}}}}, False
         )
 
     context.backup_layout.delete_backup.assert_not_called()
@@ -1081,7 +1169,8 @@ def test_delete_with_unreadable_full_metadata_and_references_fails() -> None:
 
 
 def _backup_metadata(
-    copied_from: dict | None = None, cloud_storage_source: dict | None = None
+    copied_from: dict | None = None,
+    cloud_storage_source: CloudStorageSource | None = None,
 ) -> BackupMetadata:
     meta = BackupMetadata(
         name="backup1",
@@ -1117,7 +1206,8 @@ def test_delete_unfreezes_only_own_backups(
     backup = ClickhouseBackup.__new__(ClickhouseBackup)
     backup.__dict__["_context"] = context
 
-    assert backup._delete(meta, {}) == (  # pylint: disable=protected-access
+    # pylint: disable=protected-access
+    assert backup._execute_backup_deletion(meta, {}, False, None) == (
         "backup1",
         None,
     )
@@ -1136,9 +1226,9 @@ def test_delete_unfreezes_only_own_backups(
         pytest.param(
             {},
             {
-                "cloud_storage_source_bucket": "disk-copy",
-                "cloud_storage_source_path": "copies/backup1",
-                "cloud_storage_source_endpoint": "http://s3.test:9000",
+                "cloud_storage_source_bucket": None,
+                "cloud_storage_source_path": None,
+                "cloud_storage_source_endpoint": None,
             },
             id="location from metadata",
         ),
@@ -1157,7 +1247,9 @@ def test_delete_unfreezes_only_own_backups(
     ],
 )
 # pylint: disable=protected-access
-def test_restore_cloud_storage_location(cli_options: dict, expected: dict) -> None:
+def test_restore_keeps_explicit_location_separate_from_metadata(
+    cli_options: dict, expected: dict
+) -> None:
     meta = _backup_metadata(
         cloud_storage_source={
             "endpoint_url": "http://s3.test:9000",
@@ -1217,10 +1309,14 @@ def test_restore_keeps_stored_endpoint_scheme(
             BackupSources(), "backup1", [], [], cloud_storage_source_endpoint=override
         )
     options = restore.call_args.kwargs
+    config = deepcopy(DEFAULT_CONFIG)
+    config["storage"]["credentials"][
+        "endpoint_url"
+    ] = f"{stored_scheme}://copied.example:8443"
     disks = ClickHouseTemporaryDisks(
         MagicMock(),
         MagicMock(),
-        DEFAULT_CONFIG,  # type: ignore[arg-type]
+        config,  # type: ignore[arg-type]
         meta,
         options["cloud_storage_source_bucket"],
         options["cloud_storage_source_path"],
@@ -1256,3 +1352,28 @@ def test_nothing_is_reported_when_all_data_is_backed_up() -> None:
     context.backup_meta.count_skipped_data_tables.return_value = (0, 0)
 
     assert backup._skipped_data_message() is None  # pylint: disable=protected-access
+
+
+def test_partial_copy_keeps_public_complete_backup_instead_of_generation(partial_copy):
+    generation = _light_backup("generation", 30)
+    generation.generation_of = "complete"
+    complete = _light_backup("complete", 30)
+    complete.cloud_generation = generation.name
+    assert _purge(
+        [partial_copy, generation, complete], retain_count=1, retain_time={}
+    ) == ["generation"]
+
+
+def test_retained_partial_copy_keeps_pending_generation_after_grace_period(
+    partial_copy,
+):
+    generation = _copy(_light_backup("pending-generation", 30), updated_days=30)
+    generation.generation_of = partial_copy.name
+    generation.copy_scopes = {}
+    partial_copy.cloud_generation = generation.name
+    assert not _purge(
+        [partial_copy, generation],
+        retain_count=1,
+        retain_time={},
+        retain_incomplete_copy_time={"days": 7},
+    )

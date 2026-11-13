@@ -371,6 +371,11 @@ def list_command(
 @argument("name", metavar="BACKUP")
 @option("--pretty", is_flag=True, default=False, help="Pretty output.")
 @option(
+    "--cloud-owners",
+    is_flag=True,
+    help="Show cloud generations, locations, and retaining backups. Also accepts an internal generation name.",
+)
+@option(
     "-d",
     "--database",
     type=str,
@@ -390,8 +395,19 @@ def show_command(
     pretty: bool,
     database: str | None,
     table: str | None,
+    cloud_owners: bool = False,
 ) -> None:
     """Show details for a particular backup."""
+    if cloud_owners:
+        if database or table:
+            ctx.fail("--cloud-owners cannot be combined with database or table filters")
+        if name == "LAST":
+            name = _validate_and_resolve_name(ctx, ch_backup, name)
+        inspection = ch_backup.inspect_cloud_owners(name)
+        print(json.dumps(inspection, indent=2 if pretty else None))
+        if not inspection["references_complete"]:
+            ctx.exit(2)
+        return
     name = _validate_and_resolve_name(ctx, ch_backup, name)
 
     try:
@@ -954,12 +970,20 @@ def fix_admin_user_command(
     default=False,
     help="Do nothing if backup does not exist",
 )
+@option(
+    "--delete-cloud-storage-data",
+    is_flag=True,
+    default=False,
+    help="Also delete external cloud storage data owned by copied backups.",
+)
 def delete_command(
     ctx: Context,
     ch_backup: ClickhouseBackup,
     name: str,
     purge_partial: bool,
     force: bool,
+    *,
+    delete_cloud_storage_data: bool,
 ) -> None:
     """Delete particular backup."""
     try:
@@ -972,7 +996,11 @@ def delete_command(
             return
         raise
 
-    deleted_backup_name, msg = ch_backup.delete(name, purge_partial)
+    deleted_backup_name, msg = ch_backup.delete(
+        name,
+        purge_partial=purge_partial,
+        delete_cloud_storage_data=delete_cloud_storage_data,
+    )
 
     if msg:
         print(msg, file=sys.stderr, flush=True)
@@ -1152,9 +1180,17 @@ def copy_command(
 
 
 @command(name="purge")
-def purge_command(_ctx: Context, ch_backup: ClickhouseBackup) -> None:
+@option(
+    "--delete-cloud-storage-data",
+    is_flag=True,
+    default=False,
+    help="Also delete external cloud storage data owned by copied backups.",
+)
+def purge_command(
+    _ctx: Context, ch_backup: ClickhouseBackup, delete_cloud_storage_data: bool
+) -> None:
     """Purge outdated backups."""
-    names, msg = ch_backup.purge()
+    names, msg = ch_backup.purge(delete_cloud_storage_data=delete_cloud_storage_data)
 
     if msg:
         print(msg, file=sys.stderr, flush=True)

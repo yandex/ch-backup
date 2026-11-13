@@ -7,6 +7,189 @@ Feature: Copy backups to another storage
     And a working clickhouse on clickhouse01
     And a working clickhouse on clickhouse02
 
+  @require_version_24.1
+  Scenario Outline: Owner replacement preserves an existing child with <representation> payload
+    Given ch-backup configuration on clickhouse01
+    """
+    backup:
+        deduplicate_parts: false
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    storage:
+        credentials:
+            bucket: ch-backup-copy
+    cloud_storage:
+        data_encryption:
+            key: <original_key>
+            chunk_size: 64
+    backup:
+        retain_count: 0
+        retain_time:
+            days: 0
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.generation_test (n UInt32)
+    ENGINE = MergeTree ORDER BY n
+    SETTINGS storage_policy = 's3', min_bytes_for_wide_part = 0, min_rows_for_wide_part = 0;
+    INSERT INTO test_db.generation_test SELECT number FROM numbers(20);
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: generation-owner
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: generation-child
+    """
+    When we execute command on clickhouse01
+    """
+    for backup in generation-owner generation-child; do
+        ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy "$backup" \
+            --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+            --target-config-parameter copy.cloud_storage.encrypt_data <encrypt> \
+            --target-config-parameter cloud_storage.data_encryption.key '<original_key_json>' \
+            --target-config-parameter cloud_storage.data_encryption.chunk_size 64 \
+            --target-cloud-storage-bucket cloud-storage-02 --target-cloud-storage-path original || exit 1
+    done
+    """
+    Then we got the following backups on clickhouse02
+      | num | name             | state   | data_count | link_count |
+      | 0   | generation-child | created | 0          | 1          |
+      | 1   | generation-owner | created | 1          | 0          |
+    When we save and delete the S3 objects of a data part file on clickhouse01
+    """
+    database: test_db
+    table: generation_test
+    part: all_1_1_0
+    file: n.bin
+    bucket: cloud-storage-01
+    path: data
+    """
+    And we try to execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy generation-owner --no-resume \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-config-parameter copy.cloud_storage.encrypt_data <encrypt> \
+        --target-config-parameter cloud_storage.data_encryption.key '<replacement_key_json>' \
+        --target-config-parameter cloud_storage.data_encryption.chunk_size 64 \
+        --target-cloud-storage-bucket cloud-storage-02 --target-cloud-storage-path replacement \
+        --report-path /tmp/generation-failure.json
+    """
+    Then command exits with code 1
+    When we execute command on clickhouse01
+    """
+    python3 - <<'PY'
+    import json
+    result = json.load(open('/tmp/generation-failure.json'))['backups'][0]
+    assert result['generation_publication'] == 'previous_preserved', result
+    assert result['objects_failed'] > 0, result
+    PY
+    """
+    And we drop restore context at clickhouse02
+    And we restore clickhouse backup "generation-child" to clickhouse02
+    And we execute query on clickhouse02
+    """
+    SELECT count(), sum(n) FROM test_db.generation_test
+    """
+    Then we get response
+    """
+    20	190
+    """
+    When we restore saved S3 objects
+    And we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy generation-owner --no-resume \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-config-parameter copy.cloud_storage.encrypt_data <encrypt> \
+        --target-config-parameter cloud_storage.data_encryption.key '<replacement_key_json>' \
+        --target-config-parameter cloud_storage.data_encryption.chunk_size 64 \
+        --target-cloud-storage-bucket cloud-storage-02 --target-cloud-storage-path replacement \
+        --report-path /tmp/generation-retry.json
+    python3 - <<'PY'
+    import json
+    failed = json.load(open('/tmp/generation-failure.json'))['backups'][0]
+    retried = json.load(open('/tmp/generation-retry.json'))['backups'][0]
+    assert retried['generation_publication'] == 'published', retried
+    assert retried['cloud_generation'] == failed['cloud_generation'], (failed, retried)
+    assert retried['generation_action'] == 'resumed', retried
+    PY
+    """
+    And we execute query on clickhouse01
+    """
+    DROP DATABASE test_db SYNC
+    """
+    And we delete all objects in s3 bucket cloud-storage-01
+    And we execute query on clickhouse02
+    """
+    DROP DATABASE test_db SYNC
+    """
+    And we drop restore context at clickhouse02
+    And we restore clickhouse backup "generation-child" to clickhouse02
+    And we execute query on clickhouse02
+    """
+    SELECT count(), sum(n) FROM test_db.generation_test
+    """
+    Then we get response
+    """
+    20	190
+    """
+    Given ch-backup configuration on clickhouse02
+    """
+    cloud_storage:
+        data_encryption:
+            key: <replacement_key>
+    """
+    When we execute query on clickhouse02
+    """
+    DROP DATABASE test_db SYNC
+    """
+    And we drop restore context at clickhouse02
+    And we restore clickhouse backup "generation-owner" to clickhouse02
+    And we execute query on clickhouse02
+    """
+    SELECT count(), sum(n) FROM test_db.generation_test
+    """
+    Then we get response
+    """
+    20	190
+    """
+    When we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf delete generation-owner --delete-cloud-storage-data
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf show generation-child --cloud-owners > /tmp/cloud-owners.json
+    python3 - <<'PY'
+    import json
+    inspection = json.load(open('/tmp/cloud-owners.json'))
+    assert inspection['references_complete'], inspection
+    assert any(owner['generation_of'] == 'generation-owner' and owner['referenced_by'] == ['generation-child']
+               for owner in inspection['owners']), inspection
+    PY
+    """
+    Then s3 bucket cloud-storage-02 contains objects with prefix "original/"
+    And s3 bucket cloud-storage-02 contains no objects with prefix "replacement/"
+    When we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf purge --delete-cloud-storage-data
+    """
+    Then s3 bucket ch-backup-copy contains 0 objects
+    And s3 bucket cloud-storage-02 contains no objects with prefix "original/"
+    When we execute query on clickhouse02
+    """
+    SELECT count(), sum(n) FROM test_db.generation_test
+    """
+    Then we get response
+    """
+    20	190
+    """
+
+    Examples:
+      | representation | encrypt | original_key                     | original_key_json                  | replacement_key                  | replacement_key_json               |
+      | plaintext      | false   | null                             | null                               | null                             | null                               |
+      | encrypted      | true    | aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa | "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" | bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb | "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" |
+
   Scenario Outline: Copy backup to another bucket without encryption keys
     Given clickhouse on clickhouse01 has test schema
     And clickhouse01 has test clickhouse data test1
@@ -722,10 +905,11 @@ Feature: Copy backups to another storage
       error_stage: planning
       error_sources_contain: [../invalid1, ../invalid2]
     """
-    And an object in S3 contains
+    When we save the cloud generation of clickhouse01 backup "cloud" in bucket "ch-backup-copy"
+    Then an object in S3 contains
     """
     bucket: cloud-storage-02
-    path: cloud/keepgoing-probe
+    path: {{ cloud_generation }}/keepgoing-probe
     data: abc
     """
     And full metadata of clickhouse01 backup "cloud" in bucket "ch-backup-copy" has state "failed"
@@ -1015,17 +1199,20 @@ Feature: Copy backups to another storage
     """
     (20,90)
     """
-    And s3 bucket cloud-storage-02 contains objects with prefix "copy/87654321T123456"
+    When we save the cloud generation of clickhouse02 backup "87654321T123456" in bucket "ch-backup-copy"
+    Then s3 bucket cloud-storage-02 contains objects with prefix "copy/{{ cloud_generation }}/"
     And s3 bucket <cleanup_bucket> contains no objects with prefix "<cleanup_prefix>"
 
     Examples:
       | staging                   | staging_bucket   | staging_access_key_id      | staging_secret_access_key      | cleanup_bucket   | cleanup_prefix                 |
-      | destination disk         | null             | null                       | null                           | cloud-storage-02 | copy/87654321T123456_decrypted |
-      | configured source bucket | cloud-storage-02 | {{ conf.s3.access_key_id }} | {{ conf.s3.access_secret_key }} | cloud-storage-02 | copy/87654321T123456_decrypted |
-      | another bucket           | cloud-storage-01 | {{ conf.s3.access_key_id }} | {{ conf.s3.access_secret_key }} | cloud-storage-01 | copy/87654321T123456           |
+      | destination disk         | null             | null                       | null                           | cloud-storage-02 | copy/{{ cloud_generation }}_decrypted/ |
+      | configured source bucket | cloud-storage-02 | {{ conf.s3.access_key_id }} | {{ conf.s3.access_secret_key }} | cloud-storage-02 | copy/{{ cloud_generation }}_decrypted/ |
+      | another bucket           | cloud-storage-01 | {{ conf.s3.access_key_id }} | {{ conf.s3.access_secret_key }} | cloud-storage-01 | copy/{{ cloud_generation }}/           |
 
+  # A copy prefix can contain foreign objects, and cleanup is optional.
+  # Exercise both CLI choices against real storage and restore the original backup.
   @require_version_22.8
-  Scenario: Deleting copy of backup with data on S3 disk doesn't affect the source backup
+  Scenario Outline: Deleting an S3 copy with cleanup <cleanup> preserves unrelated data
     Given ch-backup configuration on clickhouse02
     """
     storage:
@@ -1058,13 +1245,34 @@ Feature: Copy backups to another storage
         --target-cloud-storage-bucket cloud-storage-02 \
         --target-cloud-storage-path copy
     """
+    And we save the cloud generation of clickhouse01 backup "12345678T123456" in bucket "ch-backup-copy"
+    And we save S3 object keys in bucket cloud-storage-02 with prefix "copy/{{ cloud_generation }}/"
+    And we put object in S3
+    """
+    bucket: cloud-storage-02
+    path: copy/{{ cloud_generation }}/foreign
+    data: keep
+    """
+    And we put object in S3
+    """
+    bucket: cloud-storage-02
+    path: copy/{{ cloud_generation }}-neighbor/keep
+    data: keep
+    """
     And we execute command on clickhouse01
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf \
         --config-parameter storage.credentials.bucket '"ch-backup-copy"' \
-        delete 12345678T123456
+        delete 12345678T123456 <delete_option>
     """
     Then s3 bucket ch-backup-copy contains no objects with prefix "ch_backup/12345678T123456/"
+    And saved S3 objects are <objects>
+    And an object in S3 contains
+    """
+    bucket: cloud-storage-02
+    path: copy/{{ cloud_generation }}-neighbor/keep
+    data: keep
+    """
     And we got the following backups on clickhouse02
       | num | name            | state   |
       | 0   | 12345678T123456  | created |
@@ -1086,6 +1294,11 @@ Feature: Copy backups to another storage
     """
     20
     """
+
+    Examples:
+      | cleanup  | delete_option               | objects  |
+      | disabled |                             | retained |
+      | enabled  | --delete-cloud-storage-data | deleted  |
 
   Scenario Outline: Copy respects the <held_lock> storage lock
     Given clickhouse on clickhouse01 has test schema
@@ -1237,3 +1450,199 @@ Feature: Copy backups to another storage
     Then clickhouse02 has same schema as clickhouse01
     And we got same clickhouse data at clickhouse01 clickhouse02
     And clickhouse01 has same named collections as clickhouse02
+
+
+  @require_version_24.1
+  Scenario: Copy S3 disk parts with shared ownership and partial cleanup
+    Given ch-backup configuration on clickhouse02
+    """
+    storage:
+        credentials:
+            bucket: ch-backup-copy
+    backup:
+        retain_count: 0
+        retain_time:
+            days: 0
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_s3 (p UInt32, n UInt32)
+    ENGINE = MergeTree() PARTITION BY p ORDER BY n
+    SETTINGS storage_policy = 's3';
+    INSERT INTO test_db.table_s3 SELECT 0, number FROM numbers(10);
+    INSERT INTO test_db.table_s3 SELECT 1, number FROM numbers(10);
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: dedup-base
+    """
+    And we have executed queries on clickhouse01
+    """
+    ALTER TABLE test_db.table_s3 DROP PARTITION 1;
+    INSERT INTO test_db.table_s3 SELECT 2, number FROM numbers(10);
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: dedup-next
+    """
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy dedup-base \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-cloud-storage-bucket cloud-storage-02 \
+        --target-cloud-storage-path copy
+    """
+    And we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy dedup-next \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-cloud-storage-bucket cloud-storage-02 \
+        --target-cloud-storage-path copy
+    """
+    Then we got the following backups on clickhouse02
+      | num | name       | state   | data_count | link_count |
+      | 0   | dedup-next | created | 1          | 1          |
+      | 1   | dedup-base | created | 2          | 0          |
+    When we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf delete dedup-base --delete-cloud-storage-data
+    """
+    Then we got the following backups on clickhouse02
+      | num | name       | state             | data_count | link_count |
+      | 0   | dedup-next | created           | 1          | 1          |
+    When we execute query on clickhouse01
+    """
+    DROP DATABASE test_db SYNC
+    """
+    And we delete all objects in s3 bucket cloud-storage-01
+    And we restore clickhouse backup "dedup-next" to clickhouse02
+    And we execute query on clickhouse02
+    """
+    SELECT count(), sum(n) FROM test_db.table_s3
+    """
+    Then we get response
+    """
+    20	90
+    """
+    When we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf purge --delete-cloud-storage-data
+    """
+    Then s3 bucket ch-backup-copy contains 0 objects
+    And s3 bucket cloud-storage-02 contains no objects with prefix "copy/"
+    When we execute query on clickhouse02
+    """
+    SELECT count(), sum(n) FROM test_db.table_s3
+    """
+    Then we get response
+    """
+    20	90
+    """
+
+  @require_version_24.1
+  Scenario: Recopy S3 disk parts without their owner at the destination
+    Given ch-backup configuration on clickhouse02
+    """
+    storage:
+        credentials:
+            bucket: ch-backup-copy
+    backup:
+        retain_count: 0
+        retain_time:
+            days: 0
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db;
+    CREATE TABLE test_db.table_s3 (p UInt32, n UInt32)
+    ENGINE = MergeTree() PARTITION BY p ORDER BY n
+    SETTINGS storage_policy = 's3';
+    INSERT INTO test_db.table_s3 SELECT 0, number FROM numbers(10);
+    INSERT INTO test_db.table_s3 SELECT 1, number FROM numbers(10);
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: dedup-base
+    """
+    And we have executed queries on clickhouse01
+    """
+    ALTER TABLE test_db.table_s3 DROP PARTITION 1;
+    INSERT INTO test_db.table_s3 SELECT 2, number FROM numbers(10);
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: dedup-next
+    """
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy dedup-base \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-cloud-storage-bucket cloud-storage-02 \
+        --target-cloud-storage-path copy
+    """
+    And we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy dedup-next \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-cloud-storage-bucket cloud-storage-02 \
+        --target-cloud-storage-path copy
+    """
+    Then we got the following backups on clickhouse02
+      | num | name       | state   | data_count | link_count |
+      | 0   | dedup-next | created | 1          | 1          |
+      | 1   | dedup-base | created | 2          | 0          |
+    When we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy dedup-next --scope files \
+        --target-config-parameter backup.path_root '"third/"'
+    """
+    And we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy dedup-next --scope cloud_storage \
+        --target-config-parameter backup.path_root '"third/"' \
+        --target-cloud-storage-bucket cloud-storage-02 \
+        --target-cloud-storage-path third
+    """
+    And we execute query on clickhouse01
+    """
+    DROP DATABASE test_db SYNC
+    """
+    And we delete all objects in s3 bucket cloud-storage-01
+    When we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf purge --delete-cloud-storage-data
+    """
+    Then s3 bucket ch-backup-copy contains no objects with prefix "ch_backup/"
+    And s3 bucket cloud-storage-02 contains no objects with prefix "copy/"
+    Given ch-backup configuration on clickhouse02
+    """
+    backup:
+        path_root: third/
+    """
+    Then we got the following backups on clickhouse02
+      | num | name       | state   | data_count | link_count |
+      | 0   | dedup-next | created | 2          | 0          |
+    When we restore clickhouse backup "dedup-next" to clickhouse02
+    And we execute query on clickhouse02
+    """
+    SELECT count(), sum(n) FROM test_db.table_s3
+    """
+    Then we get response
+    """
+    20	90
+    """
+    When we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf purge --delete-cloud-storage-data
+    """
+    Then s3 bucket ch-backup-copy contains 0 objects
+    And s3 bucket cloud-storage-02 contains no objects with prefix "third/"
+    When we execute query on clickhouse02
+    """
+    SELECT count(), sum(n) FROM test_db.table_s3
+    """
+    Then we get response
+    """
+    20	90
+    """

@@ -98,6 +98,34 @@ class PartMetadata(Slotted):
         )
 
     @property
+    def logical_identity(self) -> tuple[str, str, str]:
+        """Return database, table, and requested part name for restore progress.
+
+        Changing the owner or stored name does not change this identity.
+        """
+        return self.database, self.table, self.name
+
+    @property
+    def stored_identity(self) -> tuple[str, str, str]:
+        """Return database, table, and the name used for stored files.
+
+        Use link_part_name when present, otherwise the requested name.
+        This fallback is independent of which backup owns the files.
+        """
+        return self.database, self.table, self.deduplicated_part_name
+
+    def resolve_stored_reference(
+        self, containing_backup_name: str
+    ) -> tuple[str, str, str, str]:
+        """Return owner backup name followed by the stored part identity.
+
+        Use link when present, otherwise containing_backup_name. Owner selection
+        does not change the stored-name fallback. File access and retention need
+        this address because a mutation can rename the requested part alone.
+        """
+        return self.link or containing_backup_name, *self.stored_identity
+
+    @property
     def checksum(self) -> str:
         """
         Return data part checksum.
