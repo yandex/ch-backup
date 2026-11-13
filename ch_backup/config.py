@@ -95,6 +95,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # Retain policy for the purge command that sets the maximum number of
         # valid backups to keep.
         "retain_count": None,
+        "broken_metadata_policy": "stop",
         # Copies in creating or failed are kept by purge and delete --purge-partial
         # while copying was saved within this time. Copies with files completed
         # and cloud_storage pending or failed use ordinary retention instead.

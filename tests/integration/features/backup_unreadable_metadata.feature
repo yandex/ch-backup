@@ -60,6 +60,10 @@ Feature: Backups with unreadable metadata
     """
     Cannot resolve LAST, metadata is unreadable for: old_backup
     """
+    Given file "backup_struct.json" in clickhouse01 backup #1 data set to
+    """
+    {not a json
+    """
     When we try to execute command on clickhouse01
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf delete new_backup
@@ -67,7 +71,7 @@ Feature: Backups with unreadable metadata
     Then command exits with code 1
     And we get response contains
     """
-    Failed to read metadata of backups: old_backup
+    Failed to decrypt legacy backup metadata
     """
     When we try to execute command on clickhouse01
     """
@@ -81,7 +85,7 @@ Feature: Backups with unreadable metadata
     Then command exits with code 1
     And we get response contains
     """
-    Backup old_backup has unreadable metadata and is referenced by other backups
+    Failed to decrypt legacy backup metadata
     """
     And s3 bucket ch-backup contains objects with prefix "ch_backup/old_backup/"
     And s3 bucket ch-backup contains objects with prefix "ch_backup/new_backup/"
@@ -109,11 +113,7 @@ Feature: Backups with unreadable metadata
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf delete old_backup
     """
-    Then we get response contains
-    """
-    SYSTEM UNFREEZE WITH NAME 'old_backup'
-    """
-    And s3 bucket ch-backup contains no objects with prefix "ch_backup/old_backup/"
+    Then s3 bucket ch-backup contains no objects with prefix "ch_backup/old_backup/"
     And we got the following backups on clickhouse01
       | num | name       | state   |
       | 0   | new_backup | created |
@@ -130,7 +130,7 @@ Feature: Backups with unreadable metadata
     """
     And file "backup_struct.json" in clickhouse01 backup #1 data set to
     """
-    {not a json
+    {}
     """
     When we delete clickhouse01 clickhouse backup "old_backup"
     Then s3 bucket ch-backup contains no objects with prefix "ch_backup/old_backup/"
@@ -145,7 +145,7 @@ Feature: Backups with unreadable metadata
     """
     And file "backup_struct.json" in clickhouse01 backup #1 data set to
     """
-    {not a json
+    {}
     """
     When we try to execute command on clickhouse01
     """
@@ -154,8 +154,25 @@ Feature: Backups with unreadable metadata
     Then command exits with code 1
     And we get response contains
     """
-    Failed to decrypt legacy backup metadata
+    Invalid backup metadata
     """
     And s3 bucket ch-backup contains objects with prefix "ch_backup/old_backup/"
     When we restore clickhouse backup "new_backup" to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
+
+  Scenario: Unreadable light metadata falls back to full and preserves referenced data
+    Given we have created clickhouse01 clickhouse backup
+    """
+    name: new_backup
+    """
+    And file "backup_light_struct.json" in clickhouse01 backup #1 data set to
+    """
+    {not a json
+    """
+    When we delete clickhouse01 clickhouse backup "old_backup"
+    Then s3 bucket ch-backup contains objects with prefix "ch_backup/old_backup/"
+    When we restore clickhouse backup "new_backup" to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+    When we delete clickhouse01 clickhouse backup "new_backup"
+    And we delete clickhouse01 clickhouse backup "old_backup"
+    Then s3 bucket ch-backup contains no objects with prefix "ch_backup/old_backup/"

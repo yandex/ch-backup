@@ -753,3 +753,14 @@ Results are printed at startup under `staging/parallel/<run-id>/results/`:
 
 All twelve existing CI combinations use three slots. JUnit and diagnostics are
 uploaded on both success and failure with run-attempt-specific artifact names.
+
+Deletion reads full metadata if light metadata is missing or unreadable. Names in
+metadata must match the backup directory. If references cannot be determined because
+metadata is missing or structurally invalid, `backup.broken_metadata_policy: stop`
+(the default) stops deletion. Set it to `ignore` only to abandon backups with such
+metadata: their unknown outgoing references will not protect data in other backups.
+For a single invocation, use
+`ch-backup --config-parameter backup.broken_metadata_policy ignore purge`.
+Storage access failures, decryption failures and mismatched names always stop deletion
+when no trustworthy metadata is available. The policy does not automatically delete
+ignored backup directories.

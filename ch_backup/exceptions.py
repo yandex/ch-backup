@@ -27,6 +27,14 @@ class StorageError(ClickhouseBackupError):
     """
 
 
+class BrokenBackupMetadata(StorageError):
+    """Metadata is missing or has an invalid readable structure."""
+
+
+class BackupMetadataNameMismatch(StorageError):
+    """Metadata names a backup other than its storage directory."""
+
+
 class ConfigurationError(ClickhouseBackupError):
     """
     Configuration errors (e.g. invalid value of configuration parameter).
