@@ -9,7 +9,7 @@ import socket
 from contextlib import suppress
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
 
 from ch_backup.backup.metadata.access_control_metadata import AccessControlMetadata
 from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageMetadata
@@ -186,7 +186,7 @@ class BackupMetadata:
         """
         self.end_time = now()
 
-    def dump(self, light: bool = False) -> dict:
+    def dump(self, light: bool = False, *, _copy_databases: bool = True) -> dict:
         """
         Serialize backup metadata.
         """
@@ -199,7 +199,11 @@ class BackupMetadata:
             # format, can still read backups produced by this version.
             # DEPRECATED: this conversion will be removed once the legacy
             # format is no longer supported.
-            databases = self._databases_with_legacy_part_links()
+            databases = (
+                self._databases_with_legacy_part_links()
+                if _copy_databases
+                else self._databases
+            )
 
         meta: dict[str, Any] = {}
         if self.copied_from:
@@ -292,6 +296,14 @@ class BackupMetadata:
                     if link and "/" not in link and path_root:
                         part["link"] = os.path.join(path_root, link)
         return databases
+
+    def iter_json(self) -> Iterator[str]:
+        """Serialize without copying the database tree; copy parts only to convert links."""
+        encoder = json.JSONEncoder(separators=(",", ":"))
+        path_root = os.path.dirname(self.path) if self.path else ""
+        yield from _iter_json_with_legacy_part_links(
+            self.dump(_copy_databases=False), encoder, path_root, ()
+        )
 
     def dump_json(
         self,
@@ -782,3 +794,33 @@ class BackupMetadata:
             result = result.replace(tzinfo=timezone.utc)
 
         return result
+
+
+def _iter_json_with_legacy_part_links(
+    value: Any, encoder: json.JSONEncoder, path_root: str, field_path: tuple[str, ...]
+) -> Iterator[str]:
+    """Convert links along databases/<db>/tables/<table>/parts/<part> while encoding."""
+    contains_part_metadata = not field_path or field_path[0] == "databases"
+    if len(field_path) >= 3:
+        contains_part_metadata = contains_part_metadata and field_path[2] == "tables"
+    if len(field_path) >= 5:
+        contains_part_metadata = contains_part_metadata and field_path[4] == "parts"
+    if not isinstance(value, dict) or not contains_part_metadata:
+        yield from encoder.iterencode(value)
+        return
+    if len(field_path) == 6:
+        link = value.get("link")
+        if link and "/" not in link and path_root:
+            value = {**value, "link": os.path.join(path_root, link)}
+        yield from encoder.iterencode(value)
+        return
+    yield "{"
+    for index, (key, child) in enumerate(value.items()):
+        if index:
+            yield ","
+        yield encoder.encode(key)
+        yield ":"
+        yield from _iter_json_with_legacy_part_links(
+            child, encoder, path_root, (*field_path, key)
+        )
+    yield "}"

@@ -12,6 +12,7 @@ from functools import partial
 from io import IOBase
 from itertools import islice
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import (
     Any,
     BinaryIO,
@@ -50,6 +51,11 @@ from ch_backup.exceptions import (
 from ch_backup.storage import StorageLoader
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.storage.engine.s3 import S3RetryingError
+from ch_backup.storage.metadata_archive import (
+    MetadataFiles,
+    TemporaryMetadataArchive,
+    spool_metadata,
+)
 from ch_backup.storage.object_copy import CopyEntry
 from ch_backup.util import (
     CLOUD_STORAGE_EXCLUDE_FILE_NAMES,
@@ -123,10 +129,13 @@ class BackupLayout:
                 backup.metadata_encrypted = False
                 logging.debug("Saving backup metadata in {}", remote_path)
                 try:
-                    self._storage_loader.upload_data(
-                        backup.dump_json(light=False),
-                        remote_path=remote_path,
-                    )
+                    with NamedTemporaryFile() as metadata:
+                        for chunk in backup.iter_json():
+                            metadata.write(
+                                chunk.encode("utf-8", errors="surrogateescape")
+                            )
+                        metadata.flush()
+                        self._storage_loader.upload_file(metadata.name, remote_path)
                 except Exception:
                     backup.metadata_encrypted = previous_encryption
                     raise
@@ -1098,15 +1107,34 @@ class BackupLayout:
     def get_cloud_storage_metadata_files(
         self, backup_meta: BackupMetadata, remote_path: str
     ) -> list[tuple[str, bytes]]:
-        """
-        Download tarball with cloud storage metadata and return its files as (file_name, data) pairs.
-        """
+        """Return metadata as a mutable list; copy uses the disk-backed archive API."""
+        archive = self.download_cloud_storage_metadata_archive(backup_meta, remote_path)
+        files = []
+        continuation = None
+        while True:
+            batch, continuation = archive.read_batch(continuation)
+            files.extend(batch)
+            if continuation is None:
+                return files
+
+    def download_cloud_storage_metadata_archive(
+        self, backup_meta: BackupMetadata, remote_path: str
+    ) -> TemporaryMetadataArchive:
+        """Download a complete cloud metadata tarball and transfer its ownership."""
         try:
-            return self._storage_loader.download_data_tarball(
-                remote_path,
-                encryption=backup_meta.cloud_storage.encrypted,
-                compression=backup_meta.cloud_storage.compressed,
-            )
+            with NamedTemporaryFile(delete=False) as destination:
+                path = destination.name
+            try:
+                self._storage_loader.download_file(
+                    remote_path,
+                    path,
+                    encryption=backup_meta.cloud_storage.encrypted,
+                    compression=backup_meta.cloud_storage.compressed,
+                )
+                return TemporaryMetadataArchive(path)
+            except BaseException:
+                Path(path).unlink(missing_ok=True)
+                raise
         except Exception as e:
             msg = f'Failed to download tarball file "{remote_path}"'
             raise StorageError(msg) from e
@@ -1115,7 +1143,7 @@ class BackupLayout:
         self,
         backup_meta: BackupMetadata,
         remote_path: str,
-        files: list[tuple[str, bytes]],
+        files: MetadataFiles,
         callback: Callable | None = None,
         on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
@@ -1123,17 +1151,47 @@ class BackupLayout:
         Upload files with cloud storage metadata as a tarball.
         """
         try:
+            archive = (
+                files
+                if isinstance(files, TemporaryMetadataArchive)
+                else spool_metadata(files)
+            )
             if not backup_meta.cloud_storage.encrypted:
-                self._validate_plaintext_cloud_metadata(files)
-            self._storage_loader.upload_data_tarball(
-                file_names=[file_name for file_name, _ in files],
-                data_list=[data for _, data in files],
-                remote_path=remote_path,
+                continuation = None
+                while True:
+                    batch, continuation = archive.read_batch(continuation)
+                    self._validate_plaintext_cloud_metadata(batch)
+                    if continuation is None:
+                        break
+
+            pending_archive: TemporaryMetadataArchive | None = archive
+
+            def completed() -> None:
+                """Release the upload's archive ownership after its success callback."""
+                nonlocal pending_archive
+                try:
+                    if callback:
+                        callback()
+                finally:
+                    pending_archive = None
+
+            def failed(error: BaseException) -> None:
+                """Release the upload's archive ownership after its error callback."""
+                nonlocal pending_archive
+                try:
+                    if on_error:
+                        on_error(error)
+                finally:
+                    pending_archive = None
+
+            self._storage_loader.upload_file(
+                local_path=archive.path(),
                 is_async=True,
+                remote_path=remote_path,
                 encryption=backup_meta.cloud_storage.encrypted,
                 compression=backup_meta.cloud_storage.compressed,
-                callback=callback,
-                on_error=on_error,
+                callback=completed,
+                on_error=failed,
             )
         except StorageError:
             raise

@@ -185,18 +185,29 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
 
         return contents
 
-    def list_dir_with_sizes(self, remote_path: str) -> dict[str, int]:
-        """
-        Return sizes of all objects under the remote path (recursively) keyed by object key.
-        """
-        remote_path = remote_path.strip("/") + "/"
-        result = {}
-        paginator = self._s3_client.get_paginator("list_objects")
-        for page in paginator.paginate(Bucket=self._s3_bucket_name, Prefix=remote_path):
-            for file_key in page.get("Contents", []):
-                result[file_key["Key"]] = file_key["Size"]
-
-        return result
+    def read_listing_page(
+        self, remote_path: str, continuation: str | None = None
+    ) -> tuple[list[tuple[str, int]], str | None]:
+        """Read one page with request-level retries and reject invalid continuation."""
+        prefix = remote_path.strip("/") + "/"
+        if continuation is not None and (
+            not continuation.startswith(prefix) or continuation <= prefix
+        ):
+            raise ValueError("Invalid S3 listing continuation")
+        page = self._s3_client.list_objects(
+            Bucket=self._s3_bucket_name, Prefix=prefix, Marker=continuation or ""
+        )
+        entries = [(item["Key"], item["Size"]) for item in page.get("Contents", [])]
+        if not page.get("IsTruncated"):
+            return entries, None
+        marker = page.get("NextMarker") or (entries[-1][0] if entries else None)
+        if (
+            not marker
+            or not marker.startswith(prefix)
+            or marker <= (continuation or prefix)
+        ):
+            raise ValueError("S3 listing did not advance its marker")
+        return entries, marker
 
     def copy_object(
         self, source_bucket: str, source_path: str, remote_path: str

@@ -10,13 +10,14 @@ import json
 import os
 from concurrent.futures import BrokenExecutor
 from functools import partial
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from ch_backup import logging as ch_logging
-from ch_backup.backup.copier import BackupCopier
+from ch_backup.backup.copier import BackupCopier, _RewrittenTarball
 from ch_backup.backup.copy_context import CopyContext
 from ch_backup.backup.copy_report import CopyReport, print_copy_report
 from ch_backup.backup.layout import BackupLayout
@@ -35,6 +36,11 @@ from ch_backup.exceptions import (
     ConfigurationError,
     StorageError,
     TerminatingSignal,
+)
+from ch_backup.storage.metadata_archive import (
+    MetadataFiles,
+    TemporaryMetadataArchive,
+    spool_metadata,
 )
 from ch_backup.storage.object_copy import CopyEntry, storage_id
 from ch_backup.util import now
@@ -56,10 +62,34 @@ class FakeEngine:
         self._objects = store.buckets.setdefault(self._id, {})
 
     def list_dir_with_sizes(self, remote_path: str) -> dict[str, int]:
+        """Collect all pages for callers that need a complete fixture listing."""
+        result: dict[str, int] = {}
+        continuation = None
+        while True:
+            page, continuation = self.read_listing_page(remote_path, continuation)
+            result.update(page)
+            if continuation is None:
+                return result
+
+    def read_listing_page(
+        self, remote_path: str, continuation: str | None = None
+    ) -> tuple[list[tuple[str, int]], str | None]:
+        """Read at most 128 fixture objects after the continuation key."""
         prefix = remote_path.strip("/") + "/"
         if prefix in self._store.list_errors:
             raise StorageError(f"Failed to list {prefix}")
-        return {k: v for k, v in self._objects.items() if k.startswith(prefix)}
+        entries = sorted(
+            (k, v)
+            for k, v in self._objects.items()
+            if k.startswith(prefix) and (continuation is None or k > continuation)
+        )
+        page = entries[:128]
+        return page, page[-1][0] if len(entries) > 128 else None
+
+    def download_file(self, remote_path, local_path):
+        """Save an object to the requested scratch file."""
+        with open(local_path, "wb") as output:
+            output.write(self.download_data(remote_path))
 
     def upload_data(self, data: bytes, remote_path: str) -> str:
         self._objects[remote_path] = len(data)
@@ -205,25 +235,40 @@ class FakeLayout:
         prefix = os.path.join(self.get_backup_path(backup_name), "disks", disk_name)
         return sorted(p for p in self.metadata_files() if p.startswith(prefix))
 
-    def get_cloud_storage_metadata_files(self, backup_meta, remote_path):
-        return list(self.metadata_files()[remote_path])
+    def download_cloud_storage_metadata_archive(self, backup_meta, remote_path):
+        return spool_metadata(self.metadata_files()[remote_path])
 
     def metadata_files(self) -> dict[str, list[tuple[str, bytes]]]:
         return {**self.copied_files, **self.cloud_storage_files}
 
     def upload_cloud_storage_metadata_files(
-        self, backup_meta, remote_path, files, callback=None, on_error=None
-    ):
+        self,
+        backup_meta: BackupMetadata,
+        remote_path: str,
+        files: MetadataFiles,
+        callback: Callable[[], None] | None = None,
+        on_error: Callable[[Exception], None] | None = None,
+    ) -> None:
         error = self.metadata_errors.get(remote_path)
         if error:
             if on_error:
                 on_error(error)
             raise error
-        self.cloud_storage_files[remote_path] = files
+        if isinstance(files, TemporaryMetadataArchive):
+            materialized = []
+            continuation = None
+            while True:
+                batch, continuation = files.read_batch(continuation)
+                materialized.extend(batch)
+                if continuation is None:
+                    break
+        else:
+            materialized = list(files)
+        self.cloud_storage_files[remote_path] = materialized
         if self.store:
             self.store.buckets.setdefault(("s3", ENDPOINT, DST_BUCKET), {})[
                 remote_path
-            ] = sum(len(data) for _, data in files)
+            ] = sum(len(data) for _, data in materialized)
         if callback:
             callback()
 
@@ -1586,6 +1631,20 @@ def test_cloud_storage_disk_endpoints(
     assert ctx.target_layout.backups["b1"].state == BackupState.CREATED
 
 
+@pytest.fixture
+def sealed_rewritten_archives(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Require planners to release archive descriptors before retaining their paths."""
+
+    def retain(path, files):
+        """Check the completed archive remains readable after its writer closes."""
+        assert isinstance(files, TemporaryMetadataArchive)
+        assert Path(files.path()).is_file()
+        return _RewrittenTarball(path, files)
+
+    monkeypatch.setattr("ch_backup.backup.copier._RewrittenTarball", retain)
+
+
+@pytest.mark.usefixtures("sealed_rewritten_archives")
 def test_cloud_storage_full_object_keys() -> None:
     ctx = _cloud_storage_context()
     tarball = "ch_backup/b1/disks/s3/db1/t1.tar.gz"
@@ -1648,6 +1707,7 @@ def test_cloud_storage_unsupported_metadata() -> None:
 
 @pytest.mark.parametrize("version", [3, 5])
 @pytest.mark.parametrize("linked", [False, True])
+@pytest.mark.usefixtures("sealed_rewritten_archives")
 @pytest.mark.parametrize("source_path_override", [None, "other/path"])
 def test_full_cloud_storage_copy(
     version: int, linked: bool, source_path_override: str | None
@@ -3277,8 +3337,8 @@ def test_files_scope_needs_no_settings_of_object_storage() -> None:
 
     with patch.object(
         ctx.layout,
-        "get_cloud_storage_metadata_files",
-        wraps=ctx.layout.get_cloud_storage_metadata_files,
+        "download_cloud_storage_metadata_archive",
+        wraps=ctx.layout.download_cloud_storage_metadata_archive,
     ) as download:
         ctx.copy(["b1"], scopes=["files"])
         bucket, target["bucket"] = target["bucket"], None
