@@ -5,6 +5,7 @@ import os
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from pathlib import Path
 from threading import Barrier, Event
 from unittest.mock import MagicMock, call, patch
 
@@ -768,6 +769,11 @@ def fallback_context_fixture():
     storage.download_data.side_effect = lambda path, **_: objects[path]
     storage.upload_data.side_effect = lambda data, remote_path, **_: objects.update(
         {remote_path: data}
+    )
+    storage.upload_file.side_effect = (
+        lambda local_path, remote_path, **_: objects.update(
+            {remote_path: Path(local_path).read_text(encoding="utf-8")}
+        )
     )
     backup = ClickhouseBackup.__new__(ClickhouseBackup)
     context = MagicMock(backup_layout=layout)
