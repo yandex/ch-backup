@@ -4,7 +4,7 @@ Steps for interacting with ClickHouse DBMS.
 
 import yaml
 from behave import given, then, when
-from hamcrest import assert_that, contains_string, equal_to, has_length
+from hamcrest import assert_that, contains_string, equal_to, greater_than, has_length
 from tenacity import retry, stop_after_attempt, wait_fixed
 
 from tests.integration.modules.ch_backup_cli import BackupManager
@@ -12,6 +12,7 @@ from tests.integration.modules.clickhouse import (
     ClickhouseClient,
     restart_clickhouse_and_wait,
     start_clickhouse_and_wait,
+    sync_replica,
     wait_for_clickhouse_ready,
 )
 from tests.integration.modules.docker import get_container, put_file
@@ -22,6 +23,11 @@ from tests.integration.modules.templates import render_template
 @given("a working clickhouse on {node:w}")
 def step_wait_for_clickhouse_alive(context, node):
     wait_for_clickhouse_ready(context, node)
+
+
+@when("we synchronize replica {database:w}.{table:w} on {node:w}")
+def step_sync_replica(context, database, table, node):
+    sync_replica(context, node, database, table)
 
 
 @given("clickhouse on {node:w} supports UNIQUE KEY")
@@ -35,6 +41,32 @@ def step_require_unique_key_support(context, node):
     )
     if supported == "0":
         context.scenario.skip("ClickHouse has no UNIQUE KEY support")
+
+
+@given("remote databases are visible in system tables on {node:w}")
+def step_enable_remote_database_visibility(context, node):
+    ch_client = ClickhouseClient(context, node)
+    setting = "show_remote_databases_in_system_tables"
+    supported = ch_client.get_response(
+        f"SELECT count() FROM system.settings WHERE name = '{setting}'"
+    )
+    if supported == "0":
+        return
+
+    # Set the profile so ch-backup queries also see remote databases.
+    put_file(
+        get_container(context, node),
+        b"<clickhouse><profiles><default><show_remote_databases_in_system_tables>1"
+        b"</show_remote_databases_in_system_tables></default></profiles></clickhouse>",
+        "/etc/clickhouse-server/users.d/remote_database_visibility.xml",
+    )
+    ch_client.execute("SYSTEM RELOAD USERS")
+    assert (
+        ch_client.get_response(
+            f"SELECT value FROM system.settings WHERE name = '{setting}'"
+        )
+        == "1"
+    )
 
 
 @given("we have enabled shared zookeeper for {node:w}")
@@ -249,6 +281,13 @@ def step_wait_for_named_collection(context, collection_name, node):
     assert collection_name in named_collections
 
 
+@then("{node1:w} has same HTTP handlers as {node2:w}")
+def step_has_same_http_handlers(context, node1, node2):
+    first = ClickhouseClient(context, node1).get_all_http_handlers()
+    second = ClickhouseClient(context, node2).get_all_http_handlers()
+    assert_that(first, equal_to(second))
+
+
 @then("on {node:w} tables are empty")
 def step_check_tables_are_empty(context, node):
     ch_client = ClickhouseClient(context, node)
@@ -349,6 +388,18 @@ def step_check_data_equal(context, node):
     ch_client = ClickhouseClient(context, node)
     new_user_data = ch_client.get_all_user_data()
     assert new_user_data == context.user_data
+
+
+@when("we save data part checksums in context on {node:w}")
+def step_save_part_checksums(context, node):
+    context.part_checksums = ClickhouseClient(context, node).get_all_part_checksums()
+    assert_that(context.part_checksums, has_length(greater_than(0)))
+
+
+@then("data part checksums equal to saved ones on {node:w}")
+def step_check_part_checksums(context, node):
+    checksums = ClickhouseClient(context, node).get_all_part_checksums()
+    assert_that(checksums, equal_to(context.part_checksums))
 
 
 @then("database replica {database} on {node:w} does not exists")

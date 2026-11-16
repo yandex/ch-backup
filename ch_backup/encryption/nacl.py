@@ -6,6 +6,7 @@ from nacl.secret import SecretBox
 from nacl.utils import random
 
 from ch_backup.encryption.base import BaseEncryption
+from ch_backup.exceptions import ConfigurationError
 
 
 class NaClEncryption(BaseEncryption):
@@ -17,6 +18,11 @@ class NaClEncryption(BaseEncryption):
 
     def __init__(self, conf):
         super().__init__(conf)
+        if not conf.get("key"):
+            raise ConfigurationError(
+                "encryption.key is required for NaCl encryption/decryption, "
+                "including legacy encrypted backup metadata"
+            )
         self._box = SecretBox(conf["key"].encode("utf-8"))
 
     def encrypt(self, data):

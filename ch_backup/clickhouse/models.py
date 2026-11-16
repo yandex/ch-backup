@@ -58,6 +58,22 @@ class Disk(SimpleNamespace):
     def type(self, value: str) -> None:
         self._type = value
 
+    @property
+    def keeps_object_metadata(self) -> bool:
+        """
+        Tell whether local files of the disk describe objects in the bucket.
+
+        Only disks with local metadata keep such files. A plain disk derives
+        object keys from the paths and keeps no metadata at all, a cache disk
+        keeps the data itself. Versions before 24.3 report no metadata type,
+        and plain disks do not exist there.
+        """
+        return (
+            self.type == "s3"
+            and not self.cache_path
+            and (self._metadata_storage_type or "Local").lower() == "local"
+        )
+
 
 _QUOTED_TEXT_RE = re.compile(
     r"'(?:[^'\\]|\\.|'')*'|`(?:[^`\\]|\\.|``)*`|['`].*", re.DOTALL
@@ -342,6 +358,68 @@ class FrozenPart(Slotted):
         self.table = table
         self.name = name
         self.disk_name = disk_name
+        self.path = path
+        self.checksum = checksum
+        self.size = size
+        self.files = files
+
+
+DETACH_REASONS = frozenset(
+    {
+        "broken",
+        "unexpected",
+        "noquorum",
+        "ignored",
+        "broken-on-start",
+        "clone",
+        "attaching",
+        "deleting",
+        "tmp-fetch",
+        "covered-by-broken",
+        "merge-not-byte-identical",
+        "mutate-not-byte-identical",
+        "broken-from-backup",
+    }
+)
+
+
+class DetachedPart(Slotted):
+    """A detached data part scanned from a table's detached directory."""
+
+    __slots__ = (
+        "database",
+        "table",
+        "name",
+        "reason",
+        "disk_name",
+        "object_storage",
+        "path",
+        "checksum",
+        "size",
+        "files",
+    )
+
+    # pylint: disable=too-many-positional-arguments
+    def __init__(
+        self,
+        database: str,
+        table: str,
+        name: str,
+        reason: str | None,
+        disk_name: str,
+        path: str,
+        checksum: str,
+        size: int,
+        files: list[str],
+        object_storage: bool = False,
+    ) -> None:
+        super().__init__()
+        self.database = database
+        self.table = table
+        self.name = name
+        self.reason = reason
+        self.disk_name = disk_name
+        self.object_storage = object_storage
         self.path = path
         self.checksum = checksum
         self.size = size

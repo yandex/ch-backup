@@ -2,26 +2,46 @@
 Clickhouse-disks controls temporary cloud storage disks management.
 """
 
+# pylint: disable=too-many-lines
+
 import copy
 import os
+import shlex
+import shutil
+import threading
+from collections import defaultdict
+from contextlib import contextmanager, suppress
 from functools import partial
+from pathlib import Path
 from subprocess import PIPE, Popen
 from types import TracebackType
-from typing import Any, Callable, Literal, Sequence
+from typing import IO, Any, Callable, Iterator, Literal, Sequence
 from urllib.parse import urlparse
 
 import xmltodict
 
 from ch_backup import logging
-from ch_backup.backup.layout import BackupLayout
-from ch_backup.backup.metadata import BackupMetadata, PartMetadata
+from ch_backup.backup.cloud_storage_decryption import (
+    CloudStorageDecryption,
+    resolve_decryption_staging,
+)
+from ch_backup.backup.layout import BackupLayout, table_shadow_relpath
+from ch_backup.backup.metadata import (
+    BackupMetadata,
+    PartMetadata,
+    sanitize_backup_name,
+)
 from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.control import ClickhouseCTL
-from ch_backup.clickhouse.models import Disk, Table
+from ch_backup.clickhouse.models import Disk, FrozenPart, Table
 from ch_backup.config import Config
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
-from ch_backup.util import is_equal_s3_endpoints
+from ch_backup.storage.object_copy import get_s3_disk_location, make_storage_config
+from ch_backup.util import (
+    is_equal_s3_endpoints,
+    s3_uri_from_path_style_to_virtual_hosted,
+)
 
 
 class ClickHouseDisksException(RuntimeError):
@@ -35,14 +55,181 @@ class ClickHouseDisksException(RuntimeError):
 CH_DISK_CONFIG_PATH = "/tmp/clickhouse-disks-config.xml"
 CH_DISK_HISTORY_FILE_PATH = "/tmp/.disks-file-history"
 CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS = 1 * 60 * 60 * 1000
+CH_DISKS_S3_RETRY_MIN_VERSION = "25.9"
+CH_DISKS_S3_RETRY_CONFIG_KEYS = (
+    "s3_retry_attempts",
+    "s3_retry_initial_delay_ms",
+    "s3_retry_max_delay_ms",
+    "s3_slow_all_threads_after_network_error",
+)
+BACKUP_DISK_CONFIG_KEYS = (
+    "type",
+    "object_storage_type",
+    "metadata_type",
+    "request_timeout_ms",
+)
+DEDUPLICATED_DIR_SUFFIX = "_deduplicated"
 
 
-class ClickHouseTemporaryDisks:
+class ClickHouseDiskManager:
+    """
+    Base for managers of temporary cloud storage disks.
+    """
+
+    # pylint: disable=too-many-positional-arguments,too-many-arguments
+    def __init__(
+        self,
+        ch_ctl: ClickhouseCTL,
+        backup_layout: BackupLayout,
+        config: Config,
+        backup_meta: BackupMetadata,
+        ch_config: ClickhouseConfig,
+    ) -> None:
+        self._ch_ctl = ch_ctl
+        self._backup_layout = backup_layout
+        self._config_dir = config["clickhouse"]["config_dir"]
+        self._ch_disks_config = config.get("clickhouse_disks") or {}
+        self._storage_config = config["storage"]
+        self._backup_meta = backup_meta
+        self._ch_config = ch_config
+
+        self._disks: dict[str, dict] = {}
+        self._created_disks: dict[str, Disk] = {}
+        self._disks_lock = threading.Lock()
+
+    def _render_ch_disks_config(self) -> None:
+        """Write the utility config with supported S3 retry overrides."""
+        retry_config = {}
+        if self._ch_ctl.ch_version_ge(CH_DISKS_S3_RETRY_MIN_VERSION):
+            retry_config = {
+                key: self._ch_disks_config.get(key)
+                for key in CH_DISKS_S3_RETRY_CONFIG_KEYS
+                if self._ch_disks_config.get(key) is not None
+            }
+
+        _render_disks_config(
+            CH_DISK_CONFIG_PATH,
+            {
+                name: (
+                    {**conf, **retry_config}
+                    if conf
+                    and (
+                        conf.get("type") in {"s3", "s3_plain", "s3_plain_rewritable"}
+                        or conf.get("object_storage_type") == "s3"
+                    )
+                    else conf
+                )
+                for name, conf in self._disks.items()
+                if not conf or conf.get("type") != "cache"
+            },
+            history_file=CH_DISK_HISTORY_FILE_PATH,
+        )
+
+    def _read_configured_disks(self) -> None:
+        """
+        Read currently configured disks from the ClickHouse configuration.
+        """
+        self._disks = self._ch_config.config.get("storage_configuration", {}).get(
+            "disks", {}
+        )
+
+    def _backup_disk_config(self, backup_name: str, disk_name: str) -> dict:
+        """
+        Build a disk configuration pointing to data of a disk in the backup.
+
+        Only settings known to be safe for the backup storage are taken from
+        the original disk. Others, like a proxy or encryption, belong to the
+        storage of the original disk, and a shared local metadata path would
+        make the cleanup of the temporary disk remove data of the original one.
+
+        Access check is skipped: it writes to the backup bucket, which is
+        already known to be writable, and ClickHouse retries a failed check
+        far beyond the time ch-backup waits for SYSTEM RELOAD CONFIG.
+        """
+        return self._storage_disk_config(
+            disk_name,
+            self._storage_config,
+            self._backup_layout.get_cloud_storage_data_path(backup_name, disk_name),
+        )
+
+    def _storage_disk_config(
+        self, disk_name: str, storage_config: dict, key_prefix: str
+    ) -> dict:
+        """Build a disk configuration pointing to a given object storage location."""
+        disk_config = {
+            key: value
+            for key, value in self._disks[disk_name].items()
+            if key in BACKUP_DISK_CONFIG_KEYS
+        }
+        _set_backup_storage(disk_config, storage_config, key_prefix)
+        disk_config["skip_access_check"] = str(True).lower()
+        return disk_config
+
+    def _register_disk(
+        self, disk_name: str, tmp_disk_name: str, disk_config: dict
+    ) -> Disk:
+        """
+        Write configuration of a temporary disk and make ClickHouse pick it up.
+        """
+        disks_config = {tmp_disk_name: disk_config}
+        if _raise_request_timeout(disk_config):
+            disks_config[disk_name] = _request_timeout_override()
+            if self._disks:
+                self._disks[disk_name]["request_timeout_ms"] = str(
+                    CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS
+                )
+
+        _render_disks_config(
+            _get_config_path(self._config_dir, tmp_disk_name),
+            disks_config,
+        )
+        self._ch_ctl.reload_config()
+
+        disk = self._ch_ctl.get_disk(tmp_disk_name)
+        self._created_disks[tmp_disk_name] = disk
+        self._disks[tmp_disk_name] = disk_config
+        return disk
+
+    def _cleanup(
+        self, exc_type: type[BaseException] | None, value: BaseException | None
+    ) -> bool:
+        """
+        Remove configuration files and local data of the created disks.
+
+        Configuration files hold credentials, so they go even after a failure.
+        Local data is kept for investigation, and ClickHouse is not asked to
+        reload its configuration: it may well be the cause of the failure, and
+        raising here would hide it.
+        """
+        if exc_type is not None:
+            logging.warning(
+                f'Keeping local data of tmp cloud storage disks due to exception: "{exc_type.__name__}: {value}"'
+            )
+
+        for tmp_disk_name in self._created_disks:
+            logging.debug(f"Removing tmp disk {tmp_disk_name}")
+            _remove_file(_get_config_path(self._config_dir, tmp_disk_name))
+            self._disks.pop(tmp_disk_name, None)
+        _remove_file(CH_DISK_CONFIG_PATH)
+        if self._created_disks and exc_type is None:
+            self._ch_ctl.reload_config()
+            for disk in self._created_disks.values():
+                self._on_disk_removed(disk)
+        self._created_disks.clear()
+        return exc_type is None
+
+    def _on_disk_removed(self, disk: Disk) -> None:
+        """
+        Clean up what is left on the host by a removed disk.
+        """
+
+
+class ClickHouseTemporaryDisks(ClickHouseDiskManager):
     """
     Manages temporary cloud storage disks.
     """
 
-    # pylint: disable=too-many-instance-attributes,too-many-positional-arguments,too-many-arguments
+    # pylint: disable=too-many-positional-arguments,too-many-arguments
     def __init__(
         self,
         ch_ctl: ClickhouseCTL,
@@ -55,51 +242,54 @@ class ClickHouseTemporaryDisks:
         ch_config: ClickhouseConfig,
         desired_tables: Sequence[TableMetadata] | Literal["all"] = "all",
         use_local_copy: bool = False,
+        skip_cloud_storage: bool = False,
+        keep_going: bool = False,
     ):
-        self._ch_ctl = ch_ctl
-        self._backup_layout = backup_layout
-        self._config = config["backup"]
-        self._config_dir = config["clickhouse"]["config_dir"]
-        self._backup_meta = backup_meta
-        self._ch_config = ch_config
+        super().__init__(ch_ctl, backup_layout, config, backup_meta, ch_config)
+        self._config = config
         self._use_local_copy = use_local_copy
+        self._skip_cloud_storage = skip_cloud_storage
         self._source_bucket: str = source_bucket or ""
         self._source_path: str = source_path or ""
         self._source_endpoint: str = source_endpoint or ""
-        if self._backup_meta.cloud_storage.enabled and source_bucket is None:
+        if (
+            backup_meta.cloud_storage.requires_source_bucket
+            and source_bucket is None
+            and not skip_cloud_storage
+        ):
             raise RuntimeError(
                 "Backup contains cloud storage data, cloud-storage-source-bucket must be set."
             )
         self._desired_tables: Sequence[TableMetadata] | Literal["all"] = desired_tables
+        self._keep_going = keep_going
+        self._decryption: CloudStorageDecryption | None = None
 
-        self._disks: dict[str, dict] = {}
-        self._created_disks: dict[str, Disk] = {}
         self._ch_availible_disks: dict[str, Disk] = {}
 
     def __enter__(self):
-        self._disks = self._ch_config.config.get("storage_configuration", {}).get(
-            "disks", {}
-        )
-        for disk_name in self._backup_meta.cloud_storage.disks:
-            self._create_temporary_disk(
-                self._backup_meta,
-                disk_name,
-                self._source_bucket,
-                self._source_path,
-                self._source_endpoint,
-                self._desired_tables,
-            )
+        try:
+            return self._enter()
+        except BaseException as e:
+            self._cleanup(type(e), e)
+            raise
+
+    def _enter(self):
+        """Create temporary disks and finish their asynchronous metadata loads."""
+        self._read_configured_disks()
+        if not self._skip_cloud_storage:
+            for disk_name in self._backup_meta.cloud_storage.disks:
+                self._create_temporary_disk(
+                    self._backup_meta,
+                    disk_name,
+                    self._desired_tables,
+                )
+            for backup_meta, disk_name, tables in self._linked_backups_data():
+                self._create_temporary_disk(
+                    backup_meta, disk_name, tables, link=backup_meta.name
+                )
         self._backup_layout.wait()
         self._ch_availible_disks = self._ch_ctl.get_disks()
-        self._render_disks_config(
-            CH_DISK_CONFIG_PATH,
-            {
-                name: conf
-                for name, conf in self._disks.items()
-                if not conf or conf.get("type") != "cache"
-            },
-            history_file=CH_DISK_HISTORY_FILE_PATH,
-        )
+        self._render_ch_disks_config()
         return self
 
     def __exit__(
@@ -108,45 +298,94 @@ class ClickHouseTemporaryDisks:
         value: BaseException | None,
         traceback: TracebackType | None,
     ) -> bool:
-        if exc_type is not None:
-            logging.warning(
-                f'Omitting tmp cloud storage disk cleanup due to exception: "{exc_type.__name__}: {value}"'
-            )
-            return False
+        return self._cleanup(exc_type, value)
 
-        for disk in self._created_disks.values():
-            logging.debug(f"Removing tmp disk {disk.name}")
+    def _cleanup(
+        self, exc_type: type[BaseException] | None, value: BaseException | None
+    ) -> bool:
+        """Remove plaintext staging and then the temporary ClickHouse disks."""
+        if self._decryption is not None:
             try:
-                os.remove(_get_config_path(self._config_dir, disk.name))
-                self._disks.pop(disk.name)
-                return True
-            except FileNotFoundError:
-                pass
-        return True
+                self._decryption.cleanup()
+            except BaseException as e:
+                if exc_type is not None:
+                    logging.exception("Failed to clean decrypted cloud storage staging")
+                else:
+                    super()._cleanup(type(e), e)
+                    raise
+        return super()._cleanup(exc_type, value)
 
-    def _render_disks_config(self, path, disks, history_file=None):
-        config = {"storage_configuration": {"disks": disks}}
-        if history_file is not None:
-            config["history-file"] = history_file
+    def _linked_backups_data(
+        self,
+    ) -> Iterator[tuple[BackupMetadata, str, list[TableMetadata]]]:
+        """
+        Yield backups holding data of deduplicated parts on cloud storage disks.
 
-        with open(path, "w", encoding="utf-8") as f:
-            xmltodict.unparse(
-                {"clickhouse": config},
-                f,
-                pretty=True,
+        Such data stays in the backup it was copied into and is read through a
+        temporary disk of that backup.
+        """
+        if not self._backup_meta.cloud_storage.disks:
+            return
+
+        links: dict[str, dict[str, dict[tuple[str, str], TableMetadata]]] = defaultdict(
+            lambda: defaultdict(dict)
+        )
+        for table in self._tables_to_restore():
+            for part in table.get_parts():
+                if not part.link:
+                    continue
+                if part.disk_name not in self._backup_meta.cloud_storage.disks:
+                    continue
+
+                links[part.link][part.disk_name][(table.database, table.name)] = table
+
+        for backup_name, disks in links.items():
+            backup_meta = self._backup_layout.get_backup(
+                backup_name, use_light_meta=True
             )
+            if backup_meta is None or not backup_meta.cloud_storage.data_copied:
+                raise ClickHouseDisksException(
+                    f'Backup "{backup_name}" holding data of deduplicated parts'
+                    " is missing or holds no copied data"
+                )
+            for disk_name, tables in disks.items():
+                yield backup_meta, disk_name, list(tables.values())
 
-    # pylint: disable=too-many-positional-arguments
+    def _tables_to_restore(self) -> Sequence[TableMetadata]:
+        """
+        Return tables of the backup whose data is going to be restored.
+        """
+        if self._desired_tables == "all":
+            return self._backup_meta.get_tables()
+
+        return self._desired_tables
+
     def _create_temporary_disk(
         self,
         backup_meta: BackupMetadata,
         disk_name: str,
-        source_bucket: str,
-        source_path: str,
-        source_endpoint: str,
         desired_tables: Sequence[TableMetadata] | Literal["all"] = "all",
+        link: str | None = None,
     ) -> None:
-        tmp_disk_name = _get_tmp_disk_name(disk_name)
+        """
+        Create a temporary disk with data of a disk in a given backup.
+
+        Inplace restore copies metadata files alone, and they name objects
+        relative to the disk endpoint. Copied or encrypted objects are not
+        usable in place, so such backups are refused.
+        """
+        if self._use_local_copy and backup_meta.cloud_storage.data_encryption:
+            raise ClickHouseDisksException(
+                f'Backup "{backup_meta.name}" holds encrypted cloud storage data,'
+                " it cannot be restored with use_inplace_cloud_restore."
+            )
+        if self._use_local_copy and backup_meta.cloud_storage.data_copied:
+            raise ClickHouseDisksException(
+                f'Backup "{backup_meta.name}" holds a copy of cloud storage data,'
+                " it cannot be restored with use_inplace_cloud_restore."
+            )
+
+        tmp_disk_name = _get_tmp_disk_name(disk_name, link)
         logging.debug(f"Creating tmp disk {tmp_disk_name}")
         if disk_name not in self._disks:
             raise ClickHouseDisksException(
@@ -154,15 +393,39 @@ class ClickHouseTemporaryDisks:
                 f" but is missing from ClickHouse storage_configuration."
                 f" Add the disk to the ClickHouse configuration and retry."
             )
-        disk_config = copy.copy(self._disks[disk_name])
 
-        endpoint = urlparse(disk_config["endpoint"])
-        endpoint_netloc = source_endpoint or endpoint.netloc
-
-        tmp_disk_endpoint = os.path.join(
-            f"{endpoint.scheme}://{endpoint_netloc}", source_bucket, source_path, ""
-        )
-        orig_disk_endpoint = self._disks[disk_name]["endpoint"]
+        orig_disk_endpoint = self._disks[disk_name].get("endpoint") or ""
+        disk_config = self._source_disk_config(backup_meta, disk_name)
+        rewrite_paths = None
+        if backup_meta.cloud_storage.data_encryption is not None:
+            if self._decryption is None:
+                self._decryption = CloudStorageDecryption(
+                    self._config, self._backup_layout
+                )
+            source_storage, source_path = self._source_storage(
+                backup_meta, disk_config, disk_name
+            )
+            staging_storage, staging_path = resolve_decryption_staging(
+                self._config,
+                source_storage,
+                source_path,
+                self._disks[disk_name],
+            )
+            self._decryption.decrypt(
+                backup_meta,
+                disk_name,
+                desired_tables,
+                source_storage,
+                source_path,
+                staging_storage,
+                staging_path,
+                keep_going=self._keep_going,
+            )
+            disk_config = self._storage_disk_config(
+                disk_name, staging_storage, staging_path
+            )
+            rewrite_paths = source_path, staging_path
+        tmp_disk_endpoint = disk_config["endpoint"]
 
         if self._use_local_copy and not is_equal_s3_endpoints(
             tmp_disk_endpoint, orig_disk_endpoint
@@ -172,35 +435,9 @@ class ClickHouseTemporaryDisks:
                 "It is required for inplace restore mode."
             )
 
-        disk_config["endpoint"] = tmp_disk_endpoint
+        disk_config["skip_access_check"] = str(True).lower()
+        source_disk = self._register_disk(disk_name, tmp_disk_name, disk_config)
 
-        disks_config = {tmp_disk_name: disk_config}
-
-        request_timeout_ms = int(disk_config.get("request_timeout_ms", 0))
-        if request_timeout_ms < CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS:
-            disks_config[tmp_disk_name]["request_timeout_ms"] = str(
-                CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS
-            )
-            disks_config[disk_name] = {
-                "request_timeout_ms": {
-                    "@replace": "replace",
-                    "#text": str(CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS),
-                }
-            }
-            if self._disks:
-                self._disks[disk_name]["request_timeout_ms"] = str(
-                    CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS
-                )
-
-        disks_config[tmp_disk_name]["skip_access_check"] = str(True).lower()
-
-        self._render_disks_config(
-            _get_config_path(self._config_dir, tmp_disk_name),
-            disks_config,
-        )
-
-        self._ch_ctl.reload_config()
-        source_disk = self._ch_ctl.get_disk(tmp_disk_name)
         logging.debug(f'Restoring Cloud Storage "shadow" data of disk "{disk_name}"')
         self._backup_layout.download_cloud_storage_metadata(
             backup_meta,
@@ -208,10 +445,73 @@ class ClickHouseTemporaryDisks:
             disk_name,
             desired_tables,
         )
+        if rewrite_paths is not None and rewrite_paths[0] != rewrite_paths[1]:
+            self._backup_layout.wait()
+            assert self._decryption is not None
+            metadata_root = os.path.join(
+                source_disk.path,
+                "shadow",
+                backup_meta.get_sanitized_name(),
+            )
+            self._decryption.rewrite_metadata(metadata_root, *rewrite_paths)
 
-        self._created_disks[tmp_disk_name] = source_disk
-        self._disks[tmp_disk_name] = disks_config[tmp_disk_name]
+    def _source_disk_config(self, backup_meta: BackupMetadata, disk_name: str) -> dict:
+        """
+        Build a disk configuration pointing to the location of the data.
+        """
+        if backup_meta.cloud_storage.data_copied:
+            return self._backup_disk_config(backup_meta.name, disk_name)
 
+        disk_config = copy.copy(self._disks[disk_name])
+        endpoint = urlparse(disk_config["endpoint"])
+        if self._source_endpoint:
+            source_endpoint = urlparse(
+                self._source_endpoint
+                if "://" in self._source_endpoint
+                else f"//{self._source_endpoint}"
+            )
+            endpoint = endpoint._replace(
+                scheme=source_endpoint.scheme or endpoint.scheme,
+                netloc=source_endpoint.netloc,
+            )
+        disk_config["endpoint"] = os.path.join(
+            f"{endpoint.scheme}://{endpoint.netloc}",
+            self._source_bucket,
+            self._source_path,
+            "",
+        )
+        return disk_config
+
+    def _source_storage(
+        self, backup_meta: BackupMetadata, disk_config: dict, disk_name: str
+    ) -> tuple[dict, str]:
+        """Return the storage and prefix containing encrypted data objects."""
+        if backup_meta.cloud_storage.data_copied:
+            return (
+                self._storage_config,
+                self._backup_layout.get_cloud_storage_data_path(
+                    backup_meta.name, disk_name
+                ),
+            )
+
+        location = get_s3_disk_location(disk_config)
+        if location is None:
+            raise ClickHouseDisksException(
+                f'Failed to determine location of data of object storage disk "{disk_name}"'
+            )
+        endpoint_url, bucket, source_path = location
+        return (
+            make_storage_config(
+                self._storage_config,
+                endpoint_url,
+                bucket,
+                disk_config.get("access_key_id"),
+                disk_config.get("secret_access_key"),
+            ),
+            source_path,
+        )
+
+    # pylint: disable=too-many-positional-arguments
     def copy_parts(
         self,
         backup_meta: BackupMetadata,
@@ -219,6 +519,7 @@ class ClickHouseTemporaryDisks:
         max_proccesses_count: int,
         keep_going: bool,
         part_callback: Callable,
+        on_error: Callable[[PartMetadata, BaseException], None] | None = None,
     ) -> None:
         """
         Copy parts from temporary cloud storage disk to actual.
@@ -234,14 +535,20 @@ class ClickHouseTemporaryDisks:
             )
         with ThreadExecPool(max_proccesses_count) as executor:
             for part in parts_to_copy:
-                executor.submit(
-                    f"Restore of part {part[1].name}",
-                    self._run_copy_command,
-                    backup_meta,
-                    part[0],
-                    part[1],
-                    callback=partial(part_callback, part[1]),
-                )
+                try:
+                    executor.submit(
+                        f"Restore of part {part[1].name}",
+                        self._run_copy_command,
+                        backup_meta,
+                        part[0],
+                        part[1],
+                        callback=partial(part_callback, part[1]),
+                        on_error=partial(on_error, part[1]) if on_error else None,
+                    )
+                except Exception as error:
+                    if on_error:
+                        on_error(part[1], error)
+                    raise
             executor.wait_all(keep_going)
 
     def _run_copy_command(
@@ -251,23 +558,30 @@ class ClickHouseTemporaryDisks:
         Copy data from temporary cloud storage disk to actual.
         """
         source_part_name = part.deduplicated_part_name
+        source_backup_name = part.link or backup_meta.name
 
         routine_tag = f"{table.database}.{table.name}::{source_part_name}"
         target_disk = self._ch_availible_disks[part.disk_name]
-        source_disk = self._ch_availible_disks[_get_tmp_disk_name(part.disk_name)]
+        source_disk = self._ch_availible_disks[
+            _get_tmp_disk_name(part.disk_name, part.link)
+        ]
         for path, disk in table.paths_with_disks:
             if disk.name == target_disk.name:
                 table_path = os.path.relpath(path, target_disk.path)
                 target_path = os.path.join(table_path, "detached")
                 if self._ch_ctl.ch_version_ge("23.7"):
                     target_path = os.path.join(target_path, part.name, "")
+                    target_part_path = target_path
+                else:
+                    target_part_path = os.path.join(target_path, source_part_name)
                 source_path = os.path.join(
                     "shadow",
-                    backup_meta.get_sanitized_name(),
+                    sanitize_backup_name(source_backup_name),
                     table_path,
                     source_part_name,
                     "",
                 )
+                self._prepare_part_copy(target_disk, target_part_path, routine_tag)
                 self._copy_dir(
                     source_disk.name,
                     source_path,
@@ -281,6 +595,43 @@ class ClickHouseTemporaryDisks:
             f'Disk "{target_disk.name}" path not found for table `{table.database}`.`{table.name}`'
         )
 
+    def _prepare_part_copy(self, disk: Disk, path: str, routine_tag: str) -> None:
+        full_path = Path(disk.path) / path
+        mode_file = full_path.with_name(f".{full_path.name}.ch-backup-copy-mode")
+        previous_mode = None
+        if mode_file.exists():
+            previous_mode = mode_file.read_text(encoding="utf-8")
+
+        if full_path.exists():
+            # The directory may come from an earlier inplace restore, even if
+            # this invocation copies objects. Only a recorded object copy owns
+            # its S3 objects; unknown/legacy directories get metadata-only cleanup.
+            logging.info("Removing incomplete part {} from disk {}", path, disk.name)
+            if previous_mode == "copy":
+                _ch_disks_remove(self._ch_ctl, disk.name, path, routine_tag)
+            else:
+                shutil.rmtree(full_path)
+
+        mode_file.parent.mkdir(parents=True, exist_ok=True)
+        # ATTACH can fail after copying succeeds. Keep ownership until ATTACH
+        # succeeds so a retry can remove copied objects, not just their metadata.
+        mode_file.write_text(
+            "inplace" if self._use_local_copy else "copy", encoding="utf-8"
+        )
+
+    def remove_part_copy_marker(self, table: Table, part: PartMetadata) -> None:
+        """Forget ownership after ATTACH so later detached parts cannot inherit it."""
+        part_name = (
+            part.name
+            if self._ch_ctl.ch_version_ge("23.7")
+            else part.deduplicated_part_name
+        )
+        full_path = Path(
+            self._ch_ctl.get_detached_part_path(table, part.disk_name, part_name)
+        )
+        mode_file = full_path.with_name(f".{full_path.name}.ch-backup-copy-mode")
+        mode_file.unlink(missing_ok=True)
+
     # pylint: disable=too-many-positional-arguments
     def _copy_dir(
         self,
@@ -293,7 +644,9 @@ class ClickHouseTemporaryDisks:
         if self._use_local_copy:
             self._os_copy(from_disk, from_path, to_disk, to_path, routine_tag)
         else:
-            self._ch_disks_copy(from_disk, from_path, to_disk, to_path, routine_tag)
+            _ch_disks_copy(
+                self._ch_ctl, from_disk, from_path, to_disk, to_path, routine_tag
+            )
 
     # pylint: disable=too-many-positional-arguments
     def _os_copy(
@@ -314,66 +667,373 @@ class ClickHouseTemporaryDisks:
         )
         logging.info(f"os copy result for {routine_tag}: {result}")
 
-    # pylint: disable=too-many-positional-arguments
-    def _ch_disks_copy(
-        self,
-        from_disk: str,
-        from_path: str,
-        to_disk: str,
-        to_path: str,
-        routine_tag: str,
-    ) -> None:
-        command = "copy"
-        common_args = ["--config", CH_DISK_CONFIG_PATH]
-        if self._ch_ctl.ch_version_ge("24.7"):
-            command_args = [
-                "--recursive",
-                "--disk-from",
-                from_disk,
-                "--disk-to",
-                to_disk,
-                from_path,
-                to_path,
-                "'",
-            ]
-            common_args.append("--query")
-            # Changes in disks interface require passing command with args in quotes
-            command = "'" + command
-        elif self._ch_ctl.ch_version_ge("23.9"):
-            command_args = [
-                "--disk-from",
-                from_disk,
-                "--disk-to",
-                to_disk,
-                from_path,
-                to_path,
-            ]
-        else:
-            command_args = [
-                "--diskFrom",
-                from_disk,
-                "--diskTo",
-                to_disk,
-                from_path,
-                to_path,
-            ]
 
-        result = _exec(
-            routine_tag,
-            exe="/usr/bin/clickhouse-disks",
-            common_args=common_args,
-            command=command,
-            command_args=command_args,
+class ClickHouseBackupDisks(ClickHouseDiskManager):
+    """
+    Manages temporary cloud storage disks pointing to the backup bucket.
+
+    Data is copied from several threads, while neither the ClickHouse client
+    nor the configuration files are meant for concurrent use. So disks are
+    created upfront, and a disk missed there is created under a lock.
+    """
+
+    def __enter__(self) -> "ClickHouseBackupDisks":
+        self._read_configured_disks()
+        self._render_ch_disks_config()
+        try:
+            for disk in self._ch_ctl.get_disks().values():
+                if (
+                    disk.type == "s3"
+                    and not disk.cache_path
+                    and disk.name in self._disks
+                ):
+                    self.create_disk(disk.name)
+        except BaseException as e:
+            self._cleanup(type(e), e)
+            raise
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self._cleanup(exc_type, value)
+
+    def _on_disk_removed(self, disk: Disk) -> None:
+        """
+        Remove metadata of the copied objects left on the local disk.
+
+        Failure is not ignored: unfreezing the backup afterwards would remove
+        the copied objects through the metadata left behind.
+        """
+        with suppress(FileNotFoundError):
+            shutil.rmtree(os.path.join(disk.path, "shadow"))
+
+    def create_disk(self, disk_name: str) -> Disk:
+        """
+        Create a temporary disk that writes to the backup bucket.
+
+        Returns the already created disk if called for the same disk twice.
+        """
+        tmp_disk_name = _get_backup_disk_name(disk_name)
+        with self._disks_lock:
+            if tmp_disk_name in self._created_disks:
+                return self._created_disks[tmp_disk_name]
+
+            if disk_name not in self._disks:
+                raise ClickHouseDisksException(
+                    f'Disk "{disk_name}" is missing from ClickHouse storage_configuration.'
+                )
+
+            logging.debug(f"Creating tmp disk {tmp_disk_name}")
+            disk = self._register_disk(
+                disk_name,
+                tmp_disk_name,
+                self._backup_disk_config(self._backup_meta.name, disk_name),
+            )
+            self._render_ch_disks_config()
+            return disk
+
+    def exclude_frozen_parts(
+        self, disks: dict[str, Disk], parts: Sequence[FrozenPart]
+    ) -> None:
+        """
+        Move frozen data of a batch of parts aside from the data of their table.
+
+        Such parts are left out of the copy, and their frozen data is released by
+        SYSTEM UNFREEZE at the end of the backup: ClickHouse decrements the
+        reference count kept in the metadata of the objects and, on a disk with
+        zero-copy replication, asks ZooKeeper whether a replica still needs them.
+        """
+        for part in parts:
+            part_path = os.path.relpath(part.path, disks[part.disk_name].path)
+            if not part_path.startswith("shadow/"):
+                raise ClickHouseDisksException(
+                    f'Path "{part.path}" of part {part.name} holds no frozen data'
+                )
+
+            excluded_dir = os.path.dirname(part.path) + DEDUPLICATED_DIR_SUFFIX
+            if not os.path.isdir(excluded_dir):
+                os.mkdir(excluded_dir)
+                self._ch_ctl.chown_dir(excluded_dir)
+            os.rename(part.path, os.path.join(excluded_dir, part.name))
+
+    def copy_table_data(self, disk_name: str, table: Table) -> Disk:
+        """
+        Copy frozen table data from a given disk into the backup bucket.
+
+        Before 23.7, clickhouse-disks appends the source directory name to the
+        destination. Newer versions require the full destination path.
+        """
+        assert table.path_on_disk, f"Table {table} doesn't store data on disk"
+
+        backup_disk = self.create_disk(disk_name)
+        shadow_path = os.path.join(
+            table_shadow_relpath(
+                self._backup_meta.get_sanitized_name(), table.path_on_disk
+            ),
+            "",
         )
-        logging.info(f"clickhouse-disks copy result for {routine_tag}: {result}")
+        target_path = os.path.join(backup_disk.path, shadow_path)
+        os.makedirs(os.path.dirname(target_path.rstrip("/")), exist_ok=True)
+        destination = shadow_path
+        if not self._ch_ctl.ch_version_ge("23.7"):
+            destination = os.path.dirname(shadow_path.rstrip("/"))
+        _ch_disks_copy(
+            self._ch_ctl,
+            disk_name,
+            shadow_path,
+            backup_disk.name,
+            destination,
+            f"Backup of {table.database}.{table.name} on disk {disk_name}",
+        )
+        return backup_disk
+
+
+def _set_backup_storage(
+    disk_config: dict, storage_config: dict, key_prefix: str
+) -> None:
+    """
+    Point a disk configuration to a location in the backup storage.
+    """
+    credentials = storage_config["credentials"]
+    disk_config["endpoint"] = _backup_storage_endpoint(storage_config, key_prefix)
+    disk_config["access_key_id"] = credentials["access_key_id"]
+    disk_config["secret_access_key"] = credentials["secret_access_key"]
+
+    proxy = _backup_storage_proxy(storage_config)
+    if proxy:
+        disk_config["proxy"] = proxy
+
+
+def _backup_storage_endpoint(storage_config: dict, key_prefix: str) -> str:
+    """
+    Build the backup storage URL of a given key prefix.
+
+    "auto" addressing style is built as path-style, since it puts no
+    requirements on the bucket name.
+    """
+    credentials = storage_config["credentials"]
+    endpoint_url = credentials["endpoint_url"].rstrip("/")
+    url = f"{endpoint_url}/{credentials['bucket']}/{key_prefix.strip('/')}/"
+
+    if storage_config["boto_config"]["addressing_style"] == "virtual":
+        return s3_uri_from_path_style_to_virtual_hosted(url)
+
+    return url
+
+
+def _backup_storage_proxy(storage_config: dict) -> dict | None:
+    """
+    Build the proxy configuration for reaching the backup storage, if any.
+
+    ClickHouse is given the resolver rather than a host resolved once, so that
+    it picks a proxy per request and drops one that fails. The endpoint always
+    gets a path: the resolve request line is built out of the path alone.
+    """
+    proxy_resolver = storage_config.get("proxy_resolver", {})
+    resolver_uri = proxy_resolver.get("uri")
+    if not resolver_uri:
+        return None
+
+    endpoint = urlparse(resolver_uri)
+    if not endpoint.path:
+        endpoint = endpoint._replace(path="/")
+
+    return {
+        "resolver": {
+            "endpoint": endpoint.geturl(),
+            "proxy_scheme": "http",
+            "proxy_port": str(proxy_resolver["proxy_port"]),
+        }
+    }
+
+
+def _raise_request_timeout(disk_config: dict) -> bool:
+    """
+    Raise request timeout of a disk configuration, keeping a larger one intact.
+
+    Returns whether the timeout was raised.
+    """
+    if int(disk_config.get("request_timeout_ms", 0)) >= (
+        CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS
+    ):
+        return False
+
+    disk_config["request_timeout_ms"] = str(CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS)
+    return True
+
+
+def _request_timeout_override() -> dict:
+    """
+    Build a configuration that raises request timeout of an already defined disk.
+    """
+    return {
+        "request_timeout_ms": {
+            "@replace": "replace",
+            "#text": str(CH_OBJECT_STORAGE_REQUEST_TIMEOUT_MS),
+        }
+    }
+
+
+def _remove_file(path: str) -> None:
+    """
+    Remove a file, ignoring a missing one.
+    """
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+
+
+@contextmanager
+def _open_config_file(path: str) -> Iterator[IO[str]]:
+    """
+    Open a config file for writing, replacing it atomically.
+
+    ClickHouse and already running clickhouse-disks read these files while
+    further disks are being added.
+    """
+    tmp_path = f"{path}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            yield f
+        os.replace(tmp_path, path)
+    except Exception:
+        _remove_file(tmp_path)
+        raise
+
+
+def _render_disks_config(
+    path: str, disks: dict, history_file: str | None = None
+) -> None:
+    """
+    Write disks configuration as a ClickHouse config file.
+    """
+    config: dict[str, Any] = {"storage_configuration": {"disks": disks}}
+    if history_file is not None:
+        config["history-file"] = history_file
+
+    with _open_config_file(path) as f:
+        xmltodict.unparse(
+            {"clickhouse": config},
+            f,
+            pretty=True,
+        )
+
+
+# pylint: disable=too-many-positional-arguments
+def _ch_disks_copy(
+    ch_ctl: ClickhouseCTL,
+    from_disk: str,
+    from_path: str,
+    to_disk: str,
+    to_path: str,
+    routine_tag: str,
+) -> None:
+    """
+    Copy a directory between disks with the clickhouse-disks utility.
+    """
+    command = "copy"
+    common_args = ["--config", CH_DISK_CONFIG_PATH]
+    if ch_ctl.ch_version_ge("24.7"):
+        command_args = [
+            "--recursive",
+            "--disk-from",
+            from_disk,
+            "--disk-to",
+            to_disk,
+            from_path,
+            to_path,
+        ]
+    elif ch_ctl.ch_version_ge("23.9"):
+        command_args = [
+            "--disk-from",
+            from_disk,
+            "--disk-to",
+            to_disk,
+            from_path,
+            to_path,
+        ]
+    else:
+        command_args = [
+            "--diskFrom",
+            from_disk,
+            "--diskTo",
+            to_disk,
+            from_path,
+            to_path,
+        ]
+
+    result = _exec(
+        routine_tag,
+        exe="/usr/bin/clickhouse-disks",
+        common_args=common_args,
+        command=command,
+        command_args=command_args,
+        query=ch_ctl.ch_version_ge("24.7"),
+    )
+    logging.info(f"clickhouse-disks copy result for {routine_tag}: {result}")
+
+
+def _ch_disks_remove(
+    ch_ctl: ClickhouseCTL, disk: str, path: str, routine_tag: str
+) -> None:
+    """Remove a directory and its objects through the ClickHouse disk."""
+    command = "remove"
+    common_args = ["--config", CH_DISK_CONFIG_PATH, "--disk", disk]
+    command_args = [path]
+    if ch_ctl.ch_version_ge("24.7"):
+        command_args = ["--recursive", path]
+
+    result = _exec(
+        routine_tag,
+        exe="/usr/bin/clickhouse-disks",
+        common_args=common_args,
+        command=command,
+        command_args=command_args,
+        query=ch_ctl.ch_version_ge("24.7"),
+    )
+    logging.info("clickhouse-disks remove result for {}: {}", routine_tag, result)
 
 
 def _get_config_path(config_dir: str, disk_name: str) -> str:
+    """
+    Return path of the config file generated for a temporary disk.
+    """
     return os.path.join(config_dir, f"cloud_storage_tmp_disk_{disk_name}.xml")
 
 
-def _get_tmp_disk_name(disk_name: str) -> str:
+def _get_tmp_disk_name(disk_name: str, backup_name: str | None = None) -> str:
+    """
+    Return name of the temporary disk used to restore data of a given disk.
+
+    A backup name is set for a disk reading data of another backup, where data
+    of deduplicated parts is left.
+    """
+    if backup_name:
+        return f"{disk_name}_source_{sanitize_backup_name(backup_name)}"
+
     return f"{disk_name}_source"
+
+
+def _get_backup_disk_name(disk_name: str) -> str:
+    """
+    Return name of the temporary disk used to back up data of a given disk.
+    """
+    return f"{disk_name}_backup"
+
+
+def _quote_query_argument(argument: str) -> str:
+    """Quote for clickhouse-disks' command parser, not for a shell."""
+    # Boost split_unix escapes both quote types and backslashes, even inside
+    # quotes. Newer ClickHouse first splits on unquoted semicolons, preserving
+    # backslashes only inside single quotes. After a literal apostrophe, reopen
+    # that single-quoted region; the double quote balances Boost's quote state.
+    escaped = argument.replace("\\", "\\\\").replace('"', '\\"').replace("'", "\\''\"")
+    return "'" + escaped + "'"
 
 
 def _exec(
@@ -382,8 +1042,17 @@ def _exec(
     common_args: list[str],
     command: str | None = None,
     command_args: list[str] | None = None,
+    *,
+    query: bool = False,
 ) -> Any:
+    """
+    Run a command and return its output lines.
 
+    clickhouse-disks may exit successfully after printing an exception to stderr.
+    Older versions, including 24.8, omit the "Error: " prefix. These commands
+    emit errors to stderr, so any nonempty diagnostic must fail the call before
+    a partially copied part can be marked as downloaded.
+    """
     proc_logger = logging.getLogger("clickhouse-disks").bind(tag=routine_tag)
     args = [
         exe,
@@ -391,18 +1060,29 @@ def _exec(
     ]
     if command:
         command_with_args = [command, *command_args] if command_args else [command]
-        args += command_with_args  # type: ignore
+        if query:
+            args += ["--query", " ".join(map(_quote_query_argument, command_with_args))]
+        else:
+            args += command_with_args
 
-    args = " ".join(args)  # type: ignore
-    logging.debug(f'Executing "{args}"')
+    logging.debug("Executing {}", shlex.join(args))
 
-    with Popen(args, stdout=PIPE, stderr=PIPE, shell=True) as proc:  # nosec
-        while proc.poll() is None:
-            for line in proc.stderr.readlines():  # type: ignore
-                proc_logger.info(line.decode("utf-8").strip())
-        if proc.returncode != 0:
+    try:
+        proc = Popen(args, stdout=PIPE, stderr=PIPE, shell=False)  # noqa: S603
+    except OSError as e:
+        raise ClickHouseDisksException(f"Failed to start {exe}: {e}") from e
+
+    with proc:
+        stdout, stderr = proc.communicate()
+        errors = []
+        for line in stderr.splitlines():
+            message = line.decode("utf-8").strip()
+            proc_logger.info(message)
+            if message:
+                errors.append(message)
+        if proc.returncode != 0 or errors:
             raise ClickHouseDisksException(
-                f"{exe} call failed with exitcode: {proc.returncode}"
+                f"{exe} call failed with exitcode: {proc.returncode}, errors: {errors}"
             )
 
-        return list(map(lambda b: b.decode("utf-8"), proc.stdout.readlines()))  # type: ignore
+        return list(map(lambda b: b.decode("utf-8"), stdout.splitlines(keepends=True)))

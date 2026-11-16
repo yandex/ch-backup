@@ -4,6 +4,7 @@ config module defines Config class and default values
 
 import copy
 import socket
+from datetime import datetime, timezone
 from typing import Any
 
 import yaml
@@ -15,7 +16,26 @@ def _as_seconds(t: str) -> int:
     return int(parse_timespan(t))
 
 
-DEFAULT_CONFIG = {
+def as_datetime(value: Any) -> datetime | None:
+    """Parse an optional timezone-aware ISO timestamp and normalize it to UTC."""
+    if value is None:
+        return None
+
+    error = "Expected an ISO 8601 timestamp with a timezone, or null"
+    if isinstance(value, str):
+        try:
+            # Python 3.10 does not accept the UTC suffix Z in fromisoformat.
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(error) from exc
+
+    # YAML may already have parsed an unquoted timestamp into a datetime.
+    if not isinstance(value, datetime) or value.utcoffset() is None:
+        raise ValueError(error)
+    return value.astimezone(timezone.utc)
+
+
+DEFAULT_CONFIG: dict[str, Any] = {
     "clickhouse": {
         "data_path": "/var/lib/clickhouse",
         "metadata_path": "/var/lib/clickhouse/metadata",
@@ -25,7 +45,6 @@ DEFAULT_CONFIG = {
         "config_dir": "/etc/clickhouse-server/config.d/",
         "preprocessed_config_path": "/var/lib/clickhouse/preprocessed_configs/config.xml",
         "named_collections_path": "/var/lib/clickhouse/named_collections",
-        "workload_path": "/var/lib/clickhouse/workload",
         "host": socket.gethostname(),
         "protocol": "http",
         "port": None,
@@ -45,27 +64,63 @@ DEFAULT_CONFIG = {
         "clickhouse_user": None,
         "clickhouse_password": None,
     },
+    "clickhouse_disks": {
+        # Supported for ClickHouse 25.9+. None keeps the ClickHouse defaults.
+        "s3_retry_attempts": None,
+        "s3_retry_initial_delay_ms": None,
+        "s3_retry_max_delay_ms": None,
+        "s3_slow_all_threads_after_network_error": None,
+    },
     "backup": {
         "system_database": "_system",
         "exclude_dbs": [],
         "path_root": None,
         "deduplicate_parts": True,
+        "deduplication_start_time": None,
         "deduplication_age_limit": {
             "days": 7,
         },
         "deduplication_batch_size": 500,
+        "deduplication_verify_links": True,
         "min_interval": {
             "minutes": 0,
         },
         "time_format": "%Y-%m-%d %H:%M:%S.%f %z",
+        # Leave out a data part, or the data of a table, that cannot be backed
+        # up, instead of failing the whole backup. Such a backup is created, and
+        # list shows how many tables are left without data or some parts.
+        "keep_going": False,
         # Retain policy for the purge command that sets the maximum age of
         # backups to keep.
         "retain_time": {},
         # Retain policy for the purge command that sets the maximum number of
         # valid backups to keep.
         "retain_count": None,
+        # Copies in creating or failed are kept by purge and delete --purge-partial
+        # while copying was saved within this time. Copies with files completed
+        # and cloud_storage pending or failed use ordinary retention instead.
+        "retain_incomplete_copy_time": {
+            "days": 7,
+        },
         # User data including into backup metadata.
         "labels": {},
+        # Backup sources used when none of the source options is passed to the backup
+        # command. Empty means all sources. Possible keys (bool):
+        #   schema - databases and tables schemas (--schema),
+        #   data - tables data, implies schema (--data),
+        #   access - access control entities (--access),
+        #   udf - user defined functions (--udf),
+        #   named_collections - named collections (--nc),
+        #   workload_entities - workloads and resources (--workload),
+        #   http_handlers - SQL-defined HTTP handlers (--http-handlers).
+        # An unknown key selects all sources with a warning.
+        "sources": {},
+        # Backup of detached parts. Options of the backup command take precedence.
+        "detached_parts": {
+            "enabled": False,
+            "disks": ["object_storage"],
+            "reasons": None,
+        },
         "keep_freezed_data_on_failure": True,
         "override_replica_name": "{replica}",
         "force_non_replicated": False,
@@ -74,11 +129,65 @@ DEFAULT_CONFIG = {
         "restore_context_sync_threshold_ops": 100,
         "validate_part_after_upload": False,
         "restore_fail_on_attach_error": False,
+        "fail_on_unparsable_part_metadata": False,
         "update_metadata_interval": _as_seconds("30 min"),
         "kill_old_freeze_queries": True,
     },
+    "copy": {
+        "scopes": ["files", "cloud_storage"],
+        "only_with_data": True,
+        # Independent target window for local parts; zero preserves source-link reuse only.
+        "deduplication_age_limit": {"days": 0},
+        # strict requires server-side copy without fallback: any failed object makes the command
+        # fail even with --keep-going. Incompatible with copy.cloud_storage.encrypt_data=true.
+        # auto uses server-side copy when possible, falling back to streaming through ch-backup.
+        # disabled always streams objects through ch-backup.
+        "server_side_copy_mode": "auto",
+        "resume": True,
+        # Copying of data stored on object storage (S3) disks.
+        "cloud_storage": {
+            # Encrypt data objects copied from ClickHouse object storage disks.
+            # Encryption settings inherit values from the top-level "encryption"
+            # section, allowing either the backup key or a dedicated override.
+            "encrypt_data": False,
+            # Location of the source disk objects. If not set, it's taken from backup metadata
+            # (for backups that were already copied) or from ClickHouse disk configuration.
+            # A stored endpoint must match a configured storage/disk endpoint unless explicitly overridden.
+            "source": {
+                "endpoint_url": None,
+                "bucket": None,
+                "path": None,
+                "access_key_id": None,
+                "secret_access_key": None,
+            },
+            # Location where disk objects are copied to. Objects of the backup are put
+            # under "<path>/<backup name>/". Endpoint and credentials default to ones of the target storage.
+            "target": {
+                "endpoint_url": None,
+                "bucket": None,
+                "path": "",
+                "access_key_id": None,
+                "secret_access_key": None,
+            },
+        },
+    },
     "restore": {
         "use_inplace_cloud_restore": False,
+        # Plaintext staging location used to restore cloud storage data encrypted
+        # by the copy command. Unset values inherit endpoint, bucket and credentials
+        # from the destination ClickHouse disk. An unset path is selected safely at
+        # restore time depending on whether source and staging buckets are the same.
+        # All objects under the exclusive staging path are removed before and after restore.
+        # An explicitly configured endpoint or bucket requires both credentials.
+        "cloud_storage": {
+            "decryption_staging": {
+                "endpoint_url": None,
+                "bucket": None,
+                "path": None,
+                "access_key_id": None,
+                "secret_access_key": None,
+            },
+        },
         # Max table name length. Actually it is just a result of the getMaxTableNameLengthForDatabase(<atomic_db>) ch function.
         "max_table_name": 206,
     },
@@ -94,12 +203,21 @@ DEFAULT_CONFIG = {
             "addressing_style": "auto",
             "region_name": "us-east-1",
         },
+        # Keyword arguments passed directly to the corresponding SDK constructors.
+        "module_config": {
+            "botocore": {},
+            "transfer": {},
+        },
         # Service that provides proxy connection settings at runtime. For example, it can be used
         # to facilitate direct access to S3 servers bypassing balancer.
         "proxy_resolver": {
             "uri": None,
             "proxy_port": None,
+            # HTTP connect and read timeout, in seconds (not a total DNS/request deadline).
+            "timeout": 10,
         },
+        # Refresh cached S3 clients and proxy discovery at this interval, in seconds.
+        "client_ttl": _as_seconds("5 min"),
         "disable_ssl_warnings": True,
         # Chunk size used when uploading / downloading data, in bytes.
         "chunk_size": parse_size("8 MiB"),
@@ -110,6 +228,26 @@ DEFAULT_CONFIG = {
         # chunk_size will be multiplied on a required number of times
         # to satisfy the limit.
         "max_chunk_count": 10000,
+        # Base S3 retry policy; 1 attempt disables retries.
+        "retry_max_attempts": 10,
+        # Base upper bound of the randomized exponential pause, in seconds.
+        "retry_max_interval": 60,
+        # Command-specific fields below override the base values above.
+        "retry": {
+            # All S3 requests made by the list command, including metadata reads.
+            "list": {
+                "max_attempts": 5,
+                "max_interval": 10,
+            },
+            # All S3 requests made while creating or copying a backup.
+            "backup": {
+                "max_attempts": 60,
+            },
+            # All S3 requests made while restoring a backup.
+            "restore": {
+                "max_attempts": 60,
+            },
+        },
         # Enable bulk delete (DeleteObjects in S3 API)
         "bulk_delete_enabled": True,
         # How many files we can delete by bulk delete operation in one call
@@ -132,8 +270,14 @@ DEFAULT_CONFIG = {
     },
     # Same structure as 'storage' section, but for cloud storage
     "cloud_storage": {
-        "encryption": True,
+        # Encryption and compression are applied to cloud storage metadata only.
+        # Data copied by "copy_data" is stored as ClickHouse wrote it.
+        "encryption": False,
         "compression": True,
+        "copy_data": False,
+        # Overrides of the top-level "encryption" section used for data objects
+        # encrypted by the copy command. Empty means use the main backup key.
+        "data_encryption": {},
     },
     "compression": {
         "type": "gzip",
@@ -165,8 +309,14 @@ DEFAULT_CONFIG = {
         # The number of processes allocating for data processing. If set to 0, all processing will be performed
         # in the main process.
         "workers": 4,
+        # The number of threads for reading source/target light metadata at copy startup.
+        "metadata_read_threads": 4,
+        # Full metadata held at once while building the copy deduplication index.
+        "full_metadata_read_threads": 2,
         # The number of processes for parts restoring from S3 disks.
         "cloud_storage_restore_workers": 4,
+        # The number of threads for copying data of S3 disks into the backup.
+        "cloud_storage_backup_workers": 4,
         # The number of threads for parallel freeze of tables
         "freeze_threads": 4,
         # To execute freeze efficiently, we should parallelize freeze operations. We have two options where we can parallelize:
@@ -183,6 +333,10 @@ DEFAULT_CONFIG = {
     "pipeline": {
         # Is asynchronous pipelines used (based on Pypeln library)
         "async": True,
+        # How often idle pipeline threads poll their queues, in seconds (pypeln "TIMEOUT").
+        # Smaller values cost CPU, larger ones make every pipeline finish
+        # about "number of stages * interval" later.
+        "queue_poll_interval": 0.01,
     },
     "main": {
         "user": "clickhouse",
@@ -281,12 +435,29 @@ class Config:
         self._recursively_update(self._conf, update_dict=patch_dict)
         return self._conf
 
+    def derive(
+        self, config_file: str | None = None, patch: dict | None = None
+    ) -> "Config":
+        """
+        Return a copy of the config with applied changes from config file and the patch.
+        """
+        config = copy.deepcopy(self)
+        if config_file:
+            config.merge(self._load_config_file(config_file))
+        if patch:
+            config.merge(patch)
+        return config
+
     def _read_config(self, file_name):
+        custom_config = self._load_config_file(file_name)
+        if custom_config:
+            self._recursively_update(self._conf, custom_config)
+
+    @staticmethod
+    def _load_config_file(file_name: str) -> dict:
         with open(file_name, "r", encoding="utf-8") as fileobj:
             try:
-                custom_config = yaml.safe_load(fileobj)
-                if custom_config:
-                    self._recursively_update(self._conf, custom_config)
+                return yaml.safe_load(fileobj) or {}
             except yaml.YAMLError as e:
                 raise RuntimeError(f"Failed to load config file: {e}")
 

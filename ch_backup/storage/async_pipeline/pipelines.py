@@ -2,12 +2,16 @@
 Free functions that create and run pipelines. Can be started in multiprocessing pool.
 """
 
+import sys
 from pathlib import Path
 from tarfile import BLOCKSIZE
+from types import TracebackType
 from typing import (
     Any,
     AnyStr,
     BinaryIO,
+    Callable,
+    Iterable,
     Iterator,
     Sequence,
 )
@@ -17,15 +21,16 @@ from ch_backup.calculators import (
     calc_aligned_data_size,
     calc_aligned_files_size,
     calc_aligned_files_size_scan,
-    calc_encrypted_size,
     calc_tarball_size,
     calc_tarball_size_scan,
 )
-from ch_backup.encryption import get_encryption
-from ch_backup.storage.async_pipeline.pipeline_builder import (
-    PipelineBuilder,
-    PypelnStage,
+from ch_backup.encryption import (
+    calc_encrypted_size_from_config,
+    get_cloud_storage_data_encryption_config,
 )
+from ch_backup.storage.async_pipeline.pipeline_builder import PipelineBuilder
+from ch_backup.storage.engine import get_storage_engine
+from ch_backup.storage.object_copy import CopyEntry
 from ch_backup.util import exhaust_iterator
 
 
@@ -41,7 +46,9 @@ def upload_data_pipeline(
     builder.build_iterable_stage([data])
     if encrypt:
         builder.build_encrypt_stage()
-        estimated_size = _calc_encrypted_size(config, estimated_size)
+        estimated_size = calc_encrypted_size_from_config(
+            config["encryption"], estimated_size
+        )
     builder.build_uploading_stage(remote_path, estimated_size)
 
     run(builder.pipeline())
@@ -71,7 +78,9 @@ def upload_data_tarball_pipeline(
         builder.build_compress_stage()
     if encrypt:
         builder.build_encrypt_stage()
-        estimated_size = _calc_encrypted_size(config, estimated_size)
+        estimated_size = calc_encrypted_size_from_config(
+            config["encryption"], estimated_size
+        )
     # Assuming actual size after compression is not larger than estimated_size
     # If it is not, number of chunks may exceed the maximum allowed count and upload will fail
     builder.build_uploading_stage(remote_path, estimated_size)
@@ -80,7 +89,12 @@ def upload_data_tarball_pipeline(
 
 
 def upload_file_pipeline(
-    config: dict, local_path: Path, remote_path: str, encrypt: bool, delete_after: bool
+    config: dict,
+    local_path: Path,
+    remote_path: str,
+    encrypt: bool,
+    delete_after: bool,
+    compress: bool = False,
 ) -> None:
     """
     Entrypoint of upload file pipeline.
@@ -89,9 +103,13 @@ def upload_file_pipeline(
 
     estimated_size = calc_aligned_files_size([local_path])
     builder.build_read_file_stage(file_path=local_path)
+    if compress:
+        builder.build_compress_stage()
     if encrypt:
         builder.build_encrypt_stage()
-        estimated_size = _calc_encrypted_size(config, estimated_size)
+        estimated_size = calc_encrypted_size_from_config(
+            config["encryption"], estimated_size
+        )
     builder.build_uploading_stage(remote_path, estimated_size)
     if delete_after:
         builder.build_delete_files_stage([local_path])
@@ -109,6 +127,7 @@ def upload_files_tarball_scan_pipeline(
     compression: bool,
     tar_base_dir: str | None = None,
     exclude_file_names: list[str] | None = None,
+    file_reader: Callable[[Path], bytes] | None = None,
 ) -> None:
     """
     Entrypoint of upload files tarball pipeline.
@@ -122,13 +141,15 @@ def upload_files_tarball_scan_pipeline(
         base_path, estimated_size, exclude_file_names
     )
     builder.build_read_files_tarball_scan_stage(
-        base_path, tar_base_dir, exclude_file_names
+        base_path, tar_base_dir, exclude_file_names, file_reader
     )
     if compression:
         builder.build_compress_stage()
     if encrypt:
         builder.build_encrypt_stage()
-        estimated_size = _calc_encrypted_size(config, estimated_size)
+        estimated_size = calc_encrypted_size_from_config(
+            config["encryption"], estimated_size
+        )
     # Assuming actual size after compression is not larger than estimated_size
     # If it is not, number of chunks may exceed the maximum allowed count and upload will fail
     builder.build_uploading_stage(remote_path, estimated_size)
@@ -163,7 +184,9 @@ def upload_files_tarball_pipeline(
         builder.build_compress_stage()
     if encrypt:
         builder.build_encrypt_stage()
-        estimated_size = _calc_encrypted_size(config, estimated_size)
+        estimated_size = calc_encrypted_size_from_config(
+            config["encryption"], estimated_size
+        )
     # Assuming actual size after compression is not larger than estimated_size
     # If it is not, number of chunks may exceed the maximum allowed count and upload will fail
     builder.build_uploading_stage(remote_path, estimated_size)
@@ -171,6 +194,15 @@ def upload_files_tarball_pipeline(
         builder.build_delete_files_stage(file_absolute_paths)
 
     run(builder.pipeline())
+
+
+def decrypt_data_pipeline(config: dict, data: bytes) -> bytes:
+    """Decrypt bytes already in memory using the standard download stages."""
+    builder = PipelineBuilder(config)
+    builder.build_iterable_stage([data])
+    builder.build_decrypt_stage()
+    builder.build_collect_data_stage()
+    return run_and_return_first(builder.pipeline())
 
 
 def download_data_pipeline(config: dict, remote_path: str, decrypt: bool) -> bytes:
@@ -249,6 +281,50 @@ def download_files_pipeline(
     run(builder.pipeline())
 
 
+def copy_object_pipeline(config: dict, entry: CopyEntry) -> None:
+    """
+    Entrypoint of copy object pipeline. Optionally transform object data in transit.
+    """
+    if entry.encrypt and entry.decrypt:
+        raise ValueError("Object cannot be encrypted and decrypted at the same time")
+
+    if entry.server_side:
+        if entry.encrypt or entry.decrypt:
+            raise ValueError("Transformed object cannot be copied on the server side")
+        get_storage_engine(entry.dst_storage).copy_object(
+            entry.src_storage["credentials"]["bucket"], entry.src_path, entry.dst_path
+        )
+        return
+
+    encryption_config = (
+        get_cloud_storage_data_encryption_config(config)
+        if entry.encrypt or entry.decrypt
+        else None
+    )
+
+    if entry.size == 0:
+        # Encryption is chunk-based, so an empty object has no encrypted chunks.
+        # Uploading stage doesn't create an object if there is no data to upload.
+        get_storage_engine(entry.dst_storage).upload_data(b"", entry.dst_path)
+        return
+
+    builder = PipelineBuilder(config)
+
+    builder.build_download_storage_stage(
+        entry.src_path, storage_config=entry.src_storage
+    )
+    if encryption_config:
+        if entry.encrypt:
+            builder.build_encrypt_stage(encryption_config)
+        else:
+            builder.build_decrypt_stage(encryption_config)
+    builder.build_uploading_stage(
+        entry.dst_path, entry.dst_size, storage_config=entry.dst_storage
+    )
+
+    run(builder.pipeline())
+
+
 def delete_multiple_storage_pipeline(config: dict, remote_paths: Sequence[str]) -> None:
     """
     Entrypoint of delete multiple objects pipeline.
@@ -260,22 +336,24 @@ def delete_multiple_storage_pipeline(config: dict, remote_paths: Sequence[str]) 
     run(builder.pipeline())
 
 
-def run(pipeline: PypelnStage) -> None:
+def run(pipeline: Iterable[Any]) -> None:
     """
     Run pipeline until it is complete.
     """
+    _, outer_error, outer_traceback = sys.exc_info()
     try:
         itr = iter(pipeline)
         exhaust_iterator(itr)
     except ValueError as e:
-        if not _ignore_invalid_thread_id_error(e):
+        if not _ignore_invalid_thread_id_error(e, outer_error, outer_traceback):
             raise
 
 
-def run_and_return_first(pipeline: PypelnStage) -> Any:
+def run_and_return_first(pipeline: Iterable[Any]) -> Any:
     """
     Run pipeline until it is complete and return first its result.
     """
+    _, outer_error, outer_traceback = sys.exc_info()
     itr = iter(pipeline)
     result_fetched = False
 
@@ -284,16 +362,20 @@ def run_and_return_first(pipeline: PypelnStage) -> Any:
         result_fetched = True
         exhaust_iterator(itr)
     except ValueError as e:
-        if not _ignore_invalid_thread_id_error(e) or not result_fetched:
+        if (
+            not _ignore_invalid_thread_id_error(e, outer_error, outer_traceback)
+            or not result_fetched
+        ):
             raise
 
     return result
 
 
-def run_and_collect_all(pipeline: PypelnStage) -> list[Any]:
+def run_and_collect_all(pipeline: Iterable[Any]) -> list[Any]:
     """
     Run pipeline until it is complete and collect all results.
     """
+    _, outer_error, outer_traceback = sys.exc_info()
     itr = iter(pipeline)
     results: list = []
 
@@ -304,13 +386,17 @@ def run_and_collect_all(pipeline: PypelnStage) -> list[Any]:
             else:
                 results.append(item)
     except ValueError as e:
-        if not _ignore_invalid_thread_id_error(e):
+        if not _ignore_invalid_thread_id_error(e, outer_error, outer_traceback):
             raise
 
     return results
 
 
-def _ignore_invalid_thread_id_error(error: ValueError) -> bool:
+def _ignore_invalid_thread_id_error(
+    error: ValueError,
+    outer_error: BaseException | None,
+    outer_traceback: TracebackType | None,
+) -> bool:
     # The library "stopit" (dependency of "pypeln") as of version 1.1.2
     # incorrectly handles a timeout exception sent to an already terminated
     # thread as an internal error.
@@ -318,20 +404,18 @@ def _ignore_invalid_thread_id_error(error: ValueError) -> bool:
     if "Invalid thread ID" not in str(error):
         return False
 
-    # stopit may fail during cleanup and mask the original pipeline exception.
-    if error.__context__ is not None:
-        raise error.__context__ from None
+    # A cleanup error also inherits the caller's active exception when a pipeline
+    # runs inside an except block (e.g. saving FAILED metadata). Only restore an
+    # error raised by this pipeline; a re-raised outer error has a new traceback.
+    pipeline_error = error.__context__
+    if pipeline_error is not None and (
+        pipeline_error is not outer_error
+        or pipeline_error.__traceback__ is not outer_traceback
+    ):
+        raise pipeline_error from None
 
     logging.warning(
         "Thread ID error due to incorrect handling of thread termination in stopit library, skipping",
         exc_info=True,
     )
     return True
-
-
-def _calc_encrypted_size(config: dict, data_size: int) -> int:
-    enc_conf = config["encryption"]
-    chunk_size = enc_conf["chunk_size"]
-    metadata_size = get_encryption(enc_conf["type"], enc_conf).metadata_size()
-
-    return calc_encrypted_size(data_size, chunk_size, metadata_size)

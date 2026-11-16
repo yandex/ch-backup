@@ -17,8 +17,17 @@ from ch_backup.storage.engine.s3.s3_client_factory import (
     S3ClientCachedFactory,
     S3ClientFactory,
 )
+from ch_backup.storage.engine.s3.s3_config import build_transfer_config
 from ch_backup.storage.engine.s3.s3_multipart_uploader import S3MultipartUploader
-from ch_backup.storage.engine.s3.s3_retry import S3RetryMeta
+from ch_backup.storage.engine.s3.s3_retry import (
+    RetryExponential,
+    S3RetryingError,
+    S3RetryMeta,
+    S3RetryPolicy,
+    is_retryable_s3_error,
+    resolve_s3_failure_limits,
+    resolve_s3_retry_config,
+)
 from ch_backup.type_hints.boto3.s3 import S3Client
 
 
@@ -29,8 +38,20 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
 
     DEFAULT_DOWNLOAD_PART_LEN = 128 * 1024 * 1024
 
-    def __init__(self, config: dict) -> None:
-        self._s3_client_factory = S3ClientCachedFactory(S3ClientFactory(config))
+    def __init__(
+        self,
+        config: dict,
+        retry_policy: S3RetryPolicy | None = None,
+        *,
+        client_factory: S3ClientCachedFactory | None = None,
+    ) -> None:
+        max_attempts, max_interval = resolve_s3_retry_config(config, retry_policy)
+        failure_limits = resolve_s3_failure_limits(config, retry_policy)
+        self._transfer_config = build_transfer_config(config)
+        self._s3_client_factory = client_factory or S3ClientCachedFactory(
+            S3ClientFactory(config),
+            client_ttl=config["client_ttl"],
+        )
         self._s3_bucket_name = config["credentials"]["bucket"]
 
         self._multipart_uploader = S3MultipartUploader(
@@ -43,6 +64,13 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
 
         self._bulk_delete_enabled = config.get("bulk_delete_enabled", True)
 
+        self._retry = RetryExponential(
+            S3RetryingError,
+            max_attempts=max_attempts,
+            max_interval=max_interval,
+            failure_limits=failure_limits,
+        )
+
     @property
     def _s3_client(self) -> S3Client:
         return self._s3_client_factory.create_s3_client()
@@ -50,7 +78,9 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
     def upload_file(self, local_path: str, remote_path: str) -> str:
         remote_path = remote_path.lstrip("/")
         with open(local_path, "rb") as data:
-            self._s3_client.upload_fileobj(data, self._s3_bucket_name, remote_path)
+            self._s3_client.upload_fileobj(
+                data, self._s3_bucket_name, remote_path, Config=self._transfer_config
+            )
         return remote_path
 
     def upload_data(self, data: bytes, remote_path: str) -> str:
@@ -62,12 +92,16 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
 
     def download_file(self, remote_path: str, local_path: str) -> None:
         remote_path = remote_path.lstrip("/")
-        self._s3_client.download_file(self._s3_bucket_name, remote_path, local_path)
+        self._s3_client.download_file(
+            self._s3_bucket_name, remote_path, local_path, Config=self._transfer_config
+        )
 
     def download_data(self, remote_path):
         remote_path = remote_path.lstrip("/")
         with TemporaryFile() as fileobj:
-            self._s3_client.download_fileobj(self._s3_bucket_name, remote_path, fileobj)
+            self._s3_client.download_fileobj(
+                self._s3_bucket_name, remote_path, fileobj, Config=self._transfer_config
+            )
             fileobj.seek(0)
             data = fileobj.read()
         return data
@@ -103,9 +137,16 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
             objects_to_delete: list = [
                 {"Key": path.lstrip("/")} for path in remote_paths
             ]
-            self._s3_client.delete_objects(
+            response = self._s3_client.delete_objects(
                 Bucket=self._s3_bucket_name, Delete={"Objects": objects_to_delete}
             )
+            errors = [
+                error
+                for error in response.get("Errors", [])
+                if error.get("Code") not in ("NoSuchKey", "NoSuchVersion", "404")
+            ]
+            if errors:
+                raise StorageError(f"Failed to delete S3 objects: {errors}")
         except ClientError as e:
             if "MalformedXML" not in repr(e):
                 raise
@@ -143,6 +184,69 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
                     contents.append(file_path)
 
         return contents
+
+    def read_listing_page(
+        self, remote_path: str, continuation: str | None = None
+    ) -> tuple[list[tuple[str, int]], str | None]:
+        """Read one page with request-level retries and reject invalid continuation."""
+        prefix = remote_path.strip("/") + "/"
+        if continuation is not None and (
+            not continuation.startswith(prefix) or continuation < prefix
+        ):
+            raise ValueError("Invalid S3 listing continuation")
+        page = self._s3_client.list_objects(
+            Bucket=self._s3_bucket_name, Prefix=prefix, Marker=continuation or ""
+        )
+        entries = [(item["Key"], item["Size"]) for item in page.get("Contents", [])]
+        if not page.get("IsTruncated"):
+            return entries, None
+        marker = page.get("NextMarker") or (entries[-1][0] if entries else None)
+        if (
+            not marker
+            or not marker.startswith(prefix)
+            or (continuation is not None and marker <= continuation)
+        ):
+            raise ValueError("S3 listing did not advance its marker")
+        return entries, marker
+
+    def copy_object(
+        self, source_bucket: str, source_path: str, remote_path: str
+    ) -> None:
+        """
+        Copy object from the bucket of the same S3 service on the server side.
+        """
+        self._copy_object(source_bucket, source_path, remote_path)
+
+    def try_copy_object(
+        self, source_bucket: str, source_path: str, remote_path: str
+    ) -> bool:
+        """
+        Try server-side copy, retrying temporary errors. Return False on permanent rejection.
+        """
+        try:
+            self._copy_object(source_bucket, source_path, remote_path)
+            return True
+        except ClientError as e:
+            if is_retryable_s3_error(e):
+                raise
+            logging.warning(
+                "Server-side copy of '{}' from bucket '{}' failed: {}",
+                source_path,
+                source_bucket,
+                e,
+            )
+            return False
+
+    def _copy_object(
+        self, source_bucket: str, source_path: str, remote_path: str
+    ) -> None:
+        # Managed copy uses UploadPartCopy for large objects.
+        self._s3_client.copy(
+            CopySource={"Bucket": source_bucket, "Key": source_path.lstrip("/")},
+            Bucket=self._s3_bucket_name,
+            Key=remote_path.lstrip("/"),
+            Config=self._transfer_config,
+        )
 
     def path_exists(self, remote_path: str, is_dir: bool = False) -> bool:
         """
@@ -264,9 +368,9 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
         """
         Returns remote object size in bytes.
         """
-        return self._s3_client.get_object(Bucket=self._s3_bucket_name, Key=remote_path)[
-            "ContentLength"
-        ]
+        return self._s3_client.head_object(
+            Bucket=self._s3_bucket_name, Key=remote_path
+        )["ContentLength"]
 
     def get_client(self):
         """

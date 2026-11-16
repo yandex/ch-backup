@@ -2,6 +2,18 @@
 Errors specific to ch-backup.
 """
 
+from concurrent.futures import BrokenExecutor
+
+
+def is_broken_executor(error: BaseException) -> bool:
+    """Recognize executor failures also wrapped by storage operations."""
+    cause: BaseException | None = error
+    while cause is not None:
+        if isinstance(cause, BrokenExecutor):
+            return True
+        cause = cause.__cause__
+    return False
+
 
 class ClickhouseBackupError(Exception):
     """

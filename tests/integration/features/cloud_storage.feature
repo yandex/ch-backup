@@ -323,3 +323,863 @@ Feature: Backup & Clean & Restore
     """
     missing from ClickHouse storage_configuration
     """
+
+  Scenario Outline: Restore warm parts and dependent objects without the source policy
+    Given a working clickhouse on clickhouse02
+    # Future timestamps keep TTL inactive. Move only one source partition to S3,
+    # leaving both rows local in the materialized view's own table.
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (d DateTime, p UInt32, id UInt64)
+    ENGINE = <engine>
+    PARTITION BY p ORDER BY id
+    TTL d + INTERVAL 1 DAY TO VOLUME 'external', d + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold';
+    CREATE MATERIALIZED VIEW storage_restore.mv ENGINE = MergeTree ORDER BY id
+    TTL d + INTERVAL 1 DAY TO VOLUME 'external', d + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold' AS SELECT d, id FROM storage_restore.t;
+    INSERT INTO storage_restore.t VALUES ('2099-01-01', 0, 10);
+    INSERT INTO storage_restore.t VALUES ('2099-01-01', 1, 20);
+    ALTER TABLE storage_restore.t MOVE PARTITION 1 TO VOLUME 'external';
+    """
+    And we create clickhouse01 clickhouse backup
+    And we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse02 with restart
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    skip_cloud_storage: true
+    keep_going: <keep_going>
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT id FROM storage_restore.t ORDER BY id
+    """
+    Then we get response
+    """
+    10
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM storage_restore.mv
+    """
+    Then we get response
+    """
+    2
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT storage_policy, position(create_table_query, 'TO VOLUME') = 0, position(create_table_query, 'toIntervalDay(100)') > 0 FROM system.tables WHERE database = 'storage_restore' AND name = 't'
+    """
+    Then we get response
+    """
+    default	1	1
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    skip_cloud_storage: true
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT count() FROM storage_restore.t
+    """
+    Then we get response
+    """
+    1
+    """
+
+    Examples:
+      | engine                                                     | keep_going |
+      | MergeTree()                                                | false      |
+      | ReplicatedMergeTree('/storage_restore/t', '{replica}')       | true       |
+
+  Scenario: Remap local active and detached parts after replacing a missing policy
+    Given a working clickhouse on clickhouse02
+    # Both source disks disappear on the target. Active and detached parts must
+    # land on its default disk while retaining their respective states.
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (p UInt32, id UInt64) ENGINE = MergeTree
+    PARTITION BY p ORDER BY id SETTINGS storage_policy = 'multiple_disks';
+    INSERT INTO storage_restore.t VALUES (0, 10);
+    INSERT INTO storage_restore.t VALUES (1, 20);
+    ALTER TABLE storage_restore.t MOVE PARTITION 0 TO DISK 'hdd1';
+    ALTER TABLE storage_restore.t MOVE PARTITION 1 TO DISK 'hdd2';
+    ALTER TABLE storage_restore.t DETACH PARTITION 1;
+    """
+    And we create clickhouse01 clickhouse backup
+    """
+    detached_parts: true
+    detached_parts_disks:
+      - hdd2
+    """
+    And we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse02 with restart
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    skip_cloud_storage: true
+    restore_detached_parts: true
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT id FROM storage_restore.t
+    """
+    Then we get response
+    """
+    10
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT disk, count() FROM system.detached_parts WHERE database = 'storage_restore' AND table = 't' GROUP BY disk
+    """
+    Then we get response
+    """
+    default	1
+    """
+
+  Scenario Outline: Restore named disk tables using the target default policy
+    Given a working clickhouse on clickhouse02
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (d DateTime, p UInt32, id UInt64)
+    ENGINE = MergeTree PARTITION BY p ORDER BY id
+    TTL d + INTERVAL 1 DAY TO DISK 'hdd2', d + INTERVAL 100 DAY DELETE
+    SETTINGS disk = 'hdd2', index_granularity = 4096;
+    CREATE MATERIALIZED VIEW storage_restore.mv ENGINE = MergeTree ORDER BY id
+    SETTINGS disk = 'hdd2' AS SELECT d, id FROM storage_restore.t;
+    CREATE VIEW storage_restore.v AS SELECT id FROM storage_restore.t;
+    CREATE TABLE storage_restore.log (id UInt64) ENGINE = Log SETTINGS disk = 'default';
+    CREATE TABLE storage_restore.remote (id UInt64) ENGINE = MergeTree ORDER BY id SETTINGS disk = 's3';
+    INSERT INTO storage_restore.remote VALUES (30);
+    INSERT INTO storage_restore.t VALUES ('2099-01-01', 0, 10), ('2099-01-01', 1, 20);
+    ALTER TABLE storage_restore.t DETACH PARTITION 1;
+    """
+    And we create clickhouse01 clickhouse backup
+    """
+    detached_parts: true
+    detached_parts_disks:
+      - hdd2
+    """
+    And we replace config file storage_configuration.xml in favor of <config> on clickhouse02 with restart
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    skip_cloud_storage: true
+    restore_detached_parts: true
+    keep_going: <keep_going>
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT (SELECT id FROM storage_restore.v), (SELECT count() FROM storage_restore.mv), (SELECT count() FROM storage_restore.remote)
+    """
+    Then we get response
+    """
+    10	2	0
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT storage_policy, position(create_table_query, 'disk =') = 0, position(create_table_query, 'TO DISK') = 0, position(create_table_query, 'toIntervalDay(100)') > 0, position(create_table_query, 'index_granularity = 4096') > 0 FROM system.tables WHERE database = 'storage_restore' AND name = 't'
+    """
+    Then we get response
+    """
+    <policy>	1	1	1	1
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT disk_name, count() FROM system.parts WHERE database = 'storage_restore' AND table = 't' AND active GROUP BY disk_name
+    """
+    Then we get response
+    """
+    <disk>	1
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT disk, count() FROM system.detached_parts WHERE database = 'storage_restore' AND table = 't' GROUP BY disk
+    """
+    Then we get response
+    """
+    <disk>	1
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT position(create_table_query, 'disk =') > 0 FROM system.tables WHERE database = 'storage_restore' AND name = 'log'
+    """
+    Then we get response
+    """
+    1
+    """
+
+    Examples:
+      | config                        | policy  | disk    | keep_going |
+      | no_storage_configuration.xml  | default | default | false      |
+      | local_storage_defaults.xml    | local   | hdd1    | true       |
+
+  Scenario: Preserve an existing named cloud disk table when storage adaptation would replace it
+    Given a working clickhouse on clickhouse02
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (id UInt64) ENGINE = MergeTree ORDER BY id SETTINGS disk = 's3';
+    INSERT INTO storage_restore.t VALUES (10);
+    """
+    And we create clickhouse01 clickhouse backup
+    And we execute queries on clickhouse02
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (id UInt64) ENGINE = MergeTree ORDER BY id SETTINGS disk = 's3';
+    INSERT INTO storage_restore.t VALUES (99);
+    """
+    And we try to execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore --skip-cloud-storage --keep-going LAST
+    """
+    Then command exits with code 1
+    And we get response contains
+    """
+    Cannot remove disk setting for existing table storage_restore.t
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT id FROM storage_restore.t
+    """
+    Then we get response
+    """
+    99
+    """
+
+  @require_version_24.4
+  Scenario: Preserve materialized view security while removing a named disk
+    Given a working clickhouse on clickhouse02
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (id UInt64) ENGINE = MergeTree ORDER BY id;
+    CREATE MATERIALIZED VIEW storage_restore.mv ENGINE = MergeTree ORDER BY id
+    SETTINGS index_granularity = 4096, disk = 'hdd2'
+    DEFINER = default SQL SECURITY DEFINER AS SELECT id FROM storage_restore.t;
+    INSERT INTO storage_restore.t VALUES (42);
+    """
+    And we create clickhouse01 clickhouse backup
+    And we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse02 with restart
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    skip_cloud_storage: true
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT id FROM storage_restore.mv
+    """
+    Then we get response
+    """
+    42
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT position(create_table_query, 'SQL SECURITY DEFINER') > 0, position(create_table_query, 'disk =') = 0 FROM system.tables WHERE database = 'storage_restore' AND name = 'mv'
+    """
+    Then we get response
+    """
+    1	1
+    """
+
+  @require_version_24.9
+  Scenario: Reject incompatible Keeper metadata before replacing an Atomic database with Replicated
+    Given a working clickhouse on clickhouse02
+    And we have enabled shared zookeeper for clickhouse01
+    And we have enabled shared zookeeper for clickhouse02
+    And ClickHouse settings
+    """
+    allow_experimental_database_replicated: 1
+    """
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore ENGINE = Replicated('/storage_restore_db', '{shard}', '{replica}');
+    CREATE TABLE storage_restore.t (d DateTime, id UInt64)
+    ENGINE = ReplicatedMergeTree ORDER BY id
+    TTL d + INTERVAL 1 DAY TO VOLUME 'external'
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.t VALUES ('2099-01-01', 10);
+    """
+    And we create clickhouse01 clickhouse backup
+    And we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse02 with restart
+    And we execute queries on clickhouse02
+    """
+    CREATE DATABASE storage_restore ENGINE = Atomic;
+    CREATE TABLE storage_restore.t (id UInt64) ENGINE = MergeTree ORDER BY id;
+    INSERT INTO storage_restore.t VALUES (99);
+    """
+    And we try to execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore --skip-cloud-storage --keep-going --restore-tables-in-replicated-database --clean-zookeeper-mode all-replicas LAST
+    """
+    Then command exits with code 1
+    And we get response contains
+    """
+    contains TTL MOVE destinations unavailable in target policy
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT engine, (SELECT id FROM storage_restore.t) FROM system.databases WHERE name = 'storage_restore'
+    """
+    Then we get response
+    """
+    Atomic	99
+    """
+
+  Scenario: Keep a named disk when restoring without skip cloud storage
+    Given a working clickhouse on clickhouse02
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (id UInt64) ENGINE = MergeTree ORDER BY id SETTINGS disk = 'hdd2';
+    INSERT INTO storage_restore.t VALUES (42);
+    """
+    And we create clickhouse01 clickhouse backup
+    And we restore clickhouse backup #0 to clickhouse02
+    And we execute query on clickhouse02
+    """
+    SELECT disk_name, (SELECT id FROM storage_restore.t) FROM system.parts WHERE database = 'storage_restore' AND table = 't' AND active
+    """
+    Then we get response
+    """
+    hdd2	42
+    """
+
+  Scenario: Restore adapted schemas into fresh Keeper state and join a second replica using backup parts
+    Given a working clickhouse on clickhouse02
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (d DateTime, id UInt64)
+    ENGINE = ReplicatedMergeTree('/storage_restore/t', '{replica}') ORDER BY id
+    TTL d + INTERVAL 1 DAY TO VOLUME 'external', d + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.t VALUES ('2099-01-01', 10);
+    """
+    And we create clickhouse01 clickhouse backup
+    # Restore both replicas into a fresh shared namespace. The source Keeper
+    # namespace retains its old metadata and must not be reset automatically.
+    And we dirty remove clickhouse data at clickhouse01
+    Given we have enabled shared zookeeper for clickhouse01
+    And we have enabled shared zookeeper for clickhouse02
+    When we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse01 with restart
+    And we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse02 with restart
+    When we restore the last created clickhouse backup to clickhouse01
+    """
+    skip_cloud_storage: true
+    """
+    # Restore ordinary data once per shard. The second replica preloads parts
+    # from the backup and lets replica recovery register them.
+    And we restore the last created clickhouse backup to clickhouse02
+    """
+    skip_cloud_storage: true
+    schema_only: true
+    parts_from_backup: "{{ last_created_backup_name }}"
+    """
+    And we synchronize replica storage_restore.t on clickhouse02
+    And we execute query on clickhouse02
+    """
+    SELECT count() FROM storage_restore.t
+    """
+    Then we get response
+    """
+    1
+    """
+    When we execute query on clickhouse02
+    """
+    SYSTEM FLUSH LOGS
+    """
+    # NewPart without DownloadPart proves recovery used the preloaded backup part
+    # instead of fetching it over the replication protocol.
+    And we execute query on clickhouse02
+    """
+    SELECT countIf(event_type = 'NewPart'), countIf(event_type = 'DownloadPart') FROM system.part_log WHERE database = 'storage_restore' AND table = 't'
+    """
+    Then we get response
+    """
+    1	0
+    """
+    When we restore the last created clickhouse backup to clickhouse01
+    """
+    skip_cloud_storage: true
+    """
+    And we restart clickhouse on clickhouse02
+    And we execute query on clickhouse02
+    """
+    SELECT is_readonly, (SELECT count() FROM storage_restore.t) FROM system.replicas WHERE database = 'storage_restore' AND table = 't'
+    """
+    Then we get response
+    """
+    0	1
+    """
+
+
+  Scenario Outline: Reject incompatible Keeper metadata without changing any replica or local table
+    Given a working clickhouse on clickhouse02
+    And we have enabled shared zookeeper for clickhouse01
+    And we have enabled shared zookeeper for clickhouse02
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (d DateTime, id UInt64)
+    ENGINE = ReplicatedMergeTree('/storage_restore/t', '{replica}') ORDER BY id
+    TTL d + INTERVAL 1 DAY TO VOLUME 'external'
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.t VALUES ('2099-01-01', 10);
+    """
+    And we create clickhouse01 clickhouse backup
+    And we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse02 with restart
+    And we execute queries on clickhouse02
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (id UInt64) ENGINE = MergeTree ORDER BY id;
+    INSERT INTO storage_restore.t VALUES (99);
+    """
+    And we try to execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore --skip-cloud-storage --keep-going --clean-zookeeper-mode <cleanup_mode> LAST
+    """
+    Then command exits with code 1
+    And we get response contains
+    """
+    Keeper metadata at /shared/storage_restore/t contains TTL MOVE destinations
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT id FROM storage_restore.t
+    """
+    Then we get response
+    """
+    99
+    """
+    When we execute query on clickhouse01
+    """
+    SELECT is_readonly, total_replicas, active_replicas, (SELECT count() FROM storage_restore.t) FROM system.replicas WHERE database = 'storage_restore' AND table = 't'
+    """
+    Then we get response
+    """
+    0	1	1	1
+    """
+    When we execute query on clickhouse01
+    """
+    SELECT position(value, 'TO VOLUME') > 0 FROM system.zookeeper WHERE path = '/storage_restore/t' AND name = 'metadata'
+    """
+    Then we get response
+    """
+    1
+    """
+
+    Examples:
+      | cleanup_mode |
+      | disabled     |
+      | replica-only |
+      | all-replicas |
+
+  Scenario Outline: Restore schemas with SQL keywords as column names
+    Given a working clickhouse on clickhouse02
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.ttl (`ttl` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY ttl
+    TTL ttl + INTERVAL 1 DAY TO VOLUME 'external', ttl + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.ttl VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.comment (`comment` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY comment
+    TTL comment + INTERVAL 1 DAY TO VOLUME 'external', comment + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.comment VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.empty (`empty` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY empty
+    TTL empty + INTERVAL 1 DAY TO VOLUME 'external', empty + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.empty VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.settings (`settings` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY settings
+    TTL settings + INTERVAL 1 DAY TO VOLUME 'external', settings + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.settings VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.case_ttl (`case` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY case
+    TTL case + INTERVAL 1 DAY TO VOLUME 'external', case + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.case_ttl VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.case_policy (`CASE` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY CASE
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.case_policy VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.interval_ttl (`interval` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY interval
+    TTL interval + INTERVAL 1 DAY TO VOLUME 'external', interval + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.interval_ttl VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.interval_policy (`INTERVAL` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY INTERVAL
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.interval_policy VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.interval_disk (`interval` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY interval
+    SETTINGS disk = 'hdd2';
+    INSERT INTO storage_restore.interval_disk VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.when_ttl (`when` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY when
+    TTL when + INTERVAL 1 DAY TO VOLUME 'external', when + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.when_ttl VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.then_policy (`then` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY then
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.then_policy VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.else_disk (`else` DateTime, id UInt64)
+    ENGINE = MergeTree ORDER BY else
+    SETTINGS disk = 'hdd2';
+    INSERT INTO storage_restore.else_disk VALUES ('2099-01-01', 42);
+    CREATE TABLE storage_restore.not_expression (d DateTime, empty UInt8, id UInt64)
+    ENGINE = MergeTree ORDER BY NOT empty
+    TTL d + INTERVAL 1 DAY TO VOLUME 'external', d + INTERVAL 100 DAY DELETE
+    SETTINGS storage_policy = 's3_cold';
+    INSERT INTO storage_restore.not_expression VALUES ('2099-01-01', 0, 42);
+    """
+    And we create clickhouse01 clickhouse backup
+    And we replace config file storage_configuration.xml in favor of no_storage_configuration.xml on clickhouse02 with restart
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    skip_cloud_storage: true
+    keep_going: <keep_going>
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT _table, id FROM merge('storage_restore', '.*') ORDER BY _table
+    """
+    Then we get response
+    """
+    case_policy	42
+    case_ttl	42
+    comment	42
+    else_disk	42
+    empty	42
+    interval_disk	42
+    interval_policy	42
+    interval_ttl	42
+    not_expression	42
+    settings	42
+    then_policy	42
+    ttl	42
+    when_ttl	42
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count(), countIf(storage_policy = 'default'), countIf(position(create_table_query, 'disk =') = 0), countIf(position(create_table_query, 'TO VOLUME') = 0), countIf(position(create_table_query, 'toIntervalDay(100)') > 0) FROM system.tables WHERE database = 'storage_restore'
+    """
+    Then we get response
+    """
+    13	13	13	13	8
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT disk_name, count() FROM system.parts WHERE database = 'storage_restore' AND active GROUP BY disk_name
+    """
+    Then we get response
+    """
+    default	13
+    """
+
+    Examples:
+      | keep_going |
+      | false      |
+      | true       |
+
+  Scenario: Restore an unchanged replicated schema without direct Keeper configuration
+    Given a working clickhouse on clickhouse02
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE storage_restore;
+    CREATE TABLE storage_restore.t (id UInt64)
+    ENGINE = ReplicatedMergeTree('/storage_restore/t', '{replica}') ORDER BY id;
+    INSERT INTO storage_restore.t VALUES (42);
+    """
+    And we create clickhouse01 clickhouse backup
+    Given ch-backup configuration on clickhouse02
+    """
+    zookeeper:
+      hosts: []
+    lock:
+      zk_flock: false
+    """
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    skip_cloud_storage: true
+    clean_zookeeper_mode: disabled
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT is_readonly, (SELECT id FROM storage_restore.t) FROM system.replicas WHERE database = 'storage_restore' AND table = 't'
+    """
+    Then we get response
+    """
+    0	42
+    """
+
+  @require_version_24.7
+  Scenario Outline: Restore retries a partially copied S3 part into its original directory: <mode>
+    # MDB-51258: copy into an existing detached/<part>/ must not create
+    # detached/<part>/<part>/. A missing data object leaves an incomplete
+    # destination on the first attempt; retry must restore the complete part.
+    Given a working clickhouse on clickhouse02
+    And ch-backup configuration on clickhouse02
+    """
+    backup:
+        restore_fail_on_attach_error: true
+    multiprocessing:
+        cloud_storage_restore_workers: 1
+    clickhouse:
+        settings:
+            log_queries: 1
+            log_comment: cloud_copy_<mode>
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    CREATE TABLE test_db.restore_retry (id UInt64, payload String)
+    ENGINE = MergeTree ORDER BY id
+    SETTINGS storage_policy = 'multiple_s3', min_bytes_for_wide_part = 0;
+    INSERT INTO test_db.restore_retry SELECT number, toString(number) FROM numbers(100);
+    """
+    When we execute query on clickhouse01
+    """
+    SELECT name, disk_name, part_type FROM system.parts
+    WHERE database = 'test_db' AND table = 'restore_retry' AND active;
+    """
+    Then we get response
+    """
+    all_1_1_0	s3	Wide
+    """
+    When we save all user's data in context on clickhouse01
+    And we save data part checksums in context on clickhouse01
+    And we create clickhouse01 clickhouse backup
+    """
+    name: restore_retry
+    """
+    # id.bin is required to attach a Wide part; columns.txt can be regenerated.
+    And we save and delete the S3 objects of a data part file on clickhouse01
+    """
+    database: test_db
+    table: restore_retry
+    part: all_1_1_0
+    file: id.bin
+    bucket: cloud-storage-01
+    path: data
+    """
+    And we try to execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore restore_retry \
+        --cloud-storage-source-bucket cloud-storage-01 \
+        --cloud-storage-source-path data <keep_going>
+    """
+    Then command exits with code 1
+    And we get response contains
+    """
+    <error_message>
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM test_db.restore_retry;
+    """
+    Then we get response
+    """
+    0
+    """
+    When we execute query on clickhouse02
+    """
+    SYSTEM FLUSH LOGS;
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT count() FROM system.query_log
+    WHERE log_comment = 'cloud_copy_<mode>' AND position(query, 'ATTACH PART') > 0;
+    """
+    Then we get response
+    """
+    0
+    """
+    When we execute command on clickhouse02
+    """
+    python3 - <<'PY'
+    import json
+    with open('/tmp/ch_backup_restore_state.json') as stream:
+        state = json.load(stream)
+    assert state['databases']['test_db']['restore_retry']['all_1_1_0'] == 'invalid', state
+    error = state['failed']['test_db']['restore_retry']['failed_parts']['all_1_1_0']
+    assert 'clickhouse-disks call failed' in error, error
+    assert 'NO_FILE_IN_DATA_PART' not in error, error
+    PY
+    """
+    # Leave the destination and restore state intact. Only repair the source.
+    When we restore saved S3 objects
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    cloud_storage_source_bucket: cloud-storage-01
+    cloud_storage_source_path: data
+    """
+    Then the user's data equal to saved one on clickhouse02
+    And data part checksums equal to saved ones on clickhouse02
+    When we execute command on clickhouse02
+    """
+    python3 - <<'PY'
+    import json
+    with open('/tmp/ch_backup_restore_state.json') as stream:
+        state = json.load(stream)
+    assert state['databases']['test_db']['restore_retry']['all_1_1_0'] == 'restored', state
+    assert not state['failed'], state
+    PY
+    """
+
+    Examples:
+      | mode | keep_going   | error_message                |
+      | stop |              | clickhouse-disks call failed  |
+      | skip | --keep-going | Some parts failed to restore |
+
+  @require_version_24.7
+  Scenario: Restore retry removes copied S3 objects after ATTACH fails
+    Given a working clickhouse on clickhouse02
+    And ch-backup configuration on clickhouse02
+    """
+    backup:
+        restore_fail_on_attach_error: true
+    multiprocessing:
+        cloud_storage_restore_workers: 1
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    CREATE TABLE test_db.restore_attach_retry (id UInt64, payload String)
+    ENGINE = MergeTree ORDER BY id
+    SETTINGS storage_policy = 'multiple_s3', min_bytes_for_wide_part = 0;
+    INSERT INTO test_db.restore_attach_retry SELECT number, toString(number) FROM numbers(100);
+    """
+    When we save all user's data in context on clickhouse01
+    And we save data part checksums in context on clickhouse01
+    And we create clickhouse01 clickhouse backup
+    """
+    name: restore_attach_retry
+    """
+    Then s3 bucket cloud-storage-02 contains 0 objects
+    When we try to execute ch-backup on clickhouse02 with ATTACH failing for test_db.restore_attach_retry
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf restore restore_attach_retry
+        --cloud-storage-source-bucket cloud-storage-01
+        --cloud-storage-source-path data
+    """
+    Then command exits with code 1
+    And we get response contains
+    """
+    Some parts failed to restore
+    """
+    When we execute command on clickhouse02
+    """
+    grep -F 'injected ATTACH failure after copying' /var/log/ch-backup/ch-backup.log
+    """
+    Then we get response contains
+    """
+    injected ATTACH failure after copying
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM test_db.restore_attach_retry;
+    """
+    Then we get response
+    """
+    0
+    """
+    # These objects belong to the complete copy left by the failed ATTACH.
+    When we save S3 object keys of a detached data part on clickhouse02
+    """
+    database: test_db
+    table: restore_attach_retry
+    part: all_1_1_0
+    bucket: cloud-storage-02
+    path: data
+    """
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    cloud_storage_source_bucket: cloud-storage-01
+    cloud_storage_source_path: data
+    """
+    Then saved S3 object keys are absent
+    And the user's data equal to saved one on clickhouse02
+    And data part checksums equal to saved ones on clickhouse02
+    And the user's data equal to saved one on clickhouse01
+    When we execute command on clickhouse02
+    """
+    find /var/lib/clickhouse/disks -name '*.ch-backup-copy-mode' | wc -l
+    """
+    Then we get response
+    """
+    0
+    """
+
+  @require_version_24.7
+  Scenario: Switching an interrupted inplace restore to copying preserves source objects
+    Given a working clickhouse on clickhouse02
+    And we use the same object storage bucket for clickhouse02 as on clickhouse01
+    And ch-backup configuration on clickhouse02
+    """
+    backup:
+        restore_fail_on_attach_error: true
+    restore:
+        use_inplace_cloud_restore: true
+    multiprocessing:
+        cloud_storage_restore_workers: 1
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    CREATE TABLE test_db.restore_switch (id UInt64, payload String)
+    ENGINE = MergeTree ORDER BY id
+    SETTINGS storage_policy = 'multiple_s3', min_bytes_for_wide_part = 0;
+    INSERT INTO test_db.restore_switch SELECT number, toString(number) FROM numbers(100);
+    """
+    When we save all user's data in context on clickhouse01
+    And we save data part checksums in context on clickhouse01
+    # Removing the original after FREEZE leaves valid frozen metadata with
+    # ref_count=0. No synthetic edits to metadata or S3 objects are needed.
+    And we execute ch-backup on clickhouse01 with frozen table test_db.restore_switch dropped before metadata upload
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf backup --name restore_switch
+    """
+    And we save the S3 objects of a frozen data part on clickhouse01
+    """
+    disk: s3
+    backup: restore_switch
+    part: all_1_1_0
+    bucket: cloud-storage-01
+    path: data
+    """
+    And we try to execute ch-backup on clickhouse02 with inplace copy interrupted after "id.bin"
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf restore restore_switch
+        --cloud-storage-source-bucket cloud-storage-01
+        --cloud-storage-source-path data
+    """
+    Then command exits with code 1
+    And we get response contains
+    """
+    injected inplace copy interruption; ref_count=0
+    """
+    And saved S3 objects are unchanged
+    Given ch-backup configuration on clickhouse02
+    """
+    restore:
+        use_inplace_cloud_restore: false
+    """
+    # Preserve the incomplete directory and restore context across the switch.
+    When we try to execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore restore_switch \
+        --cloud-storage-source-bucket cloud-storage-01 \
+        --cloud-storage-source-path data
+    """
+    Then saved S3 objects are unchanged
+    And command exits with code 0
+    And the user's data equal to saved one on clickhouse02
+    And data part checksums equal to saved ones on clickhouse02

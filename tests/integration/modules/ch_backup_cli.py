@@ -4,13 +4,16 @@ Interface to ch-backup command-line tool.
 
 import json
 import os
-from copy import copy
+import shlex
+from copy import copy, deepcopy
 from typing import Sequence
 from urllib.parse import quote
 
 import yaml
 
 from ch_backup.backup.metadata import normalize_backup_link
+from ch_backup.config import DEFAULT_CONFIG
+from ch_backup.storage import StorageLoader
 
 from . import docker, s3, utils
 from .typing import ContextT
@@ -67,6 +70,9 @@ class Backup:
                 for part_obj in table_obj["parts"].values():
                     if not part_obj["link"]:
                         count += 1
+                count += sum(
+                    len(parts) for parts in table_obj.get("detached_parts", {}).values()
+                )
         return count
 
     @property
@@ -200,6 +206,19 @@ class Backup:
                         file_paths.update(
                             os.path.join(part_path, f) for f in part_obj["files"]
                         )
+                for disk_name, detached_parts in table_obj.get(
+                    "detached_parts", {}
+                ).items():
+                    for part_name in detached_parts:
+                        part_path = os.path.join(
+                            backup_path,
+                            "detached",
+                            _quote(db_name),
+                            _quote(table_name),
+                            _quote(disk_name),
+                            _quote(part_name),
+                        )
+                        file_paths.add(os.path.join(part_path, f"{part_name}.tar"))
 
         return tuple(file_paths)
 
@@ -210,19 +229,23 @@ class BackupManager:
     """
 
     def __init__(self, context: ContextT, node_name: str, timeout: int = 300) -> None:
+        self._context = context
         self._container = docker.get_container(context, node_name)
-        self._s3_client = s3.S3Client(context)
         self._config_path = CH_BACKUP_CONF_PATH
         protocol = context.ch_backup["protocol"]
         self._cmd_base = f"timeout {timeout} {CH_BACKUP_CLI_PATH} --protocol {protocol} --insecure  --config {self._config_path}"
-        # Read path_root from the ch-backup config on the container.
+        # Read path_root and bucket from the ch-backup config on the container.
         conf_output = self._container.exec_run(
             f"/bin/cat {self._config_path}", user="root"
         ).output.decode()
         conf = yaml.load(conf_output, yaml.SafeLoader)
+        self._raw_config = conf
         self._path_root: str = conf.get("backup", {}).get("path_root", "ch_backup/")
+        self._s3_client = s3.S3Client(
+            context, conf.get("storage", {}).get("credentials", {}).get("bucket")
+        )
 
-    # pylint: disable=too-many-arguments,too-many-positional-arguments
+    # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals,too-many-branches
     def backup(
         self,
         name: str = "{uuid}",
@@ -236,11 +259,18 @@ class BackupManager:
         schema: bool = None,
         udf: bool = None,
         nc: bool = None,
+        copy_cloud_storage_data: bool = False,
+        http_handlers: bool = False,
+        detached_parts: bool = False,
+        detached_parts_disks: Sequence[str] = None,
+        detached_parts_reasons: Sequence[str] = None,
     ) -> str:
         """
         Execute backup command.
         """
         options = [f"--name {name}"]
+        if copy_cloud_storage_data:
+            options.append("--copy-cloud-storage-data")
         if force:
             options.append("--force")
         if databases:
@@ -261,6 +291,16 @@ class BackupManager:
             options.append("--udf")
         if nc:
             options.append("--nc")
+        if http_handlers:
+            options.append("--http-handlers")
+        if detached_parts:
+            options.append("--detached-parts")
+        if detached_parts_disks is not None:
+            disks = shlex.quote(",".join(detached_parts_disks))
+            options.append(f"--detached-parts-disks {disks}")
+        if detached_parts_reasons is not None:
+            reasons = shlex.quote(",".join(detached_parts_reasons))
+            options.append(f"--detached-parts-reasons {reasons}")
         return self._exec(f'backup {" ".join(options)}').strip()
 
     def delete(
@@ -269,7 +309,7 @@ class BackupManager:
         """
         Execute delete command.
         """
-        backup_id = self._normalize_id(backup_id)
+        backup_id = self.normalize_id(backup_id)
 
         options = []
         if purge_partial:
@@ -307,19 +347,30 @@ class BackupManager:
             self._config_path,
         )
 
-    def get_backup_ids(self, list_all: bool = True) -> Sequence[str]:
+    def get_backup_ids(
+        self, list_all: bool = True, *, allow_unreadable: bool = False
+    ) -> Sequence[str]:
         """
         Get list of existing backup entries / identifiers.
         """
-        cmd = "list" if not list_all else "list -a"
+        # A partial listing must not silently change the meaning of backup #N.
+        cmd = "list -v --format=json"
+        if list_all:
+            cmd += " -a"
+        if not allow_unreadable:
+            cmd += " --include-unreadable"
         output = self._exec(cmd)
-        return list(filter(None, output.split("\n")))
+        return [
+            backup["name"]
+            for backup in json.loads(output)
+            if backup.get("metadata_error") is None
+        ]
 
     def get_backup(self, backup_id: BackupId) -> Backup:
         """
         Get backup entry metadata.
         """
-        backup_id = self._normalize_id(backup_id)
+        backup_id = self.normalize_id(backup_id)
         output = self._exec(f"show {backup_id}")
         return Backup(json.loads(output))
 
@@ -334,8 +385,12 @@ class BackupManager:
         force_non_replicated: bool = False,
         clean_zookeeper_mode: str = None,
         replica_name: str = None,
+        parts_from_backup: BackupId = None,
         cloud_storage_source_bucket: str = None,
         cloud_storage_source_path: str = None,
+        cloud_storage_source_endpoint: str = None,
+        skip_cloud_storage: bool = False,
+        restore_detached_parts: bool = False,
         access: bool = None,
         data: bool = None,
         schema: bool = None,
@@ -345,11 +400,12 @@ class BackupManager:
         restore_tables_in_replicated_database: bool = False,
         table_included_patterns: str = None,
         table_excluded_patterns: str = None,
+        http_handlers: bool = False,
     ) -> str:
         """
         Restore backup entry.
         """
-        backup_id = self._normalize_id(backup_id)
+        backup_id = self.normalize_id(backup_id)
         options = []
         if schema_only:
             options.append("--schema-only")
@@ -361,12 +417,24 @@ class BackupManager:
             options.append(f"--clean-zookeeper-mode {clean_zookeeper_mode}")
         if replica_name:
             options.append(f"--replica-name {replica_name}")
+        if parts_from_backup is not None:
+            options.append(
+                f"--parts-from-backup {self.normalize_id(parts_from_backup)}"
+            )
         if cloud_storage_source_bucket:
             options.append(
                 f"--cloud-storage-source-bucket {cloud_storage_source_bucket}"
             )
         if cloud_storage_source_path:
             options.append(f"--cloud-storage-source-path {cloud_storage_source_path}")
+        if cloud_storage_source_endpoint:
+            options.append(
+                f"--cloud-storage-source-endpoint {cloud_storage_source_endpoint}"
+            )
+        if skip_cloud_storage:
+            options.append("--skip-cloud-storage")
+        if restore_detached_parts:
+            options.append("--restore-detached-parts")
         if access:
             options.append("--access")
         if data:
@@ -377,6 +445,8 @@ class BackupManager:
             options.append("--udf")
         if nc:
             options.append("--nc")
+        if http_handlers:
+            options.append("--http-handlers")
         if keep_going:
             options.append("--keep-going")
         if restore_tables_in_replicated_database:
@@ -449,6 +519,13 @@ class BackupManager:
             os.path.join(backup.get_backup_path(self._path_root), path)
         )
 
+    def get_backup_file_data(self, backup_id: BackupId, path: str) -> bytes:
+        """Read a backup object for reversible fault injection."""
+        backup = self.get_backup(backup_id)
+        return self._s3_client.download_data(
+            os.path.join(backup.get_backup_path(self._path_root), path)
+        )
+
     def set_backup_file_data(self, backup_id: BackupId, path: str, data: bytes) -> None:
         """
         Set particular file data in backup (useful for fault injection).
@@ -496,6 +573,51 @@ class BackupManager:
                 missed.append(path)
         return missed
 
+    def download_detached_part_files(
+        self,
+        backup_id: BackupId,
+        database: str,
+        table: str,
+        disk_name: str,
+    ) -> dict[str, dict[str, bytes]]:
+        """Download and unpack detached-part archives through the storage pipeline."""
+        backup = self.get_backup(backup_id)
+        detached_parts = backup.metadata["databases"][database]["tables"][table][
+            "detached_parts"
+        ][disk_name]
+
+        config: dict = deepcopy(DEFAULT_CONFIG)
+        utils.merge(config, self._raw_config)
+        s3_container = docker.get_container(
+            self._context, self._context.conf["s3"]["container"]
+        )
+        host, port = docker.get_exposed_port(
+            s3_container, self._context.conf["s3"]["port"]
+        )
+        config["storage"]["credentials"]["endpoint_url"] = f"http://{host}:{port}"
+        config["storage"]["proxy_resolver"]["uri"] = None
+        config["multiprocessing"]["workers"] = 0
+        loader = StorageLoader(config)
+
+        result = {}
+        for part_name, part_meta in detached_parts.items():
+            part_path = os.path.join(
+                backup.get_backup_path(self._path_root),
+                "detached",
+                _quote(database),
+                _quote(table),
+                _quote(disk_name),
+                _quote(part_name),
+                f"{part_name}.tar",
+            )
+            result[part_name] = dict(
+                loader.download_data_tarball(
+                    part_path,
+                    encryption=part_meta.get("encrypted", True),
+                )
+            )
+        return result
+
     def _exec(self, command: str) -> str:
         cmd = f"{self._cmd_base} {command}"
         result = self._container.exec_run(cmd, user="root")
@@ -505,9 +627,14 @@ class BackupManager:
 
         return result.output.decode().strip()
 
-    def _normalize_id(self, backup_id: BackupId) -> str:
+    def normalize_id(self, backup_id: BackupId) -> str:
         if isinstance(backup_id, int):
-            return self.get_backup_ids()[backup_id]
+            backup_ids = self.get_backup_ids()
+            assert -len(backup_ids) <= backup_id < len(backup_ids), (
+                f"Backup #{backup_id} is unavailable on {self._container.name}: "
+                f"found {len(backup_ids)} backups: {backup_ids}"
+            )
+            return backup_ids[backup_id]
         return backup_id
 
 

@@ -103,6 +103,7 @@ Feature: Backup & Restore
     ORDER BY (dt, id)
     PARTITION BY toYYYYMM(dt);
 
+    SYSTEM STOP MERGES test_db.hits;
     INSERT INTO test_db.hits VALUES
       (toDate('2024-10-24'), 1, '/index', 100);
     """
@@ -163,6 +164,7 @@ Feature: Backup & Restore
     """
     When we create clickhouse01 clickhouse backup
     And we restore clickhouse backup #0 to clickhouse02
+    # Merges can progress differently on each node. Compare logical rows with FINAL.
     When we execute query on clickhouse01
     """
     SELECT id, visits FROM test_db.hits FINAL ORDER BY id FORMAT Vertical;
@@ -184,6 +186,17 @@ Feature: Backup & Restore
     ──────
     id:     1
     visits: 111
+    """
+
+    # Compare every column after both nodes have merged the replaced rows.
+    When we execute queries on clickhouse01
+    """
+    SYSTEM START MERGES test_db.hits;
+    OPTIMIZE TABLE test_db.hits FINAL;
+    """
+    And we execute query on clickhouse02
+    """
+    OPTIMIZE TABLE test_db.hits FINAL;
     """
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
@@ -273,9 +286,10 @@ Feature: Backup & Restore
     And we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
-  Scenario: Restore of a backup with a corrupted data part
+  Scenario Outline: Restore of a backup with a corrupted data part: <mode>
     When we drop all databases at clickhouse01
     And we drop all databases at clickhouse02
+    And we drop restore context at clickhouse02
     And we execute queries on clickhouse01
     """
     CREATE DATABASE test_db;
@@ -285,27 +299,70 @@ Feature: Backup & Restore
     INSERT INTO test_db.test_table SELECT number % 2, number FROM system.numbers LIMIT 100;
     """
     And we create clickhouse01 clickhouse backup
+    """
+    name: corrupted_part_<mode>
+    """
     Given ch-backup configuration on clickhouse02
     """
     backup:
-        restore_fail_on_attach_error: False
+        restore_fail_on_attach_error: <fail_on_error>
+    clickhouse:
+        settings:
+            log_queries: 1
+            log_comment: corrupted_part_<mode>
     """
     And file "data/test_db/test_table/0_1_1_0/0_1_1_0.tar" in clickhouse01 backup #0 data set to
     """
     Corrupted backup data part
     """
-    When we restore clickhouse backup #0 to clickhouse02
+    When we try to execute command on clickhouse02
     """
-    keep_going: true
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore corrupted_part_<mode> <keep_going>
     """
-    And we execute query on clickhouse02
+    Then command exits with code <exit_code>
+    When we execute query on clickhouse02
     """
-    SELECT count() FROM system.parts WHERE table = 'test_table';
+    SELECT count(), countIf(partition_id = 0) FROM test_db.test_table;
     """
     Then we get response
     """
-    1
+    <rows>	0
     """
+    When we execute query on clickhouse02
+    """
+    SYSTEM FLUSH LOGS;
+    """
+    And we execute query on clickhouse02
+    """
+    SELECT countIf(position(query, '0_1_1_0') > 0),
+           countIf(type = 'QueryFinish' AND position(query, '0_1_1_0') = 0)
+    FROM system.query_log
+    WHERE log_comment = 'corrupted_part_<mode>'
+      AND position(query, 'ATTACH PART') > 0;
+    """
+    Then we get response
+    """
+    0	<attached>
+    """
+    When we execute command on clickhouse02
+    """
+    python3 - <<'PY'
+    import json
+    with open('/tmp/ch_backup_restore_state.json') as stream:
+        state = json.load(stream)
+    assert state['databases']['test_db']['test_table']['0_1_1_0'] == 'invalid', state
+    error = state['failed']['test_db']['test_table']['failed_parts']['0_1_1_0']
+    assert 'ciphertext' in error.lower(), error
+    assert 'NO_FILE_IN_DATA_PART' not in error, error
+    PY
+    """
+    And we drop restore context at clickhouse02
+
+    Examples:
+      | mode    | keep_going   | fail_on_error | exit_code | rows | attached |
+      | lenient | --keep-going | false         | 0         | 50   | 1        |
+      | strict  | --keep-going | true          | 1         | 50   | 1        |
+      | stop    |              | false         | 1         | 0    | 0        |
 
   Scenario: Overwrite existing table on destination node when UUID is equal and schema is mismatched
     When we drop all databases at clickhouse01
@@ -817,3 +874,108 @@ Feature: Backup & Restore
     RENAME TABLE long_names.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     TO long_names.babacaba;
     """
+
+  Scenario: A truncated local part stays private and a retry restores complete data
+    Given ch-backup configuration on clickhouse01
+    """
+    encryption:
+        chunk_size: 1024
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    encryption:
+        chunk_size: 1024
+    backup:
+        restore_fail_on_attach_error: false
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    CREATE TABLE test_db.atomic_retry (p UInt64, n UInt64)
+    ENGINE = MergeTree PARTITION BY p ORDER BY n;
+    INSERT INTO test_db.atomic_retry SELECT number % 2, number FROM numbers(100);
+    """
+    When we create clickhouse01 clickhouse backup
+    """
+    name: atomic_retry
+    tables: [test_db.atomic_retry]
+    """
+    And we save and truncate file "data/test_db/atomic_retry/0_1_1_0/0_1_1_0.tar" in clickhouse01 backup #0
+    And we restore clickhouse backup #0 to clickhouse02
+    """
+    keep_going: true
+    """
+    Then part "0_1_1_0" of test_db.atomic_retry is not published on clickhouse02
+    And part "0_1_1_0" of test_db.atomic_retry has restore state "invalid" on clickhouse02
+    When we execute query on clickhouse02
+    """
+    SELECT count() FROM test_db.atomic_retry
+    """
+    Then we get response
+    """
+    50
+    """
+    When we restore the saved backup file
+    And we restore clickhouse backup #0 to clickhouse02
+    And we execute query on clickhouse02
+    """
+    SELECT count(), sum(n) FROM test_db.atomic_retry FORMAT CSV
+    """
+    Then we get response
+    """
+    100,4950
+    """
+
+  Scenario Outline: Replace an existing local part after a complete <layout> download
+    Given ch-backup configuration on clickhouse01
+    """
+    backup:
+        deduplicate_parts: false
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    backup:
+        restore_fail_on_attach_error: true
+    """
+    When we execute queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    CREATE TABLE test_db.atomic_<layout> (n UInt64) ENGINE = MergeTree ORDER BY n;
+    INSERT INTO test_db.atomic_<layout> SELECT number FROM numbers(100);
+    """
+    And we create clickhouse01 clickhouse backup
+    """
+    name: atomic_<layout>
+    tables: [test_db.atomic_<layout>]
+    """
+    Given local parts of clickhouse01 backup "atomic_<layout>" use the <layout> layout
+    When we try to execute ch-backup on clickhouse02 with ATTACH failing for test_db.atomic_<layout>
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf restore atomic_<layout>
+    """
+    Then command exits with code 1
+    When we execute command on clickhouse02
+    """
+    table_path=$(clickhouse-client -q "SELECT data_paths[1] FROM system.tables WHERE database='test_db' AND name='atomic_<layout>' FORMAT TSVRaw")
+    echo stale > "${table_path}/detached/all_1_1_0/stale.txt"
+    """
+    And we restore clickhouse backup "atomic_<layout>" to clickhouse02
+    Then part "all_1_1_0" of test_db.atomic_<layout> has restore state "restored" on clickhouse02
+    When we execute query on clickhouse02
+    """
+    SELECT count(), sum(n) FROM test_db.atomic_<layout> FORMAT CSV
+    """
+    Then we get response
+    """
+    100,4950
+    """
+    When we execute command on clickhouse02
+    """
+    part_path=$(clickhouse-client -q "SELECT path FROM system.parts WHERE database='test_db' AND table='atomic_<layout>' AND active FORMAT TSVRaw")
+    test -n "$part_path" && test ! -e "${part_path}/stale.txt"
+    """
+
+    Examples:
+      | layout |
+      | tar    |
+      | legacy |

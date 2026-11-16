@@ -5,10 +5,12 @@ Pipeline builder.
 from functools import reduce
 from math import ceil
 from pathlib import Path
-from typing import Any, BinaryIO, Iterable, Sequence, Union
+from typing import Any, BinaryIO, Callable, Iterable, Iterator, Sequence, Union
 
 from pypeln import utils as pypeln_utils
 from pypeln.thread.api.from_iterable import from_iterable
+from pypeln.thread.queue import IterableQueue
+from pypeln.thread.supervisor import Supervisor
 
 from ch_backup.compression import get_compression
 from ch_backup.encryption import get_encryption
@@ -54,6 +56,8 @@ class PipelineBuilder:
     def __init__(self, config: dict) -> None:
         self._config = config
         self._stages: list[PypelnStage] = []
+        # Process-wide pypeln setting, set per pipeline since spawned workers do not inherit it.
+        pypeln_utils.TIMEOUT = config["pipeline"]["queue_poll_interval"]
 
     def build_iterable_stage(self, iterable: Iterable[Any]) -> "PipelineBuilder":
         """
@@ -103,9 +107,10 @@ class PipelineBuilder:
         queue_size = stage_config["queue_size"]
 
         self.append(
-            thread_map(
+            thread_flat_map(
                 DecompressStage(
                     compressor,
+                    self._config[WriteFilesStage.stype]["chunk_size"],
                 ),
                 maxsize=queue_size,
             )
@@ -118,6 +123,7 @@ class PipelineBuilder:
         dir_path: Path,
         tar_base_dir: str | None = None,
         exclude_file_names: list[str] | None = None,
+        file_reader: Callable[[Path], bytes] | None = None,
     ) -> "PipelineBuilder":
         """
         Build reading files to tarball stage.
@@ -128,7 +134,11 @@ class PipelineBuilder:
         self.append(
             thread_input(
                 ReadFilesTarballScanStage(
-                    stage_config, dir_path, tar_base_dir, exclude_file_names
+                    stage_config,
+                    dir_path,
+                    tar_base_dir,
+                    exclude_file_names,
+                    file_reader,
                 ),
                 maxsize=queue_size,
             )
@@ -172,11 +182,13 @@ class PipelineBuilder:
 
         return self
 
-    def build_encrypt_stage(self) -> "PipelineBuilder":
+    def build_encrypt_stage(
+        self, encryption_config: dict | None = None
+    ) -> "PipelineBuilder":
         """
         Build encrypting stage.
         """
-        stage_config = self._config[EncryptStage.stype]
+        stage_config = encryption_config or self._config[EncryptStage.stype]
 
         buffer_size = stage_config["buffer_size"]
         chunk_size = stage_config["chunk_size"]
@@ -190,11 +202,13 @@ class PipelineBuilder:
 
         return self
 
-    def build_decrypt_stage(self) -> "PipelineBuilder":
+    def build_decrypt_stage(
+        self, encryption_config: dict | None = None
+    ) -> "PipelineBuilder":
         """
         Build decrypting stage.
         """
-        stage_config = self._config[EncryptStage.stype]
+        stage_config = encryption_config or self._config[EncryptStage.stype]
 
         buffer_size = stage_config["buffer_size"]
         chunk_size = stage_config["chunk_size"]
@@ -211,12 +225,14 @@ class PipelineBuilder:
         return self
 
     def build_uploading_stage(
-        self, remote_path: str, source_size: int
+        self, remote_path: str, source_size: int, storage_config: dict | None = None
     ) -> "PipelineBuilder":
         """
         Build uploading stage.
+
+        Storage config can be overridden to upload data to a storage other than the configured one.
         """
-        stage_config = self._config[StorageUploadingStage.stype]
+        stage_config = storage_config or self._config[StorageUploadingStage.stype]
 
         max_chunk_count = stage_config["max_chunk_count"]
         buffer_size = stage_config["buffer_size"]
@@ -290,11 +306,15 @@ class PipelineBuilder:
         self.append(thread_map(DeleteFilesStage(stage_config, files)))
         return self
 
-    def build_download_storage_stage(self, remote_path: str) -> "PipelineBuilder":
+    def build_download_storage_stage(
+        self, remote_path: str, storage_config: dict | None = None
+    ) -> "PipelineBuilder":
         """
         Build downloading from storage stage.
+
+        Storage config can be overridden to download data from a storage other than the configured one.
         """
-        stage_config = self._config[DownloadStorageStage.stype]
+        stage_config = storage_config or self._config[DownloadStorageStage.stype]
         storage = get_storage_engine(stage_config)
         queue_size = stage_config["queue_size"]
 
@@ -330,12 +350,14 @@ class PipelineBuilder:
         """
         stage_config = self._config[WriteFilesStage.stype]
         buffer_size = stage_config["buffer_size"]
+        chunk_size = stage_config["chunk_size"]
         queue_size = stage_config["queue_size"]
 
         self.append(
+            thread_flat_map(ChunkingStage(chunk_size, chunk_size), maxsize=queue_size),
             thread_map(
                 UnpackTarballStage(stage_config, buffer_size), maxsize=queue_size
-            )
+            ),
         )
         return self
 
@@ -374,7 +396,7 @@ class PipelineBuilder:
         for stage in stages:
             self._stages.append(stage)
 
-    def pipeline(self) -> PypelnStage:
+    def pipeline(self) -> Iterator[Any]:
         """
         Return built pipeline.
         """
@@ -391,4 +413,19 @@ class PipelineBuilder:
             self._stages = [dummy_stage, *self._stages]
 
         # pipeline = stage1 | stage2 | ... | stageN
-        return reduce(lambda pipeline, stage: pipeline | stage, self._stages)
+        stage = reduce(lambda pipeline, stage: pipeline | stage, self._stages)
+        return self._iterate(stage)
+
+    @staticmethod
+    def _iterate(stage: PypelnStage) -> Iterator[Any]:
+        main_queue = IterableQueue(maxsize=stage.maxsize, total_sources=stage.workers)
+        workers = list(stage.build({}, main_queue, main_queue))
+
+        with Supervisor(workers=workers, main_queue=main_queue):
+            for element in main_queue:
+                yield element.value
+
+            # After successful exhaustion, join before the supervisor force-stops workers.
+            # A late `StopThreadException` can otherwise interrupt Python's thread teardown.
+            for worker in workers:
+                worker.process.join()

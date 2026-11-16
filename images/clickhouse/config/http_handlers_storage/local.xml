@@ -1,0 +1,7 @@
+<yandex>
+    <display_secrets_in_show_and_select>1</display_secrets_in_show_and_select>
+    <query_rules_storage>
+        <type>local</type>
+        <path>/var/lib/clickhouse/http_handlers_test</path>
+    </query_rules_storage>
+</yandex>

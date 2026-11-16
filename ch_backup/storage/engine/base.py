@@ -128,3 +128,37 @@ class PipeLineCompatibleStorageEngine(StorageEngine):
         Return object size.
         """
         pass
+
+    def list_dir_with_sizes(self, remote_path: str) -> dict[str, int]:
+        """Collect recursive object sizes through the shared page API."""
+        result: dict[str, int] = {}
+        continuation = None
+        while True:
+            entries, continuation = self.read_listing_page(remote_path, continuation)
+            result.update(entries)
+            if continuation is None:
+                return result
+
+    @abstractmethod
+    def read_listing_page(
+        self, remote_path: str, continuation: str | None = None
+    ) -> tuple[list[tuple[str, int]], str | None]:
+        """Read one recursive listing page; None starts and marks completion."""
+
+    @abstractmethod
+    def copy_object(
+        self, source_bucket: str, source_path: str, remote_path: str
+    ) -> None:
+        """
+        Copy object from another bucket of the same storage service on the server side.
+        """
+        pass
+
+    @abstractmethod
+    def try_copy_object(
+        self, source_bucket: str, source_path: str, remote_path: str
+    ) -> bool:
+        """
+        Try to copy object on the server side. Return False if the storage service rejected the request.
+        """
+        pass

@@ -1,11 +1,328 @@
 """Unit tests for backup layout cloud metadata path selection."""
 
+import copy
+import os
 from collections import Counter
-from unittest.mock import MagicMock, patch
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from threading import Barrier, Event
+from unittest.mock import MagicMock, call, patch
 
-from ch_backup.backup.layout import BackupLayout
+import pytest
+from click import Group
+from click.testing import CliRunner
+
+from ch_backup.backup.layout import BackupLayout, read_metadata_in_batches
+from ch_backup.backup.metadata import (
+    BackupMetadata,
+    BackupState,
+    CopyScope,
+    CopyScopeStatus,
+    PartMetadata,
+)
 from ch_backup.backup.metadata.table_metadata import TableMetadata
+from ch_backup.ch_backup import ClickhouseBackup
+from ch_backup.cli import delete_command
+from ch_backup.clickhouse.models import Disk, Table
+from ch_backup.command_context import command_context, get_current_command
 from ch_backup.config import DEFAULT_CONFIG
+from ch_backup.exceptions import ClickhouseBackupError, StorageError
+from ch_backup.storage.async_pipeline import pipeline_executor
+from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
+from ch_backup.storage.engine.s3 import S3RetryingError
+
+
+def make_layout() -> BackupLayout:
+    """Helper: build a BackupLayout with a mocked storage loader."""
+    config: dict = copy.deepcopy(DEFAULT_CONFIG)
+    config["backup"]["path_root"] = "ch_backup"
+    with patch("ch_backup.backup.layout.StorageLoader"):
+        layout = BackupLayout(config)  # type: ignore[arg-type]
+    setattr(layout, "_storage_loader", MagicMock())
+    return layout
+
+
+@pytest.mark.parametrize("use_light_meta", [False, True])
+@pytest.mark.parametrize("workers", [1, 2, 4])
+def test_metadata_reads_are_parallel_bounded_and_ordered(use_light_meta, workers):
+    layout = make_layout()
+    names = [f"b{i}" for i in range(workers * 2)]
+    barrier = Barrier(workers)
+
+    def read(name, use_light_meta=False):
+        assert use_light_meta is light
+        assert get_current_command() == "copy"
+        # All reads of the batch must start before any can finish.
+        barrier.wait(timeout=10)
+        return BackupMetadata(name, "2", "26.6", "%Y-%m-%d")
+
+    light = use_light_meta
+    with (
+        command_context("copy"),
+        patch.object(layout, "get_backup", side_effect=read) as get_backup,
+        ThreadExecPool(workers) as pool,
+    ):
+        reads = read_metadata_in_batches(
+            layout, names, pool=pool, workers=workers, use_light_meta=use_light_meta
+        )
+        name, future = next(reads)
+        assert name == names[0]
+        backup = future.result()
+        assert backup is not None and backup.name == name
+        assert get_backup.call_count == workers
+        assert [name] + [name for name, future in reads if future.result()] == names
+        assert get_backup.call_count == workers * 2
+
+
+def test_metadata_reads_preserve_missing_and_errors_and_drain_on_early_exit():
+    layout = make_layout()
+    failure = StorageError("unreadable metadata")
+    finished = []
+    last_started, release_last, consumer_failed, done = (
+        Event(),
+        Event(),
+        Event(),
+        Event(),
+    )
+
+    def read(name, **_kwargs):
+        try:
+            if name == "last":
+                last_started.set()
+                assert release_last.wait(10)
+            if name == "broken":
+                raise failure
+        finally:
+            finished.append(name)
+
+    def consume():
+        with ThreadExecPool(4) as pool:
+            reads = read_metadata_in_batches(
+                layout, ["missing", "broken", "unused", "last"], pool=pool, workers=4
+            )
+            name, future = next(reads)
+            assert name == "missing" and future.result() is None
+            assert last_started.wait(10)
+            assert "last" not in finished
+            name, future = next(reads)
+            assert name == "broken"
+            try:
+                future.result()
+            finally:
+                consumer_failed.set()
+
+    with patch.object(layout, "get_backup", side_effect=read):
+        with ThreadPoolExecutor(max_workers=1) as consumer:
+            loading = consumer.submit(consume)
+            loading.add_done_callback(lambda _: done.set())
+            try:
+                assert consumer_failed.wait(10)
+                assert not done.wait(0.05)
+            finally:
+                release_last.set()
+            with pytest.raises(StorageError) as raised:
+                loading.result(timeout=10)
+            assert raised.value is failure
+    assert sorted(finished) == ["broken", "last", "missing", "unused"]
+
+
+@pytest.mark.parametrize("filename", ["../outside/file", "/outside/file", "link/file"])
+def test_legacy_part_rejects_unsafe_manifest_before_download(tmp_path, filename):
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "link").symlink_to(tmp_path / "outside", target_is_directory=True)
+    if filename.startswith("/"):
+        filename = str(tmp_path / filename.lstrip("/"))
+    layout = make_layout()
+    part = PartMetadata("db", "t", "all_1_1_0", "", 1, ["p.proj/a", filename], False)
+    with (
+        patch.object(layout, "_storage_loader") as storage,
+        pytest.raises(StorageError, match="Invalid part filename"),
+    ):
+        layout.download_data_part(MagicMock(), part, str(staging), MagicMock())
+    storage.download_file.assert_not_called()
+    assert not (staging / "p.proj").exists()
+    assert not (tmp_path / "outside").exists()
+
+
+@pytest.mark.parametrize("failure", [None, "first", "both", "submit"])
+# pylint: disable=protected-access
+def test_legacy_part_completes_only_after_all_files(tmp_path, monkeypatch, failure):
+    # Current integration backups use TAR; legacy parts have separate futures.
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    config["backup"]["path_root"] = "ch_backup"
+    config["multiprocessing"]["workers"] = 0
+    layout = BackupLayout(config)  # type: ignore[arg-type]
+    layout._storage_loader._engine = MagicMock()
+    backup = BackupMetadata("backup", "2", "23.3", "%Y-%m-%d")
+    part = PartMetadata("db", "tbl", "all_1_1_0", "", 1, ["a", "b"], False)
+    first_collected = Event()
+    completed: list[PartMetadata] = []
+    errors: list[str] = []
+
+    def on_error(failed_part, error):
+        assert failed_part is part
+        errors.append(str(error))
+        first_collected.set()
+
+    def download(_config, remote_path, local_path, *_args):
+        if remote_path.endswith("/b"):
+            assert first_collected.wait(10), "first file was not collected"
+            if failure == "both":
+                raise OSError("later error")
+        elif failure in ("first", "both"):
+            raise OSError("first error")
+        with open(local_path, "w", encoding="utf-8") as stream:
+            stream.write(remote_path[-1])
+
+    def submit_file(job_id, pipeline, *args, callback, **kwargs):
+        def done():
+            callback()
+            if str(tmp_path / "a") in job_id:
+                assert not completed, "part completed before its last file"
+                first_collected.set()
+
+        if failure == "submit" and str(tmp_path / "b") in job_id:
+            raise OSError("submission error")
+        return submit(job_id, pipeline, *args, callback=done, **kwargs)
+
+    monkeypatch.setattr(pipeline_executor, "download_file_pipeline", download)
+    with ThreadExecPool(2) as pool:
+        submit = pool.submit
+        monkeypatch.setattr(pool, "submit", submit_file)
+        monkeypatch.setattr(layout._storage_loader._ploader, "_exec_pool", pool)
+        try:
+            layout.download_data_part(
+                backup, part, str(tmp_path), completed.append, on_error
+            )
+        except OSError as error:
+            assert failure == "submit" and str(error) == "submission error"
+        layout.wait(keep_going=True)
+
+    assert completed == ([] if failure else [part])
+    assert errors == (
+        ["submission error" if failure == "submit" else "first error"]
+        if failure
+        else []
+    )
+    if not failure:
+        assert [(tmp_path / name).read_text() for name in part.files] == part.files
+
+
+@pytest.mark.parametrize("name", ["../handler/日本語", "foo%2Fbar"])
+def test_http_handler_upload_download_uses_same_escaped_encrypted_path(name):
+    layout = make_layout()
+    storage = MagicMock()
+    setattr(layout, "_storage_loader", storage)
+    storage.download_data.return_value = "CREATE HANDLER test URL '/test' AS SELECT 1"
+    statement = storage.download_data.return_value
+    metadata = BackupMetadata("backup", "2", "26.8", "%Y-%m-%d")
+    layout.upload_http_handler(metadata.name, name, statement)
+    path = storage.upload_data.call_args.kwargs["remote_path"]
+    assert path.startswith("ch_backup/backup/http_handlers/")
+    assert path.endswith(".sql")
+    assert "/" not in path.removeprefix("ch_backup/backup/http_handlers/")
+    assert storage.upload_data.call_args.kwargs["encryption"] is True
+    assert layout.get_http_handler_create_statement(metadata, name) == statement
+    storage.download_data.assert_called_once_with(path, encryption=True)
+
+
+@pytest.mark.parametrize("use_light_meta", [False, True])
+def test_list_sorts_backups_by_instant_across_timezone_offsets(use_light_meta):
+    layout = make_layout()
+    storage = getattr(layout, "_storage_loader")
+    timestamps = {
+        "east": "2026-10-14T02:00:00+03:00",  # October 13, 23:00 UTC
+        "utc": "2026-10-14T01:00:00+00:00",  # October 14, 01:00 UTC
+        "west": "2026-10-13T23:00:00-03:00",  # October 14, 02:00 UTC
+    }
+    metadata = []
+    for name, timestamp in timestamps.items():
+        backup = BackupMetadata(
+            name, "2", "26.6", DEFAULT_CONFIG["backup"]["time_format"]
+        )
+        backup.start_time = datetime.fromisoformat(timestamp)
+        metadata.append(backup.dump_json(light=use_light_meta))
+    storage.list_dir.return_value = list(timestamps)
+    storage.path_exists.return_value = True
+    storage.download_data.side_effect = metadata
+
+    backups = layout.get_backups(use_light_meta=use_light_meta)
+
+    assert [backup.name for backup in backups] == ["west", "utc", "east"]
+
+
+@pytest.mark.parametrize("operation", ["head", "get"])
+def test_list_collects_read_errors_only_when_requested(operation):
+    """A failed light read is visible while healthy and missing entries survive."""
+    layout = make_layout()
+    storage = getattr(layout, "_storage_loader")
+    storage.list_dir.return_value = ["broken", "missing", "good"]
+    good = BackupMetadata("good", "2", "26.6", "%Y-%m-%d")
+    error = S3RetryingError("\n\nInternalError\nTraceback details")
+
+    def path_exists(path):
+        if "/broken/" in path and operation == "head":
+            raise error
+        return "/missing/" not in path
+
+    def download_data(path, **_kwargs):
+        if "/broken/" in path:
+            raise error
+        return good.dump_json(light=True)
+
+    storage.path_exists.side_effect = path_exists
+    storage.download_data.side_effect = download_data
+    with pytest.raises((StorageError, S3RetryingError)):
+        layout.get_backups(use_light_meta=True)
+
+    unreadable: dict[str, str] = {}
+    assert [b.name for b in layout.get_backups(True, unreadable=unreadable)] == ["good"]
+    assert unreadable == {"broken": "S3RetryingError: InternalError"}
+
+
+def test_list_failure_is_not_treated_as_unreadable_metadata():
+    """Failure to discover backup names cannot produce a partial listing."""
+    layout = make_layout()
+    getattr(layout, "_storage_loader").list_dir.side_effect = S3RetryingError(
+        "LIST failed"
+    )
+    unreadable: dict[str, str] = {}
+    with pytest.raises(S3RetryingError, match="LIST failed"):
+        layout.get_backups(True, unreadable=unreadable)
+    assert not unreadable
+
+
+@pytest.mark.parametrize("full_metadata", [None, "invalid metadata"])
+def test_list_keeps_copies_with_unreadable_full_metadata(full_metadata):
+    """Listing copies needs only light metadata, even when a full file is corrupt."""
+    layout = make_layout()
+    storage = MagicMock()
+    setattr(layout, "_storage_loader", storage)
+    copied = BackupMetadata("base", "2", "26.6", "%Y-%m-%d %H:%M:%S %z")
+    copied.state = BackupState.CREATED
+    copied.copied_from = {"bucket": "source"}
+    copied.copy_scopes = {CopyScope.FILES: CopyScopeStatus.COMPLETED}
+    copied.copy_updated_at = datetime.fromisoformat("2026-10-30T10:00:00+03:00")
+    objects = {"ch_backup/base/backup_light_struct.json": copied.dump_json(light=True)}
+    if full_metadata is not None:
+        objects["ch_backup/base/backup_struct.json"] = full_metadata
+    storage.path_exists.side_effect = objects.__contains__
+    storage.list_dir.return_value = ["base"]
+    storage.download_data.side_effect = lambda path, **_: objects[path]
+    backup = ClickhouseBackup.__new__(ClickhouseBackup)
+    backup.__dict__["_context"] = MagicMock(backup_layout=layout)
+    unreadable: dict[str, str] = {}
+
+    listed = backup.list(unreadable=unreadable)
+
+    assert not unreadable
+    assert [item.name for item in listed] == ["base"]
+    assert listed[0].copy_scopes == copied.copy_scopes
+    assert listed[0].copy_updated_at == copied.copy_updated_at
+    storage.download_data.assert_called_once_with(
+        "ch_backup/base/backup_light_struct.json", encoding=None
+    )
 
 
 class TestCloudStorageMetadataRemotePaths:
@@ -14,14 +331,7 @@ class TestCloudStorageMetadataRemotePaths:
     # pylint: disable=protected-access
 
     def test_prefers_old_style_and_filters_exact_per_table_paths(self):
-        with (
-            patch("ch_backup.backup.layout.StorageLoader"),
-            patch("ch_backup.backup.layout.get_encryption") as get_encryption,
-        ):
-            get_encryption.return_value.metadata_size.return_value = 0
-            layout = BackupLayout(DEFAULT_CONFIG)  # type: ignore[arg-type]
-        layout._storage_loader = MagicMock()
-        layout._config["path_root"] = "ch_backup"
+        layout = make_layout()
 
         backup_name = "backup"
         source_disk_name = "s3"
@@ -38,13 +348,13 @@ class TestCloudStorageMetadataRemotePaths:
             f"{backup_path}/disks/{source_disk_name}/db2/table3.tar",
         ]
 
-        layout._storage_loader.path_exists.side_effect = {old_style_path: False}.get
-        layout._storage_loader.list_dir.side_effect = lambda _disk_path, **_kwargs: [
+        layout._storage_loader.path_exists.side_effect = {old_style_path: False}.get  # type: ignore[attr-defined]
+        layout._storage_loader.list_dir.side_effect = lambda _disk_path, **_kwargs: [  # type: ignore[attr-defined]
             *expected_paths,
             f"{backup_path}/disks/{source_disk_name}/db2/table4.tar",
         ]
 
-        remote_paths = layout._get_cloud_storage_metadata_remote_paths(
+        remote_paths = layout.get_cloud_storage_metadata_remote_paths(
             backup_name,
             source_disk_name,
             compression=False,
@@ -52,3 +362,473 @@ class TestCloudStorageMetadataRemotePaths:
         )
 
         assert Counter(remote_paths) == Counter(expected_paths)
+
+
+class TestCloudStorageMetadataUpload:
+    """Tests for reading cloud storage metadata from a given disk."""
+
+    # pylint: disable=protected-access
+    # The storage loader is a mock, pylint infers the class it replaces.
+    # pylint: disable=no-member
+
+    _BACKUP_NAME = "20260101T000000"
+
+    @staticmethod
+    def _make_layout() -> tuple[BackupLayout, MagicMock]:
+        """Helper: build a BackupLayout and expose its storage loader."""
+        layout = make_layout()
+        return layout, layout._storage_loader  # type: ignore[return-value]
+
+    def _make_backup_meta(self) -> MagicMock:
+        backup_meta = MagicMock()
+        backup_meta.get_sanitized_name.return_value = self._BACKUP_NAME
+        backup_meta.cloud_storage.compressed = False
+        backup_meta.cloud_storage.encrypted = False
+        return backup_meta
+
+    @staticmethod
+    def _make_table(disk: Disk) -> Table:
+        return Table(
+            "db1",
+            "table1",
+            "MergeTree",
+            [disk],
+            [os.path.join(disk.path, "store/abc/abcdef")],
+            "",
+            "",
+            "some-uuid",
+        )
+
+    def test_has_frozen_cloud_storage_data(self):
+        """
+        Frozen data is looked up in the shadow directory of the given disk.
+        """
+        layout, _ = self._make_layout()
+        disk = Disk("s3", "/var/lib/clickhouse/disks/s3/", "s3")
+        table = self._make_table(disk)
+
+        with patch("ch_backup.backup.layout.dir_is_empty") as dir_is_empty:
+            dir_is_empty.return_value = False
+            assert layout.has_frozen_cloud_storage_data(
+                self._make_backup_meta(), disk, table
+            )
+
+        dir_is_empty.assert_called_once_with(
+            f"/var/lib/clickhouse/disks/s3/shadow/{self._BACKUP_NAME}/store/abc/abcdef",
+            ["frozen_metadata.txt"],
+        )
+
+    def test_upload_reads_files_from_source_disk(self):
+        """
+        With source_disk set, metadata is read from it while the tarball still
+        lands under the name of the original disk.
+        """
+        layout, loader = self._make_layout()
+        disk = Disk("s3", "/var/lib/clickhouse/disks/s3/", "s3")
+        source_disk = Disk("s3_backup", "/var/lib/clickhouse/disks/s3_backup/", "s3")
+        table = self._make_table(disk)
+
+        layout.upload_cloud_storage_metadata(
+            self._make_backup_meta(), disk, table, source_disk=source_disk
+        )
+
+        kwargs = loader.upload_files_tarball_scan.call_args.kwargs
+        assert kwargs["dir_path"] == (
+            f"/var/lib/clickhouse/disks/s3_backup/shadow/{self._BACKUP_NAME}"
+            "/store/abc/abcdef"
+        )
+        assert kwargs["remote_path"] == (
+            f"ch_backup/{self._BACKUP_NAME}/disks/s3/db1/table1.tar"
+        )
+        assert kwargs["tar_base_dir"] == "store/abc/abcdef"
+
+    def test_upload_reads_files_from_the_disk_itself_by_default(self):
+        """
+        Without source_disk the behaviour must stay as it was.
+        """
+        layout, loader = self._make_layout()
+        disk = Disk("s3", "/var/lib/clickhouse/disks/s3/", "s3")
+        table = self._make_table(disk)
+
+        layout.upload_cloud_storage_metadata(self._make_backup_meta(), disk, table)
+
+        kwargs = loader.upload_files_tarball_scan.call_args.kwargs
+        assert kwargs["dir_path"] == (
+            f"/var/lib/clickhouse/disks/s3/shadow/{self._BACKUP_NAME}/store/abc/abcdef"
+        )
+
+
+class TestCloudStorageMetadataLookup:
+    """Tests for the lookup of disk metadata of a table in a backup."""
+
+    # pylint: disable=protected-access
+
+    @staticmethod
+    def _probed_paths(layout: BackupLayout) -> list:
+        """Helper: return paths the lookup checked for existence."""
+        path_exists = layout._storage_loader.path_exists
+        return [call.args[0] for call in path_exists.call_args_list]  # type: ignore[attr-defined]
+
+    def test_dashed_backup_name_is_looked_up_under_the_sanitized_path(self):
+        """
+        Disk metadata is uploaded under the sanitized backup name, so looking it
+        up by the raw name would never find it and deduplication would be lost.
+        """
+        layout = make_layout()
+        layout._storage_loader.path_exists.return_value = False  # type: ignore[attr-defined]
+
+        layout.has_cloud_storage_metadata("my-backup", "db1", "table1", "s3")
+
+        assert self._probed_paths(layout) == [
+            "ch_backup/my_backup/disks/s3/db1/table1.tar.gz",
+            "ch_backup/my_backup/disks/s3/db1/table1.tar",
+        ]
+
+    def test_metadata_is_found_when_stored_uncompressed(self):
+        """
+        Either extension means the metadata is there.
+        """
+        layout = make_layout()
+        layout._storage_loader.path_exists.side_effect = {  # type: ignore[attr-defined]
+            "ch_backup/my_backup/disks/s3/db1/table1.tar": True
+        }.get
+
+        assert layout.has_cloud_storage_metadata("my-backup", "db1", "table1", "s3")
+
+    def test_missing_metadata_is_reported(self):
+        """
+        A backup without the metadata of the table cannot be linked to.
+        """
+        layout = make_layout()
+        layout._storage_loader.path_exists.return_value = False  # type: ignore[attr-defined]
+
+        assert not layout.has_cloud_storage_metadata("my-backup", "db1", "table1", "s3")
+
+
+class TestCloudStorageDataDeletion:
+    """Tests for deletion of cloud storage data of a backup."""
+
+    # pylint: disable=protected-access
+
+    @staticmethod
+    def _make_layout() -> tuple[BackupLayout, MagicMock]:
+        """Helper: build a BackupLayout that records paths passed for deletion."""
+        layout = make_layout()
+        layout._storage_loader.list_dir.side_effect = lambda path, **_kwargs: [  # type: ignore[attr-defined]
+            f"{path}/object"
+        ]
+        delete_files = MagicMock()
+        setattr(layout, "_delete_files", delete_files)
+        return layout, delete_files
+
+    def test_delete_backup_with_dashed_name_deletes_cloud_storage_data(self):
+        """
+        ClickHouse writes cloud storage data under the sanitized backup name, so
+        deleting the backup path alone would leave the data in the bucket.
+        """
+        layout, delete_files = self._make_layout()
+
+        layout.delete_backup("my-backup", MagicMock())
+
+        assert delete_files.call_args.args[0] == [
+            "ch_backup/my-backup/object",
+            "ch_backup/my_backup/disks/object",
+            "ch_backup/my_backup/cloud_storage/object",
+        ]
+
+    def test_delete_backup_keeps_a_backup_named_as_the_sanitized_path(self):
+        """
+        Names differing only in '-' share the sanitized path, so listing it as a
+        whole would delete metadata and data parts of the other backup.
+        """
+        layout = make_layout()
+        layout._storage_loader.list_dir.side_effect = lambda path, **_kwargs: {  # type: ignore[attr-defined]
+            "ch_backup/my-backup": ["ch_backup/my-backup/backup_struct.json"],
+            "ch_backup/my_backup": [
+                "ch_backup/my_backup/backup_struct.json",
+                "ch_backup/my_backup/data/db/table/part.tar",
+                "ch_backup/my_backup/disks/s3/db/table.tar",
+            ],
+            "ch_backup/my_backup/disks": ["ch_backup/my_backup/disks/s3/db/table.tar"],
+        }.get(
+            path, []
+        )
+        delete_files = MagicMock()
+        setattr(layout, "_delete_files", delete_files)
+
+        layout.delete_backup("my-backup", MagicMock())
+
+        assert delete_files.call_args.args[0] == [
+            "ch_backup/my_backup/disks/s3/db/table.tar",
+        ]
+
+    def test_delete_backup_without_dashes_deletes_the_path_once(self):
+        """
+        Both names match, the backup path must not be listed twice.
+        """
+        layout, delete_files = self._make_layout()
+
+        layout.delete_backup("20260101T000000", MagicMock())
+
+        assert delete_files.call_args.args[0] == ["ch_backup/20260101T000000/object"]
+
+    def test_delete_cloud_storage_data_keeps_the_rest_of_the_backup(self):
+        """
+        Partially deleted backup keeps data parts shared with newer backups,
+        while its cloud storage data is deleted whole, under both names.
+        """
+        layout, delete_files = self._make_layout()
+
+        layout.delete_cloud_storage_data("my-backup")
+
+        assert delete_files.call_args.args[0] == [
+            "ch_backup/my_backup/disks/object",
+            "ch_backup/my_backup/cloud_storage/object",
+        ]
+
+
+def test_prefix_delete_keeps_light_metadata_until_retry_succeeds() -> None:
+    layout = BackupLayout.__new__(BackupLayout)
+    layout._config = {"path_root": "backups"}  # pylint: disable=protected-access
+    layout._storage_loader = MagicMock()  # pylint: disable=protected-access
+    storage = layout._storage_loader  # pylint: disable=protected-access
+    storage.list_dir.return_value = [
+        "backups/old/data.tar",
+        "backups/old/backup_struct.json",
+        "backups/old/backup_light_struct.json",
+    ]
+    storage.wait.side_effect = [RuntimeError("async deletion failed"), None]
+    unfreeze = MagicMock()
+
+    with pytest.raises(StorageError):
+        layout.delete_backup("old", unfreeze)
+
+    storage.delete_files.assert_called_once_with(
+        remote_paths=["backups/old/data.tar"], is_async=True
+    )
+    unfreeze.assert_not_called()
+
+    layout.delete_backup("old", unfreeze)
+
+    unfreeze.assert_called_once_with()
+    assert storage.delete_files.call_args_list[-2:] == [
+        call(["backups/old/backup_struct.json"], is_async=False),
+        call(["backups/old/backup_light_struct.json"], is_async=False),
+    ]
+
+
+class TestTableDataFiles:
+    """Tests for checking data parts against one listing of a table."""
+
+    # pylint: disable=protected-access
+
+    def test_files_are_grouped_by_part(self):
+        """One listing of a table gives files of all its parts."""
+        layout = make_layout()
+        storage = layout._storage_loader = MagicMock()
+        storage.list_dir_with_sizes.return_value = {
+            "ch_backup/b1/data/db1/t1/all_1_1_0/all_1_1_0.tar": 10,
+            "ch_backup/b1/data/db1/t1/all_2_2_0/checksums.txt": 1,
+            "ch_backup/b1/data/db1/t1/all_2_2_0/p.proj/data.bin": 2,
+        }
+
+        assert layout.get_table_data_files("b1", "db1", "t1") == {
+            "all_1_1_0": {"all_1_1_0.tar": 10},
+            "all_2_2_0": {"checksums.txt": 1, "p.proj/data.bin": 2},
+        }
+        storage.list_dir_with_sizes.assert_called_once_with("ch_backup/b1/data/db1/t1")
+
+    def test_unescaped_names_are_listed_if_escaped_are_absent(self):
+        """Backups of older versions keep data under unescaped names."""
+        layout = make_layout()
+        storage = layout._storage_loader = MagicMock()
+        storage.list_dir_with_sizes.side_effect = [
+            {},
+            {"ch_backup/b1/data/db1/t-1/all_1_1_0/all_1_1_0.tar": 10},
+        ]
+
+        assert layout.get_table_data_files("b1", "db1", "t-1") == {
+            "all_1_1_0": {"all_1_1_0.tar": 10}
+        }
+        assert storage.list_dir_with_sizes.call_args_list == [
+            call("ch_backup/b1/data/db1/t%2D1"),
+            call("ch_backup/b1/data/db1/t-1"),
+        ]
+
+    def test_failed_listing_gives_no_files(self):
+        """Parts of a table that cannot be listed are uploaded again."""
+        layout = make_layout()
+        getattr(layout, "_storage_loader").list_dir_with_sizes.side_effect = (
+            S3RetryingError("LIST failed")
+        )
+
+        assert not layout.get_table_data_files("b1", "db1", "t1")
+
+    @pytest.mark.parametrize("size_delta, valid", [(0, True), (1, False)])
+    def test_tarball_size_is_checked(self, size_delta, valid):
+        """A tarball of another size is not the data of the part."""
+        layout = make_layout()
+        part = PartMetadata(
+            "db1", "t1", "all_1_1_0", "c", 1024, ["data.bin"], True, encrypted=False
+        )
+        size = layout._target_part_size(part, encrypted=False) + size_delta
+
+        assert layout.check_data_part_files(part, {"all_1_1_0.tar": size}) is valid
+
+    @pytest.mark.parametrize(
+        "files, valid",
+        [
+            ({"checksums.txt": 1, "data.bin": 2}, True),
+            ({"checksums.txt": 1}, False),
+            ({}, False),
+        ],
+    )
+    def test_part_files_are_checked(self, files, valid):
+        """A part with a missing file cannot be reused."""
+        layout = make_layout()
+        part = PartMetadata(
+            "db1", "t1", "all_1_1_0", "c", 3, ["checksums.txt", "data.bin"], False
+        )
+
+        assert layout.check_data_part_files(part, files) is valid
+
+    @pytest.mark.parametrize("size_delta, valid", [(0, True), (1, False)])
+    def test_uploaded_part_is_checked_by_its_tarball_size(self, size_delta, valid):
+        """Validation after upload applies the same check to one part directory."""
+        layout = make_layout()
+        storage = layout._storage_loader = MagicMock()
+        part = PartMetadata(
+            "db1", "t1", "all_1_1_0", "c", 1024, ["data.bin"], True, encrypted=False
+        )
+        storage.list_dir.return_value = ["all_1_1_0.tar"]
+        storage.get_file_size.return_value = (
+            layout._target_part_size(part, encrypted=False) + size_delta
+        )
+
+        assert layout.check_data_part("b1", part) is valid
+        storage.get_file_size.assert_called_once_with(
+            "ch_backup/b1/data/db1/t1/all_1_1_0/all_1_1_0.tar"
+        )
+
+
+@pytest.fixture(name="fallback_context")
+def fallback_context_fixture():
+    """Keep two real manifests and their payload keys behind a fake storage boundary."""
+    layout = make_layout()
+    storage = MagicMock()
+    setattr(layout, "_storage_loader", storage)
+    objects = {}
+    for name, day in (("old", 1), ("new", 2)):
+        meta = BackupMetadata(name, "2", "26.6", "%Y-%m-%d")
+        meta.state = BackupState.CREATED
+        meta.start_time = datetime(2026, 11, day)
+        raw = meta.dump()
+        raw["databases"] = {
+            "db": {
+                "tables": {
+                    "table": {
+                        "engine": "MergeTree",
+                        "uuid": None,
+                        "parts": {
+                            part: {
+                                "checksum": "x",
+                                "bytes": 1,
+                                "files": ["data.bin"],
+                                "link": "old" if name == "new" else None,
+                            }
+                            for part in (
+                                ["all_1_1_0", "all_2_2_0"]
+                                if name == "old"
+                                else ["all_1_1_0"]
+                            )
+                        },
+                    }
+                }
+            }
+        }
+        meta = BackupMetadata.load(raw)
+        objects[f"ch_backup/{name}/backup_struct.json"] = meta.dump_json()
+        objects[f"ch_backup/{name}/backup_light_struct.json"] = meta.dump_json(
+            light=True
+        )
+    for part in ("all_1_1_0", "all_2_2_0"):
+        objects[f"ch_backup/old/data/db/table/{part}/data.bin"] = "payload"
+    storage.list_dir.return_value = ["new", "old"]
+    storage.path_exists.side_effect = lambda path, **_: path in objects
+    storage.download_data.side_effect = lambda path, **_: objects[path]
+    storage.upload_data.side_effect = lambda data, remote_path, **_: objects.update(
+        {remote_path: data}
+    )
+    backup = ClickhouseBackup.__new__(ClickhouseBackup)
+    context = MagicMock(backup_layout=layout)
+    context.config = {"retain_count": 1, "retain_time": {}}
+    backup.__dict__["_context"] = context
+    return backup, layout, storage, objects
+
+
+@pytest.mark.parametrize("operation", ["delete", "purge", "cli"])
+@pytest.mark.parametrize("damaged", ["old", "new"])
+@pytest.mark.parametrize("missing", [True, False])
+def test_full_fallback_preserves_shared_parts_and_rewrites_target_light(
+    fallback_context, operation, damaged, missing
+):
+    """Missing or corrupt light must not hide references or prevent partial deletion."""
+    backup, layout, storage, objects = fallback_context
+    path = f"ch_backup/{damaged}/backup_light_struct.json"
+    if missing:
+        del objects[path]
+    else:
+        objects[path] = "{invalid"
+    listed = layout.get_backups(use_light_meta=True)
+    assert [meta.name for meta in listed] == ["new", "old"]
+    assert all(not meta.get_databases() for meta in listed)
+    storage.upload_data.assert_not_called()
+    if operation == "delete":
+        backup.delete("old", False)
+    elif operation == "purge":
+        backup.purge()
+    else:
+        result = CliRunner().invoke(
+            Group(commands=[delete_command]), ["delete", "old"], obj={"backup": backup}
+        )
+        assert result.exit_code == 0, result.output
+    deleted = [
+        key
+        for call in storage.delete_files.call_args_list
+        for key in call.kwargs.get("remote_paths", call.args[0] if call.args else [])
+    ]
+    assert deleted == ["ch_backup/old/data/db/table/all_2_2_0/data.bin"]
+    light = BackupMetadata.load_json(objects["ch_backup/old/backup_light_struct.json"])
+    full = BackupMetadata.load_json(objects["ch_backup/old/backup_struct.json"])
+    assert light.state == full.state == BackupState.PARTIALLY_DELETED
+    assert [part.name for part in full.get_tables()[0].get_parts()] == ["all_1_1_0"]
+    assert light.dump(light=True) == full.dump(light=True)
+
+
+@pytest.mark.parametrize("damaged", ["old", "new"])
+@pytest.mark.parametrize("missing", [True, False])
+def test_unreadable_full_still_blocks_deletion_with_references(
+    fallback_context, damaged, missing
+):
+    """A referenced target or retained backup without full metadata blocks deletion."""
+    backup, _, storage, objects = fallback_context
+    path = f"ch_backup/{damaged}/backup_struct.json"
+    if missing:
+        del objects[path]
+    else:
+        objects[path] = "{}"
+    with pytest.raises(ClickhouseBackupError):
+        backup.delete("old", False)
+    storage.upload_data.assert_not_called()
+    storage.delete_files.assert_not_called()
+
+
+def test_broken_light_without_full_is_not_silently_skipped(fallback_context):
+    """A failed fallback keeps the existing unreadable-metadata guard."""
+    backup, _, storage, objects = fallback_context
+    objects["ch_backup/new/backup_light_struct.json"] = "{invalid"
+    del objects["ch_backup/new/backup_struct.json"]
+    with pytest.raises(StorageError, match="new"):
+        backup.delete("old", False)
+    storage.upload_data.assert_not_called()
+    storage.delete_files.assert_not_called()

@@ -12,30 +12,38 @@ from contextlib import contextmanager, suppress
 from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE  # type: ignore
-from typing import Any, Generator, Iterable, Sequence
+from typing import Any, Callable, Generator, Iterable, Sequence
 
 from ch_backup import logging
-from ch_backup.backup.metadata import TableMetadata
+from ch_backup.backup.metadata import DetachedPartMetadata, TableMetadata
+from ch_backup.backup.metadata.table_metadata import split_part_name
 from ch_backup.backup.restore_context import RestoreContext
 from ch_backup.calculators import calc_aligned_files_size
 from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.clickhouse.models import (
+    DETACH_REASONS,
     Database,
+    DetachedPart,
     Disk,
     FrozenPart,
     Table,
     WorkloadEntityType,
 )
+from ch_backup.clickhouse.storage_schema import StoragePolicy
 from ch_backup.exceptions import ClickhouseBackupError, ConfigurationError
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.util import (
+    CLOUD_STORAGE_EXCLUDE_FILE_NAMES,
     chown_dir_contents,
     chown_file,
     escape,
     list_dir_files,
     retry,
+    scan_dir_files,
+    sql_string_literal,
     strip_query,
 )
+from ch_backup.zookeeper.zookeeper import ZookeeperCTL
 
 ACCESS_ENTITY_CHAR = {
     "users": "U",
@@ -124,6 +132,9 @@ GET_TABLES_SQL_23_8 = strip_query(
 """
 )
 
+# engine_full shares the CREATE AST already read for create_table_query.
+# It adds no catalog lookup and lets _make_table resolve cold TableProxy engines.
+# Exclude external databases before table enumeration, which accesses their sources.
 GET_TABLES_SHORT_SQL = strip_query(
     """
     SELECT
@@ -131,10 +142,15 @@ GET_TABLES_SHORT_SQL = strip_query(
         name,
         uuid,
         engine,
+        engine_full,
         create_table_query
     FROM system.tables
     WHERE ({db_condition})
       AND ({tables_condition})
+      AND database IN (
+          SELECT name FROM system.databases
+          WHERE engine NOT IN ('MySQL', 'MaterializedMySQL', 'PostgreSQL', 'MaterializedPostgreSQL')
+      )
     ORDER BY metadata_modification_time
     FORMAT JSON
 """
@@ -161,7 +177,9 @@ GET_REPLICAS_SQL = strip_query(
     SELECT
         database,
         table,
-        is_readonly
+        is_readonly,
+        zookeeper_path,
+        replica_name
     FROM system.replicas
     WHERE ({db_condition})
       AND ({tables_condition})
@@ -175,7 +193,7 @@ CHECK_TABLE_SQL = strip_query(
     """
     SELECT count()
     FROM system.tables
-    WHERE database = '{db_name}' AND name = '{table_name}'
+    WHERE database = {db_name} AND name = {table_name}
     FORMAT TSVRaw
 """
 )
@@ -245,7 +263,7 @@ SYSTEM_UNFREEZE_SQL = strip_query(
 
 KILL_RUNNING_FREEZE_SQL = strip_query(
     """
-    KILL QUERY WHERE query_kind='Alter' AND user='{user}' AND query ilike '%ALTER TABLE%FREEZE%'
+    KILL QUERY WHERE query_kind='Alter' AND user={user} AND query ilike '%ALTER TABLE%FREEZE%'
 """
 )
 
@@ -276,18 +294,6 @@ DROP_UDF_SQL = strip_query(
 DROP_NAMED_COLLECTION_SQL = strip_query(
     """
     DROP NAMED COLLECTION `{nc_name}`
-"""
-)
-
-DROP_WORKLOAD_SQL = strip_query(
-    """
-    DROP WORKLOAD IF EXISTS `{entity_name}`
-"""
-)
-
-DROP_RESOURCE_SQL = strip_query(
-    """
-    DROP RESOURCE IF EXISTS `{entity_name}`
 """
 )
 
@@ -324,7 +330,7 @@ GET_DDL_QUEUE_STATUS_SQL = strip_query(
         exception_code,
         exception_text
     FROM system.distributed_ddl_queue
-    WHERE cluster = '{db_name}'
+    WHERE cluster = {db_name}
       AND status != 'Finished'
     ORDER BY entry
     FORMAT JSON
@@ -342,7 +348,7 @@ GET_DATABASES_SQL = strip_query(
     FROM system.databases
     WHERE
         engine = 'Replicated' AND
-        name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', '{system_db}')
+        name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', {system_db})
     UNION ALL
     SELECT
         name,
@@ -353,7 +359,7 @@ GET_DATABASES_SQL = strip_query(
     FROM system.databases
     WHERE
         engine != 'Replicated' AND
-        name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', '{system_db}')
+        name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', {system_db})
     FORMAT JSON
 """
 )
@@ -366,7 +372,7 @@ GET_DATABASES_SQL_22_8 = strip_query(
         metadata_path,
         uuid
     FROM system.databases
-    WHERE name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', '{system_db}')
+    WHERE name NOT IN ('system', '_temporary_and_external_tables', 'information_schema', 'INFORMATION_SCHEMA', {system_db})
     FORMAT JSON
 """
 )
@@ -417,7 +423,7 @@ GET_DEDUPLICATED_PARTS_SQL = strip_query(
     FROM `{system_db}`._deduplication_info
     JOIN `{system_db}`._deduplication_info_current
     ON _deduplication_info.checksum = _deduplication_info_current.checksum
-    WHERE database='{database}' AND table='{table}'
+    WHERE database={database} AND table={table}
     ORDER BY _deduplication_info.backup_name DESC
     LIMIT 1 BY current_name
     FORMAT JSON
@@ -433,14 +439,14 @@ SHOW_CREATE_DATABASE_SQL = strip_query(
 
 GET_DATABASE_ENGINE = strip_query(
     """
-    SELECT engine FROM system.databases WHERE name='{db_name}'
+    SELECT engine FROM system.databases WHERE name={db_name}
     FORMAT TSVRaw
 """
 )
 
 GET_DATABASE_METADATA_PATH = strip_query(
     """
-    SELECT metadata_path FROM system.databases WHERE name='{db_name}'
+    SELECT metadata_path FROM system.databases WHERE name={db_name}
     FORMAT JSON
 """
 )
@@ -471,7 +477,7 @@ GET_ACCESS_CONTROL_OBJECTS_SQL = strip_query(
 GET_DISK_SQL = strip_query(
     """
     SELECT name, path, type, cache_path FROM system.disks
-    WHERE name = '{disk_name}'
+    WHERE name = {disk_name}
     FORMAT JSON
 """
 )
@@ -479,7 +485,7 @@ GET_DISK_SQL = strip_query(
 GET_DISK_SQL_24_3 = strip_query(
     """
     SELECT name, path, type, object_storage_type, metadata_type, cache_path FROM system.disks
-    WHERE name = '{disk_name}'
+    WHERE name = {disk_name}
     FORMAT JSON
 """
 )
@@ -522,12 +528,35 @@ GET_NAMED_COLLECTIONS_QUERY_SQL = strip_query(
 """
 )
 
+GET_SQL_NAMED_COLLECTIONS_CREATE_QUERY_SQL = strip_query(
+    "SELECT name, create_query FROM system.named_collections WHERE source = 'SQL' FORMAT JSON"
+)
+GET_ACCESS_STORAGE_TYPES_SQL = strip_query(
+    "SELECT DISTINCT type FROM system.user_directories FORMAT JSON"
+)
+GET_LOCAL_ACCESS_ENTITIES_SQL = strip_query(
+    """
+    SELECT {columns} FROM system.{table}
+    WHERE storage IN (SELECT name FROM system.user_directories WHERE type = 'local_directory')
+    FORMAT JSON
+"""
+)
+SHOW_CREATE_ACCESS_ENTITY_SQL = strip_query("SHOW CREATE {type} {name} FORMAT TSVRaw")
+SHOW_GRANTS_SQL = strip_query("SHOW GRANTS FOR {name} FORMAT TSVRaw")
+DROP_ACCESS_ENTITY_SQL = strip_query("DROP {type} IF EXISTS {name}")
+ACCESS_ENTITY_TABLES = {
+    "ROLE": "roles",
+    "SETTINGS PROFILE": "settings_profiles",
+    "USER": "users",
+    "QUOTA": "quotas",
+}
+
 GET_WORKLOAD_ENTITIES_QUERY_SQL = strip_query(
     f"""
-    SELECT name, type FROM (
-        SELECT name, '{WorkloadEntityType.WORKLOAD.value}' AS type FROM system.workloads
+    SELECT name, type, create_query FROM (
+        SELECT name, '{WorkloadEntityType.WORKLOAD.value}' AS type, create_query FROM system.workloads
         UNION ALL
-        SELECT name, '{WorkloadEntityType.RESOURCE.value}' AS type FROM system.resources
+        SELECT name, '{WorkloadEntityType.RESOURCE.value}' AS type, create_query FROM system.resources
     )
     ORDER BY name
     FORMAT JSON
@@ -596,7 +625,16 @@ GET_PARTITIONS = strip_query(
     """
     SELECT DISTINCT partition_id
     FROM system.parts
-    WHERE database = '{db_name}' AND table = '{table_name}' AND active = 1
+    WHERE database = {db_name} AND table = {table_name} AND active = 1
+    FORMAT JSONCompact
+"""
+)
+
+GET_ACTIVE_PARTS_SQL = strip_query(
+    """
+    SELECT name
+    FROM system.parts
+    WHERE database = {db_name} AND table = {table_name} AND active = 1
     FORMAT JSONCompact
 """
 )
@@ -646,6 +684,7 @@ class ClickhouseCTL:
         self._ch_client = ClickhouseClient(self._ch_ctl_config)
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
         self._disks = self.get_disks()
+        self._missing_detached_disks_warned: set[str] = set()
         if settings is None:
             settings = {
                 "allow_deprecated_database_ordinary": 1,
@@ -677,20 +716,34 @@ class ClickhouseCTL:
                 settings["database_replicated_allow_explicit_uuid"] = 1
         self._ch_client.settings.update(settings)
 
-    def chown_detached_table_parts(self, table: Table, context: RestoreContext) -> None:
+    def chown_detached_table_parts(
+        self,
+        table: Table,
+        context: RestoreContext,
+        disk_names: Iterable[str] | None = None,
+    ) -> None:
         """
         Change permissions (owner and group) of detached data parts for the
         specified table. New values for permissions are taken from the config.
+        If disk names are provided, only their detached directories are changed.
         """
-        for _, disk in table.paths_with_disks:
-            detached_path = self._get_table_detached_path(table, disk.name)
+        selected_disks = (
+            disk_names
+            if disk_names is not None
+            else (disk.name for _, disk in table.paths_with_disks)
+        )
+        detached_paths = dict.fromkeys(
+            self._get_table_detached_path(table, disk_name)
+            for disk_name in selected_disks
+        )
+        for detached_path in detached_paths:
             try:
                 self.chown_dir(detached_path)
             except FileNotFoundError:
                 logging.warning(
                     f"table {table.database}.{table.name} path {detached_path} not found"
                 )
-                context.add_failed_chown(table.database, table.database, detached_path)
+                context.add_failed_chown(table.database, table.name, detached_path)
 
     def attach_part(self, table: Table, part_name: str) -> None:
         """
@@ -719,7 +772,9 @@ class ClickhouseCTL:
         Collect all freeze queries from prev backup and kill them all.
         """
         self._ch_client.query(
-            KILL_RUNNING_FREEZE_SQL.format(user=self._ch_ctl_config["user"])
+            KILL_RUNNING_FREEZE_SQL.format(
+                user=sql_string_literal(self._ch_ctl_config["user"])
+            )
         )
 
     # pylint: disable=too-many-positional-arguments
@@ -804,11 +859,22 @@ class ClickhouseCTL:
         Get list of active partitions for table.
         """
         query_sql = GET_PARTITIONS.format(
-            db_name=escape(table.database),
-            table_name=escape(table.name),
+            db_name=sql_string_literal(table.database),
+            table_name=sql_string_literal(table.name),
         )
         result = self._ch_client.query(query_sql, should_retry=False)["data"]
         return [partition[0] for partition in result]
+
+    def get_active_parts(self, table: Table) -> set[str]:
+        """
+        Get names of active parts of table.
+        """
+        query_sql = GET_ACTIVE_PARTS_SQL.format(
+            db_name=sql_string_literal(table.database),
+            table_name=sql_string_literal(table.name),
+        )
+        result = self._ch_client.query(query_sql, should_retry=False)["data"]
+        return {part[0] for part in result}
 
     def system_unfreeze(self, backup_name: str) -> None:
         """
@@ -862,7 +928,7 @@ class ClickhouseCTL:
             exclude_dbs = []
 
         result: list[Database] = []
-        system_database = self._backup_config["system_database"]
+        system_database = sql_string_literal(self._backup_config["system_database"])
 
         query = (
             GET_DATABASES_SQL.format(system_db=system_database)
@@ -897,7 +963,7 @@ class ClickhouseCTL:
         """
         Return database engine.
         """
-        query_sql = GET_DATABASE_ENGINE.format(db_name=escape(db_name))
+        query_sql = GET_DATABASE_ENGINE.format(db_name=sql_string_literal(db_name))
         return self._ch_client.query(query_sql)
 
     def get_tables(
@@ -912,7 +978,7 @@ class ClickhouseCTL:
         A short query does not access the source of table if it was built from an external source.
         Example: CREATE ... AS postgresql() or CREATE ... AS s3().
         """
-        db_condition = f"database = '{escape(db_name)}'" if db_name else "1"
+        db_condition = f"database = {sql_string_literal(db_name)}" if db_name else "1"
         tables_condition = (
             f"has(cast({_format_string_array(tables)}, 'Array(String)'), name)"
             if tables
@@ -1000,7 +1066,7 @@ class ClickhouseCTL:
         """
         Get table replicas from system.replicas
         """
-        db_condition = f"database = '{escape(db_name)}'" if db_name else "1"
+        db_condition = f"database = {sql_string_literal(db_name)}" if db_name else "1"
         tables_condition = (
             f"has(cast({_format_string_array(tables)}, 'Array(String)'), table)"
             if tables
@@ -1023,7 +1089,8 @@ class ClickhouseCTL:
         Return True if the specified table exists.
         """
         query_sql = CHECK_TABLE_SQL.format(
-            db_name=escape(db_name), table_name=escape(table_name)
+            db_name=sql_string_literal(db_name),
+            table_name=sql_string_literal(table_name),
         )
         return bool(int(self._ch_client.query(query_sql)))
 
@@ -1050,6 +1117,98 @@ class ClickhouseCTL:
         Restore named collection.
         """
         self._ch_client.query(nc_statement, sensitive=True)
+
+    def restore_http_handler(self, statement: str) -> None:
+        """Restore a handler without logging its query or retrying CREATE."""
+        self._ch_client.query(statement, sensitive=True, should_retry=False)
+
+    def drop_http_handler(self, name: str) -> None:
+        """Drop an existing SQL-defined HTTP handler."""
+        escaped_name = escape(name.replace("\\", "\\\\"))
+        self._ch_client.query(
+            f"DROP HANDLER `{escaped_name}`", sensitive=True, should_retry=False
+        )
+
+    def restore_access_entity(self, statement: str) -> None:
+        """
+        Run an access statement without retries.
+        """
+        self._ch_client.query(statement, sensitive=True, should_retry=False)
+
+    def get_local_access_statements(self) -> list[str]:
+        """
+        Return statements recreating local access entities. Roles and profiles refer to each
+        other and to users, so they are created bare and altered after users. ClickHouse
+        creates a user before it resolves GRANTEES and then fails on a grantee created later,
+        so users are created with IF NOT EXISTS to let the retry pass and are altered after
+        all are created. Grants go last.
+        """
+        entities = self._get_local_access_entities()
+        mutual = [(t, n) for t in ("ROLE", "SETTINGS PROFILE") for n in entities[t]]
+        users = [self._show_create_access_entity("USER", n) for n in entities["USER"]]
+        statements = [f"CREATE {t} {n}" for t, n in mutual]
+        statements += [
+            re.sub("^CREATE USER", "CREATE USER IF NOT EXISTS", s) for s in users
+        ]
+        statements += [
+            re.sub("^CREATE", "ALTER", self._show_create_access_entity(t, n))
+            for t, n in mutual
+        ]
+        statements += [re.sub("^CREATE", "ALTER", s) for s in users]
+        statements += [
+            self._show_create_access_entity(t, n)
+            for t in ("QUOTA", "ROW POLICY")
+            for n in entities[t]
+        ]
+        for name in entities["ROLE"] + entities["USER"]:
+            grants = self._ch_client.query(SHOW_GRANTS_SQL.format(name=name))
+            statements += grants.splitlines()
+        return statements
+
+    def drop_local_access_entities(self) -> None:
+        """
+        Drop local access entities.
+        """
+        for entity_type, names in self._get_local_access_entities().items():
+            for name in names:
+                self._ch_client.query(
+                    DROP_ACCESS_ENTITY_SQL.format(type=entity_type, name=name)
+                )
+
+    def get_access_storage_types(self) -> set[str]:
+        """
+        Return types of access storages.
+        """
+        resp = self._ch_client.query(GET_ACCESS_STORAGE_TYPES_SQL)
+        return {row["type"] for row in resp["data"]}
+
+    def _get_local_access_entities(self) -> dict[str, list[str]]:
+        """
+        Return quoted names of local access entities by type.
+        """
+        entities = {}
+        for entity_type, table in ACCESS_ENTITY_TABLES.items():
+            query_sql = GET_LOCAL_ACCESS_ENTITIES_SQL.format(
+                columns="name", table=table
+            )
+            rows = self._ch_client.query(query_sql)["data"]
+            entities[entity_type] = [_quote_or_any(row["name"]) for row in rows]
+        query_sql = GET_LOCAL_ACCESS_ENTITIES_SQL.format(
+            columns="short_name, database, table", table="row_policies"
+        )
+        entities["ROW POLICY"] = [
+            f"{_quote_or_any(row['short_name'])} ON "
+            f"{_quote_or_any(row['database'])}.{_quote_or_any(row['table'])}"
+            for row in self._ch_client.query(query_sql)["data"]
+        ]
+        return entities
+
+    def _show_create_access_entity(self, entity_type: str, name: str) -> str:
+        """
+        Return the create statement of an access entity.
+        """
+        query_sql = SHOW_CREATE_ACCESS_ENTITY_SQL.format(type=entity_type, name=name)
+        return self._ch_client.query(query_sql)
 
     def restore_workload_entity(self, entity_statement):
         """
@@ -1157,6 +1316,26 @@ class ClickhouseCTL:
             raise
         self._ch_client.query(SYSTEM_START_VIEWS_SQL)
 
+    def get_parts_of_other_replicas(
+        self, table: Table, zk_ctl: ZookeeperCTL
+    ) -> set[str]:
+        """
+        Get names of the active parts that every other replica of the table has in ZooKeeper.
+        """
+        replica = self.get_replicas(table.database, [table.name])[0]
+        replicas_path = os.path.join(replica["zookeeper_path"], "replicas")
+        with zk_ctl.zk_client:
+            other_replicas = set(zk_ctl.get_children(replicas_path)) - {
+                replica["replica_name"]
+            }
+            parts = [
+                _active_parts(
+                    set(zk_ctl.get_children(os.path.join(replicas_path, name, "parts")))
+                )
+                for name in other_replicas
+            ]
+        return set.intersection(*parts) if parts else set()
+
     def drop_table_if_exists(self, table: Table) -> None:
         """
         Drop table. If the specified table doesn't exist, do nothing.
@@ -1199,18 +1378,6 @@ class ClickhouseCTL:
         """
         self._ch_client.query(DROP_NAMED_COLLECTION_SQL.format(nc_name=escape(nc_name)))
 
-    def drop_workload(self, entity_name: str) -> None:
-        """
-        Drop WORKLOAD entity.
-        """
-        self._ch_client.query(DROP_WORKLOAD_SQL.format(entity_name=escape(entity_name)))
-
-    def drop_resource(self, entity_name: str) -> None:
-        """
-        Drop RESOURCE entity.
-        """
-        self._ch_client.query(DROP_RESOURCE_SQL.format(entity_name=escape(entity_name)))
-
     def system_drop_replica(self, replica: str, zookeeper_path: str) -> None:
         """
         System drop replica query.
@@ -1241,7 +1408,7 @@ class ClickhouseCTL:
         """
         try:
             result = self._ch_client.query(
-                GET_DDL_QUEUE_STATUS_SQL.format(db_name=escape(db_name))
+                GET_DDL_QUEUE_STATUS_SQL.format(db_name=sql_string_literal(db_name))
             )
             return result.get("data", [])
         except Exception as e:
@@ -1255,7 +1422,7 @@ class ClickhouseCTL:
         Get filesystem absolute path to database metadata.
         """
         data = self._ch_client.query(
-            GET_DATABASE_METADATA_PATH.format(db_name=database)
+            GET_DATABASE_METADATA_PATH.format(db_name=sql_string_literal(database))
         )["data"]
         assert len(data) == 1
         return data[0]["metadata_path"]
@@ -1266,7 +1433,136 @@ class ClickhouseCTL:
         """
         Get filesystem absolute path to detached data part.
         """
+        if part_name in {"", ".", ".."} or os.path.basename(part_name) != part_name:
+            raise ClickhouseBackupError(
+                f'Invalid detached part directory name: "{part_name}"'
+            )
         return os.path.join(self._get_table_detached_path(table, disk_name), part_name)
+
+    @staticmethod
+    def detached_part_matches(part: DetachedPartMetadata, part_path: str) -> bool:
+        """Return whether an existing directory matches backed-up part metadata."""
+        if not os.path.isdir(part_path):
+            return False
+        try:
+            files = list_dir_files(part_path)
+            if sorted(files) != sorted(part.files):
+                return False
+            abs_paths = [Path(part_path) / file for file in files]
+            if calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE) != part.size:
+                return False
+            if not part.checksum:
+                return True
+            checksum = (
+                _get_cloud_part_checksum_and_size(part_path, files)[0]
+                if part.object_storage
+                else _get_part_checksum(part_path)
+            )
+            return checksum == part.checksum
+        except OSError:
+            return False
+
+    def scan_detached_parts(
+        self,
+        table: Table,
+        disk_names: Sequence[str] = None,
+        reasons: Sequence[str] = None,
+    ) -> Iterable[DetachedPart]:
+        """Yield detached parts found in the selected disks' directories.
+
+        The filesystem is the source of truth. Known ClickHouse detach reason
+        prefixes take precedence over parsing the whole directory name as a
+        MergeTree part; a valid part name without such a prefix has no reason.
+        """
+        reason_filter = set(reasons or [])
+
+        selected: list[tuple[str, Disk, str]] = []
+        if disk_names:
+            for disk_name in dict.fromkeys(disk_names):
+                disk = self._disks.get(disk_name)
+                if disk is None:
+                    if disk_name not in self._missing_detached_disks_warned:
+                        logging.warning(
+                            'Detached-parts disk "{}" is not reported by system.disks; skipping it',
+                            disk_name,
+                        )
+                        self._missing_detached_disks_warned.add(disk_name)
+                    continue
+                selected.extend(
+                    (disk_name, disk, data_path)
+                    for data_path, table_disk in table.paths_with_disks
+                    if table_disk.path == disk.path
+                )
+        else:
+            selected.extend(
+                (disk.name, disk, data_path)
+                for data_path, disk in table.paths_with_disks
+            )
+
+        scanned_paths: set[str] = set()
+        for disk_name, disk, data_path in selected:
+            detached_path = os.path.join(data_path, "detached")
+            if detached_path in scanned_paths:
+                continue
+            scanned_paths.add(detached_path)
+
+            try:
+                entries = sorted(
+                    os.scandir(detached_path), key=lambda entry: entry.name
+                )
+            except (FileNotFoundError, NotADirectoryError):
+                continue
+            except OSError as e:
+                logging.warning(
+                    'Detached directory is not accessible and will be skipped: "{}": {}',
+                    detached_path,
+                    e,
+                )
+                continue
+
+            for entry in entries:
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+
+                    reason = _get_detached_part_reason(entry.name)
+                    if reason_filter and reason not in reason_filter:
+                        continue
+
+                    rel_paths = list(scan_dir_files(Path(entry.path)))
+                    checksum = _get_detached_part_checksum(entry.path, rel_paths, disk)
+
+                    # Detached object-storage parts contain local metadata files.
+                    # Those files are what the backup archives, so their aligned
+                    # size (not the size of referenced bucket objects) is recorded.
+                    size = calc_aligned_files_size(
+                        [Path(entry.path) / file for file in rel_paths],
+                        alignment=BLOCKSIZE,
+                    )
+
+                    yield DetachedPart(
+                        database=table.database,
+                        table=table.name,
+                        name=entry.name,
+                        reason=reason,
+                        disk_name=disk_name,
+                        path=entry.path,
+                        checksum=checksum,
+                        size=size,
+                        files=rel_paths,
+                        object_storage=disk.type == "s3",
+                    )
+                except FileNotFoundError:
+                    logging.warning(
+                        'Detached part directory disappeared while scanning: "{}"',
+                        entry.path,
+                    )
+                except OSError as e:
+                    logging.warning(
+                        'Detached part directory is not accessible and will be skipped: "{}": {}',
+                        entry.path,
+                        e,
+                    )
 
     def get_version(self) -> str:
         """
@@ -1318,9 +1614,14 @@ class ClickhouseCTL:
         disk: Disk,
         data_path: str,
         backup_name: str,
+        copy_data: bool = False,
+        fail_on_unparsable_metadata: bool = False,
+        on_error: Callable[[str, Exception], object] | None = None,
     ) -> Iterable[FrozenPart]:
         """
         Yield frozen parts from specific disk and path.
+
+        A part that cannot be read is passed to on_error and skipped, if given.
         """
         table_relative_path = os.path.relpath(data_path, disk.path)
         path = os.path.join(disk.path, "shadow", backup_name, table_relative_path)
@@ -1332,11 +1633,21 @@ class ClickhouseCTL:
         for dir_entry in os.scandir(path):
             part = dir_entry.name
             part_path = dir_entry.path
-            checksum = _get_part_checksum(part_path)
-            rel_paths = list_dir_files(part_path)
-            abs_paths = [Path(part_path) / file for file in rel_paths]
-
-            size = calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE)
+            try:
+                rel_paths = list_dir_files(part_path)
+                if copy_data and disk.keeps_object_metadata:
+                    checksum, size = _get_cloud_part_checksum_and_size(
+                        part_path, rel_paths, fail_on_unparsable_metadata
+                    )
+                else:
+                    checksum = _get_part_checksum(part_path)
+                    abs_paths = [Path(part_path) / file for file in rel_paths]
+                    size = calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE)
+            except Exception as e:
+                if on_error is None:
+                    raise
+                on_error(part, e)
+                continue
             logging.debug(
                 f"scan_freezed_parts: {table.name} -> {escape(table.name)} \n {part}"
             )
@@ -1352,11 +1663,16 @@ class ClickhouseCTL:
                 rel_paths,
             )
 
-    @staticmethod
-    def _get_table_detached_path(table: Table, disk_name: str) -> str:
+    def _get_table_detached_path(self, table: Table, disk_name: str) -> str:
         for data_path, disk in table.paths_with_disks:
             if disk.name == disk_name:
                 return os.path.join(data_path, "detached")
+
+        requested_disk = self._disks.get(disk_name)
+        if requested_disk is not None:
+            for data_path, disk in table.paths_with_disks:
+                if disk.path == requested_disk.path:
+                    return os.path.join(data_path, "detached")
         raise RuntimeError(f"Disk not found: {disk_name}")
 
     def chown_dir(self, dir_path: str) -> None:
@@ -1441,6 +1757,45 @@ class ClickhouseCTL:
         resp = self._ch_client.query(GET_UDF_QUERY_SQL)
         return {row["name"]: row["create_query"] for row in resp.get("data", [])}
 
+    def get_http_handlers_create_queries(
+        self, names: Sequence[str] | None = None
+    ) -> dict[str, str]:
+        """Read selected handlers, or all handlers when names is None, with secrets."""
+        if names is not None and not names:
+            return {}
+        condition = ""
+        if names is not None:
+            # Hex encoding preserves quotes and backslashes in handler names.
+            values = ", ".join(
+                f"unhex('{name.encode('utf-8').hex()}')" for name in names
+            )
+            condition = f"WHERE name IN ({values})"
+        # Request JSON via HTTP because CHECK GRANT rejects a SQL FORMAT clause.
+        grant = self._ch_client.query(
+            "CHECK GRANT SHOW HANDLERS ON *.*", settings={"default_format": "JSON"}
+        )
+        if not grant["data"][0]["result"]:
+            raise ClickhouseBackupError(
+                "HTTP handler backup/restore requires SHOW HANDLERS"
+            )
+        response = self._ch_client.query(
+            "SELECT name, create_query FROM system.handlers "  # noqa: S608 - names are hex-encoded
+            f"{condition} ORDER BY name FORMAT JSON",
+            settings={"format_display_secrets_in_show_and_select": 1},
+            sensitive=True,
+        )
+        handlers = {row["name"]: row["create_query"] for row in response["data"]}
+        if any("[HIDDEN]" in statement for statement in handlers.values()):
+            # Later permission/configuration checks cannot establish whether this
+            # read hid secrets. Reject even a literal marker rather than guessing.
+            raise ClickhouseBackupError(
+                "HTTP handler definitions may contain hidden secrets: enable "
+                "display_secrets_in_show_and_select and grant "
+                "displaySecretsInShowAndSelect to the ch-backup user. "
+                "Literal [HIDDEN] markers are also unsupported"
+            )
+        return handlers
+
     def get_named_collections_query(self) -> list[str]:
         """
         Get named collections query from system table.
@@ -1448,15 +1803,33 @@ class ClickhouseCTL:
         resp = self._ch_client.query(GET_NAMED_COLLECTIONS_QUERY_SQL)
         return [row["name"] for row in resp.get("data", [])]
 
-    def get_workload_entities_query(self) -> list[tuple[str, WorkloadEntityType]]:
+    def get_named_collections_create_queries(self) -> dict[str, str]:
         """
-        Get workload entities (WORKLOADs and RESOURCEs) from system tables.
+        Return create statements of named collections created by SQL, shown since 25.5.
+        """
+        resp = self._ch_client.query(GET_SQL_NAMED_COLLECTIONS_CREATE_QUERY_SQL)
+        return {row["name"]: row["create_query"] for row in resp["data"]}
+
+    def get_workload_entities(self) -> dict[str, tuple[WorkloadEntityType, str]]:
+        """
+        Get workload entity names, types and live create queries from system tables.
         """
         resp = self._ch_client.query(GET_WORKLOAD_ENTITIES_QUERY_SQL)
-        return [
-            (row["name"], WorkloadEntityType(row["type"]))
+        return {
+            row["name"]: (WorkloadEntityType(row["type"]), row["create_query"])
             for row in resp.get("data", [])
-        ]
+        }
+
+    def format_query(self, query: str) -> str:
+        """
+        Canonicalize SQL using the server parser without changing literal values.
+        """
+        # Hex encoding preserves quotes, backslashes and whitespace in the input.
+        query_hex = query.encode("utf-8").hex()
+        resp = self._ch_client.query(
+            f"SELECT formatQuerySingleLine(unhex('{query_hex}')) AS query FORMAT JSON"
+        )
+        return resp["data"][0]["query"]
 
     def decrypt_aes_ctr(
         self, data_hex: str, key_hex: str, key_size: int, iv_hex: str
@@ -1491,12 +1864,12 @@ class ClickhouseCTL:
         """
         if self.ch_version_ge("24.3"):
             resp = resp = self._ch_client.query(
-                GET_DISK_SQL_24_3.format(disk_name=disk_name)
+                GET_DISK_SQL_24_3.format(disk_name=sql_string_literal(disk_name))
             ).get("data")
         else:
-            resp = self._ch_client.query(GET_DISK_SQL.format(disk_name=disk_name)).get(
-                "data"
-            )
+            resp = self._ch_client.query(
+                GET_DISK_SQL.format(disk_name=sql_string_literal(disk_name))
+            ).get("data")
 
         assert resp, f"disk '{disk_name}' not found"
         resp = resp[0]
@@ -1540,17 +1913,57 @@ class ClickhouseCTL:
             for row in disks_resp.get("data", [])
         }
 
+    def get_storage_policies(self) -> dict[str, StoragePolicy]:
+        """Snapshot policies in volume priority and disk order."""
+        # Read effective server policies, including implicit defaults absent from
+        # XML. Their order defines the fallback disk for restored local parts.
+        rows = self._ch_client.query(
+            "SELECT policy_name, volume_name, disks FROM system.storage_policies "
+            "ORDER BY policy_name, volume_priority, volume_name FORMAT JSON"
+        ).get("data", [])
+        disks = self.get_disks()
+        volumes_by_policy: dict[str, list[str]] = {}
+        disks_by_policy: dict[str, list[str]] = {}
+        for row in rows:
+            name = row["policy_name"]
+            volumes_by_policy.setdefault(name, []).append(row["volume_name"])
+            disks_by_policy.setdefault(name, []).extend(row["disks"])
+        # All policy disks/volumes are valid TTL destinations. Part remapping uses
+        # only local disks; remove duplicates while preserving the server's order.
+        return {
+            name: StoragePolicy(
+                name,
+                tuple(volumes),
+                tuple(dict.fromkeys(disks_by_policy[name])),
+                tuple(
+                    dict.fromkeys(
+                        disk
+                        for disk in disks_by_policy[name]
+                        if disk in disks and disks[disk].type == "local"
+                    )
+                ),
+            )
+            for name, volumes in volumes_by_policy.items()
+        }
+
     def _make_table(self, record: dict) -> Table:
+        engine = record["engine"]
+        if engine == "TableProxy":
+            # A paths query can load the table after its engine column was read.
+            # Use the stored engine definition, also available without loading.
+            match = re.match(r"[A-Za-z_][A-Za-z0-9_]*", record.get("engine_full") or "")
+            if not match:
+                raise ClickhouseBackupError(
+                    f"Cannot determine engine of lazy table {record['database']}.{record['name']}"
+                )
+            engine = match.group()
+
         return Table(
             database=record["database"],
             name=record["name"],
-            engine=record.get("engine", None),
+            engine=engine,
             disks=list(self._disks.values()),
-            data_paths=(
-                record.get("data_paths", [])
-                if "MergeTree" in record.get("engine", "")
-                else []
-            ),
+            data_paths=(record.get("data_paths", []) if "MergeTree" in engine else []),
             metadata_path=self._get_metadata_path(record),
             create_statement=record["create_table_query"],
             uuid=record.get("uuid", None),
@@ -1647,7 +2060,10 @@ class ClickhouseCTL:
             )
         )
 
-        batch = [f"('{part.name}','{part.checksum}')" for part in frozen_parts.values()]
+        batch = [
+            f"({sql_string_literal(part.name)},{sql_string_literal(part.checksum)})"
+            for part in frozen_parts.values()
+        ]
         self._ch_client.query(
             INSERT_DEDUP_INFO_BATCH_SQL.format(
                 system_db=escape(self._backup_config["system_database"]),
@@ -1658,8 +2074,8 @@ class ClickhouseCTL:
         result_json = self._ch_client.query(
             GET_DEDUPLICATED_PARTS_SQL.format(
                 system_db=escape(self._backup_config["system_database"]),
-                database=escape(database),
-                table=escape(table),
+                database=sql_string_literal(database),
+                table=sql_string_literal(table),
             )
         )
 
@@ -1698,12 +2114,153 @@ class ClickhouseCTL:
 
 
 def _get_part_checksum(part_path: str) -> str:
+    """
+    Calculate checksum of a part stored on a local disk.
+    """
     with open(os.path.join(part_path, "checksums.txt"), "rb") as f:
         return md5(f.read()).hexdigest()  # nosec
 
 
+def _get_detached_part_reason(part_name: str) -> str:
+    """Parse a detached directory name in the same order as ClickHouse."""
+    name_to_parse = part_name
+    try_suffix_pos = part_name.rfind("_try")
+    try_suffix = part_name[try_suffix_pos + 4 :]
+    if try_suffix_pos != -1 and try_suffix.isascii() and try_suffix.isdigit():
+        name_to_parse = part_name[:try_suffix_pos]
+
+    prefix, separator, _ = name_to_parse.partition("_")
+    if separator and prefix in DETACH_REASONS:
+        return prefix
+    try:
+        split_part_name(name_to_parse)
+        return ""
+    except ValueError:
+        return prefix if separator else name_to_parse
+
+
+def _get_detached_part_checksum(
+    part_path: str, rel_paths: Sequence[str], disk: Disk
+) -> str:
+    """Calculate a detached part checksum according to its disk format."""
+    try:
+        if disk.keeps_object_metadata:
+            checksum, _ = _get_cloud_part_checksum_and_size(part_path, rel_paths)
+            return checksum
+        return _get_part_checksum(part_path)
+    except OSError:
+        # Broken detached parts are precisely one of the things this feature must
+        # preserve, and they may have no checksums.txt.
+        return ""
+
+
+def _get_cloud_part_checksum_and_size(
+    part_path: str, rel_paths: Sequence[str], fail_on_unparsable: bool = False
+) -> tuple[str, int]:
+    """
+    Calculate checksum and size of a part stored on an object storage disk.
+
+    Files of such a part are metadata referring to objects with random keys.
+    ClickHouse rewrites the metadata on every freeze, so the keys are what
+    identifies the data of the part. Freezing a replicated table also leaves a
+    file describing the replica, which refers to no object at all.
+
+    The size is that of the objects: what a copy of the part weighs in the
+    backup, unlike its metadata.
+
+    Metadata that cannot be parsed leaves the part described by its files, as
+    it was before the keys were read: such a checksum changes on every freeze,
+    so the part is never deduplicated. With fail_on_unparsable such metadata
+    fails the backup instead. An unreadable file is left to fail.
+    """
+    checksum = md5()  # nosec
+    size = 0
+    try:
+        for rel_path in sorted(rel_paths):
+            if rel_path in CLOUD_STORAGE_EXCLUDE_FILE_NAMES:
+                continue
+            checksum.update(rel_path.encode())
+            for object_key, object_size in _read_objects(
+                os.path.join(part_path, rel_path)
+            ):
+                checksum.update(object_key.encode())
+                size += object_size
+    except (ClickhouseBackupError, ValueError):
+        if fail_on_unparsable:
+            raise
+        logging.warning(
+            "Failed to parse object storage metadata of part {}, describing it by"
+            " its metadata files",
+            part_path,
+            exc_info=True,
+        )
+        abs_paths = [Path(part_path) / rel_path for rel_path in rel_paths]
+        return (
+            _get_part_checksum(part_path),
+            calc_aligned_files_size(abs_paths, alignment=BLOCKSIZE),
+        )
+
+    return checksum.hexdigest(), size
+
+
+def _read_objects(metadata_path: str) -> list[tuple[str, int]]:
+    """
+    Read keys and sizes of the objects a disk metadata file refers to.
+    """
+    with open(metadata_path, encoding="utf-8") as f:
+        version = f.readline().strip()
+        try:
+            objects_count = int(f.readline().split("\t")[0])
+            objects = (f.readline().split("\t") for _ in range(objects_count))
+            return [(obj[1].strip(), int(obj[0])) for obj in objects]
+        except (IndexError, ValueError) as e:
+            raise ClickhouseBackupError(
+                f"Failed to read objects of {metadata_path},"
+                f" metadata version {version}"
+            ) from e
+
+
+def _active_parts(names: set[str]) -> set[str]:
+    """
+    Drop the parts covered by another part of the set, as ZooKeeper keeps merged parts
+    for old_parts_lifetime. A set with an unparsable name is kept as is.
+    """
+    try:
+        parts = sorted(
+            ((name, split_part_name(name)) for name in names),
+            key=lambda item: (
+                item[1].partition_id,
+                item[1].min_block_num,
+                -item[1].max_block_num,
+                -item[1].level,
+                -item[1].mutation,
+            ),
+        )
+    except ValueError:
+        return names
+    active: set[str] = set()
+    covering = None
+    for name, part in parts:
+        if (
+            covering
+            and covering.partition_id == part.partition_id
+            and covering.max_block_num >= part.max_block_num
+        ):
+            continue
+        active.add(name)
+        covering = part
+    return active
+
+
+def _quote_or_any(name: str) -> str:
+    """
+    Quote an identifier, or return * for an empty one, as a row policy table can be.
+    """
+    return f"`{escape(name)}`" if name else "*"
+
+
 def _format_string_array(value: Sequence[str]) -> str:
-    return "[" + ",".join(f"'{escape(v)}'" for v in value) + "]"
+    return "[" + ",".join(sql_string_literal(v) for v in value) + "]"
 
 
 def _parse_version(version: str) -> list[int]:

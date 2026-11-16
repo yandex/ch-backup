@@ -9,8 +9,15 @@ from urllib.parse import urljoin
 
 from docker.models.containers import ExecResult
 from requests import HTTPError, Session
-from tenacity import retry, stop_after_attempt, wait_fixed
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    stop_after_delay,
+    wait_fixed,
+)
 
+from ch_backup.util import escape, sql_string_literal
 from tests.integration.diagnostics import record_stage_failure
 
 from . import docker
@@ -21,6 +28,11 @@ DB_COUNT = 2
 TABLE_COUNT = 2
 ROWS_COUNT = 3
 PARTITIONS_COUNT = 1
+
+SYSTEM_DATABASES = (
+    "'system', '_temporary_and_external_tables', "
+    "'information_schema', 'INFORMATION_SCHEMA'"
+)
 
 ACCESS_TYPES = [
     ("users", "USER"),
@@ -40,6 +52,23 @@ FROM system.named_collections
 ORDER BY name
 FORMAT JSON
 """
+
+
+def get_part_path(
+    context: ContextT, node: str, database: str, table: str, part: str
+) -> str:
+    """Find exactly one active part before injecting a file or object fault."""
+    paths = (
+        ClickhouseClient(context, node)
+        .get_response(
+            f"SELECT path FROM system.parts WHERE active "
+            f"AND database = '{database}' AND table = '{table}' "
+            f"AND name = '{part}' FORMAT TSVRaw"
+        )
+        .splitlines()
+    )
+    assert len(paths) == 1, f"Expected one active part, found paths: {paths}"
+    return paths[0].rstrip("/")
 
 
 class ClickhouseClient:
@@ -178,6 +207,29 @@ class ClickhouseClient:
             rows_count += table_data["rows"]
         return rows_count, user_data
 
+    def get_all_part_checksums(self) -> list:
+        """
+        Retrieve checksums of files of all active data parts.
+
+        Part names are left out: ATTACH PART assigns new block numbers, so a
+        restored part keeps its contents but not its name.
+        """
+        query = f"""
+            SELECT database, table,
+                   hash_of_all_files,
+                   hash_of_uncompressed_files,
+                   uncompressed_hash_of_compressed_files
+            FROM system.parts
+            WHERE active
+              AND database NOT IN ({SYSTEM_DATABASES}, '{self._system_database}')
+            ORDER BY database, table,
+                     hash_of_all_files,
+                     hash_of_uncompressed_files,
+                     uncompressed_hash_of_compressed_files
+            FORMAT JSONCompact
+            """
+        return self._query("POST", data=query.encode("utf-8"))["data"]
+
     def get_table_schemas(self) -> dict:
         """
         Retrieve DDL for user schemas.
@@ -188,8 +240,7 @@ class ClickhouseClient:
                 name,
                 create_table_query
             FROM system.tables
-            WHERE database NOT IN ('system', '_temporary_and_external_tables',
-                                   'information_schema', 'INFORMATION_SCHEMA', '{self._system_database}')
+            WHERE database NOT IN ({SYSTEM_DATABASES}, '{self._system_database}')
             FORMAT JSON
             """
         tables = self._query("GET", query)["data"]
@@ -207,8 +258,7 @@ class ClickhouseClient:
         query = f"""
             SELECT name
             FROM system.databases
-            WHERE name NOT IN ('system', '_temporary_and_external_tables',
-                               'information_schema', 'INFORMATION_SCHEMA', '{self._system_database}')
+            WHERE name NOT IN ({SYSTEM_DATABASES}, '{self._system_database}')
             FORMAT JSONCompact
             """
 
@@ -239,6 +289,15 @@ class ClickhouseClient:
         """
         ncs = self._query("GET", query=NAMED_COLLECTIONS_QUERY)
         return {nc["name"]: nc["collection"] for nc in ncs.get("data", [])}
+
+    def get_all_http_handlers(self) -> dict[str, str]:
+        """Read full handler definitions, including credentials for comparison."""
+        response = self._query(
+            "GET",
+            "SELECT name, create_query FROM system.handlers "
+            "SETTINGS format_display_secrets_in_show_and_select = 1 FORMAT JSON",
+        )
+        return {row["name"]: row["create_query"] for row in response["data"]}
 
     def drop_all_access_objects(self) -> None:
         """
@@ -300,8 +359,7 @@ class ClickhouseClient:
                 groupArray(c.name) "columns"
             FROM system.tables t
             JOIN system.columns c ON (t.database = c.database AND t.name = c.table)
-            WHERE database NOT IN ('system', '_temporary_and_external_tables',
-                                   'information_schema', 'INFORMATION_SCHEMA', '{self._system_database}')
+            WHERE database NOT IN ({SYSTEM_DATABASES}, '{self._system_database}')
               AND t.engine NOT IN ('View', 'MaterializedView', 'Distributed')
             GROUP BY database, table
             ORDER BY database, table
@@ -400,6 +458,43 @@ class ClickhouseClient:
             rows.append(", ".join(row))
 
         return rows
+
+
+def sync_replica(context: ContextT, node: str, database: str, table: str) -> None:
+    """Synchronize the database schema, table session and table data in order."""
+    client = ClickhouseClient(context, node)
+    engine = client.get_response(
+        "SELECT engine FROM system.databases "
+        f"WHERE name = {sql_string_literal(database)} FORMAT TabSeparated"
+    )
+    assert engine, f"Database {database} does not exist on {node}"
+    # ReplicatedMergeTree tables can also belong to Atomic/Ordinary databases,
+    # which do not support SYSTEM SYNC DATABASE REPLICA.
+    if engine == "Replicated":
+        client.execute(f"SYSTEM SYNC DATABASE REPLICA `{escape(database)}`")
+    wait_for_replica_ready(context, node, database, table)
+    client.execute(f"SYSTEM SYNC REPLICA `{escape(database)}`.`{escape(table)}`")
+
+
+@retry(
+    retry=retry_if_exception_type(AssertionError),
+    wait=wait_fixed(0.1),
+    stop=stop_after_delay(60),
+    reraise=True,
+)
+def wait_for_replica_ready(
+    context: ContextT, node: str, database: str, table: str
+) -> None:
+    """Schema replication may finish before the table's Keeper session starts."""
+    state = ClickhouseClient(context, node).get_response(
+        "SELECT is_readonly, is_session_expired FROM system.replicas "
+        f"WHERE database = {sql_string_literal(database)} "
+        f"AND table = {sql_string_literal(table)} FORMAT TabSeparated"
+    )
+    assert state == "0\t0", (
+        f"Replica {database}.{table} on {node} is not writable: "
+        f"(is_readonly, is_session_expired) = {state!r}; empty means missing replica"
+    )
 
 
 @retry(wait=wait_fixed(0.5), stop=stop_after_attempt(360), reraise=True)

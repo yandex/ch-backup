@@ -9,7 +9,7 @@ import pickle
 from types import SimpleNamespace
 
 from tests.integration import configuration
-from tests.integration.modules import compose, docker, minio, templates
+from tests.integration.modules import compose, docker, s3, templates
 
 SESSION_STATE_CONF = ".session_conf.sav"
 STAGES = {
@@ -21,8 +21,7 @@ STAGES = {
     "start": [
         docker.create_network,
         compose.startup_containers,
-        minio.configure_s3_credentials,
-        minio.create_s3_buckets,
+        s3.wait_for_s3_buckets,
     ],
     "update": [
         compose.create_config,

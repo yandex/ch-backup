@@ -18,6 +18,43 @@ Feature: Backward compatibility support for old backups
     """
 
 
+  @require_version_22.8
+  Scenario: Restore an old encrypted backup with local and S3 data
+    Given ch-backup configuration on clickhouse01
+    """
+    encryption:
+      enabled: true
+    cloud_storage:
+      encryption: true
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    encryption:
+      enabled: true
+    """
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE legacy_db;
+    CREATE TABLE legacy_db.local_data (n UInt32, value String)
+    ENGINE = MergeTree ORDER BY n;
+    CREATE TABLE legacy_db.s3_data AS legacy_db.local_data
+    ENGINE = MergeTree ORDER BY n SETTINGS storage_policy = 's3';
+    INSERT INTO legacy_db.local_data SELECT number, toString(number) FROM numbers(20);
+    INSERT INTO legacy_db.s3_data SELECT * FROM legacy_db.local_data;
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: legacy
+    """
+    And full metadata of clickhouse01 backup "legacy" uses legacy encrypted JSON
+    When we restore clickhouse backup #0 to clickhouse02
+    """
+    cloud_storage_source_bucket: cloud-storage-01
+    cloud_storage_source_path: data
+    """
+    Then clickhouse02 has same schema as clickhouse01
+    And we got same clickhouse data at clickhouse01 clickhouse02
+
   Scenario: Restore with old metadata layout
     When we execute queries on clickhouse01
     """

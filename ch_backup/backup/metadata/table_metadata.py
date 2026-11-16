@@ -6,6 +6,7 @@ from enum import Enum
 from types import SimpleNamespace
 from typing import NamedTuple
 
+from ch_backup.backup.metadata.detached_part_metadata import DetachedPartMetadata
 from ch_backup.backup.metadata.part_metadata import PartMetadata
 
 
@@ -30,25 +31,53 @@ def split_part_name(part: str) -> PartInfo:
     part name format: ``{partition_id}_{min_block}_{max_block}_{level}[_{mutation}]``.
     """
 
-    max_split = 4
-    chunks = part.split("_", maxsplit=max_split)
-    if len(chunks) < 4:
+    # At most 6 fields (5 separators); excess separators stay in the last field
+    # and fail numeric validation without allocating a list entry for each one.
+    chunks = part.split("_", maxsplit=5)
+    if (
+        not chunks[0]
+        or not part.isascii()
+        or not all(value.isdigit() for value in chunks[1:])
+    ):
+        raise ValueError(
+            f"Invalid part name format: '{part}'. "
+            "Numeric segments must contain decimal digits only"
+        )
+    # Legacy format has 5 fields, or 6 with mutation:
+    # minDate_maxDate_minBlock_maxBlock_level[_mutation].
+    # Dates are YYYYMMDD (8 digits); partition_id is YYYYMM (6 digits).
+    # Five fields can also be modern: prefer that layout if minBlock <= maxBlock.
+    # Without the table format version, some names are inherently ambiguous.
+    if (
+        len(chunks) in (5, 6)
+        and len(chunks[0]) == len(chunks[1]) == 8
+        and chunks[0].isdigit()
+        and (len(chunks) == 6 or int(chunks[1]) > int(chunks[2]))
+    ):
+        chunks = [chunks[0][:6], *chunks[2:]]
+    # Modern or normalized format has 4 fields, or 5 with mutation.
+    if len(chunks) not in (4, 5):
         raise ValueError(
             f"Invalid part name format: '{part}'. "
             f"Expected format: partition_id_minBlock_maxBlock_level[_mutation]"
         )
-    try:
-        partition_id = chunks[0]
-        min_block_num = int(chunks[1])
-        max_block_num = int(chunks[2])
-        level = int(chunks[3])
-        mutation = int(chunks[4]) if max_split + 1 == len(chunks) else 0
-    except (IndexError, ValueError) as e:
+    partition_id = chunks[0]
+    min_block, max_block, level = chunks[1:4]
+    mutation = chunks[4] if len(chunks) == 5 else "0"
+    min_block_num = int(min_block)
+    max_block_num = int(max_block)
+    if min_block_num > max_block_num:
         raise ValueError(
             f"Invalid part name format: '{part}'. "
-            f"Failed to parse numeric segments: {e}"
+            "Minimum block number exceeds maximum block number"
         )
-    return PartInfo(partition_id, min_block_num, max_block_num, level, mutation)
+    return PartInfo(
+        partition_id,
+        min_block_num,
+        max_block_num,
+        int(level),
+        int(mutation),
+    )
 
 
 class DataSkippedReason(str, Enum):
@@ -57,6 +86,7 @@ class DataSkippedReason(str, Enum):
     """
 
     UNIQUE_KEY = "unique_key"
+    BACKUP_FAILED = "backup_failed"
 
 
 class TableMetadata(SimpleNamespace):
@@ -141,6 +171,43 @@ class TableMetadata(SimpleNamespace):
             "encrypted": part.encrypted,
         }
 
+    def get_detached_parts(self) -> list[DetachedPartMetadata]:
+        """Return detached parts sorted by disk and original directory name."""
+        result = []
+        for disk_name, disk_parts in self.raw_metadata.get(
+            "detached_parts", {}
+        ).items():
+            for part_name, raw_metadata in disk_parts.items():
+                result.append(
+                    DetachedPartMetadata.load(
+                        self.database,
+                        self.name,
+                        disk_name,
+                        part_name,
+                        raw_metadata,
+                    )
+                )
+        return sorted(result, key=lambda part: (part.disk_name, part.name))
+
+    def add_detached_part(self, part: DetachedPartMetadata) -> None:
+        """Add a detached part without mixing it with attachable table parts."""
+        assert part.database == self.database
+        assert part.table == self.name
+
+        disk_parts = self.raw_metadata.setdefault("detached_parts", {}).setdefault(
+            part.disk_name, {}
+        )
+        assert part.name not in disk_parts
+        disk_parts[part.name] = {
+            "reason": part.reason,
+            "checksum": part.checksum,
+            "bytes": part.size,
+            "files": part.files,
+            "tarball": part.tarball,
+            "encrypted": part.encrypted,
+            "object_storage": part.object_storage,
+        }
+
     @classmethod
     def load(cls, database: str, name: str, raw_metadata: dict) -> "TableMetadata":
         """
@@ -154,4 +221,6 @@ class TableMetadata(SimpleNamespace):
             raw_metadata.get("data_skipped_reason", None),
         )
         table.raw_metadata["parts"] = raw_metadata["parts"]
+        if "detached_parts" in raw_metadata:
+            table.raw_metadata["detached_parts"] = raw_metadata["detached_parts"]
         return table

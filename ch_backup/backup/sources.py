@@ -2,7 +2,10 @@
 Management of partial backup or restore sources.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+
+from ch_backup import logging
+from ch_backup.exceptions import ConfigurationError
 
 
 @dataclass(frozen=True)
@@ -23,6 +26,8 @@ class BackupSources:
     named_collections: bool = True
     # Perform operation for workload entities (WORKLOADs and RESOURCEs)
     workload_entities: bool = True
+    # Perform operation for SQL-defined HTTP handlers
+    http_handlers: bool = False
 
     @classmethod
     # pylint: disable=too-many-positional-arguments
@@ -35,16 +40,28 @@ class BackupSources:
         named_collections: bool = False,
         workload_entities: bool = False,
         schema_only: bool = False,
+        http_handlers: bool = False,
     ) -> "BackupSources":
         """
         Setting up sources ready for backup.
 
         @todo: `schema_only` is deprecated and will be replaced soon.
         """
-        if any([access, data, schema, udf, named_collections, workload_entities]):
+        if any(
+            [
+                access,
+                data,
+                schema,
+                udf,
+                named_collections,
+                workload_entities,
+                http_handlers,
+            ]
+        ):
             schema = data or schema
         else:
-            access, schema, udf, named_collections, workload_entities = (
+            access, schema, udf, named_collections, workload_entities, http_handlers = (
+                True,
                 True,
                 True,
                 True,
@@ -60,7 +77,29 @@ class BackupSources:
             udf=udf,
             named_collections=named_collections,
             workload_entities=workload_entities,
+            http_handlers=http_handlers,
         )
+
+    @classmethod
+    def from_config(cls, config: dict | None) -> "BackupSources":
+        """
+        Setting up sources for backup from the `backup.sources` config section.
+
+        An unknown key, a typo or a source added in a newer version, selects all sources
+        with a warning: a larger backup is safer than one that silently misses data.
+        A non-boolean value of a known key, e.g. the quoted YAML string "false", fails.
+        """
+        config = config or {}
+        known = {field.name for field in fields(cls)}
+        if any(not isinstance(config[key], bool) for key in config.keys() & known):
+            raise ConfigurationError(
+                f"backup.sources values must be booleans: {config}"
+            )
+        unknown = sorted(config.keys() - known)
+        if unknown:
+            logging.warning(f"Unknown backup sources {unknown}, backing up all sources")
+            return cls.for_backup()
+        return cls.for_backup(**config)
 
     @classmethod
     # pylint: disable=too-many-positional-arguments
@@ -73,6 +112,7 @@ class BackupSources:
         named_collections: bool = False,
         workload_entities: bool = False,
         schema_only: bool = False,
+        http_handlers: bool = False,
     ) -> "BackupSources":
         """
         Setting up sources ready for restore.
@@ -80,11 +120,22 @@ class BackupSources:
         @todo: method will be merged with `for_backup` when they'll have similar logic
         @todo: `schema_only` is deprecated and will be replaced soon.
         """
-        if any([access, data, schema, udf, named_collections, workload_entities]):
+        if any(
+            [
+                access,
+                data,
+                schema,
+                udf,
+                named_collections,
+                workload_entities,
+                http_handlers,
+            ]
+        ):
             schema = data or schema
         else:
-            access, schema, udf, named_collections, workload_entities = (
+            access, schema, udf, named_collections, workload_entities, http_handlers = (
                 False,
+                True,
                 True,
                 True,
                 True,
@@ -99,6 +150,7 @@ class BackupSources:
             udf=udf,
             named_collections=named_collections,
             workload_entities=workload_entities,
+            http_handlers=http_handlers,
         )
 
     def schemas_included(self) -> bool:

@@ -1,0 +1,194 @@
+"""SQL-defined HTTP handler backup and restore tests."""
+
+# pylint: disable=protected-access
+
+from unittest.mock import MagicMock, call
+
+import pytest
+
+from ch_backup.backup.metadata import BackupMetadata
+from ch_backup.clickhouse.control import ClickhouseCTL
+from ch_backup.exceptions import ClickhouseBackupError
+from ch_backup.logic.http_handlers import HTTPHandlersBackup
+
+STATEMENT = "CREATE HANDLER `test` URL '/test' AS SELECT 1"
+
+
+@pytest.fixture(name="metadata")
+def metadata_fixture():
+    return BackupMetadata("backup", "2", "26.8", "%Y-%m-%d")
+
+
+@pytest.fixture(name="context")
+def context_fixture(metadata):
+    ctx = MagicMock()
+    ctx.backup_meta = metadata
+    ctx.ch_ctl.ch_version_ge.return_value = True
+    ctx.ch_ctl.get_http_handlers_create_queries.return_value = {"test": STATEMENT}
+    ctx.backup_layout.get_http_handler_create_statement.return_value = STATEMENT
+    return ctx
+
+
+@pytest.fixture(name="manager")
+def manager_fixture():
+    return HTTPHandlersBackup()
+
+
+@pytest.fixture(name="ctl")
+def ctl_fixture():
+    control = object.__new__(ClickhouseCTL)
+    control._ch_client = MagicMock()
+    control._ch_client.query.side_effect = [
+        {"data": [{"result": 1}]},
+        {"data": [{"name": "test", "create_query": STATEMENT}]},
+    ]
+    return control
+
+
+def test_metadata_roundtrip_and_legacy_default(metadata):
+    metadata.add_http_handler("test")
+    assert BackupMetadata.load_json(metadata.dump_json()).get_http_handlers() == [
+        "test"
+    ]
+    assert metadata.dump(light=True)["http_handlers"] == []
+    data = metadata.dump()
+    del data["http_handlers"]
+    assert BackupMetadata.load(data).get_http_handlers() == []
+
+
+def test_backup_does_not_record_handler_when_upload_fails(manager, context):
+    context.backup_layout.upload_http_handler.side_effect = RuntimeError(
+        "upload failed"
+    )
+    with pytest.raises(RuntimeError, match="upload failed"):
+        manager.backup(context)
+    assert context.backup_meta.get_http_handlers() == []
+
+
+def test_restore_reads_all_definitions_before_changing_handlers(manager, context):
+    context.backup_meta.add_http_handler("test")
+    context.backup_meta.add_http_handler("missing")
+    context.backup_layout.get_http_handler_create_statement.side_effect = [
+        STATEMENT + " + 1",
+        RuntimeError("read failed"),
+    ]
+    with pytest.raises(RuntimeError, match="read failed"):
+        manager.restore(context)
+    assert context.backup_layout.get_http_handler_create_statement.call_args_list == [
+        call(context.backup_meta, "test"),
+        call(context.backup_meta, "missing"),
+    ]
+    context.ch_ctl.drop_http_handler.assert_not_called()
+    context.ch_ctl.restore_http_handler.assert_not_called()
+
+
+def test_restore_drops_changed_handlers_before_creating_to_allow_url_swaps(
+    manager, context
+):
+    first = "CREATE HANDLER a URL '/b' AS SELECT 1"
+    second = "CREATE HANDLER b URL '/a' AS SELECT 1"
+    context.backup_meta.add_http_handler("a")
+    context.backup_meta.add_http_handler("b")
+    context.ch_ctl.get_http_handlers_create_queries.return_value = {
+        "a": "CREATE HANDLER a URL '/a' AS SELECT 1",
+        "b": "CREATE HANDLER b URL '/b' AS SELECT 1",
+    }
+    context.backup_layout.get_http_handler_create_statement.side_effect = [
+        first,
+        second,
+    ]
+    manager.restore(context)
+    assert context.ch_ctl.method_calls == [
+        call.ch_version_ge("26.8"),
+        call.get_http_handlers_create_queries(["a", "b"]),
+        call.drop_http_handler("a"),
+        call.drop_http_handler("b"),
+        call.restore_http_handler(first),
+        call.restore_http_handler(second),
+    ]
+
+
+def test_restore_to_old_clickhouse_fails_if_handlers_exist(manager, context):
+    context.backup_meta.add_http_handler("test")
+    context.ch_ctl.ch_version_ge.return_value = False
+    with pytest.raises(ClickhouseBackupError, match="26.8"):
+        manager.restore(context)
+    context.ch_ctl.restore_http_handler.assert_not_called()
+
+
+def test_control_rejects_missing_show_privilege_instead_of_empty_backup(ctl):
+    ctl._ch_client.query.side_effect = [{"data": [{"result": 0}]}]
+    with pytest.raises(ClickhouseBackupError, match="SHOW HANDLERS"):
+        ctl.get_http_handlers_create_queries()
+
+
+def test_control_rejects_hidden_marker_even_if_later_checks_allow_secrets(ctl):
+    statement = (
+        "CREATE HANDLER test URL '/test' AS SELECT * FROM "
+        "s3('https://example.invalid/data.csv', 'key', '[HIDDEN]', 'CSV', 'x UInt64')"
+    )
+    ctl._ch_client.query.side_effect = [
+        {"data": [{"result": 1}]},
+        {"data": [{"name": "test", "create_query": statement}]},
+        {"data": [{"result": 1}]},
+        {"data": [{"value": "1"}]},
+    ]
+    with pytest.raises(ClickhouseBackupError, match="hidden secrets"):
+        ctl.get_http_handlers_create_queries()
+    # Later permission/configuration values cannot establish visibility at read time.
+    assert ctl._ch_client.query.call_count == 2
+
+
+def test_control_restores_sensitive_sql_without_retry(ctl):
+    ctl.restore_http_handler(STATEMENT)
+    ctl._ch_client.query.assert_called_once_with(
+        STATEMENT,
+        sensitive=True,
+        should_retry=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "name, expected",
+    [("a`b", "`a\\`b`"), ("a\\b", "`a\\\\b`")],
+)
+def test_control_quotes_handler_name_when_dropping(ctl, name, expected):
+    ctl.drop_http_handler(name)
+    ctl._ch_client.query.assert_called_once_with(
+        f"DROP HANDLER {expected}",
+        sensitive=True,
+        should_retry=False,
+    )
+
+
+@pytest.mark.parametrize("masked_name", ["unrelated", "test"])
+def test_restore_validates_only_selected_handlers(manager, context, ctl, masked_name):
+    context.backup_meta.add_http_handler("test")
+    context.ch_ctl = ctl
+    ctl._ch_version = "26.8"
+    masked = {
+        "name": masked_name,
+        "create_query": "CREATE HANDLER masked AS SELECT '[HIDDEN]'",
+    }
+
+    def query(statement, **_kwargs):
+        if statement.startswith("CHECK GRANT"):
+            return {"data": [{"result": 1}]}
+        if statement.startswith("SELECT"):
+            selected = "WHERE name IN (unhex('74657374'))" in statement
+            return {"data": [masked] if not selected or masked_name == "test" else []}
+        return {}
+
+    ctl._ch_client.query.side_effect = query
+    if masked_name == "test":
+        with pytest.raises(ClickhouseBackupError, match="hidden secrets"):
+            manager.restore(context)
+        assert not any(
+            item.args[0].startswith(("DROP", "CREATE"))
+            for item in ctl._ch_client.query.call_args_list
+        )
+    else:
+        manager.restore(context)
+        assert ctl._ch_client.query.call_args == call(
+            STATEMENT, sensitive=True, should_retry=False
+        )

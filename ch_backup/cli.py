@@ -3,6 +3,8 @@
 Command-line interface.
 """
 
+# pylint: disable=too-many-lines
+
 import json
 import os
 import signal
@@ -12,7 +14,7 @@ import uuid
 from collections import OrderedDict
 from functools import wraps
 from pathlib import Path as PathlibPath
-from typing import Iterable
+from typing import Any, Iterable
 
 from click import Choice, Path, argument, pass_context, style
 from cloup import (
@@ -29,21 +31,42 @@ from cloup.constraints import constraint, mutually_exclusive
 from humanfriendly import format_timespan
 from tabulate import tabulate
 
-from ch_backup.exceptions import TerminatingSignal
+from ch_backup.command_context import command_context
+from ch_backup.exceptions import ConfigurationError, TerminatingSignal
 
 from . import logging
-from .backup.metadata import BackupState, TableMetadata
+from .backup.copy_deduplication import copy_deduplication_cutoff
+from .backup.copy_report import CopyReport, print_copy_report
+from .backup.metadata import BackupState, CopyScope, TableMetadata, parse_copy_scopes
 from .backup.sources import BackupSources
 from .ch_backup import CleanZooKeeperMode, ClickhouseBackup
 from .config import DEFAULT_CONFIG, Config
 from .logic.partial_restore import PartialRestoreFilter
 from .params import JsonParamType, KeyValues, List, String, TimeSpan
 from .profile import profile
-from .util import chown_dir_contents, drop_privileges, setup_environment, utcnow
+from .storage.object_copy import parse_server_side_copy_mode
+from .util import (
+    chown_dir_contents,
+    drop_privileges,
+    raise_nofile_limit,
+    setup_environment,
+    utcnow,
+)
 from .version import get_version
 
 TIMESTAMP = utcnow().strftime("%Y%m%dT%H%M%S")
 UUID = str(uuid.uuid4())
+_HIDDEN = "[HIDDEN]"
+_SECRET_PARAMETER_NAMES = {
+    "access_token",
+    "api_key",
+    "clickhouse_password",
+    "key",
+    "password",
+    "private_key",
+    "secret_access_key",
+    "token",
+}
 
 
 def signal_handler(signum, _frame):
@@ -163,6 +186,7 @@ def cli(
 
     # Creating logger as not privileged user is required to copy logger to child processes
     logging.configure(cfg["loguru"])
+    raise_nofile_limit()
 
     ch_backup = ClickhouseBackup(cfg)
 
@@ -183,14 +207,13 @@ def command(*args, **kwargs):
                 logging.info(
                     "Executing command '{}', params: {}, args: {}, version: {}",
                     ctx.command.name,
-                    {
-                        **ctx.parent.params,
-                        **ctx.params,
-                    },
+                    _mask_command_params({**ctx.parent.params, **ctx.params}),
                     ctx.args,
                     get_version(),
                 )
-                result = ctx.invoke(f, ctx, ctx.obj["backup"], *args, **kwargs)
+                ch_backup = ctx.obj["backup"]
+                with command_context(ctx.command.name):
+                    result = ctx.invoke(f, ctx, ch_backup, *args, **kwargs)
                 logging.info("Command '{}' completed", ctx.command.name)
                 return result
             except (Exception, TerminatingSignal):
@@ -200,6 +223,37 @@ def command(*args, **kwargs):
         return cli.command(*args, **kwargs)(wrapper)
 
     return decorator
+
+
+def _mask_command_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Hide secrets passed through command options before logging them."""
+    result = {}
+    for name, value in params.items():
+        if name in {"config_parameters", "target_config_parameters"}:
+            result[name] = [
+                (path, _mask_value(parameter_value, path))
+                for path, parameter_value in value
+            ]
+        else:
+            result[name] = _mask_value(value, name)
+    return result
+
+
+def _mask_value(value: Any, name: str | None = None) -> Any:
+    if name and name.strip().lower() == "storage.proxy_resolver.uri":
+        return _HIDDEN
+    if name and name.rsplit(".", 1)[-1].lower() in _SECRET_PARAMETER_NAMES:
+        return _HIDDEN
+    if isinstance(value, dict):
+        return {
+            key: _mask_value(item, f"{name}.{key}" if name else key)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_mask_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_mask_value(item) for item in value)
+    return value
 
 
 @command(name="list")
@@ -213,6 +267,11 @@ def command(*args, **kwargs):
 )
 @option("-v", "--verbose", is_flag=True, default=False, help="Verbose output.")
 @option(
+    "--include-unreadable",
+    is_flag=True,
+    help="Include unreadable metadata in verbose listings (-a -v shows it too); exit with code 2 if any is unreadable.",
+)
+@option(
     "--format",
     "format_",
     type=Choice(["table", "json"]),
@@ -224,12 +283,18 @@ def list_command(
     ch_backup: ClickhouseBackup,
     verbose: bool,
     all_: bool,
+    include_unreadable: bool,
     format_: str,
 ) -> None:
     """List existing backups."""
+    if include_unreadable and not verbose:
+        _ctx.fail("--include-unreadable requires --verbose")
     state = None if all_ else BackupState.CREATED
 
-    backups = ch_backup.list(state)
+    unreadable: dict[str, str] = {}
+    backups = ch_backup.list(state, unreadable=unreadable)
+    if not (all_ or include_unreadable):
+        unreadable.clear()
 
     if not verbose:
         print("\n".join([b.name for b in backups]))
@@ -237,6 +302,8 @@ def list_command(
 
     records = []
     for backup in backups:
+        data_skipped_tables, incomplete_tables = backup.count_skipped_data_tables()
+        copy = backup.dump(light=True)["meta"].get("copy")
         record: dict = OrderedDict(
             (
                 ("name", backup.name),
@@ -246,16 +313,48 @@ def list_command(
                 ("size", backup.size),
                 ("real_size", backup.real_size),
                 ("ch_version", backup.ch_version),
+                ("data_skipped_tables", data_skipped_tables),
+                ("incomplete_tables", incomplete_tables),
             )
         )
         if format_ == "json":
             record["labels"] = backup.labels
+            record["copy"] = copy
             record["cloud_disks"] = backup.cloud_storage.disks
             record["exception"] = backup.exception
         else:
             record["labels"] = "\n".join(
                 f"{name}: {value}" for name, value in backup.labels.items()
             )
+            copy_lines = [
+                f"{scope}: {status}"
+                for scope, status in (copy or {}).get("scopes", {}).items()
+            ]
+            if copy and copy.get("updated_at"):
+                copy_lines.extend(("", f"updated_at: {copy['updated_at']}"))
+            record["copy"] = "\n".join(copy_lines).lstrip("\n")
+        if all_ or include_unreadable:
+            record["metadata_error"] = None
+        records.append(record)
+
+    for name, error in sorted(unreadable.items()):
+        record = dict.fromkeys(
+            (
+                "start_time",
+                "end_time",
+                "size",
+                "real_size",
+                "ch_version",
+                "data_skipped_tables",
+                "incomplete_tables",
+                "labels",
+                "copy",
+            )
+        )
+        record = {"name": name, "state": "unknown", **record}
+        if format_ == "json":
+            record.update(cloud_disks=None, exception=None)
+        record["metadata_error"] = error
         records.append(record)
 
     if format_ == "json":
@@ -263,6 +362,9 @@ def list_command(
         print()
     else:
         print(tabulate(records, headers="keys"))
+    if unreadable and include_unreadable:
+        print(f"Unreadable metadata: {len(unreadable)}", file=sys.stderr, flush=True)
+        _ctx.exit(2)
 
 
 @command(name="show")  # type: ignore
@@ -330,7 +432,7 @@ def show_command(
         option(
             "-d",
             "--databases",
-            type=List(regexp=r"\w+"),
+            type=List(regexp=r".+"),
             help="Comma-separated list of databases to backup.",
         ),
         option(
@@ -361,7 +463,42 @@ def show_command(
     ),
     option("--nc", is_flag=True, help="Perform partial backup of named collections."),
     option(
+        "--http-handlers",
+        is_flag=True,
+        help="Perform partial backup of SQL-defined HTTP handlers.",
+    ),
+    option(
         "--workload", is_flag=True, help="Perform partial backup of workload entities."
+    ),
+    option(
+        "--detached-parts",
+        is_flag=True,
+        help="Also backup detached parts of selected tables. Overrides backup.detached_parts.enabled.",
+    ),
+    option(
+        "--detached-parts-disk",
+        "--detached-parts-disks",
+        "detached_parts_disks",
+        type=List(),
+        help="Comma-separated disk names whose detached directories are backed up. Overrides backup.detached_parts.disks (default: object_storage).",
+    ),
+    option(
+        "--detached-parts-reason",
+        "--detached-parts-reasons",
+        "detached_parts_reasons",
+        type=List(),
+        help="Comma-separated detach reasons. By default all reasons are included; pass an empty value to select user-detached parts. Overrides backup.detached_parts.reasons.",
+    ),
+)
+@option_group(
+    "Cloud Storage",
+    option(
+        "--copy-cloud-storage-data",
+        is_flag=True,
+        help="Copy object storage data into the backup instead of storing "
+        "references only. Increases backup size and duration. The data is copied "
+        "by ClickHouse as is: unlike the metadata, it is neither compressed nor "
+        "encrypted by ch-backup.",
     ),
 )
 @option_group(
@@ -398,6 +535,12 @@ def show_command(
         is_flag=True,
         help="Enables force mode (backup.min_interval is ignored).",
     ),
+    option(
+        "--keep-going",
+        is_flag=True,
+        help="Leave out a data part, or the data of a table, that cannot be "
+        "backed up, instead of failing the whole backup. Overrides backup.keep_going.",
+    ),
 )
 @constraint(mutually_exclusive, ["schema_only", "access"])
 @constraint(mutually_exclusive, ["schema_only", "data"])
@@ -405,6 +548,7 @@ def show_command(
 @constraint(mutually_exclusive, ["schema_only", "udf"])
 @constraint(mutually_exclusive, ["schema_only", "nc"])
 @constraint(mutually_exclusive, ["schema_only", "workload"])
+@constraint(mutually_exclusive, ["schema_only", "http_handlers"])
 @constraint(mutually_exclusive, ["data", "schema"])
 # pylint: disable=too-many-positional-arguments
 def backup_command(
@@ -414,6 +558,7 @@ def backup_command(
     databases: list,
     tables: list,
     force: bool,
+    keep_going: bool,
     label: list,
     schema_only: bool,
     freeze_timeout: int,
@@ -423,9 +568,18 @@ def backup_command(
     udf: bool,
     nc: bool,
     workload: bool,
+    copy_cloud_storage_data: bool,
+    http_handlers: bool,
+    detached_parts: bool,
+    detached_parts_disks: list[str] | None,
+    detached_parts_reasons: list[str] | None,
 ) -> None:
     """Perform backup."""
     # pylint: disable=too-many-arguments,too-many-locals
+    if copy_cloud_storage_data:
+        ch_backup.config.merge({"cloud_storage": {"copy_data": True}})
+    if keep_going:
+        ch_backup.config.merge({"backup": {"keep_going": True}})
     if freeze_timeout:
         logging.info(f"ALTER FREEZE timeout force set to {freeze_timeout} sec.")
         ch_backup.reload_config(
@@ -439,11 +593,39 @@ def backup_command(
         value = key_value.pop() if key_value else None
         labels[key] = value
 
-    sources = BackupSources.for_backup(
-        access, data, schema, udf, nc, workload, schema_only
-    )
+    backup_config = ch_backup.config["backup"]
+    if any([access, data, schema, udf, nc, workload, schema_only, http_handlers]):
+        sources = BackupSources.for_backup(
+            access,
+            data,
+            schema,
+            udf,
+            nc,
+            workload,
+            schema_only,
+            http_handlers=http_handlers,
+        )
+    else:
+        sources = BackupSources.from_config(backup_config["sources"])
+
+    detached_parts_config = backup_config["detached_parts"]
+    if not isinstance(detached_parts_config["enabled"], bool):
+        raise ConfigurationError("backup.detached_parts.enabled must be a boolean")
+    if detached_parts_disks is None:
+        detached_parts_disks = detached_parts_config["disks"]
+    if detached_parts_reasons is None:
+        detached_parts_reasons = detached_parts_config["reasons"]
+
     name, msg = ch_backup.backup(
-        sources, name, db_names=databases, tables=tables, force=force, labels=labels
+        sources,
+        name,
+        db_names=databases,
+        tables=tables,
+        force=force,
+        labels=labels,
+        include_detached_parts=detached_parts or detached_parts_config["enabled"],
+        detached_parts_disks=detached_parts_disks,
+        detached_parts_reasons=detached_parts_reasons,
     )
 
     if msg:
@@ -461,12 +643,12 @@ def backup_command(
         option(
             "-d",
             "--databases",
-            type=List(regexp=r"\w+"),
+            type=List(regexp=r".+"),
             help="Comma-separated list of databases to restore. Other databases will be skipped.",
         ),
         option(
             "--exclude-databases",
-            type=List(regexp=r"\w+"),
+            type=List(regexp=r".+"),
             help="Comma-separated list of databases to exclude for restore. Other databases will be restored.",
         ),
     ),
@@ -493,6 +675,12 @@ def backup_command(
         type=str,
         help=f'Replica name to be removed from zookeeper. Default - {style("hostname", fg=Color.bright_green)}.',
     ),
+    option(
+        "--parts-from-backup",
+        type=str,
+        help="Download data parts that all other replicas have from this backup instead "
+        "of fetching them from replicas. Only for restore without data.",
+    ),
 )
 @option_group(
     "Cloud Storage",
@@ -507,12 +695,18 @@ def backup_command(
         help="Source path to restore cloud storage data.",
     ),
     option(
-        "--cloud-storage-source-endpoint", type=str, help="Endpoint for source bucket."
+        "--cloud-storage-source-endpoint",
+        type=str,
+        help="Endpoint for source bucket: HTTP(S) URL or host[:port]. "
+        "Without a scheme, uses the original disk's scheme.",
     ),
     option(
         "--skip-cloud-storage",
         is_flag=True,
-        help="Forces to skip restoring data on cloud storage.",
+        help=(
+            "Skip cloud data and adapt storage policies and TTL MOVE rules to the target. "
+            "Conflicting Keeper metadata causes an error without resetting replicas."
+        ),
     ),
 )
 @option_group(
@@ -561,8 +755,18 @@ def backup_command(
     ),
     option("--nc", is_flag=True, help="Perform partial restore of named collections."),
     option(
+        "--http-handlers",
+        is_flag=True,
+        help="Perform partial restore of SQL-defined HTTP handlers.",
+    ),
+    option(
         "--workload", is_flag=True, help="Perform partial restore of workload entities."
     ),
+)
+@option(
+    "--restore-detached-parts",
+    is_flag=True,
+    help="Restore backed-up detached parts without attaching them.",
 )
 @option(
     "--keep-going",
@@ -581,6 +785,7 @@ def backup_command(
 @constraint(mutually_exclusive, ["schema_only", "udf"])
 @constraint(mutually_exclusive, ["schema_only", "nc"])
 @constraint(mutually_exclusive, ["schema_only", "workload"])
+@constraint(mutually_exclusive, ["schema_only", "http_handlers"])
 @constraint(mutually_exclusive, ["data", "schema"])
 # pylint: disable=too-many-positional-arguments
 def restore_command(
@@ -593,10 +798,12 @@ def restore_command(
     override_replica_name: str = None,
     force_non_replicated: bool = False,
     replica_name: str = None,
+    parts_from_backup: str | None = None,
     cloud_storage_source_bucket: str = None,
     cloud_storage_source_path: str = None,
     cloud_storage_source_endpoint: str = None,
     skip_cloud_storage: bool = False,
+    restore_detached_parts: bool = False,
     clean_zookeeper_mode: CleanZooKeeperMode = CleanZooKeeperMode.REPLICA_ONLY,
     keep_going: bool = False,
     restore_tables_in_replicated_database: bool = False,
@@ -608,6 +815,7 @@ def restore_command(
     table_excluded_patterns: list[str] | None = None,
     nc: bool = False,
     workload: bool = False,
+    http_handlers: bool = False,
 ) -> None:
     """Restore data from a particular backup."""
     # pylint: disable=too-many-arguments,too-many-locals
@@ -624,8 +832,19 @@ def restore_command(
         matcher = PartialRestoreFilter(inverted=True, patterns=table_excluded_patterns)
 
     sources = BackupSources.for_restore(
-        access, data, schema, udf, nc, workload, schema_only
+        access,
+        data,
+        schema,
+        udf,
+        nc,
+        workload,
+        schema_only,
+        http_handlers=http_handlers,
     )
+    if parts_from_backup:
+        parts_from_backup = _validate_and_resolve_name(
+            ctx, ch_backup, parts_from_backup, BackupState.CREATED
+        )
     ch_backup.restore(
         sources=sources,
         backup_name=name,
@@ -634,15 +853,65 @@ def restore_command(
         override_replica_name=override_replica_name,
         force_non_replicated=force_non_replicated,
         replica_name=replica_name,
+        parts_backup_name=parts_from_backup,
         cloud_storage_source_bucket=cloud_storage_source_bucket,
         cloud_storage_source_path=cloud_storage_source_path,
         cloud_storage_source_endpoint=cloud_storage_source_endpoint,
         skip_cloud_storage=skip_cloud_storage,
+        restore_detached_parts=restore_detached_parts,
         clean_zookeeper_mode=clean_zookeeper_mode,
         keep_going=keep_going,
         restore_tables_in_replicated_database=restore_tables_in_replicated_database,
         partial_restore_filter=matcher,
     )
+
+
+@command(name="restore-from-replica")  # type: ignore
+@option(
+    "--source-host",
+    type=str,
+    required=True,
+    help="Live replica of the same shard to restore from. It is connected with the "
+    "credentials and TLS settings of this host.",
+)
+@option(
+    "--replica-name",
+    type=str,
+    help=f'Replica name to be removed from zookeeper. Default - {style("{replica}", fg=Color.bright_green)} macro.',
+)
+@option_group(
+    "Partial restore",
+    option("--schema", is_flag=True, help="Restore databases and tables schemas."),
+    option("--access", is_flag=True, help="Restore access control entities."),
+    option("--udf", is_flag=True, help="Restore user defined functions."),
+    option("--nc", is_flag=True, help="Restore named collections."),
+    option("--workload", is_flag=True, help="Restore workload entities."),
+)
+# pylint: disable=too-many-positional-arguments
+def restore_from_replica_command(
+    _ctx: Context,
+    ch_backup: ClickhouseBackup,
+    source_host: str,
+    replica_name: str | None = None,
+    schema: bool = False,
+    access: bool = False,
+    udf: bool = False,
+    nc: bool = False,
+    workload: bool = False,
+) -> None:
+    """Restore from a live replica of the shard instead of a backup. All without options."""
+    sources = BackupSources(data=False, http_handlers=False)
+    if any([schema, access, udf, nc, workload]):
+        sources = BackupSources(
+            access=access,
+            data=False,
+            schema=schema,
+            udf=udf,
+            named_collections=nc,
+            workload_entities=workload,
+            http_handlers=False,
+        )
+    ch_backup.restore_from_replica(source_host, sources, replica_name)
 
 
 @command(name="restore-access-control")  # type: ignore
@@ -712,6 +981,176 @@ def delete_command(
         print(deleted_backup_name)
 
 
+@command(name="copy")  # type: ignore
+@argument("name", metavar="[BACKUP]", required=False)
+@option_group(
+    "General",
+    option(
+        "-a",
+        "--all",
+        "all_",
+        is_flag=True,
+        default=False,
+        help="Copy created backups, oldest first. Backups without table data are skipped "
+        "by default; use --no-only-with-data to include them.",
+    ),
+    option(
+        "--keep-going",
+        is_flag=True,
+        default=False,
+        help="Continue copying independent objects and backups after errors.",
+    ),
+    option(
+        "--only-with-data/--no-only-with-data",
+        default=None,
+        help="Select only backups with data for LAST and --all. Enabled by default.",
+    ),
+    option(
+        "--report-path",
+        type=Path(dir_okay=False),
+        help="Save the final copy report as JSON, including on failure.",
+    ),
+    option(
+        "--scope",
+        "scopes",
+        multiple=True,
+        type=Choice([scope.value for scope in CopyScope]),
+        help='Copy only the specified scope: "files" for files of the backup, '
+        '"cloud_storage" for data of object storage disks. Can be specified multiple times, '
+        "overrides copy.scopes in the configuration (all scopes by default). "
+        "The copy is published once every scope is copied. "
+        'Without "files", copies are taken from the target storage, so the source storage is '
+        'not accessed; --all and LAST select copies with "cloud_storage" not completed.',
+    ),
+)
+@option_group(
+    "Target storage options",
+    option(
+        "--target-config",
+        type=Path(exists=True),
+        help="Configuration file with settings of the target storage. "
+        "It's merged on top of the main configuration, so it's enough to specify only "
+        'differing settings (e.g. "storage.credentials" and "backup.path_root").',
+    ),
+    option(
+        "--target-config-parameter",
+        "target_config_parameters",
+        multiple=True,
+        type=(str, JsonParamType()),
+        metavar="PATH VALUE",
+        help="Paths and values to override target configuration values. "
+        "The same as --config-parameter, but for the target configuration.",
+    ),
+    option(
+        "--resume/--no-resume",
+        default=None,
+        help="Skip objects confirmed by previous runs of copying and still present in the target "
+        "storage. Enabled by default. With --no-resume, all objects are copied again.",
+    ),
+)
+@option_group(
+    "Cloud storage options",
+    option(
+        "--target-cloud-storage-bucket",
+        type=str,
+        help="Bucket to copy data of object storage disks to.",
+    ),
+    option(
+        "--target-cloud-storage-path",
+        type=str,
+        help="Path in the bucket to copy data of object storage disks to. "
+        'Data of the backup is put under "<path>/<backup name>/".',
+    ),
+    option(
+        "--cloud-storage-source-bucket",
+        type=str,
+        help="Bucket with data of object storage disks. By default, it's taken from ClickHouse configuration.",
+    ),
+    option(
+        "--cloud-storage-source-path",
+        type=str,
+        help="Path in the bucket with data of object storage disks. "
+        "By default, it's taken from ClickHouse configuration.",
+    ),
+)
+# pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+def copy_command(
+    ctx: Context,
+    ch_backup: ClickhouseBackup,
+    name: str | None,
+    all_: bool,
+    target_config: str | None,
+    target_config_parameters: Iterable[tuple[str, dict]],
+    resume: bool | None,
+    target_cloud_storage_bucket: str | None,
+    target_cloud_storage_path: str | None,
+    cloud_storage_source_bucket: str | None,
+    cloud_storage_source_path: str | None,
+    keep_going: bool = False,
+    only_with_data: bool | None = None,
+    report_path: str | None = None,
+    scopes: tuple[str, ...] = (),
+) -> None:
+    """Copy backup to another storage (another S3 bucket, endpoint or path)."""
+    command_start = utcnow()
+    report = CopyReport()
+    try:
+        if bool(name) == all_:
+            ctx.fail("Either BACKUP or --all must be specified.")
+
+        copy_config: dict = {"cloud_storage": {"source": {}, "target": {}}}
+        if scopes:
+            copy_config["scopes"] = list(scopes)
+        if only_with_data is not None:
+            copy_config["only_with_data"] = only_with_data
+        if resume is not None:
+            copy_config["resume"] = resume
+        for section, key, value in (
+            ("target", "bucket", target_cloud_storage_bucket),
+            ("target", "path", target_cloud_storage_path),
+            ("source", "bucket", cloud_storage_source_bucket),
+            ("source", "path", cloud_storage_source_path),
+        ):
+            if value is not None:
+                copy_config["cloud_storage"][section][key] = value
+
+        target_cfg = ch_backup.config.derive(
+            target_config,
+            _build_cli_cfg_from_config_parameters(target_config_parameters),
+        )
+        target_cfg.merge({"copy": copy_config})
+        # Validate before resolving LAST, which already lists the source storage.
+        parse_server_side_copy_mode(target_cfg["copy"]["server_side_copy_mode"])
+        if not isinstance(target_cfg["copy"]["only_with_data"], bool):
+            raise ConfigurationError("copy.only_with_data must be a boolean")
+        copy_deduplication_cutoff(target_cfg["copy"], command_start)
+        backup_names = None
+        if name:
+            if name == "LAST" and CopyScope.FILES in parse_copy_scopes(
+                target_cfg["copy"]["scopes"]
+            ):
+                name = _validate_and_resolve_name(
+                    ctx,
+                    ch_backup,
+                    name,
+                    BackupState.CREATED,
+                    only_with_data=target_cfg["copy"]["only_with_data"],
+                )
+            backup_names = [name]
+        ch_backup.copy(
+            target_cfg,
+            backup_names,
+            keep_going=keep_going,
+            report=report,
+            command_start=command_start,
+        )
+    except BaseException as e:
+        report.error = f"{type(e).__name__}: {e}"
+        raise
+    finally:
+        print_copy_report(report, report_path)
+
+
 @command(name="purge")
 def purge_command(_ctx: Context, ch_backup: ClickhouseBackup) -> None:
     """Purge outdated backups."""
@@ -761,15 +1200,30 @@ def _validate_and_resolve_name(
     ch_backup: ClickhouseBackup,
     name: str,
     backup_state: BackupState = None,
+    only_with_data: bool = False,
 ) -> str:
-    backups = ch_backup.list(backup_state)
+    """
+    Check that the backup exists; LAST is refused while any metadata is unreadable.
+
+    With only_with_data, LAST is resolved to the latest backup with data parts.
+    """
+    unreadable: dict[str, str] = {}
+    backups = ch_backup.list(backup_state, unreadable=unreadable)
 
     if name == "LAST":
+        if unreadable:
+            ctx.fail(
+                f"Cannot resolve LAST, metadata is unreadable for: {', '.join(sorted(unreadable))}"
+            )
         if not backups:
             ctx.fail("There are no backups.")
+        if only_with_data:
+            backups = [b for b in backups if not b.is_empty()]
+            if not backups:
+                ctx.fail("There are no backups with data.")
         return backups[0].name
 
-    if name not in (b.name for b in backups):
+    if name not in unreadable and name not in (b.name for b in backups):
         ctx.fail(f'No backups with name "{name}" were found.')
 
     return name

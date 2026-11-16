@@ -1,0 +1,871 @@
+"""
+Unit tests for S3StorageEngine.
+"""
+
+import socket
+import ssl
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from http.client import IncompleteRead
+from pathlib import Path
+from typing import Any
+from unittest.mock import Mock, patch
+
+import pytest
+import requests
+from botocore.exceptions import ClientError, ResponseStreamingError
+from botocore.exceptions import SSLError as BotoSSLError
+from urllib3 import HTTPConnectionPool
+from urllib3.exceptions import MaxRetryError, ProtocolError
+from urllib3.exceptions import SSLError as Urllib3SSLError
+from urllib3.util.ssl_match_hostname import CertificateError as Urllib3CertificateError
+
+from ch_backup.config import DEFAULT_CONFIG
+from ch_backup.exceptions import ConfigurationError
+from ch_backup.storage.engine.s3 import (
+    S3RetryingError,
+    S3RetryPolicy,
+    S3StorageEngine,
+)
+from ch_backup.storage.engine.s3.s3_client_factory import (
+    S3BalancerUnknownHost,
+    S3ClientCachedFactory,
+)
+from ch_backup.storage.engine.s3.s3_retry import (
+    FailureKey,
+    FailureKind,
+    FailureLimit,
+    validate_s3_retry_config,
+)
+
+
+def _engine(
+    retry_policy: S3RetryPolicy = S3RetryPolicy.DEFAULT, **storage: Any
+) -> S3StorageEngine:
+    """Build an engine on the default storage config with the given overrides."""
+    config: dict = {**DEFAULT_CONFIG["storage"], **storage}  # type: ignore[dict-item]
+    config["credentials"] = {**config["credentials"], "bucket": "bucket"}
+    return S3StorageEngine(config, retry_policy=retry_policy)
+
+
+def test_module_config_is_passed_to_sdk(tmp_path: Path) -> None:
+    options: dict[str, dict[str, Any]] = {
+        "botocore": {
+            "read_timeout": 120,
+            "retries": {"mode": "standard", "total_max_attempts": 3},
+            "proxies": {},
+        },
+        "transfer": {"multipart_chunksize": 16777216, "max_concurrency": 4},
+    }
+    with patch(
+        "ch_backup.storage.engine.s3.s3_client_factory.boto3.session.Session"
+    ) as session_class:
+        engine = _engine(module_config=options)
+        local_path = tmp_path / "data"
+        local_path.write_bytes(b"backup data")
+        engine.upload_file(str(local_path), "uploaded")
+        engine.download_file("downloaded", str(local_path))
+        engine.download_data("metadata")
+        engine.copy_object("source-bucket", "source", "target")
+
+    session = session_class.return_value
+    botocore_config = session.client.call_args.kwargs["config"]
+    for name, value in options["botocore"].items():
+        assert getattr(botocore_config, name) == value
+    client = session.client.return_value
+    for method in (
+        client.upload_fileobj,
+        client.download_file,
+        client.download_fileobj,
+        client.copy,
+    ):
+        transfer_config = method.call_args.kwargs["Config"]
+        for name, value in options["transfer"].items():
+            assert getattr(transfer_config, name) == value
+
+
+@pytest.mark.parametrize("max_attempts", [1, 3])
+def test_retry_max_attempts_from_config(max_attempts: int) -> None:
+    """S3 operations are retried with the attempt and pause limits from the config."""
+    engine = _engine(retry_max_attempts=max_attempts, retry_max_interval=1.5)
+    client = Mock()
+    client.download_fileobj.side_effect = ClientError(
+        {"Error": {"Code": "InternalError"}}, "GetObject"
+    )
+    setattr(
+        engine, "_s3_client_factory", Mock(create_s3_client=Mock(return_value=client))
+    )
+    sleep = Mock()
+    getattr(engine, "_retry").sleep_function = sleep
+
+    with (
+        patch(
+            "ch_backup.storage.engine.s3.s3_retry.uniform",
+            side_effect=lambda _low, high: high,
+        ),
+        pytest.raises(S3RetryingError),
+    ):
+        engine.download_data("path")
+
+    assert client.download_fileobj.call_count == max_attempts
+    assert sleep.call_count == max_attempts - 1
+    assert all(call.args[0] <= 1.5 for call in sleep.call_args_list)
+
+
+def test_retry_policy_overrides_base_limits() -> None:
+    retry_config = {
+        "default": {
+            "failure_limits": {"error_codes": {"InternalError": {"max_attempts": 1}}}
+        },
+        S3RetryPolicy.LIST.value: {"max_attempts": 2},
+        S3RetryPolicy.BACKUP.value: {"max_interval": 3},
+    }
+    expected_by_policy = {
+        S3RetryPolicy.LIST: (2, 20),
+        S3RetryPolicy.BACKUP: (10, 3),
+        S3RetryPolicy.RESTORE: (10, 20),
+        S3RetryPolicy.DEFAULT: (10, 20),
+    }
+
+    for retry_policy, expected in expected_by_policy.items():
+        retry = getattr(
+            _engine(
+                retry_policy,
+                retry_max_attempts=10,
+                retry_max_interval=20,
+                retry=retry_config,
+            ),
+            "_retry",
+        )
+        assert (retry.max_attempts, retry.max_interval) == expected
+        assert retry.failure_limits == (
+            {FailureKey(FailureKind.ERROR_CODE, "InternalError"): FailureLimit(1)}
+            if retry_policy == S3RetryPolicy.DEFAULT
+            else {}
+        )
+
+
+@pytest.mark.parametrize(
+    "storage",
+    [
+        {"retry_max_attempts": 0},
+        {"retry_max_attempts": 2.5},
+        {"retry_max_interval": -1},
+    ],
+)
+def test_invalid_retry_limits_are_rejected(storage: dict) -> None:
+    """Retry limits that would end retries without an error or crash sleep are rejected."""
+    with pytest.raises(ConfigurationError, match="storage.retry_max_attempts"):
+        _engine(**storage)
+
+
+@pytest.mark.parametrize("max_attempts", [2, 60])
+@pytest.mark.parametrize("policy", [S3RetryPolicy.RESTORE, S3RetryPolicy.DEFAULT])
+@pytest.mark.parametrize(
+    "exception_name, cause_type",
+    [
+        ("http.client.IncompleteRead", IncompleteRead),
+        ("http.client.HTTPException", IncompleteRead),
+        ("socket.timeout", TimeoutError),
+        ("requests.ConnectionError", requests.exceptions.ConnectionError),
+    ],
+)
+@pytest.mark.parametrize(
+    "errors, expected_calls, succeeds",
+    [
+        (["InternalError"] * 3, 3, False),
+        (["InternalError"] * 2, 3, True),
+        # With a 60-attempt budget, SlowDown must not reset the InternalError counter.
+        (["InternalError"] + ["SlowDown"] * 50 + ["InternalError"] * 2, 53, False),
+        (["SlowDown"] * 59, 60, True),
+        (["SlowDown"] * 60, 60, False),
+        (["IncompleteRead"] * 3, 3, False),
+        (["message"] * 3, 4, True),
+        (["AccessDenied"], 1, False),
+    ],
+)
+def test_s3_failure_limits(
+    errors: list[str],
+    expected_calls: int,
+    succeeds: bool,
+    max_attempts: int,
+    policy: S3RetryPolicy,
+    *,
+    exception_name: str,
+    cause_type: type[Exception],
+) -> None:
+    succeeds = succeeds and expected_calls <= max_attempts
+    expected_calls = min(expected_calls, max_attempts)
+    engine = _engine(
+        policy,
+        retry={
+            policy.value: {
+                "max_attempts": max_attempts,
+                "failure_limits": {
+                    "error_codes": {"InternalError": 3},
+                    "exceptions": {
+                        exception_name: {"max_attempts": 3, "max_interval": 5}
+                    },
+                },
+            }
+        },
+    )
+    sleep = Mock()
+    getattr(engine, "_retry").sleep_function = sleep
+    responses = []
+    for code in errors:
+        response: Any
+        if code in ("IncompleteRead", "message"):
+            cause = (
+                cause_type(b"x", 7)
+                if code == "IncompleteRead"
+                else RuntimeError("IncompleteRead")
+            )
+            cause.__cause__ = cause  # Exercise cycle protection and deduplication.
+            if code == "message":
+                cause.__context__ = ClientError(
+                    {"Error": {"Code": "InternalError"}}, "GetObject"
+                )
+            response = {
+                "Body": Mock(
+                    read=Mock(
+                        side_effect=ResponseStreamingError(
+                            error=ProtocolError("broken", cause)
+                        )
+                    )
+                )
+            }
+        else:
+            response = ClientError({"Error": {"Code": code}}, "GetObject")
+        responses.append(response)
+    client = Mock()
+    client.head_object.return_value = {"ContentLength": 2, "ETag": "etag"}
+    factory = Mock(create_s3_client=Mock(return_value=client))
+    setattr(engine, "_s3_client_factory", factory)
+    download_id = engine.create_multipart_download("path")
+    # A second range repeats the scenario to check that counters are per operation.
+    for range_start in range(2):
+        client.get_object.reset_mock()
+        factory.reset.reset_mock()
+        sleep.reset_mock()
+        client.get_object.side_effect = responses + [
+            {"Body": Mock(read=Mock(return_value=b"x"))}
+        ]
+        if succeeds:
+            assert engine.download_part(download_id, part_len=1) == b"x"
+        else:
+            with pytest.raises(
+                ClientError if errors[0] == "AccessDenied" else S3RetryingError
+            ):
+                engine.download_part(download_id, part_len=1)
+        assert client.get_object.call_count == expected_calls
+        assert sleep.call_count == expected_calls - 1
+        assert factory.reset.call_count == expected_calls - int(succeeds) - int(
+            errors[0] == "AccessDenied"
+        )
+        start = range_start if succeeds else 0
+        assert all(
+            call.kwargs["Range"] == f"bytes={start}-{start}"
+            for call in client.get_object.call_args_list
+        )
+
+
+@pytest.mark.parametrize(
+    "interval, expected",
+    [(0, [0, 0]), (0.5, [0.5, 0.5]), (5, [5, 5]), (120, [64, 120])],
+)
+@pytest.mark.parametrize(
+    "kind, name, error, parent",
+    [
+        (
+            FailureKind.ERROR_CODE,
+            "InternalError",
+            ClientError({"Error": {"Code": "InternalError"}}, "GetObject"),
+            None,
+        ),
+        (
+            FailureKind.EXCEPTION,
+            "http.client.IncompleteRead",
+            ResponseStreamingError(error=IncompleteRead(b"x", 7)),
+            "http.client.HTTPException",
+        ),
+        (
+            FailureKind.EXCEPTION,
+            "socket.timeout",
+            ResponseStreamingError(error=TimeoutError()),
+            "builtins.OSError",
+        ),
+        (
+            FailureKind.EXCEPTION,
+            "requests.ConnectionError",
+            ResponseStreamingError(error=requests.ConnectionError()),
+            "builtins.OSError",
+        ),
+    ],
+)
+def test_s3_failure_intervals(
+    interval: float,
+    expected: list[float],
+    *,
+    kind: FailureKind,
+    name: str,
+    error: Exception,
+    parent: str | None,
+) -> None:
+    rules: dict[str, Any] = {"error_codes": {"SlowDown": {"max_attempts": 60}}}
+    rules.setdefault(kind.value, {})[name] = {
+        "max_attempts": 3,
+        "max_interval": interval,
+    }
+    if parent:
+        rules.setdefault("exceptions", {})[parent] = {
+            "max_attempts": 10,
+            "max_interval": 150,
+        }
+    engine = _engine(
+        S3RetryPolicy.RESTORE,
+        retry={
+            "restore": {
+                "max_attempts": 60,
+                "max_interval": 60,
+                "failure_limits": rules,
+            }
+        },
+    )
+    slowdown = ClientError({"Error": {"Code": "SlowDown"}}, "GetObject")
+    client = Mock(
+        download_fileobj=Mock(
+            side_effect=[slowdown] * 6 + [error] * 2 + [slowdown, None]
+        )
+    )
+    setattr(
+        engine, "_s3_client_factory", Mock(create_s3_client=Mock(return_value=client))
+    )
+    sleep = Mock()
+    getattr(engine, "_retry").sleep_function = sleep
+    with patch(
+        "ch_backup.storage.engine.s3.s3_retry.uniform",
+        side_effect=lambda _low, high: high,
+    ):
+        assert engine.download_data("path") == b""
+    expected = [1, 2, 4, 8, 16, 32, *expected, 60]
+    assert [call.args[0] for call in sleep.call_args_list] == expected
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [
+        None,
+        [],
+        {"other": {}},
+        {"error_codes": []},
+        {"error_codes": {500: 3}},
+        {"error_codes": {"InternalError ": 3}},
+        {"exceptions": {"IncompleteRead": 3}},
+        *({"error_codes": {"InternalError": limit}} for limit in (True, 0, -1, 1.5)),
+        *(
+            {"exceptions": {"http.client.IncompleteRead": options}}
+            for options in [
+                {},
+                {"max_interval": 5},
+                {"max_attempts": 3, "interval": 5},
+                *({"max_attempts": value} for value in (True, 0, 1.5)),
+                *(
+                    {"max_attempts": 3, "max_interval": value}
+                    for value in (None, True, -1, "5", float("nan"), float("inf"))
+                ),
+            ]
+        ),
+    ],
+)
+def test_invalid_s3_failure_limits(limits: Any) -> None:
+    storage = {"retry": {"restore": {"failure_limits": limits}}}
+    with (
+        patch("ch_backup.storage.engine.s3.s3_engine.S3ClientFactory") as factory,
+        patch(
+            "ch_backup.storage.engine.s3.s3_engine.build_transfer_config"
+        ) as transfer,
+        pytest.raises(ConfigurationError, match="storage.retry.restore.failure_limits"),
+    ):
+        _engine(S3RetryPolicy.RESTORE, **storage)
+
+    factory.assert_not_called()
+    transfer.assert_not_called()
+    with pytest.raises(
+        ConfigurationError, match="storage.retry.restore.failure_limits"
+    ):
+        validate_s3_retry_config(storage)
+
+
+def _response(status: int = 200, text: str = "proxy.example\n") -> requests.Response:
+    response = requests.Response()
+    response.status_code = status
+    response._content = text.encode()  # pylint: disable=protected-access
+    setattr(response, "_content_consumed", True)
+    return response
+
+
+@pytest.mark.parametrize("dns_errno", [socket.EAI_AGAIN, socket.EAI_NODATA])
+def test_proxy_dns_failure_recovers_after_six_attempts(dns_errno: int) -> None:
+    engine = _engine(proxy_resolver={"uri": "http://resolver", "proxy_port": 4080})
+    getattr(engine, "_retry").sleep_function = Mock()
+    factory = getattr(getattr(engine, "_s3_client_factory"), "_s3_client_factory")
+    client = Mock()
+    client.download_fileobj.side_effect = (
+        lambda _bucket, _key, target, **_kwargs: target.write(b"backup data")
+    )
+    dns_error = socket.gaierror(dns_errno, "DNS lookup failed")
+    with (
+        patch(
+            "ch_backup.storage.engine.s3.s3_client_factory.requests.Session.get",
+            side_effect=[_response(text=f"proxy-{i}.example\n") for i in range(7)],
+        ) as get,
+        patch(
+            "ch_backup.storage.engine.s3.s3_client_factory.socket.getaddrinfo",
+            side_effect=[dns_error] * 6 + [[]],
+        ) as resolve,
+        patch.object(getattr(factory, "_s3_session"), "client", return_value=client),
+    ):
+        assert engine.download_data("path") == b"backup data"
+        # Once created, the working S3 client is reused for the next operation.
+        assert engine.download_data("another-path") == b"backup data"
+
+    assert get.call_count == 7
+    assert [call.args[0] for call in resolve.call_args_list] == [
+        f"proxy-{i}.example" for i in range(7)
+    ]
+    assert all(call.kwargs["timeout"] == 10 for call in get.call_args_list)
+    assert getattr(engine, "_retry").sleep_function.call_count == 6
+
+
+@pytest.mark.parametrize("max_attempts", [1, 3])
+def test_proxy_dns_failure_uses_one_retry_budget(max_attempts: int) -> None:
+    engine = _engine(
+        retry_max_attempts=max_attempts,
+        proxy_resolver={"uri": "http://resolver", "proxy_port": 4080, "timeout": 2},
+    )
+    getattr(engine, "_retry").sleep_function = Mock()
+    dns_error = socket.gaierror(
+        socket.EAI_NODATA, "No address associated with hostname"
+    )
+    with (
+        patch(
+            "ch_backup.storage.engine.s3.s3_client_factory.requests.Session.get",
+            side_effect=lambda *args, **kwargs: _response(),
+        ) as get,
+        patch(
+            "ch_backup.storage.engine.s3.s3_client_factory.socket.getaddrinfo",
+            side_effect=dns_error,
+        ),
+        pytest.raises(S3RetryingError, match="DNS error:.*No address") as exc,
+    ):
+        engine.download_data("path")
+
+    assert get.call_count == max_attempts
+    assert all(call.kwargs["timeout"] == 2 for call in get.call_args_list)
+    assert getattr(engine, "_retry").sleep_function.call_count == max_attempts - 1
+    assert isinstance(exc.value.__context__, S3BalancerUnknownHost)
+    assert exc.value.__context__.__context__ is dns_error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        requests.ConnectTimeout("connect timed out"),
+        requests.ReadTimeout("read timed out"),
+        requests.ConnectionError("connection reset"),
+        requests.exceptions.ChunkedEncodingError("response body interrupted"),
+        *[
+            requests.HTTPError(response=_response(code))
+            for code in (408, 429, 500, 503)
+        ],
+    ],
+)
+def test_proxy_request_failure_is_retried(error: Exception) -> None:
+    engine = _engine(retry_max_attempts=2)
+    getattr(engine, "_retry").sleep_function = Mock()
+    client = Mock()
+    factory = Mock(create_s3_client=Mock(side_effect=[error, client]))
+    setattr(engine, "_s3_client_factory", factory)
+
+    assert engine.download_data("path") == b""
+    assert factory.create_s3_client.call_count == 2
+    factory.reset.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        *[
+            requests.HTTPError(response=_response(code))
+            for code in (400, 401, 403, 404, 507)
+        ],
+        requests.exceptions.InvalidURL("invalid resolver URL"),
+        ValueError("invalid configuration"),
+        ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject"),
+    ],
+)
+def test_permanent_error_is_not_retried(error: Exception) -> None:
+    engine = _engine(retry_max_attempts=3)
+    getattr(engine, "_retry").sleep_function = Mock()
+    factory = Mock(create_s3_client=Mock(side_effect=error))
+    setattr(engine, "_s3_client_factory", factory)
+
+    with pytest.raises(type(error)) as exc:
+        engine.download_data("path")
+
+    assert exc.value is error
+    factory.create_s3_client.assert_called_once_with()
+    factory.reset.assert_not_called()
+    getattr(engine, "_retry").sleep_function.assert_not_called()
+
+
+@pytest.mark.parametrize("error_code", ["507", "InternalError", "InsufficientStorage"])
+@pytest.mark.parametrize(
+    ("operation", "client_method"),
+    [
+        ("download_data", "download_fileobj"),
+        ("download_part", "get_object"),
+        ("path_exists", "head_object"),
+    ],
+)
+def test_s3_http_507_is_not_retried(
+    error_code: str, operation: str, client_method: str
+) -> None:
+    engine = _engine(retry_max_attempts=3)
+    sleep = Mock()
+    getattr(engine, "_retry").sleep_function = sleep
+    client = Mock()
+    factory = Mock(create_s3_client=Mock(return_value=client))
+    setattr(engine, "_s3_client_factory", factory)
+    argument = "path"
+    if operation == "download_part":
+        client.head_object.return_value = {"ContentLength": 1, "ETag": "etag"}
+        argument = engine.create_multipart_download("path")
+
+    error = ClientError(
+        {
+            "Error": {"Code": error_code, "Message": "Object data unavailable"},
+            "ResponseMetadata": {"HTTPStatusCode": 507},
+        },
+        client_method,
+    )
+    request = getattr(client, client_method)
+    request.side_effect = error
+
+    with pytest.raises(ClientError) as exc:
+        getattr(engine, operation)(argument)
+
+    assert exc.value is error
+    request.assert_called_once()
+    factory.reset.assert_not_called()
+    sleep.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [
+        (500, "InternalError"),
+        (503, "ServiceUnavailable"),
+        (400, "RequestTimeout"),
+        (400, "Throttling"),
+        (503, "SlowDown"),
+        (408, "408"),
+        (429, "429"),
+    ],
+)
+def test_s3_server_error_is_retried(status: int, code: str) -> None:
+    engine = _engine(retry_max_attempts=2)
+    sleep = Mock()
+    getattr(engine, "_retry").sleep_function = sleep
+    client = Mock()
+    client.download_fileobj.side_effect = [
+        ClientError(
+            {
+                "Error": {"Code": code},
+                "ResponseMetadata": {"HTTPStatusCode": status},
+            },
+            "GetObject",
+        ),
+        None,
+    ]
+    factory = Mock(create_s3_client=Mock(return_value=client))
+    setattr(engine, "_s3_client_factory", factory)
+
+    assert engine.download_data("path") == b""
+    assert client.download_fileobj.call_count == 2
+    factory.reset.assert_called_once_with()
+    sleep.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [
+        (403, "AccessDenied"),
+        (403, "InvalidAccessKeyId"),
+        (403, "SignatureDoesNotMatch"),
+        (400, "InvalidArgument"),
+        (400, "MalformedXML"),
+        (404, "NoSuchKey"),
+        (404, "NotFound"),
+        (403, "403"),
+        (400, "UnknownBadRequest"),
+        (None, "AccessDenied"),
+        (None, "InvalidAccessKeyId"),
+        (None, "SignatureDoesNotMatch"),
+        (None, "507"),
+        (None, "InsufficientStorage"),
+    ],
+)
+def test_s3_permanent_response_is_not_retried(status: int | None, code: str) -> None:
+    engine = _engine(retry_max_attempts=3)
+    sleep = Mock()
+    getattr(engine, "_retry").sleep_function = sleep
+    error = ClientError(
+        {"Error": {"Code": code}, "ResponseMetadata": {"HTTPStatusCode": status}},
+        "GetObject",
+    )
+    client = Mock()
+    client.download_fileobj.side_effect = error
+    factory = Mock(create_s3_client=Mock(return_value=client))
+    setattr(engine, "_s3_client_factory", factory)
+
+    with pytest.raises(ClientError) as exc:
+        engine.download_data("path")
+
+    assert exc.value is error
+    client.download_fileobj.assert_called_once()
+    factory.reset.assert_not_called()
+    sleep.assert_not_called()
+
+
+@pytest.mark.parametrize("boto", [False, True])
+@pytest.mark.parametrize(
+    ("cause", "retryable"),
+    [
+        (ssl.SSLCertVerificationError(1, "certificate verify failed"), False),
+        (Urllib3CertificateError("hostname does not match"), False),
+        (ssl.SSLEOFError(8, "connection closed during TLS handshake"), True),
+    ],
+)
+def test_tls_verification_failure_is_not_retried(
+    boto: bool, cause: Exception, retryable: bool
+) -> None:
+    engine = _engine(retry_max_attempts=2)
+    sleep = Mock()
+    getattr(engine, "_retry").sleep_function = sleep
+    wrapped = Urllib3SSLError(cause)
+    error = (
+        BotoSSLError(endpoint_url="https://s3", error=wrapped)
+        if boto
+        else requests.exceptions.SSLError(
+            MaxRetryError(HTTPConnectionPool("resolver"), "/resolver", wrapped)
+        )
+    )
+    client = Mock()
+    factory = Mock(create_s3_client=Mock(side_effect=[error, client]))
+    setattr(engine, "_s3_client_factory", factory)
+
+    if retryable:
+        assert engine.download_data("path") == b""
+        assert factory.create_s3_client.call_count == 2
+        sleep.assert_called_once()
+    else:
+        with pytest.raises(type(error)) as exc:
+            engine.download_data("path")
+        assert exc.value is error
+        factory.create_s3_client.assert_called_once_with()
+        factory.reset.assert_not_called()
+        sleep.assert_not_called()
+
+
+@pytest.mark.parametrize("discovery_failure", [True, False])
+def test_delayed_reset_preserves_another_threads_client(
+    discovery_failure: bool,
+) -> None:
+    engine = _engine(retry_max_attempts=2)
+    getattr(engine, "_retry").sleep_function = Mock()
+    old_client, healthy_client = Mock(), Mock()
+    old_client.download_fileobj.side_effect = ClientError(
+        {"Error": {"Code": "InternalError"}}, "GetObject"
+    )
+    first_result = (
+        S3BalancerUnknownHost("proxy DNS failed") if discovery_failure else old_client
+    )
+    source = Mock(create_s3_client=Mock(side_effect=[first_result, healthy_client]))
+    cache = S3ClientCachedFactory(source)
+    setattr(engine, "_s3_client_factory", cache)
+    original_reset = cache.reset
+    reset_started, allow_reset = threading.Event(), threading.Event()
+
+    def delayed_reset() -> None:
+        reset_started.set()
+        assert allow_reset.wait(5)
+        original_reset()
+
+    with (
+        patch.object(cache, "reset", side_effect=delayed_reset),
+        ThreadPoolExecutor(1) as pool,
+    ):
+        failing_operation = pool.submit(engine.download_data, "first")
+        try:
+            assert reset_started.wait(5)
+            # Model a second worker replacing the old client before A handles its error.
+            assert cache.create_s3_client(cached=False) is healthy_client
+            assert engine.download_data("second") == b""
+        finally:
+            allow_reset.set()
+        assert failing_operation.result(timeout=5) == b""
+
+    assert source.create_s3_client.call_count == 2
+    assert healthy_client.download_fileobj.call_count == 2
+
+
+def test_failed_s3_request_replaces_its_own_cached_client() -> None:
+    engine = _engine(retry_max_attempts=2)
+    getattr(engine, "_retry").sleep_function = Mock()
+    broken, healthy = Mock(), Mock()
+    broken.download_fileobj.side_effect = ClientError(
+        {"Error": {"Code": "InternalError"}}, "GetObject"
+    )
+    source = Mock(create_s3_client=Mock(side_effect=[broken, healthy]))
+    setattr(engine, "_s3_client_factory", S3ClientCachedFactory(source))
+
+    assert engine.download_data("path") == b""
+    assert source.create_s3_client.call_count == 2
+    broken.download_fileobj.assert_called_once()
+    healthy.download_fileobj.assert_called_once()
+
+
+@pytest.mark.parametrize("failure_page", [0, 1])
+def test_streamed_listing_retries_failed_page(failure_page: int) -> None:
+    """Retry a temporary failure without duplicating already yielded keys."""
+    engine = _engine(retry_max_attempts=2)
+    getattr(engine, "_retry").sleep_function = Mock()
+    client = Mock()
+    pages = [
+        {"Contents": [{"Key": "prefix/a", "Size": 1}], "IsTruncated": True},
+        {"Contents": [{"Key": "prefix/b", "Size": 2}], "IsTruncated": False},
+    ]
+    responses: list = list(pages)
+    responses.insert(
+        failure_page, ClientError({"Error": {"Code": "InternalError"}}, "ListObjects")
+    )
+    client.list_objects.side_effect = responses
+    factory = Mock(create_s3_client=Mock(return_value=client))
+    setattr(engine, "_s3_client_factory", factory)
+    assert list(engine.list_dir_with_sizes("prefix").items()) == [
+        ("prefix/a", 1),
+        ("prefix/b", 2),
+    ]
+    assert client.list_objects.call_count == 3
+    factory.reset.assert_called_once()
+    assert client.list_objects.call_args.kwargs["Marker"] == "prefix/a"
+
+
+@pytest.mark.parametrize("marker", ["prefix/a", "prefix/0", "elsewhere/a", ""])
+def test_listing_rejects_nonadvancing_marker(marker: str) -> None:
+    """Do not silently skip or repeat pages when continuation is invalid."""
+    engine = _engine()
+    client = Mock()
+    client.list_objects.return_value = {
+        "Contents": [],
+        "IsTruncated": True,
+        "NextMarker": marker,
+    }
+    setattr(
+        engine, "_s3_client_factory", Mock(create_s3_client=Mock(return_value=client))
+    )
+    with pytest.raises(ValueError):
+        engine.read_listing_page("prefix", "prefix/a")
+
+
+def test_listing_page_is_bounded_and_collects_all_pages() -> None:
+    """A page request exposes just that page and preserves object keys verbatim."""
+    engine = _engine()
+    client = Mock()
+    client.list_objects.side_effect = [
+        {"Contents": [{"Key": "prefix/a//../b", "Size": 3}], "IsTruncated": True},
+        {"Contents": [{"Key": "prefix/z", "Size": 4}], "IsTruncated": False},
+    ]
+    setattr(
+        engine, "_s3_client_factory", Mock(create_s3_client=Mock(return_value=client))
+    )
+    entries, continuation = engine.read_listing_page("/prefix/")
+    assert entries == [("prefix/a//../b", 3)]
+    assert continuation == "prefix/a//../b"
+    assert client.list_objects.call_count == 1
+    assert engine.read_listing_page("prefix", continuation) == ([("prefix/z", 4)], None)
+
+
+@pytest.mark.parametrize("continuation", ["", "elsewhere/key"])
+def test_listing_rejects_invalid_input_before_request(continuation: str) -> None:
+    """Reject a continuation outside this listing before touching storage."""
+    engine = _engine()
+    client = Mock()
+    setattr(
+        engine, "_s3_client_factory", Mock(create_s3_client=Mock(return_value=client))
+    )
+    with pytest.raises(ValueError):
+        engine.read_listing_page("prefix", continuation)
+    client.list_objects.assert_not_called()
+
+
+def test_empty_listing_page_can_advance() -> None:
+    """Only the returned continuation, not the number of entries, ends a listing."""
+    engine = _engine()
+    client = Mock()
+    client.list_objects.return_value = {
+        "Contents": [],
+        "IsTruncated": True,
+        "NextMarker": "prefix/next",
+    }
+    setattr(
+        engine, "_s3_client_factory", Mock(create_s3_client=Mock(return_value=client))
+    )
+    assert engine.read_listing_page("prefix") == ([], "prefix/next")
+
+
+@pytest.mark.parametrize("failure_page", [0, 1])
+def test_listing_exhausts_only_failed_page_retries(failure_page: int) -> None:
+    """Stop at the page's retry limit without restarting earlier listing pages."""
+    engine = _engine(retry_max_attempts=2)
+    getattr(engine, "_retry").sleep_function = Mock()
+
+    def response(**kwargs):
+        """Return the first page or fail the selected page permanently."""
+        if failure_page == 1 and not kwargs["Marker"]:
+            return {"Contents": [{"Key": "prefix/a", "Size": 1}], "IsTruncated": True}
+        raise ClientError({"Error": {"Code": "InternalError"}}, "ListObjects")
+
+    client = Mock(list_objects=Mock(side_effect=response))
+    factory = Mock(create_s3_client=Mock(return_value=client))
+    setattr(engine, "_s3_client_factory", factory)
+    with pytest.raises(S3RetryingError):
+        engine.list_dir_with_sizes("prefix")
+    markers = [
+        request.kwargs["Marker"] for request in client.list_objects.call_args_list
+    ]
+    assert markers == (["", ""] if failure_page == 0 else ["", "prefix/a", "prefix/a"])
+
+
+@pytest.mark.parametrize("explicit_marker", [False, True])
+def test_listing_prefix_object_advances_first_page(explicit_marker: bool) -> None:
+    """A zero-size prefix object is a valid marker before the next page."""
+    engine = _engine()
+    client = Mock()
+    first: dict[str, Any] = {
+        "Contents": [{"Key": "prefix/", "Size": 0}],
+        "IsTruncated": True,
+    }
+    if explicit_marker:
+        first["NextMarker"] = "prefix/"
+    client.list_objects.side_effect = [
+        first,
+        {"Contents": [{"Key": "prefix/a", "Size": 1}]},
+    ]
+    setattr(
+        engine, "_s3_client_factory", Mock(create_s3_client=Mock(return_value=client))
+    )
+    assert engine.list_dir_with_sizes("prefix") == {"prefix/": 0, "prefix/a": 1}
+    assert client.list_objects.call_args.kwargs["Marker"] == "prefix/"

@@ -192,9 +192,13 @@ def test_sensitive_named_collection_query_is_logged_without_values() -> None:
     )
 
 
-def test_sensitive_query_without_a_safe_header_is_not_logged() -> None:
-    assert _logged_query(DECRYPT_QUERY, sensitive=True) == (
-        f"Executing sensitive query: <{len(DECRYPT_QUERY.encode())} bytes>"
+@pytest.mark.parametrize(
+    "query",
+    [DECRYPT_QUERY, "CREATE HANDLER test URL '/test' AS SELECT 'private-token'"],
+)
+def test_sensitive_query_without_a_safe_header_is_not_logged(query: str) -> None:
+    assert _logged_query(query, sensitive=True) == (
+        f"Executing sensitive query: <{len(query.encode())} bytes>"
     )
 
 
