@@ -753,3 +753,9 @@ Results are printed at startup under `staging/parallel/<run-id>/results/`:
 
 All twelve existing CI combinations use three slots. JUnit and diagnostics are
 uploaded on both success and failure with run-attempt-specific artifact names.
+
+When light metadata is missing or unreadable, backup listing falls back to full
+metadata. This keeps deduplication references visible to `delete` and `purge`.
+Deleting a backup with readable full metadata preserves referenced parts and
+rewrites its light metadata through the normal deletion path. A referenced backup
+whose full metadata cannot be read is not partially deleted.

@@ -561,7 +561,9 @@ class BackupLayout:
         self, backup_name: str, use_light_meta: bool = False
     ) -> BackupMetadata | None:
         """
-        Download and return backup metadata.
+        Download metadata, falling back to full when light is missing or unreadable.
+
+        Return only light fields on fallback to keep backup listings small.
         """
         path = (
             self._backup_light_metadata_path(backup_name)
@@ -569,10 +571,31 @@ class BackupLayout:
             else self._backup_metadata_path(backup_name)
         )
 
-        if not self._storage_loader.path_exists(path):
-            return None
+        light_error = None
+        try:
+            if self._storage_loader.path_exists(path):
+                return self._load_metadata(path, not use_light_meta)
+        except (StorageError, S3RetryingError) as error:
+            if not use_light_meta:
+                raise
+            light_error = error
 
-        return self._load_metadata(path, not use_light_meta)
+        if not use_light_meta:
+            return None
+        backup = self.get_backup(backup_name)
+        if backup is None:
+            if light_error is not None:
+                raise light_error
+            return None
+        logging.warning(
+            "Using full metadata instead of light for backup {}", backup_name
+        )
+        try:
+            return BackupMetadata.load(backup.dump(light=True))
+        except Exception as error:
+            raise StorageError(
+                f"Failed to derive light metadata for backup {backup_name}"
+            ) from error
 
     def get_backups(
         self,
