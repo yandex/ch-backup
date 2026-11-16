@@ -60,14 +60,14 @@ def test_decompression_keeps_full_flush_stream_tail() -> None:
         list(GZIPCompression().decompress_chunks(encoded, 0))
 
 
-def test_metadata_spool_preserves_long_names_empty_files_and_digest() -> None:
+def test_metadata_spool_preserves_long_names_and_legacy_filtered_digest() -> None:
     """Preserve tar members and the old resume digest without retaining file contents."""
     files = [("part/empty", b""), ("part/" + "long" * 50, b"data" * 300000)]
     archive = spool_metadata(iter(files))
-    assert archive.count_files() == 2
-    assert _read_archive(archive) == files
+    assert archive.count_files() == 1
+    assert _read_archive(archive) == files[1:]
     assert _archive_record(STORAGE, "archive", archive, 123) == _archive_record(
-        STORAGE, "archive", files, 123
+        STORAGE, "archive", files[1:], 123
     )
     path = Path(archive.path())
     assert path.stat().st_mode & 0o077 == 0

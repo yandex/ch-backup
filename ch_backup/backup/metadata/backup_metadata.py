@@ -186,25 +186,13 @@ class BackupMetadata:
         """
         self.end_time = now()
 
-    def dump(self, light: bool = False, *, _copy_databases: bool = True) -> dict:
-        """
-        Serialize backup metadata.
-        """
-        if light:
-            databases: dict[str, dict] = {}
-        else:
-            # Rewrite ``link`` of every part from a plain backup name back to a
-            # full storage path (``<path_root>/<source_backup_name>``) so that
-            # older ch-backup versions, which expect the legacy full-path
-            # format, can still read backups produced by this version.
-            # DEPRECATED: this conversion will be removed once the legacy
-            # format is no longer supported.
-            databases = (
-                self._databases_with_legacy_part_links()
-                if _copy_databases
-                else self._databases
-            )
+    def dump(self, light: bool = False) -> dict:
+        """Serialize metadata with legacy part links for older readers."""
+        databases = {} if light else self._databases_with_legacy_part_links()
+        return self._dump_fields(databases, light)
 
+    def _dump_fields(self, databases: dict[str, dict], light: bool) -> dict:
+        """Build metadata fields around the supplied database tree."""
         meta: dict[str, Any] = {}
         if self.copied_from:
             meta["copied_from"] = self.copied_from
@@ -302,7 +290,7 @@ class BackupMetadata:
         encoder = json.JSONEncoder(separators=(",", ":"))
         path_root = os.path.dirname(self.path) if self.path else ""
         yield from _iter_json_with_legacy_part_links(
-            self.dump(_copy_databases=False), encoder, path_root, ()
+            self._dump_fields(self._databases, False), encoder, path_root, ()
         )
 
     def dump_json(
@@ -812,7 +800,7 @@ def _iter_json_with_legacy_part_links(
         link = value.get("link")
         if link and "/" not in link and path_root:
             value = {**value, "link": os.path.join(path_root, link)}
-        yield from encoder.iterencode(value)
+        yield encoder.encode(value)
         return
     yield "{"
     for index, (key, child) in enumerate(value.items()):

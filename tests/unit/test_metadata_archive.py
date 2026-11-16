@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 import pytest
 
+from ch_backup.backup.copy_context import _archive_record
+from ch_backup.backup.copy_report import CopyReport
 from ch_backup.exceptions import StorageError
 from ch_backup.storage.async_pipeline.stages.filesystem.write_files_stage import (
     UnpackTarballStage,
@@ -20,6 +22,12 @@ from ch_backup.storage.metadata_archive import (
     MetadataArchiveWriter,
     TemporaryMetadataArchive,
     spool_metadata,
+)
+from tests.unit.test_backup_copy import (
+    _backup,
+    _cloud_storage_context,
+    _object_storage_metadata,
+    _part,
 )
 from tests.unit.test_keyless_metadata import get_loader, make_backup, make_layout
 
@@ -47,6 +55,9 @@ def test_finish_transfers_ownership_and_closes_writer() -> None:
         writer.append(("extra", b"data"))
     with pytest.raises(ValueError, match="closed"):
         writer.finish()
+    writer.close()
+    writer.close()
+    assert path.exists()
     del writer
     gc.collect()
     assert path.exists()
@@ -63,6 +74,21 @@ def test_unfinished_writer_cleanup() -> None:
     del writer
     gc.collect()
     assert not path.exists()
+
+
+def test_close_removes_unfinished_writer_immediately() -> None:
+    """Close twice without waiting for finalization and reject later writes."""
+    writer = MetadataArchiveWriter()
+    writer.append(("part/data", b"payload"))
+    path = Path(writer._file.name)
+    writer.close()
+    writer.close()
+    assert writer._file.closed
+    assert not path.exists()
+    with pytest.raises(ValueError, match="closed"):
+        writer.append(("extra", b"data"))
+    with pytest.raises(ValueError, match="closed"):
+        writer.finish()
 
 
 @pytest.mark.parametrize("operation", ["append", "finish", "source"])
@@ -117,20 +143,43 @@ def test_path_performs_no_io_and_reading_is_explicit() -> None:
 
 
 def test_downloaded_archive_count_digest_and_repeated_reads(tmp_path: Path) -> None:
-    """Preserve long names, empty files and the writing digest after downloading."""
+    """Skip empty members and retain the writer's count and resume record."""
     files = [("part/empty", b""), ("part/" + "long" * 50, b"data" * 300000)]
     original = spool_metadata(files)
+    with tarfile.open(original.path()) as tar:
+        assert tar.getnames() == [name for name, _ in files]
     path = tmp_path / "download.tar"
     path.write_bytes(Path(original.path()).read_bytes())
     downloaded = TemporaryMetadataArchive(str(path))
     with patch.object(downloaded, "read_batch", wraps=downloaded.read_batch) as read:
-        assert downloaded.count_files() == 2
+        assert downloaded.count_files() == original.count_files() == 1
         assert read.call_count > 0
         read.reset_mock()
-        assert downloaded.count_files() == 2
+        assert downloaded.count_files() == 1
         read.assert_not_called()
     assert downloaded.content_digest() == original.content_digest()
-    assert read_files(downloaded) == read_files(downloaded) == files
+    assert read_files(original) == read_files(downloaded) == files[1:]
+    assert read_files(downloaded) == files[1:]
+    storage = {
+        "type": "s3",
+        "credentials": {"endpoint_url": "https://s3.test", "bucket": "backup"},
+    }
+    assert _archive_record(storage, "archive", downloaded, 123) == _archive_record(
+        storage, "archive", files[1:], 123
+    )
+
+
+def test_empty_only_archive_has_no_metadata_or_resume_contents(tmp_path: Path) -> None:
+    """Keep writer and downloaded counts and digests equal when all members are empty."""
+    original = spool_metadata([("part/empty", b"")])
+    path = tmp_path / "download.tar"
+    path.write_bytes(Path(original.path()).read_bytes())
+    downloaded = TemporaryMetadataArchive(str(path))
+    empty = spool_metadata([])
+    for archive in (original, downloaded):
+        assert archive.read_batch() == ([], None)
+        assert archive.count_files() == 0
+        assert archive.content_digest() == empty.content_digest()
 
 
 @pytest.mark.parametrize("continuation", [-1, 1, 512 * 100])
@@ -158,18 +207,23 @@ def test_read_batches_bound_input_and_preserve_all_files() -> None:
     assert read_files(archive) == files
 
 
-def test_empty_directory_batch_does_not_end_reading(tmp_path: Path) -> None:
+@pytest.mark.parametrize("directory", [False, True])
+def test_empty_member_batch_does_not_end_reading(
+    tmp_path: Path, directory: bool
+) -> None:
     """Return a continuation even when a bounded batch contains no files."""
-    directory = tarfile.TarInfo("part")
-    directory.type = tarfile.DIRTYPE
+    member = tarfile.TarInfo("part/empty")
+    if directory:
+        member.type = tarfile.DIRTYPE
     original = spool_metadata([("part/data", b"payload")])
     path = tmp_path / "download.tar"
-    path.write_bytes(directory.tobuf() + Path(original.path()).read_bytes())
+    path.write_bytes(member.tobuf() + Path(original.path()).read_bytes())
     archive = TemporaryMetadataArchive(str(path))
     with patch("ch_backup.storage.metadata_archive.METADATA_ARCHIVE_BATCH_BYTES", 512):
         assert archive.read_batch() == ([], 512)
         assert archive.read_batch(512) == ([("part/data", b"payload")], None)
         assert archive.count_files() == 1
+        assert archive.content_digest() == original.content_digest()
 
 
 def test_pax_names_remain_readable(tmp_path: Path) -> None:
@@ -187,16 +241,19 @@ def test_pax_names_remain_readable(tmp_path: Path) -> None:
     assert read_files(archive) == [(name, b"payload")]
 
 
-@pytest.mark.parametrize("kind", ["directory", "nonzero padding", "partial header"])
+@pytest.mark.parametrize(
+    "kind", ["directory", "empty regular", "nonzero padding", "partial header"]
+)
 def test_reader_preserves_previous_parser_contract(tmp_path: Path, kind: str) -> None:
-    """Skip empty directories and reject corrupt padding and trailing headers."""
+    """Match legacy empty-member filtering and rejection of corrupt archives."""
     member = tarfile.TarInfo("part/data")
     member.size = 3
     raw = member.tobuf() + b"abc" + b"\0" * 509
-    if kind == "directory":
-        directory = tarfile.TarInfo("part")
-        directory.type = tarfile.DIRTYPE
-        raw = directory.tobuf() + raw
+    if kind in ("directory", "empty regular"):
+        empty = tarfile.TarInfo("part/empty")
+        if kind == "directory":
+            empty.type = tarfile.DIRTYPE
+        raw = empty.tobuf() + raw
     elif kind == "nonzero padding":
         raw = raw[:-1] + b"x"
     else:
@@ -204,8 +261,8 @@ def test_reader_preserves_previous_parser_contract(tmp_path: Path, kind: str) ->
     path = tmp_path / "download.tar"
     path.write_bytes(raw)
     archive = TemporaryMetadataArchive(str(path))
-    previous = UnpackTarballStage({}, len(raw) + 512, include_empty=True)
-    if kind == "directory":
+    previous = UnpackTarballStage({}, len(raw) + 512)
+    if kind in ("directory", "empty regular"):
         previous(raw, 0)
         expected = previous.take_files() + list(previous.on_done())
         assert read_files(archive) == expected == [("part/data", b"abc")]
@@ -215,6 +272,28 @@ def test_reader_preserves_previous_parser_contract(tmp_path: Path, kind: str) ->
             list(previous.on_done())
         with pytest.raises(ValueError, match="Truncated TAR"):
             read_files(archive)
+
+
+@pytest.mark.parametrize("full_cloud", [False, True])
+def test_copy_planning_skips_empty_metadata_members(full_cloud: bool) -> None:
+    """Copy valid objects beside empty metadata without reporting parse failures."""
+    ctx = _cloud_storage_context()
+    backup = _backup(
+        "b1",
+        parts={"all_1_1_0": {**_part(), "disk_name": "s3"}},
+        cloud_storage_disks=["s3"],
+    )
+    backup.cloud_storage.data_copied = full_cloud
+    ctx.layout.backups["b1"] = backup
+    ctx.layout.cloud_storage_files["ch_backup/b1/disks/s3/db1/t1.tar.gz"] = [
+        ("all_1_1_0/empty", b""),
+        ("all_1_1_0/data.bin", _object_storage_metadata(("xyz/good", 100))),
+        ("all_1_1_0/also_empty", b""),
+    ]
+    report = CopyReport()
+    assert ctx.copy(report=report) == (["b1"], [])
+    assert not report.backups[0].errors
+    assert any(e.dst_path.endswith("xyz/good") for e in ctx.target_layout.copied)
 
 
 def test_failed_download_removes_partial_destination() -> None:

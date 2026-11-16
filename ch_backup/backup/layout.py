@@ -1214,8 +1214,10 @@ class BackupLayout:
 
     @staticmethod
     def _validate_plaintext_cloud_metadata(files: Iterable[tuple[str, bytes]]) -> None:
-        """Never publish inline file contents in unencrypted disk metadata."""
+        """Reject inline contents; empty files carry no data to disclose."""
         for file_name, data in files:
+            if not data:
+                continue
             try:
                 metadata = parse_object_storage_metadata(data)
             except ObjectStorageMetadataError as e:

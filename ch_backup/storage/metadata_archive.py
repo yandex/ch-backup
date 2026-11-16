@@ -5,6 +5,7 @@ import json
 import os
 import tarfile
 import weakref
+from contextlib import closing
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import IO, Iterable
@@ -38,7 +39,7 @@ class MetadataArchiveWriter:
         self._digest = hashlib.blake2b(digest_size=16)
 
     def append(self, item: tuple[str, bytes]) -> None:
-        """Append one metadata file, removing the archive if writing fails."""
+        """Write a member and track nonempty contents for counts and resume."""
         if self._file.closed:
             raise ValueError("Metadata archive writer is closed")
         try:
@@ -46,12 +47,17 @@ class MetadataArchiveWriter:
             self._file.write(_make_tar_header(name, len(data)))
             self._file.write(data)
             self._file.write(b"\0" * (-len(data) % 512))
-            self._digest.update(json.dumps([name, len(data)]).encode())
-            self._digest.update(data)
-            self._count += 1
+            if data:
+                self._digest.update(json.dumps([name, len(data)]).encode())
+                self._digest.update(data)
+                self._count += 1
         except BaseException:
-            self._cleanup()
+            self.close()
             raise
+
+    def close(self) -> None:
+        """Remove unfinished output once; preserve ownership after finish()."""
+        self._cleanup()
 
     def finish(self) -> "TemporaryMetadataArchive":
         """Close the writer and transfer its file to a completed archive."""
@@ -63,7 +69,7 @@ class MetadataArchiveWriter:
                 self._file.name, self._count, self._digest.hexdigest()
             )
         except BaseException:
-            self._cleanup()
+            self.close()
             raise
         self._cleanup.detach()
         return archive
@@ -97,6 +103,7 @@ class TemporaryMetadataArchive:
         Continuations are byte offsets returned by an earlier call. Memory is
         bounded by 1 MiB of tar data plus one file crossing the batch boundary.
         Legacy archives may omit all padding after the final file.
+        Empty members are omitted, as in the legacy metadata parser.
         """
         offset = 0 if continuation is None else continuation
         with Path(self._path).open("rb") as stream:
@@ -115,7 +122,7 @@ class TemporaryMetadataArchive:
                         if member is None:
                             raise ValueError("Truncated TAR stream")
                         data = _read_member(stream, member)
-                        if data or member.isfile():
+                        if data:
                             files.append((member.name, data))
                         position = stream.tell()
                         if position - offset >= METADATA_ARCHIVE_BATCH_BYTES:
@@ -127,7 +134,7 @@ class TemporaryMetadataArchive:
             return files, position if position < size else None
 
     def count_files(self) -> int:
-        """Return the file count, scanning downloaded archives once."""
+        """Count nonempty files, scanning downloaded archives once."""
         if self._count is None:
             count = 0
             continuation = None
@@ -172,11 +179,7 @@ def _read_member(stream: IO[bytes], member: tarfile.TarInfo) -> bytes:
 
 def spool_metadata(files: Iterable[tuple[str, bytes]]) -> TemporaryMetadataArchive:
     """Write a metadata iterable and return its completed local archive."""
-    writer = MetadataArchiveWriter()
-    try:
+    with closing(MetadataArchiveWriter()) as writer:
         for item in files:
             writer.append(item)
         return writer.finish()
-    except BaseException:
-        writer._cleanup()  # pylint: disable=protected-access
-        raise

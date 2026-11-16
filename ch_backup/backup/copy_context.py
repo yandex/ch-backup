@@ -8,7 +8,8 @@ import json
 import os
 import time
 import uuid
-from tempfile import NamedTemporaryFile
+from pathlib import Path
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from types import TracebackType
 
 from ch_backup import logging
@@ -140,10 +141,11 @@ class CopyContext:
                 if os.path.dirname(path) != self._path:
                     continue
                 try:
-                    with NamedTemporaryFile() as source:
-                        self._engine.download_file(path, source.name)
+                    with TemporaryDirectory() as directory:
+                        source = Path(directory) / "journal.gz"
+                        self._engine.download_file(path, str(source))
                         with (
-                            gzip.open(source.name, "rb") as stream,
+                            gzip.open(source, "rb") as stream,
                             self._recorded.importing(),
                         ):
                             for line in _journal_lines(stream):
@@ -195,20 +197,13 @@ class CopyContext:
         except Exception as e:
             logging.warning("Failed to save list of failed objects {}: {}", path, e)
 
-    def save_manifest(
-        self, scope: CopyScope, entries: CopyEntries | list[CopyEntry]
-    ) -> None:
+    def save_manifest(self, scope: CopyScope, entries: CopyEntries) -> None:
         """Stream the object manifest without credentials into a compressed file."""
         with NamedTemporaryFile() as target:
             with gzip.open(target.name, "wb") as stream:
                 continuation = None
                 while True:
-                    if isinstance(entries, CopyEntries):
-                        batch, continuation = entries.read_batch(
-                            continuation, limit=128
-                        )
-                    else:
-                        batch = entries
+                    batch, continuation = entries.read_batch(continuation, limit=128)
                     for entry in batch:
                         stream.write(_record(entry) + b"\n")
                     if continuation is None:
@@ -222,12 +217,13 @@ class CopyContext:
         """Import the saved manifest without keeping all locations in memory."""
         entries = CopyEntries()
         storages: dict[tuple, dict] = {}
-        with NamedTemporaryFile() as source:
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / "manifest.gz"
             self._engine.download_file(
                 os.path.join(self._path, MANIFEST_DIR, f"{scope.value}.jsonl.gz"),
-                source.name,
+                str(source),
             )
-            with gzip.open(source.name, "rb") as stream:
+            with gzip.open(source, "rb") as stream:
                 for line in _journal_lines(stream):
                     src, src_path, dst, dst_path, size = json.loads(line)
                     src, dst = (

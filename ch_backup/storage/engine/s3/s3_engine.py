@@ -191,7 +191,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
         """Read one page with request-level retries and reject invalid continuation."""
         prefix = remote_path.strip("/") + "/"
         if continuation is not None and (
-            not continuation.startswith(prefix) or continuation <= prefix
+            not continuation.startswith(prefix) or continuation < prefix
         ):
             raise ValueError("Invalid S3 listing continuation")
         page = self._s3_client.list_objects(
@@ -204,7 +204,7 @@ class S3StorageEngine(PipeLineCompatibleStorageEngine, metaclass=S3RetryMeta):
         if (
             not marker
             or not marker.startswith(prefix)
-            or marker <= (continuation or prefix)
+            or (continuation is not None and marker <= continuation)
         ):
             raise ValueError("S3 listing did not advance its marker")
         return entries, marker

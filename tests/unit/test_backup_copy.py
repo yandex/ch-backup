@@ -19,6 +19,7 @@ import pytest
 from ch_backup import logging as ch_logging
 from ch_backup.backup.copier import BackupCopier, _RewrittenTarball
 from ch_backup.backup.copy_context import CopyContext
+from ch_backup.backup.copy_index import CopyEntries
 from ch_backup.backup.copy_report import CopyReport, print_copy_report
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import (
@@ -607,7 +608,7 @@ def test_copy_mode_cache_isolates_credentials(
         patch("ch_backup.backup.copier.logging") as logging,
     ):
         # pylint: disable-next=protected-access
-        copied = list(ctx.make_copier()._resolve_copy_mode(entries))
+        copied = list(ctx.make_copier()._resolve_copy_mode(CopyEntries(entries)))
 
     expected = {"copy/a/second": True, "copy/b/second": second_mode == "available"}
     if second_mode != "available":

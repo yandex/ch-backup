@@ -7,7 +7,7 @@ Copying of backups from one storage to another.
 import copy
 import json
 import os
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime
 from functools import partial
 from pathlib import PurePosixPath
@@ -1333,84 +1333,90 @@ class BackupCopier:
                 continue
             sources.setdefault(part.link or backup.name, []).append(part)
 
-        writer = MetadataArchiveWriter()
-        for source_name, source_parts in sources.items():
-            with self._planning_step(copy_result, source_name):
-                source = (
-                    backup
-                    if source_name == backup.name
-                    else self._layout.get_backup(source_name)
-                )
-                if source is None or not source.cloud_storage.data_copied:
-                    raise ClickhouseBackupError(
-                        f'Backup "{source_name}" holding cloud storage data is missing or holds no copied data'
+        with closing(MetadataArchiveWriter()) as writer:
+            for source_name, source_parts in sources.items():
+                with self._planning_step(copy_result, source_name):
+                    source = (
+                        backup
+                        if source_name == backup.name
+                        else self._layout.get_backup(source_name)
                     )
-                src_prefix = _key(
-                    self._layout.get_cloud_storage_data_path(source_name, disk_name)
-                )
-                names = {part.deduplicated_part_name: part for part in source_parts}
-                found = set()
-                for remote_path in self._layout.get_cloud_storage_metadata_remote_paths(
-                    source.get_sanitized_name(),
-                    disk_name,
-                    source.cloud_storage.compressed,
-                    [table],
-                ):
-                    with self._planning_step(copy_result, remote_path):
-                        metadata_files = (
-                            self._layout.download_cloud_storage_metadata_archive(
-                                source, remote_path
-                            )
+                    if source is None or not source.cloud_storage.data_copied:
+                        raise ClickhouseBackupError(
+                            f'Backup "{source_name}" holding cloud storage data is missing or holds no copied data'
                         )
-                        continuation = None
-                        while True:
-                            batch, continuation = metadata_files.read_batch(
-                                continuation
+                    src_prefix = _key(
+                        self._layout.get_cloud_storage_data_path(source_name, disk_name)
+                    )
+                    names = {part.deduplicated_part_name: part for part in source_parts}
+                    found = set()
+                    for (
+                        remote_path
+                    ) in self._layout.get_cloud_storage_metadata_remote_paths(
+                        source.get_sanitized_name(),
+                        disk_name,
+                        source.cloud_storage.compressed,
+                        [table],
+                    ):
+                        with self._planning_step(copy_result, remote_path):
+                            metadata_files = (
+                                self._layout.download_cloud_storage_metadata_archive(
+                                    source, remote_path
+                                )
                             )
-                            for file_name, data in batch:
-                                with self._planning_step(
-                                    copy_result, f"{remote_path}:{file_name}"
-                                ):
-                                    components = file_name.split("/")
-                                    # A part may contain projection subdirectories; match its directory
-                                    # anywhere above the file rather than just its immediate parent.
-                                    index = next(
-                                        (
-                                            i
-                                            for i, name in enumerate(components[:-1])
-                                            if name in names
-                                        ),
-                                        None,
-                                    )
-                                    if index is None:
-                                        continue
-                                    part = names[components[index]]
-                                    found.add(part.name)
-                                    components[index] = part.name
-                                    data = self._plan_metadata_objects(
-                                        data,
-                                        file_name,
-                                        remote_path,
-                                        self._storage,
-                                        src_prefix,
-                                        self._target_storage,
-                                        dst_prefix,
-                                        entries,
-                                        copy_result,
-                                        source_data_encryption=source.cloud_storage.data_encryption,
-                                    )
-                                    writer.append(("/".join(components), data))
-                            if continuation is None:
-                                break
-                for part in source_parts:
-                    with self._planning_step(copy_result, f"{source_name}/{part.name}"):
-                        if part.name not in found:
-                            raise ClickhouseBackupError(
-                                f'Metadata of cloud storage part "{part.name}" is missing in backup "{source_name}"'
-                            )
-                        if part.link:
-                            target_meta.unlink_part(part)
-        return writer.finish()
+                            continuation = None
+                            while True:
+                                batch, continuation = metadata_files.read_batch(
+                                    continuation
+                                )
+                                for file_name, data in batch:
+                                    with self._planning_step(
+                                        copy_result, f"{remote_path}:{file_name}"
+                                    ):
+                                        components = file_name.split("/")
+                                        # A part may contain projection subdirectories; match its directory
+                                        # anywhere above the file rather than just its immediate parent.
+                                        index = next(
+                                            (
+                                                i
+                                                for i, name in enumerate(
+                                                    components[:-1]
+                                                )
+                                                if name in names
+                                            ),
+                                            None,
+                                        )
+                                        if index is None:
+                                            continue
+                                        part = names[components[index]]
+                                        found.add(part.name)
+                                        components[index] = part.name
+                                        data = self._plan_metadata_objects(
+                                            data,
+                                            file_name,
+                                            remote_path,
+                                            self._storage,
+                                            src_prefix,
+                                            self._target_storage,
+                                            dst_prefix,
+                                            entries,
+                                            copy_result,
+                                            source_data_encryption=source.cloud_storage.data_encryption,
+                                        )
+                                        writer.append(("/".join(components), data))
+                                if continuation is None:
+                                    break
+                    for part in source_parts:
+                        with self._planning_step(
+                            copy_result, f"{source_name}/{part.name}"
+                        ):
+                            if part.name not in found:
+                                raise ClickhouseBackupError(
+                                    f'Metadata of cloud storage part "{part.name}" is missing in backup "{source_name}"'
+                                )
+                            if part.link:
+                                target_meta.unlink_part(part)
+            return writer.finish()
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
     def _plan_metadata_objects(
@@ -1512,35 +1518,37 @@ class BackupCopier:
                         source_files = layout.download_cloud_storage_metadata_archive(
                             backup, remote_path
                         )
-                        writer = MetadataArchiveWriter()
-                        rewritten = False
-                        continuation = None
-                        while True:
-                            batch, continuation = source_files.read_batch(continuation)
-                            for file_name, data in batch:
-                                rewritten_data = data
-                                with self._planning_step(
-                                    result, f"{remote_path}:{file_name}"
-                                ):
-                                    rewritten_data = self._plan_metadata_objects(
-                                        data,
-                                        file_name,
-                                        remote_path,
-                                        src_storage,
-                                        src_prefix,
-                                        target_storage,
-                                        dst_prefix,
-                                        entries,
-                                        result,
-                                        source_data_encryption=backup.cloud_storage.data_encryption,
-                                        src_path_override=src_path_override,
-                                    )
-                                    if rewritten_data != data:
-                                        rewritten = True
-                                writer.append((file_name, rewritten_data))
-                            if continuation is None:
-                                break
-                        files = writer.finish()
+                        with closing(MetadataArchiveWriter()) as writer:
+                            rewritten = False
+                            continuation = None
+                            while True:
+                                batch, continuation = source_files.read_batch(
+                                    continuation
+                                )
+                                for file_name, data in batch:
+                                    rewritten_data = data
+                                    with self._planning_step(
+                                        result, f"{remote_path}:{file_name}"
+                                    ):
+                                        rewritten_data = self._plan_metadata_objects(
+                                            data,
+                                            file_name,
+                                            remote_path,
+                                            src_storage,
+                                            src_prefix,
+                                            target_storage,
+                                            dst_prefix,
+                                            entries,
+                                            result,
+                                            source_data_encryption=backup.cloud_storage.data_encryption,
+                                            src_path_override=src_path_override,
+                                        )
+                                        if rewritten_data != data:
+                                            rewritten = True
+                                    writer.append((file_name, rewritten_data))
+                                if continuation is None:
+                                    break
+                            files = writer.finish()
 
                         if rewritten:
                             plan.rewritten_cloud_storage_metadata.append(
@@ -1836,37 +1844,7 @@ class BackupCopier:
                 callback=completed,
                 on_error=failed,
             )
-            for index, (remote_path, files) in enumerate(
-                plan.rewritten_cloud_storage_metadata, 1
-            ):
-                errors_before_upload = len(result.errors)
-                try:
-                    self._target_layout.upload_cloud_storage_metadata_files(
-                        backup,
-                        remote_path,
-                        files,
-                        callback=partial(uploaded, remote_path, files),
-                        on_error=partial(
-                            result.add_error,
-                            stage="copy_metadata",
-                            target=remote_path,
-                            object_failed=True,
-                        ),
-                    )
-                except Exception as e:
-                    # Validation can fail before the upload registers its error callback.
-                    # Synchronous pipeline errors may already have called it.
-                    if len(result.errors) == errors_before_upload:
-                        result.add_error(
-                            e,
-                            "copy_metadata",
-                            target=remote_path,
-                            object_failed=True,
-                        )
-                    if not self._keep_going or is_broken_executor(e):
-                        raise
-                if index % 256 == 0:
-                    self._target_layout.wait(keep_going=self._keep_going)
+            self._upload_rewritten_metadata(backup, plan, result, uploaded)
         except (Exception, TerminatingSignal) as e:
             # Submission can fail after other uploads have already started. Wait before
             # publishing FAILED and releasing the locks, preserving the original error.
@@ -1894,6 +1872,46 @@ class BackupCopier:
                 f"Failed to copy backup {backup.name}: {len(result.errors)} error(s), "
                 f"{result.objects_failed} object transfer(s) failed"
             )
+
+    def _upload_rewritten_metadata(
+        self,
+        backup: BackupMetadata,
+        plan: _ScopePlan,
+        result: BackupCopyResult,
+        uploaded: Callable,
+    ) -> None:
+        """Schedule metadata uploads after object copies, waiting every 256 archives."""
+        for index, (remote_path, files) in enumerate(
+            plan.rewritten_cloud_storage_metadata, 1
+        ):
+            errors_before_upload = len(result.errors)
+            try:
+                self._target_layout.upload_cloud_storage_metadata_files(
+                    backup,
+                    remote_path,
+                    files,
+                    callback=partial(uploaded, remote_path, files),
+                    on_error=partial(
+                        result.add_error,
+                        stage="copy_metadata",
+                        target=remote_path,
+                        object_failed=True,
+                    ),
+                )
+            except Exception as e:
+                # Validation can fail before the upload registers its error callback.
+                # Synchronous pipeline errors may already have called it.
+                if len(result.errors) == errors_before_upload:
+                    result.add_error(
+                        e,
+                        "copy_metadata",
+                        target=remote_path,
+                        object_failed=True,
+                    )
+                if not self._keep_going or is_broken_executor(e):
+                    raise
+            if index % 256 == 0:
+                self._target_layout.wait(keep_going=self._keep_going)
 
     def _record_archives(
         self,
@@ -1933,7 +1951,7 @@ class BackupCopier:
 
     def _resolve_copy_mode(
         self,
-        entries: CopyEntries | list[CopyEntry],
+        entries: CopyEntries,
         copy_result: BackupCopyResult | None = None,
         on_error: Callable[[CopyEntry, BaseException], None] | None = None,
     ) -> Iterator[CopyEntry]:
@@ -1945,10 +1963,7 @@ class BackupCopier:
         """
         continuation = None
         while True:
-            if isinstance(entries, CopyEntries):
-                batch, continuation = entries.read_batch(continuation, limit=128)
-            else:
-                batch = entries
+            batch, continuation = entries.read_batch(continuation, limit=128)
             for entry in batch:
                 if self._server_side_copy_mode == ServerSideCopyMode.DISABLED:
                     yield entry

@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ch_backup import logging
+from ch_backup.backup.cloud_storage_decryption import CloudStorageDecryption
 from ch_backup.backup.layout import (
     MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE,
     BackupLayout,
@@ -31,6 +32,7 @@ from ch_backup.storage.async_pipeline.stages.filesystem.read_files_tarball_stage
     ReadFilesTarballScanStage,
 )
 from ch_backup.storage.metadata_archive import spool_metadata
+from ch_backup.storage.object_copy import make_storage_config
 
 KEY = "a" * 32
 
@@ -166,6 +168,7 @@ def test_read_legacy_metadata_preserves_encryption_defaults(encrypted, key):
 @pytest.mark.parametrize(
     "data, encrypted, safe",
     [
+        (b"", False, True),
         (b"5\n1\t3\n3\tdata/key\n0\n0\n\n", False, True),
         (b"5\n0\t0\n0\n0\nINLINE_SECRET\n", False, False),
         (b"5\n0\t0\n0\n0\n\nTRAILING_SECRET\n", False, False),
@@ -288,18 +291,66 @@ def test_large_frozen_metadata_is_rejected_with_bounded_read(tmp_path: Path) -> 
         assert source.tell() == MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE + 1
 
 
+def test_empty_frozen_metadata_is_safe_for_plaintext_upload(tmp_path: Path) -> None:
+    """Allow an empty file without treating it as malformed object metadata."""
+    (tmp_path / "empty.bin").write_bytes(b"")
+    raw = b"".join(cloud_metadata_stream(tmp_path))
+    with tarfile.open(fileobj=BytesIO(raw)) as archive:
+        member = archive.extractfile("store/uuid/empty.bin")
+        assert member is not None
+        assert member.read() == b""
+
+
 def test_cloud_metadata_legacy_list_api() -> None:
-    """Keep indexing and mutation available without changing the disk-backed archive."""
+    """Filter downloaded empty members while keeping list indexing and mutation."""
     layout = make_layout()
-    archive = spool_metadata([("part/data.bin", b"data")])
-    with patch.object(
-        layout, "download_cloud_storage_metadata_archive", return_value=archive
-    ):
-        files = layout.get_cloud_storage_metadata_files(
-            make_backup(), "disks/table.tar"
-        )
+    original = spool_metadata([("part/empty", b""), ("part/data.bin", b"data")])
+
+    def download(_remote, local, **_kwargs):
+        """Provide an existing archive containing an empty regular member."""
+        Path(local).write_bytes(Path(original.path()).read_bytes())
+
+    get_loader(layout).download_file.side_effect = download
+    files = layout.get_cloud_storage_metadata_files(make_backup(), "disks/table.tar")
     assert isinstance(files, list)
+    assert files == [("part/data.bin", b"data")]
     assert files[0] == ("part/data.bin", b"data")
     files.append(("part/extra", b"extra"))
     files[0] = ("changed", b"changed")
-    assert archive.read_batch() == ([("part/data.bin", b"data")], None)
+    assert original.read_batch() == ([("part/data.bin", b"data")], None)
+
+
+def test_restore_decryption_planning_skips_empty_metadata_members() -> None:
+    """Decrypt valid objects from an existing archive containing empty members."""
+    layout = make_layout()
+    archive = spool_metadata(
+        [("part/empty", b""), ("part/data.bin", b"5\n1\t3\n3\tdata/key\n0\n0\n\n")]
+    )
+
+    def download(_remote, local, **_kwargs):
+        """Download the raw archive, retaining its empty regular member."""
+        Path(local).write_bytes(Path(archive.path()).read_bytes())
+
+    get_loader(layout).download_file.side_effect = download
+    storage = make_storage_config(
+        DEFAULT_CONFIG["storage"], "https://s3.test", "bucket", "access", "secret"
+    )
+    with (
+        patch("ch_backup.backup.cloud_storage_decryption.StorageLoader"),
+        patch.object(
+            layout,
+            "get_cloud_storage_metadata_remote_paths",
+            return_value=["table.tar"],
+        ),
+        patch.object(CloudStorageDecryption, "_cleanup_prefix"),
+        patch.object(CloudStorageDecryption, "_decrypt_entries") as decrypt,
+    ):
+        decryption = CloudStorageDecryption(DEFAULT_CONFIG, layout)
+        decryption.decrypt(
+            make_backup(), "s3", "all", storage, "data", storage, "staging"
+        )
+    entries, disk_name, keep_going = decrypt.call_args.args
+    assert disk_name == "s3" and not keep_going
+    assert list(entries) == ["staging/key"]
+    assert entries["staging/key"].src_path == "data/key"
+    assert entries["staging/key"].decrypt

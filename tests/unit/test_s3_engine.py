@@ -798,7 +798,7 @@ def test_listing_page_is_bounded_and_collects_all_pages() -> None:
     assert engine.read_listing_page("prefix", continuation) == ([("prefix/z", 4)], None)
 
 
-@pytest.mark.parametrize("continuation", ["", "elsewhere/key", "prefix/"])
+@pytest.mark.parametrize("continuation", ["", "elsewhere/key"])
 def test_listing_rejects_invalid_input_before_request(continuation: str) -> None:
     """Reject a continuation outside this listing before touching storage."""
     engine = _engine()
@@ -847,3 +847,25 @@ def test_listing_exhausts_only_failed_page_retries(failure_page: int) -> None:
         request.kwargs["Marker"] for request in client.list_objects.call_args_list
     ]
     assert markers == (["", ""] if failure_page == 0 else ["", "prefix/a", "prefix/a"])
+
+
+@pytest.mark.parametrize("explicit_marker", [False, True])
+def test_listing_prefix_object_advances_first_page(explicit_marker: bool) -> None:
+    """A zero-size prefix object is a valid marker before the next page."""
+    engine = _engine()
+    client = Mock()
+    first: dict[str, Any] = {
+        "Contents": [{"Key": "prefix/", "Size": 0}],
+        "IsTruncated": True,
+    }
+    if explicit_marker:
+        first["NextMarker"] = "prefix/"
+    client.list_objects.side_effect = [
+        first,
+        {"Contents": [{"Key": "prefix/a", "Size": 1}]},
+    ]
+    setattr(
+        engine, "_s3_client_factory", Mock(create_s3_client=Mock(return_value=client))
+    )
+    assert engine.list_dir_with_sizes("prefix") == {"prefix/": 0, "prefix/a": 1}
+    assert client.list_objects.call_args.kwargs["Marker"] == "prefix/"
