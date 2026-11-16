@@ -798,19 +798,20 @@ class TableBackup(BackupManager):
                     preprocessing_failed_skipped=preprocessing_failed_skipped,
                 )
 
-                views_to_restore = (
-                    [t for t in tables_to_restore if t.is_view()]
+                tables_after_data = (
+                    [t for t in tables_to_restore if not t.is_merge_tree()]
                     if context.ch_ctl.ch_version_ge("23.12")
+                    and any(t.is_view() for t in tables_to_restore)
                     else []
                 )
-                view_names = {(t.database, t.name) for t in views_to_restore}
+                deferred_names = {(t.database, t.name) for t in tables_after_data}
                 failed_tables = self._restore_tables(
                     context,
                     databases,
                     [
                         t
                         for t in tables_to_restore
-                        if (t.database, t.name) not in view_names
+                        if (t.database, t.name) not in deferred_names
                     ],
                     keep_going,
                 )
@@ -839,7 +840,7 @@ class TableBackup(BackupManager):
                         lambda t: f"`{t.database}`.`{t.name}`"
                         not in failed_tables_names
                         and (t.database, t.name) not in preprocessing_failed_tables
-                        and (t.database, t.name) not in view_names
+                        and (t.database, t.name) not in deferred_names
                         and (
                             storage_restore is None
                             or (t.database, t.name) not in storage_restore.errors
@@ -905,13 +906,13 @@ class TableBackup(BackupManager):
                         ),
                     )
 
-            # Refreshable views must not replace target data while it is being restored.
-            if views_to_restore:
-                failed_views = self._restore_tables(
-                    context, databases, views_to_restore, keep_going
+            # Restore views and their dependent objects after loading MergeTree data.
+            if tables_after_data:
+                failed_deferred_tables = self._restore_tables(
+                    context, databases, tables_after_data, keep_going
                 )
                 if storage_restore is not None:
-                    for table in failed_views:
+                    for table in failed_deferred_tables:
                         storage_restore.errors.setdefault(
                             (table.database, table.name), "Table schema restore failed"
                         )
