@@ -457,10 +457,7 @@ class BackupMetadata:
                 obj["files"] = [names.setdefault(name, name) for name in files]
             return obj
 
-        try:
-            return cls.load(json.loads(data, object_hook=share_file_names))
-        except (TypeError, AttributeError) as error:
-            raise InvalidBackupStruct(error) from error
+        return cls.load(json.loads(data, object_hook=share_file_names))
 
     def get_databases(self) -> Sequence[str]:
         """

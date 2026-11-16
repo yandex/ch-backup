@@ -35,7 +35,6 @@ from ch_backup.clickhouse.disks import ClickHouseTemporaryDisks
 from ch_backup.clickhouse.models import Database
 from ch_backup.config import DEFAULT_CONFIG, Config
 from ch_backup.exceptions import (
-    BrokenBackupMetadata,
     ClickhouseBackupError,
     InvalidBackupStruct,
     StorageError,
@@ -1054,9 +1053,7 @@ def test_delete_with_unreadable_full_metadata_without_references() -> None:
     light_metadata = Mock(name="old", state=BackupState.CREATED, copied_from=None)
     light_metadata.name = "old"
     light_metadata.cloud_storage.source = None
-    context.backup_layout.get_backup.side_effect = BrokenBackupMetadata(
-        "Unreadable full"
-    )
+    context.backup_layout.get_backup.side_effect = StorageError("Unreadable full")
 
     result = backup._delete(light_metadata, {})  # pylint: disable=protected-access
 
@@ -1072,9 +1069,7 @@ def test_delete_with_unreadable_full_metadata_and_references_fails() -> None:
     backup, context = _backup_with_context()
     light_metadata = Mock(name="old", state=BackupState.CREATED)
     light_metadata.name = "old"
-    context.backup_layout.get_backup.side_effect = BrokenBackupMetadata(
-        "Unreadable full"
-    )
+    context.backup_layout.get_backup.side_effect = StorageError("Unreadable full")
 
     with pytest.raises(StorageError, match="Unreadable full"):
         backup._delete(  # pylint: disable=protected-access

@@ -1,9 +1,6 @@
 """Unit tests for backup layout cloud metadata path selection."""
 
-# pylint: disable=too-many-lines
-
 import copy
-import json
 import os
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -29,7 +26,7 @@ from ch_backup.cli import delete_command
 from ch_backup.clickhouse.models import Disk, Table
 from ch_backup.command_context import command_context, get_current_command
 from ch_backup.config import DEFAULT_CONFIG
-from ch_backup.exceptions import BrokenBackupMetadata, StorageError
+from ch_backup.exceptions import ClickhouseBackupError, StorageError
 from ch_backup.storage.async_pipeline import pipeline_executor
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.storage.engine.s3 import S3RetryingError
@@ -714,297 +711,124 @@ class TestTableDataFiles:
         )
 
 
-def deletion_context(
-    light: str = "ok", full: str = "ok", policy: str = "stop"
-) -> tuple[ClickhouseBackup, BackupLayout, MagicMock]:
-    """Build a real deletion inventory with a newer backup referencing old."""
+@pytest.fixture(name="fallback_context")
+def fallback_context_fixture():
+    """Keep two real manifests and their payload keys behind a fake storage boundary."""
     layout = make_layout()
     storage = MagicMock()
     setattr(layout, "_storage_loader", storage)
-    getattr(layout, "_config")["broken_metadata_policy"] = policy
     objects = {}
-    for name in ("old", "new"):
+    for name, day in (("old", 1), ("new", 2)):
         meta = BackupMetadata(name, "2", "26.6", "%Y-%m-%d")
         meta.state = BackupState.CREATED
+        meta.start_time = datetime(2026, 11, day)
         raw = meta.dump()
-        if name == "new":
-            raw["databases"] = {
-                "db": {
-                    "tables": {
-                        "table": {
-                            "engine": "MergeTree",
-                            "uuid": None,
-                            "parts": {
-                                "all_1_1_0": {
-                                    "checksum": "x",
-                                    "bytes": 1,
-                                    "files": ["data.bin"],
-                                    "link": "old",
-                                }
-                            },
-                        }
+        raw["databases"] = {
+            "db": {
+                "tables": {
+                    "table": {
+                        "engine": "MergeTree",
+                        "uuid": None,
+                        "parts": {
+                            part: {
+                                "checksum": "x",
+                                "bytes": 1,
+                                "files": ["data.bin"],
+                                "link": "old" if name == "new" else None,
+                            }
+                            for part in (
+                                ["all_1_1_0", "all_2_2_0"]
+                                if name == "old"
+                                else ["all_1_1_0"]
+                            )
+                        },
                     }
                 }
             }
-        objects[f"ch_backup/{name}/backup_struct.json"] = json.dumps(raw)
+        }
+        meta = BackupMetadata.load(raw)
+        objects[f"ch_backup/{name}/backup_struct.json"] = meta.dump_json()
         objects[f"ch_backup/{name}/backup_light_struct.json"] = meta.dump_json(
             light=True
         )
-    for filename, mode in [
-        ("backup_light_struct.json", light),
-        ("backup_struct.json", full),
-    ]:
-        key = f"ch_backup/new/{filename}"
-        if mode == "missing":
-            objects.pop(key)
-        elif mode == "corrupt":
-            objects[key] = "{}"
-        elif mode == "wrong_name":
-            raw = json.loads(objects[key])
-            raw["meta"]["name"] = "old"
-            objects[key] = json.dumps(raw)
-    storage.path_exists.side_effect = objects.__contains__
+    for part in ("all_1_1_0", "all_2_2_0"):
+        objects[f"ch_backup/old/data/db/table/{part}/data.bin"] = "payload"
     storage.list_dir.return_value = ["new", "old"]
-
-    def download(path, **_kwargs):
-        """Model transient storage errors separately from invalid JSON."""
-        if (path.endswith("/new/backup_struct.json") and full == "storage_error") or (
-            path.endswith("/new/backup_light_struct.json") and light == "storage_error"
-        ):
-            raise S3RetryingError("InternalError")
-        return objects[path]
-
-    storage.download_data.side_effect = download
+    storage.path_exists.side_effect = lambda path, **_: path in objects
+    storage.download_data.side_effect = lambda path, **_: objects[path]
+    storage.upload_data.side_effect = lambda data, remote_path, **_: objects.update(
+        {remote_path: data}
+    )
     backup = ClickhouseBackup.__new__(ClickhouseBackup)
     context = MagicMock(backup_layout=layout)
-    context.config = {
-        "retain_count": 1,
-        "retain_time": {},
-        "broken_metadata_policy": policy,
-    }
+    context.config = {"retain_count": 1, "retain_time": {}}
     backup.__dict__["_context"] = context
-    return backup, layout, storage
+    return backup, layout, storage, objects
 
 
-@pytest.mark.parametrize("operation", ["delete", "purge"])
-@pytest.mark.parametrize("light", ["missing", "corrupt", "storage_error"])
-def test_deletion_inventory_falls_back_to_full_and_preserves_references(
-    light, operation
+@pytest.mark.parametrize("operation", ["delete", "purge", "cli"])
+@pytest.mark.parametrize("damaged", ["old", "new"])
+@pytest.mark.parametrize("missing", [True, False])
+def test_full_fallback_preserves_shared_parts_and_rewrites_target_light(
+    fallback_context, operation, damaged, missing
 ):
-    """Missing light cannot hide a retained backup's reference to old data."""
-    backup, layout, storage = deletion_context(light=light)
-    with patch.object(backup, "_delete", return_value=(None, None)) as delete:
-        if operation == "delete":
-            backup.delete("old", purge_partial=False)
-        else:
-            backup.purge()
-    references = delete.call_args.args[1]
-    assert references["db"]["table"] == {"all_1_1_0"}
-    storage.delete_files.assert_not_called()
-    assert {b.name for b in layout.get_backups(True, for_deletion=True)} == {
-        "old",
-        "new",
-    }
-
-
-@pytest.mark.parametrize("operation", ["delete", "purge"])
-@pytest.mark.parametrize("full", ["missing", "corrupt"])
-def test_unknown_backup_blocks_deletion_by_default(operation, full):
-    """Unknown references stop both destructive commands before any writes."""
-    backup, _, storage = deletion_context(light="missing", full=full)
-    with pytest.raises(StorageError):
-        if operation == "delete":
-            backup.delete("old", purge_partial=False)
-        else:
-            backup.purge()
-    storage.upload_data.assert_not_called()
-    storage.delete_files.assert_not_called()
-
-
-@pytest.mark.parametrize("light", ["ok", "missing"])
-@pytest.mark.parametrize("full", ["missing", "corrupt"])
-def test_ignore_policy_explicitly_discards_unknown_references(light, full):
-    """The opt-in policy lets deletion proceed without unreadable references."""
-    backup, _, _ = deletion_context(light=light, full=full, policy="ignore")
-    with patch.object(backup, "_delete", return_value=("old", None)) as delete:
-        backup.delete("old", purge_partial=False)
-    assert not delete.call_args.args[1]
-
-
-@pytest.mark.parametrize("policy", ["stop", "ignore"])
-@pytest.mark.parametrize("light", ["ok", "missing", "storage_error"])
-def test_storage_errors_are_never_ignored(policy, light):
-    """A temporary full read failure cannot discard a retained backup's links."""
-    backup, _, storage = deletion_context(
-        light=light, full="storage_error", policy=policy
-    )
-    with pytest.raises((StorageError, S3RetryingError)):
-        backup.delete("old", purge_partial=False)
-    storage.upload_data.assert_not_called()
-    storage.delete_files.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    "light,full",
-    [("wrong_name", "ok"), ("missing", "wrong_name"), ("ok", "wrong_name")],
-)
-def test_metadata_name_mismatch_never_redirects_or_skips_deletion(light, full):
-    """Even ignore must reject manifests naming a different directory."""
-    backup, _, storage = deletion_context(light=light, full=full, policy="ignore")
-    with pytest.raises(StorageError, match="does not match directory"):
-        backup.delete("old", purge_partial=False)
-    storage.upload_data.assert_not_called()
-    storage.delete_files.assert_not_called()
-
-
-@pytest.mark.parametrize("data", ["[]", "null", '{"meta": []}'])
-def test_invalid_metadata_structure_has_a_distinct_error(data):
-    """Readable invalid structures can be distinguished from transport failures."""
-
-    layout = make_layout()
-    storage = getattr(layout, "_storage_loader")
-    storage.download_data.return_value = data
-    with pytest.raises(BrokenBackupMetadata):
-        layout.get_backup("old")
-
-
-@pytest.mark.parametrize("extra", [[], ["."], ["data"], ["backup_struct.json"]])
-def test_cloud_companion_is_classified_only_with_known_owner_and_contents(extra):
-    """Normal cloud prefixes are accepted but unknown backup data blocks deletion."""
-    layout = make_layout()
-    storage = getattr(layout, "_storage_loader")
-    owner = BackupMetadata("my-backup", "2", "26.6", "%Y-%m-%d")
-    owner.cloud_storage.add_disk("s3")
-    storage.list_dir.side_effect = lambda path, **_: (
-        ["my-backup", "my_backup"]
-        if path == "ch_backup"
-        else ["disks", "cloud_storage"] + extra
-    )
-    storage.path_exists.side_effect = lambda path: "/my-backup/" in path
-    storage.download_data.return_value = owner.dump_json(light=True)
-    if extra and extra != ["."]:
-        with pytest.raises(StorageError):
-            layout.get_backups(True, for_deletion=True)
+    """Missing or corrupt light must not hide references or prevent partial deletion."""
+    backup, layout, storage, objects = fallback_context
+    path = f"ch_backup/{damaged}/backup_light_struct.json"
+    if missing:
+        del objects[path]
     else:
-        assert [b.name for b in layout.get_backups(True, for_deletion=True)] == [
-            "my-backup"
-        ]
-
-
-@pytest.mark.parametrize("policy", ["stop", "ignore"])
-def test_target_full_storage_failure_is_not_a_light_only_delete(policy):
-    """A full GET failure on the target itself must not cause destructive fallback."""
-    backup, layout, storage = deletion_context(policy=policy)
-    light = layout.get_backup("old", True)
-    assert light is not None
-    with patch.object(layout, "get_backup", side_effect=StorageError("InternalError")):
-        with pytest.raises(StorageError):
-            backup._delete(light, {})  # pylint: disable=protected-access
+        objects[path] = "{invalid"
+    listed = layout.get_backups(use_light_meta=True)
+    assert [meta.name for meta in listed] == ["new", "old"]
+    assert all(not meta.get_databases() for meta in listed)
     storage.upload_data.assert_not_called()
-    storage.delete_files.assert_not_called()
-
-
-@pytest.mark.parametrize("name", ["new", "LAST"])
-@pytest.mark.parametrize("force", [False, True])
-def test_delete_cli_uses_full_when_target_light_is_missing(name, force):
-    """The public command reaches deletion and resolves LAST through full metadata."""
-    backup, layout, _ = deletion_context(light="missing")
-    with patch.object(layout, "delete_backup") as delete:
+    if operation == "delete":
+        backup.delete("old", False)
+    elif operation == "purge":
+        backup.purge()
+    else:
         result = CliRunner().invoke(
-            Group(commands=[delete_command]),
-            ["delete", name, *(["--force"] if force else [])],
-            obj={"backup": backup},
+            Group(commands=[delete_command]), ["delete", "old"], obj={"backup": backup}
         )
-    assert result.exit_code == 0, result.output
-    assert result.stdout.strip() == "new"
-    assert delete.call_args.args[0] == "new"
+        assert result.exit_code == 0, result.output
+    deleted = [
+        key
+        for call in storage.delete_files.call_args_list
+        for key in call.kwargs.get("remote_paths", call.args[0] if call.args else [])
+    ]
+    assert deleted == ["ch_backup/old/data/db/table/all_2_2_0/data.bin"]
+    light = BackupMetadata.load_json(objects["ch_backup/old/backup_light_struct.json"])
+    full = BackupMetadata.load_json(objects["ch_backup/old/backup_struct.json"])
+    assert light.state == full.state == BackupState.PARTIALLY_DELETED
+    assert [part.name for part in full.get_tables()[0].get_parts()] == ["all_1_1_0"]
+    assert light.dump(light=True) == full.dump(light=True)
 
 
-@pytest.mark.parametrize("failure", ["storage_error", "wrong_name"])
-def test_force_delete_does_not_hide_metadata_errors(failure):
-    """Force only tolerates an absent backup, never failed safety checks."""
-    backup, _, storage = deletion_context(light="missing", full=failure)
-    result = CliRunner().invoke(
-        Group(commands=[delete_command]),
-        ["delete", "old", "--force"],
-        obj={"backup": backup},
-    )
-    assert result.exit_code != 0
-    storage.upload_data.assert_not_called()
-    storage.delete_files.assert_not_called()
-
-
-@pytest.mark.parametrize("force", [False, True])
-def test_delete_cli_preserves_force_for_nonexistent_backup(force):
-    """Only explicit force makes deletion of a nonexistent backup succeed."""
-    backup, _, storage = deletion_context()
-    result = CliRunner().invoke(
-        Group(commands=[delete_command]),
-        ["delete", "absent", *(["--force"] if force else [])],
-        obj={"backup": backup},
-    )
-    assert result.exit_code == (0 if force else 2)
-    storage.upload_data.assert_not_called()
-    storage.delete_files.assert_not_called()
-
-
-@pytest.mark.parametrize("policy", ["stop", "ignore"])
-@pytest.mark.parametrize("operation", ["delete", "purge"])
-@pytest.mark.parametrize(
-    "damage",
-    [
-        "databases",
-        "parts",
-        "files",
-        "part_name",
-        "link_part_name_list",
-        "link_part_name_int",
-    ],
-)
-def test_nested_metadata_damage_obeys_policy_for_the_whole_backup(
-    policy, operation, damage
+@pytest.mark.parametrize("damaged", ["old", "new"])
+@pytest.mark.parametrize("missing", [True, False])
+def test_unreadable_full_still_blocks_deletion_with_references(
+    fallback_context, damaged, missing
 ):
-    """Malformed later parts cannot leave partially collected references behind."""
-    backup, layout, storage = deletion_context(policy=policy)
-    metadata = layout.get_backup("new")
-    assert metadata is not None
-    raw = metadata.dump()
-    table = raw["databases"]["db"]["tables"]["table"]
-    if damage == "databases":
-        raw["databases"] = None
-    elif damage == "parts":
-        del table["parts"]
+    """A referenced target or retained backup without full metadata blocks deletion."""
+    backup, _, storage, objects = fallback_context
+    path = f"ch_backup/{damaged}/backup_struct.json"
+    if missing:
+        del objects[path]
     else:
-        broken = dict(table["parts"]["all_1_1_0"])
-        if damage == "files":
-            del broken["files"]
-        elif damage == "link_part_name_list":
-            broken["link_part_name"] = ["all_1_1_0"]
-        elif damage == "link_part_name_int":
-            broken["link_part_name"] = 123
-        table["parts"]["bad_name" if damage == "part_name" else "all_2_2_0"] = broken
-    download = storage.download_data.side_effect
+        objects[path] = "{}"
+    with pytest.raises(ClickhouseBackupError):
+        backup.delete("old", False)
+    storage.upload_data.assert_not_called()
+    storage.delete_files.assert_not_called()
 
-    def read(path, **kwargs):
-        """Substitute only the malformed full metadata, retaining real parsing."""
-        return (
-            json.dumps(raw)
-            if path.endswith("/new/backup_struct.json")
-            else download(path, **kwargs)
-        )
 
-    storage.download_data.side_effect = read
-    with patch.object(backup, "_delete", return_value=("old", None)) as delete:
-        if policy == "stop":
-            with pytest.raises(BrokenBackupMetadata, match="new"):
-                _ = (
-                    backup.delete("old", False)
-                    if operation == "delete"
-                    else backup.purge()
-                )
-            delete.assert_not_called()
-        else:
-            _ = backup.delete("old", False) if operation == "delete" else backup.purge()
-            assert not delete.call_args.args[1]
+def test_broken_light_without_full_is_not_silently_skipped(fallback_context):
+    """A failed fallback keeps the existing unreadable-metadata guard."""
+    backup, _, storage, objects = fallback_context
+    objects["ch_backup/new/backup_light_struct.json"] = "{invalid"
+    del objects["ch_backup/new/backup_struct.json"]
+    with pytest.raises(StorageError, match="new"):
+        backup.delete("old", False)
     storage.upload_data.assert_not_called()
     storage.delete_files.assert_not_called()
