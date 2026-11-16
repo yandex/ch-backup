@@ -133,6 +133,7 @@ GET_TABLES_SQL_23_8 = strip_query(
 
 # engine_full shares the CREATE AST already read for create_table_query.
 # It adds no catalog lookup and lets _make_table resolve cold TableProxy engines.
+# Exclude external databases before table enumeration, which accesses their sources.
 GET_TABLES_SHORT_SQL = strip_query(
     """
     SELECT
@@ -145,6 +146,10 @@ GET_TABLES_SHORT_SQL = strip_query(
     FROM system.tables
     WHERE ({db_condition})
       AND ({tables_condition})
+      AND database IN (
+          SELECT name FROM system.databases
+          WHERE engine NOT IN ('MySQL', 'MaterializedMySQL', 'PostgreSQL', 'MaterializedPostgreSQL')
+      )
     ORDER BY metadata_modification_time
     FORMAT JSON
 """

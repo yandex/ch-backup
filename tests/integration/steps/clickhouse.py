@@ -43,6 +43,32 @@ def step_require_unique_key_support(context, node):
         context.scenario.skip("ClickHouse has no UNIQUE KEY support")
 
 
+@given("remote databases are visible in system tables on {node:w}")
+def step_enable_remote_database_visibility(context, node):
+    ch_client = ClickhouseClient(context, node)
+    setting = "show_remote_databases_in_system_tables"
+    supported = ch_client.get_response(
+        f"SELECT count() FROM system.settings WHERE name = '{setting}'"
+    )
+    if supported == "0":
+        return
+
+    # Set the profile so ch-backup queries also see remote databases.
+    put_file(
+        get_container(context, node),
+        b"<clickhouse><profiles><default><show_remote_databases_in_system_tables>1"
+        b"</show_remote_databases_in_system_tables></default></profiles></clickhouse>",
+        "/etc/clickhouse-server/users.d/remote_database_visibility.xml",
+    )
+    ch_client.execute("SYSTEM RELOAD USERS")
+    assert (
+        ch_client.get_response(
+            f"SELECT value FROM system.settings WHERE name = '{setting}'"
+        )
+        == "1"
+    )
+
+
 @given("we have enabled shared zookeeper for {node:w}")
 def step_enable_shared_zookeeper_for_clickhouse(context, node):
     """

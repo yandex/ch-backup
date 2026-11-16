@@ -43,6 +43,64 @@ Feature: Backup of tables with different engines and configurations
       | PostgreSQL  | PostgreSQL('postgre:1111', 'test', 'test_table', 'test_user', 'clickhouse')                                 |
       | MongoDB     | MongoDB('mongo:1111', 'test', 'test_table', 'test_user', 'clickhouse')                                      |
 
+  @unreachable_mysql_database
+  Scenario: Backup and restore with an unreachable MySQL database
+    Given remote databases are visible in system tables on clickhouse01
+    And remote databases are visible in system tables on clickhouse02
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db ENGINE = Atomic;
+    CREATE TABLE test_db.local_data (n UInt64) ENGINE = MergeTree ORDER BY n;
+    INSERT INTO test_db.local_data VALUES (1), (2), (3);
+    CREATE TABLE test_db.local_mysql (n UInt64)
+    ENGINE = MySQL('127.0.0.1:1', 'remote_db', 'remote_table', 'user', 'password');
+    ATTACH DATABASE remote_mysql ENGINE = MySQL('127.0.0.1:1', 'remote_db', 'user', 'password');
+    """
+    When we create clickhouse01 clickhouse backup
+    And we restore clickhouse backup #0 to clickhouse02
+    And we execute query on clickhouse02
+    """
+    SELECT n FROM test_db.local_data ORDER BY n
+    """
+    Then we get response
+    """
+    1
+    2
+    3
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT engine FROM system.tables WHERE database = 'test_db' AND name = 'local_mysql'
+    """
+    Then we get response
+    """
+    MySQL
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT engine FROM system.databases WHERE name = 'remote_mysql'
+    """
+    Then we get response
+    """
+    MySQL
+    """
+    When we try to execute command on clickhouse02
+    """
+    clickhouse-client --query 'SHOW TABLES FROM remote_mysql'
+    """
+    Then we get response contains
+    """
+    Connections to mysql failed
+    """
+    When we try to execute command on clickhouse02
+    """
+    clickhouse-client --query 'SELECT * FROM test_db.local_mysql'
+    """
+    Then we get response contains
+    """
+    Connections to mysql failed
+    """
+
   @S3
   Scenario: Create backup containing s3 tables
     Given we execute query on clickhouse01
