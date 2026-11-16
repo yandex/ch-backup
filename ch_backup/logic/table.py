@@ -907,7 +907,14 @@ class TableBackup(BackupManager):
 
             # Refreshable views must not replace target data while it is being restored.
             if views_to_restore:
-                self._restore_tables(context, databases, views_to_restore, keep_going)
+                failed_views = self._restore_tables(
+                    context, databases, views_to_restore, keep_going
+                )
+                if storage_restore is not None:
+                    for table in failed_views:
+                        storage_restore.errors.setdefault(
+                            (table.database, table.name), "Table schema restore failed"
+                        )
             if storage_restore is not None:
                 storage_restore.raise_errors()
 
