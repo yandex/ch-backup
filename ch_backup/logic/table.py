@@ -798,10 +798,20 @@ class TableBackup(BackupManager):
                     preprocessing_failed_skipped=preprocessing_failed_skipped,
                 )
 
+                views_to_restore = (
+                    [t for t in tables_to_restore if t.is_view()]
+                    if context.ch_ctl.ch_version_ge("23.12")
+                    else []
+                )
+                view_names = {(t.database, t.name) for t in views_to_restore}
                 failed_tables = self._restore_tables(
                     context,
                     databases,
-                    tables_to_restore,
+                    [
+                        t
+                        for t in tables_to_restore
+                        if (t.database, t.name) not in view_names
+                    ],
                     keep_going,
                 )
 
@@ -819,85 +829,86 @@ class TableBackup(BackupManager):
                 logging.debug(
                     "Skipping restoring of table data as --schema-only flag passed"
                 )
-                if storage_restore is not None:
-                    # Keep-going may have restored other schemas successfully; it
-                    # must still report any deferred adaptation errors to the caller.
-                    storage_restore.raise_errors()
-                return
-
-            failed_tables_names = [f"`{t.database}`.`{t.name}`" for t in failed_tables]
-            # Never load parts into a table whose schema preparation or creation failed.
-            tables_to_restore_data = list(
-                filter(
-                    lambda t: f"`{t.database}`.`{t.name}`" not in failed_tables_names
-                    and (t.database, t.name) not in preprocessing_failed_tables
-                    and (
-                        storage_restore is None
-                        or (t.database, t.name) not in storage_restore.errors
-                    ),
-                    tables_meta,
+            else:
+                failed_tables_names = [
+                    f"`{t.database}`.`{t.name}`" for t in failed_tables
+                ]
+                # Never load parts into a table whose schema preparation or creation failed.
+                tables_to_restore_data = list(
+                    filter(
+                        lambda t: f"`{t.database}`.`{t.name}`"
+                        not in failed_tables_names
+                        and (t.database, t.name) not in preprocessing_failed_tables
+                        and (t.database, t.name) not in view_names
+                        and (
+                            storage_restore is None
+                            or (t.database, t.name) not in storage_restore.errors
+                        ),
+                        tables_meta,
+                    )
                 )
-            )
 
-            tables_with_create_statements = {
-                (table.database, table.name) for table in tables_to_preprocess
-            }
-            tables_to_restore_detached = [
-                table
-                for table in filtered_tables_meta
-                if (table.database, table.name) in tables_with_create_statements
-                and (table.database, table.name) not in preprocessing_failed_tables
-                and f"`{table.database}`.`{table.name}`" not in failed_tables_names
-            ]
+                tables_with_create_statements = {
+                    (table.database, table.name) for table in tables_to_preprocess
+                }
+                tables_to_restore_detached = [
+                    table
+                    for table in filtered_tables_meta
+                    if (table.database, table.name) in tables_with_create_statements
+                    and (table.database, table.name) not in preprocessing_failed_tables
+                    and f"`{table.database}`.`{table.name}`" not in failed_tables_names
+                ]
 
-            use_inplace_cloud_restore = context.config_root["restore"][
-                "use_inplace_cloud_restore"
-            ]
+                use_inplace_cloud_restore = context.config_root["restore"][
+                    "use_inplace_cloud_restore"
+                ]
 
-            with ClickHouseTemporaryDisks(
-                context.ch_ctl,
-                context.backup_layout,
-                context.config_root,
-                context.backup_meta,
-                cloud_storage_source_bucket,
-                cloud_storage_source_path,
-                cloud_storage_source_endpoint,
-                context.ch_config,
-                desired_tables=tables_meta,
-                use_local_copy=use_inplace_cloud_restore,
-                skip_cloud_storage=skip_cloud_storage,
-                keep_going=keep_going,
-            ) as disks:
-                self._restore_data(
-                    context,
-                    tables=tables_to_restore_data,
-                    disks=disks,
+                with ClickHouseTemporaryDisks(
+                    context.ch_ctl,
+                    context.backup_layout,
+                    context.config_root,
+                    context.backup_meta,
+                    cloud_storage_source_bucket,
+                    cloud_storage_source_path,
+                    cloud_storage_source_endpoint,
+                    context.ch_config,
+                    desired_tables=tables_meta,
+                    use_local_copy=use_inplace_cloud_restore,
                     skip_cloud_storage=skip_cloud_storage,
                     keep_going=keep_going,
-                    storage_disks=(
-                        storage_restore.storage_disks
-                        if storage_restore is not None
-                        else None
-                    ),
-                )
+                ) as disks:
+                    self._restore_data(
+                        context,
+                        tables=tables_to_restore_data,
+                        disks=disks,
+                        skip_cloud_storage=skip_cloud_storage,
+                        keep_going=keep_going,
+                        storage_disks=(
+                            storage_restore.storage_disks
+                            if storage_restore is not None
+                            else None
+                        ),
+                    )
 
-            if restore_detached_parts and any(
-                table.get_detached_parts() for table in tables_to_restore_detached
-            ):
-                self._restore_detached_data(
-                    context,
-                    tables=tables_to_restore_detached,
-                    skip_cloud_storage=skip_cloud_storage,
-                    keep_going=keep_going,
-                    storage_disks=(
-                        storage_restore.storage_disks
-                        if storage_restore is not None
-                        else None
-                    ),
-                )
+                if restore_detached_parts and any(
+                    table.get_detached_parts() for table in tables_to_restore_detached
+                ):
+                    self._restore_detached_data(
+                        context,
+                        tables=tables_to_restore_detached,
+                        skip_cloud_storage=skip_cloud_storage,
+                        keep_going=keep_going,
+                        storage_disks=(
+                            storage_restore.storage_disks
+                            if storage_restore is not None
+                            else None
+                        ),
+                    )
+
+            # Refreshable views must not replace target data while it is being restored.
+            if views_to_restore:
+                self._restore_tables(context, databases, views_to_restore, keep_going)
             if storage_restore is not None:
-                # Report deferred errors only after independent tables and their parts
-                # have been restored, so keep-going preserves useful completed work.
                 storage_restore.raise_errors()
 
     @staticmethod
@@ -1400,7 +1411,9 @@ class TableBackup(BackupManager):
                         (table.database, table.name)
                     )
 
-                if detached_table:
+                if detached_table and not (
+                    table.is_view() and context.ch_ctl.ch_version_ge("23.12")
+                ):
                     try:
                         logging.debug(
                             "Table {} already exists as detached, attaching it",

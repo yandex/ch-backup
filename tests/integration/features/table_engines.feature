@@ -490,13 +490,11 @@ Feature: Backup of tables with different engines and configurations
     """
     When we execute query on clickhouse02
     """
-    SELECT count() > 0
+    SELECT countIf(query = 'SYSTEM STOP VIEWS') = 1
+      AND minIf(query_start_time_microseconds, query LIKE 'ATTACH MATERIALIZED VIEW%')
+        > maxIf(query_start_time_microseconds, query LIKE 'ALTER TABLE%ATTACH PART%')
     FROM system.query_log
     WHERE type = 'QueryFinish'
-      AND query_kind = 'Create'
-      AND query LIKE 'ATTACH MATERIALIZED VIEW%'
-      AND query ILIKE '%mview_01%'
-      AND Settings['stop_refreshable_materialized_views_on_startup'] = '1'
     """
     Then we get response
     """

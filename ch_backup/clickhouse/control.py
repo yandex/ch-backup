@@ -1272,40 +1272,18 @@ class ClickhouseCTL:
             time.sleep(1)
 
     @contextmanager
-    def _stop_refreshable_materialized_views_on_startup(
-        self,
-    ) -> Generator[None, None, None]:
-        if not self.ch_version_ge("23.12"):
-            yield
-            return
-
-        setting_name = "stop_refreshable_materialized_views_on_startup"
-        settings = self._ch_client.settings
-        previous_value = settings.get(setting_name)
-        was_set = setting_name in settings
-        settings[setting_name] = 1
-        try:
-            yield
-        finally:
-            if was_set:
-                settings[setting_name] = previous_value
-            else:
-                settings.pop(setting_name, None)
-
-    @contextmanager
     def stop_refreshable_materialized_views_for_restore(
         self, databases: Sequence[str]
     ) -> Generator[None, None, None]:
         """Pause refreshable views while table restore is in progress."""
-        if not self.ch_version_ge("23.12"):
+        if not databases or not self.ch_version_ge("23.12"):
             yield
             return
 
         self._ch_client.query(SYSTEM_STOP_VIEWS_SQL)
         try:
             self._wait_for_refreshable_materialized_views_to_stop(databases)
-            with self._stop_refreshable_materialized_views_on_startup():
-                yield
+            yield
         except BaseException:
             try:
                 self._ch_client.query(SYSTEM_START_VIEWS_SQL)
