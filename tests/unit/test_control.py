@@ -402,7 +402,7 @@ def test_restore_failure_is_preserved_when_starting_views_fails() -> None:
         RuntimeError("start views failed"),
     ]
 
-    with mock.patch("ch_backup.clickhouse.control.logging.exception") as log:
+    with mock.patch("ch_backup.clickhouse.control.logging.error") as log:
         with pytest.raises(RuntimeError, match="restore failed"):
             with ctl.stop_refreshable_materialized_views_for_restore(["db"]):
                 raise RuntimeError("restore failed")
@@ -410,7 +410,10 @@ def test_restore_failure_is_preserved_when_starting_views_fails() -> None:
     query_mock = ctl._ch_client.query  # pylint: disable=protected-access
     assert query_mock.call_args_list[0].args[0] == "SYSTEM STOP VIEWS"
     assert query_mock.call_args_list[-1].args[0] == "SYSTEM START VIEWS"
-    log.assert_called_once()
+    log.assert_called_once_with(
+        "Failed to start refreshable materialized views while restore was failing",
+        exc_info=True,
+    )
 
 
 class TestGetPartsOfOtherReplicas:

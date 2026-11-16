@@ -1280,8 +1280,9 @@ class ClickhouseCTL:
             try:
                 self._ch_client.query(SYSTEM_START_VIEWS_SQL)
             except Exception:
-                logging.exception(
-                    "Failed to start refreshable materialized views while restore was failing"
+                logging.error(
+                    "Failed to start refreshable materialized views while restore was failing",
+                    exc_info=True,
                 )
             raise
         self._ch_client.query(SYSTEM_START_VIEWS_SQL)
