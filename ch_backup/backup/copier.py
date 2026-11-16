@@ -46,6 +46,7 @@ from ch_backup.backup.metadata import (
     parse_copy_scopes,
     sanitize_backup_name,
 )
+from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageBackup
 from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.object_storage_metadata import (
     FROZEN_METADATA_FNAME,
@@ -73,6 +74,7 @@ from ch_backup.exceptions import (
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
+from ch_backup.storage.engine.s3 import S3RetryingError
 from ch_backup.storage.object_copy import (
     CopyEntry,
     ServerSideCopyMode,
@@ -287,10 +289,16 @@ class BackupCopier:
         """Reserve unreadable target names without blocking independent backups."""
         names = {}
         candidates = []
+        readable_names = []
+        for name in self._target_layout.get_backup_names():
+            if self._target_layout.get_delete_pending(name) is not None:
+                names[sanitize_backup_name(name)] = name
+            else:
+                readable_names.append(name)
         with ThreadExecPool(self._metadata_read_threads) as pool:
             for name, read in read_metadata_in_batches(
                 self._target_layout,
-                self._target_layout.get_backup_names(),
+                readable_names,
                 pool=pool,
                 workers=self._metadata_read_threads,
                 use_light_meta=True,
@@ -413,6 +421,8 @@ class BackupCopier:
         names = (
             sorted(layout.get_backup_names()) if backup_names is None else backup_names
         )
+        if backup_names is None:
+            names = [name for name in names if layout.get_delete_pending(name) is None]
         results = {name: BackupCopyResult(name) for name in dict.fromkeys(names)}
         self._report.backups.extend(results.values())
         with ThreadExecPool(self._metadata_read_threads) as pool:
@@ -614,6 +624,13 @@ class BackupCopier:
         Without the scope "files", use the copy's full metadata, which retains the source
         cloud storage location until the copy is published, so source storage is not accessed.
         """
+        if (
+            target_backup is None
+            and self._target_layout.get_cloud_storage_backup(backup_name) is not None
+        ):
+            raise ClickhouseBackupError(
+                f"Backup {backup_name} has cloud data but no readable metadata; delete it before copying"
+            )
         if CopyScope.FILES in self._scopes:
             backup = self._layout.get_backup(backup_name)
             if not backup:
@@ -706,6 +723,8 @@ class BackupCopier:
         Statuses of scopes saved by previous runs are not trusted. Failures during cleanup
         are preserved.
         """
+        if backup.cloud_storage.enabled:
+            self._target_layout.claim_cloud_storage(backup.name)
         files = plan[CopyScope.FILES].entries
         self._leave_out_confirmed_objects(backup, plan, result)
         statuses = self._scope_statuses(backup.name, plan, previous)
@@ -908,7 +927,14 @@ class BackupCopier:
         storage disks, original disk metadata is also copied into the copy
         context, so the scope "cloud_storage" can be copied without the source storage.
         """
-        exclude = {BACKUP_META_FNAME, BACKUP_LIGHT_META_FNAME, COPY_CONTEXT_DIR}
+        exclude = {
+            BACKUP_META_FNAME,
+            BACKUP_LIGHT_META_FNAME,
+            COPY_CONTEXT_DIR,
+            "delete_pending.json",
+            "cloud_storage_info.json",
+            ".cloud_storage_owner.json",
+        }
         if backup.cloud_storage.data_copied:
             # Plan these from disk metadata, including objects held by older backups.
             exclude.update({"disks", "cloud_storage"})
@@ -1161,6 +1187,8 @@ class BackupCopier:
         "files", and delete and purge keep parts referenced by other backups.
         """
         assert part.link
+        if self._target_layout.get_delete_pending(part.link) is not None:
+            return False
         if part.link not in self._target_backups:
             try:
                 self._target_backups[part.link] = self._target_layout.get_backup(
@@ -1310,11 +1338,23 @@ class BackupCopier:
         files = []
         for source_name, source_parts in sources.items():
             with self._planning_step(copy_result, source_name):
-                source = (
-                    backup
-                    if source_name == backup.name
-                    else self._layout.get_backup(source_name)
-                )
+                source: BackupMetadata | CloudStorageBackup | None = backup
+                if source_name != backup.name:
+                    try:
+                        source = self._layout.get_backup(
+                            source_name, allow_pending=True
+                        )
+                    except (StorageError, S3RetryingError):
+                        source = None
+                    if source is None:
+                        source = self._layout.get_cloud_storage_backup(source_name)
+                if (
+                    isinstance(source, CloudStorageBackup)
+                    and disk_name not in source.cloud_storage.disks
+                ):
+                    raise ClickhouseBackupError(
+                        f"Missing cloud disk {disk_name} in backup {source_name}"
+                    )
                 if source is None or not source.cloud_storage.data_copied:
                     raise ClickhouseBackupError(
                         f'Backup "{source_name}" holding cloud storage data is missing or holds no copied data'

@@ -25,6 +25,7 @@ from ch_backup.backup.metadata import (
     BackupState,
     DetachedPartMetadata,
 )
+from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageBackup
 from ch_backup.config import DEFAULT_CONFIG
 from ch_backup.encryption import (
     get_cloud_storage_data_encryption_metadata,
@@ -119,6 +120,8 @@ class FakeLayout:
     ) -> None:
         self.path_root = path_root
         self.backups = {b.name: b for b in backups}
+        self.pending: set[str] = set()
+        self.descriptors: dict[str, CloudStorageBackup] = {}
         self.uploaded: list[tuple[str, BackupState]] = []
         self.copied: list[CopyEntry] = []
         self.cloud_storage_files: dict[str, list[tuple[str, bytes]]] = {}
@@ -134,8 +137,19 @@ class FakeLayout:
         self.source: FakeLayout | None = None
         self.copied_files: dict[str, list[tuple[str, bytes]]] = {}
 
+    def get_delete_pending(self, backup_name: str) -> dict | None:
+        """Return deletion intents independently of the fake manifests."""
+        return {"backup_name": backup_name} if backup_name in self.pending else None
+
+    def get_cloud_storage_backup(self, backup_name: str) -> CloudStorageBackup | None:
+        """Read the independently stored cloud restore settings."""
+        return self.descriptors.get(backup_name)
+
+    def claim_cloud_storage(self, backup_name: str) -> None:
+        """Storage ownership is covered by the real-layout tests."""
+
     def get_backup_names(self):
-        return list(self.backups)
+        return list(dict.fromkeys([*self.backups, *sorted(self.pending)]))
 
     get_table_data_files = BackupLayout.get_table_data_files
     check_data_part_files = BackupLayout.check_data_part_files
@@ -155,7 +169,9 @@ class FakeLayout:
             self.get_cloud_storage_path(backup_name), "cloud_storage", disk_name
         )
 
-    def get_backup(self, backup_name, use_light_meta=False):
+    def get_backup(self, backup_name, use_light_meta=False, *, allow_pending=False):
+        if backup_name in self.pending and not allow_pending:
+            raise StorageError(f"Backup {backup_name} is pending deletion")
         backup = self.backups.get(backup_name)
         return copy.deepcopy(backup) if backup else None
 
@@ -1647,10 +1663,13 @@ def test_cloud_storage_unsupported_metadata() -> None:
 
 
 @pytest.mark.parametrize("version", [3, 5])
-@pytest.mark.parametrize("linked", [False, True])
+@pytest.mark.parametrize(
+    "linked,owner_status",
+    [(False, "legacy"), (True, "legacy"), (True, "pending"), (True, "descriptor")],
+)
 @pytest.mark.parametrize("source_path_override", [None, "other/path"])
 def test_full_cloud_storage_copy(
-    version: int, linked: bool, source_path_override: str | None
+    version: int, linked: bool, owner_status: str, source_path_override: str | None
 ) -> None:
     part = {
         **_part(
@@ -1672,6 +1691,11 @@ def test_full_cloud_storage_copy(
     # A retained, partially deleted backup is still a valid source for linked data.
     owner.state = BackupState.PARTIALLY_DELETED
     ctx = CopyTestContext([backup, owner])
+    if owner_status != "legacy":
+        ctx.layout.pending.add("base")
+    if owner_status == "descriptor":
+        del ctx.layout.backups["base"]
+        ctx.layout.descriptors["base"] = CloudStorageBackup("base", owner.cloud_storage)
     ctx.target_config["copy"]["cloud_storage"]["source"]["path"] = source_path_override
     ctx.target_config["copy"]["server_side_copy_mode"] = "disabled"
     source_name = "base" if linked else "backup_1"
@@ -3674,3 +3698,13 @@ def test_cloud_storage_selection_only_with_data(only_with_data, names):
     expected = ["b1"] if only_with_data else (["empty"] if names else ["b1", "empty"])
     assert copied == expected
     assert not skipped
+
+
+@pytest.mark.parametrize("pending_side", ["source", "target"])
+def test_pending_backups_do_not_block_independent_copy(pending_side):
+    """Automatic source selection and target reservation skip deletion intents."""
+    ctx = CopyTestContext([_backup("good")])
+    layout = ctx.layout if pending_side == "source" else ctx.target_layout
+    layout.pending.add("retired")
+    assert ctx.copy() == (["good"], [])
+    assert "retired" not in ctx.target_layout.backups

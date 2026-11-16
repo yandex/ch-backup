@@ -32,7 +32,7 @@ from humanfriendly import format_timespan
 from tabulate import tabulate
 
 from ch_backup.command_context import command_context
-from ch_backup.exceptions import ConfigurationError, TerminatingSignal
+from ch_backup.exceptions import BackupNotFound, ConfigurationError, TerminatingSignal
 
 from . import logging
 from .backup.copy_deduplication import copy_deduplication_cutoff
@@ -289,15 +289,16 @@ def list_command(
     """List existing backups."""
     if include_unreadable and not verbose:
         _ctx.fail("--include-unreadable requires --verbose")
-    state = None if all_ else BackupState.CREATED
-
     unreadable: dict[str, str] = {}
-    backups = ch_backup.list(state, unreadable=unreadable)
+    backups = ch_backup.list(
+        None if all_ else BackupState.CREATED, unreadable=unreadable
+    )
     if not (all_ or include_unreadable):
         unreadable.clear()
 
+    pending = ch_backup.pending_deletions() if all_ else {}
     if not verbose:
-        print("\n".join([b.name for b in backups]))
+        print("\n".join([b.name for b in backups] + sorted(pending)))
         return
 
     records = []
@@ -337,6 +338,25 @@ def list_command(
             record["metadata_error"] = None
         records.append(record)
 
+    for name, marker in sorted(pending.items()):
+        record = {
+            key: None
+            for key in (
+                records[0]
+                if records
+                else ("name", "state", "start_time", "end_time", "size", "real_size")
+            )
+        }
+        record.update(
+            name=name,
+            state=marker["state"],
+            delete_pending=(
+                marker
+                if format_ == "json"
+                else "\n".join(marker["referenced_by"] or [])
+            ),
+        )
+        records.append(record)
     for name, error in sorted(unreadable.items()):
         record = dict.fromkeys(
             (
@@ -942,6 +962,11 @@ def fix_admin_user_command(
 @command(name="delete")  # type: ignore
 @argument("name", metavar="BACKUP")
 @option(
+    "--delete-unreadable",
+    is_flag=True,
+    help="Devalue backups without readable metadata; keep referenced data and retry via deletion markers.",
+)
+@option(
     "--purge-partial",
     is_flag=True,
     default=False,
@@ -955,24 +980,29 @@ def fix_admin_user_command(
     help="Do nothing if backup does not exist",
 )
 def delete_command(
-    ctx: Context,
+    _ctx: Context,
     ch_backup: ClickhouseBackup,
     name: str,
     purge_partial: bool,
     force: bool,
+    *,
+    delete_unreadable: bool = False,
 ) -> None:
     """Delete particular backup."""
     try:
-        name = _validate_and_resolve_name(ctx, ch_backup, name)
-    except Exception:
+        if delete_unreadable:
+            deleted_backup_name, msg = ch_backup.delete(
+                name, purge_partial, delete_unreadable=True
+            )
+        else:
+            deleted_backup_name, msg = ch_backup.delete(name, purge_partial)
+    except BackupNotFound:
         if force:
             logging.info(
                 f"Attempt to delete a non-existent backup '{name}' was skipped"
             )
             return
         raise
-
-    deleted_backup_name, msg = ch_backup.delete(name, purge_partial)
 
     if msg:
         print(msg, file=sys.stderr, flush=True)
@@ -1152,9 +1182,20 @@ def copy_command(
 
 
 @command(name="purge")
-def purge_command(_ctx: Context, ch_backup: ClickhouseBackup) -> None:
+@option(
+    "--delete-unreadable",
+    is_flag=True,
+    help="Devalue backups without readable metadata under retention; preserve referenced data.",
+)
+def purge_command(
+    _ctx: Context, ch_backup: ClickhouseBackup, delete_unreadable: bool = False
+) -> None:
     """Purge outdated backups."""
-    names, msg = ch_backup.purge()
+    names, msg = (
+        ch_backup.purge(delete_unreadable=True)
+        if delete_unreadable
+        else ch_backup.purge()
+    )
 
     if msg:
         print(msg, file=sys.stderr, flush=True)

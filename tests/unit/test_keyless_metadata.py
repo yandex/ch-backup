@@ -40,6 +40,10 @@ def make_layout(key: str | None = None) -> BackupLayout:
     config["backup"]["path_root"] = "backups"
     config["encryption"].update(key=key, chunk_size=64)
     with patch("ch_backup.backup.layout.StorageLoader") as loader:
+        loader.return_value.path_exists.side_effect = lambda path: path.endswith(
+            ("backup_struct.json", "backup_light_struct.json")
+        )
+        loader.return_value.list_dir.return_value = []
         loader.return_value.decrypt_data.side_effect = partial(
             decrypt_data_pipeline, config
         )

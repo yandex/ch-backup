@@ -1,5 +1,6 @@
 """Coordination of operations touching more than one storage."""
 
+import fcntl
 from contextlib import contextmanager
 from unittest.mock import MagicMock, call, patch
 
@@ -262,3 +263,17 @@ def test_copy_reports_errors_before_copier_runs(failed_stage):
     assert raised.value is failure
     assert report.error == f"RuntimeError: {failed_stage} failed"
     assert not report.backups
+
+
+def test_file_lock_excludes_other_readers_and_releases_on_exit(tmp_path):
+    """Writers sharing a file lock cannot overlap, and failures release the lock."""
+    path = tmp_path / "writers.lock"
+    path.touch()
+    manager = LockManager({"flock": True, "flock_path": str(path)}, None)
+    with path.open() as other:
+        with pytest.raises(RuntimeError, match="writer failed"):
+            with manager(operation="BACKUP"):
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(other, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                raise RuntimeError("writer failed")
+        fcntl.flock(other, fcntl.LOCK_SH | fcntl.LOCK_NB)

@@ -418,7 +418,7 @@ Behavior and limitations:
 - Copy acquires the configured source and target locks through completion, including retries and
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
   and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.
-  Locking remains optional; the local file lock retains its shared semantics.
+  Locking remains optional for ordinary operations; local file locks are exclusive.
 - Set `multiprocessing.metadata_read_threads` in the target configuration to control parallel
   source and target light-metadata reads at copy startup (default: `4`, positive integer).
   Each batch holds at most this many reads; set `1` for sequential reading.
@@ -758,4 +758,54 @@ When light metadata is missing or unreadable, backup listing falls back to full
 metadata. This keeps deduplication references visible to `delete` and `purge`.
 Deleting a backup with readable full metadata preserves referenced parts and
 rewrites its light metadata through the normal deletion path. A referenced backup
-whose full metadata cannot be read is not partially deleted.
+whose full metadata cannot be read is not partially deleted by default.
+
+To explicitly devalue a backup whose manifests cannot be read, enable the shared
+ZooKeeper writer lock and use:
+
+```sh
+ch-backup delete BACKUP --delete-unreadable
+ch-backup purge --delete-unreadable
+```
+
+The equivalent persistent setting is `backup.delete_unreadable: true` (default:
+`false`). `lock.zk_flock` must be enabled, with the same ZooKeeper ensemble and
+lock path for every backup, copy, delete and purge writer sharing the storage.
+Upgrade all these writers before enabling the policy; older versions do not
+honor deletion markers. File locks alone cannot coordinate different hosts.
+
+`delete` devalues only its explicit target, and refuses to proceed if another
+unmarked backup has unknown references. With retention configured, `purge
+--delete-unreadable` also devalues unreadable candidates whose retention time
+cannot be established. Missing metadata, corrupt metadata and read failures are
+recorded separately as `missing_metadata`, `corrupt_metadata` and
+`metadata_unavailable`. A temporary S3 failure can therefore devalue a selected
+backup when the policy is explicitly enabled. Listing failures and unreadable
+markers always stop deletion.
+
+Before deleting any data, the command writes `<backup>/delete_pending.json`.
+It records the original request time, current state, the last successful
+`referenced_by` snapshot and its check time. The snapshot is diagnostic: each
+attempt rereads the complete retained inventory. Referenced ordinary parts are
+kept whole, and referenced cloud data and disk metadata are kept as a group.
+The marker remains `partially_deleted` while references exist, even if manifests
+later become readable. Such a backup cannot be restored independently or become
+a new deduplication source; existing dependent backups can still read its data.
+Use `list -a -v --format=json` to see deletion intents and their reference snapshot.
+
+Existing markers are retried by `delete BACKUP`, `delete BACKUP --purge-partial`
+and `purge`, without repeating `--delete-unreadable`. `purge` retries them even
+without retention settings. Once the last reference disappears, cleanup removes
+the remaining data and deletes the marker last. Frozen data is not automatically
+unfrozen when the original/copy provenance is unknown.
+
+New completed cloud backups publish `cloud_storage_info.json` alongside their
+manifests. This small descriptor preserves cloud restore settings, including the
+non-secret encryption identity, so dependent restore and copy can read data after
+both manifests are lost. It is not a substitute full manifest. New cloud writers
+also claim an empty sanitized cloud prefix using `.cloud_storage_owner.json`
+before writing payload. A claim never adopts pre-existing legacy cloud objects.
+Without a valid ownership claim, unreferenced legacy cloud objects remain pending
+with an explicit error. Without readable manifests or a cloud descriptor, linked
+cloud restore fails explicitly; its settings cannot be recovered reliably from
+object names. No estimated backup date is used to authorize data deletion.

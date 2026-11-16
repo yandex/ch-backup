@@ -6,7 +6,7 @@ import os
 import socket
 import sys
 from contextlib import ExitStack, contextmanager
-from fcntl import LOCK_SH, flock
+from fcntl import LOCK_EX, flock
 from functools import partial
 from types import TracebackType
 from typing import Any, Callable, Iterator, Sequence
@@ -26,7 +26,7 @@ def storage_locks(configs: Sequence[Config], operation: str) -> Iterator[None]:
 
     These are the same advisory locks used by delete/purge. ZooKeeper lock identity
     depends on the ensemble and path, not the storage credentials or caller identity.
-    File locks retain their existing shared semantics.
+    File locks are exclusive across writers on the same host.
     """
     resources: dict[tuple, tuple[dict, dict | None]] = {}
     for config in configs:
@@ -156,7 +156,7 @@ class LockManager:
                 pass
         lock_file = open(self._process_lockfile_path, "r", encoding="utf-8")
         stack.push(partial(self._release_resource, lock_file.close))
-        flock(lock_file, LOCK_SH)
+        flock(lock_file, LOCK_EX)
 
     def _zk_flock(self, stack: ExitStack) -> None:
         """
