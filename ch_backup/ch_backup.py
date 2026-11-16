@@ -600,7 +600,10 @@ class ClickhouseBackup:
 
             if blocking := set(unreadable) - {backup_name}:
                 raise StorageError(
-                    f"Failed to read metadata of backups: {', '.join(sorted(blocking))}"
+                    f"Failed to read metadata of backups: {', '.join(sorted(blocking))}. "
+                    f"Backup {backup_name} cannot be deleted: references of these backups "
+                    "to data parts are unknown. Fix their metadata, or delete them first "
+                    "if no other backup references them."
                 )
             if not found and backup_name not in unreadable:
                 raise BackupNotFound(backup_name)
