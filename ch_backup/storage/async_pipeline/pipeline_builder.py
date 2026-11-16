@@ -107,9 +107,10 @@ class PipelineBuilder:
         queue_size = stage_config["queue_size"]
 
         self.append(
-            thread_map(
+            thread_flat_map(
                 DecompressStage(
                     compressor,
+                    self._config[WriteFilesStage.stype]["chunk_size"],
                 ),
                 maxsize=queue_size,
             )

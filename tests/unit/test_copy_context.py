@@ -4,10 +4,14 @@ Unit tests for the journal of copied objects.
 
 import gzip
 import json
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from ch_backup.backup.copy_context import CopyContext, FailedObjects
+from ch_backup.backup.copy_index import CopyEntries
 from ch_backup.backup.metadata import CopyScope
 from ch_backup.exceptions import StorageError
 from ch_backup.storage.object_copy import CopyEntry, storage_id
@@ -29,8 +33,32 @@ class MemoryEngine:
         self.upload_error: Exception | None = None
 
     def list_dir_with_sizes(self, remote_path: str) -> dict[str, int]:
+        """Collect all pages for callers that need a complete fixture listing."""
+        result: dict[str, int] = {}
+        continuation = None
+        while True:
+            page, continuation = self.read_listing_page(remote_path, continuation)
+            result.update(page)
+            if continuation is None:
+                return result
+
+    def read_listing_page(
+        self, remote_path: str, continuation: str | None = None
+    ) -> tuple[list[tuple[str, int]], str | None]:
+        """Read at most 128 fixture objects after the continuation key."""
         prefix = remote_path.strip("/") + "/"
-        return {k: len(v) for k, v in self.objects.items() if k.startswith(prefix)}
+        entries = sorted(
+            (k, len(v))
+            for k, v in self.objects.items()
+            if k.startswith(prefix) and (continuation is None or k > continuation)
+        )
+        page = entries[:128]
+        return page, page[-1][0] if len(entries) > 128 else None
+
+    def download_file(self, remote_path, local_path):
+        """Save an object to the requested scratch file."""
+        with open(local_path, "wb") as output:
+            output.write(self.download_data(remote_path))
 
     def upload_data(self, data: bytes, remote_path: str) -> str:
         if self.upload_error:
@@ -221,7 +249,7 @@ def test_manifest_keeps_locations_without_credentials() -> None:
         },
     }
     entry = CopyEntry(storage, STORAGE, "src/a", "dst/a", 3, 3)
-    context.save_manifest(CopyScope.FILES, [entry])
+    context.save_manifest(CopyScope.FILES, CopyEntries([entry]))
 
     resumed = _context(engine)
     resumed.load()
@@ -229,5 +257,63 @@ def test_manifest_keeps_locations_without_credentials() -> None:
     assert not resumed.has_records()
     assert b"secret" not in gzip.decompress(next(iter(engine.objects.values())))
     loaded = resumed.load_manifest(CopyScope.FILES)
-    assert [(e.src_path, e.dst_path, e.size) for e in loaded] == [("src/a", "dst/a", 3)]
-    assert [storage_id(e.src_storage) for e in loaded] == [storage_id(storage)]
+    batch, continuation = loaded.read_batch(limit=128)
+    assert continuation is None
+    assert [(e.src_path, e.dst_path, e.size) for e in batch] == [("src/a", "dst/a", 3)]
+    assert [storage_id(e.src_storage) for e in batch] == [storage_id(storage)]
+
+
+def test_downloads_use_private_parent_and_clean_up() -> None:
+    """Protect neighbouring boto3 files even if the downloader uses public file modes."""
+    engine = MemoryEngine()
+    context = _context(engine)
+    entry = _entry("a")
+    context.record(entry)
+    context.flush(force=True)
+    context.save_manifest(CopyScope.FILES, CopyEntries([entry]))
+    paths = []
+
+    def replace_download(remote_path, local_path):
+        """Mimic boto3 writing a neighbour and renaming it to the destination."""
+        destination = Path(local_path)
+        assert destination.parent.stat().st_mode & 0o077 == 0
+        temporary = destination.with_suffix(".download")
+        temporary.write_bytes(engine.download_data(remote_path))
+        temporary.chmod(0o644)
+        temporary.replace(destination)
+        paths.append(destination)
+
+    resumed = _context(engine)
+    with patch.object(engine, "download_file", side_effect=replace_download):
+        resumed.load()
+        assert resumed.is_recorded(entry)
+        batch, _ = resumed.load_manifest(CopyScope.FILES).read_batch()
+        assert batch[0].src_path == entry.src_path
+    assert len(paths) == 2
+    assert all(not path.parent.exists() for path in paths)
+
+
+def test_failed_downloads_remove_private_directory() -> None:
+    """Remove neighbouring partial downloads on journal and manifest failures."""
+    engine = MemoryEngine()
+    context = _context(engine)
+    context.record(_entry("a"))
+    context.flush(force=True)
+    directories = []
+
+    def fail_download(_remote_path, local_path):
+        """Leave the same partial neighbour as a failed downloader could."""
+        path = Path(local_path)
+        assert path.parent.stat().st_mode & 0o077 == 0
+        path.with_suffix(".partial").write_bytes(b"partial")
+        directories.append(path.parent)
+        raise StorageError("download failed")
+
+    resumed = _context(engine)
+    with patch.object(engine, "download_file", side_effect=fail_download):
+        resumed.load()
+        assert not resumed.has_records()
+        with pytest.raises(StorageError, match="download failed"):
+            resumed.load_manifest(CopyScope.FILES)
+    assert len(directories) == 2
+    assert all(not directory.exists() for directory in directories)
