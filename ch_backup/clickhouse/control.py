@@ -204,8 +204,7 @@ GET_RUNNING_REFRESHABLE_MATERIALIZED_VIEWS_SQL = strip_query(
         database,
         view
     FROM system.view_refreshes
-    WHERE database IN {databases}
-      AND status = 'Running'
+    WHERE status = 'Running'
     FORMAT JSON
 """
 )
@@ -1241,27 +1240,20 @@ class ClickhouseCTL:
             timeout=self._restore_replica_timeout,
         )
 
-    def _get_running_refreshable_materialized_views(
-        self, databases: Sequence[str]
-    ) -> list[tuple[str, str]]:
-        if not databases or not self.ch_version_ge("23.12"):
+    def _get_running_refreshable_materialized_views(self) -> list[tuple[str, str]]:
+        if not self.ch_version_ge("23.12"):
             return []
 
-        query_sql = GET_RUNNING_REFRESHABLE_MATERIALIZED_VIEWS_SQL.format(
-            databases=_format_string_array(databases)
-        )
         return [
             (row["database"], row["view"])
-            for row in self._ch_client.query(query_sql)["data"]
+            for row in self._ch_client.query(
+                GET_RUNNING_REFRESHABLE_MATERIALIZED_VIEWS_SQL
+            )["data"]
         ]
 
-    def _wait_for_refreshable_materialized_views_to_stop(
-        self, databases: Sequence[str]
-    ) -> None:
+    def _wait_for_refreshable_materialized_views_to_stop(self) -> None:
         deadline = time.monotonic() + self._refreshable_views_stop_timeout
-        while running_views := self._get_running_refreshable_materialized_views(
-            databases
-        ):
+        while running_views := self._get_running_refreshable_materialized_views():
             if time.monotonic() >= deadline:
                 views = ", ".join(
                     f"{database}.{view}" for database, view in running_views
@@ -1282,7 +1274,7 @@ class ClickhouseCTL:
 
         self._ch_client.query(SYSTEM_STOP_VIEWS_SQL)
         try:
-            self._wait_for_refreshable_materialized_views_to_stop(databases)
+            self._wait_for_refreshable_materialized_views_to_stop()
             yield
         except BaseException:
             try:
