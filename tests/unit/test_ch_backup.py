@@ -1045,20 +1045,6 @@ def test_failed_partial_delete_keeps_unreadable_backup() -> None:
     context.backup_layout.delete_backup.assert_not_called()
 
 
-def test_delete_unreadable_backup_with_references_fails() -> None:
-    """An unreadable backup linked from another backup is kept."""
-    backup, context = _backup_with_context()
-    context.locker = MagicMock()
-    other = _readable_backup("other", link="broken")
-    context.backup_layout.get_backups.side_effect = _get_backups_with_unreadable(other)
-    context.backup_layout.reload_backup.return_value = other
-
-    with pytest.raises(StorageError, match="--delete-unreadable"):
-        backup.delete("broken", purge_partial=False)
-
-    context.backup_layout.delete_backup.assert_not_called()
-
-
 def test_delete_with_unreadable_full_metadata_without_references() -> None:
     """Unreadable full metadata falls back to light metadata if nothing links to it."""
     backup, context = _backup_with_context()

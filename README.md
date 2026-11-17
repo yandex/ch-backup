@@ -760,52 +760,23 @@ Deleting a backup with readable full metadata preserves referenced parts and
 rewrites its light metadata through the normal deletion path. A referenced backup
 whose full metadata cannot be read is not partially deleted by default.
 
-To explicitly devalue a backup whose manifests cannot be read, enable the shared
-ZooKeeper writer lock and use:
+Use `ch-backup delete BACKUP --delete-unreadable` or `ch-backup purge
+--delete-unreadable` to devalue unreadable backups (`backup.delete_unreadable: true`
+in config; default `false`). This includes temporary S3 read failures. Upgrade all
+writers first, enable `lock.zk_flock`, and use the same ZooKeeper ensemble/path
+for operations sharing storage. Explicit delete affects only its target; purge with retention also
+includes unreadable candidates whose age cannot be determined. Unknown references
+in retained backups, listing failures and unreadable markers stop deletion.
 
-```sh
-ch-backup delete BACKUP --delete-unreadable
-ch-backup purge --delete-unreadable
-```
+`delete_pending.json` preserves the intent even if manifests return. Each attempt
+rereads retained references, keeps shared parts and cloud data, and records
+`referenced_by`; see `list -a -v --format=json`. Marked backups cannot be restored
+independently or reused for new deduplication. Existing dependent backups retain
+access. `delete BACKUP`, `delete BACKUP --purge-partial` and `purge` retry cleanup
+without the flag; purge retries even without retention. The marker is deleted last.
+Unknown original/copy provenance prevents automatic UNFREEZE.
 
-The equivalent persistent setting is `backup.delete_unreadable: true` (default:
-`false`). `lock.zk_flock` must be enabled, with the same ZooKeeper ensemble and
-lock path for every backup, copy, delete and purge writer sharing the storage.
-Upgrade all these writers before enabling the policy; older versions do not
-honor deletion markers. File locks alone cannot coordinate different hosts.
-
-`delete` devalues only its explicit target, and refuses to proceed if another
-unmarked backup has unknown references. With retention configured, `purge
---delete-unreadable` also devalues unreadable candidates whose retention time
-cannot be established. Missing metadata, corrupt metadata and read failures are
-recorded separately as `missing_metadata`, `corrupt_metadata` and
-`metadata_unavailable`. A temporary S3 failure can therefore devalue a selected
-backup when the policy is explicitly enabled. Listing failures and unreadable
-markers always stop deletion.
-
-Before deleting any data, the command writes `<backup>/delete_pending.json`.
-It records the original request time, current state, the last successful
-`referenced_by` snapshot and its check time. The snapshot is diagnostic: each
-attempt rereads the complete retained inventory. Referenced ordinary parts are
-kept whole, and referenced cloud data and disk metadata are kept as a group.
-The marker remains `partially_deleted` while references exist, even if manifests
-later become readable. Such a backup cannot be restored independently or become
-a new deduplication source; existing dependent backups can still read its data.
-Use `list -a -v --format=json` to see deletion intents and their reference snapshot.
-
-Existing markers are retried by `delete BACKUP`, `delete BACKUP --purge-partial`
-and `purge`, without repeating `--delete-unreadable`. `purge` retries them even
-without retention settings. Once the last reference disappears, cleanup removes
-the remaining data and deletes the marker last. Frozen data is not automatically
-unfrozen when the original/copy provenance is unknown.
-
-New completed cloud backups publish `cloud_storage_info.json` alongside their
-manifests. This small descriptor preserves cloud restore settings, including the
-non-secret encryption identity, so dependent restore and copy can read data after
-both manifests are lost. It is not a substitute full manifest. New cloud writers
-also claim an empty sanitized cloud prefix using `.cloud_storage_owner.json`
-before writing payload. A claim never adopts pre-existing legacy cloud objects.
-Without a valid ownership claim, unreferenced legacy cloud objects remain pending
-with an explicit error. Without readable manifests or a cloud descriptor, linked
-cloud restore fails explicitly; its settings cannot be recovered reliably from
-object names. No estimated backup date is used to authorize data deletion.
+New cloud backups store restore settings in `cloud_storage_info.json` and claim an
+empty cloud prefix with `.cloud_storage_owner.json`. Legacy cloud data without
+proven ownership remains pending. Dependent cloud restore/copy requires readable
+manifests or the descriptor; settings are never guessed from object names.

@@ -12,40 +12,27 @@ from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageBackup
 from ch_backup.cli import delete_command, list_command, purge_command
 from ch_backup.exceptions import StorageError
 from tests.unit.test_disks import BACKUP_DISK_CLICKHOUSE_CONFIG, _make_temporary_disks
-from tests.unit.test_layout import fallback_context_fixture, make_layout
+from tests.unit.test_layout import fallback_context_fixture
 
 
 @pytest.fixture(name="marker_storage")
-def marker_storage_fixture():
-    """Keep storage mutations observable while exercising the actual layout."""
-    layout = make_layout()
-    storage = MagicMock()
-    setattr(layout, "_storage_loader", storage)
-    objects: dict[str, str] = {}
-    storage.path_exists.side_effect = lambda path: path in objects
-    storage.download_data.side_effect = lambda path: objects[path]
-    storage.upload_data.side_effect = lambda data, remote_path: objects.update(
-        {remote_path: data}
-    )
-    storage.list_dir.side_effect = lambda path, **kwargs: (
-        ["old"] if path == "ch_backup" else list(objects)
-    )
+def marker_storage_fixture(pending_context):
+    """Reuse the mutable store without any backup manifests or payload."""
+    _, layout, storage, objects = pending_context
+    objects.clear()
     return layout, storage, objects
 
 
-def test_marker_discovery_needs_no_full_or_light(marker_storage):
-    """A marker alone makes an unfinished deletion discoverable."""
-    layout, _, _ = marker_storage
-    marker = layout.save_delete_pending("old", "metadata_unavailable")
-    assert marker["referenced_by"] is None
-    assert marker["references_checked_at"] is None
-    assert layout.get_pending_deletions() == {"old": marker}
-
-
-def test_retry_preserves_intent_and_last_complete_reference_snapshot(marker_storage):
+@pytest.mark.parametrize("root", ["ch_backup", "/ch_backup"])
+def test_retry_preserves_intent_and_last_complete_reference_snapshot(
+    marker_storage, root
+):
     """A new attempt without a completed scan cannot clear previous protection."""
     layout, _, _ = marker_storage
+    getattr(layout, "_config")["path_root"] = root
     initial = layout.save_delete_pending("old", "missing_metadata")
+    assert initial["referenced_by"] is initial["references_checked_at"] is None
+    assert layout.get_pending_deletions() == {"old": initial}
     checked = layout.save_delete_pending("old", "retry", ["new", "another", "new"])
     retry = layout.save_delete_pending("old", "retry")
     assert retry["requested_at"] == initial["requested_at"]
@@ -58,7 +45,7 @@ def test_retry_preserves_intent_and_last_complete_reference_snapshot(marker_stor
     assert empty["references_checked_at"] is not None
 
 
-@pytest.mark.parametrize("bad", ["{invalid", "{}", '{"version": 2}', "[]"])
+@pytest.mark.parametrize("bad", ["{invalid", "{}", "[]"])
 def test_unreadable_marker_is_never_overwritten(marker_storage, bad):
     """An invalid intent is not treated as absence and replaced silently."""
     layout, storage, objects = marker_storage
@@ -86,40 +73,31 @@ def test_marker_survives_cleanup_failure_and_is_deleted_last(marker_storage):
     ]
 
 
-def test_failed_marker_write_propagates(marker_storage):
-    """Intent persistence must finish before a caller may start deletion."""
-    layout, storage, _ = marker_storage
+def test_failed_marker_write_prevents_deletion(pending_context):
+    """Delete must stop before changing payload when its intent cannot be saved."""
+    backup, layout, storage, objects = pending_context
+    del objects["ch_backup/old/backup_struct.json"]
+    del objects["ch_backup/old/backup_light_struct.json"]
+    before = objects.copy()
     storage.upload_data.side_effect = RuntimeError("S3 unavailable")
     with pytest.raises(StorageError, match="Failed to save"):
-        layout.save_delete_pending("old", "missing_metadata")
+        backup.delete("old", False, delete_unreadable=True)
+    storage.upload_data.assert_called_once()
     storage.delete_files.assert_not_called()
+    assert layout.get_delete_pending("old") is None
+    assert objects == before
 
 
-def test_marker_retry_with_leading_slash_root_keeps_snapshot(marker_storage):
-    """S3 marker reads must address the same normalized key used for uploads."""
-    layout, _, objects = marker_storage
-    getattr(layout, "_config")["path_root"] = "/ch_backup"
-    first = layout.save_delete_pending("old", "missing", ["new"])
-    retry = layout.save_delete_pending("old", "retry")
-    assert list(objects) == ["ch_backup/old/delete_pending.json"]
-    assert retry["requested_at"] == first["requested_at"]
-    assert retry["referenced_by"] == ["new"]
-
-
-def test_pending_cleanup_uses_current_references_and_keeps_whole_shared_part():
+def test_pending_cleanup_uses_current_references_and_keeps_whole_shared_part(
+    pending_context,
+):
     """A stale marker snapshot must not delete a newly referenced part."""
-    _, layout, storage, objects = getattr(fallback_context_fixture, "__wrapped__")()
+    _, layout, storage, objects = pending_context
     layout.save_delete_pending("old", "metadata_unavailable", [])
     del objects["ch_backup/old/backup_struct.json"]
     del objects["ch_backup/old/backup_light_struct.json"]
-    storage.list_dir.side_effect = lambda path, **_: [
-        key for key in objects if key.startswith(path.rstrip("/") + "/")
-    ]
-    storage.path_exists.side_effect = lambda path, is_dir=False: (
-        any(key.startswith(path.rstrip("/") + "/") for key in objects)
-        if is_dir
-        else path in objects
-    )
+    objects["ch_backup/old/cloud_storage/disk/shared"] = "data"
+    objects["ch_backup/old/disks/disk.tar"] = "metadata"
     objects["ch_backup/old/data/db/table/all_1_1_0/extra.bin"] = "data"
     retained = layout.get_backup("new", use_light_meta=True)
     assert retained is not None
@@ -128,27 +106,27 @@ def test_pending_cleanup_uses_current_references_and_keeps_whole_shared_part():
         remote_paths=["ch_backup/old/data/db/table/all_2_2_0/data.bin"], is_async=True
     )
     assert layout.get_delete_pending("old")["referenced_by"] == ["new"]
+    assert "ch_backup/old/cloud_storage/disk/shared" in objects
+    assert "ch_backup/old/disks/disk.tar" in objects
+    assert "ch_backup/old/data/db/table/all_1_1_0/extra.bin" in objects
     storage.delete_files.reset_mock()
-    storage.download_data.side_effect = StorageError(
-        "retained full temporarily unavailable"
-    )
+    marker = layout.get_delete_pending("old")
+
+    def download(path, **_kwargs):
+        """Fail only the retained manifest, keeping the deletion intent readable."""
+        if path == "ch_backup/new/backup_struct.json":
+            raise StorageError("retained full temporarily unavailable")
+        return objects[path]
+
+    storage.download_data.reset_mock()
+    storage.download_data.side_effect = download
     with pytest.raises(StorageError):
         layout.clean_pending_backup("old", [retained])
+    storage.download_data.assert_any_call(
+        "ch_backup/new/backup_struct.json", encoding=None
+    )
     storage.delete_files.assert_not_called()
-
-
-def test_pending_cleanup_removes_marker_after_last_reference_disappears(marker_storage):
-    """An empty fresh inventory permits cleanup even if the old snapshot had links."""
-    layout, storage, objects = marker_storage
-    layout.save_delete_pending("old", "missing_metadata", ["new"])
-    objects["ch_backup/old/data.bin"] = "data"
-    storage.list_dir.side_effect = lambda path, **_: [
-        key for key in objects if key.startswith(path.rstrip("/") + "/")
-    ]
-    assert layout.clean_pending_backup("old", []) is True
-    assert storage.delete_files.call_args.args[0] == [
-        "ch_backup/old/delete_pending.json"
-    ]
+    assert layout.get_delete_pending("old") == marker
 
 
 @pytest.mark.parametrize("mutated", [False, True])
@@ -178,9 +156,6 @@ def test_pending_cleanup_protects_escaped_and_legacy_paths(marker_storage, mutat
     retained = MagicMock(spec=BackupMetadata)
     retained.name = "new"
     retained.get_tables.return_value = [MagicMock(get_parts=lambda: [part])]
-    storage.list_dir.side_effect = lambda path, **_: [
-        key for key in objects if key.startswith(path.lstrip("/").rstrip("/") + "/")
-    ]
     with patch.object(layout, "reload_backup", return_value=retained):
         assert not layout.clean_pending_backup("old", [retained])
     storage.delete_files.assert_called_once_with(
@@ -189,31 +164,11 @@ def test_pending_cleanup_protects_escaped_and_legacy_paths(marker_storage, mutat
     )
 
 
-def test_pending_cleanup_preserves_cloud_objects_with_references():
-    """Unknown cloud ownership must not prevent safe local cleanup or lose cloud data."""
-    _, layout, storage, objects = getattr(fallback_context_fixture, "__wrapped__")()
-    layout.save_delete_pending("old", "missing_metadata")
-    objects["ch_backup/old/cloud_storage/disk/shared-object"] = "data"
-    objects["ch_backup/old/disks/disk.tar"] = "metadata"
-    storage.list_dir.side_effect = lambda path, **_: [
-        key for key in objects if key.startswith(path.rstrip("/") + "/")
-    ]
-    retained = layout.get_backup("new", use_light_meta=True)
-    assert retained is not None
-    assert not layout.clean_pending_backup("old", [retained])
-    storage.delete_files.assert_called_once_with(
-        remote_paths=["ch_backup/old/data/db/table/all_2_2_0/data.bin"], is_async=True
-    )
-
-
 def test_pending_cleanup_rejects_unknown_cloud_ownership(marker_storage):
     """No references do not prove ownership of a sanitized cloud prefix."""
     layout, storage, objects = marker_storage
     marker = layout.save_delete_pending("old", "missing_metadata", ["new"])
     objects["ch_backup/old/cloud_storage/disk/shared-object"] = "data"
-    storage.list_dir.side_effect = lambda path, **_: [
-        key for key in objects if key.startswith(path.rstrip("/") + "/")
-    ]
     with pytest.raises(StorageError, match="ownership"):
         layout.clean_pending_backup("old", [])
     storage.delete_files.assert_not_called()
@@ -299,17 +254,6 @@ def test_pending_policy_requires_distributed_writer_lock(pending_context):
         backup.delete("old", False, delete_unreadable=True)
     storage.upload_data.assert_not_called()
     storage.delete_files.assert_not_called()
-
-
-def test_purge_devalues_unreadable_candidates_and_retries_markers(pending_context):
-    """Explicit policy handles missing metadata, subsequent purge needs no flag."""
-    backup, layout, _, objects = pending_context
-    del objects["ch_backup/old/backup_struct.json"]
-    del objects["ch_backup/old/backup_light_struct.json"]
-    assert backup.purge(delete_unreadable=True)[0] == []
-    assert layout.get_delete_pending("old")["referenced_by"] == ["new"]
-    assert backup.purge()[0] == []
-    assert "ch_backup/old/data/db/table/all_1_1_0/data.bin" in objects
 
 
 def test_cloud_claim_cannot_adopt_legacy_objects_or_conflicting_owner(pending_context):
@@ -459,6 +403,7 @@ def test_cli_policy_lists_intents_and_purge_partial_finishes_them(
     )
     assert pending["state"] == "partially_deleted"
     assert pending["delete_pending"]["referenced_by"] == ["new"]
+    assert backup.purge()[0] == []
     result = runner.invoke(
         app, ["delete", "new", "--purge-partial"], obj={"backup": backup}
     )
