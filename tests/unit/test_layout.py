@@ -5,6 +5,7 @@ import os
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from pathlib import Path
 from threading import Barrier, Event
 from unittest.mock import MagicMock, call, patch
 
@@ -759,6 +760,11 @@ def fallback_context_fixture():
     storage.upload_data.side_effect = lambda data, remote_path, **_: objects.update(
         {remote_path: data}
     )
+    storage.upload_file.side_effect = (
+        lambda local_path, remote_path, **_: objects.update(
+            {remote_path: Path(local_path).read_bytes()}
+        )
+    )
     backup = ClickhouseBackup.__new__(ClickhouseBackup)
     context = MagicMock(backup_layout=layout)
     context.config = {"retain_count": 1, "retain_time": {}}
@@ -783,6 +789,7 @@ def test_full_fallback_preserves_shared_parts_and_rewrites_target_light(
     assert [meta.name for meta in listed] == ["new", "old"]
     assert all(not meta.get_databases() for meta in listed)
     storage.upload_data.assert_not_called()
+    storage.upload_file.assert_not_called()
     if operation == "delete":
         backup.delete("old", False)
     elif operation == "purge":
@@ -820,6 +827,7 @@ def test_unreadable_full_still_blocks_deletion_with_references(
     with pytest.raises(ClickhouseBackupError):
         backup.delete("old", False)
     storage.upload_data.assert_not_called()
+    storage.upload_file.assert_not_called()
     storage.delete_files.assert_not_called()
 
 
@@ -831,4 +839,5 @@ def test_broken_light_without_full_is_not_silently_skipped(fallback_context):
     with pytest.raises(StorageError, match="new"):
         backup.delete("old", False)
     storage.upload_data.assert_not_called()
+    storage.upload_file.assert_not_called()
     storage.delete_files.assert_not_called()
