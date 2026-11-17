@@ -584,6 +584,15 @@ class ClickhouseBackup:
                 f"Availability check through ClickHouse failed: {error}"
             ) from error
 
+    def adopt_cloud_storage(self, backup_name: str) -> None:
+        """Record operator-confirmed legacy ownership under the shared writer lock."""
+        if self._context.lock_conf.get("zk_flock") is not True:
+            raise StorageError(
+                "Legacy adoption requires lock.zk_flock shared by all writers"
+            )
+        with self._context.locker(operation="ADOPT"):
+            self._context.backup_layout.claim_cloud_storage(backup_name, adopt=True)
+
     def delete(
         self, backup_name: str, purge_partial: bool, *, delete_unreadable: bool = False
     ) -> tuple[str | None, str | None]:

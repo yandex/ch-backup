@@ -780,3 +780,12 @@ New cloud backups store restore settings in `cloud_storage_info.json` and claim 
 empty cloud prefix with `.cloud_storage_owner.json`. Legacy cloud data without
 proven ownership remains pending. Dependent cloud restore/copy requires readable
 manifests or the descriptor; settings are never guessed from object names.
+
+For a pre-upgrade cloud backup with readable full metadata, use
+`ch-backup adopt-cloud-storage BACKUP --confirm-owner` before delete/purge.
+Enable the shared `lock.zk_flock` first. The flag asserts that the entire sanitized
+prefix belongs exclusively to this backup, including historical objects; verify
+that from the storage's backup history before running it. The command rejects
+conflicting names, metadata or owner claims and writes no payload. It cannot prove
+historical ownership from LIST; leave ambiguous prefixes unclaimed. A successful
+adoption unblocks strict inventory and permits later cleanup of that cloud prefix.

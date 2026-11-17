@@ -12,7 +12,12 @@ from ch_backup.backup.deduplication import (
 )
 from ch_backup.backup.metadata import BackupMetadata, CloudStorageMetadata, PartMetadata
 from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageBackup
-from ch_backup.cli import delete_command, list_command, purge_command
+from ch_backup.cli import (
+    adopt_cloud_storage_command,
+    delete_command,
+    list_command,
+    purge_command,
+)
 from ch_backup.exceptions import StorageError
 from tests.unit.test_disks import BACKUP_DISK_CLICKHOUSE_CONFIG, _make_temporary_disks
 from tests.unit.test_layout import fallback_context_fixture
@@ -465,3 +470,77 @@ def test_cloud_cleanup_retry_keeps_intent_and_deletes_payload_once(
     ]
     assert deleted.count(cloud) == 1
     assert deleted[-1] == f"ch_backup/{name}/delete_pending.json"
+
+
+@pytest.fixture(name="legacy_cloud")
+def legacy_cloud_fixture(pending_context):
+    """Represent the old dashed-name layout without an ownership claim."""
+    backup, layout, storage, objects = pending_context
+    meta = layout.get_backup("old")
+    assert meta is not None
+    objects.clear()
+    meta.name = "legacy-backup"
+    meta.cloud_storage = CloudStorageMetadata(disks=["s3"], data_copied=True)
+    for light, filename in (
+        (False, "backup_struct.json"),
+        (True, "backup_light_struct.json"),
+    ):
+        objects[f"ch_backup/legacy-backup/{filename}"] = meta.dump_json(light=light)
+    objects["ch_backup/legacy_backup/disks/s3.tar"] = "metadata"
+    objects["ch_backup/legacy_backup/cloud_storage/s3/object"] = "payload"
+    return backup, layout, storage, objects
+
+
+def test_explicit_legacy_adoption_unblocks_delete(legacy_cloud):
+    """An operator can migrate a known legacy owner without changing its payload."""
+    backup, layout, _, objects = legacy_cloud
+    before = objects.copy()
+    with pytest.raises(StorageError, match="legacy_backup"):
+        backup.delete("legacy-backup", False)
+    runner = CliRunner()
+    app = Group(commands=[adopt_cloud_storage_command])
+    result = runner.invoke(
+        app, ["adopt-cloud-storage", "legacy-backup"], obj={"backup": backup}
+    )
+    assert result.exit_code != 0
+    assert objects == before
+    result = runner.invoke(
+        app,
+        ["adopt-cloud-storage", "legacy-backup", "--confirm-owner"],
+        obj={"backup": backup},
+    )
+    assert result.exit_code == 0, result.output
+    assert layout.cloud_storage_owned("legacy-backup")
+    assert all(objects[key] == value for key, value in before.items())
+    backup.adopt_cloud_storage("legacy-backup")
+    assert backup.delete("legacy-backup", False)[0] == "legacy-backup"
+    assert not objects
+
+
+@pytest.mark.parametrize(
+    "obstacle", ["full", "collision", "pending", "owner", "lock", "write"]
+)
+def test_legacy_adoption_refuses_unknown_or_conflicting_ownership(
+    legacy_cloud, obstacle
+):
+    """Failed validation or persistence never grants ownership or removes data."""
+    backup, layout, storage, objects = legacy_cloud
+    if obstacle == "full":
+        del objects["ch_backup/legacy-backup/backup_struct.json"]
+    elif obstacle == "collision":
+        objects["ch_backup/legacy_backup/backup_struct.json"] = "unreadable"
+    elif obstacle == "pending":
+        layout.save_delete_pending("legacy-backup", "missing_metadata")
+    elif obstacle == "owner":
+        objects["ch_backup/legacy_backup/.cloud_storage_owner.json"] = json.dumps(
+            {"version": 1, "backup_name": "legacy_backup"}
+        )
+    elif obstacle == "lock":
+        getattr(backup, "_context").lock_conf = {"zk_flock": False}
+    else:
+        storage.upload_data.side_effect = StorageError("S3 unavailable")
+    before = objects.copy()
+    with pytest.raises(StorageError):
+        backup.adopt_cloud_storage("legacy-backup")
+    assert objects == before
+    storage.delete_files.assert_not_called()

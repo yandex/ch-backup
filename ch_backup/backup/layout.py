@@ -672,11 +672,31 @@ class BackupLayout:
                 f"Invalid cloud storage ownership for {backup_name}"
             ) from error
 
-    def claim_cloud_storage(self, backup_name: str) -> None:
-        """Claim empty cloud directories under the writer lock; never adopt legacy data."""
-        if self.cloud_storage_owned(backup_name) or self._list_cloud_storage_files(
-            backup_name
-        ):
+    def claim_cloud_storage(self, backup_name: str, *, adopt: bool = False) -> None:
+        """Claim empty cloud directories, or adopt legacy data after explicit owner confirmation."""
+        if adopt:
+            backup = self.get_backup(backup_name)
+            if backup is None or not backup.cloud_storage.enabled:
+                raise StorageError(
+                    "Legacy adoption requires readable full cloud metadata"
+                )
+            sanitized = sanitize_backup_name(backup_name)
+            for name in self.get_backup_names():
+                if name == backup_name or sanitize_backup_name(name) != sanitized:
+                    continue
+                children = self._storage_loader.list_dir(
+                    self.get_backup_path(name), recursive=False, absolute=False
+                )
+                if (
+                    name != sanitized
+                    or not children
+                    or not set(children)
+                    <= {"disks", "cloud_storage", CLOUD_STORAGE_OWNER_FNAME}
+                ):
+                    raise StorageError(f"Cloud prefix conflicts with backup {name}")
+        if self.cloud_storage_owned(backup_name):
+            return
+        if not adopt and self._list_cloud_storage_files(backup_name):
             return
         path = os.path.join(
             self.get_cloud_storage_path(backup_name), CLOUD_STORAGE_OWNER_FNAME

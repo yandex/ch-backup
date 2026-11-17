@@ -959,6 +959,26 @@ def fix_admin_user_command(
     ch_backup.fix_admin_user(dry_run=dryrun)
 
 
+@command(name="adopt-cloud-storage")
+@argument("name", metavar="BACKUP")
+@option(
+    "--confirm-owner",
+    is_flag=True,
+    required=True,
+    help="Confirm that the entire sanitized cloud prefix belongs exclusively to BACKUP, including historical objects.",
+)
+def adopt_cloud_storage_command(
+    ctx: Context, ch_backup: ClickhouseBackup, name: str, confirm_owner: bool
+) -> None:
+    """Record explicitly confirmed ownership of legacy cloud data."""
+    if not confirm_owner:
+        ctx.fail(
+            "--confirm-owner is required; ownership cannot be inferred from object names"
+        )
+    ch_backup.adopt_cloud_storage(name)
+    print(name)
+
+
 @command(name="delete")  # type: ignore
 @argument("name", metavar="BACKUP")
 @option(
