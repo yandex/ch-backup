@@ -260,6 +260,8 @@ def test_returning_manifests_do_not_cancel_intent(pending_context):
         layout.get_backup("old")
     assert backup.delete("old", False)[0] is None
     assert objects["ch_backup/old/backup_struct.json"]
+    assert "ch_backup/old/data/db/table/all_1_1_0/data.bin" in objects
+    assert "ch_backup/old/data/db/table/all_2_2_0/data.bin" not in objects
     assert layout.get_delete_pending("old")["referenced_by"] == ["new"]
 
 
@@ -279,7 +281,8 @@ def test_cloud_claim_cannot_adopt_legacy_objects_or_conflicting_owner(pending_co
     """Only an empty prefix can acquire ownership before any cloud write."""
     _, layout, _, objects = pending_context
     objects["ch_backup/old/cloud_storage/disk/legacy"] = "data"
-    layout.claim_cloud_storage("old")
+    with pytest.raises(StorageError, match="adopt-cloud-storage"):
+        layout.claim_cloud_storage("old")
     assert not layout.cloud_storage_owned("old")
     layout.claim_cloud_storage("fresh-backup")
     assert layout.cloud_storage_owned("fresh-backup")
@@ -381,7 +384,7 @@ def test_cloud_descriptor_is_published_before_created_manifests(pending_context)
 
 
 @pytest.mark.parametrize("field", ["link", "link_part_name"])
-@pytest.mark.parametrize("bad", [0, False, [], {}])
+@pytest.mark.parametrize("bad", [0, False, [], {}, ".", ".."])
 def test_malformed_retained_links_never_authorize_cleanup(pending_context, field, bad):
     """False-like malformed reference fields must not become an empty reference map."""
     backup, layout, storage, objects = pending_context
@@ -544,3 +547,25 @@ def test_legacy_adoption_refuses_unknown_or_conflicting_ownership(
         backup.adopt_cloud_storage("legacy-backup")
     assert objects == before
     storage.delete_files.assert_not_called()
+
+
+@pytest.mark.parametrize("name", ["plain", "with-dash"])
+@pytest.mark.parametrize("whole", [False, True])
+def test_cloud_deletion_requires_ownership_before_touching_payload(
+    pending_context, name, whole
+):
+    """Both deletion paths preserve unknown cloud data, including same-name prefixes."""
+    _, layout, storage, objects = pending_context
+    objects[f"ch_backup/{name}/data/part/data.bin"] = "local"
+    cloud = layout.get_cloud_storage_data_path(name) + "/s3/object"
+    objects[cloud] = "cloud"
+    before = objects.copy()
+    unfreeze = MagicMock()
+    with pytest.raises(StorageError, match="not owned"):
+        if whole:
+            layout.delete_backup(name, unfreeze)
+        else:
+            layout.delete_cloud_storage_data(name)
+    assert objects == before
+    storage.delete_files.assert_not_called()
+    unfreeze.assert_not_called()

@@ -697,7 +697,9 @@ class BackupLayout:
         if self.cloud_storage_owned(backup_name):
             return
         if not adopt and self._list_cloud_storage_files(backup_name):
-            return
+            raise StorageError(
+                f"Cloud prefix of {backup_name} is not owned; use adopt-cloud-storage after verifying its owner"
+            )
         path = os.path.join(
             self.get_cloud_storage_path(backup_name), CLOUD_STORAGE_OWNER_FNAME
         ).lstrip("/")
@@ -959,6 +961,7 @@ class BackupLayout:
                     ),
                     isinstance(part.deduplicated_part_name, str),
                     bool(part.deduplicated_part_name),
+                    part.deduplicated_part_name not in (".", ".."),
                     "/" not in part.deduplicated_part_name,
                 )
                 if not all(valid):
@@ -1624,6 +1627,11 @@ class BackupLayout:
         Delete backup data and metadata from storage.
         """
         owns_cloud = self.cloud_storage_owned(backup_name)
+        cloud_files = self._list_cloud_storage_files(backup_name)
+        if cloud_files and not owns_cloud:
+            raise StorageError(
+                f"Cloud prefix of {backup_name} is not owned; adopt it before deletion"
+            )
         backup_path = self.get_backup_path(backup_name)
         logging.debug("Deleting data in {}", backup_path)
         full_metadata = self._backup_metadata_path(backup_name)
@@ -1643,7 +1651,7 @@ class BackupLayout:
             path for path in deleting_files if path.lstrip("/") not in metadata_paths
         ]
         if self.get_cloud_storage_path(backup_name) != backup_path:
-            payload_files += self._list_cloud_storage_files(backup_name)
+            payload_files += cloud_files
         if payload_files:
             self._delete_files(payload_files)
         self.wait()
@@ -1731,7 +1739,12 @@ class BackupLayout:
         """
         logging.debug("Deleting cloud storage data of backup {}", backup_name)
 
-        self._delete_files(self._list_cloud_storage_files(backup_name))
+        files = self._list_cloud_storage_files(backup_name)
+        if files and not self.cloud_storage_owned(backup_name):
+            raise StorageError(
+                f"Cloud prefix of {backup_name} is not owned; adopt it before deletion"
+            )
+        self._delete_files(files)
 
     def _list_cloud_storage_files(self, backup_name: str) -> list[str]:
         """

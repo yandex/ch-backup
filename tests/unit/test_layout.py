@@ -524,6 +524,7 @@ class TestCloudStorageDataDeletion:
     def _make_layout() -> tuple[BackupLayout, MagicMock]:
         """Helper: build a BackupLayout that records paths passed for deletion."""
         layout = make_layout()
+        setattr(layout, "cloud_storage_owned", MagicMock(return_value=True))
         layout._storage_loader.list_dir.side_effect = lambda path, **_kwargs: [  # type: ignore[attr-defined]
             f"{path}/object"
         ]
@@ -566,11 +567,9 @@ class TestCloudStorageDataDeletion:
         delete_files = MagicMock()
         setattr(layout, "_delete_files", delete_files)
 
-        layout.delete_backup("my-backup", MagicMock())
-
-        assert delete_files.call_args.args[0] == [
-            "ch_backup/my_backup/disks/s3/db/table.tar",
-        ]
+        with pytest.raises(StorageError, match="not owned"):
+            layout.delete_backup("my-backup", MagicMock())
+        delete_files.assert_not_called()
 
     def test_delete_backup_without_dashes_deletes_the_path_once(self):
         """
@@ -603,11 +602,15 @@ def test_prefix_delete_keeps_light_metadata_until_retry_succeeds() -> None:
     layout._storage_loader = MagicMock()  # pylint: disable=protected-access
     storage = layout._storage_loader  # pylint: disable=protected-access
     storage.path_exists.return_value = False
-    storage.list_dir.return_value = [
-        "backups/old/data.tar",
-        "backups/old/backup_struct.json",
-        "backups/old/backup_light_struct.json",
-    ]
+    storage.list_dir.side_effect = lambda path, **_: (
+        [
+            "backups/old/data.tar",
+            "backups/old/backup_struct.json",
+            "backups/old/backup_light_struct.json",
+        ]
+        if path == "backups/old"
+        else []
+    )
     storage.wait.side_effect = [RuntimeError("async deletion failed"), None]
     unfreeze = MagicMock()
 

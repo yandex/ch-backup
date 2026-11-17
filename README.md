@@ -789,3 +789,7 @@ that from the storage's backup history before running it. The command rejects
 conflicting names, metadata or owner claims and writes no payload. It cannot prove
 historical ownership from LIST; leave ambiguous prefixes unclaimed. A successful
 adoption unblocks strict inventory and permits later cleanup of that cloud prefix.
+
+Writers also refuse nonempty cloud prefixes without an owner claim. Before
+resuming a legacy copy or deleting legacy cloud data, adopt its verified owner;
+readable manifests alone do not bypass the ownership check.
