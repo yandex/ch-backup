@@ -912,6 +912,10 @@ class BackupLayout:
                     ]
                     if len(owners) == 1 and self.cloud_storage_owned(owners[0]):
                         continue
+                if not self._storage_loader.list_dir(
+                    self.get_backup_path(name), recursive=True, absolute=False
+                ):
+                    continue
                 if unreadable is None:
                     raise StorageError(f"Missing metadata for backup {name}")
                 unreadable[name] = "missing_metadata"

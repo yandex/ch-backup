@@ -306,6 +306,18 @@ def test_cloud_cleanup_removes_claimed_payload_only_after_links_disappear(
     assert not objects
 
 
+@pytest.mark.parametrize("nonempty", [False, True])
+def test_strict_inventory_ignores_only_empty_prefixes(pending_context, nonempty):
+    """Empty directory prefixes left by storage do not block deletion."""
+    _, layout, _, objects = pending_context
+    if nonempty:
+        objects["ch_backup/deleted/metadata/table.sql"] = "metadata"
+    unreadable: dict[str, str] = {}
+    with patch.object(layout, "get_backup_names", return_value=["deleted"]):
+        assert not layout.get_backups(unreadable=unreadable, strict_inventory=True)
+    assert unreadable == ({"deleted": "missing_metadata"} if nonempty else {})
+
+
 def test_strict_inventory_requires_proof_for_cloud_companions(pending_context):
     """A similar name and cloud-only contents cannot hide unknown outgoing links."""
     _, layout, _, objects = pending_context
