@@ -994,7 +994,7 @@ def test_delete_unreadable_backup_without_references() -> None:
     assert msg and "Frozen data was kept" in msg
     context.backup_layout.save_delete_pending.assert_called_once()
     context.backup_layout.clean_pending_backup.assert_called_once_with(
-        "broken", [other]
+        "broken", {}, set()
     )
     context.ch_ctl.system_unfreeze.assert_not_called()
     context.backup_layout.upload_backup_metadata.assert_not_called()

@@ -966,10 +966,13 @@ class ClickhouseBackup:
                 raise StorageError(
                     "Pending deletion requires lock.zk_flock shared by all backup/copy/delete writers"
                 )
+        pending |= set(unreadable)
+        referenced_by: dict[str, set[str]] = {}
         references = collect_dedup_references_for_batch_backup_deletion(
             layout=layout,
             retained_backups_light_meta=retained,
-            deleting_backup_names={backup.name for backup in normal},
+            deleting_backup_names={backup.name for backup in normal} | pending,
+            referenced_by=referenced_by,
         )
         for name, reason in unreadable.items():
             layout.save_delete_pending(
@@ -981,13 +984,14 @@ class ClickhouseBackup:
                     else "metadata_unavailable"
                 ),
             )
-        pending |= set(unreadable)
         results = {}
         for backup in normal:
             results[backup.name] = self._delete(backup, references[backup.name])
         for name in sorted(pending):
             try:
-                complete = layout.clean_pending_backup(name, retained)
+                complete = layout.clean_pending_backup(
+                    name, references[name], referenced_by.get(name, set())
+                )
             except (Exception, TerminatingSignal) as error:
                 with suppress(Exception):
                     layout.save_delete_pending(

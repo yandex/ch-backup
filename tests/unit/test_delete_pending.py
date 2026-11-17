@@ -7,12 +7,26 @@ import pytest
 from click import Group
 from click.testing import CliRunner
 
+from ch_backup.backup.deduplication import (
+    collect_dedup_references_for_batch_backup_deletion,
+)
 from ch_backup.backup.metadata import BackupMetadata, CloudStorageMetadata, PartMetadata
 from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageBackup
 from ch_backup.cli import delete_command, list_command, purge_command
 from ch_backup.exceptions import StorageError
 from tests.unit.test_disks import BACKUP_DISK_CLICKHOUSE_CONFIG, _make_temporary_disks
 from tests.unit.test_layout import fallback_context_fixture
+
+
+def clean_pending(layout, retained):
+    """Collect references under the same contract as the deletion coordinator."""
+    owners: dict[str, set[str]] = {}
+    references = collect_dedup_references_for_batch_backup_deletion(
+        layout, retained, {"old"}, owners
+    )
+    return layout.clean_pending_backup(
+        "old", references["old"], owners.get("old", set())
+    )
 
 
 @pytest.fixture(name="marker_storage")
@@ -101,7 +115,7 @@ def test_pending_cleanup_uses_current_references_and_keeps_whole_shared_part(
     objects["ch_backup/old/data/db/table/all_1_1_0/extra.bin"] = "data"
     retained = layout.get_backup("new", use_light_meta=True)
     assert retained is not None
-    assert layout.clean_pending_backup("old", [retained]) is False
+    assert clean_pending(layout, [retained]) is False
     storage.delete_files.assert_called_once_with(
         remote_paths=["ch_backup/old/data/db/table/all_2_2_0/data.bin"], is_async=True
     )
@@ -121,7 +135,7 @@ def test_pending_cleanup_uses_current_references_and_keeps_whole_shared_part(
     storage.download_data.reset_mock()
     storage.download_data.side_effect = download
     with pytest.raises(StorageError):
-        layout.clean_pending_backup("old", [retained])
+        clean_pending(layout, [retained])
     storage.download_data.assert_any_call(
         "ch_backup/new/backup_struct.json", encoding=None
     )
@@ -157,7 +171,7 @@ def test_pending_cleanup_protects_escaped_and_legacy_paths(marker_storage, mutat
     retained.name = "new"
     retained.get_tables.return_value = [MagicMock(get_parts=lambda: [part])]
     with patch.object(layout, "reload_backup", return_value=retained):
-        assert not layout.clean_pending_backup("old", [retained])
+        assert not clean_pending(layout, [retained])
     storage.delete_files.assert_called_once_with(
         remote_paths=["ch_backup/old/data/db/my%2Dtable/all_2_2_0/data.bin"],
         is_async=True,
@@ -170,7 +184,7 @@ def test_pending_cleanup_rejects_unknown_cloud_ownership(marker_storage):
     marker = layout.save_delete_pending("old", "missing_metadata", ["new"])
     objects["ch_backup/old/cloud_storage/disk/shared-object"] = "data"
     with pytest.raises(StorageError, match="ownership"):
-        layout.clean_pending_backup("old", [])
+        clean_pending(layout, [])
     storage.delete_files.assert_not_called()
     assert layout.get_delete_pending("old") == marker
 
@@ -409,3 +423,45 @@ def test_cli_policy_lists_intents_and_purge_partial_finishes_them(
     )
     assert result.exit_code == 0, result.output
     assert not objects
+
+
+def test_batch_reads_retained_full_once_for_all_pending_backups(pending_context):
+    """A complete shared scan protects all targets without reloading per target."""
+    backup, layout, storage, _ = pending_context
+    for name in ("old", "another"):
+        layout.save_delete_pending(name, "missing_metadata")
+    storage.download_data.reset_mock()
+    backup.purge()
+    full_reads = [
+        call.args[0]
+        for call in storage.download_data.call_args_list
+        if call.args[0].endswith("backup_struct.json")
+    ]
+    assert full_reads == ["ch_backup/new/backup_struct.json"]
+    assert layout.get_delete_pending("old")["referenced_by"] == ["new"]
+    assert layout.get_delete_pending("another") is None
+
+
+@pytest.mark.parametrize("name", ["plain", "with-dash"])
+def test_cloud_cleanup_retry_keeps_intent_and_deletes_payload_once(
+    pending_context, name
+):
+    """One cleanup pass handles both cloud layouts and retains intent on wait failure."""
+    _, layout, storage, objects = pending_context
+    layout.claim_cloud_storage(name)
+    cloud = f"{layout.get_cloud_storage_path(name)}/cloud_storage/disk/object"
+    objects[cloud] = "data"
+    layout.save_delete_pending(name, "missing_metadata")
+    storage.wait.side_effect = [RuntimeError("delete failed"), None]
+    with pytest.raises(StorageError):
+        layout.clean_pending_backup(name, {}, set())
+    assert layout.get_delete_pending(name) is not None
+    assert layout.cloud_storage_owned(name)
+    assert layout.clean_pending_backup(name, {}, set())
+    deleted = [
+        key
+        for call in storage.delete_files.call_args_list
+        for key in call.kwargs.get("remote_paths", call.args[0] if call.args else [])
+    ]
+    assert deleted.count(cloud) == 1
+    assert deleted[-1] == f"ch_backup/{name}/delete_pending.json"

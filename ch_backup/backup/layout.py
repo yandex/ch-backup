@@ -1644,34 +1644,30 @@ class BackupLayout:
             self._storage_loader.delete_files([pending_marker], is_async=False)
 
     def clean_pending_backup(
-        self, backup_name: str, retained_backups: Sequence[BackupMetadata]
+        self,
+        backup_name: str,
+        references: dict[str, dict[str, set[str]]],
+        referenced_by: set[str],
     ) -> bool:
         """Clean local parts using fresh references, leaving uncertain cloud data intact.
 
-        The caller must hold the common exclusive storage lock and supply the complete
-        retained inventory. Existing intent is required. Return True only after the
-        entire prefix and its marker are gone; never unfreeze an unknown original.
+        The caller must hold the common exclusive storage lock from the complete
+        retained reference scan through cleanup. Existing intent is required. Return
+        True only after the prefix and marker are gone; never unfreeze an unknown original.
         """
         if self.get_delete_pending(backup_name) is None:
             raise StorageError(f"No deletion intent for backup {backup_name}")
-        protected: set[str] = set()
-        referenced_by = set()
-        for retained in retained_backups:
-            if retained.name == backup_name:
-                raise StorageError("Deleting backup cannot be retained")
-            retained = self.reload_backup(retained)
-            for table in retained.get_tables():
-                for part in table.get_parts():
-                    if part.link == backup_name:
-                        referenced_by.add(retained.name)
-                        protected.update(
-                            os.path.join(self.get_backup_path(backup_name), directory)
-                            .lstrip("/")
-                            .rstrip("/")
-                            + "/"
-                            for directory in get_data_part_relative_dirs(part)
-                        )
         backup_path = self.get_backup_path(backup_name)
+        protected = {
+            _part_path(backup_path, database, table, part, escape_names)
+            .lstrip("/")
+            .rstrip("/")
+            + "/"
+            for database, tables in references.items()
+            for table, parts in tables.items()
+            for part in parts
+            for escape_names in (True, False)
+        }
         cloud_files = self._list_cloud_storage_files(backup_name)
         if (
             not referenced_by
@@ -1683,9 +1679,6 @@ class BackupLayout:
             )
         self.save_delete_pending(backup_name, "retry", sorted(referenced_by))
         if not referenced_by:
-            if cloud_files:
-                self._delete_files(cloud_files)
-                self.wait()
             self.delete_backup(backup_name, lambda: None)
             return True
         data_path = os.path.join(backup_path, "data")
