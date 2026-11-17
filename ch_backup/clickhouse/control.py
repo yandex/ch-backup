@@ -198,26 +198,26 @@ CHECK_TABLE_SQL = strip_query(
 """
 )
 
-GET_RUNNING_REFRESHABLE_MATERIALIZED_VIEWS_SQL = strip_query(
+GET_REFRESHABLE_MATERIALIZED_VIEWS_SQL = strip_query(
     """
     SELECT
         database,
         view
     FROM system.view_refreshes
-    WHERE status = 'Running'
+    {status_condition}
     FORMAT JSON
 """
 )
 
-SYSTEM_STOP_VIEWS_SQL = strip_query(
+SYSTEM_STOP_VIEW_SQL = strip_query(
     """
-    SYSTEM STOP VIEWS
+    SYSTEM STOP VIEW `{db_name}`.`{view_name}`
 """
 )
 
-SYSTEM_START_VIEWS_SQL = strip_query(
+SYSTEM_START_VIEW_SQL = strip_query(
     """
-    SYSTEM START VIEWS
+    SYSTEM START VIEW `{db_name}`.`{view_name}`
 """
 )
 
@@ -1240,20 +1240,33 @@ class ClickhouseCTL:
             timeout=self._restore_replica_timeout,
         )
 
-    def _get_running_refreshable_materialized_views(self) -> list[tuple[str, str]]:
+    def _get_refreshable_materialized_views(
+        self, running_only: bool = False
+    ) -> list[tuple[str, str]]:
         if not self.ch_version_ge("23.12"):
             return []
 
         return [
             (row["database"], row["view"])
             for row in self._ch_client.query(
-                GET_RUNNING_REFRESHABLE_MATERIALIZED_VIEWS_SQL
+                GET_REFRESHABLE_MATERIALIZED_VIEWS_SQL.format(
+                    status_condition="WHERE status = 'Running'" if running_only else ""
+                )
             )["data"]
         ]
 
+    def _set_refreshable_materialized_views_running(self, running: bool) -> None:
+        query = SYSTEM_START_VIEW_SQL if running else SYSTEM_STOP_VIEW_SQL
+        for database, view in self._get_refreshable_materialized_views():
+            self._ch_client.query(
+                query.format(db_name=escape(database), view_name=escape(view))
+            )
+
     def _wait_for_refreshable_materialized_views_to_stop(self) -> None:
         deadline = time.monotonic() + self._refreshable_views_stop_timeout
-        while running_views := self._get_running_refreshable_materialized_views():
+        while running_views := self._get_refreshable_materialized_views(
+            running_only=True
+        ):
             if time.monotonic() >= deadline:
                 views = ", ".join(
                     f"{database}.{view}" for database, view in running_views
@@ -1272,20 +1285,20 @@ class ClickhouseCTL:
             yield
             return
 
-        self._ch_client.query(SYSTEM_STOP_VIEWS_SQL)
         try:
+            self._set_refreshable_materialized_views_running(False)
             self._wait_for_refreshable_materialized_views_to_stop()
             yield
         except BaseException:
             try:
-                self._ch_client.query(SYSTEM_START_VIEWS_SQL)
+                self._set_refreshable_materialized_views_running(True)
             except Exception:
                 logging.error(
                     "Failed to start refreshable materialized views while restore was failing",
                     exc_info=True,
                 )
             raise
-        self._ch_client.query(SYSTEM_START_VIEWS_SQL)
+        self._set_refreshable_materialized_views_running(True)
 
     def get_parts_of_other_replicas(
         self, table: Table, zk_ctl: ZookeeperCTL
