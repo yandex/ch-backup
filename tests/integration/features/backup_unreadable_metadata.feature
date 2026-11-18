@@ -85,7 +85,7 @@ Feature: Backups with unreadable metadata
     Then command exits with code 1
     And we get response contains
     """
-    Backup old_backup has unreadable metadata and is referenced by other backups
+    Metadata is unavailable for old_backup; use --delete-unreadable to devalue these backups
     """
     And s3 bucket ch-backup contains objects with prefix "ch_backup/old_backup/"
     And s3 bucket ch-backup contains objects with prefix "ch_backup/new_backup/"
