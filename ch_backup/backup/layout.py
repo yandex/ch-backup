@@ -572,9 +572,9 @@ class BackupLayout:
         path = os.path.join(
             self.get_backup_path(backup_name), DELETE_PENDING_FNAME
         ).lstrip("/")
-        if not self._storage_loader.path_exists(path):
-            return None
         try:
+            if not self._storage_loader.path_exists(path):
+                return None
             marker = json.loads(self._storage_loader.download_data(path))
             references = marker["referenced_by"]
             valid = (
@@ -848,6 +848,7 @@ class BackupLayout:
         *,
         unreadable: dict[str, str] | None = None,
         strict_inventory: bool = False,
+        pending: dict[str, dict] | None = None,
     ) -> list[BackupMetadata]:
         """
         Return list of existing backups sorted by start_time in descent order.
@@ -866,7 +867,17 @@ class BackupLayout:
             if sanitize_backup_name(name) != name
         }
         for name in names:
-            if self.get_delete_pending(name) is not None:
+            try:
+                marker = self.get_delete_pending(name)
+            except StorageError as marker_error:
+                if strict_inventory or unreadable is None:
+                    raise
+                unreadable[name] = str(marker_error)
+                logging.warning("{}", marker_error)
+                continue
+            if marker is not None:
+                if pending is not None:
+                    pending[name] = marker
                 continue
             logging.debug(
                 "Collecting {} of backup: {}",

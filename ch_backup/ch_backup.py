@@ -149,7 +149,11 @@ class ClickhouseBackup:
         return self._context.backup_layout.get_pending_deletions()
 
     def list(
-        self, state: BackupState = None, *, unreadable: dict[str, str] | None = None
+        self,
+        state: BackupState = None,
+        *,
+        unreadable: dict[str, str] | None = None,
+        pending: dict[str, dict] | None = None,
     ) -> Sequence[BackupMetadata]:
         """
         Get list of existing backups sorted by start timestamp.
@@ -157,7 +161,7 @@ class ClickhouseBackup:
         """
         backups = []
         for backup in self._context.backup_layout.get_backups(
-            use_light_meta=True, unreadable=unreadable
+            use_light_meta=True, unreadable=unreadable, pending=pending
         ):
             if state and backup.state != state:
                 continue
@@ -640,8 +644,7 @@ class ClickhouseBackup:
                 raise StorageError(
                     f"Failed to read metadata of backups: {', '.join(sorted(blocking))}. "
                     f"Backup {backup_name} cannot be deleted: references of these backups "
-                    "to data parts are unknown. Fix their metadata, or delete them first "
-                    "if no other backup references them."
+                    "to data parts are unknown. Repair their metadata before retrying."
                 )
             if (
                 not found

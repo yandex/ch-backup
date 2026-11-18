@@ -290,13 +290,15 @@ def list_command(
     if include_unreadable and not verbose:
         _ctx.fail("--include-unreadable requires --verbose")
     unreadable: dict[str, str] = {}
+    pending: dict[str, dict] = {}
     backups = ch_backup.list(
-        None if all_ else BackupState.CREATED, unreadable=unreadable
+        None if all_ else BackupState.CREATED,
+        unreadable=unreadable,
+        pending=pending if all_ else None,
     )
     if not (all_ or include_unreadable):
         unreadable.clear()
 
-    pending = ch_backup.pending_deletions() if all_ else {}
     if not verbose:
         print("\n".join([b.name for b in backups] + sorted(pending)))
         return

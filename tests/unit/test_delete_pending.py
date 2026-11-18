@@ -74,6 +74,43 @@ def test_unreadable_marker_is_never_overwritten(marker_storage, bad):
     storage.upload_data.assert_not_called()
 
 
+@pytest.mark.parametrize("head_error", [False, True])
+def test_marker_error_is_reported_by_list_and_blocks_delete(
+    pending_context, head_error
+):
+    """Keep healthy backups visible and preserve all objects on a marker error."""
+    backup, layout, storage, objects = pending_context
+    marker = "ch_backup/old/delete_pending.json"
+    if head_error:
+
+        def path_exists(path):
+            """Simulate a failed S3 HEAD for the target marker."""
+            if path == marker:
+                raise StorageError("HEAD failed")
+            return path in objects
+
+        storage.path_exists.side_effect = path_exists
+    else:
+        objects[marker] = "{"
+    result = CliRunner().invoke(
+        Group(commands=[list_command]),
+        ["list", "-av", "--format", "json"],
+        obj={"backup": backup},
+    )
+    assert result.exit_code == 0, result.output
+    rows = {row["name"]: row for row in json.loads(result.stdout)}
+    assert rows["new"]["state"] == "created"
+    assert rows["old"]["metadata_error"] == "Failed to read deletion marker for old"
+    with pytest.raises(StorageError, match="Failed to read deletion marker for old"):
+        layout.get_backups(unreadable={}, strict_inventory=True)
+    before = objects.copy()
+    with pytest.raises(StorageError, match="Failed to read deletion marker for old"):
+        backup.purge(delete_unreadable=True)
+    with pytest.raises(StorageError, match="Failed to read deletion marker for old"):
+        backup.delete("new", False, delete_unreadable=True)
+    assert objects == before
+
+
 def test_marker_survives_cleanup_failure_and_is_deleted_last(marker_storage):
     """A failed wait leaves intent available for an idempotent retry."""
     layout, storage, objects = marker_storage

@@ -764,7 +764,7 @@ def _backup_list_with_unreadable() -> MagicMock:
     good = BackupMetadata("good", "2", "26.6", "%Y-%m-%d")
     good.state = BackupState.CREATED
 
-    def list_backups(_state=None, *, unreadable=None):
+    def list_backups(_state=None, *, unreadable=None, **_kwargs):
         """Return the readable backup and record "broken" as unreadable."""
         if unreadable is None:
             raise StorageError("Unreadable light")
@@ -832,7 +832,7 @@ def test_list_command_reports_copy(format_, with_updated_at, state, status):
     metadata["meta"].update(state=state, copy=copy)
     backup = MagicMock()
 
-    def list_backups(_state, *, unreadable):
+    def list_backups(_state, *, unreadable, **_kwargs):
         """Return a copy and a regular backup alongside unreadable metadata."""
         unreadable["broken"] = "StorageError: unreadable metadata"
         return [
