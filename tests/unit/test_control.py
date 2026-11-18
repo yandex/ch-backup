@@ -324,6 +324,7 @@ class TestCreateTable:
             "freeze_timeout": 10,
             "unfreeze_timeout": 10,
             "restore_replica_timeout": 10,
+            "refreshable_views_stop_timeout": 10,
             "drop_replica_timeout": 10,
         }
         with (
@@ -363,6 +364,64 @@ class TestCreateTable:
         ch_ctl.create_table(self._table(statement))
 
         client.query.assert_called_once_with(statement, settings=settings)
+
+
+def _make_clickhouse_ctl(version: str = "23.12.1") -> ClickhouseCTL:
+    ctl = ClickhouseCTL.__new__(ClickhouseCTL)
+    ctl._ch_version = version  # pylint: disable=protected-access
+    ctl._timeout = 42  # pylint: disable=protected-access
+    ctl._refreshable_views_stop_timeout = 42  # pylint: disable=protected-access
+    ctl._ch_client = mock.Mock()  # pylint: disable=protected-access
+    ctl._ch_client.settings = {}  # pylint: disable=protected-access
+    return ctl
+
+
+def test_refreshable_views_are_resumed_after_restore() -> None:
+    ctl = _make_clickhouse_ctl()
+    ctl._ch_client.query.side_effect = [  # pylint: disable=protected-access
+        {"data": [{"database": "analytics", "view": "mv"}]},
+        None,
+        {"data": []},
+        {"data": [{"database": "analytics", "view": "restored_mv"}]},
+        None,
+    ]
+
+    with ctl.stop_refreshable_materialized_views_for_restore(["db"]):
+        pass
+
+    query_mock = ctl._ch_client.query  # pylint: disable=protected-access
+    assert query_mock.call_count == 5
+    stop_query = query_mock.call_args_list[1].args[0]
+    wait_query = query_mock.call_args_list[2].args[0]
+    start_query = query_mock.call_args_list[4].args[0]
+    assert stop_query == "SYSTEM STOP VIEW `analytics`.`mv`"
+    assert "FROM system.view_refreshes" in wait_query
+    assert "status = 'Running'" in wait_query
+    assert start_query == "SYSTEM START VIEW `analytics`.`restored_mv`"
+
+
+def test_restore_failure_is_preserved_when_starting_views_fails() -> None:
+    ctl = _make_clickhouse_ctl()
+    ctl._ch_client.query.side_effect = [  # pylint: disable=protected-access
+        {"data": [{"database": "db", "view": "mv"}]},
+        None,
+        {"data": []},
+        {"data": [{"database": "db", "view": "mv"}]},
+        RuntimeError("start views failed"),
+    ]
+
+    with mock.patch("ch_backup.clickhouse.control.logging.error") as log:
+        with pytest.raises(RuntimeError, match="restore failed"):
+            with ctl.stop_refreshable_materialized_views_for_restore(["db"]):
+                raise RuntimeError("restore failed")
+
+    query_mock = ctl._ch_client.query  # pylint: disable=protected-access
+    assert query_mock.call_args_list[1].args[0] == "SYSTEM STOP VIEW `db`.`mv`"
+    assert query_mock.call_args_list[-1].args[0] == "SYSTEM START VIEW `db`.`mv`"
+    log.assert_called_once_with(
+        "Failed to start refreshable materialized views while restore was failing",
+        exc_info=True,
+    )
 
 
 class TestGetPartsOfOtherReplicas:

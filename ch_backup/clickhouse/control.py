@@ -7,11 +7,12 @@ Clickhouse-control classes module
 import os
 import re
 import shutil
+import time
 from contextlib import contextmanager, suppress
 from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE  # type: ignore
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Generator, Iterable, Sequence
 
 from ch_backup import logging
 from ch_backup.backup.metadata import DetachedPartMetadata, TableMetadata
@@ -194,6 +195,29 @@ CHECK_TABLE_SQL = strip_query(
     FROM system.tables
     WHERE database = {db_name} AND name = {table_name}
     FORMAT TSVRaw
+"""
+)
+
+GET_REFRESHABLE_MATERIALIZED_VIEWS_SQL = strip_query(
+    """
+    SELECT
+        database,
+        view
+    FROM system.view_refreshes
+    {status_condition}
+    FORMAT JSON
+"""
+)
+
+SYSTEM_STOP_VIEW_SQL = strip_query(
+    """
+    SYSTEM STOP VIEW `{db_name}`.`{view_name}`
+"""
+)
+
+SYSTEM_START_VIEW_SQL = strip_query(
+    """
+    SYSTEM START VIEW `{db_name}`.`{view_name}`
 """
 )
 
@@ -647,6 +671,9 @@ class ClickhouseCTL:
         self._freeze_timeout = self._ch_ctl_config["freeze_timeout"]
         self._unfreeze_timeout = self._ch_ctl_config["unfreeze_timeout"]
         self._restore_replica_timeout = self._ch_ctl_config["restore_replica_timeout"]
+        self._refreshable_views_stop_timeout = self._ch_ctl_config[
+            "refreshable_views_stop_timeout"
+        ]
         self._drop_replica_timeout = self._ch_ctl_config["drop_replica_timeout"]
         settings = self._ch_ctl_config.get("settings")
         if settings is not None and not isinstance(settings, dict):
@@ -1212,6 +1239,66 @@ class ClickhouseCTL:
             ),
             timeout=self._restore_replica_timeout,
         )
+
+    def _get_refreshable_materialized_views(
+        self, running_only: bool = False
+    ) -> list[tuple[str, str]]:
+        if not self.ch_version_ge("23.12"):
+            return []
+
+        return [
+            (row["database"], row["view"])
+            for row in self._ch_client.query(
+                GET_REFRESHABLE_MATERIALIZED_VIEWS_SQL.format(
+                    status_condition="WHERE status = 'Running'" if running_only else ""
+                )
+            )["data"]
+        ]
+
+    def _set_refreshable_materialized_views_running(self, running: bool) -> None:
+        query = SYSTEM_START_VIEW_SQL if running else SYSTEM_STOP_VIEW_SQL
+        for database, view in self._get_refreshable_materialized_views():
+            self._ch_client.query(
+                query.format(db_name=escape(database), view_name=escape(view))
+            )
+
+    def _wait_for_refreshable_materialized_views_to_stop(self) -> None:
+        deadline = time.monotonic() + self._refreshable_views_stop_timeout
+        while running_views := self._get_refreshable_materialized_views(
+            running_only=True
+        ):
+            if time.monotonic() >= deadline:
+                views = ", ".join(
+                    f"{database}.{view}" for database, view in running_views
+                )
+                raise ClickhouseBackupError(
+                    f"Timed out waiting for refreshable materialized views to stop: {views}"
+                )
+            time.sleep(1)
+
+    @contextmanager
+    def stop_refreshable_materialized_views_for_restore(
+        self, databases: Sequence[str]
+    ) -> Generator[None, None, None]:
+        """Pause refreshable views while table restore is in progress."""
+        if not databases or not self.ch_version_ge("23.12"):
+            yield
+            return
+
+        try:
+            self._set_refreshable_materialized_views_running(False)
+            self._wait_for_refreshable_materialized_views_to_stop()
+            yield
+        except BaseException:
+            try:
+                self._set_refreshable_materialized_views_running(True)
+            except Exception:
+                logging.error(
+                    "Failed to start refreshable materialized views while restore was failing",
+                    exc_info=True,
+                )
+            raise
+        self._set_refreshable_materialized_views_running(True)
 
     def get_parts_of_other_replicas(
         self, table: Table, zk_ctl: ZookeeperCTL
