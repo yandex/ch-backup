@@ -484,6 +484,24 @@ Feature: Backup of tables with different engines and configurations
       | num | state    | data_count | link_count   |
       | 0   | created  | 20         | 0            |
     When we restore clickhouse backup #0 to clickhouse02
+    When we execute queries on clickhouse02
+    """
+    SYSTEM FLUSH LOGS;
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT countIf(query LIKE 'SYSTEM START VIEW %') = 1
+      AND minIf(query_start_time_microseconds, query LIKE 'ATTACH MATERIALIZED VIEW%')
+        > maxIf(query_start_time_microseconds, query LIKE 'ALTER TABLE%ATTACH PART%')
+      AND minIf(query_start_time_microseconds, query LIKE 'SYSTEM START VIEW %')
+        > maxIf(query_start_time_microseconds, query LIKE 'ATTACH MATERIALIZED VIEW%')
+    FROM system.query_log
+    WHERE type = 'QueryFinish'
+    """
+    Then we get response
+    """
+    1
+    """
     Then clickhouse02 has same schema as clickhouse01
     And we got same clickhouse data at clickhouse01 clickhouse02
 

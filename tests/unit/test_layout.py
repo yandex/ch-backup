@@ -775,7 +775,7 @@ def fallback_context_fixture():
     )
     storage.upload_file.side_effect = (
         lambda local_path, remote_path, **_: objects.update(
-            {remote_path: Path(local_path).read_text(encoding="utf-8")}
+            {remote_path: Path(local_path).read_bytes()}
         )
     )
     backup = ClickhouseBackup.__new__(ClickhouseBackup)
@@ -802,6 +802,7 @@ def test_full_fallback_preserves_shared_parts_and_rewrites_target_light(
     assert [meta.name for meta in listed] == ["new", "old"]
     assert all(not meta.get_databases() for meta in listed)
     storage.upload_data.assert_not_called()
+    storage.upload_file.assert_not_called()
     if operation == "delete":
         backup.delete("old", False)
     elif operation == "purge":
@@ -839,6 +840,7 @@ def test_unreadable_full_still_blocks_deletion_with_references(
     with pytest.raises(ClickhouseBackupError):
         backup.delete("old", False)
     storage.upload_data.assert_not_called()
+    storage.upload_file.assert_not_called()
     storage.delete_files.assert_not_called()
 
 
@@ -850,4 +852,5 @@ def test_broken_light_without_full_is_not_silently_skipped(fallback_context):
     with pytest.raises(StorageError, match="new"):
         backup.delete("old", False)
     storage.upload_data.assert_not_called()
+    storage.upload_file.assert_not_called()
     storage.delete_files.assert_not_called()

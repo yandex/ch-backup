@@ -754,146 +754,170 @@ class TableBackup(BackupManager):
         """
         Restore tables and MergeTree data.
         """
-        with ExitStack() as schema_locks:
-            prepared = prepared_restore
-            if prepared is None:
-                prepared = self.prepare_restore(
+        with context.ch_ctl.stop_refreshable_materialized_views_for_restore(
+            list(databases)
+        ):
+            with ExitStack() as schema_locks:
+                prepared = prepared_restore
+                if prepared is None:
+                    prepared = self.prepare_restore(
+                        context,
+                        databases,
+                        tables,
+                        keep_going,
+                        skip_cloud_storage,
+                        restore_tables_in_replicated_database,
+                        schema_locks,
+                    )
+                else:
+                    # The caller acquired these locks before database restore. Release
+                    # them after CREATE, without holding up other replicas during data loading.
+                    schema_locks.enter_context(prepared.schema_locks)
+                if len(prepared.tables_meta) == 0:
+                    return
+                tables_meta = prepared.tables_meta
+                filtered_tables_meta = prepared.filtered_tables_meta
+                tables_to_preprocess = prepared.tables
+                storage_restore = prepared.storage_restore
+                (
+                    tables_to_restore,
+                    preprocessing_failed_skipped,
+                    preprocessing_failed_tables,
+                ) = self._preprocess_tables_to_restore(
                     context,
                     databases,
-                    tables,
+                    tables_to_preprocess,
                     keep_going,
-                    skip_cloud_storage,
                     restore_tables_in_replicated_database,
-                    schema_locks,
+                    metadata_cleaner,
+                    storage_restore=storage_restore,
+                )
+                self._log_restore_preprocess_summary(
+                    duplicate_uuid_skipped=prepared.duplicate_uuid_skipped,
+                    missing_create_statement_skipped=prepared.missing_create_statement_skipped,
+                    preprocessing_failed_skipped=preprocessing_failed_skipped,
+                )
+
+                tables_after_data = (
+                    [t for t in tables_to_restore if not t.is_merge_tree()]
+                    if context.ch_ctl.ch_version_ge("23.12")
+                    and any(t.is_view() for t in tables_to_restore)
+                    else []
+                )
+                deferred_names = {(t.database, t.name) for t in tables_after_data}
+                failed_tables = self._restore_tables(
+                    context,
+                    databases,
+                    [
+                        t
+                        for t in tables_to_restore
+                        if (t.database, t.name) not in deferred_names
+                    ],
+                    keep_going,
+                )
+
+            if storage_restore is not None:
+                # A valid rewrite can still fail during preprocessing or CREATE. Do
+                # not report success with keep-going merely because parsing succeeded.
+                for key in preprocessing_failed_tables | {
+                    (table.database, table.name) for table in failed_tables
+                }:
+                    storage_restore.errors.setdefault(
+                        key, "Table schema restore failed"
+                    )
+
+            if schema_only:
+                logging.debug(
+                    "Skipping restoring of table data as --schema-only flag passed"
                 )
             else:
-                # The caller acquired these locks before database restore. Release
-                # them after CREATE, without holding up other replicas during data loading.
-                schema_locks.enter_context(prepared.schema_locks)
-            if len(prepared.tables_meta) == 0:
-                return
-            tables_meta = prepared.tables_meta
-            filtered_tables_meta = prepared.filtered_tables_meta
-            tables_to_preprocess = prepared.tables
-            storage_restore = prepared.storage_restore
-            (
-                tables_to_restore,
-                preprocessing_failed_skipped,
-                preprocessing_failed_tables,
-            ) = self._preprocess_tables_to_restore(
-                context,
-                databases,
-                tables_to_preprocess,
-                keep_going,
-                restore_tables_in_replicated_database,
-                metadata_cleaner,
-                storage_restore=storage_restore,
-            )
-            self._log_restore_preprocess_summary(
-                duplicate_uuid_skipped=prepared.duplicate_uuid_skipped,
-                missing_create_statement_skipped=prepared.missing_create_statement_skipped,
-                preprocessing_failed_skipped=preprocessing_failed_skipped,
-            )
+                failed_tables_names = [
+                    f"`{t.database}`.`{t.name}`" for t in failed_tables
+                ]
+                # Never load parts into a table whose schema preparation or creation failed.
+                tables_to_restore_data = list(
+                    filter(
+                        lambda t: f"`{t.database}`.`{t.name}`"
+                        not in failed_tables_names
+                        and (t.database, t.name) not in preprocessing_failed_tables
+                        and (t.database, t.name) not in deferred_names
+                        and (
+                            storage_restore is None
+                            or (t.database, t.name) not in storage_restore.errors
+                        ),
+                        tables_meta,
+                    )
+                )
 
-            failed_tables = self._restore_tables(
-                context,
-                databases,
-                tables_to_restore,
-                keep_going,
-            )
+                tables_with_create_statements = {
+                    (table.database, table.name) for table in tables_to_preprocess
+                }
+                tables_to_restore_detached = [
+                    table
+                    for table in filtered_tables_meta
+                    if (table.database, table.name) in tables_with_create_statements
+                    and (table.database, table.name) not in preprocessing_failed_tables
+                    and f"`{table.database}`.`{table.name}`" not in failed_tables_names
+                ]
 
-        if storage_restore is not None:
-            # A valid rewrite can still fail during preprocessing or CREATE. Do
-            # not report success with keep-going merely because parsing succeeded.
-            for key in preprocessing_failed_tables | {
-                (table.database, table.name) for table in failed_tables
-            }:
-                storage_restore.errors.setdefault(key, "Table schema restore failed")
+                use_inplace_cloud_restore = context.config_root["restore"][
+                    "use_inplace_cloud_restore"
+                ]
 
-        if schema_only:
-            logging.debug(
-                "Skipping restoring of table data as --schema-only flag passed"
-            )
+                with ClickHouseTemporaryDisks(
+                    context.ch_ctl,
+                    context.backup_layout,
+                    context.config_root,
+                    context.backup_meta,
+                    cloud_storage_source_bucket,
+                    cloud_storage_source_path,
+                    cloud_storage_source_endpoint,
+                    context.ch_config,
+                    desired_tables=tables_meta,
+                    use_local_copy=use_inplace_cloud_restore,
+                    skip_cloud_storage=skip_cloud_storage,
+                    keep_going=keep_going,
+                ) as disks:
+                    self._restore_data(
+                        context,
+                        tables=tables_to_restore_data,
+                        disks=disks,
+                        skip_cloud_storage=skip_cloud_storage,
+                        keep_going=keep_going,
+                        storage_disks=(
+                            storage_restore.storage_disks
+                            if storage_restore is not None
+                            else None
+                        ),
+                    )
+
+                if restore_detached_parts and any(
+                    table.get_detached_parts() for table in tables_to_restore_detached
+                ):
+                    self._restore_detached_data(
+                        context,
+                        tables=tables_to_restore_detached,
+                        skip_cloud_storage=skip_cloud_storage,
+                        keep_going=keep_going,
+                        storage_disks=(
+                            storage_restore.storage_disks
+                            if storage_restore is not None
+                            else None
+                        ),
+                    )
+
+            # Restore views and their dependent objects after loading MergeTree data.
+            if tables_after_data:
+                failed_deferred_tables = self._restore_tables(
+                    context, databases, tables_after_data, keep_going
+                )
+                if storage_restore is not None:
+                    for table in failed_deferred_tables:
+                        storage_restore.errors.setdefault(
+                            (table.database, table.name), "Table schema restore failed"
+                        )
             if storage_restore is not None:
-                # Keep-going may have restored other schemas successfully; it
-                # must still report any deferred adaptation errors to the caller.
                 storage_restore.raise_errors()
-            return
-
-        failed_tables_names = [f"`{t.database}`.`{t.name}`" for t in failed_tables]
-        # Never load parts into a table whose schema preparation or creation failed.
-        tables_to_restore_data = list(
-            filter(
-                lambda t: f"`{t.database}`.`{t.name}`" not in failed_tables_names
-                and (t.database, t.name) not in preprocessing_failed_tables
-                and (
-                    storage_restore is None
-                    or (t.database, t.name) not in storage_restore.errors
-                ),
-                tables_meta,
-            )
-        )
-
-        tables_with_create_statements = {
-            (table.database, table.name) for table in tables_to_preprocess
-        }
-        tables_to_restore_detached = [
-            table
-            for table in filtered_tables_meta
-            if (table.database, table.name) in tables_with_create_statements
-            and (table.database, table.name) not in preprocessing_failed_tables
-            and f"`{table.database}`.`{table.name}`" not in failed_tables_names
-        ]
-
-        use_inplace_cloud_restore = context.config_root["restore"][
-            "use_inplace_cloud_restore"
-        ]
-
-        with ClickHouseTemporaryDisks(
-            context.ch_ctl,
-            context.backup_layout,
-            context.config_root,
-            context.backup_meta,
-            cloud_storage_source_bucket,
-            cloud_storage_source_path,
-            cloud_storage_source_endpoint,
-            context.ch_config,
-            desired_tables=tables_meta,
-            use_local_copy=use_inplace_cloud_restore,
-            skip_cloud_storage=skip_cloud_storage,
-            keep_going=keep_going,
-        ) as disks:
-            self._restore_data(
-                context,
-                tables=tables_to_restore_data,
-                disks=disks,
-                skip_cloud_storage=skip_cloud_storage,
-                keep_going=keep_going,
-                storage_disks=(
-                    storage_restore.storage_disks
-                    if storage_restore is not None
-                    else None
-                ),
-            )
-
-        if restore_detached_parts and any(
-            table.get_detached_parts() for table in tables_to_restore_detached
-        ):
-            self._restore_detached_data(
-                context,
-                tables=tables_to_restore_detached,
-                skip_cloud_storage=skip_cloud_storage,
-                keep_going=keep_going,
-                storage_disks=(
-                    storage_restore.storage_disks
-                    if storage_restore is not None
-                    else None
-                ),
-            )
-        if storage_restore is not None:
-            # Report deferred errors only after independent tables and their parts
-            # have been restored, so keep-going preserves useful completed work.
-            storage_restore.raise_errors()
 
     @staticmethod
     def _check_metadata_change_time(
@@ -1395,7 +1419,9 @@ class TableBackup(BackupManager):
                         (table.database, table.name)
                     )
 
-                if detached_table:
+                if detached_table and not (
+                    table.is_view() and context.ch_ctl.ch_version_ge("23.12")
+                ):
                     try:
                         logging.debug(
                             "Table {} already exists as detached, attaching it",
