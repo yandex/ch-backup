@@ -181,9 +181,7 @@ class NamedCollectionsBackup(BackupManager):
             flags=re.IGNORECASE,
         )
         if replacements == 0:
-            raise RuntimeError(
-                "Expected CREATE NAMED COLLECTION statement, got: " f"{statement!r}"
-            )
+            raise RuntimeError("Expected CREATE NAMED COLLECTION statement")
         return result
 
     @staticmethod

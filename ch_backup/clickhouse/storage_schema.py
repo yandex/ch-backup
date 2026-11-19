@@ -321,7 +321,7 @@ def remove_unavailable_move_ttls(
             # than silently removing a fragment whose meaning is uncertain.
             destination = _without_comments(ttl[move.end() : end]).strip()
             if _STRING.fullmatch(destination) is None:
-                raise StorageSchemaError(f"Cannot parse TTL MOVE rule: {fragment!r}")
+                raise StorageSchemaError("Cannot parse TTL MOVE rule")
             allowed = policy.disks if move["kind"].upper() == "DISK" else policy.volumes
             if _unquote_sql_string(destination) not in allowed:
                 removed.append(fragment.strip())

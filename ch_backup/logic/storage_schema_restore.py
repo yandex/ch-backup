@@ -77,11 +77,11 @@ class StorageSchemaRestore:
                 change.previous_policy,
                 change.policy.name,
             )
-        for rule in change.removed_ttls:
+        if change.removed_ttls:
             logging.warning(
-                "Removing TTL MOVE from {}.{}: {}; destination is absent from policy {}",
+                "Removing {} TTL MOVE rule(s) from {}.{}; destination is absent from policy {}",
+                len(change.removed_ttls),
                 *key,
-                rule,
                 change.policy.name,
             )
 
