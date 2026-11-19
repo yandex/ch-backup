@@ -363,7 +363,9 @@ class TestCreateTable:
 
         ch_ctl.create_table(self._table(statement))
 
-        client.query.assert_called_once_with(statement, settings=settings)
+        client.query.assert_called_once_with(
+            statement, settings=settings, sensitive=True
+        )
 
 
 def _make_clickhouse_ctl(version: str = "23.12.1") -> ClickhouseCTL:

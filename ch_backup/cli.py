@@ -230,10 +230,7 @@ def _mask_command_params(params: dict[str, Any]) -> dict[str, Any]:
     result = {}
     for name, value in params.items():
         if name in {"config_parameters", "target_config_parameters"}:
-            result[name] = [
-                (path, _mask_value(parameter_value, path))
-                for path, parameter_value in value
-            ]
+            result[name] = [(path, _HIDDEN) for path, _ in value]
         else:
             result[name] = _mask_value(value, name)
     return result

@@ -1429,7 +1429,7 @@ class TableBackup(BackupManager):
                         )
                         context.ch_ctl.attach_table(detached_table)
                     except ClickhouseError as ch_err:
-                        if "CANNOT_GET_CREATE_TABLE_QUERY" in str(ch_err):
+                        if "CANNOT_GET_CREATE_TABLE_QUERY" in ch_err.server_message:
                             logging.warning(
                                 "Got an exception during attaching detached table. "
                                 "Will ignore the ignore and try to restore table as usual {}",
@@ -1457,21 +1457,17 @@ class TableBackup(BackupManager):
                         )
                         continue
                     logging.warning(
-                        'Table {} will be recreated as its schema mismatches the schema from backup: "{}" != "{}"',
+                        "Table {} will be recreated as its schema mismatches the schema from backup",
                         table_name_for_logs,
-                        existing_table.create_statement,
-                        table.create_statement,
                     )
                 elif existing_table := (
                     existing_tables_by_uuid.get(table.uuid) if table.uuid else None
                 ):
                     # Schemas mismatch here at least in name
                     logging.warning(
-                        'Table "{}"."{}" will be dropped as its UUID is equal but schema mismatches the schema from backup: "{}" != "{}"',
+                        'Table "{}"."{}" will be dropped as its UUID is equal but schema mismatches the schema from backup',
                         existing_table.database,
                         existing_table.name,
-                        existing_table.create_statement,
-                        table.create_statement,
                     )
 
                 drop_performed = False

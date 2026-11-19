@@ -85,7 +85,7 @@ class DatabaseZookeeperData:
         match = REPLICATED_DB_ENGINE_RE.search(db.engine_full)
         if not match:
             raise RuntimeError(
-                f"Database {db.name}: cannot parse ZK path from engine_full={db.engine_full}."
+                f"Database {db.name}: cannot parse ZK path from database engine."
             )
 
         return (
@@ -198,8 +198,7 @@ def _check_ddl_queue_for_errors(context: BackupContext, db_name: str) -> bool:
         logging.warning(
             f"Stuck DDL entry in database {db_name}: "
             f"entry={entry.get('entry')}, "
-            f"exception_code={entry.get('exception_code')}, "
-            f"exception_text={str(entry.get('exception_text', ''))[:300]}"
+            f"exception_code={entry.get('exception_code')}"
         )
 
     return bool(error_entries)

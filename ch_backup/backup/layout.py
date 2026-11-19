@@ -346,7 +346,9 @@ class BackupLayout:
         """
         Return True if a cloud storage disk holds shadow data of a table.
         """
-        assert table.path_on_disk, f"Table {table} doesn't store data on disk"
+        assert (
+            table.path_on_disk
+        ), f"Table {table.database}.{table.name} doesn't store data on disk"
 
         shadow_path = _table_shadow_path(
             disk.path, backup_meta.get_sanitized_name(), table.path_on_disk
@@ -401,7 +403,9 @@ class BackupLayout:
         Metadata is read from source_disk when data is copied into the backup:
         ClickHouse writes metadata of the copies to a temporary disk.
         """
-        assert table.path_on_disk, f"Table {table} doesn't store data on disk"
+        assert (
+            table.path_on_disk
+        ), f"Table {table.database}.{table.name} doesn't store data on disk"
 
         backup_name = backup_meta.get_sanitized_name()
         compression = backup_meta.cloud_storage.compressed

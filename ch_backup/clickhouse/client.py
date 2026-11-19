@@ -2,13 +2,13 @@
 ClickHouse client.
 """
 
+import re
 from contextlib import contextmanager
 from typing import Any, Generator
 
 import requests
 
 from ch_backup import logging
-from ch_backup.clickhouse.masking import mask_named_collection, mask_sql_literals
 from ch_backup.util import retry
 
 
@@ -16,6 +16,11 @@ class ClickhouseError(Exception):
     """
     ClickHouse interaction error.
     """
+
+    def __init__(self, message: str, *, server_message: str | None = None) -> None:
+        """Keep the server response for error handling, separate from printable text."""
+        super().__init__(message)
+        self.server_message = message if server_message is None else server_message
 
 
 class ClickhouseErrorNotRetriable(ClickhouseError):
@@ -76,11 +81,7 @@ class ClickhouseClient:
                 query = query.encode(encoding, "surrogateescape")
 
             if sensitive:
-                query_text = query.decode(encoding, "surrogateescape")
-                logging.debug(
-                    "Executing sensitive query: {}",
-                    mask_named_collection(query_text) or f"<{len(query)} bytes>",
-                )
+                logging.debug("Executing sensitive query: <{} bytes>", len(query))
             else:
                 logging.debug("Executing query: {}", query)
 
@@ -106,11 +107,16 @@ class ClickhouseClient:
             ) from e
         except requests.exceptions.HTTPError as e:
             error_text = e.response.text.strip()
-            if sensitive:
-                error_text = mask_sql_literals(error_text)
+            code = re.match(r"Code: [0-9]{1,6}\.", error_text)
+            message = f"{code[0]} " if code else ""
+            message += "ClickHouse query failed; server response hidden"
             if should_retry:
-                raise ClickhouseErrorRetriable(error_text) from e
-            raise ClickhouseErrorNotRetriable(error_text) from e
+                raise ClickhouseErrorRetriable(
+                    message, server_message=error_text
+                ) from None
+            raise ClickhouseErrorNotRetriable(
+                message, server_message=error_text
+            ) from None
 
         try:
             return response.json()
@@ -134,6 +140,7 @@ class ClickhouseClient:
 
     @staticmethod
     def _create_session(config, settings):
+        """Create a session after validating credentials without exposing their values."""
         session = requests.Session()
 
         ca_path = config.get("ca_path")
@@ -146,6 +153,17 @@ class ClickhouseClient:
         password = config.get("clickhouse_password")
         if password:
             headers["X-ClickHouse-Key"] = password
+
+        for name, value in headers.items():
+            try:
+                requests.utils.check_header_validity((name, value))
+                encoded = value.encode("latin-1") if isinstance(value, str) else value
+                if b"\r" in encoded or b"\n" in encoded:
+                    raise ValueError
+            except ValueError:
+                raise ClickhouseErrorNotRetriable(
+                    f"Invalid ClickHouse HTTP header {name}"
+                ) from None
 
         session.headers.update(headers)
 

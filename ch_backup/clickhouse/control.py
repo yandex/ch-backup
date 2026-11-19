@@ -1103,13 +1103,13 @@ class ClickhouseCTL:
         """
         Restore database.
         """
-        self._ch_client.query(database_schema)
+        self._ch_client.query(database_schema, sensitive=True)
 
     def restore_udf(self, udf_statement):
         """
         Restore user defined function.
         """
-        self._ch_client.query(udf_statement)
+        self._ch_client.query(udf_statement, sensitive=True)
 
     def restore_named_collection(self, nc_statement):
         """
@@ -1213,7 +1213,7 @@ class ClickhouseCTL:
         """
         Restore workload entity (WORKLOAD or RESOURCE).
         """
-        self._ch_client.query(entity_statement)
+        self._ch_client.query(entity_statement, sensitive=True)
 
     def create_table(self, table: Table) -> None:
         """
@@ -1226,7 +1226,7 @@ class ClickhouseCTL:
         settings = (
             {"allow_experimental_unique_key": 1} if table.has_unique_key() else None
         )
-        self._ch_client.query(table.create_statement, settings=settings)
+        self._ch_client.query(table.create_statement, settings=settings, sensitive=True)
 
     def restore_replica(self, table: Table) -> None:
         """
@@ -1811,7 +1811,8 @@ class ClickhouseCTL:
         # Hex encoding preserves quotes, backslashes and whitespace in the input.
         query_hex = query.encode("utf-8").hex()
         resp = self._ch_client.query(
-            f"SELECT formatQuerySingleLine(unhex('{query_hex}')) AS query FORMAT JSON"
+            f"SELECT formatQuerySingleLine(unhex('{query_hex}')) AS query FORMAT JSON",
+            sensitive=True,
         )
         return resp["data"][0]["query"]
 

@@ -34,8 +34,7 @@ def rewrite_table_schema(
     """
     Rewrite table schema.
     """
-    # Use repr for logging because schema may contain surrogate escape symbols
-    logging.info(f"Going to rewrite table schema: {table.create_statement!r}")
+    logging.info("Rewriting schema for table {!r}.{!r}", table.database, table.name)
     if force_non_replicated_engine:
         create_statement = table.create_statement
         engine = find_merge_tree_engine(create_statement)
@@ -86,7 +85,6 @@ def rewrite_table_schema(
         f"\\g<create> \\g<type> `{escape(table.database)}`.`{escape(table.name)}` ",
         table.create_statement,
     )
-    logging.info(f"Resulting table schema: {table.create_statement!r}")
 
 
 def rewrite_database_schema(
@@ -125,7 +123,7 @@ def _add_uuid(table: Table, inner_uuid: str = None) -> None:
     )
     if mach_uuid is not None:
         logging.info(
-            f"{mach_uuid.group(0)} already present in table schema."
+            "UUID already present in table schema."
             f" Metadata UUID is {table.uuid}. return without adding UUID"
         )
         return
