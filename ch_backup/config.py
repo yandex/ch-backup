@@ -76,6 +76,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "exclude_dbs": [],
         "path_root": None,
         "deduplicate_parts": True,
+        "delete_unreadable": False,
         "deduplication_start_time": None,
         "deduplication_age_limit": {
             "days": 7,

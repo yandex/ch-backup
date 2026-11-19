@@ -7,6 +7,7 @@ from typing import Literal, Sequence
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, TableMetadata
+from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageBackup
 from ch_backup.clickhouse.object_storage_metadata import (
     FROZEN_METADATA_FNAME,
     ObjectStorageMetadataError,
@@ -44,7 +45,7 @@ class CloudStorageDecryption:
     # pylint: disable=too-many-positional-arguments,too-many-locals
     def decrypt(
         self,
-        backup: BackupMetadata,
+        backup: BackupMetadata | CloudStorageBackup,
         disk_name: str,
         desired_tables: Sequence[TableMetadata] | Literal["all"],
         source_storage: dict,

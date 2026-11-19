@@ -39,7 +39,9 @@ def make_layout() -> BackupLayout:
     config["backup"]["path_root"] = "ch_backup"
     with patch("ch_backup.backup.layout.StorageLoader"):
         layout = BackupLayout(config)  # type: ignore[arg-type]
-    setattr(layout, "_storage_loader", MagicMock())
+    storage = MagicMock()
+    storage.path_exists.return_value = False
+    setattr(layout, "_storage_loader", storage)
     return layout
 
 
@@ -245,7 +247,9 @@ def test_list_sorts_backups_by_instant_across_timezone_offsets(use_light_meta):
         backup.start_time = datetime.fromisoformat(timestamp)
         metadata.append(backup.dump_json(light=use_light_meta))
     storage.list_dir.return_value = list(timestamps)
-    storage.path_exists.return_value = True
+    storage.path_exists.side_effect = lambda path: not path.endswith(
+        "delete_pending.json"
+    )
     storage.download_data.side_effect = metadata
 
     backups = layout.get_backups(use_light_meta=use_light_meta)
@@ -263,6 +267,8 @@ def test_list_collects_read_errors_only_when_requested(operation):
     error = S3RetryingError("\n\nInternalError\nTraceback details")
 
     def path_exists(path):
+        if path.endswith("delete_pending.json"):
+            return False
         if "/broken/" in path and operation == "head":
             raise error
         return "/missing/" not in path
@@ -378,10 +384,13 @@ class TestCloudStorageMetadataUpload:
     def _make_layout() -> tuple[BackupLayout, MagicMock]:
         """Helper: build a BackupLayout and expose its storage loader."""
         layout = make_layout()
+        getattr(layout, "_storage_loader").path_exists.return_value = False
+        getattr(layout, "_storage_loader").list_dir.return_value = []
         return layout, layout._storage_loader  # type: ignore[return-value]
 
     def _make_backup_meta(self) -> MagicMock:
         backup_meta = MagicMock()
+        backup_meta.name = self._BACKUP_NAME
         backup_meta.get_sanitized_name.return_value = self._BACKUP_NAME
         backup_meta.cloud_storage.compressed = False
         backup_meta.cloud_storage.encrypted = False
@@ -515,6 +524,7 @@ class TestCloudStorageDataDeletion:
     def _make_layout() -> tuple[BackupLayout, MagicMock]:
         """Helper: build a BackupLayout that records paths passed for deletion."""
         layout = make_layout()
+        setattr(layout, "cloud_storage_owned", MagicMock(return_value=True))
         layout._storage_loader.list_dir.side_effect = lambda path, **_kwargs: [  # type: ignore[attr-defined]
             f"{path}/object"
         ]
@@ -557,11 +567,9 @@ class TestCloudStorageDataDeletion:
         delete_files = MagicMock()
         setattr(layout, "_delete_files", delete_files)
 
-        layout.delete_backup("my-backup", MagicMock())
-
-        assert delete_files.call_args.args[0] == [
-            "ch_backup/my_backup/disks/s3/db/table.tar",
-        ]
+        with pytest.raises(StorageError, match="not owned"):
+            layout.delete_backup("my-backup", MagicMock())
+        delete_files.assert_not_called()
 
     def test_delete_backup_without_dashes_deletes_the_path_once(self):
         """
@@ -593,11 +601,16 @@ def test_prefix_delete_keeps_light_metadata_until_retry_succeeds() -> None:
     layout._config = {"path_root": "backups"}  # pylint: disable=protected-access
     layout._storage_loader = MagicMock()  # pylint: disable=protected-access
     storage = layout._storage_loader  # pylint: disable=protected-access
-    storage.list_dir.return_value = [
-        "backups/old/data.tar",
-        "backups/old/backup_struct.json",
-        "backups/old/backup_light_struct.json",
-    ]
+    storage.path_exists.return_value = False
+    storage.list_dir.side_effect = lambda path, **_: (
+        [
+            "backups/old/data.tar",
+            "backups/old/backup_struct.json",
+            "backups/old/backup_light_struct.json",
+        ]
+        if path == "backups/old"
+        else []
+    )
     storage.wait.side_effect = [RuntimeError("async deletion failed"), None]
     unfreeze = MagicMock()
 

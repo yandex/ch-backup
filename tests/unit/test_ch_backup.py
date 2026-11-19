@@ -381,6 +381,9 @@ def _backup_with_context(
 ) -> tuple[ClickhouseBackup, Mock]:
     context = Mock()
     context.config = {"force_non_replicated": False}
+    context.backup_layout.get_pending_deletions.return_value = {}
+    context.backup_layout.clean_pending_backup.return_value = True
+    context.lock_conf = {"zk_flock": True}
     context.backup_meta.get_database.return_value = Database(
         "db", database_engine, None, None, None
     )
@@ -575,6 +578,7 @@ def _readable_backup(name: str, link: str | None = None) -> Mock:
     meta = Mock(state=BackupState.CREATED, copy_scopes={})
     meta.name = name
     part = Mock(link=link, database="db", table="table", deduplicated_part_name="p")
+    meta.get_parts.return_value = [part]
     meta.get_databases.return_value = ["db"]
     meta.get_tables.return_value = [Mock(get_parts=Mock(return_value=[part]))]
     return meta
@@ -928,8 +932,10 @@ def test_purge_partial_keeps_copies_being_copied() -> None:
     )
     context.backup_layout.reload_backup.side_effect = lambda meta, **_: meta
 
+    context.backup_layout.get_backup.side_effect = _readable_backup
+
     with patch.object(backup, "_delete", return_value=("stale", None)) as delete:
-        backup.delete("broken", purge_partial=True)
+        backup.delete("broken", purge_partial=True, delete_unreadable=True)
 
     assert [call.args[0] for call in delete.call_args_list] == [stale]
 
@@ -966,31 +972,30 @@ def test_purge_fails_on_unreadable_metadata() -> None:
     context.config = {"retain_time": {}, "retain_count": 1}
     context.backup_layout.get_backups.side_effect = _get_backups_with_unreadable()
 
-    with pytest.raises(StorageError, match="Unreadable light"):
+    with pytest.raises(StorageError, match="unreadable metadata"):
         backup.purge()
 
     context.backup_layout.delete_backup.assert_not_called()
 
 
 def test_delete_unreadable_backup_without_references() -> None:
-    """An unreferenced unreadable backup is deleted by name without unfreeze."""
+    """Explicit policy records intent and uses reference-aware cleanup without unfreeze."""
     backup, context = _backup_with_context()
     context.locker = MagicMock()
     other = _readable_backup("other")
     context.backup_layout.get_backups.side_effect = _get_backups_with_unreadable(other)
     context.backup_layout.reload_backup.return_value = other
 
-    deleted_name, msg = backup.delete("broken", purge_partial=False)
+    deleted_name, msg = backup.delete(
+        "broken", purge_partial=False, delete_unreadable=True
+    )
 
     assert deleted_name == "broken"
-    assert msg and "SYSTEM UNFREEZE WITH NAME 'broken'" in msg
-
-    context.backup_layout.reload_backup.assert_called_once_with(
-        other, use_light_meta=False
+    assert msg and "Frozen data was kept" in msg
+    context.backup_layout.save_delete_pending.assert_called_once()
+    context.backup_layout.clean_pending_backup.assert_called_once_with(
+        "broken", {}, set()
     )
-    context.backup_layout.delete_backup.assert_called_once()
-    assert context.backup_layout.delete_backup.call_args.args[0] == "broken"
-    context.backup_layout.delete_backup.call_args.args[1]()
     context.ch_ctl.system_unfreeze.assert_not_called()
     context.backup_layout.upload_backup_metadata.assert_not_called()
 
@@ -1007,12 +1012,17 @@ def test_delete_unreadable_backup_purges_partial_backups() -> None:
     )
     context.backup_layout.reload_backup.side_effect = lambda meta, **_: meta
 
+    context.backup_layout.get_backup.side_effect = _readable_backup
+
     with patch.object(backup, "_delete", return_value=("partial", None)) as delete:
-        assert backup.delete("broken", purge_partial=True)[0] == "broken"
+        assert (
+            backup.delete("broken", purge_partial=True, delete_unreadable=True)[0]
+            == "broken"
+        )
 
     delete.assert_called_once()
     assert delete.call_args.args[0] is partial
-    assert context.backup_layout.delete_backup.call_args.args[0] == "broken"
+    assert context.backup_layout.clean_pending_backup.call_args.args[0] == "broken"
 
 
 def test_failed_partial_delete_keeps_unreadable_backup() -> None:
@@ -1026,23 +1036,11 @@ def test_failed_partial_delete_keeps_unreadable_backup() -> None:
     )
     context.backup_layout.reload_backup.side_effect = lambda meta, **_: meta
 
+    context.backup_layout.get_backup.side_effect = _readable_backup
+
     with patch.object(backup, "_delete", side_effect=StorageError("deletion failed")):
         with pytest.raises(StorageError, match="deletion failed"):
-            backup.delete("broken", purge_partial=True)
-
-    context.backup_layout.delete_backup.assert_not_called()
-
-
-def test_delete_unreadable_backup_with_references_fails() -> None:
-    """An unreadable backup linked from another backup is kept."""
-    backup, context = _backup_with_context()
-    context.locker = MagicMock()
-    other = _readable_backup("other", link="broken")
-    context.backup_layout.get_backups.side_effect = _get_backups_with_unreadable(other)
-    context.backup_layout.reload_backup.return_value = other
-
-    with pytest.raises(ClickhouseBackupError, match="referenced by other backups"):
-        backup.delete("broken", purge_partial=False)
+            backup.delete("broken", purge_partial=True, delete_unreadable=True)
 
     context.backup_layout.delete_backup.assert_not_called()
 
