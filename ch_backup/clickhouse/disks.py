@@ -31,12 +31,16 @@ from ch_backup.backup.metadata import (
     PartMetadata,
     sanitize_backup_name,
 )
+from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageBackup
 from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.models import Disk, FrozenPart, Table
 from ch_backup.config import Config
+from ch_backup.encryption import validate_cloud_storage_data_encryption_config
+from ch_backup.exceptions import StorageError
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
+from ch_backup.storage.engine.s3 import S3RetryingError
 from ch_backup.storage.object_copy import get_s3_disk_location, make_storage_config
 from ch_backup.util import (
     is_equal_s3_endpoints,
@@ -317,7 +321,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
 
     def _linked_backups_data(
         self,
-    ) -> Iterator[tuple[BackupMetadata, str, list[TableMetadata]]]:
+    ) -> Iterator[tuple[BackupMetadata | CloudStorageBackup, str, list[TableMetadata]]]:
         """
         Yield backups holding data of deduplicated parts on cloud storage disks.
 
@@ -340,15 +344,28 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
                 links[part.link][part.disk_name][(table.database, table.name)] = table
 
         for backup_name, disks in links.items():
-            backup_meta = self._backup_layout.get_backup(
-                backup_name, use_light_meta=True
-            )
+            backup_meta: BackupMetadata | CloudStorageBackup | None
+            try:
+                backup_meta = self._backup_layout.get_backup(
+                    backup_name, use_light_meta=True, allow_pending=True
+                )
+            except (StorageError, S3RetryingError):
+                backup_meta = None
+            if backup_meta is None:
+                backup_meta = self._backup_layout.get_cloud_storage_backup(backup_name)
             if backup_meta is None or not backup_meta.cloud_storage.data_copied:
                 raise ClickHouseDisksException(
                     f'Backup "{backup_name}" holding data of deduplicated parts'
                     " is missing or holds no copied data"
                 )
             for disk_name, tables in disks.items():
+                if (
+                    isinstance(backup_meta, CloudStorageBackup)
+                    and disk_name not in backup_meta.cloud_storage.disks
+                ):
+                    raise ClickHouseDisksException(
+                        f"Missing cloud disk {disk_name} in backup {backup_name}"
+                    )
                 yield backup_meta, disk_name, list(tables.values())
 
     def _tables_to_restore(self) -> Sequence[TableMetadata]:
@@ -362,7 +379,7 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
 
     def _create_temporary_disk(
         self,
-        backup_meta: BackupMetadata,
+        backup_meta: BackupMetadata | CloudStorageBackup,
         disk_name: str,
         desired_tables: Sequence[TableMetadata] | Literal["all"] = "all",
         link: str | None = None,
@@ -398,6 +415,9 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         disk_config = self._source_disk_config(backup_meta, disk_name)
         rewrite_paths = None
         if backup_meta.cloud_storage.data_encryption is not None:
+            validate_cloud_storage_data_encryption_config(
+                self._config, backup_meta.cloud_storage.data_encryption
+            )
             if self._decryption is None:
                 self._decryption = CloudStorageDecryption(
                     self._config, self._backup_layout
@@ -455,7 +475,9 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
             )
             self._decryption.rewrite_metadata(metadata_root, *rewrite_paths)
 
-    def _source_disk_config(self, backup_meta: BackupMetadata, disk_name: str) -> dict:
+    def _source_disk_config(
+        self, backup_meta: BackupMetadata | CloudStorageBackup, disk_name: str
+    ) -> dict:
         """
         Build a disk configuration pointing to the location of the data.
         """
@@ -483,7 +505,10 @@ class ClickHouseTemporaryDisks(ClickHouseDiskManager):
         return disk_config
 
     def _source_storage(
-        self, backup_meta: BackupMetadata, disk_config: dict, disk_name: str
+        self,
+        backup_meta: BackupMetadata | CloudStorageBackup,
+        disk_config: dict,
+        disk_name: str,
     ) -> tuple[dict, str]:
         """Return the storage and prefix containing encrypted data objects."""
         if backup_meta.cloud_storage.data_copied:
@@ -678,6 +703,7 @@ class ClickHouseBackupDisks(ClickHouseDiskManager):
     """
 
     def __enter__(self) -> "ClickHouseBackupDisks":
+        self._backup_layout.claim_cloud_storage(self._backup_meta.name)
         self._read_configured_disks()
         self._render_ch_disks_config()
         try:

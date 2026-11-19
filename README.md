@@ -418,7 +418,7 @@ Behavior and limitations:
 - Copy acquires the configured source and target locks through completion, including retries and
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
   and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.
-  Locking remains optional; the local file lock retains its shared semantics.
+  Locking remains optional for ordinary operations; local file locks are exclusive.
 - Set `multiprocessing.metadata_read_threads` in the target configuration to control parallel
   source and target light-metadata reads at copy startup (default: `4`, positive integer).
   Each batch holds at most this many reads; set `1` for sequential reading.
@@ -758,4 +758,38 @@ When light metadata is missing or unreadable, backup listing falls back to full
 metadata. This keeps deduplication references visible to `delete` and `purge`.
 Deleting a backup with readable full metadata preserves referenced parts and
 rewrites its light metadata through the normal deletion path. A referenced backup
-whose full metadata cannot be read is not partially deleted.
+whose full metadata cannot be read is not partially deleted by default.
+
+Use `ch-backup delete BACKUP --delete-unreadable` or `ch-backup purge
+--delete-unreadable` to devalue unreadable backups (`backup.delete_unreadable: true`
+in config; default `false`). This includes temporary S3 read failures. Upgrade all
+writers first, enable `lock.zk_flock`, and use the same ZooKeeper ensemble/path
+for operations sharing storage. Explicit delete affects only its target; purge with retention also
+includes unreadable candidates whose age cannot be determined. Unknown references
+in retained backups, listing failures and unreadable markers stop deletion.
+
+`delete_pending.json` preserves the intent even if manifests return. Each attempt
+rereads retained references, keeps shared parts and cloud data, and records
+`referenced_by`; see `list -a -v --format=json`. Marked backups cannot be restored
+independently or reused for new deduplication. Existing dependent backups retain
+access. `delete BACKUP`, `delete BACKUP --purge-partial` and `purge` retry cleanup
+without the flag; purge retries even without retention. The marker is deleted last.
+Unknown original/copy provenance prevents automatic UNFREEZE.
+
+New cloud backups store restore settings in `cloud_storage_info.json` and claim an
+empty cloud prefix with `.cloud_storage_owner.json`. Legacy cloud data without
+proven ownership remains pending. Dependent cloud restore/copy requires readable
+manifests or the descriptor; settings are never guessed from object names.
+
+For a pre-upgrade cloud backup with readable full metadata, use
+`ch-backup adopt-cloud-storage BACKUP --confirm-owner` before delete/purge.
+Enable the shared `lock.zk_flock` first. The flag asserts that the entire sanitized
+prefix belongs exclusively to this backup, including historical objects; verify
+that from the storage's backup history before running it. The command rejects
+conflicting names, metadata or owner claims and writes no payload. It cannot prove
+historical ownership from LIST; leave ambiguous prefixes unclaimed. A successful
+adoption unblocks strict inventory and permits later cleanup of that cloud prefix.
+
+Writers also refuse nonempty cloud prefixes without an owner claim. Before
+resuming a legacy copy or deleting legacy cloud data, adopt its verified owner;
+readable manifests alone do not bypass the ownership check.

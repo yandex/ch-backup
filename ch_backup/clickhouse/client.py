@@ -160,7 +160,7 @@ class ClickhouseClient:
                 encoded = value.encode("latin-1") if isinstance(value, str) else value
                 if b"\r" in encoded or b"\n" in encoded:
                     raise ValueError
-            except ValueError:
+            except (requests.exceptions.InvalidHeader, ValueError):
                 raise ClickhouseErrorNotRetriable(
                     f"Invalid ClickHouse HTTP header {name}"
                 ) from None

@@ -4,8 +4,12 @@ Unit tests for masking secrets before they reach the log.
 
 # pylint: disable=protected-access
 
+import os
+import subprocess
+import sys
 import traceback
 from collections.abc import Iterator
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -340,17 +344,97 @@ def test_invalid_auth_header_never_exposes_credentials(
     assert "Retrying" not in logged
 
 
-@pytest.mark.parametrize("value", ["hunter2", "hunter2 ", "hunter2\u00e9", b"hunter2"])
-def test_valid_auth_headers_are_preserved(value: str | bytes) -> None:
+@pytest.mark.parametrize(
+    "user,password",
+    [
+        ("backup", "hunter2"),
+        ("backup ", "hunter2 "),
+        ("backup\u00e9", "hunter2\u00e9"),
+        (b"backup", b"hunter2"),
+    ],
+)
+def test_valid_auth_headers_are_preserved(
+    user: str | bytes, password: str | bytes
+) -> None:
     """Valid credentials reach the prepared request without trimming or rewriting."""
     client = ClickhouseClient(
-        {**CLIENT_CONFIG, "clickhouse_user": value, "clickhouse_password": value}
+        {**CLIENT_CONFIG, "clickhouse_user": user, "clickhouse_password": password}
     )
     prepared = client._session.prepare_request(
         requests.Request("POST", "http://clickhouse.test/", data=b"SELECT 1")
     )
-    assert prepared.headers["X-ClickHouse-User"] == value
-    assert prepared.headers["X-ClickHouse-Key"] == value
+    assert prepared.headers["X-ClickHouse-User"] == user
+    assert prepared.headers["X-ClickHouse-Key"] == password
+
+
+def test_invalid_header_does_not_require_value_error_base() -> None:
+    """Sanitize the Requests exception independently of its ValueError inheritance."""
+
+    class InvalidHeader(requests.exceptions.RequestException):
+        """Represent a header error without the ValueError base."""
+
+    config = {**CLIENT_CONFIG, "clickhouse_password": "hunter2"}
+    with (
+        patch.object(requests.exceptions, "InvalidHeader", InvalidHeader),
+        patch.object(
+            requests.utils,
+            "check_header_validity",
+            side_effect=InvalidHeader("hunter2"),
+        ),
+        pytest.raises(
+            ClickhouseErrorNotRetriable,
+            match="Invalid ClickHouse HTTP header X-ClickHouse-Key",
+        ) as error,
+    ):
+        ClickhouseClient(config)
+    assert "hunter2" not in str(error.value)
+    assert "hunter2" not in "".join(traceback.format_exception(error.value))
+
+
+def test_production_logging_hides_traceback_locals(tmp_path: Path) -> None:
+    """Production sinks replace unsafe sinks and omit raw HTTP response locals."""
+    script = """
+import sys
+from copy import deepcopy
+from pathlib import Path
+from loguru import logger
+from ch_backup import logging
+from ch_backup.clickhouse.client import ClickhouseError
+from ch_backup.config import DEFAULT_CONFIG
+from tests.unit.test_secrets_in_logs import _query_error
+
+logger.add(Path(sys.argv[1]) / "unsafe.log", diagnose=True)
+config = deepcopy(DEFAULT_CONFIG["loguru"])
+config["logs_directory"] = sys.argv[1]
+logging.configure(config)
+response_text = sys.argv[2]
+try:
+    raise _query_error(response_text)
+except ClickhouseError:
+    logging.exception("Command failed")
+logger.complete()
+logger.remove()
+"""
+    script_path = tmp_path / "check_logging.py"
+    script_path.write_text(script)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script_path),
+            str(tmp_path),
+            "Code: 62. DB::Exception: hunter2",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=Path(__file__).resolve().parents[2],
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[2])},
+    )
+    logged = "".join(path.read_text() for path in tmp_path.glob("*.log"))
+    assert "Command failed" in logged
+    assert "Traceback" in logged
+    assert "Code: 62. ClickHouse query failed; server response hidden" in logged
+    assert "hunter2" not in logged + result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("sensitive", [False, True])
@@ -764,7 +848,7 @@ def test_missing_table_path_does_not_print_table_schema(operation: str) -> None:
     """Assertions about missing disk paths cannot expose the table's DDL."""
     table = Table("db", "t", "MergeTree", [], [], "", "hunter2", None)
     with pytest.raises(
-        AssertionError, match="db.t doesn't store data on disk"
+        AssertionError, match=r"db\.t doesn't store data on disk"
     ) as error:
         if operation == "frozen":
             BackupLayout.has_frozen_cloud_storage_data(

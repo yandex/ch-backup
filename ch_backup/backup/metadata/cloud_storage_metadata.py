@@ -2,6 +2,7 @@
 Backup metadata for Cloud Storage.
 """
 
+from dataclasses import dataclass
 from typing import Any
 
 
@@ -157,3 +158,15 @@ class CloudStorageMetadata:
         if self._data_encryption is not None:
             result["data_encryption"] = self._data_encryption
         return result
+
+
+@dataclass
+class CloudStorageBackup:
+    """Describe cloud restore inputs without pretending to be a full manifest."""
+
+    name: str
+    cloud_storage: CloudStorageMetadata
+
+    def get_sanitized_name(self) -> str:
+        """Return the directory name ClickHouse uses for frozen cloud data."""
+        return self.name.replace("-", "_")
