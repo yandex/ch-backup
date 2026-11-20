@@ -49,6 +49,68 @@ An interruption between the two renames can leave the old part in a
 `.ch-backup-*.previous` directory. If transfer workers do not finish
 normally, staging directories are retained for manual cleanup after they stop.
 
+## Local TAR restore performance
+
+Local part archives contain TAR members without an additional gzip layer. Restore
+streams the object through decryption, TAR parsing and filesystem writes. The
+following settings apply to TAR archives extracted to disk, including detached
+parts and access-control archives. Uploads and cloud metadata decoding keep their
+existing pipeline settings.
+
+```yaml
+restore:
+  largest_parts_first: true
+  local_data:
+    encryption_queue_size: 2
+    filesystem_queue_size: 4
+    direct_chunks: true
+    direct_write: true
+    download_range_size: 0
+    decrypt_threads: 1
+```
+
+These are the defaults. `largest_parts_first` schedules larger local table parts
+first to reduce idle workers at the end of a table. ATTACH still follows the
+original part order. `direct_chunks` copies only incomplete chunks through a FIFO;
+`direct_write` bypasses the TAR FIFO while continuing a file's payload. File
+validation, staging and publication are unchanged.
+
+Queue limits count input items. The queue before filesystem chunking receives
+decrypted encryption-sized blocks, so a limit of 50 can retain about 400 MiB with
+8 MiB encryption blocks. The new queue defaults have a combined capacity of about
+68 MiB per encrypted pipeline with default chunk sizes, excluding working buffers,
+cryptographic allocations and process overhead. Both limits must be positive.
+They cap the corresponding global `encryption.queue_size` and
+`filesystem.queue_size`: a smaller positive global limit is preserved, while a
+nonpositive global limit (unbounded) is constrained by the local restore limit.
+
+Two additional modes are opt-in candidates for benchmarking:
+
+- Set `restore.local_data.download_range_size: 33554432` to request 32 MiB HTTP
+  ranges while reading at most `storage.chunk_size` bytes at a time. Zero uses the
+  previous complete-range downloader. The streaming mode requires matching ETag,
+  Content-Range and Content-Length responses and sends `If-Match`. Failed reads
+  resume from the first byte not yet delivered; object replacement fails the
+  download. Outstanding response bodies are closed on completion or cancellation.
+- Set `restore.local_data.decrypt_threads: 2` to decrypt independent frames
+  concurrently. A window of at most this many jobs preserves the original byte
+  order and retains MAC verification. Threads finish before the stage exits,
+  including on failure. Each extra job can hold an encryption-sized input and
+  output plus native cryptographic working memory.
+
+Use `multiprocessing.workers` to vary concurrent archives and
+`filesystem.chunk_size` to compare 1, 4 and 8 MiB filesystem chunks. Increasing
+either can increase memory use. Keep `encryption.chunk_size` equal to the setting
+used to create the backup: it defines the encrypted format.
+
+For a comparison with the previous pipeline on the same package, set
+`largest_parts_first`, `direct_chunks` and `direct_write` to false, queue limits
+to 10 and 50, `download_range_size` to zero and `decrypt_threads` to one. Compare
+the PyNaCl upgrade using separately pinned environments; this package requires
+PyNaCl 1.6.2 or newer. No throughput improvement is guaranteed without workload
+measurements. Measure total restore time and aggregate process/cgroup memory,
+including page cache, and verify restored data for each variant.
+
 ## Restore without cloud storage
 
 `ch-backup restore --skip-cloud-storage BACKUP` restores local parts and skips

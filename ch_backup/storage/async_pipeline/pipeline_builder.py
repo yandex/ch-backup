@@ -17,6 +17,7 @@ from ch_backup.encryption import get_encryption
 from ch_backup.storage.async_pipeline import thread_flat_map
 from ch_backup.storage.async_pipeline.base_pipeline.input import thread_input
 from ch_backup.storage.async_pipeline.base_pipeline.map import thread_map
+from ch_backup.storage.async_pipeline.restore import local_restore_options
 from ch_backup.storage.async_pipeline.stages import (
     ChunkingStage,
     CollectDataStage,
@@ -53,8 +54,10 @@ class PipelineBuilder:
     build_* functions can be chained.
     """
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: dict, *, local_restore: bool = False) -> None:
+        """Build stages with optional local TAR restore settings."""
         self._config = config
+        self._restore_options = local_restore_options(config) if local_restore else {}
         self._stages: list[PypelnStage] = []
         # Process-wide pypeln setting, set per pipeline since spawned workers do not inherit it.
         pypeln_utils.TIMEOUT = config["pipeline"]["queue_poll_interval"]
@@ -212,14 +215,34 @@ class PipelineBuilder:
 
         buffer_size = stage_config["buffer_size"]
         chunk_size = stage_config["chunk_size"]
-        queue_size = stage_config["queue_size"]
+        queue_limit = self._restore_options.get(
+            "encryption_queue_size", stage_config["queue_size"]
+        )
+        queue_size = (
+            min(stage_config["queue_size"], queue_limit)
+            if stage_config["queue_size"] > 0
+            else queue_limit
+        )
+        workers = self._restore_options.get("decrypt_threads", 1)
 
         crypto = get_encryption(stage_config["type"], stage_config)
         chunk_size += crypto.metadata_size()
 
         self.append(
-            thread_flat_map(ChunkingStage(chunk_size, buffer_size), maxsize=queue_size),
-            thread_map(DecryptStage(crypto), maxsize=queue_size),
+            thread_flat_map(
+                ChunkingStage(
+                    chunk_size,
+                    buffer_size,
+                    direct_chunks=self._restore_options.get("direct_chunks", False),
+                ),
+                maxsize=queue_size,
+            ),
+            thread_map(
+                DecryptStage(crypto),
+                maxsize=queue_size,
+                workers=workers,
+                ordered=workers > 1,
+            ),
         )
 
         return self
@@ -320,7 +343,12 @@ class PipelineBuilder:
 
         self.append(
             thread_input(
-                DownloadStorageStage(stage_config, storage, remote_path),
+                DownloadStorageStage(
+                    stage_config,
+                    storage,
+                    remote_path,
+                    range_size=self._restore_options.get("download_range_size", 0),
+                ),
                 maxsize=queue_size,
             )
         )
@@ -334,12 +362,32 @@ class PipelineBuilder:
 
         buffer_size = stage_config["buffer_size"]
         chunk_size = stage_config["chunk_size"]
-        queue_size = stage_config["queue_size"]
+        queue_limit = self._restore_options.get(
+            "filesystem_queue_size", stage_config["queue_size"]
+        )
+        queue_size = (
+            min(stage_config["queue_size"], queue_limit)
+            if stage_config["queue_size"] > 0
+            else queue_limit
+        )
 
         self.append(
-            thread_flat_map(ChunkingStage(chunk_size, buffer_size), maxsize=queue_size),
+            thread_flat_map(
+                ChunkingStage(
+                    chunk_size,
+                    buffer_size,
+                    direct_chunks=self._restore_options.get("direct_chunks", False),
+                ),
+                maxsize=queue_size,
+            ),
             thread_map(
-                WriteFilesStage(stage_config, dir_path, buffer_size), maxsize=queue_size
+                WriteFilesStage(
+                    stage_config,
+                    dir_path,
+                    buffer_size,
+                    direct_write=self._restore_options.get("direct_write", False),
+                ),
+                maxsize=queue_size,
             ),
         )
         return self

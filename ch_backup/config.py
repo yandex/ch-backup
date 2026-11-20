@@ -174,6 +174,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "restore": {
         "use_inplace_cloud_restore": False,
+        "largest_parts_first": True,
+        "local_data": {
+            "encryption_queue_size": 2,
+            "filesystem_queue_size": 4,
+            "direct_chunks": True,
+            "direct_write": True,
+            "download_range_size": 0,
+            "decrypt_threads": 1,
+        },
         # Plaintext staging location used to restore cloud storage data encrypted
         # by the copy command. Unset values inherit endpoint, bucket and credentials
         # from the destination ClickHouse disk. An unset path is selected safely at

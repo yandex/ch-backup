@@ -269,7 +269,7 @@ def download_files_pipeline(
     """
     Entrypoint of download files pipeline.
     """
-    builder = PipelineBuilder(config)
+    builder = PipelineBuilder(config, local_restore=True)
 
     builder.build_download_storage_stage(remote_path)
     if decrypt:
