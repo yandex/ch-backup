@@ -324,10 +324,8 @@ GET_DDL_QUEUE_STATUS_SQL = strip_query(
     """
     SELECT
         entry,
-        query,
         status,
-        exception_code,
-        exception_text
+        exception_code
     FROM system.distributed_ddl_queue
     WHERE cluster = {db_name}
       AND status != 'Finished'
@@ -1387,7 +1385,7 @@ class ClickhouseCTL:
     def get_ddl_queue_unfinished_status(self, db_name: str) -> list[dict]:
         """
         Get pending DDL entries from system.distributed_ddl_queue for a replicated database.
-        Returns list of entries with status, exception_code and exception_text.
+        Returns entry names, statuses and exception codes.
         An empty list means all DDL entries have been processed (sync is complete).
         """
         try:

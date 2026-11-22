@@ -1440,11 +1440,10 @@ class TableBackup(BackupManager):
                             raise
 
                 existing_table: Table | None = None
+                drop_reason = "schema mismatches the schema from backup"
                 if (table.database, table.name) in existing_readonly_tables:
                     existing_table = table
-                    logging.warning(
-                        f"Table {table_name_for_logs} will be recreated because it is in readonly state",
-                    )
+                    drop_reason = "table is in readonly state"
 
                 elif existing_table := existing_tables_by_name.get(
                     (table.database, table.name)
@@ -1456,18 +1455,11 @@ class TableBackup(BackupManager):
                             f"Table {table_name_for_logs} already exists and its schema is the same as the schema from backup. Skipping it.",
                         )
                         continue
-                    logging.warning(
-                        "Table {} will be recreated as its schema mismatches the schema from backup",
-                        table_name_for_logs,
-                    )
                 elif existing_table := (
                     existing_tables_by_uuid.get(table.uuid) if table.uuid else None
                 ):
-                    # Schemas mismatch here at least in name
-                    logging.warning(
-                        'Table "{}"."{}" will be dropped as its UUID is equal but schema mismatches the schema from backup',
-                        existing_table.database,
-                        existing_table.name,
+                    drop_reason = (
+                        "UUID matches but schema mismatches the schema from backup"
                     )
 
                 drop_performed = False
@@ -1484,6 +1476,17 @@ class TableBackup(BackupManager):
                 elif not existing_table:
                     result.append(table)
                 else:
+                    existing_table_for_logs = existing_tables_by_name.get(
+                        (existing_table.database, existing_table.name), existing_table
+                    )
+                    logging.warning(
+                        "Dropping {} (UUID {}) to restore {} (UUID {}): {}",
+                        existing_table_for_logs,
+                        existing_table_for_logs.uuid,
+                        table,
+                        table.uuid,
+                        drop_reason,
+                    )
                     self._drop_existing_table(context, table, existing_table)
                     drop_performed = True
                     result.append(table)

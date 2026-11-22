@@ -793,9 +793,7 @@ class ClickHouseBackupDisks(ClickHouseDiskManager):
         Before 23.7, clickhouse-disks appends the source directory name to the
         destination. Newer versions require the full destination path.
         """
-        assert (
-            table.path_on_disk
-        ), f"Table {table.database}.{table.name} doesn't store data on disk"
+        assert table.path_on_disk, f"Table {table} doesn't store data on disk"
 
         backup_disk = self.create_disk(disk_name)
         shadow_path = os.path.join(

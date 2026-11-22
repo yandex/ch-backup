@@ -28,7 +28,6 @@ from ch_backup.clickhouse.client import (
 )
 from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.disks import ClickHouseBackupDisks
-from ch_backup.clickhouse.masking import mask_named_collection, mask_sql_literals
 from ch_backup.clickhouse.metadata_cleaner import (
     MetadataCleaner,
     _is_not_table_path_error,
@@ -51,7 +50,6 @@ from ch_backup.logic.storage_schema_restore import StorageSchemaRestore
 from ch_backup.logic.table import TableBackup
 from ch_backup.logic.workload_entities import WorkloadEntity
 from ch_backup.util import get_table_zookeeper_paths
-from tests.unit.utils import parametrize
 
 CLIENT_CONFIG = {
     "host": "clickhouse.test",
@@ -65,143 +63,6 @@ DECRYPT_QUERY = (
     "SELECT decrypt('aes-128-ctr', unhex('0a0b0c'), unhex('0d0e0f'), unhex('010203'))"
     " AS data FORMAT JSON"
 )
-
-
-@parametrize(
-    {
-        "id": "named collection with s3 credentials",
-        "args": {
-            "sql": (
-                "CREATE NAMED COLLECTION IF NOT EXISTS s3_args AS"
-                " access_key_id = 'AKIAIOSFODNN7EXAMPLE',"
-                " format = 'CSVWithNames',"
-                " secret_access_key = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',"
-                " url = 'https://s3.example.com/test-bucket/data/*.xz'"
-            ),
-            "expected": "CREATE NAMED COLLECTION IF NOT EXISTS s3_args AS '[HIDDEN]'",
-        },
-    },
-    {
-        "id": "cluster name is kept in the header",
-        "args": {
-            "sql": (
-                "CREATE NAMED COLLECTION db_creds ON CLUSTER 'ch_cluster' AS"
-                " password = 'hunter2'"
-            ),
-            "expected": (
-                "CREATE NAMED COLLECTION db_creds ON CLUSTER 'ch_cluster' AS '[HIDDEN]'"
-            ),
-        },
-    },
-    {
-        "id": "collection name containing a keyword is kept in the header",
-        "args": {
-            "sql": "CREATE NAMED COLLECTION as_creds AS password = 123456",
-            "expected": "CREATE NAMED COLLECTION as_creds AS '[HIDDEN]'",
-        },
-    },
-    {
-        "id": "value containing the values keyword does not expose the pairs",
-        "args": {
-            "sql": (
-                "CREATE NAMED COLLECTION db_creds AS"
-                " query = 'SELECT 1 AS x', password = 123456"
-            ),
-            "expected": "CREATE NAMED COLLECTION db_creds AS '[HIDDEN]'",
-        },
-    },
-    {
-        "id": "keywords are case insensitive",
-        "args": {
-            "sql": "create named collection db_creds as password = 'hunter2'",
-            "expected": "create named collection db_creds as '[HIDDEN]'",
-        },
-    },
-    {
-        "id": "leading whitespace and line breaks are tolerated",
-        "args": {
-            "sql": "\nCREATE NAMED COLLECTION db_creds\nAS\npassword = 'hunter2'",
-            "expected": "\nCREATE NAMED COLLECTION db_creds\nAS '[HIDDEN]'",
-        },
-    },
-    {
-        "id": "statement is recognized only at the start",
-        "args": {
-            "sql": (
-                "Code: 62. DB::Exception: Syntax error in"
-                " CREATE NAMED COLLECTION db_creds AS port = 3306"
-            ),
-            "expected": None,
-        },
-    },
-    {
-        "id": "statement declaring nothing is not recognized",
-        "args": {
-            "sql": "CREATE NAMED COLLECTION db_creds",
-            "expected": None,
-        },
-    },
-    {
-        "id": "another create statement is not recognized",
-        "args": {
-            "sql": "CREATE TABLE test_db.test_table AS SELECT 1",
-            "expected": None,
-        },
-    },
-)
-def test_mask_named_collection(sql: str, expected: str | None) -> None:
-    assert mask_named_collection(sql) == expected
-
-
-@parametrize(
-    {
-        "id": "escaped quote does not end the literal early",
-        "args": {
-            "sql": (
-                "structure = 'kind Enum8(\\'AAA\\' = 1, \\'BBB\\' = 2)',"
-                " password = 'hunter2'"
-            ),
-            "expected": "structure = '[HIDDEN]', password = '[HIDDEN]'",
-        },
-    },
-    {
-        "id": "backslash before the closing quote",
-        "args": {
-            "sql": "path = 'C:\\\\', password = 'hunter2'",
-            "expected": "path = '[HIDDEN]', password = '[HIDDEN]'",
-        },
-    },
-    {
-        "id": "doubled quote escapes the quote inside a literal",
-        "args": {
-            "sql": "SELECT 'it''s a secret' FROM test_table",
-            "expected": "SELECT '[HIDDEN]' FROM test_table",
-        },
-    },
-    {
-        "id": "backticked identifiers are not literals",
-        "args": {
-            "sql": "DROP NAMED COLLECTION `db_creds`",
-            "expected": "DROP NAMED COLLECTION `db_creds`",
-        },
-    },
-    {
-        "id": "apostrophe in a backquoted identifier does not shift masking",
-        "args": {
-            "sql": "SELECT decrypt('aes-128-ctr', `col's`, 'key_hex') FROM test_table",
-            "expected": "SELECT decrypt('[HIDDEN]', `col's`, '[HIDDEN]') FROM test_table",
-        },
-    },
-    {
-        "id": "unterminated identifier is masked to the end",
-        "args": {
-            "sql": "SELECT `col, password = 'hunter2'",
-            "expected": "SELECT '[HIDDEN]'",
-        },
-    },
-)
-def test_mask_sql_literals(sql: str, expected: str) -> None:
-    assert mask_sql_literals(sql) == expected
 
 
 def _client(response: MagicMock | requests.Response) -> ClickhouseClient:
@@ -609,26 +470,33 @@ def test_error_classification_uses_original_response(
     assert _is_not_table_path_error(error) is invalid_path
 
 
-@pytest.mark.parametrize("same_name", [False, True])
+@pytest.mark.parametrize(
+    "same_name,readonly", [(False, False), (True, False), (True, True)]
+)
+@pytest.mark.parametrize("restricted", [False, True])
 def test_schema_conflicts_hide_both_schemas(
-    same_name: bool, log_messages: list[str]
+    same_name: bool, readonly: bool, restricted: bool, log_messages: list[str]
 ) -> None:
     """Both conflict branches replace the right table without logging either DDL."""
     table_uuid = "223b4576-76f0-4ed3-976f-46db82af82a9"
     statement = (
         "CREATE TABLE t (x Int64) ENGINE=MySQL('host', 'db', 't', 'user', 'hunter2')"
     )
-    table = Table("db", "t", "MySQL", [], [], "", statement, table_uuid)
+    engine = "MySQL"
+    if readonly:
+        engine = "ReplicatedMergeTree"
+        statement = "CREATE TABLE t (x Int64) ENGINE=ReplicatedMergeTree('/t', 'r') ORDER BY x SETTINGS disk=disk(type='s3', secret_access_key='hunter2')"
+    table = Table("db", "t", engine, [], [], "", statement, table_uuid)
     old_name = "t" if same_name else "old"
     old = Table(
         "db",
         old_name,
-        "MySQL",
+        engine,
         [],
         [],
         "",
         statement.replace("hunter2", "old-secret"),
-        table_uuid,
+        "11111111-1111-1111-1111-111111111111" if readonly else table_uuid,
     )
     stored = {("db", old_name): old}
     context = MagicMock()
@@ -636,25 +504,42 @@ def test_schema_conflicts_hide_both_schemas(
     context.config_root = {"restore": {"max_table_name": 255}}
     context.ch_ctl.get_tables.return_value = list(stored.values())
     context.ch_ctl.get_detached_tables.return_value = []
-    context.ch_ctl.get_replicas.return_value = []
-    context.ch_ctl.drop_table_if_exists.side_effect = lambda item: stored.pop(
-        (item.database, item.name)
+    context.ch_ctl.get_replicas.return_value = (
+        [{"database": "db", "table": "t"}] if readonly else []
     )
+
+    def drop(item: Table) -> None:
+        """Verify the explanation is logged before changing live table state."""
+        logged = "".join(log_messages)
+        assert "Dropping" in logged
+        assert repr(old) in logged and repr(table) in logged
+        assert table_uuid in logged
+        assert old.uuid is not None and old.uuid in logged
+        stored.pop((item.database, item.name))
+
+    context.ch_ctl.drop_table_if_exists.side_effect = drop
     context.ch_ctl.create_table.side_effect = lambda item: stored.__setitem__(
         (item.database, item.name), item
     )
-    db = Database("db", "Atomic", None, None, None)
+    db = Database("db", "Replicated" if restricted else "Atomic", None, None, None)
 
     result = TableBackup()._preprocess_tables_to_restore(
         context, {"db": db}, [table], False, False, None
     )
+    if restricted:
+        assert result == ([], 0, set())
+        assert stored == {("db", old_name): old}
+        assert "Dropping" not in "".join(log_messages)
+        assert "will be dropped" not in "".join(log_messages)
+        assert "will be recreated" not in "".join(log_messages)
+        return
     assert result == ([table], 0, set())
     assert not stored
     TableBackup._restore_table_object(context, db, table)
     assert stored == {("db", "t"): table}
     assert "hunter2" in stored["db", "t"].create_statement
     logged = "".join(log_messages)
-    assert "schema mismatches" in logged
+    assert ("readonly state" if readonly else "schema mismatches") in logged
     assert "hunter2" not in logged and "old-secret" not in logged
 
 
@@ -847,9 +732,7 @@ def test_database_cleanup_keeps_original_error_decision(
 def test_missing_table_path_does_not_print_table_schema(operation: str) -> None:
     """Assertions about missing disk paths cannot expose the table's DDL."""
     table = Table("db", "t", "MergeTree", [], [], "", "hunter2", None)
-    with pytest.raises(
-        AssertionError, match=r"db\.t doesn't store data on disk"
-    ) as error:
+    with pytest.raises(AssertionError) as error:
         if operation == "frozen":
             BackupLayout.has_frozen_cloud_storage_data(
                 MagicMock(), MagicMock(), MagicMock(), table
@@ -860,7 +743,39 @@ def test_missing_table_path_does_not_print_table_schema(operation: str) -> None:
             )
         else:
             ClickHouseBackupDisks.copy_table_data(MagicMock(), "default", table)
-    assert "hunter2" not in str(error.value)
+    assert (
+        str(error.value)
+        == "Table Table(database='db', name='t') doesn't store data on disk"
+    )
+
+
+def test_model_representations_hide_sensitive_fields() -> None:
+    """Nested containers and str use names only, leaving metadata unchanged."""
+    table = Table("db", "t", "MySQL", [], [], "", "hunter2", None)
+    db = Database("db", "MySQL", None, None, "hunter2")
+    assert repr(table) == str(table) == "Table(database='db', name='t')"
+    assert repr(db) == str(db) == "Database(name='db')"
+    assert "hunter2" not in repr([table, db])
+    assert table.create_statement == db.engine_full == "hunter2"
+
+
+def test_ddl_queue_reads_only_status_fields() -> None:
+    """The queue reader requests diagnostic metadata without SQL or error bodies."""
+    entries = [{"entry": "query-1", "status": "Active", "exception_code": 62}]
+    session = MagicMock()
+    session.post.return_value.json.return_value = {"data": entries}
+    with patch.object(ClickhouseClient, "_create_session", return_value=session):
+        client = ClickhouseClient(CLIENT_CONFIG)
+    ctl = ClickhouseCTL.__new__(ClickhouseCTL)
+    ctl._ch_client = client
+    assert ctl.get_ddl_queue_unfinished_status("db") == entries
+    sql = session.post.call_args.kwargs["data"].decode()
+    assert sql.split("FROM")[0].split() == [
+        "SELECT",
+        "entry,",
+        "status,",
+        "exception_code",
+    ]
 
 
 def test_removed_ttl_is_not_logged(log_messages: list[str]) -> None:

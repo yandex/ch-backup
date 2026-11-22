@@ -321,7 +321,7 @@ def get_table_zookeeper_paths(tables: Iterable) -> Iterable[tuple]:
         )
         if not match:
             raise ClickhouseBackupError(
-                f"Couldn't parse create statement for zk path: {table.database}.{table.name}"
+                f"Couldn't parse create statement for zk path: {table}"
             )
         result.append((table, match.group("zk_path")))
     return result
