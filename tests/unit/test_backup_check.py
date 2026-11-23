@@ -18,12 +18,12 @@ from ch_backup.backup.checker import (
     _cloud_storage_dirs,
     _differing_files,
     _DiskCheckResult,
-    _files_of_parts,
     _ObjectCheckResult,
     _skipped_data,
     _stored_objects,
     _table_paths,
 )
+from ch_backup.backup.checker_archive import files_of_parts
 from ch_backup.backup.metadata import BackupMetadata, TableMetadata
 from ch_backup.backup.metadata.table_metadata import DataSkippedReason
 from ch_backup.clickhouse.models import Database
@@ -307,8 +307,8 @@ def test_linked_cloud_storage_data_is_attributed_by_parts(
     storage.disk_metadata(
         meta,
         {
-            "all_1_1_0/data.bin": object_metadata("abc/obj1", 10),
-            "all_2_2_0/data.bin": (
+            "data/db/c/all_1_1_0/data.bin": object_metadata("abc/obj1", 10),
+            "data/db/c/all_2_2_0/data.bin": (
                 object_metadata("abc/obj2", 5) if damage == "object" else b"garbage"
             ),
         },
@@ -364,7 +364,7 @@ def test_not_copied_cloud_storage_data_is_reported_as_unverified(
 
 def test_malformed_disk_metadata_of_not_copied_data(storage: Storage) -> None:
     meta = storage.cloud_backup("c1", objects={}, data_copied=False)
-    storage.disk_metadata(meta, {"all_1_1_0/data.bin": b"garbage"})
+    storage.disk_metadata(meta, {"data/db/c/all_1_1_0/data.bin": b"garbage"})
 
     results = _check(storage, deep=False)
 
@@ -451,11 +451,15 @@ def test_linked_cloud_storage_data_must_be_copied(
 
     results = _check(storage, deep=False)
 
-    assert _broken(results) == ({"c2"} if damage == "not copied" else {"c1", "c2"})
-    assert results["c2"].problems == [
-        'disk s3 of "db"."c" in backup "c1": '
-        'backup "c1" holding the data is missing or holds no copied data'
-    ]
+    if damage == "not copied":
+        assert _broken(results) == {"c2"}
+        assert results["c2"].problems == [
+            'disk s3 of "db"."c" in backup "c1": '
+            'backup "c1" holding the data is missing or holds no copied data'
+        ]
+    else:
+        assert _broken(results) == {"c1"}
+        assert results["c1"].problems == ["light metadata: missing"]
 
 
 def test_cloud_storage_data_linked_from_unchecked_backup(storage: Storage) -> None:
@@ -502,10 +506,10 @@ def test_tables_of_external_databases_are_not_checked(storage: Storage) -> None:
     [
         (
             [
-                "all_1_1_0/columns.txt",
-                "all_1_1_0/data.bin",
-                "all_1_1_0/frozen_metadata.txt",
-                "all_2_2_0/data.bin",
+                "data/db/c/all_1_1_0/columns.txt",
+                "data/db/c/all_1_1_0/data.bin",
+                "data/db/c/all_1_1_0/frozen_metadata.txt",
+                "data/db/c/all_2_2_0/data.bin",
             ],
             None,
         ),
@@ -517,15 +521,15 @@ def test_tables_of_external_databases_are_not_checked(storage: Storage) -> None:
             None,
         ),
         (
-            ["all_1_1_0/frozen_metadata.txt"],
+            ["data/db/c/all_1_1_0/frozen_metadata.txt"],
             "missing ['columns.txt', 'data.bin'], unexpected []",
         ),
-        (["all_1_1_0/data.bin"], "missing ['columns.txt'], unexpected []"),
+        (["data/db/c/all_1_1_0/data.bin"], "missing ['columns.txt'], unexpected []"),
         (
             [
-                "all_1_1_0/columns.txt",
-                "all_1_1_0/data.bin",
-                "all_1_1_0/p.proj/data.bin",
+                "data/db/c/all_1_1_0/columns.txt",
+                "data/db/c/all_1_1_0/data.bin",
+                "data/db/c/all_1_1_0/p.proj/data.bin",
             ],
             "missing [], unexpected ['p.proj/data.bin']",
         ),
@@ -535,7 +539,11 @@ def test_files_of_part_in_disk_metadata(
     file_names: list[str], problem: str | None
 ) -> None:
     files = ("columns.txt", "data.bin", "frozen_metadata.txt")
-    found = _files_of_parts([(name, b"") for name in file_names], {"all_1_1_0"}, set())
+    found = files_of_parts(
+        [(name, b"") for name in file_names],
+        {"all_1_1_0"},
+        {"data/db/c", "store/abc/uuid"},
+    )
 
     differing = _differing_files(found, [{"all_1_1_0": files}])
 
@@ -545,7 +553,11 @@ def test_files_of_part_in_disk_metadata(
 
 
 def test_files_of_part_are_compared_with_metadata_of_each_backup() -> None:
-    found = _files_of_parts([("all_1_1_0/data.bin", b"")], {"all_1_1_0"}, set())
+    found = files_of_parts(
+        [("data/db/c/all_1_1_0/data.bin", b"")],
+        {"all_1_1_0"},
+        {"data/db/c", "store/abc/uuid"},
+    )
 
     differing = _differing_files(
         found,
@@ -566,7 +578,7 @@ def test_files_of_table_are_taken_from_disk_metadata_of_all_tables() -> None:
         ("store/xyz/xyzuvw/all_1_1_0/columns.txt", b"other"),
     ]
 
-    found = _files_of_parts(files, {"all_1_1_0"}, {"store/abc/abcdef"})
+    found = files_of_parts(files, {"all_1_1_0"}, {"store/abc/abcdef"})
 
     assert found == {"all_1_1_0": {"data.bin": b"own"}}
     assert _table_paths(TableMetadata("db", "t-1", "MergeTree", "abcdef")) == {

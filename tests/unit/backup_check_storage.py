@@ -191,7 +191,7 @@ class Storage:
             self.disk_metadata(
                 meta,
                 {
-                    "all_1_1_0/data.bin": (
+                    "data/db/c/all_1_1_0/data.bin": (
                         f"{version}\n{len(objects)}\t{sum(objects.values())}\n"
                         + "".join(
                             f"{size}\t{key_prefix}{key}\n"

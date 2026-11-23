@@ -11,6 +11,7 @@ from kazoo.client import KazooClient
 from kazoo.exceptions import NoNodeError
 
 from ch_backup import logging
+from ch_backup.backup.layout import validate_access_control_filenames
 from ch_backup.backup.metadata import BackupStorageFormat
 from ch_backup.backup.replica_layout import ReplicaLayout
 from ch_backup.backup_context import BackupContext
@@ -88,6 +89,9 @@ class AccessBackup(BackupManager):
         if not acl_ids:
             logging.debug("No access control entities to restore.")
             return
+
+        if access_control.backup_format == BackupStorageFormat.PLAIN:
+            validate_access_control_filenames(_get_access_control_files(acl_ids))
 
         has_replicated_access = self._has_replicated_access(context)
 

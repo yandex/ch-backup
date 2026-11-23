@@ -12,6 +12,7 @@ from functools import partial
 from io import IOBase
 from itertools import islice
 from pathlib import Path
+from tarfile import BLOCKSIZE
 from tempfile import NamedTemporaryFile
 from typing import (
     Any,
@@ -672,6 +673,29 @@ class BackupLayout:
                 f"Invalid cloud storage ownership for {backup_name}"
             ) from error
 
+    def is_cloud_storage_companion(
+        self, name: str, owner: str, *, allow_legacy: bool = False
+    ) -> bool:
+        """Identify a separate cloud payload directory by its contents and owner."""
+        children = set(
+            self._storage_loader.list_dir(
+                self.get_backup_path(name), recursive=False, absolute=False
+            )
+        )
+        if not children or children - {
+            "disks",
+            "cloud_storage",
+            CLOUD_STORAGE_OWNER_FNAME,
+        }:
+            return False
+        if CLOUD_STORAGE_OWNER_FNAME in children:
+            return self.cloud_storage_owned(owner)
+        if allow_legacy:
+            backup = self.get_backup(owner, use_light_meta=True, allow_pending=True)
+            settings = backup or self.get_cloud_storage_backup(owner)
+            return settings is not None and settings.cloud_storage.enabled
+        return False
+
     def claim_cloud_storage(self, backup_name: str, *, adopt: bool = False) -> None:
         """Claim empty cloud directories, or adopt legacy data after explicit owner confirmation."""
         if adopt:
@@ -908,21 +932,15 @@ class BackupLayout:
             if backup:
                 backups.append(backup)
             elif strict_inventory:
-                children = self._storage_loader.list_dir(
-                    self.get_backup_path(name), recursive=False, absolute=False
-                )
-                if (
-                    name in companions
-                    and children
-                    and set(children)
-                    <= {"disks", "cloud_storage", CLOUD_STORAGE_OWNER_FNAME}
-                ):
+                if name in companions:
                     owners = [
                         owner
                         for owner in names
                         if owner != name and sanitize_backup_name(owner) == name
                     ]
-                    if len(owners) == 1 and self.cloud_storage_owned(owners[0]):
+                    if len(owners) == 1 and self.is_cloud_storage_companion(
+                        name, owners[0]
+                    ):
                         continue
                 if not self._storage_loader.list_dir(
                     self.get_backup_path(name), recursive=True, absolute=False
@@ -1098,6 +1116,8 @@ class BackupLayout:
         """
         Download access control object metadata and save on disk.
         """
+        validate_access_control_filenames([file_name])
+        _validate_part_file_paths(local_path, [file_name])
         remote_path = _access_control_data_path(
             self.get_backup_path(backup_name), file_name
         )
@@ -1106,7 +1126,10 @@ class BackupLayout:
             'Downloading access control metadata "{}" to "{}', remote_path, local_path
         )
         try:
-            self._storage_loader.download_file(remote_path, local_path, encryption=True)
+            with open(local_path, "xb", buffering=0) as destination:
+                self._storage_loader.download_file(
+                    remote_path, destination, encryption=True
+                )
         except Exception as e:
             msg = f"Failed to download access control metadata file {remote_path}"
             raise StorageError(msg) from e
@@ -1282,9 +1305,10 @@ class BackupLayout:
             )
             remote_files = self._storage_loader.list_dir(remote_dir_path)
             files = dict.fromkeys(remote_files, 0)
-            if remote_files == [f"{source_part_name}.tar"]:
-                files[remote_files[0]] = self._storage_loader.get_file_size(
-                    os.path.join(remote_dir_path, remote_files[0])
+            tar_name = f"{source_part_name}.tar"
+            if part.tarball and tar_name in files:
+                files[tar_name] = self._storage_loader.get_file_size(
+                    os.path.join(remote_dir_path, tar_name)
                 )
             return self.check_data_part_files(part, files)
 
@@ -1296,7 +1320,7 @@ class BackupLayout:
             return False
 
     def get_table_data_files(
-        self, backup_name: str, database: str, table: str
+        self, backup_name: str, database: str, table: str, *, strict: bool = False
     ) -> dict[str, dict[str, int]]:
         """
         List data of a table stored in a backup at once: file sizes grouped by part name.
@@ -1317,9 +1341,22 @@ class BackupLayout:
                 ).items():
                     part_name, _, file_name = key[len(prefix) + 1 :].partition("/")
                     parts.setdefault(part_name, {})[file_name] = size
-                if parts:
+                if not strict and parts:
                     return parts
+                if escape_names:
+                    escaped = parts
+                    if (
+                        _part_path(
+                            backup_path, database, table, "", escape_names=False
+                        ).strip("/")
+                        == prefix
+                    ):
+                        return parts
+                elif strict:
+                    return {**parts, **escaped}
         except S3RetryingError:
+            if strict:
+                raise
             logging.warning(
                 f"Failed to list data of {database}.{table} in backup {backup_name}, consider it's broken",
                 exc_info=True,
@@ -1331,7 +1368,9 @@ class BackupLayout:
         Check data of a part against sizes of its stored files keyed by file name.
         """
         tar_name = f"{part.deduplicated_part_name}.tar"
-        if part.tarball and list(files) == [tar_name]:
+        if part.tarball:
+            if tar_name not in files:
+                return False
             target_size = self._target_part_size(part, encrypted=part.encrypted)
             if target_size != files[tar_name]:
                 logging.warning(
@@ -1351,8 +1390,10 @@ class BackupLayout:
 
         return True
 
-    def check_detached_part(self, backup_name: str, part: DetachedPartMetadata) -> bool:
-        """Check availability and size of a detached part archive."""
+    def check_detached_part(
+        self, backup_name: str, part: DetachedPartMetadata, *, for_restore: bool = False
+    ) -> bool:
+        """Check archive size and presence, using restore's lookup in for_restore mode."""
         try:
             remote_dir_path = self._get_escaped_if_exists(
                 _detached_part_path,
@@ -1362,16 +1403,20 @@ class BackupLayout:
                 part.disk_name,
                 part.name,
             )
-            remote_files = self._storage_loader.list_dir(remote_dir_path)
-            if remote_files != [f"{part.name}.tar"]:
+            remote_path = os.path.join(remote_dir_path, f"{part.name}.tar")
+            if for_restore:
+                exists = self._storage_loader.path_exists(remote_path)
+            else:
+                exists = self._storage_loader.list_dir(remote_dir_path) == [
+                    f"{part.name}.tar"
+                ]
+            if not exists:
                 logging.warning(
                     "Detached part archive was not found in {}", remote_dir_path
                 )
                 return False
 
-            actual_size = self._storage_loader.get_file_size(
-                os.path.join(remote_dir_path, f"{part.name}.tar")
-            )
+            actual_size = self._storage_loader.get_file_size(remote_path)
             target_size = self._target_part_size(part, encrypted=part.encrypted)
             if target_size != actual_size:
                 logging.warning(
@@ -1380,6 +1425,8 @@ class BackupLayout:
                 return False
             return True
         except S3RetryingError:
+            if for_restore:
+                raise
             logging.warning(
                 f"Failed to check detached data part {part.name}, consider it broken",
                 exc_info=True,
@@ -1398,8 +1445,8 @@ class BackupLayout:
         """
         backup_path = self.get_backup_path(backup_name)
         # Check if metadata is stored as 'disks/s3.tar.gz' for backwards compatibility
-        old_style_remote_path = _disk_metadata_path(
-            backup_path, None, None, source_disk_name, compression
+        old_style_remote_path = self.get_legacy_disk_metadata_path(
+            backup_name, source_disk_name, compression
         )
         if self._storage_loader.path_exists(old_style_remote_path):
             return [old_style_remote_path]
@@ -1429,6 +1476,14 @@ class BackupLayout:
             logging.warning(f"Missing path {path} on remote")
 
         return list(needed_paths)
+
+    def get_legacy_disk_metadata_path(
+        self, backup_name: str, disk_name: str, compressed: bool
+    ) -> str:
+        """Return the key of the shared metadata archive in older backups."""
+        return _disk_metadata_path(
+            self.get_backup_path(backup_name), None, None, disk_name, compressed
+        )
 
     @contextmanager
     def _get_cloud_storage_metadata_dst(
@@ -1951,6 +2006,31 @@ class BackupLayout:
             tar_size, self._encryption_chunk_size, self._encryption_metadata_size
         )
 
+    def matches_legacy_tar_size(self, part: PartMetadata, stored_size: int) -> bool:
+        """Allow per-file padding for a raw byte count, including an unpadded final file."""
+        size = stored_size
+        if part.encrypted:
+            chunk = self._encryption_chunk_size + self._encryption_metadata_size
+            chunks = -(-size // chunk)
+            size -= chunks * self._encryption_metadata_size
+            if (
+                size < 0
+                or calc_encrypted_size(
+                    size, self._encryption_chunk_size, self._encryption_metadata_size
+                )
+                != stored_size
+            ):
+                return False
+        payload = size - calc_tarball_size(part.files, 0)
+        padding = payload - part.size
+        if padding < 0:
+            return False
+        if remainder := payload % BLOCKSIZE:
+            padded_files = min(len(part.files) - 1, part.size - remainder)
+        else:
+            padded_files = min(len(part.files), part.size)
+        return padding <= padded_files * (BLOCKSIZE - 1)
+
     def _get_escaped_if_exists(
         self, path_function: Callable, *args: Any, **kwargs: Any
     ) -> str:
@@ -1961,6 +2041,20 @@ class BackupLayout:
         if self._storage_loader.path_exists(path, is_dir=True):
             return path
         return path_function(*args, escape_names=False, **kwargs)
+
+
+def validate_access_control_filenames(filenames: Sequence[str]) -> None:
+    """Validate all legacy ACL names before downloading any file."""
+    if len(set(filenames)) != len(filenames):
+        raise StorageError("Duplicate access control filename")
+    if any(
+        not filename
+        or filename in (".", "..")
+        or Path(filename).name != filename
+        or "\x00" in filename
+        for filename in filenames
+    ):
+        raise StorageError("Invalid access control filename")
 
 
 def _validate_part_file_paths(path: str, filenames: Sequence[str]) -> None:

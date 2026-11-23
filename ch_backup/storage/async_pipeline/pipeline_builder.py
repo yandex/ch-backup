@@ -46,6 +46,14 @@ from ch_backup.storage.engine import get_storage_engine
 PypelnStage = Union[pypeln_utils.BaseStage]  # noqa: UP007
 
 
+class _PipelineQueue(IterableQueue):
+    """Carry original thread exceptions through pypeln's exception queue."""
+
+    def get_pipeline_exception(self, exception: BaseException) -> Any:
+        """Supply pypeln with a callable that returns the original exception."""
+        return (lambda _traceback: exception), ""
+
+
 class PipelineBuilder:
     """
     Build the whole pipeline stage by stage and return the final result.
@@ -418,7 +426,7 @@ class PipelineBuilder:
 
     @staticmethod
     def _iterate(stage: PypelnStage) -> Iterator[Any]:
-        main_queue = IterableQueue(maxsize=stage.maxsize, total_sources=stage.workers)
+        main_queue = _PipelineQueue(maxsize=stage.maxsize, total_sources=stage.workers)
         workers = list(stage.build({}, main_queue, main_queue))
 
         with Supervisor(workers=workers, main_queue=main_queue):
