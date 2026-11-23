@@ -77,6 +77,7 @@ def test_restore_attaches_parts_in_source_order(tmp_path, newest_source):
     context.config["restore_context_path"] = str(tmp_path / "restore.json")
     context.backup_layout = layout = Mock()
     context.ch_ctl = ch_ctl = Mock()
+    ch_ctl.get_table.return_value.paths_with_disks = []
     ch_ctl.get_detached_part_path.side_effect = lambda _table, _disk, name: str(
         tmp_path / name
     )
@@ -134,6 +135,46 @@ def test_restore_attaches_parts_in_source_order(tmp_path, newest_source):
 
     assert [call.args[1] for call in ch_ctl.attach_part.call_args_list] == names
     assert all(context.restore_context.part_restored(part) for part in parts)
+
+
+def test_restore_recovers_all_actual_local_disks_before_skipping_restored_parts(
+    tmp_path,
+):
+    context = _make_backup_context()
+    context.config["restore_context_path"] = str(tmp_path / "restore.json")
+    metadata = TableMetadata("db1", "tbl", "MergeTree", None)
+    part = PartMetadata(
+        "db1",
+        "tbl",
+        "all_1_1_0",
+        "checksum",
+        512,
+        ["checksums.txt"],
+        True,
+        disk_name="removed_disk",
+    )
+    metadata.add_part(part)
+    context.restore_context.change_part_state(PartState.RESTORED, part)
+    context.ch_ctl = controller = Mock()
+    context.backup_layout = layout = Mock()
+    table = controller.get_table.return_value
+    table.paths_with_disks = [
+        (str(tmp_path / name), Disk(name, str(tmp_path / name), "Local"))
+        for name in ("first", "second")
+    ]
+    roots = [
+        Path(path) / "detached" / ".ch-backup-restore"
+        for path, _ in table.paths_with_disks
+    ]
+    for root in roots:
+        (root / "incoming" / "all_2_2_0").mkdir(parents=True)
+    TableBackup._restore_data(  # pylint: disable=protected-access
+        context, [metadata], Mock(), False, False
+    )
+    assert all(not root.exists() for root in roots)
+    controller.get_detached_part_path.assert_not_called()
+    layout.download_data_part.assert_not_called()
+    controller.attach_part.assert_not_called()
 
 
 @pytest.mark.parametrize(

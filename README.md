@@ -33,8 +33,8 @@ regardless of download completion order. Saved failure details survive restores
 of other tables; a part's error is removed after that part is successfully attached.
 Only failures from the current invocation affect its exit code.
 
-Local parts are downloaded into unique `.ch-backup-*` staging directories on
-the destination disk. Each part name must be a single directory name. Nested
+Local parts are downloaded to `detached/.ch-backup-restore/incoming/<part>` on
+each destination disk. Each part name must be a single directory name. Nested
 paths in per-file backups must stay inside staging. Restore accepts early TAR
 backups that omit all padding after the last complete file.
 After all files have been written, restore checks their
@@ -45,9 +45,16 @@ Local parts saved as `DOWNLOADED` are downloaded again on retry. Failed download
 leave the existing destination untouched. During replacement the previous part
 is moved aside until publication succeeds. If the publish rename fails, restore
 moves the old part back. If that rollback fails, the error log gives its path.
-An interruption between the two renames can leave the old part in a
-`.ch-backup-*.previous` directory. If transfer workers do not finish
-normally, staging directories are retained for manual cleanup after they stop.
+After an interruption, wait for the previous restore and its transfer workers
+to exit before retrying on the same table and disk. The retry reuses the same
+workspace. It moves `previous/<part>` back when the destination is missing,
+removes it after a completed publication, and discards partial downloads before
+scheduling new ones. If the incoming, previous and destination paths all exist
+for a part, restore stops and preserves them for inspection. Successful restores
+remove the workspace. Older releases used `.ch-backup-<uuid>` directories that
+cannot be matched to their destination automatically. After workers have stopped,
+inspect legacy `.ch-backup-<uuid>.previous` directories for old parts to recover
+before manually removing obsolete staging directories.
 
 ## Restore without cloud storage
 

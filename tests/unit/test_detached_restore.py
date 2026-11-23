@@ -75,8 +75,9 @@ def _complete_download(
     callback()
 
 
-def test_restore_uses_try_suffix_for_conflicting_part() -> None:
-    part = _part()
+@pytest.mark.parametrize("name", ["all_1_1_0", ".ch-backup-restore"])
+def test_restore_uses_try_suffix_for_conflicting_part(name: str) -> None:
+    part = _part(name)
     context, table_meta, _ = _context(part)
     context.ch_ctl.detached_part_matches.return_value = False
     context.backup_layout.download_detached_part.side_effect = _complete_download
@@ -96,9 +97,9 @@ def test_restore_uses_try_suffix_for_conflicting_part() -> None:
         )
 
     restored_part = promote.call_args.args[1]
-    assert restored_part.name == "all_1_1_0_try1"
+    assert restored_part.name == f"{name}_try1"
     assert restored_part.checksum == part.checksum
-    assert promote.call_args.args[3] == "/data/default/detached/all_1_1_0_try1"
+    assert promote.call_args.args[3] == f"/data/default/detached/{name}_try1"
     context.ch_ctl.attach_part.assert_not_called()
 
 

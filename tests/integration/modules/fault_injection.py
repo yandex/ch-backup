@@ -1,6 +1,7 @@
 """Faults that must run inside the ClickHouse container."""
 
 import argparse
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -122,6 +123,24 @@ def interrupt_inplace_copy(filename: str, arguments: list[str]) -> None:
         _run_patched_cli(arguments)
 
 
+def interrupt_local_publication(boundary: str, arguments: list[str]) -> None:
+    """Exit the process at a precise point in the real publication sequence."""
+    rename = os.rename
+
+    def interrupted_rename(source, destination):
+        if Path(source).parent.name == "incoming" and boundary == "before-publication":
+            os._exit(86)
+        rename(source, destination)
+        if (
+            Path(destination).parent.name == "previous"
+            and boundary == "after-old-rename"
+        ):
+            os._exit(86)
+
+    with patch("ch_backup.logic.part_restore.os.rename", interrupted_rename):
+        _run_patched_cli(arguments)
+
+
 def fail_part_attach(database: str, table_name: str, arguments: list[str]) -> None:
     """Let copying finish, then fail before ATTACH consumes the detached part."""
     attach = ClickhouseCTL.attach_part
@@ -154,6 +173,9 @@ if __name__ == "__main__":
     inplace = subparsers.add_parser("interrupt-inplace-copy")
     inplace.add_argument("filename")
     inplace.add_argument("arguments", nargs=argparse.REMAINDER)
+    local = subparsers.add_parser("interrupt-local-publication")
+    local.add_argument("boundary", choices=["before-publication", "after-old-rename"])
+    local.add_argument("arguments", nargs=argparse.REMAINDER)
     attach_part = subparsers.add_parser("fail-part-attach")
     attach_part.add_argument("database")
     attach_part.add_argument("table")
@@ -169,5 +191,7 @@ if __name__ == "__main__":
         drop_frozen_table(options.database, options.table, options.arguments)
     elif options.fault == "interrupt-inplace-copy":
         interrupt_inplace_copy(options.filename, options.arguments)
+    elif options.fault == "interrupt-local-publication":
+        interrupt_local_publication(options.boundary, options.arguments)
     else:
         fail_part_attach(options.database, options.table, options.arguments)

@@ -602,6 +602,8 @@ def test_scan_detached_parts_reads_reason_from_directory_name(
     broken_part.mkdir()
     (normal_part / "data.bin").write_bytes(b"data")
     (broken_part / "data.bin").write_bytes(b"broken")
+    (detached_path / ".ch-backup-restore" / "incoming").mkdir(parents=True)
+    (detached_path / ".ch-backup-restore-other").mkdir()
     table = Table(
         "db1",
         "table1",
@@ -631,6 +633,12 @@ def test_scan_detached_parts_reads_reason_from_directory_name(
     assert parts[0].reason == ""
     assert parts[0].disk_name == "default"
     assert parts[0].checksum == ""
+
+    assert {part.name for part in ch_ctl.scan_detached_parts(table)} == {
+        normal_part.name,
+        broken_part.name,
+        ".ch-backup-restore-other",
+    }
 
     broken_parts = list(
         ch_ctl.scan_detached_parts(

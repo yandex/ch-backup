@@ -33,6 +33,7 @@ from ch_backup.exceptions import ClickhouseBackupError, ConfigurationError
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.util import (
     CLOUD_STORAGE_EXCLUDE_FILE_NAMES,
+    LOCAL_RESTORE_DIR,
     chown_dir_contents,
     chown_file,
     escape,
@@ -1325,7 +1326,10 @@ class ClickhouseCTL:
         """
         Get filesystem absolute path to detached data part.
         """
-        if part_name in {"", ".", ".."} or os.path.basename(part_name) != part_name:
+        if (
+            part_name in {"", ".", "..", LOCAL_RESTORE_DIR}
+            or os.path.basename(part_name) != part_name
+        ):
             raise ClickhouseBackupError(
                 f'Invalid detached part directory name: "{part_name}"'
             )
@@ -1414,7 +1418,9 @@ class ClickhouseCTL:
 
             for entry in entries:
                 try:
-                    if not entry.is_dir(follow_symlinks=False):
+                    if entry.name == LOCAL_RESTORE_DIR or not entry.is_dir(
+                        follow_symlinks=False
+                    ):
                         continue
 
                     reason = _get_detached_part_reason(entry.name)

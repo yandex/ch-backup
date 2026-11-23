@@ -44,7 +44,7 @@ from ch_backup.logic.upload_part_observer import UploadPartObserver
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
     ThreadExecPool,
 )
-from ch_backup.util import compare_schema
+from ch_backup.util import LOCAL_RESTORE_DIR, compare_schema
 
 RANDOM_TABLE_NAME_LENGTH = 16
 
@@ -1858,6 +1858,9 @@ class TableBackup(BackupManager):
                     on_success=downloaded,
                     on_error=download_failed,
                 )
+                for data_path, disk in table.paths_with_disks:
+                    if disk.type == "local":
+                        local_parts.prepare(Path(data_path) / "detached")
                 for part in table_meta.get_parts():
                     if context.restore_context.part_restored(part):
                         if part.disk_name in context.backup_meta.cloud_storage.disks:
@@ -2088,7 +2091,10 @@ class TableBackup(BackupManager):
         directory with different contents is preserved and the first free
         ``_tryN`` name is used instead.
         """
-        for try_no in count():
+        # Older backups may contain a user-detached directory with the name
+        # now reserved for local restore. Treat that name as occupied.
+        first_try = 1 if part.name == LOCAL_RESTORE_DIR else 0
+        for try_no in count(first_try):
             restore_part = (
                 part if try_no == 0 else part.with_name(f"{part.name}_try{try_no}")
             )
