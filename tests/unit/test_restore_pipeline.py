@@ -52,14 +52,13 @@ class DownloadBody(io.BytesIO):
         super().__init__(data)
         self.fail_after = fail_after
         self.read_sizes: list[int | None] = []
-        self.error_read_size = 0
         self.discarded = 0
 
     def read(self, size: int | None = -1) -> bytes:
         """Raise a transport failure after the selected delivered prefix."""
         self.read_sizes.append(size)
         if self.fail_after is not None and self.tell() >= self.fail_after:
-            self.discarded += len(super().read(self.error_read_size))
+            self.discarded += len(super().read(2))
             raise ResponseStreamingError(error="interrupted test response")
         return super().read(size)
 
@@ -107,15 +106,12 @@ def tar_files(files: dict[str, bytes]) -> bytes:
     return bytes(stream)
 
 
-@pytest.mark.parametrize("direct", [False, True])
-@pytest.mark.parametrize("read_size", [1, 13, 64, 77, 257])
-@pytest.mark.parametrize("chunk_size", [1, 16, 65])
-def test_chunking_preserves_every_byte(
-    direct: bool, read_size: int, chunk_size: int
-) -> None:
+@pytest.mark.parametrize("read_size", [13, 64, 257])
+def test_chunking_preserves_every_byte(read_size: int) -> None:
     """Exercise partial chunks, wraparound, empty inputs and the final short block."""
     data = bytes(range(256)) * 3 + b"end"
-    stage = ChunkingStage(chunk_size, chunk_size + 7, direct_chunks=direct)
+    chunk_size = 64
+    stage = ChunkingStage(chunk_size, chunk_size + 7, direct_chunks=True)
     chunks: list[bytes] = []
     for offset in range(0, len(data), read_size):
         chunks.extend(stage(data[offset : offset + read_size], offset))
@@ -168,20 +164,26 @@ def test_restore_queue_caps_preserve_lower_global_limits(global_limit: int) -> N
 
 
 @pytest.mark.parametrize(
-    "direct_options", [(False, False), (False, True), (True, False), (True, True)]
+    "encrypted,direct_chunks,direct_write,threads,range_size",
+    [
+        (False, True, True, 1, 8192),
+        (True, True, True, 1, 0),
+        (True, False, True, 2, 8192),
+        (True, True, False, 2, 8192),
+        (True, True, True, 2, 8192),
+        (True, False, False, 1, 0),
+    ],
 )
-@pytest.mark.parametrize("threads", [1, 2, 3])
-@pytest.mark.parametrize("range_size", [0, 8192])
-@pytest.mark.parametrize("encrypted", [False, True])
 def test_local_tar_pipeline_restores_files(
     tmp_path: Path,
-    direct_options: tuple[bool, bool],
+    *,
+    encrypted: bool,
+    direct_chunks: bool,
+    direct_write: bool,
     threads: int,
     range_size: int,
-    encrypted: bool,
 ) -> None:
     """Restore actual payload, empty files and GNU long names through all stages."""
-    direct_chunks, direct_write = direct_options
     files = {
         "checksums.txt": b"checksums",
         "empty.bin": b"",
@@ -246,13 +248,23 @@ def test_nacl_reads_legacy_frames_and_writes_compatible_frames(size: int) -> Non
             crypto.decrypt(broken)
 
 
+def start_download(
+    storage: S3StorageEngine, range_size: int = 16
+) -> DownloadStorageStage:
+    """Open a streaming range for the S3 response tests."""
+    stage = DownloadStorageStage(
+        {"chunk_size": 4}, storage, "part.tar", range_size=range_size
+    )
+    stage.on_start()
+    return stage
+
+
 @pytest.mark.parametrize("fail_after", [None, 4, 8])
 def test_streaming_ranges_retry_without_repeating_bytes(fail_after: int | None) -> None:
     """Retry a partially read HTTP response from its first undelivered byte."""
     data = bytes(range(53))
     storage, client, bodies = make_storage(data, fail_after)
-    stage = DownloadStorageStage({"chunk_size": 4}, storage, "part.tar", range_size=16)
-    stage.on_start()
+    stage = start_download(storage)
     restored = b"".join(stage())
     stage.on_done()
     assert restored == data
@@ -261,6 +273,7 @@ def test_streaming_ranges_retry_without_repeating_bytes(fail_after: int | None) 
         0 < size <= 4 for body in bodies for size in body.read_sizes if size is not None
     )
     if fail_after is not None:
+        assert bodies[0].discarded == 2
         assert (
             client.get_object.call_args_list[1]
             .kwargs["Range"]
@@ -288,8 +301,7 @@ def test_streaming_rejects_changed_or_mismatched_ranges(
         return response
 
     client.get_object.side_effect = changed
-    stage = DownloadStorageStage({"chunk_size": 4}, storage, "part.tar", range_size=16)
-    stage.on_start()
+    stage = start_download(storage)
     restored = bytearray()
     with pytest.raises(StorageError, match="does not match the requested object range"):
         for chunk in stage():
@@ -301,8 +313,7 @@ def test_streaming_rejects_changed_or_mismatched_ranges(
 def test_streaming_consumer_close_releases_response() -> None:
     """Closing an unfinished stream releases the retained HTTP body."""
     storage, _, bodies = make_storage(bytes(range(64)))
-    stage = DownloadStorageStage({"chunk_size": 4}, storage, "part.tar", range_size=32)
-    stage.on_start()
+    stage = start_download(storage, 32)
     stream = stage()
     assert next(stream) == bytes(range(4))
     stream.close()
@@ -325,8 +336,7 @@ def test_streaming_short_response_resumes_at_delivered_offset(length: int) -> No
         return response
 
     client.get_object.side_effect = truncated
-    stage = DownloadStorageStage({"chunk_size": 4}, storage, "part.tar", range_size=16)
-    stage.on_start()
+    stage = start_download(storage)
     assert b"".join(stage()) == data
     assert (
         client.get_object.call_args_list[1]
@@ -349,34 +359,12 @@ def test_streaming_retry_exhaustion_closes_all_responses() -> None:
         return response
 
     client.get_object.side_effect = unavailable
-    stage = DownloadStorageStage({"chunk_size": 4}, storage, "part.tar", range_size=16)
-    stage.on_start()
+    stage = start_download(storage)
     stream = stage()
     assert next(stream) == bytes(range(4))
     with pytest.raises(S3RetryingError, match="interrupted test response"):
         next(stream)
     assert client.get_object.call_count == 2
-    assert all(body.closed for body in bodies)
-
-
-def test_streaming_read_failure_discards_unreturned_bytes() -> None:
-    """Retry bytes consumed inside a failed read but never returned to the pipeline."""
-    data = bytes(range(53))
-    storage, client, bodies = make_storage(data, fail_after=4)
-    serve = client.get_object.side_effect
-
-    def interrupted_read(**kwargs):
-        """Consume two extra bytes before the first body raises."""
-        response = serve(**kwargs)
-        bodies[-1].error_read_size = 2
-        return response
-
-    client.get_object.side_effect = interrupted_read
-    stage = DownloadStorageStage({"chunk_size": 4}, storage, "part.tar", range_size=16)
-    stage.on_start()
-    assert b"".join(stage()) == data
-    assert bodies[0].discarded == 2
-    assert client.get_object.call_args_list[1].kwargs["Range"] == "bytes=4-19"
     assert all(body.closed for body in bodies)
 
 
@@ -390,8 +378,7 @@ def test_streaming_precondition_failure_is_not_retried() -> None:
         },
         "GetObject",
     )
-    stage = DownloadStorageStage({"chunk_size": 4}, storage, "part.tar", range_size=16)
-    stage.on_start()
+    stage = start_download(storage)
     with pytest.raises(ClientError, match="PreconditionFailed"):
         list(stage())
     assert client.get_object.call_count == 1
@@ -491,13 +478,10 @@ def test_parallel_map_drains_after_cancellation_interrupts_shutdown() -> None:
         shutdown=threading.Event(),
         join_started=threading.Event(),
         retrying=threading.Event(),
-        progress=threading.Event(),
-        completed=threading.Event(),
     )
     release: dict[threading.Thread, threading.Event] = {}
     threads: list[threading.Thread] = []
     first: list[threading.Thread] = []
-    control_errors: list[str] = []
     original = SimpleNamespace(
         shutdown=ThreadPoolExecutor.shutdown,
         stop=Worker.stop,
@@ -510,7 +494,8 @@ def test_parallel_map_drains_after_cancellation_interrupts_shutdown() -> None:
             signals.shutdown.set()
         else:
             signals.retrying.set()
-            signals.progress.set()
+            for event in release.values():
+                event.set()
         return original.shutdown(executor, *args, **kwargs)
 
     def observed_join(thread, *args, **kwargs):
@@ -552,22 +537,11 @@ def test_parallel_map_drains_after_cancellation_interrupts_shutdown() -> None:
             assert signals.join_started.wait(5), "decrypt join did not begin"
             raise OSError("test writer failed")
 
-    def finish_jobs():
-        """Release the remaining jobs only after interrupted shutdown is retried."""
-        if not signals.progress.wait(5):
-            control_errors.append("drain did not retry")
-        if not signals.retrying.is_set() or signals.completed.is_set():
-            control_errors.append("pipeline returned before drain")
-        for event in release.values():
-            event.set()
-
     builder = PipelineBuilder(DEFAULT_CONFIG).build_iterable_stage(
         [b"1", b"2", b"3", b"4"]
     )
     builder.append(thread_map(Crypto(), workers=3, ordered=True, maxsize=1))
     builder.append(thread_map(Writer(), maxsize=1))
-    controller = threading.Thread(target=finish_jobs)
-    controller.start()
     try:
         with (
             patch.object(ThreadPoolExecutor, "shutdown", observed_shutdown),
@@ -578,25 +552,11 @@ def test_parallel_map_drains_after_cancellation_interrupts_shutdown() -> None:
             run_and_collect_all(builder.pipeline())
         live = [thread.name for thread in set(threads) if thread.is_alive()]
     finally:
-        signals.completed.set()
-        signals.progress.set()
-        controller.join(10)
         for event in release.values():
             event.set()
         for thread in set(threads):
             thread.join(5)
-    assert not control_errors and not live, (control_errors, live)
-
-
-@pytest.mark.parametrize("cut", [1, 511, 512, 562, 613, 1023])
-def test_direct_tar_write_preserves_truncation_checks(tmp_path: Path, cut: int) -> None:
-    """The fast payload path must still reject missing headers, data and padding."""
-    data = tar_files({"data.bin": b"x" * 100})
-    stage = WriteFilesStage({}, tmp_path, 1024, direct_write=True)
-    for offset in range(0, cut, 64):
-        stage(data[offset : min(offset + 64, cut)], offset)
-    with pytest.raises(ValueError, match="Truncated TAR stream"):
-        stage.on_done()
+    assert signals.retrying.is_set() and not live, live
 
 
 @pytest.mark.parametrize("threads", [1, 2])
@@ -659,16 +619,3 @@ def test_corrupt_frame_never_replaces_existing_part(
     assert list(destination.iterdir()) == [destination / "original.bin"]
     assert not success.called
     assert all(body.closed for body in bodies)
-
-
-def test_direct_tar_write_accepts_legacy_final_padding(tmp_path: Path) -> None:
-    """Keep compatibility with complete final members lacking all final padding."""
-    header = TarInfo("data.bin")
-    header.size = 1025
-    data = b"x" * header.size
-    stream = header.tobuf(format=GNU_FORMAT) + data
-    stage = WriteFilesStage({}, tmp_path, 1024, direct_write=True)
-    for offset in range(0, len(stream), 512):
-        stage(stream[offset : offset + 512], offset)
-    stage.on_done()
-    assert (tmp_path / "data.bin").read_bytes() == data

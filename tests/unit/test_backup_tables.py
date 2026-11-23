@@ -70,60 +70,19 @@ _EXISTS_ERROR = ClickhouseError("Cannot check table existence")
 
 
 # pylint: disable=protected-access
-@pytest.mark.parametrize("largest_first", [False, True])
-def test_restore_downloads_largest_parts_without_changing_attach_order(
-    tmp_path, largest_first
-):
-    """Restore real part files in size order while preserving source ATTACH order."""
+@pytest.mark.parametrize(
+    "newest_source,largest_first",
+    [
+        ("download", True),
+        ("download", False),
+        ("cloud", True),
+        ("downloaded", True),
+    ],
+)
+def test_restore_attaches_parts_in_source_order(tmp_path, newest_source, largest_first):
+    """Schedule by size when enabled and attach in source order despite reversed completion."""
     context = _make_backup_context()
-    context.backup_layout = layout = Mock()
     context.config_root["restore"]["largest_parts_first"] = largest_first
-    context.config["restore_context_path"] = str(tmp_path / "restore.json")
-    context.ch_ctl = ch_ctl = Mock()
-    ch_ctl.get_detached_part_path.side_effect = lambda _table, _disk, name: str(
-        tmp_path / name
-    )
-    table = TableMetadata("db1", "tbl", "ReplacingMergeTree", None)
-    files = {}
-    for index, size in enumerate([512, 2048, 1024], start=1):
-        name = f"all_{index}_{index}_0"
-        files[name] = bytes([index]) * size
-        table.add_part(
-            PartMetadata(
-                "db1",
-                "tbl",
-                name,
-                md5(b"checksums").hexdigest(),
-                size + 512,
-                ["checksums.txt", "data.bin"],
-                True,
-                disk_name="default",
-            )
-        )
-    downloaded = []
-
-    def download(_backup, part, path, callback, **_kwargs):
-        """Write staged payload for the real validation and publication path."""
-        downloaded.append(part.name)
-        Path(path).mkdir()
-        (Path(path) / "checksums.txt").write_bytes(b"checksums")
-        (Path(path) / "data.bin").write_bytes(files[part.name])
-        callback(part)
-
-    layout.download_data_part.side_effect = download
-    TableBackup._restore_data(context, [table], Mock(), False, False)
-    names = list(files)
-    assert downloaded == ([names[1], names[2], names[0]] if largest_first else names)
-    assert [item.args[1] for item in ch_ctl.attach_part.call_args_list] == names
-    for part in table.get_parts():
-        assert (tmp_path / part.name / "data.bin").read_bytes() == files[part.name]
-        assert context.restore_context.part_restored(part)
-
-
-@pytest.mark.parametrize("newest_source", ["download", "cloud", "downloaded"])
-def test_restore_attaches_parts_in_source_order(tmp_path, newest_source):
-    # Unlike an integration run, force newer downloads to finish first.
-    context = _make_backup_context()
     context.config["restore_context_path"] = str(tmp_path / "restore.json")
     context.backup_layout = layout = Mock()
     context.ch_ctl = ch_ctl = Mock()
@@ -132,6 +91,10 @@ def test_restore_attaches_parts_in_source_order(tmp_path, newest_source):
     )
     table = TableMetadata("db1", "tbl", "ReplacingMergeTree", None)
     names = ["all_1_1_0", "all_2_2_0", "all_10_10_0"]
+    payloads = {
+        name: bytes([i]) * size
+        for i, (name, size) in enumerate(zip(names, [512, 2048, 1024]))
+    }
     for name in names:
         disk = "cloud" if name == names[-1] and newest_source == "cloud" else "default"
         table.add_part(
@@ -140,8 +103,8 @@ def test_restore_attaches_parts_in_source_order(tmp_path, newest_source):
                 "tbl",
                 name,
                 md5(b"checksums").hexdigest(),
-                512,
-                ["checksums.txt"],
+                512 + len(payloads[name]),
+                ["checksums.txt", "data.bin"],
                 True,
                 disk_name=disk,
             )
@@ -173,6 +136,7 @@ def test_restore_attaches_parts_in_source_order(tmp_path, newest_source):
                     10
                 ), "newer part was not collected"
             Path(_path).mkdir()
+            (Path(_path) / "data.bin").write_bytes(payloads[part.name])
             (Path(_path) / "checksums.txt").write_bytes(b"checksums")
 
         pool.submit(part.name, task, callback=lambda: complete(callback, part))
@@ -182,6 +146,13 @@ def test_restore_attaches_parts_in_source_order(tmp_path, newest_source):
         layout.wait.side_effect = pool.wait_all
         TableBackup._restore_data(context, [table], disks, False, False)
 
+    if newest_source == "download":
+        scheduled = [
+            call.args[1].name for call in layout.download_data_part.call_args_list
+        ]
+        assert scheduled == ([names[1], names[2], names[0]] if largest_first else names)
+        for name in names:
+            assert (tmp_path / name / "data.bin").read_bytes() == payloads[name]
     assert [call.args[1] for call in ch_ctl.attach_part.call_args_list] == names
     assert all(context.restore_context.part_restored(part) for part in parts)
 
