@@ -1,15 +1,18 @@
 """Coordination of operations touching more than one storage."""
 
+import fcntl
 from contextlib import contextmanager
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
-from kazoo.exceptions import LockTimeout
+from kazoo.exceptions import ConnectionLoss, LockTimeout
 
 from ch_backup.backup.copy_report import BackupCopyResult, CopyReport
 from ch_backup.ch_backup import ClickhouseBackup
 from ch_backup.config import Config
+from ch_backup.exceptions import TerminatingSignal
 from ch_backup.logic.lock_manager import LockManager, storage_locks
+from ch_backup.zookeeper.zookeeper import ZookeeperCTL
 
 
 def _config(path="/backup-lock", hosts=None):
@@ -88,11 +91,22 @@ def test_equivalent_lock_paths_and_chroots_are_acquired_once(target_path):
                 assert manager.call_count == 1
 
 
-def test_lock_timeout_releases_previously_acquired_locks_and_clients():
+@pytest.mark.parametrize(
+    "acquire_error", [LockTimeout(), None], ids=["timeout", "false"]
+)
+@pytest.mark.parametrize(
+    "contenders_error", [None, ConnectionLoss()], ids=["available", "unavailable"]
+)
+def test_lock_timeout_releases_previously_acquired_locks_and_clients(
+    acquire_error, contenders_error
+):
     clients = [MagicMock(), MagicMock()]
     locks = [client.__enter__.return_value.Lock.return_value for client in clients]
-    locks[1].acquire.side_effect = LockTimeout()
+    locks[0].acquire.return_value = True
+    locks[1].acquire.side_effect = acquire_error
+    locks[1].acquire.return_value = False
     locks[1].contenders.return_value = []
+    locks[1].contenders.side_effect = contenders_error
     with patch("ch_backup.logic.lock_manager.ZookeeperCTL") as ctl:
         ctl.side_effect = [MagicMock(zk_client=client) for client in clients]
         with pytest.raises(SystemExit) as error:
@@ -138,6 +152,57 @@ def test_file_lock_is_closed_if_zookeeper_acquisition_fails():
     lock_file.close.assert_called_once()
 
 
+@pytest.fixture(name="zk_lock")
+def _zk_lock():
+    config = _config()
+    with patch("ch_backup.zookeeper.zookeeper.KazooClient") as factory:
+        ctl = ZookeeperCTL(config["zookeeper"])
+        manager = LockManager(config["lock"], ctl)(operation="TEST")
+        yield manager, ctl.zk_client, factory.return_value
+
+
+def test_release_failure_closes_zookeeper(zk_lock):
+    manager, _, client = zk_lock
+    error = OSError("release failed")
+    client.Lock.return_value.release.side_effect = error
+    with pytest.raises(OSError) as raised:
+        with manager:
+            pass
+    assert raised.value is error
+    assert client.mock_calls[-2:] == [call.stop(), call.close()]
+
+
+@pytest.mark.parametrize("during_entry,cleanup", [(False, "release"), (True, "stop")])
+def test_lock_cleanup_preserves_signal(zk_lock, during_entry, cleanup):
+    manager, _, client = zk_lock
+    signal = TerminatingSignal()
+    client.Lock.return_value.acquire.side_effect = signal if during_entry else None
+    cleanup_fn = (
+        client.Lock.return_value.release if cleanup == "release" else client.stop
+    )
+    cleanup_fn.side_effect = BrokenPipeError("cleanup failed")
+    with pytest.raises(TerminatingSignal) as raised:
+        with manager:
+            assert not during_entry
+            raise signal
+    assert raised.value is signal
+    cleanup_fn.assert_called_once_with()
+    client.close.assert_called_once_with()
+
+
+def test_reused_lock_preserves_outer_zookeeper_context(zk_lock):
+    manager, wrapper, client = zk_lock
+    with wrapper:
+        for distributed in (True, False, True):
+            with manager(distributed=distributed):
+                pass
+            client.stop.assert_not_called()
+    client.start.assert_called_once()
+    client.stop.assert_called_once_with()
+    client.close.assert_called_once_with()
+    assert client.Lock.return_value.release.call_count == 2
+
+
 @pytest.mark.parametrize("failed", [False, True])
 def test_copy_holds_source_and_target_locks_until_copier_returns(failed):
     source, target = _config("/source"), _config("/target")
@@ -155,9 +220,10 @@ def test_copy_holds_source_and_target_locks_until_copier_returns(failed):
         finally:
             events.append("exit")
 
-    def do_copy(names, *, keep_going=False, report=None):
+    def do_copy(names, *, keep_going=False, report=None, command_start=None, **_):
         assert not keep_going
         assert report is None
+        assert command_start is not None
         assert names == ["b1"]
         assert events == ["enter"]
         events.append("copy")
@@ -197,3 +263,17 @@ def test_copy_reports_errors_before_copier_runs(failed_stage):
     assert raised.value is failure
     assert report.error == f"RuntimeError: {failed_stage} failed"
     assert not report.backups
+
+
+def test_file_lock_excludes_other_readers_and_releases_on_exit(tmp_path):
+    """Writers sharing a file lock cannot overlap, and failures release the lock."""
+    path = tmp_path / "writers.lock"
+    path.touch()
+    manager = LockManager({"flock": True, "flock_path": str(path)}, None)
+    with path.open() as other:
+        with pytest.raises(RuntimeError, match="writer failed"):
+            with manager(operation="BACKUP"):
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(other, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                raise RuntimeError("writer failed")
+        fcntl.flock(other, fcntl.LOCK_SH | fcntl.LOCK_NB)

@@ -10,7 +10,7 @@ import subprocess
 
 import yaml
 
-from . import utils
+from . import docker, utils
 from .typing import ContextT
 
 COMPOSE_UP_DOWN_TIMEOUT = 30
@@ -49,18 +49,29 @@ def startup_containers(context: ContextT) -> None:
         raise
 
 
-@utils.env_stage("stop", fail=False)
+@utils.env_stage("stop", fail=True)
 def shutdown_containers(context: ContextT) -> None:
     """
     Shutdown and remove docker containers.
     """
     project_name = _project_name(context.conf)
-    _call_compose(context.conf, project_name=project_name, command="kill")
+    try:
+        _call_compose(context.conf, project_name=project_name, command="kill")
+    except subprocess.CalledProcessError:
+        # Even a failed kill must be followed by removal. Starting the next
+        # scenario with surviving containers would reuse its predecessor's data.
+        logging.exception("Container kill failed; attempting Compose down")
     _call_compose(
         context.conf,
         project_name=project_name,
-        command=f"down --volumes --timeout {COMPOSE_UP_DOWN_TIMEOUT}",
+        command=f"down --volumes --remove-orphans --timeout {COMPOSE_UP_DOWN_TIMEOUT}",
     )
+    remaining = docker.get_containers(context)
+    if remaining:
+        raise RuntimeError(
+            "Containers survived environment reset: "
+            + ", ".join(container.name for container in remaining)
+        )
 
 
 @utils.env_stage("create", fail=True)
@@ -160,6 +171,8 @@ def _generate_service_config(
         # the domain part will end up there twice.
         # Does not affect A or AAAA, though.
         "container_name": f"{instance_name}.{network_name}",
+        # Reap orphaned children from commands executed during the scenario.
+        "init": True,
         "labels": {"ch-backup.integration.environment": network_name},
         # Ports exposure
         "ports": ports_list,

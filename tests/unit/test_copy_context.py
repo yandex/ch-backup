@@ -1,0 +1,319 @@
+"""
+Unit tests for the journal of copied objects.
+"""
+
+import gzip
+import json
+from pathlib import Path
+from typing import Any
+from unittest.mock import patch
+
+import pytest
+
+from ch_backup.backup.copy_context import CopyContext, FailedObjects
+from ch_backup.backup.copy_index import CopyEntries
+from ch_backup.backup.metadata import CopyScope
+from ch_backup.exceptions import StorageError
+from ch_backup.storage.object_copy import CopyEntry, storage_id
+from tests.unit.test_backup_copy import _backup
+
+STORAGE = {
+    "type": "s3",
+    "credentials": {"endpoint_url": "http://s3.test:9000", "bucket": "copy"},
+}
+
+
+class MemoryEngine:
+    """
+    Storage engine keeping objects in memory.
+    """
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.upload_error: Exception | None = None
+
+    def list_dir_with_sizes(self, remote_path: str) -> dict[str, int]:
+        """Collect all pages for callers that need a complete fixture listing."""
+        result: dict[str, int] = {}
+        continuation = None
+        while True:
+            page, continuation = self.read_listing_page(remote_path, continuation)
+            result.update(page)
+            if continuation is None:
+                return result
+
+    def read_listing_page(
+        self, remote_path: str, continuation: str | None = None
+    ) -> tuple[list[tuple[str, int]], str | None]:
+        """Read at most 128 fixture objects after the continuation key."""
+        prefix = remote_path.strip("/") + "/"
+        entries = sorted(
+            (k, len(v))
+            for k, v in self.objects.items()
+            if k.startswith(prefix) and (continuation is None or k > continuation)
+        )
+        page = entries[:128]
+        return page, page[-1][0] if len(entries) > 128 else None
+
+    def download_file(self, remote_path, local_path):
+        """Save an object to the requested scratch file."""
+        with open(local_path, "wb") as output:
+            output.write(self.download_data(remote_path))
+
+    def upload_data(self, data: bytes, remote_path: str) -> str:
+        if self.upload_error:
+            raise self.upload_error
+        self.objects[remote_path] = data
+        return remote_path
+
+    def upload_file(self, local_path: str, remote_path: str) -> str:
+        with open(local_path, "rb") as file:
+            return self.upload_data(file.read(), remote_path)
+
+    def download_data(self, remote_path: str) -> bytes:
+        return self.objects[remote_path]
+
+    def delete_file(self, remote_path: str) -> None:
+        self.objects.pop(remote_path, None)
+
+
+def _entry(name: str, size: int = 1) -> CopyEntry:
+    return CopyEntry(STORAGE, STORAGE, f"src/{name}", f"dst/{name}", size, size)
+
+
+def _context(engine: MemoryEngine, **kwargs: Any) -> CopyContext:
+    return CopyContext(engine, "/backups/b1", _backup("b1"), **kwargs)  # type: ignore[arg-type]
+
+
+def test_records_are_read_by_next_run() -> None:
+    engine = MemoryEngine()
+    context = _context(engine)
+    context.record(_entry("a"))
+    context.flush(force=True)
+
+    resumed = _context(engine)
+    resumed.load()
+
+    assert resumed.has_records()
+    assert resumed.is_recorded(_entry("a"))
+    assert not resumed.is_recorded(_entry("a", size=2))
+    assert not resumed.is_recorded(_entry("b"))
+    assert all(path.startswith("backups/b1/copy_context/") for path in engine.objects)
+
+
+def test_runs_write_separate_files() -> None:
+    engine = MemoryEngine()
+    for name in ("a", "b"):
+        context = _context(engine)
+        context.record(_entry(name))
+        context.flush(force=True)
+
+    resumed = _context(engine)
+    resumed.load()
+
+    assert len(engine.objects) == 2
+    assert resumed.is_recorded(_entry("a")) and resumed.is_recorded(_entry("b"))
+
+
+def test_records_of_another_backup_are_ignored() -> None:
+    engine = MemoryEngine()
+    context = _context(engine)
+    context.record(_entry("a"))
+    context.flush(force=True)
+
+    other = CopyContext(
+        engine,  # type: ignore[arg-type]
+        "/backups/b1",
+        _backup("b1", start_time="2026-01-02 00:00:00 +0000"),
+    )
+    other.load()
+
+    assert not other.has_records()
+
+
+def test_flush_waits_for_size_or_interval() -> None:
+    engine = MemoryEngine()
+    with patch("ch_backup.backup.copy_context.time.monotonic", return_value=0):
+        context = _context(engine, flush_size=2, flush_interval=60)
+    with patch("ch_backup.backup.copy_context.time.monotonic", return_value=59):
+        context.record(_entry("a"))
+        context.flush()
+        assert not engine.objects
+        context.record(_entry("b"))
+        context.flush()
+        assert len(engine.objects) == 1
+    with patch("ch_backup.backup.copy_context.time.monotonic", return_value=120):
+        context.record(_entry("c"))
+        context.flush()
+        assert len(engine.objects) == 2
+
+
+def test_failed_flush_keeps_records() -> None:
+    engine = MemoryEngine()
+    context = _context(engine)
+    context.record(_entry("a"))
+    engine.upload_error = StorageError("SlowDown")
+    context.flush(force=True)
+    engine.upload_error = None
+    context.flush(force=True)
+
+    resumed = _context(engine)
+    resumed.load()
+
+    assert resumed.is_recorded(_entry("a"))
+
+
+def test_failed_flush_waits_for_size_or_interval() -> None:
+    engine = MemoryEngine()
+    with patch("ch_backup.backup.copy_context.time.monotonic", return_value=0):
+        context = _context(engine, flush_size=2, flush_interval=60)
+        context.record(_entry("a"))
+        context.record(_entry("b"))
+        engine.upload_error = StorageError("SlowDown")
+        context.flush()
+        engine.upload_error = None
+        context.record(_entry("c"))
+        context.flush()
+        assert not engine.objects
+        context.record(_entry("d"))
+        context.flush()
+        assert len(engine.objects) == 1
+
+
+def test_unreadable_file_is_skipped() -> None:
+    engine = MemoryEngine()
+    context = _context(engine)
+    context.record(_entry("a"))
+    context.flush(force=True)
+    context.record(_entry("b"))
+    context.flush(force=True)
+    engine.objects[sorted(engine.objects)[0]] = b"not gzip"
+
+    resumed = _context(engine)
+    resumed.load()
+
+    assert not resumed.is_recorded(_entry("a"))
+    assert resumed.is_recorded(_entry("b"))
+
+
+def test_archive_records_depend_on_content_and_size() -> None:
+    engine = MemoryEngine()
+    context = _context(engine)
+    context.record_archive(STORAGE, "dst/t1.tar", [("a", b"1")], 10)
+    context.flush(force=True)
+
+    resumed = _context(engine)
+    resumed.load()
+
+    assert resumed.is_archive_recorded(STORAGE, "dst/t1.tar", [("a", b"1")], 10)
+    assert not resumed.is_archive_recorded(STORAGE, "dst/t1.tar", [("a", b"2")], 10)
+    assert not resumed.is_archive_recorded(STORAGE, "dst/t1.tar", [("a", b"1")], 9)
+    assert not resumed.is_archive_recorded(STORAGE, "dst/t1.tar", [("a", b"1")], None)
+
+
+def test_failed_objects_are_not_records() -> None:
+    engine = MemoryEngine()
+    context = _context(engine)
+    with FailedObjects() as failures:
+        failures.append(_entry("a"), "StorageError: SlowDown")
+        failures.append(_entry("b", size=2), "StorageError: SlowDown")
+        context.save_failures(CopyScope.FILES, failures)
+    path = next(
+        path for path in engine.objects if path.endswith("/failed/files.jsonl.gz")
+    )
+    assert [
+        json.loads(line) for line in gzip.decompress(engine.objects[path]).splitlines()
+    ] == [
+        {"src": "src/a", "dst": "dst/a", "size": 1, "error": "StorageError: SlowDown"},
+        {"src": "src/b", "dst": "dst/b", "size": 2, "error": "StorageError: SlowDown"},
+    ]
+
+    resumed = _context(engine)
+    resumed.load()
+    assert not resumed.has_records()
+
+    with FailedObjects() as failures:
+        resumed.save_failures(CopyScope.FILES, failures)
+    assert not engine.objects
+
+
+def test_manifest_keeps_locations_without_credentials() -> None:
+    engine = MemoryEngine()
+    context = _context(engine)
+    storage = {
+        "type": "s3",
+        "credentials": {
+            "endpoint_url": "http://s3.test:9000",
+            "bucket": "copy",
+            "secret": "x",
+        },
+    }
+    entry = CopyEntry(storage, STORAGE, "src/a", "dst/a", 3, 3)
+    context.save_manifest(CopyScope.FILES, CopyEntries([entry]))
+
+    resumed = _context(engine)
+    resumed.load()
+
+    assert not resumed.has_records()
+    assert b"secret" not in gzip.decompress(next(iter(engine.objects.values())))
+    loaded = resumed.load_manifest(CopyScope.FILES)
+    batch, continuation = loaded.read_batch(limit=128)
+    assert continuation is None
+    assert [(e.src_path, e.dst_path, e.size) for e in batch] == [("src/a", "dst/a", 3)]
+    assert [storage_id(e.src_storage) for e in batch] == [storage_id(storage)]
+
+
+def test_downloads_use_private_parent_and_clean_up() -> None:
+    """Protect neighbouring boto3 files even if the downloader uses public file modes."""
+    engine = MemoryEngine()
+    context = _context(engine)
+    entry = _entry("a")
+    context.record(entry)
+    context.flush(force=True)
+    context.save_manifest(CopyScope.FILES, CopyEntries([entry]))
+    paths = []
+
+    def replace_download(remote_path, local_path):
+        """Mimic boto3 writing a neighbour and renaming it to the destination."""
+        destination = Path(local_path)
+        assert destination.parent.stat().st_mode & 0o077 == 0
+        temporary = destination.with_suffix(".download")
+        temporary.write_bytes(engine.download_data(remote_path))
+        temporary.chmod(0o644)
+        temporary.replace(destination)
+        paths.append(destination)
+
+    resumed = _context(engine)
+    with patch.object(engine, "download_file", side_effect=replace_download):
+        resumed.load()
+        assert resumed.is_recorded(entry)
+        batch, _ = resumed.load_manifest(CopyScope.FILES).read_batch()
+        assert batch[0].src_path == entry.src_path
+    assert len(paths) == 2
+    assert all(not path.parent.exists() for path in paths)
+
+
+def test_failed_downloads_remove_private_directory() -> None:
+    """Remove neighbouring partial downloads on journal and manifest failures."""
+    engine = MemoryEngine()
+    context = _context(engine)
+    context.record(_entry("a"))
+    context.flush(force=True)
+    directories = []
+
+    def fail_download(_remote_path, local_path):
+        """Leave the same partial neighbour as a failed downloader could."""
+        path = Path(local_path)
+        assert path.parent.stat().st_mode & 0o077 == 0
+        path.with_suffix(".partial").write_bytes(b"partial")
+        directories.append(path.parent)
+        raise StorageError("download failed")
+
+    resumed = _context(engine)
+    with patch.object(engine, "download_file", side_effect=fail_download):
+        resumed.load()
+        assert not resumed.has_records()
+        with pytest.raises(StorageError, match="download failed"):
+            resumed.load_manifest(CopyScope.FILES)
+    assert len(directories) == 2
+    assert all(not directory.exists() for directory in directories)

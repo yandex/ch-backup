@@ -76,9 +76,7 @@ class DatabaseBackup(BackupManager):
                 name in present_databases
                 and db.engine != present_databases[name].engine
             ):
-                logging.debug(
-                    f"Database engine mismatch({db.engine}!={present_databases[name].engine}), deleting"
-                )
+                logging.debug(f"Database {name} engine mismatch, deleting")
                 context.ch_ctl.drop_database_if_exists(name)
                 del present_databases[name]
 

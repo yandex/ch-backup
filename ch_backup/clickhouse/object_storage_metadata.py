@@ -25,6 +25,7 @@ VERSION_RELATIVE_PATHS = 2
 VERSION_READ_ONLY_FLAG = 3
 VERSION_INLINE_DATA = 4
 VERSION_FULL_OBJECT_KEY = 5
+FROZEN_METADATA_FNAME = "frozen_metadata.txt"
 
 _ESCAPE_SEQUENCES = {
     "a": "\a",
@@ -163,6 +164,8 @@ def _escape(value: str) -> str:
     """
     Escape string as ClickHouse writeEscapedString() does.
     """
+    if not any(char in value for char in _ESCAPED_CHARS):
+        return value
     return "".join(_ESCAPED_CHARS.get(char, char) for char in value)
 
 

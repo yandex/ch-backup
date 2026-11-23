@@ -6,10 +6,13 @@ Management of backup data layout.
 
 import json
 import os
+from concurrent.futures import Future
 from contextlib import contextmanager
 from functools import partial
 from io import IOBase
+from itertools import islice
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import (
     Any,
     BinaryIO,
@@ -26,9 +29,14 @@ from nacl.exceptions import CryptoError
 from ch_backup import logging
 from ch_backup.backup.metadata import (
     BackupMetadata,
+    BackupState,
     DetachedPartMetadata,
     PartMetadata,
     sanitize_backup_name,
+)
+from ch_backup.backup.metadata.cloud_storage_metadata import (
+    CloudStorageBackup,
+    CloudStorageMetadata,
 )
 from ch_backup.backup.metadata.table_metadata import TableMetadata
 from ch_backup.calculators import calc_encrypted_size, calc_tarball_size
@@ -39,24 +47,63 @@ from ch_backup.clickhouse.object_storage_metadata import (
 )
 from ch_backup.config import Config
 from ch_backup.encryption import get_encryption_class
-from ch_backup.exceptions import ConfigurationError, StorageError, is_broken_executor
+from ch_backup.exceptions import (
+    ConfigurationError,
+    StorageError,
+    TerminatingSignal,
+    is_broken_executor,
+)
 from ch_backup.storage import StorageLoader
+from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.storage.engine.s3 import S3RetryingError
+from ch_backup.storage.metadata_archive import (
+    MetadataFiles,
+    TemporaryMetadataArchive,
+    spool_metadata,
+)
 from ch_backup.storage.object_copy import CopyEntry
 from ch_backup.util import (
     CLOUD_STORAGE_EXCLUDE_FILE_NAMES,
     dir_is_empty,
     escape_metadata_file_name,
+    now,
 )
 
 BACKUP_META_FNAME = "backup_struct.json"
 BACKUP_LIGHT_META_FNAME = "backup_light_struct.json"
+DELETE_PENDING_FNAME = "delete_pending.json"
+CLOUD_STORAGE_INFO_FNAME = "cloud_storage_info.json"
+CLOUD_STORAGE_OWNER_FNAME = ".cloud_storage_owner.json"
 ACCESS_CONTROL_FNAME = "access_control.tar"
 DATABASES_FNAME = "databases.tar"
 COMPRESSED_EXTENSION = ".gz"
 CLOUD_STORAGE_METADATA_DIR = "disks"
 CLOUD_STORAGE_DATA_DIR = "cloud_storage"
 MAX_PLAINTEXT_CLOUD_METADATA_FILE_SIZE = 1024 * 1024
+
+
+def read_metadata_in_batches(
+    layout: "BackupLayout",
+    names: Iterable[str],
+    *,
+    pool: ThreadExecPool,
+    workers: int,
+    use_light_meta: bool = False,
+) -> Iterator[tuple[str, Future[BackupMetadata | None]]]:
+    """Submit batches; the caller owns the pool and awaits each future before advancing."""
+    names = iter(names)
+    while batch := list(islice(names, workers)):
+        reads = [
+            (
+                name,
+                pool.submit_future(
+                    layout.get_backup, name, use_light_meta=use_light_meta
+                ),
+            )
+            for name in batch
+        ]
+        yield from reads
+        del reads
 
 
 # pylint: disable=too-many-public-methods
@@ -87,14 +134,38 @@ class BackupLayout:
         remote_light_path = self._backup_light_metadata_path(backup.name)
         previous_encryption = backup.metadata_encrypted
         try:
+            if backup.state == BackupState.CREATED and backup.cloud_storage.enabled:
+                previous = self.get_cloud_storage_backup(backup.name)
+                if (
+                    previous is not None
+                    and previous.cloud_storage.dump() != backup.cloud_storage.dump()
+                ):
+                    raise StorageError(
+                        "Cloud restore descriptor cannot be changed after publication"
+                    )
+                self._storage_loader.upload_data(
+                    json.dumps(
+                        {
+                            "version": 1,
+                            "backup_name": backup.name,
+                            "cloud_storage": backup.cloud_storage.dump(),
+                        }
+                    ),
+                    remote_path=os.path.join(
+                        self.get_backup_path(backup.name), CLOUD_STORAGE_INFO_FNAME
+                    ),
+                )
             if not light_only:
                 backup.metadata_encrypted = False
                 logging.debug("Saving backup metadata in {}", remote_path)
                 try:
-                    self._storage_loader.upload_data(
-                        backup.dump_json(light=False),
-                        remote_path=remote_path,
-                    )
+                    with NamedTemporaryFile() as metadata:
+                        for chunk in backup.iter_json():
+                            metadata.write(
+                                chunk.encode("utf-8", errors="surrogateescape")
+                            )
+                        metadata.flush()
+                        self._storage_loader.upload_file(metadata.name, remote_path)
                 except Exception:
                     backup.metadata_encrypted = previous_encryption
                     raise
@@ -360,6 +431,7 @@ class BackupLayout:
         Metadata is read from source_disk when data is copied into the backup:
         ClickHouse writes metadata of the copies to a temporary disk.
         """
+        self.claim_cloud_storage(backup_meta.name)
         assert table.path_on_disk, f"Table {table} doesn't store data on disk"
 
         backup_name = backup_meta.get_sanitized_name()
@@ -495,6 +567,197 @@ class BackupLayout:
             self._config["path_root"], recursive=False, absolute=False
         )
 
+    def get_delete_pending(self, backup_name: str) -> dict | None:
+        """Read deletion intent independently of the backup's metadata."""
+        path = os.path.join(
+            self.get_backup_path(backup_name), DELETE_PENDING_FNAME
+        ).lstrip("/")
+        try:
+            if not self._storage_loader.path_exists(path):
+                return None
+            marker = json.loads(self._storage_loader.download_data(path))
+            references = marker["referenced_by"]
+            valid = (
+                isinstance(marker["version"], int),
+                not isinstance(marker["version"], bool),
+                marker["version"] == 1,
+                marker["backup_name"] == backup_name,
+                marker["state"] in ("deleting", "partially_deleted"),
+                isinstance(marker["requested_at"], str),
+                isinstance(marker["reason"], str),
+            )
+            if not all(valid):
+                raise ValueError("Invalid deletion marker")
+            if references is not None and (
+                not isinstance(references, list)
+                or not all(isinstance(name, str) for name in references)
+                or not isinstance(marker["references_checked_at"], str)
+            ):
+                raise ValueError("Invalid deletion marker references")
+            return marker
+        except Exception as error:
+            raise StorageError(
+                f"Failed to read deletion marker for {backup_name}"
+            ) from error
+
+    def save_delete_pending(
+        self,
+        backup_name: str,
+        reason: str,
+        referenced_by: Sequence[str] | None = None,
+        *,
+        last_error: str | None = None,
+    ) -> dict:
+        """Persist intent and optionally replace a completely checked reference snapshot.
+
+        Call under the storage lock. None preserves the last successful snapshot;
+        an empty sequence records a completed scan that found no references.
+        """
+        marker = self.get_delete_pending(backup_name)
+        timestamp = now().isoformat()
+        if marker is None:
+            marker = {
+                "version": 1,
+                "backup_name": backup_name,
+                "state": "deleting",
+                "requested_at": timestamp,
+                "reason": reason,
+                "referenced_by": None,
+                "references_checked_at": None,
+            }
+        marker["last_attempt_at"] = timestamp
+        marker["last_error"] = last_error
+        if referenced_by is not None:
+            marker["referenced_by"] = sorted(set(referenced_by))
+            marker["references_checked_at"] = timestamp
+            marker["state"] = "partially_deleted" if referenced_by else "deleting"
+        path = os.path.join(
+            self.get_backup_path(backup_name), DELETE_PENDING_FNAME
+        ).lstrip("/")
+        try:
+            self._storage_loader.upload_data(json.dumps(marker), remote_path=path)
+        except Exception as error:
+            raise StorageError(
+                f"Failed to save deletion marker for {backup_name}"
+            ) from error
+        return marker
+
+    def get_pending_deletions(self) -> dict[str, dict]:
+        """Discover deletion intents even when both backup manifests are gone."""
+        markers = {}
+        for name in self.get_backup_names():
+            marker = self.get_delete_pending(name)
+            if marker is not None:
+                markers[name] = marker
+        return markers
+
+    def cloud_storage_owned(self, backup_name: str) -> bool:
+        """Verify a claim created before writing cloud payload into an empty prefix."""
+        path = os.path.join(
+            self.get_cloud_storage_path(backup_name), CLOUD_STORAGE_OWNER_FNAME
+        ).lstrip("/")
+        if not self._storage_loader.path_exists(path):
+            return False
+        try:
+            claim = json.loads(self._storage_loader.download_data(path))
+            if (
+                claim != {"version": 1, "backup_name": backup_name}
+                or not isinstance(claim["version"], int)
+                or isinstance(claim["version"], bool)
+            ):
+                raise ValueError("Conflicting cloud storage owner")
+            return True
+        except Exception as error:
+            raise StorageError(
+                f"Invalid cloud storage ownership for {backup_name}"
+            ) from error
+
+    def claim_cloud_storage(self, backup_name: str, *, adopt: bool = False) -> None:
+        """Claim empty cloud directories, or adopt legacy data after explicit owner confirmation."""
+        if adopt:
+            backup = self.get_backup(backup_name)
+            if backup is None or not backup.cloud_storage.enabled:
+                raise StorageError(
+                    "Legacy adoption requires readable full cloud metadata"
+                )
+            sanitized = sanitize_backup_name(backup_name)
+            for name in self.get_backup_names():
+                if name == backup_name or sanitize_backup_name(name) != sanitized:
+                    continue
+                children = self._storage_loader.list_dir(
+                    self.get_backup_path(name), recursive=False, absolute=False
+                )
+                if (
+                    name != sanitized
+                    or not children
+                    or not set(children)
+                    <= {"disks", "cloud_storage", CLOUD_STORAGE_OWNER_FNAME}
+                ):
+                    raise StorageError(f"Cloud prefix conflicts with backup {name}")
+        if self.cloud_storage_owned(backup_name):
+            return
+        if not adopt and self._list_cloud_storage_files(backup_name):
+            raise StorageError(
+                f"Cloud prefix of {backup_name} is not owned; use adopt-cloud-storage after verifying its owner"
+            )
+        path = os.path.join(
+            self.get_cloud_storage_path(backup_name), CLOUD_STORAGE_OWNER_FNAME
+        ).lstrip("/")
+        self._storage_loader.upload_data(
+            json.dumps({"version": 1, "backup_name": backup_name}), remote_path=path
+        )
+
+    def get_cloud_storage_backup(self, backup_name: str) -> CloudStorageBackup | None:
+        """Read independent restore settings; absence never implies cloud ownership."""
+        path = os.path.join(
+            self.get_backup_path(backup_name), CLOUD_STORAGE_INFO_FNAME
+        ).lstrip("/")
+        if not self._storage_loader.path_exists(path):
+            return None
+        try:
+            data = json.loads(self._storage_loader.download_data(path))
+            cloud = data["cloud_storage"]
+            if not isinstance(cloud, dict):
+                raise ValueError("Invalid cloud storage descriptor")
+            valid: tuple[bool, ...] = (
+                isinstance(data["version"], int),
+                not isinstance(data["version"], bool),
+                data["version"] == 1,
+                data["backup_name"] == backup_name,
+                all(
+                    isinstance(cloud[field], bool)
+                    for field in ("encryption", "compression", "data_copied")
+                ),
+                isinstance(cloud["disks"], list),
+                all(isinstance(disk, str) and disk for disk in cloud["disks"]),
+            )
+            if not all(valid):
+                raise ValueError("Invalid cloud storage descriptor")
+            encryption = cloud.get("data_encryption")
+            if encryption is not None:
+                if not isinstance(encryption, dict):
+                    raise ValueError("Invalid cloud data encryption descriptor")
+                valid = (
+                    set(encryption) == {"version", "type", "chunk_size", "key_id"},
+                    isinstance(encryption["version"], int),
+                    not isinstance(encryption["version"], bool),
+                    encryption["version"] == 1,
+                    isinstance(encryption["type"], str),
+                    isinstance(encryption["chunk_size"], int),
+                    not isinstance(encryption["chunk_size"], bool),
+                    encryption["chunk_size"] > 0,
+                    isinstance(encryption["key_id"], str),
+                    len(encryption["key_id"]) == 32,
+                )
+                if not all(valid):
+                    raise ValueError("Invalid cloud data encryption descriptor")
+                get_encryption_class(encryption["type"])
+            return CloudStorageBackup(backup_name, CloudStorageMetadata.load(cloud))
+        except Exception as error:
+            raise StorageError(
+                f"Failed to read cloud storage descriptor for {backup_name}"
+            ) from error
+
     def _load_metadata(
         self, path: str, allow_legacy_encryption: bool
     ) -> BackupMetadata:
@@ -526,27 +789,67 @@ class BackupLayout:
             raise StorageError(f"Failed to download backup metadata {path}") from e
 
     def get_backup(
-        self, backup_name: str, use_light_meta: bool = False
+        self,
+        backup_name: str,
+        use_light_meta: bool = False,
+        *,
+        allow_pending: bool = False,
+        fallback_to_full: bool = True,
     ) -> BackupMetadata | None:
         """
-        Download and return backup metadata.
+        Download metadata, optionally falling back to full when light is missing or unreadable.
+
+        Return only light fields on fallback to keep backup listings small.
         """
+        if not allow_pending and self.get_delete_pending(backup_name) is not None:
+            raise StorageError(f"Backup {backup_name} is pending deletion")
         path = (
             self._backup_light_metadata_path(backup_name)
             if use_light_meta
             else self._backup_metadata_path(backup_name)
         )
 
-        if not self._storage_loader.path_exists(path):
-            return None
+        light_error = None
+        backup: BackupMetadata | None
+        try:
+            if self._storage_loader.path_exists(path):
+                backup = self._load_metadata(path, not use_light_meta)
+                if backup.name != backup_name:
+                    raise StorageError(
+                        f"Metadata name does not match backup directory {backup_name}"
+                    )
+                if not use_light_meta:
+                    self._validate_reference_parts(backup)
+                return backup
+        except (StorageError, S3RetryingError) as error:
+            if not use_light_meta or not fallback_to_full:
+                raise
+            light_error = error
 
-        return self._load_metadata(path, not use_light_meta)
+        if not use_light_meta or not fallback_to_full:
+            return None
+        backup = self.get_backup(backup_name, allow_pending=allow_pending)
+        if backup is None:
+            if light_error is not None:
+                raise light_error
+            return None
+        logging.warning(
+            "Using full metadata instead of light for backup {}", backup_name
+        )
+        try:
+            return BackupMetadata.load(backup.dump(light=True))
+        except Exception as error:
+            raise StorageError(
+                f"Failed to derive light metadata for backup {backup_name}"
+            ) from error
 
     def get_backups(
         self,
         use_light_meta: bool = False,
         *,
         unreadable: dict[str, str] | None = None,
+        strict_inventory: bool = False,
+        pending: dict[str, dict] | None = None,
     ) -> list[BackupMetadata]:
         """
         Return list of existing backups sorted by start_time in descent order.
@@ -558,7 +861,25 @@ class BackupLayout:
         )
 
         backups = []
-        for name in self.get_backup_names():
+        names = self.get_backup_names()
+        companions = {
+            sanitize_backup_name(name)
+            for name in names
+            if sanitize_backup_name(name) != name
+        }
+        for name in names:
+            try:
+                marker = self.get_delete_pending(name)
+            except StorageError as marker_error:
+                if strict_inventory or unreadable is None:
+                    raise
+                unreadable[name] = str(marker_error)
+                logging.warning("{}", marker_error)
+                continue
+            if marker is not None:
+                if pending is not None:
+                    pending[name] = marker
+                continue
             logging.debug(
                 "Collecting {} of backup: {}",
                 "light metadata" if use_light_meta else "metadata",
@@ -573,11 +894,43 @@ class BackupLayout:
                 while error.__cause__ is not None:
                     error = error.__cause__
                 message = str(error).strip().split("\n", 1)[0]
-                unreadable[name] = f"{type(error).__name__}: {message}"
+                unreadable[name] = (
+                    (
+                        "corrupt_metadata"
+                        if isinstance(error, (ValueError, KeyError, TypeError))
+                        else "metadata_unavailable"
+                    )
+                    if strict_inventory
+                    else f"{type(error).__name__}: {message}"
+                )
                 logging.exception("Failed to read metadata of backup {}", name)
                 continue
             if backup:
                 backups.append(backup)
+            elif strict_inventory:
+                children = self._storage_loader.list_dir(
+                    self.get_backup_path(name), recursive=False, absolute=False
+                )
+                if (
+                    name in companions
+                    and children
+                    and set(children)
+                    <= {"disks", "cloud_storage", CLOUD_STORAGE_OWNER_FNAME}
+                ):
+                    owners = [
+                        owner
+                        for owner in names
+                        if owner != name and sanitize_backup_name(owner) == name
+                    ]
+                    if len(owners) == 1 and self.cloud_storage_owned(owners[0]):
+                        continue
+                if not self._storage_loader.list_dir(
+                    self.get_backup_path(name), recursive=True, absolute=False
+                ):
+                    continue
+                if unreadable is None:
+                    raise StorageError(f"Missing metadata for backup {name}")
+                unreadable[name] = "missing_metadata"
 
         return sorted(backups, key=lambda b: b.start_time, reverse=True)
 
@@ -593,7 +946,46 @@ class BackupLayout:
             else self._backup_metadata_path(backup.name)
         )
 
-        return self._load_metadata(path, not use_light_meta)
+        reloaded = self._load_metadata(path, not use_light_meta)
+        if reloaded.name != backup.name:
+            raise StorageError(
+                f"Metadata name does not match backup directory {backup.name}"
+            )
+        if not use_light_meta:
+            self._validate_reference_parts(reloaded)
+        return reloaded
+
+    @staticmethod
+    def _validate_reference_parts(backup: BackupMetadata) -> None:
+        """Reject malformed links before treating a manifest as a complete reference map."""
+        try:
+            for table in backup.get_tables():
+                for raw in table.raw_metadata["parts"].values():
+                    if any(
+                        raw.get(field) is not None and not isinstance(raw[field], str)
+                        for field in ("link", "link_part_name")
+                    ):
+                        raise ValueError("Invalid raw part reference")
+            for part in backup.get_parts():
+                valid = (
+                    part.link is None
+                    or (
+                        isinstance(part.link, str)
+                        and bool(part.link)
+                        and "/" not in part.link
+                        and part.link not in (".", "..")
+                    ),
+                    isinstance(part.deduplicated_part_name, str),
+                    bool(part.deduplicated_part_name),
+                    part.deduplicated_part_name not in (".", ".."),
+                    "/" not in part.deduplicated_part_name,
+                )
+                if not all(valid):
+                    raise ValueError("Invalid part reference")
+        except Exception as error:
+            raise StorageError(
+                f"Invalid part references of backup {backup.name}"
+            ) from error
 
     def get_database_create_statement(
         self, backup_meta: BackupMetadata, db_name: str
@@ -752,11 +1144,27 @@ class BackupLayout:
         part: PartMetadata,
         fs_part_path: str,
         callback: Callable,
+        on_error: Callable[[PartMetadata, BaseException], None] | None = None,
     ) -> None:
         """
-        Download part data to the specified directory.
+        Download a whole part, reporting success only after every file is written.
         """
         source_part_name = part.deduplicated_part_name
+        pending = 1 if part.tarball else len(part.files)
+        failed = False
+
+        def downloaded() -> None:
+            nonlocal pending
+            pending -= 1
+            if pending == 0 and not failed:
+                callback(part)
+
+        def download_failed(error: BaseException) -> None:
+            nonlocal failed
+            if not failed:
+                failed = True
+                if on_error:
+                    on_error(part, error)
 
         logging.debug(
             'Downloading data part {} (stored as {}) of "{}"."{}"',
@@ -766,48 +1174,56 @@ class BackupLayout:
             part.table,
         )
 
-        os.makedirs(fs_part_path, exist_ok=True)
+        try:
+            if not part.tarball:
+                _validate_part_file_paths(fs_part_path, part.files)
+            os.makedirs(fs_part_path, exist_ok=True)
 
-        # part.link is the source backup name for deduplicated parts (or None).
-        source_backup_name = part.link or backup_meta.name
-        backup_path = self.get_backup_path(source_backup_name)
-        remote_dir_path = self._get_escaped_if_exists(
-            _part_path,
-            backup_path,
-            part.database,
-            part.table,
-            source_part_name,
-        )
+            # part.link is the source backup name for deduplicated parts (or None).
+            source_backup_name = part.link or backup_meta.name
+            backup_path = self.get_backup_path(source_backup_name)
+            remote_dir_path = self._get_escaped_if_exists(
+                _part_path,
+                backup_path,
+                part.database,
+                part.table,
+                source_part_name,
+            )
 
-        if part.tarball:
-            remote_path = os.path.join(remote_dir_path, f"{source_part_name}.tar")
-            logging.debug("Downloading part tarball file: {}", remote_path)
-            try:
+            if part.tarball:
+                remote_path = os.path.join(remote_dir_path, f"{source_part_name}.tar")
+                logging.debug("Downloading part tarball file: {}", remote_path)
                 self._storage_loader.download_files(
                     remote_path=remote_path,
                     local_path=fs_part_path,
                     is_async=True,
                     encryption=part.encrypted,
-                    callback=partial(callback, part),
+                    callback=downloaded,
+                    on_error=download_failed,
                 )
-            except Exception as e:
-                msg = f"Failed to download part tarball file {remote_path}"
-                raise StorageError(msg) from e
-        else:
-            for filename in part.files:
-                local_path = os.path.join(fs_part_path, filename)
-                remote_path = os.path.join(remote_dir_path, filename)
-                try:
+            else:
+                # ExecPool invokes callbacks in the collecting thread. Count all
+                # files up front, also when workers=0 runs callbacks during submit.
+                for filename in part.files:
+                    local_path = os.path.join(fs_part_path, filename)
+                    remote_path = os.path.join(remote_dir_path, filename)
                     logging.debug("Downloading part file: {}", remote_path)
+                    os.makedirs(os.path.dirname(local_path), exist_ok=True)
                     self._storage_loader.download_file(
                         remote_path=remote_path,
                         local_path=local_path,
                         is_async=True,
                         encryption=part.encrypted,
+                        callback=downloaded,
+                        on_error=download_failed,
                     )
-                except Exception as e:
-                    msg = f"Failed to download part file {remote_path}"
-                    raise StorageError(msg) from e
+                if not part.files:
+                    callback(part)
+        except (Exception, TerminatingSignal) as error:
+            # Includes failures before submit. Later successful file callbacks
+            # must not publish a partially scheduled part as downloaded.
+            download_failed(error)
+            raise
 
     def download_detached_part(
         self,
@@ -1017,7 +1433,7 @@ class BackupLayout:
     @contextmanager
     def _get_cloud_storage_metadata_dst(
         self,
-        backup_meta: BackupMetadata,
+        backup_meta: BackupMetadata | CloudStorageBackup,
         disk: Disk,
         file_path: str | None = None,
     ) -> Iterator[str | BinaryIO]:
@@ -1049,17 +1465,36 @@ class BackupLayout:
         )
 
     def get_cloud_storage_metadata_files(
-        self, backup_meta: BackupMetadata, remote_path: str
+        self, backup_meta: BackupMetadata | CloudStorageBackup, remote_path: str
     ) -> list[tuple[str, bytes]]:
-        """
-        Download tarball with cloud storage metadata and return its files as (file_name, data) pairs.
-        """
+        """Return metadata as a mutable list; copy uses the disk-backed archive API."""
+        archive = self.download_cloud_storage_metadata_archive(backup_meta, remote_path)
+        files = []
+        continuation = None
+        while True:
+            batch, continuation = archive.read_batch(continuation)
+            files.extend(batch)
+            if continuation is None:
+                return files
+
+    def download_cloud_storage_metadata_archive(
+        self, backup_meta: BackupMetadata | CloudStorageBackup, remote_path: str
+    ) -> TemporaryMetadataArchive:
+        """Download a complete cloud metadata tarball and transfer its ownership."""
         try:
-            return self._storage_loader.download_data_tarball(
-                remote_path,
-                encryption=backup_meta.cloud_storage.encrypted,
-                compression=backup_meta.cloud_storage.compressed,
-            )
+            with NamedTemporaryFile(delete=False) as destination:
+                path = destination.name
+            try:
+                self._storage_loader.download_file(
+                    remote_path,
+                    path,
+                    encryption=backup_meta.cloud_storage.encrypted,
+                    compression=backup_meta.cloud_storage.compressed,
+                )
+                return TemporaryMetadataArchive(path)
+            except BaseException:
+                Path(path).unlink(missing_ok=True)
+                raise
         except Exception as e:
             msg = f'Failed to download tarball file "{remote_path}"'
             raise StorageError(msg) from e
@@ -1068,7 +1503,7 @@ class BackupLayout:
         self,
         backup_meta: BackupMetadata,
         remote_path: str,
-        files: list[tuple[str, bytes]],
+        files: MetadataFiles,
         callback: Callable | None = None,
         on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
@@ -1076,17 +1511,47 @@ class BackupLayout:
         Upload files with cloud storage metadata as a tarball.
         """
         try:
+            archive = (
+                files
+                if isinstance(files, TemporaryMetadataArchive)
+                else spool_metadata(files)
+            )
             if not backup_meta.cloud_storage.encrypted:
-                self._validate_plaintext_cloud_metadata(files)
-            self._storage_loader.upload_data_tarball(
-                file_names=[file_name for file_name, _ in files],
-                data_list=[data for _, data in files],
-                remote_path=remote_path,
+                continuation = None
+                while True:
+                    batch, continuation = archive.read_batch(continuation)
+                    self._validate_plaintext_cloud_metadata(batch)
+                    if continuation is None:
+                        break
+
+            pending_archive: TemporaryMetadataArchive | None = archive
+
+            def completed() -> None:
+                """Release the upload's archive ownership after its success callback."""
+                nonlocal pending_archive
+                try:
+                    if callback:
+                        callback()
+                finally:
+                    pending_archive = None
+
+            def failed(error: BaseException) -> None:
+                """Release the upload's archive ownership after its error callback."""
+                nonlocal pending_archive
+                try:
+                    if on_error:
+                        on_error(error)
+                finally:
+                    pending_archive = None
+
+            self._storage_loader.upload_file(
+                local_path=archive.path(),
                 is_async=True,
+                remote_path=remote_path,
                 encryption=backup_meta.cloud_storage.encrypted,
                 compression=backup_meta.cloud_storage.compressed,
-                callback=callback,
-                on_error=on_error,
+                callback=completed,
+                on_error=failed,
             )
         except StorageError:
             raise
@@ -1109,8 +1574,10 @@ class BackupLayout:
 
     @staticmethod
     def _validate_plaintext_cloud_metadata(files: Iterable[tuple[str, bytes]]) -> None:
-        """Never publish inline file contents in unencrypted disk metadata."""
+        """Reject inline contents; empty files carry no data to disclose."""
         for file_name, data in files:
+            if not data:
+                continue
             try:
                 metadata = parse_object_storage_metadata(data)
             except ObjectStorageMetadataError as e:
@@ -1137,7 +1604,7 @@ class BackupLayout:
     # pylint: disable=too-many-positional-arguments
     def download_cloud_storage_metadata(
         self,
-        backup_meta: BackupMetadata,
+        backup_meta: BackupMetadata | CloudStorageBackup,
         disk: Disk,
         source_disk_name: str,
         desired_tables: Sequence[TableMetadata] | Literal["all"],
@@ -1184,6 +1651,12 @@ class BackupLayout:
         """
         Delete backup data and metadata from storage.
         """
+        owns_cloud = self.cloud_storage_owned(backup_name)
+        cloud_files = self._list_cloud_storage_files(backup_name)
+        if cloud_files and not owns_cloud:
+            raise StorageError(
+                f"Cloud prefix of {backup_name} is not owned; adopt it before deletion"
+            )
         backup_path = self.get_backup_path(backup_name)
         logging.debug("Deleting data in {}", backup_path)
         full_metadata = self._backup_metadata_path(backup_name)
@@ -1191,18 +1664,96 @@ class BackupLayout:
         deleting_files = self._storage_loader.list_dir(
             backup_path, recursive=True, absolute=True
         )
-        metadata_paths = {full_metadata.lstrip("/"), light_metadata.lstrip("/")}
+        pending_marker = os.path.join(backup_path, DELETE_PENDING_FNAME)
+        metadata_paths = {
+            full_metadata.lstrip("/"),
+            light_metadata.lstrip("/"),
+            pending_marker.lstrip("/"),
+            os.path.join(backup_path, CLOUD_STORAGE_INFO_FNAME).lstrip("/"),
+            os.path.join(backup_path, CLOUD_STORAGE_OWNER_FNAME).lstrip("/"),
+        }
         payload_files = [
             path for path in deleting_files if path.lstrip("/") not in metadata_paths
         ]
         if self.get_cloud_storage_path(backup_name) != backup_path:
-            payload_files += self._list_cloud_storage_files(backup_name)
+            payload_files += cloud_files
         if payload_files:
             self._delete_files(payload_files)
         self.wait()
         unfreeze()
+        if owns_cloud:
+            owner_path = os.path.join(
+                self.get_cloud_storage_path(backup_name), CLOUD_STORAGE_OWNER_FNAME
+            ).lstrip("/")
+            self._storage_loader.delete_files([owner_path], is_async=False)
+        descriptor = os.path.join(backup_path, CLOUD_STORAGE_INFO_FNAME)
+        if any(path.lstrip("/") == descriptor.lstrip("/") for path in deleting_files):
+            self._storage_loader.delete_files([descriptor], is_async=False)
         self._storage_loader.delete_files([full_metadata], is_async=False)
         self._storage_loader.delete_files([light_metadata], is_async=False)
+        if any(
+            path.lstrip("/") == pending_marker.lstrip("/") for path in deleting_files
+        ):
+            self._storage_loader.delete_files([pending_marker], is_async=False)
+
+    def clean_pending_backup(
+        self,
+        backup_name: str,
+        references: dict[str, dict[str, set[str]]],
+        referenced_by: set[str],
+    ) -> bool:
+        """Clean local parts using fresh references, leaving uncertain cloud data intact.
+
+        The caller must hold the common exclusive storage lock from the complete
+        retained reference scan through cleanup. Existing intent is required. Return
+        True only after the prefix and marker are gone; never unfreeze an unknown original.
+        """
+        if self.get_delete_pending(backup_name) is None:
+            raise StorageError(f"No deletion intent for backup {backup_name}")
+        backup_path = self.get_backup_path(backup_name)
+        protected = {
+            _part_path(backup_path, database, table, part, escape_names)
+            .lstrip("/")
+            .rstrip("/")
+            + "/"
+            for database, tables in references.items()
+            for table, parts in tables.items()
+            for part in parts
+            for escape_names in (True, False)
+        }
+        cloud_files = self._list_cloud_storage_files(backup_name)
+        if (
+            not referenced_by
+            and cloud_files
+            and not self.cloud_storage_owned(backup_name)
+        ):
+            raise StorageError(
+                f"Cloud storage ownership of backup {backup_name} is unknown; keeping deletion pending"
+            )
+        self.save_delete_pending(backup_name, "retry", sorted(referenced_by))
+        if not referenced_by:
+            self.delete_backup(backup_name, lambda: None)
+            return True
+        data_path = os.path.join(backup_path, "data")
+        files = self._storage_loader.list_dir(data_path, recursive=True, absolute=True)
+        prefix = data_path.lstrip("/").rstrip("/") + "/"
+        if any(not path.lstrip("/").startswith(prefix) for path in files):
+            raise StorageError(
+                f"Unexpected data path while deleting backup {backup_name}"
+            )
+        deleting = []
+        for path in files:
+            key = path.lstrip("/")
+            if not any(
+                key[: index + 1] in protected
+                for index, char in enumerate(key)
+                if char == "/"
+            ):
+                deleting.append(path)
+        if deleting:
+            self._delete_files(deleting)
+        self.wait()
+        return False
 
     def delete_cloud_storage_data(self, backup_name: str) -> None:
         """
@@ -1213,7 +1764,12 @@ class BackupLayout:
         """
         logging.debug("Deleting cloud storage data of backup {}", backup_name)
 
-        self._delete_files(self._list_cloud_storage_files(backup_name))
+        files = self._list_cloud_storage_files(backup_name)
+        if files and not self.cloud_storage_owned(backup_name):
+            raise StorageError(
+                f"Cloud prefix of {backup_name} is not owned; adopt it before deletion"
+            )
+        self._delete_files(files)
 
     def _list_cloud_storage_files(self, backup_name: str) -> list[str]:
         """
@@ -1405,6 +1961,19 @@ class BackupLayout:
         if self._storage_loader.path_exists(path, is_dir=True):
             return path
         return path_function(*args, escape_names=False, **kwargs)
+
+
+def _validate_part_file_paths(path: str, filenames: Sequence[str]) -> None:
+    """Check all legacy filenames before submitting even the first download."""
+    root = Path(path).resolve()
+    for filename in filenames:
+        relative = Path(filename)
+        if (
+            relative.is_absolute()
+            or ".." in relative.parts
+            or root not in (root / relative).resolve().parents
+        ):
+            raise StorageError(f'Invalid part filename: "{filename}"')
 
 
 def get_data_part_relative_dirs(part: PartMetadata) -> list[str]:

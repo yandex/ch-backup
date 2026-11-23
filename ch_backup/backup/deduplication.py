@@ -18,6 +18,7 @@ from ch_backup.backup.metadata import (
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.models import Database, FrozenPart, Table
 from ch_backup.config import as_datetime
+from ch_backup.exceptions import StorageError
 from ch_backup.util import Slotted, sql_string_literal, utcnow
 
 
@@ -97,6 +98,9 @@ TableDedupReferences = set[str]
 DatabaseDedupReferences = dict[str, TableDedupReferences]
 
 DedupReferences = dict[str, DatabaseDedupReferences]
+
+TableFiles = dict[str, dict[str, int]]
+StoredFiles = dict[tuple[str, str, str], TableFiles]
 
 
 def _create_empty_dedup_references() -> DedupReferences:
@@ -302,7 +306,7 @@ def _part_data_exists(
     part: PartMetadata,
     cloud_storage: bool,
     checked_tables: dict[tuple[str, str], bool],
-    stored_files: dict[tuple[str, str, str], dict[str, dict[str, int]]],
+    stored_files: StoredFiles,
 ) -> bool:
     """
     Check that data of a part is really present in the backup holding it.
@@ -335,7 +339,7 @@ def deduplicate_parts(
     database: str,
     table: str,
     frozen_parts: dict[str, FrozenPart],
-    stored_files: dict[tuple[str, str, str], dict[str, dict[str, int]]],
+    stored_files: StoredFiles,
     *,
     cloud_storage: bool = False,
 ) -> dict[str, PartMetadata]:
@@ -434,27 +438,25 @@ def collect_dedup_references_for_batch_backup_deletion(
     layout: BackupLayout,
     retained_backups_light_meta: list[BackupMetadata],
     deleting_backup_names: set[str],
+    referenced_by: dict[str, set[str]] | None = None,
 ) -> dict[str, DedupReferences]:
-    """
-    Collect deduplication information for deleting multiple backups. It contains names of data parts that should
-    pe preserved during deletion.
-    """
+    """Collect protected parts and their retaining backups in one full scan."""
     dedup_references: dict[str, DedupReferences] = defaultdict(
         _create_empty_dedup_references
     )
 
     for backup in retained_backups_light_meta:
+        if backup.name in deleting_backup_names:
+            raise StorageError("Deleting backup cannot be retained")
         backup = layout.reload_backup(backup, use_light_meta=False)
-        for db_name in backup.get_databases():
-            for table in backup.get_tables(db_name):
-                for part in table.get_parts():
-                    if not part.link:
-                        continue
+        for table in backup.get_tables():
+            for part in table.get_parts():
+                if not part.link or part.link not in deleting_backup_names:
+                    continue
 
-                    if part.link not in deleting_backup_names:
-                        continue
-
-                    _add_part_to_dedup_references(dedup_references[part.link], part)
+                _add_part_to_dedup_references(dedup_references[part.link], part)
+                if referenced_by is not None:
+                    referenced_by.setdefault(part.link, set()).add(backup.name)
 
     return dedup_references
 

@@ -12,7 +12,6 @@ from typing import (
     Sequence,
 )
 
-from ch_backup.command_context import get_current_command, run_with_command_context
 from ch_backup.exceptions import TerminatingSignal
 from ch_backup.profile import profile
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import (
@@ -102,6 +101,10 @@ class PipelineExecutor:
         encryption: bool,
         delete: bool,
         params: dict,
+        *,
+        compression: bool = False,
+        callback: Callable | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         """
         Upload file from local filesystem.
@@ -115,12 +118,13 @@ class PipelineExecutor:
             remote_path,
             encryption,
             delete_after=delete,
+            compress=compression,
         )
 
         if params.get("skip_deleted", False):
             pipeline = partial(suppress_exceptions, pipeline, [FileNotFoundError])
 
-        self._exec_pipeline(job_id, pipeline, is_async)
+        self._exec_pipeline(job_id, pipeline, is_async, callback, on_error)
 
     # pylint: disable=too-many-positional-arguments
     def upload_files_tarball_scan(
@@ -220,6 +224,7 @@ class PipelineExecutor:
 
         return self._exec_pipeline(job_id, pipeline, is_async)
 
+    # pylint: disable=too-many-positional-arguments
     def download_file(
         self,
         remote_path: str,
@@ -227,6 +232,8 @@ class PipelineExecutor:
         is_async: bool,
         encryption: bool,
         compression: bool,
+        callback: Callable | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         """
         Download file to local filesystem.
@@ -241,7 +248,7 @@ class PipelineExecutor:
             encryption,
             compression,
         )
-        self._exec_pipeline(job_id, pipeline, is_async)
+        self._exec_pipeline(job_id, pipeline, is_async, callback, on_error)
 
     # pylint: disable=too-many-positional-arguments
     def download_files(
@@ -252,6 +259,7 @@ class PipelineExecutor:
         encryption: bool,
         compression: bool,
         callback: Callable | None,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         """
         Download and unarchive tarball to files on local filesystem.
@@ -266,7 +274,7 @@ class PipelineExecutor:
             encryption,
             compression,
         )
-        self._exec_pipeline(job_id, pipeline, is_async, callback=callback)
+        self._exec_pipeline(job_id, pipeline, is_async, callback, on_error)
 
     # pylint: disable=unused-argument
     def delete_files(
@@ -317,8 +325,6 @@ class PipelineExecutor:
         """
         Run pipeline inplace or schedule for exec in process pool
         """
-        pipeline = partial(run_with_command_context, get_current_command(), pipeline)
-
         try:
             if is_async and self._exec_pool:
                 return self._exec_pool.submit(

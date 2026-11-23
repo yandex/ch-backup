@@ -127,3 +127,29 @@ def step_restore_cloud_metadata(context):
         layout.wait()
         assert layout.get_cloud_storage_metadata_files(backup, path) == files
     context.saved_cloud_metadata = {}
+
+
+@given('local parts of {node:w} backup "{backup_name}" use the {layout:w} layout')
+def step_local_part_layout(context, node, backup_name, layout):
+    assert layout in {"tar", "legacy"}
+    if layout == "legacy":
+        BackupStorage(context, node).rewrite_per_file_parts(backup_name)
+
+
+@when('both manifests of {node:w} backup "{backup_name}" are removed')
+def step_remove_backup_manifests(context, node, backup_name):
+    """Lose only the full and light manifests, retaining payload and cloud settings."""
+    storage = BackupStorage(context, node)
+    for filename in ("backup_struct.json", "backup_light_struct.json"):
+        storage.engine.delete_file(
+            f"{storage.layout.get_backup_path(backup_name)}/{filename}"
+        )
+
+
+@then('deletion marker of {node:w} backup "{backup_name}" references "{dependent}"')
+def step_pending_backup_references(context, node, backup_name, dependent):
+    """Check durable intent independently of the unavailable manifests."""
+    marker = BackupStorage(context, node).layout.get_delete_pending(backup_name)
+    assert marker is not None
+    assert marker["state"] == "partially_deleted"
+    assert marker["referenced_by"] == [dependent]

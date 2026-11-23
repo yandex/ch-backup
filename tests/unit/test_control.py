@@ -19,6 +19,75 @@ from ch_backup.exceptions import ClickhouseBackupError
 from tests.unit.utils import parametrize
 
 
+@pytest.fixture(name="cold_table_record")
+def fixture_cold_table_record() -> dict:
+    """The first paths query can still report TableProxy for loaded storage."""
+    return {
+        "database": "db1",
+        "name": "table1",
+        "uuid": "12345678-1234-1234-1234-123456789012",
+        "engine": "TableProxy",
+        "engine_full": "ReplicatedMergeTree('/tables/table1', 'r1') ORDER BY id",
+        "create_table_query": "CREATE TABLE db1.table1 (id UInt64) ENGINE = ReplicatedMergeTree('/tables/table1', 'r1') ORDER BY id",
+        "data_paths": ["/var/lib/clickhouse/store/123/table1/"],
+        "metadata_path": "metadata/db1/table1.sql",
+    }
+
+
+@pytest.mark.parametrize("short_query", [False, True])
+def test_first_discovery_uses_declared_engine_for_lazy_table(
+    cold_table_record: dict, short_query: bool
+) -> None:
+    ctl, client = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    ctl._disks = {  # pylint: disable=protected-access
+        "default": Disk("default", "/var/lib/clickhouse/", "local")
+    }
+    if short_query:
+        cold_table_record.pop("data_paths")
+        cold_table_record.pop("metadata_path")
+    client.query.return_value = {"data": [cold_table_record]}
+
+    table = ctl.get_table("db1", "table1", short_query=short_query)
+
+    assert table is not None
+    assert table.engine == "ReplicatedMergeTree"
+    assert table.is_merge_tree()
+    assert table.is_replicated()
+    assert bool(table.paths_with_disks) is (not short_query)
+
+
+@pytest.mark.parametrize("engine", ["MergeTree", "StorageProxy", "PostgreSQL"])
+def test_discovery_preserves_other_runtime_engines(
+    cold_table_record: dict,
+    engine: str,
+) -> None:
+    ctl, client = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    cold_table_record["engine"] = engine
+    ctl._disks = {  # pylint: disable=protected-access
+        "default": Disk("default", "/var/lib/clickhouse/", "local")
+    }
+    client.query.return_value = {"data": [cold_table_record]}
+
+    table = ctl.get_table("db1", "table1")
+
+    assert table is not None
+    assert table.engine == engine
+    assert bool(table.paths_with_disks) is (engine == "MergeTree")
+
+
+@pytest.mark.parametrize("engine_full", [None, "(missing engine)"])
+def test_lazy_table_with_unknown_declared_engine_fails_discovery(
+    cold_table_record: dict,
+    engine_full: str | None,
+) -> None:
+    ctl, client = TestCreateTable._make_ctl()  # pylint: disable=protected-access
+    cold_table_record["engine_full"] = engine_full
+    client.query.return_value = {"data": [cold_table_record]}
+
+    with pytest.raises(ClickhouseBackupError, match="db1.table1"):
+        ctl.get_table("db1", "table1")
+
+
 @parametrize(
     {
         "id": "empty list",
@@ -255,6 +324,7 @@ class TestCreateTable:
             "freeze_timeout": 10,
             "unfreeze_timeout": 10,
             "restore_replica_timeout": 10,
+            "refreshable_views_stop_timeout": 10,
             "drop_replica_timeout": 10,
         }
         with (
@@ -293,7 +363,67 @@ class TestCreateTable:
 
         ch_ctl.create_table(self._table(statement))
 
-        client.query.assert_called_once_with(statement, settings=settings)
+        client.query.assert_called_once_with(
+            statement, settings=settings, sensitive=True
+        )
+
+
+def _make_clickhouse_ctl(version: str = "23.12.1") -> ClickhouseCTL:
+    ctl = ClickhouseCTL.__new__(ClickhouseCTL)
+    ctl._ch_version = version  # pylint: disable=protected-access
+    ctl._timeout = 42  # pylint: disable=protected-access
+    ctl._refreshable_views_stop_timeout = 42  # pylint: disable=protected-access
+    ctl._ch_client = mock.Mock()  # pylint: disable=protected-access
+    ctl._ch_client.settings = {}  # pylint: disable=protected-access
+    return ctl
+
+
+def test_refreshable_views_are_resumed_after_restore() -> None:
+    ctl = _make_clickhouse_ctl()
+    ctl._ch_client.query.side_effect = [  # pylint: disable=protected-access
+        {"data": [{"database": "analytics", "view": "mv"}]},
+        None,
+        {"data": []},
+        {"data": [{"database": "analytics", "view": "restored_mv"}]},
+        None,
+    ]
+
+    with ctl.stop_refreshable_materialized_views_for_restore(["db"]):
+        pass
+
+    query_mock = ctl._ch_client.query  # pylint: disable=protected-access
+    assert query_mock.call_count == 5
+    stop_query = query_mock.call_args_list[1].args[0]
+    wait_query = query_mock.call_args_list[2].args[0]
+    start_query = query_mock.call_args_list[4].args[0]
+    assert stop_query == "SYSTEM STOP VIEW `analytics`.`mv`"
+    assert "FROM system.view_refreshes" in wait_query
+    assert "status = 'Running'" in wait_query
+    assert start_query == "SYSTEM START VIEW `analytics`.`restored_mv`"
+
+
+def test_restore_failure_is_preserved_when_starting_views_fails() -> None:
+    ctl = _make_clickhouse_ctl()
+    ctl._ch_client.query.side_effect = [  # pylint: disable=protected-access
+        {"data": [{"database": "db", "view": "mv"}]},
+        None,
+        {"data": []},
+        {"data": [{"database": "db", "view": "mv"}]},
+        RuntimeError("start views failed"),
+    ]
+
+    with mock.patch("ch_backup.clickhouse.control.logging.error") as log:
+        with pytest.raises(RuntimeError, match="restore failed"):
+            with ctl.stop_refreshable_materialized_views_for_restore(["db"]):
+                raise RuntimeError("restore failed")
+
+    query_mock = ctl._ch_client.query  # pylint: disable=protected-access
+    assert query_mock.call_args_list[1].args[0] == "SYSTEM STOP VIEW `db`.`mv`"
+    assert query_mock.call_args_list[-1].args[0] == "SYSTEM START VIEW `db`.`mv`"
+    log.assert_called_once_with(
+        "Failed to start refreshable materialized views while restore was failing",
+        exc_info=True,
+    )
 
 
 class TestGetPartsOfOtherReplicas:
@@ -544,11 +674,20 @@ def test_scan_detached_parts_reads_reason_from_directory_name(
         None,
     )
 
-    parts = list(
-        ch_ctl.scan_detached_parts(table, disk_names=["default"], reasons=[""])
-    )
+    with mock.patch("ch_backup.clickhouse.control.logging.warning") as warning:
+        parts = list(
+            ch_ctl.scan_detached_parts(
+                table,
+                disk_names=["object_storage_cache", "default"],
+                reasons=[""],
+            )
+        )
 
     assert len(parts) == 1
+    warning.assert_called_once_with(
+        'Detached-parts disk "{}" is not reported by system.disks; skipping it',
+        "object_storage_cache",
+    )
     assert parts[0].name == "all_1_1_0"
     assert parts[0].reason == ""
     assert parts[0].disk_name == "default"
@@ -771,7 +910,7 @@ def test_detached_part_matches_object_storage_metadata(tmp_path: Path) -> None:
     assert not ClickhouseCTL.detached_part_matches(part, str(part_path))
 
 
-def test_detached_path_accepts_table_disk_with_same_storage_path(
+def test_detached_path_is_direct_child_on_table_disk_with_same_storage_path(
     tmp_path: Path,
 ) -> None:
     ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
@@ -800,3 +939,6 @@ def test_detached_path_accepts_table_disk_with_same_storage_path(
     assert ch_ctl.get_detached_part_path(table, backing_disk.name, "all_1_1_0") == str(
         table_path / "detached" / "all_1_1_0"
     )
+    for name in ("../all_1_1_0", str(table_path / "all_1_1_0")):
+        with pytest.raises(ClickhouseBackupError, match="Invalid detached part"):
+            ch_ctl.get_detached_part_path(table, backing_disk.name, name)

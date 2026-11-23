@@ -2,12 +2,34 @@
 
 from uuid import uuid4
 
-from behave import given, when
+from behave import given, then, when
 
-from tests.integration.modules.clickhouse import get_part_path
+from tests.integration.modules.clickhouse import ClickhouseClient, get_part_path
 from tests.integration.modules.docker import get_container
 from tests.integration.modules.faults import FAULT_MODULE, run_fault
 from tests.integration.modules.steps import get_step_data
+
+
+@then('part "{part}" of {database:w}.{table:w} is not published on {node:w}')
+def step_part_not_published(context, part, database, table, node):
+    paths = (
+        ClickhouseClient(context, node)
+        .get_response(
+            f"SELECT arrayJoin(data_paths) FROM system.tables "
+            f"WHERE database = '{database}' AND name = '{table}' FORMAT TSVRaw"
+        )
+        .splitlines()
+    )
+    assert paths, "Expected a restored table"
+    container = get_container(context, node)
+    for path in paths:
+        for predicate in ("-e", "-L"):
+            result = container.exec_run(
+                ["test", "!", predicate, f"{path}/detached/{part}"]
+            )
+            assert (
+                result.exit_code == 0
+            ), f"Part was published at {path}/detached/{part}"
 
 
 @when(

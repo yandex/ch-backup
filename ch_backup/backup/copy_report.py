@@ -8,6 +8,7 @@ from itertools import islice
 from tempfile import SpooledTemporaryFile
 from typing import Iterator, Literal, TextIO
 
+from ch_backup.backup.metadata import CopyScopeStatus
 from ch_backup.exceptions import ClickhouseBackupError
 
 
@@ -53,16 +54,23 @@ class CopyErrors:
         return len(self) == len(other) and all(a == b for a, b in zip(self, other))
 
 
+# pylint: disable=too-many-instance-attributes
 @dataclass
 class BackupCopyResult:
     """Confirmed operations and errors for one backup."""
 
     name: str
-    status: Literal["copied", "skipped", "failed", "not_processed"] = "not_processed"
+    status: Literal["copied", "partial", "skipped", "failed", "not_processed"] = (
+        "not_processed"
+    )
+    skip_reason: str | None = None
+    backup_state: str | None = None
     objects_total: int | None = None
     objects_copied: int = 0
     objects_failed: int = 0
+    objects_skipped: int = 0
     known_bytes_copied: int = 0
+    scopes: dict[str, str] | None = None
     errors: CopyErrors = field(default_factory=CopyErrors)
 
     def completed(self, size: int = 0) -> None:
@@ -115,23 +123,39 @@ def _write_report(report: CopyReport, report_file: TextIO) -> None:
         for error_index, error in enumerate(result.errors):
             if error_index:
                 report_file.write(",")
-            json.dump(error, report_file)
+            # Encode one error at a time without json.dump's per-call encoder cycles.
+            report_file.write(json.dumps(error))
         report_file.write("]}")
     report_file.write("\n]}\n")
 
 
 def print_copy_report(report: CopyReport, report_path: str | None) -> None:
     """Print confirmed results and optionally save them without masking copy errors."""
-    statuses = ("copied", "skipped", "failed", "not_processed")
+    statuses = ("copied", "partial", "skipped", "failed", "not_processed")
     for result in report.backups:
-        suffix = (
-            ", already present in target storage" if result.status == "skipped" else ""
-        )
+        suffix = {
+            "skipped": f", {result.skip_reason or 'already present in target storage'}",
+            "partial": f", the copy is {result.backup_state} in target storage",
+        }.get(result.status, "")
         print(f"{result.name}: {result.status}{suffix}")
         if result.objects_total is not None:
             print(
                 f"  objects: {result.objects_copied}/{result.objects_total} copied, "
-                f"{result.objects_failed} failed; known bytes copied: {result.known_bytes_copied}"
+                + (
+                    f"{result.objects_skipped} skipped as already copied, "
+                    if result.objects_skipped
+                    else ""
+                )
+                + f"{result.objects_failed} failed; known bytes copied: {result.known_bytes_copied}"
+            )
+        if result.scopes and set(result.scopes.values()) != {
+            CopyScopeStatus.COMPLETED.value
+        }:
+            print(
+                "  scopes: "
+                + ", ".join(
+                    f"{name} {status}" for name, status in result.scopes.items()
+                )
             )
         for error in result.errors:
             path = error.get("target", error.get("source", ""))

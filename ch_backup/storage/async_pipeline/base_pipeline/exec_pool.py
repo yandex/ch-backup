@@ -14,10 +14,12 @@ from concurrent.futures import (
     as_completed,
 )
 from dataclasses import dataclass
+from functools import partial
 from multiprocessing import get_context
 from typing import Any, Callable, Iterable
 
 from ch_backup import logging
+from ch_backup.command_context import get_current_command, run_with_command_context
 from ch_backup.exceptions import TerminatingSignal, is_broken_executor
 from ch_backup.util import exhaust_iterator
 
@@ -78,8 +80,16 @@ class ExecPool:
         if job_id in [job.id_ for job in self._future_to_job.values()]:
             raise RuntimeError("Duplicate")
 
-        future = self._pool.submit(func, *args, **kwargs)
+        future = self.submit_future(func, *args, **kwargs)
         self._future_to_job[future] = Job(job_id, callback, on_error)
+
+    def submit_future(self, func: Callable, *args: Any, **kwargs: Any) -> Future:
+        """Submit without job tracking; the caller consumes the returned future."""
+        return self._pool.submit(
+            run_with_command_context,
+            get_current_command(),
+            partial(func, *args, **kwargs),
+        )
 
     @staticmethod
     def _start():

@@ -195,7 +195,9 @@ class BackupChecker:
         layout = self._layout()
         problems = self._problems[name]
         try:
-            self._light_metas[name] = layout.get_backup(name, use_light_meta=True)
+            self._light_metas[name] = layout.get_backup(
+                name, use_light_meta=True, fallback_to_full=False
+            )
             if not self._light_metas[name]:
                 problems.append("light metadata: missing")
         except Exception as e:
@@ -438,7 +440,7 @@ class BackupChecker:
         if name not in self._light_metas:
             try:
                 self._light_metas[name] = self._layout().get_backup(
-                    name, use_light_meta=True
+                    name, use_light_meta=True, fallback_to_full=False
                 )
             except Exception:
                 self._light_metas[name] = None

@@ -6,6 +6,7 @@ import re
 
 from ch_backup import logging
 from ch_backup.clickhouse.models import Database, Table
+from ch_backup.clickhouse.storage_schema import find_merge_tree_engine
 from ch_backup.util import escape, sql_string_literal
 
 
@@ -33,22 +34,32 @@ def rewrite_table_schema(
     """
     Rewrite table schema.
     """
-    # Use repr for logging because schema may contain surrogate escape symbols
-    logging.info(f"Going to rewrite table schema: {table.create_statement!r}")
+    logging.info("Rewriting schema for table {!r}.{!r}", table.database, table.name)
     if force_non_replicated_engine:
         create_statement = table.create_statement
-        match = re.search(
-            r"(?P<replicated>Replicated)\S{0,20}MergeTree\((?P<params>('[^']+', '[^']+'(,\s*|))|)",
-            create_statement,
-        )
-        if match:
-            params = match.group("params")
-            if len(params) > 0:
-                create_statement = create_statement.replace(params, "").replace(
-                    match.group("replicated"), ""
+        engine = find_merge_tree_engine(create_statement)
+        if engine is not None and engine["engine"].startswith("Replicated"):
+            # Default replica arguments can be omitted with or without parentheses.
+            # Locate ENGINE outside strings/expressions, then strip explicit replica
+            # arguments before its prefix so the original offsets remain valid.
+            params = re.match(
+                r"\s*\((?P<params>('[^']+', '[^']+'(,\s*|))|)",
+                create_statement[engine.end() :],
+            )
+            if params is not None:
+                start, end = params.span("params")
+                start, end = engine.end() + start, engine.end() + end
+                create_statement = create_statement[:start] + create_statement[end:]
+            empty_args = re.match(r"\s*\(\s*\)", create_statement[engine.end() :])
+            if empty_args is not None:
+                create_statement = (
+                    create_statement[: engine.end()]
+                    + create_statement[engine.end() + empty_args.end() :]
                 )
-                create_statement = create_statement.replace("MergeTree()", "MergeTree")
-                table.create_statement = create_statement
+            start = engine.start("engine")
+            table.create_statement = (
+                create_statement[:start] + create_statement[start + len("Replicated") :]
+            )
             if table.is_replicated():
                 table.engine = table.engine.replace("Replicated", "")
 
@@ -74,7 +85,6 @@ def rewrite_table_schema(
         f"\\g<create> \\g<type> `{escape(table.database)}`.`{escape(table.name)}` ",
         table.create_statement,
     )
-    logging.info(f"Resulting table schema: {table.create_statement!r}")
 
 
 def rewrite_database_schema(
@@ -113,7 +123,7 @@ def _add_uuid(table: Table, inner_uuid: str = None) -> None:
     )
     if mach_uuid is not None:
         logging.info(
-            f"{mach_uuid.group(0)} already present in table schema."
+            "UUID already present in table schema."
             f" Metadata UUID is {table.uuid}. return without adding UUID"
         )
         return

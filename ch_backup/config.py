@@ -54,6 +54,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "freeze_timeout": _as_seconds("45 min"),
         "unfreeze_timeout": _as_seconds("1 hour"),
         "restore_replica_timeout": _as_seconds("30 min"),
+        "refreshable_views_stop_timeout": _as_seconds("10 min"),
         "sync_database_replica_timeout": _as_seconds("30 min"),
         "sync_database_replica_poll_interval": 10,
         "sync_database_replica_stall_threshold": 6,
@@ -75,6 +76,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "exclude_dbs": [],
         "path_root": None,
         "deduplicate_parts": True,
+        "delete_unreadable": False,
         "deduplication_start_time": None,
         "deduplication_age_limit": {
             "days": 7,
@@ -95,6 +97,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # Retain policy for the purge command that sets the maximum number of
         # valid backups to keep.
         "retain_count": None,
+        # Copies in creating or failed are kept by purge and delete --purge-partial
+        # while copying was saved within this time. Copies with files completed
+        # and cloud_storage pending or failed use ordinary retention instead.
+        "retain_incomplete_copy_time": {
+            "days": 7,
+        },
         # User data including into backup metadata.
         "labels": {},
         # Backup sources used when none of the source options is passed to the backup
@@ -127,11 +135,22 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "kill_old_freeze_queries": True,
     },
     "copy": {
-        # Copy objects on the server side if source and target buckets belong to the same S3 service
-        # and are accessible with the same credentials.
-        "server_side_copy": True,
+        "scopes": ["files", "cloud_storage"],
+        "only_with_data": True,
+        # Independent target window for local parts; zero preserves source-link reuse only.
+        "deduplication_age_limit": {"days": 0},
+        # strict requires server-side copy without fallback: any failed object makes the command
+        # fail even with --keep-going. Incompatible with copy.cloud_storage.encrypt_data=true.
+        # auto uses server-side copy when possible, falling back to streaming through ch-backup.
+        # disabled always streams objects through ch-backup.
+        "server_side_copy_mode": "auto",
+        "resume": True,
         # Copying of data stored on object storage (S3) disks.
         "cloud_storage": {
+            # Encrypt data objects copied from ClickHouse object storage disks.
+            # Encryption settings inherit values from the top-level "encryption"
+            # section, allowing either the backup key or a dedicated override.
+            "encrypt_data": False,
             # Location of the source disk objects. If not set, it's taken from backup metadata
             # (for backups that were already copied) or from ClickHouse disk configuration.
             # A stored endpoint must match a configured storage/disk endpoint unless explicitly overridden.
@@ -155,6 +174,21 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "restore": {
         "use_inplace_cloud_restore": False,
+        # Plaintext staging location used to restore cloud storage data encrypted
+        # by the copy command. Unset values inherit endpoint, bucket and credentials
+        # from the destination ClickHouse disk. An unset path is selected safely at
+        # restore time depending on whether source and staging buckets are the same.
+        # All objects under the exclusive staging path are removed before and after restore.
+        # An explicitly configured endpoint or bucket requires both credentials.
+        "cloud_storage": {
+            "decryption_staging": {
+                "endpoint_url": None,
+                "bucket": None,
+                "path": None,
+                "access_key_id": None,
+                "secret_access_key": None,
+            },
+        },
         # Max table name length. Actually it is just a result of the getMaxTableNameLengthForDatabase(<atomic_db>) ch function.
         "max_table_name": 206,
     },
@@ -170,6 +204,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "addressing_style": "auto",
             "region_name": "us-east-1",
         },
+        # Keyword arguments passed directly to the corresponding SDK constructors.
+        "module_config": {
+            "botocore": {},
+            "transfer": {},
+        },
         # Service that provides proxy connection settings at runtime. For example, it can be used
         # to facilitate direct access to S3 servers bypassing balancer.
         "proxy_resolver": {
@@ -178,6 +217,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
             # HTTP connect and read timeout, in seconds (not a total DNS/request deadline).
             "timeout": 10,
         },
+        # Refresh cached S3 clients and proxy discovery at this interval, in seconds.
+        "client_ttl": _as_seconds("5 min"),
         "disable_ssl_warnings": True,
         # Chunk size used when uploading / downloading data, in bytes.
         "chunk_size": parse_size("8 MiB"),
@@ -235,6 +276,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "encryption": False,
         "compression": True,
         "copy_data": False,
+        # Overrides of the top-level "encryption" section used for data objects
+        # encrypted by the copy command. Empty means use the main backup key.
+        "data_encryption": {},
     },
     "compression": {
         "type": "gzip",
@@ -266,6 +310,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         # The number of processes allocating for data processing. If set to 0, all processing will be performed
         # in the main process.
         "workers": 4,
+        # The number of threads for reading source/target light metadata at copy startup.
+        "metadata_read_threads": 4,
+        # Full metadata held at once while building the copy deduplication index.
+        "full_metadata_read_threads": 2,
         # The number of processes for parts restoring from S3 disks.
         "cloud_storage_restore_workers": 4,
         # The number of threads for copying data of S3 disks into the backup.
@@ -286,6 +334,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "pipeline": {
         # Is asynchronous pipelines used (based on Pypeln library)
         "async": True,
+        # How often idle pipeline threads poll their queues, in seconds (pypeln "TIMEOUT").
+        # Smaller values cost CPU, larger ones make every pipeline finish
+        # about "number of stages * interval" later.
+        "queue_poll_interval": 0.01,
     },
     "main": {
         "user": "clickhouse",

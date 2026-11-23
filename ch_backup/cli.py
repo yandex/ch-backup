@@ -14,7 +14,7 @@ import uuid
 from collections import OrderedDict
 from functools import wraps
 from pathlib import Path as PathlibPath
-from typing import Iterable
+from typing import Any, Iterable
 
 from click import Choice, Path, argument, pass_context, style
 from cloup import (
@@ -32,17 +32,19 @@ from humanfriendly import format_timespan
 from tabulate import tabulate
 
 from ch_backup.command_context import command_context
-from ch_backup.exceptions import ConfigurationError, TerminatingSignal
+from ch_backup.exceptions import BackupNotFound, ConfigurationError, TerminatingSignal
 
 from . import logging
+from .backup.copy_deduplication import copy_deduplication_cutoff
 from .backup.copy_report import CopyReport, print_copy_report
-from .backup.metadata import BackupState, TableMetadata
+from .backup.metadata import BackupState, CopyScope, TableMetadata, parse_copy_scopes
 from .backup.sources import BackupSources
 from .ch_backup import CleanZooKeeperMode, ClickhouseBackup
 from .config import DEFAULT_CONFIG, Config
 from .logic.partial_restore import PartialRestoreFilter
 from .params import JsonParamType, KeyValues, List, String, TimeSpan
 from .profile import profile
+from .storage.object_copy import parse_server_side_copy_mode
 from .util import (
     chown_dir_contents,
     drop_privileges,
@@ -54,6 +56,17 @@ from .version import get_version
 
 TIMESTAMP = utcnow().strftime("%Y%m%dT%H%M%S")
 UUID = str(uuid.uuid4())
+_HIDDEN = "[HIDDEN]"
+_SECRET_PARAMETER_NAMES = {
+    "access_token",
+    "api_key",
+    "clickhouse_password",
+    "key",
+    "password",
+    "private_key",
+    "secret_access_key",
+    "token",
+}
 
 
 def signal_handler(signum, _frame):
@@ -194,10 +207,7 @@ def command(*args, **kwargs):
                 logging.info(
                     "Executing command '{}', params: {}, args: {}, version: {}",
                     ctx.command.name,
-                    {
-                        **ctx.parent.params,
-                        **ctx.params,
-                    },
+                    _mask_command_params({**ctx.parent.params, **ctx.params}),
                     ctx.args,
                     get_version(),
                 )
@@ -213,6 +223,34 @@ def command(*args, **kwargs):
         return cli.command(*args, **kwargs)(wrapper)
 
     return decorator
+
+
+def _mask_command_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Hide secrets passed through command options before logging them."""
+    result = {}
+    for name, value in params.items():
+        if name in {"config_parameters", "target_config_parameters"}:
+            result[name] = [(path, _HIDDEN) for path, _ in value]
+        else:
+            result[name] = _mask_value(value, name)
+    return result
+
+
+def _mask_value(value: Any, name: str | None = None) -> Any:
+    if name and name.strip().lower() == "storage.proxy_resolver.uri":
+        return _HIDDEN
+    if name and name.rsplit(".", 1)[-1].lower() in _SECRET_PARAMETER_NAMES:
+        return _HIDDEN
+    if isinstance(value, dict):
+        return {
+            key: _mask_value(item, f"{name}.{key}" if name else key)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_mask_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_mask_value(item) for item in value)
+    return value
 
 
 @command(name="list")
@@ -248,20 +286,24 @@ def list_command(
     """List existing backups."""
     if include_unreadable and not verbose:
         _ctx.fail("--include-unreadable requires --verbose")
-    state = None if all_ else BackupState.CREATED
-
     unreadable: dict[str, str] = {}
-    backups = ch_backup.list(state, unreadable=unreadable)
+    pending: dict[str, dict] = {}
+    backups = ch_backup.list(
+        None if all_ else BackupState.CREATED,
+        unreadable=unreadable,
+        pending=pending if all_ else None,
+    )
     if not (all_ or include_unreadable):
         unreadable.clear()
 
     if not verbose:
-        print("\n".join([b.name for b in backups]))
+        print("\n".join([b.name for b in backups] + sorted(pending)))
         return
 
     records = []
     for backup in backups:
         data_skipped_tables, incomplete_tables = backup.count_skipped_data_tables()
+        copy = backup.dump(light=True)["meta"].get("copy")
         record: dict = OrderedDict(
             (
                 ("name", backup.name),
@@ -277,16 +319,43 @@ def list_command(
         )
         if format_ == "json":
             record["labels"] = backup.labels
+            record["copy"] = copy
             record["cloud_disks"] = backup.cloud_storage.disks
             record["exception"] = backup.exception
         else:
             record["labels"] = "\n".join(
                 f"{name}: {value}" for name, value in backup.labels.items()
             )
+            copy_lines = [
+                f"{scope}: {status}"
+                for scope, status in (copy or {}).get("scopes", {}).items()
+            ]
+            if copy and copy.get("updated_at"):
+                copy_lines.extend(("", f"updated_at: {copy['updated_at']}"))
+            record["copy"] = "\n".join(copy_lines).lstrip("\n")
         if all_ or include_unreadable:
             record["metadata_error"] = None
         records.append(record)
 
+    for name, marker in sorted(pending.items()):
+        record = {
+            key: None
+            for key in (
+                records[0]
+                if records
+                else ("name", "state", "start_time", "end_time", "size", "real_size")
+            )
+        }
+        record.update(
+            name=name,
+            state=marker["state"],
+            delete_pending=(
+                marker
+                if format_ == "json"
+                else "\n".join(marker["referenced_by"] or [])
+            ),
+        )
+        records.append(record)
     for name, error in sorted(unreadable.items()):
         record = dict.fromkeys(
             (
@@ -298,6 +367,7 @@ def list_command(
                 "data_skipped_tables",
                 "incomplete_tables",
                 "labels",
+                "copy",
             )
         )
         record = {"name": name, "state": "unknown", **record}
@@ -652,7 +722,10 @@ def backup_command(
     option(
         "--skip-cloud-storage",
         is_flag=True,
-        help="Forces to skip restoring data on cloud storage.",
+        help=(
+            "Skip cloud data and adapt storage policies and TTL MOVE rules to the target. "
+            "Conflicting Keeper metadata causes an error without resetting replicas."
+        ),
     ),
 )
 @option_group(
@@ -885,8 +958,33 @@ def fix_admin_user_command(
     ch_backup.fix_admin_user(dry_run=dryrun)
 
 
+@command(name="adopt-cloud-storage")
+@argument("name", metavar="BACKUP")
+@option(
+    "--confirm-owner",
+    is_flag=True,
+    required=True,
+    help="Confirm that the entire sanitized cloud prefix belongs exclusively to BACKUP, including historical objects.",
+)
+def adopt_cloud_storage_command(
+    ctx: Context, ch_backup: ClickhouseBackup, name: str, confirm_owner: bool
+) -> None:
+    """Record explicitly confirmed ownership of legacy cloud data."""
+    if not confirm_owner:
+        ctx.fail(
+            "--confirm-owner is required; ownership cannot be inferred from object names"
+        )
+    ch_backup.adopt_cloud_storage(name)
+    print(name)
+
+
 @command(name="delete")  # type: ignore
 @argument("name", metavar="BACKUP")
+@option(
+    "--delete-unreadable",
+    is_flag=True,
+    help="Devalue backups without readable metadata; keep referenced data and retry via deletion markers.",
+)
 @option(
     "--purge-partial",
     is_flag=True,
@@ -901,24 +999,29 @@ def fix_admin_user_command(
     help="Do nothing if backup does not exist",
 )
 def delete_command(
-    ctx: Context,
+    _ctx: Context,
     ch_backup: ClickhouseBackup,
     name: str,
     purge_partial: bool,
     force: bool,
+    *,
+    delete_unreadable: bool = False,
 ) -> None:
     """Delete particular backup."""
     try:
-        name = _validate_and_resolve_name(ctx, ch_backup, name)
-    except Exception:
+        if delete_unreadable:
+            deleted_backup_name, msg = ch_backup.delete(
+                name, purge_partial, delete_unreadable=True
+            )
+        else:
+            deleted_backup_name, msg = ch_backup.delete(name, purge_partial)
+    except BackupNotFound:
         if force:
             logging.info(
                 f"Attempt to delete a non-existent backup '{name}' was skipped"
             )
             return
         raise
-
-    deleted_backup_name, msg = ch_backup.delete(name, purge_partial)
 
     if msg:
         print(msg, file=sys.stderr, flush=True)
@@ -937,7 +1040,8 @@ def delete_command(
         "all_",
         is_flag=True,
         default=False,
-        help='Copy all backups in the state "created". Older backups are copied first.',
+        help="Copy created backups, oldest first. Backups without table data are skipped "
+        "by default; use --no-only-with-data to include them.",
     ),
     option(
         "--keep-going",
@@ -946,9 +1050,26 @@ def delete_command(
         help="Continue copying independent objects and backups after errors.",
     ),
     option(
+        "--only-with-data/--no-only-with-data",
+        default=None,
+        help="Select only backups with data for LAST and --all. Enabled by default.",
+    ),
+    option(
         "--report-path",
         type=Path(dir_okay=False),
         help="Save the final copy report as JSON, including on failure.",
+    ),
+    option(
+        "--scope",
+        "scopes",
+        multiple=True,
+        type=Choice([scope.value for scope in CopyScope]),
+        help='Copy only the specified scope: "files" for files of the backup, '
+        '"cloud_storage" for data of object storage disks. Can be specified multiple times, '
+        "overrides copy.scopes in the configuration (all scopes by default). "
+        "The copy is published once every scope is copied. "
+        'Without "files", copies are taken from the target storage, so the source storage is '
+        'not accessed; --all and LAST select copies with "cloud_storage" not completed.',
     ),
 )
 @option_group(
@@ -970,10 +1091,10 @@ def delete_command(
         "The same as --config-parameter, but for the target configuration.",
     ),
     option(
-        "--server-side-copy/--no-server-side-copy",
+        "--resume/--no-resume",
         default=None,
-        help="Copy objects on the server side if source and target buckets belong to the same "
-        "S3 service and are accessible with the same credentials. Enabled by default.",
+        help="Skip objects confirmed by previous runs of copying and still present in the target "
+        "storage. Enabled by default. With --no-resume, all objects are copied again.",
     ),
 )
 @option_group(
@@ -1009,31 +1130,30 @@ def copy_command(
     all_: bool,
     target_config: str | None,
     target_config_parameters: Iterable[tuple[str, dict]],
-    server_side_copy: bool | None,
+    resume: bool | None,
     target_cloud_storage_bucket: str | None,
     target_cloud_storage_path: str | None,
     cloud_storage_source_bucket: str | None,
     cloud_storage_source_path: str | None,
     keep_going: bool = False,
+    only_with_data: bool | None = None,
     report_path: str | None = None,
+    scopes: tuple[str, ...] = (),
 ) -> None:
     """Copy backup to another storage (another S3 bucket, endpoint or path)."""
+    command_start = utcnow()
     report = CopyReport()
     try:
         if bool(name) == all_:
             ctx.fail("Either BACKUP or --all must be specified.")
 
-        backup_names = None
-        if name:
-            if name == "LAST":
-                name = _validate_and_resolve_name(
-                    ctx, ch_backup, name, BackupState.CREATED
-                )
-            backup_names = [name]
-
         copy_config: dict = {"cloud_storage": {"source": {}, "target": {}}}
-        if server_side_copy is not None:
-            copy_config["server_side_copy"] = server_side_copy
+        if scopes:
+            copy_config["scopes"] = list(scopes)
+        if only_with_data is not None:
+            copy_config["only_with_data"] = only_with_data
+        if resume is not None:
+            copy_config["resume"] = resume
         for section, key, value in (
             ("target", "bucket", target_cloud_storage_bucket),
             ("target", "path", target_cloud_storage_path),
@@ -1048,7 +1168,31 @@ def copy_command(
             _build_cli_cfg_from_config_parameters(target_config_parameters),
         )
         target_cfg.merge({"copy": copy_config})
-        ch_backup.copy(target_cfg, backup_names, keep_going=keep_going, report=report)
+        # Validate before resolving LAST, which already lists the source storage.
+        parse_server_side_copy_mode(target_cfg["copy"]["server_side_copy_mode"])
+        if not isinstance(target_cfg["copy"]["only_with_data"], bool):
+            raise ConfigurationError("copy.only_with_data must be a boolean")
+        copy_deduplication_cutoff(target_cfg["copy"], command_start)
+        backup_names = None
+        if name:
+            if name == "LAST" and CopyScope.FILES in parse_copy_scopes(
+                target_cfg["copy"]["scopes"]
+            ):
+                name = _validate_and_resolve_name(
+                    ctx,
+                    ch_backup,
+                    name,
+                    BackupState.CREATED,
+                    only_with_data=target_cfg["copy"]["only_with_data"],
+                )
+            backup_names = [name]
+        ch_backup.copy(
+            target_cfg,
+            backup_names,
+            keep_going=keep_going,
+            report=report,
+            command_start=command_start,
+        )
     except BaseException as e:
         report.error = f"{type(e).__name__}: {e}"
         raise
@@ -1138,9 +1282,20 @@ def check_command(
 
 
 @command(name="purge")
-def purge_command(_ctx: Context, ch_backup: ClickhouseBackup) -> None:
+@option(
+    "--delete-unreadable",
+    is_flag=True,
+    help="Devalue backups without readable metadata under retention; preserve referenced data.",
+)
+def purge_command(
+    _ctx: Context, ch_backup: ClickhouseBackup, delete_unreadable: bool = False
+) -> None:
     """Purge outdated backups."""
-    names, msg = ch_backup.purge()
+    names, msg = (
+        ch_backup.purge(delete_unreadable=True)
+        if delete_unreadable
+        else ch_backup.purge()
+    )
 
     if msg:
         print(msg, file=sys.stderr, flush=True)
@@ -1186,8 +1341,13 @@ def _validate_and_resolve_name(
     ch_backup: ClickhouseBackup,
     name: str,
     backup_state: BackupState = None,
+    only_with_data: bool = False,
 ) -> str:
-    """Check that the backup exists; LAST is refused while any metadata is unreadable."""
+    """
+    Check that the backup exists; LAST is refused while any metadata is unreadable.
+
+    With only_with_data, LAST is resolved to the latest backup with data parts.
+    """
     unreadable: dict[str, str] = {}
     backups = ch_backup.list(backup_state, unreadable=unreadable)
 
@@ -1198,6 +1358,10 @@ def _validate_and_resolve_name(
             )
         if not backups:
             ctx.fail("There are no backups.")
+        if only_with_data:
+            backups = [b for b in backups if not b.is_empty()]
+            if not backups:
+                ctx.fail("There are no backups with data.")
         return backups[0].name
 
     if name not in unreadable and name not in (b.name for b in backups):

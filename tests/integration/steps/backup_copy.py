@@ -16,6 +16,11 @@ def step_fail_backup_publication(context, node, backup_name):
     run_fault(context, node, "fail-backup-publication", backup_name)
 
 
+@when("we try to execute ch-backup on {node:w} with {count:d} SlowDown errors")
+def step_fail_server_side_copy(context, node, count):
+    run_fault(context, node, "fail-server-side-copy", str(count))
+
+
 @then('failed copy report "{path}" on {node:w} has results')
 def step_failed_copy_report(context, path, node):
     result = get_container(context, node).exec_run(["cat", path], user="root")

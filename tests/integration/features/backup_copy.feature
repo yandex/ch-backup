@@ -19,7 +19,7 @@ Feature: Copy backups to another storage
     """
     When we execute command on clickhouse01
     """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf --config-parameter encryption.key null copy LAST <options> \
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf --config-parameter encryption.key null copy LAST --target-config-parameter copy.server_side_copy_mode '"<mode>"' \
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
     """
     Then we get response contains
@@ -33,7 +33,7 @@ Feature: Copy backups to another storage
     Then we got same clickhouse data at clickhouse01 clickhouse02
     When we execute command on clickhouse01
     """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf --config-parameter encryption.key null copy LAST <options> \
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf --config-parameter encryption.key null copy LAST --target-config-parameter copy.server_side_copy_mode '"<mode>"' \
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
     """
     Then we get response contains
@@ -42,9 +42,64 @@ Feature: Copy backups to another storage
     """
 
     Examples:
-      | options               |
-      | --server-side-copy    |
-      | --no-server-side-copy |
+      | mode     |
+      | auto     |
+      | disabled |
+      | strict   |
+
+  Scenario: Copy retries temporary probe errors and respects the selected mode
+    Given clickhouse on clickhouse01 has test schema
+    And clickhouse01 has test clickhouse data test1
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: retry
+    """
+    And ch-backup configuration on clickhouse01
+    """
+    copy:
+        server_side_copy_mode: strict
+    storage:
+        proxy_resolver: {uri: null}
+        retry:
+            backup: {max_attempts: 3, max_interval: 0}
+    """
+    When we try to execute ch-backup on clickhouse01 with 3 SlowDown errors
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf copy retry --keep-going
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
+        --report-path /tmp/copy-report.json
+    """
+    Then command exits with code 1
+    And failed copy report "/tmp/copy-report.json" on clickhouse01 has results
+    """
+    retry:
+      status: failed
+      partial_copy: true
+      error_count: 1
+      error_stage: copy
+      error_sources: true
+    """
+    When we try to execute ch-backup on clickhouse01 with 2 SlowDown errors
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf copy retry
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
+    """
+    Then command exits with code 0
+    And we get response contains
+    """
+    retry: copied
+    """
+    When we try to execute ch-backup on clickhouse01 with 3 SlowDown errors
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf copy retry --target-config-parameter copy.server_side_copy_mode '"auto"'
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
+        --target-config-parameter backup.path_root '"ch_backup_auto/"'
+    """
+    Then command exits with code 0
+    And we get response contains
+    """
+    retry: copied
+    """
 
   Scenario: Copy backup to another path in the same bucket
     Given clickhouse on clickhouse01 has test schema
@@ -65,6 +120,39 @@ Feature: Copy backups to another storage
       | 0   | created |
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
+
+  Scenario Outline: Copy <selection> skips backups without data
+    Given clickhouse on clickhouse01 has test schema
+    And clickhouse01 has test clickhouse data test1
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: with-data
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: schema-only
+    schema_only: true
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    backup:
+        path_root: ch_backup_copy/
+    """
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy <selection> \
+        --target-config-parameter backup.path_root '"ch_backup_copy/"'
+    """
+    Then we got the following backups on clickhouse02
+      | num | name      | state   |
+      | 0   | with-data | created |
+    When we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
+    Examples:
+      | selection |
+      | LAST      |
+      | --all     |
 
   Scenario: Copy only the latest deduplicated backup
     Given we have executed queries on clickhouse01
@@ -143,7 +231,100 @@ Feature: Copy backups to another storage
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
-  Scenario: Copy reuses a materialized part after its original owner fails
+  @require_version_22.8
+  Scenario Outline: Copy target window survives source renewal and owner removal
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db1;
+    CREATE TABLE test_db1.test_table1 (n Int32) ENGINE = MergeTree ORDER BY n;
+    INSERT INTO test_db1.test_table1 SELECT number FROM numbers(100);
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: a_owner
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    storage:
+        credentials:
+            bucket: ch-backup-copy
+    backup:
+        retain_count: 1
+    """
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy a_owner --target-config-parameter copy.server_side_copy_mode '"<copy_mode>"' \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-config-parameter copy.deduplication_age_limit.days 90
+    """
+    And metadata of clickhouse01 backup "a_owner" was adjusted with
+    """
+    meta:
+        start_time: {{ backup.start_time | decrease_on('8 days') }}
+        end_time: {{ backup.end_time | decrease_on('8 days') }}
+    """
+    And metadata of clickhouse02 backup "a_owner" was adjusted with
+    """
+    meta:
+        start_time: {{ backup.start_time | decrease_on('8 days') }}
+        end_time: {{ backup.end_time | decrease_on('8 days') }}
+    """
+    And we create clickhouse01 clickhouse backup
+    """
+    name: b_renewed
+    """
+    Then we got the following backups on clickhouse01
+      | num | state   | data_count | link_count |
+      | 0   | created | 1          | 0          |
+      | 1   | created | 1          | 0          |
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf --config-parameter encryption.key null copy b_renewed --target-config-parameter copy.server_side_copy_mode '"<copy_mode>"' \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-config-parameter copy.deduplication_age_limit.days 90
+    """
+    Then we got the following backups on clickhouse02
+      | num | state   | data_count | link_count |
+      | 0   | created | 0          | 1          |
+      | 1   | created | 1          | 0          |
+    And metadata of clickhouse02 backup "b_renewed" contains
+    """
+    real_bytes: 0
+    """
+    And s3 bucket ch-backup-copy contains no objects with prefix "ch_backup/b_renewed/data/"
+    And s3 bucket ch-backup-copy contains objects with prefix "ch_backup/a_owner/data/"
+    When we restore clickhouse backup "b_renewed" to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+    When we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf <remove_owner>
+    """
+    Then we got the following backups on clickhouse02
+      | num | state             | data_count | link_count |
+      | 0   | created           | 0          | 1          |
+      | 1   | partially_deleted | 1          | 0          |
+    # Start a new restore rather than resume the previously completed one.
+    Given ch-backup configuration on clickhouse02
+    """
+    backup:
+        restore_context_path: /tmp/copy-restore-after-delete.json
+    """
+    When we drop all databases at clickhouse02
+    And we restore clickhouse backup "b_renewed" to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+    When we delete clickhouse02 clickhouse backup "b_renewed"
+    And we execute command on clickhouse02
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf --config-parameter backup.retain_count 0 purge
+    """
+    Then s3 bucket ch-backup-copy contains 0 objects
+
+    Examples:
+      | copy_mode | remove_owner   |
+      | auto      | delete a_owner |
+      | disabled  | purge          |
+
+  Scenario: Copy keeps links to parts of a copy that fails to be published
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE test_db1;
@@ -156,7 +337,7 @@ Feature: Copy backups to another storage
     """
     And we have created clickhouse01 clickhouse backup
     """
-    name: b_materialized
+    name: b_linked
     """
     And we have created clickhouse01 clickhouse backup
     """
@@ -178,9 +359,9 @@ Feature: Copy backups to another storage
     And we got the following backups on clickhouse02
       | num | state   | data_count | link_count |
       | 0   | created | 0          | 1          |
-      | 1   | created | 1          | 0          |
+      | 1   | created | 0          | 1          |
       | 2   | failed  | 1          | 0          |
-    And all parts in clickhouse02 backup "c_linked" link to "b_materialized"
+    And all parts in clickhouse02 backup "c_linked" link to "a_owner"
     When we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
@@ -283,6 +464,12 @@ Feature: Copy backups to another storage
     path: ch_backup/broken/backup_light_struct.json
     data: invalid metadata
     """
+    And we put object in S3
+    """
+    bucket: ch-backup
+    path: ch_backup/broken/backup_struct.json
+    data: invalid metadata
+    """
     And we try to execute command on clickhouse01
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy --all --keep-going \
@@ -301,7 +488,7 @@ Feature: Copy backups to another storage
     """
 
   @require_version_22.8
-  Scenario: Copy keeps going after object failures and leaves the incomplete backup failed
+  Scenario Outline: Copy keeps going after object failures with <copy_mode>
     Given we have executed queries on clickhouse01
     """
     CREATE DATABASE test_db;
@@ -333,7 +520,7 @@ Feature: Copy backups to another storage
     And we try to execute command on clickhouse01
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy --all --keep-going \
-        --no-server-side-copy \
+        --target-config-parameter copy.server_side_copy_mode '"<copy_mode>"' \
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
         --target-cloud-storage-bucket cloud-storage-02 \
         --report-path /tmp/copy-report.json
@@ -352,6 +539,11 @@ Feature: Copy backups to another storage
       error_sources: true
     b_local: {status: copied}
     """
+
+    Examples:
+      | copy_mode |
+      | disabled  |
+      | strict    |
 
   Scenario: Copy isolates corrupt target metadata
     Given clickhouse on clickhouse01 has test schema
@@ -377,6 +569,12 @@ Feature: Copy backups to another storage
     """
     bucket: ch-backup-copy
     path: ch_backup/broken/backup_light_struct.json
+    data: invalid metadata
+    """
+    And we put object in S3
+    """
+    bucket: ch-backup-copy
+    path: ch_backup/broken/backup_struct.json
     data: invalid metadata
     """
     And we try to execute command on clickhouse01
@@ -522,7 +720,7 @@ Feature: Copy backups to another storage
     And we try to execute command on clickhouse01
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy cloud --keep-going \
-        --no-server-side-copy \
+        --target-config-parameter copy.server_side_copy_mode '"disabled"' \
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
         --target-cloud-storage-bucket cloud-storage-02 \
         --report-path /tmp/copy-report.json
@@ -547,15 +745,27 @@ Feature: Copy backups to another storage
     And we execute command on clickhouse01
     """
     ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy cloud --keep-going \
-        --no-server-side-copy \
+        --target-config-parameter copy.server_side_copy_mode '"disabled"' \
         --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
-        --target-cloud-storage-bucket cloud-storage-02
+        --target-cloud-storage-bucket cloud-storage-02 \
+        --report-path /tmp/copy-retry-report.json
     """
     Then we get response contains
     """
     cloud: copied
     """
-    When we restore clickhouse backup #0 to clickhouse02
+    When we execute command on clickhouse01
+    """
+    python3 - <<'PY'
+    import json
+    with open('/tmp/copy-retry-report.json') as f:
+        result = json.load(f)['backups'][0]
+    assert result['objects_skipped'] > 0
+    assert result['objects_failed'] == 0
+    assert result['objects_copied'] + result['objects_skipped'] == result['objects_total']
+    PY
+    """
+    And we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
 
   @require_version_22.8
@@ -661,6 +871,170 @@ Feature: Copy backups to another storage
     """
     And we restore clickhouse backup #0 to clickhouse02
     Then we got same clickhouse data at clickhouse01 clickhouse02
+
+  @require_version_22.8
+  Scenario: Copy backup with data on S3 disk by scopes
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    CREATE TABLE test_db.table_01 (
+        CounterID UInt32,
+        UserID UInt32
+    )
+    ENGINE = MergeTree()
+    PARTITION BY CounterID % 3
+    ORDER BY UserID
+    SETTINGS storage_policy = 's3';
+
+    INSERT INTO test_db.table_01 SELECT 0, number FROM system.numbers LIMIT 10;
+    INSERT INTO test_db.table_01 SELECT 1, number FROM system.numbers LIMIT 10;
+    """
+    And we have created clickhouse01 clickhouse backup
+    And ch-backup configuration on clickhouse02
+    """
+    storage:
+        credentials:
+            bucket: ch-backup-copy
+    """
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf copy LAST --scope files --target-config-parameter copy.server_side_copy_mode '"auto"' \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"'
+    """
+    Then we get response contains
+    """
+    scopes: files completed, cloud_storage pending
+    """
+    And we got the following backups on clickhouse02
+      | num | state    |
+      | 0   | creating |
+    When metadata of clickhouse02 backup #0 was adjusted with
+    """
+    meta:
+        copy:
+            updated_at: {{ backup.meta['copy'].updated_at | decrease_on('2 weeks') }}
+    """
+    And we create clickhouse02 clickhouse backup
+    """
+    schema_only: true
+    """
+    And we delete clickhouse02 clickhouse backup #0
+    """
+    purge_partial: true
+    """
+    Then we got the following backups on clickhouse02
+      | num | state    |
+      | 0   | creating |
+    Given ch-backup configuration on clickhouse02
+    """
+    backup:
+        retain_count: 0
+        retain_time:
+            days: 30
+    """
+    When we purge clickhouse02 clickhouse backups
+    Then we got the following backups on clickhouse02
+      | num | state    |
+      | 0   | creating |
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf \
+        --config-parameter storage.credentials.bucket '"missing-bucket"' \
+        copy LAST --scope cloud_storage --keep-going \
+        --target-config-parameter copy.server_side_copy_mode '"disabled"' \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-cloud-storage-bucket cloud-storage-02 \
+        --target-cloud-storage-path copy
+    """
+    Then we got the following backups on clickhouse02
+      | num | state   |
+      | 0   | created |
+    When we restore clickhouse backup #0 to clickhouse02
+    Then we got same clickhouse data at clickhouse01 clickhouse02
+
+  @require_version_22.8
+  Scenario Outline: Restore encrypted S3 disk data through <staging>
+    Given we have executed queries on clickhouse01
+    """
+    CREATE DATABASE IF NOT EXISTS test_db;
+    CREATE TABLE test_db.encrypted_copy_restore_feature (
+        CounterID UInt32,
+        UserID UInt32
+    )
+    ENGINE = MergeTree()
+    PARTITION BY CounterID % 3
+    ORDER BY UserID
+    SETTINGS storage_policy = 's3';
+
+    INSERT INTO test_db.encrypted_copy_restore_feature SELECT 0, number FROM system.numbers LIMIT 10;
+    INSERT INTO test_db.encrypted_copy_restore_feature SELECT 1, number FROM system.numbers LIMIT 10;
+    """
+    And we have created clickhouse01 clickhouse backup
+    """
+    name: 87654321T123456
+    """
+    And ch-backup configuration on clickhouse02
+    """
+    storage:
+        credentials:
+            bucket: ch-backup-copy
+    cloud_storage:
+        data_encryption:
+            key: cccccccccccccccccccccccccccccccc
+            chunk_size: 64
+    restore:
+        cloud_storage:
+            decryption_staging:
+                bucket: <staging_bucket>
+                access_key_id: <staging_access_key_id>
+                secret_access_key: <staging_secret_access_key>
+    """
+    And a keyless copy configuration "/tmp/keyless-cloud.conf" on clickhouse01
+    """
+    backup_name: 87654321T123456
+    disk: s3
+    source:
+      bucket: cloud-storage-01
+      path: data
+    """
+    When we execute command on clickhouse01
+    """
+    ch-backup -c /tmp/keyless-cloud.conf copy 87654321T123456 \
+        --target-config-parameter storage.credentials.bucket '"ch-backup-copy"' \
+        --target-config-parameter copy.cloud_storage.encrypt_data true \
+        --target-config-parameter cloud_storage.data_encryption.type '"nacl"' \
+        --target-config-parameter cloud_storage.data_encryption.key '"cccccccccccccccccccccccccccccccc"' \
+        --target-config-parameter cloud_storage.data_encryption.chunk_size 64 \
+        --target-cloud-storage-bucket cloud-storage-02 \
+        --target-cloud-storage-path copy
+    """
+    Then we get response contains
+    """
+    87654321T123456: copied
+    """
+    When we execute query on clickhouse01
+    """
+    DROP TABLE test_db.encrypted_copy_restore_feature
+    """
+    And we delete clickhouse01 clickhouse backup #0
+    Then s3 bucket cloud-storage-01 contains 0 objects
+    When we restore clickhouse backup #0 to clickhouse02
+    And we execute query on clickhouse02
+    """
+    SELECT (count(), sum(UserID)) FROM test_db.encrypted_copy_restore_feature
+    """
+    Then we get response
+    """
+    (20,90)
+    """
+    And s3 bucket cloud-storage-02 contains objects with prefix "copy/87654321T123456"
+    And s3 bucket <cleanup_bucket> contains no objects with prefix "<cleanup_prefix>"
+
+    Examples:
+      | staging                   | staging_bucket   | staging_access_key_id      | staging_secret_access_key      | cleanup_bucket   | cleanup_prefix                 |
+      | destination disk         | null             | null                       | null                           | cloud-storage-02 | copy/87654321T123456_decrypted |
+      | configured source bucket | cloud-storage-02 | {{ conf.s3.access_key_id }} | {{ conf.s3.access_secret_key }} | cloud-storage-02 | copy/87654321T123456_decrypted |
+      | another bucket           | cloud-storage-01 | {{ conf.s3.access_key_id }} | {{ conf.s3.access_secret_key }} | cloud-storage-01 | copy/87654321T123456           |
 
   @require_version_22.8
   Scenario: Deleting copy of backup with data on S3 disk doesn't affect the source backup

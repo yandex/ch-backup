@@ -17,6 +17,145 @@ The tool also supports deduplication at part-level granularity. It's set up
  set a start time to exclude earlier backups from deduplication.
 
 
+## Restore after part download errors
+
+Restore attaches a part only after all its files have been downloaded and unpacked,
+or its cloud-storage copy has completed. Failed parts are recorded as `invalid`
+with the original download or copy error in the restore state file.
+With `--keep-going`, other parts continue restoring; without it, the command
+stops with the download or copy error. With `--keep-going`, set
+`backup.restore_fail_on_attach_error: true` to return a nonzero exit code if any
+part failed to download, copy, or attach. The default remains `false`.
+A new restore invocation retries invalid parts, attaches already downloaded
+parts, and skips restored parts.
+Successfully downloaded parts are attached in their original part order,
+regardless of download completion order. Saved failure details survive restores
+of other tables; a part's error is removed after that part is successfully attached.
+Only failures from the current invocation affect its exit code.
+
+Local parts are downloaded into unique `.ch-backup-*` staging directories on
+the destination disk. Each part name must be a single directory name. Nested
+paths in per-file backups must stay inside staging. Restore accepts early TAR
+backups that omit all padding after the last complete file.
+After all files have been written, restore checks their
+file list, recorded size and the checksum of `checksums.txt`, replaces any
+existing destination directory and publishes the part with `rename` before
+recording `DOWNLOADED` or attaching it. This does not hash every data file.
+Local parts saved as `DOWNLOADED` are downloaded again on retry. Failed downloads
+leave the existing destination untouched. During replacement the previous part
+is moved aside until publication succeeds. If the publish rename fails, restore
+moves the old part back. If that rollback fails, the error log gives its path.
+An interruption between the two renames can leave the old part in a
+`.ch-backup-*.previous` directory. If transfer workers do not finish
+normally, staging directories are retained for manual cleanup after they stop.
+
+## Restore without cloud storage
+
+`ch-backup restore --skip-cloud-storage BACKUP` restores local parts and skips
+cloud parts, including detached parts. It also adapts MergeTree schemas and
+materialized views with their own storage to the target server:
+
+- A policy missing from `system.storage_policies` is replaced with `default`.
+- An explicit named `disk` setting is removed, even if that disk exists on the
+  target. The table uses the target server's default MergeTree storage policy
+  (including a `replicated_merge_tree` override), which must contain a local disk.
+  Dynamic `disk(...)` expressions and target engine defaults specifying `disk`
+  instead of a policy are not supported by this adaptation.
+  If removing `disk` would require replacing an existing table (including a
+  detached table or a table with the same UUID), restore stops before deleting
+  any database or table, even with `--keep-going`. Cloud parts would not be
+  restored after that deletion. Use an empty destination, or explicitly remove
+  the existing table after deciding that its data can be discarded.
+- TTL MOVE rules referencing disks or volumes absent from the resulting policy
+  are removed as whole rules. DELETE, conditional DELETE, RECOMPRESS, GROUP BY,
+  column TTLs and available MOVE rules are preserved.
+- Local parts whose original disk is outside the adapted policy go to its first
+  local disk, in volume priority and disk order.
+
+For replicated tables, use the same flag and storage configuration on every
+target replica.
+Restore each replicated shard's data on one replica. On its other replicas, use
+`--schema-only --skip-cloud-storage`, optionally with `--parts-from-backup BACKUP`
+to accelerate recovery. The existing `--parts-from-backup` mode downloads eligible
+parts into `detached/`, verifies their file checksums, then runs
+`SYSTEM RESTORE REPLICA`; replication fetches any remaining parts. This mode
+requires restore without ordinary data loading, so `--schema-only` is still
+needed. Restore non-replicated tables separately with their data.
+If adapting a replicated table's TTL conflicts with existing Keeper metadata,
+restore fails before dropping local databases or tables or cleaning replica metadata, including
+with `--keep-going` and any `--clean-zookeeper-mode`. It never resets shared Keeper
+metadata automatically. Restore to a separate Keeper table path or resolve the
+conflict before retrying. A per-table Keeper lock covers the check and table
+creation. Direct ZooKeeper access, using the same root as ClickHouse, is required
+only when the replicated table TTL is changed; unchanged schemas and policy-only
+changes retain the ordinary restore requirements.
+
+Removed disk settings, policy replacements and removed TTL rules are logged. With `--keep-going`,
+independent tables continue after a schema adaptation or creation failure, but
+the command reports those failures with a nonzero exit status. A shared Keeper
+metadata conflict stops the restore immediately. The behavior without
+`--skip-cloud-storage` is unchanged.
+
+## S3 retry limits
+
+Limit selected failures while keeping the usual retry budget for other errors:
+
+```yaml
+storage:
+    retry:
+        restore:
+            max_attempts: 60
+            max_interval: 60
+            failure_limits:
+                error_codes:
+                    InternalError: 3
+                exceptions:
+                    http.client.IncompleteRead:
+                        max_attempts: 3
+                        max_interval: 5
+```
+
+Add S3 `Error.Code` strings to `error_codes`, or fully qualified exception names to
+`exceptions`. Public aliases from loaded modules, such as `socket.timeout` and
+`requests.ConnectionError`, also work. Matching includes base classes, explicit
+causes and SDK wrappers, without importing classes
+or matching messages. Rules count failures cumulatively per public S3 method call
+(each download range separately), stopping immediately at the configured limit.
+Unlisted errors such as `SlowDown` retain the total attempt budget; permanent errors
+remain nonretryable. The same block works for `list`, `backup` and `default`, without
+inheritance between policies. SDK retries below are independent. Without
+`failure_limits`, retry behavior is unchanged.
+
+A number sets only the attempt limit. The extended form requires `max_attempts`
+and optionally overrides `max_interval` (seconds) for that failure. Parent
+exception types match subclasses. If several matching rules specify an interval,
+the smallest one is used; unlisted errors keep the policy interval.
+
+## S3 SDK configuration
+
+`storage.module_config` passes options to botocore and boto3 managed transfers:
+
+```yaml
+storage:
+    module_config:
+        botocore:
+            connect_timeout: 10
+            read_timeout: 120
+            retries:
+                mode: standard
+                total_max_attempts: 3
+        transfer:
+            multipart_threshold: 16777216
+            multipart_chunksize: 16777216
+            max_concurrency: 4
+```
+
+Options are passed to the installed SDK's `Config` and `TransferConfig`
+constructors, which perform their own validation. Omitted options keep the
+existing defaults. Explicit `retries` replace the default disabled SDK retries;
+explicit `proxies` override `storage.proxy_resolver`. These settings also apply
+to copy targets and cloud-storage clients.
+
 ## Installation
 
 In order to get an up-to-date version of ch-backup, run `make build`. It will produce
@@ -131,9 +270,24 @@ ch-backup check --deep --workers 8 --tmp-dir /var/tmp --format json 20261010T000
   `failed`, are reported but don't affect the exit code.
 - Backups are not locked, so a backup deleted or purged during the check may be reported as broken.
 
+### S3 client lifetime
+
+`storage.client_ttl` sets the client refresh interval in seconds (default: 300).
+It must be a finite positive number:
+
+```yaml
+storage:
+  client_ttl: 300
+```
+
+Clients are refreshed on their next use after this interval, repeating proxy discovery.
+Transfers already in progress continue with their existing client. If refresh fails,
+the error uses the operation's retry budget; a retry can reuse the existing client
+until the next refresh deadline.
+
 ### Copying backups to another storage
 
-`ch-backup copy` copies a backup (or all backups with `--all`) to another S3 bucket,
+`ch-backup copy` copies a backup (or selected created backups with `--all`) to another S3 bucket,
 endpoint or `backup.path_root`. The main configuration describes the source storage. The
 target storage is described by the main configuration merged with a configuration file passed
 in `--target-config` and values passed in `--target-config-parameter`, so it's enough to
@@ -149,10 +303,19 @@ ch-backup copy --all --target-config /etc/yandex/ch-backup/dr.conf
 # Continue after errors and save confirmed results, including on failure.
 ch-backup copy --all --keep-going --target-config /etc/yandex/ch-backup/dr.conf \
     --report-path /tmp/ch-backup-copy-report.json
+
+# Copy files of the backup on the server side first, then stream data of object storage disks,
+# possibly from another host without access to the source storage.
+ch-backup copy LAST --scope files --target-config /etc/yandex/ch-backup/dr.conf
+ch-backup copy LAST --scope cloud_storage --keep-going --target-config /etc/yandex/ch-backup/dr.conf \
+    --target-config-parameter copy.server_side_copy_mode '"disabled"'
 ```
 
 ```yaml
 # /etc/yandex/ch-backup/dr.conf
+copy:
+    # strict | auto | disabled
+    server_side_copy_mode: auto
 storage:
     credentials:
         endpoint_url: https://s3.other.example
@@ -163,6 +326,14 @@ storage:
 
 Behavior and limitations:
 
+- `copy.only_with_data` is enabled by default: `LAST` selects the latest created backup
+  with data, and `--all` skips backups without data. The filter uses the data size in backup
+  metadata, including deduplicated and detached parts. Override it with
+  `--only-with-data` / `--no-only-with-data`. Backups explicitly selected by name are copied
+  regardless of this setting. Schema-only and access-control-only backups are excluded too:
+  access entities and other definitions do not count as table data. To preserve all created
+  snapshots, including permission changes in access-only backups, use
+  `copy --all --no-only-with-data` or set `copy.only_with_data: false`.
 - A final text report lists copied, skipped, failed and unprocessed backups. `--report-path`
   also saves a JSON report (schema version 1) once the command finishes, including failures
   and handled termination signals. Any failure gives a nonzero exit code.
@@ -196,22 +367,129 @@ Behavior and limitations:
   the file list in the selected backup without reading the owner's metadata.
   To start an independent series of keyless-copyable backups,
   set `backup.deduplication_start_time` to the beginning of the series when enabling the new format.
-- If both buckets belong to the same S3 service and are accessible with the same credentials, objects
-  are copied on the server side. Otherwise, data is streamed through ch-backup. Server-side copy can be
-  disabled with `--no-server-side-copy`.
+- `copy.server_side_copy_mode` selects `strict`, `auto` (the default) or `disabled`. In `auto`, objects are copied
+  on the server side if both buckets belong to the same S3 service and are accessible with the same
+  credentials; otherwise, data is streamed through ch-backup. `disabled` always streams objects.
+  Objects transformed by encryption or decryption are streamed in `auto` mode. The setting is read
+  from the merged target configuration and can be overridden with
+  `--target-config-parameter copy.server_side_copy_mode '"strict"'`.
+- `copy.server_side_copy_mode: strict` forbids streaming objects through ch-backup. If an object cannot
+  be copied on the server side, it is reported as failed; `--keep-going` continues independent
+  objects and backups, but the command still exits with an error. The mode is incompatible with
+  `copy.cloud_storage.encrypt_data=true`. Already encrypted objects can be copied unchanged.
+  Reading, rewriting and publishing backup metadata still uses ch-backup.
 - The copy becomes valid (gets the state `created`) only after all its data is copied. If copying is
   interrupted, the copy remains in the state `creating` or `failed`, and the next run of the command
-  retries copying all objects. Existing objects are overwritten even when their sizes match, since
-  size alone does not establish that their contents are correct. Completed backups are skipped.
+  resumes it. Confirmed copies are recorded in the copy context, a journal kept in the target storage
+  under `<backup>/copy_context/`. It is saved when 10000 confirmations accumulate or the first
+  confirmation arrives 60 seconds after the previous save, and when copying fails or is interrupted by
+  a signal. The next run skips an object only if the context records it with the
+  same source, target and size and the target storage still holds it with that size: size alone does not
+  establish that the contents are correct, and a failed or partial delete may have removed recorded
+  objects. Other objects are overwritten. If the target listing or a context file cannot be read, the
+  affected objects are copied again. `objects_skipped` in the report counts skipped objects. Before
+  copying, resuming holds the listing of the target backup in memory, comparable to the object plan.
+  `--no-resume` (or `copy.resume: false`) ignores records of previous runs and overwrites all objects;
+  the run still records confirmed copies, so an interrupted run should be repeated with `--no-resume`
+  to overwrite every object.
+  The context is not copied with the backup and is deleted together with it.
+  Completed backups are skipped.
   When a linked part has already been materialized in a successfully copied backup, subsequent
   backups reuse that copy, including mutation-renamed parts and full cloud-storage backups.
+- Copying consists of two scopes: `files` copies files of the backup, `cloud_storage` copies data
+  and metadata of object storage disks kept in their buckets, rewriting the metadata to reference
+  the copied data. Backups without such data, including ones created with
+  `--copy-cloud-storage-data`, are copied entirely by `files`, and their scope `cloud_storage` is
+  completed right away. `--scope` (can be given multiple times) copies only the specified scopes,
+  overriding `copy.scopes` in the configuration (default: `[files, cloud_storage]`). For example,
+  `copy: {scopes: [cloud_storage]}` selects only object storage copying. The list must be non-empty.
+  The setting is read from the merged target configuration, so it can be set in the main config,
+  `--target-config` or `--target-config-parameter copy.scopes '["files"]'`.
+  Each run chooses its own copy mode with `copy.server_side_copy_mode`. `files`
+  also copies the original disk metadata into
+  `<backup>/copy_context/<id>/source/` and saves the list of its objects in
+  `<backup>/copy_context/<id>/manifest/files.jsonl.gz` (locations and sizes, without credentials). A
+  run without `files` does not access the source storage: it takes copies from the target storage
+  (the specified ones, or with `--all` every copy whose `cloud_storage` is not completed, or the
+  newest of them for `LAST`), reads the copy's full metadata and disk metadata from `source/`,
+  copies disk metadata that needs no rewriting from there and checks `files` by the manifest.
+  The copy retains the original cloud storage location until it is published as `created`. So `files` must be copied first, from a
+  host with access to the source storage; `cloud_storage` needs only access to the buckets of the
+  disks. A scope that is not copied is planned only if it is completed, to check it with the same
+  settings as copying it, so copying only the scope `files` needs no settings of object storage data
+  while `cloud_storage` is not completed. Statuses of the scopes (`pending`, `completed`, `failed`)
+  are saved in `meta.copy` of the copy, for example `state: creating, copy: {scopes: {files:
+  completed, cloud_storage: pending}, updated_at: ...}`, where `updated_at` is when copying was last
+  saved. `list -av` shows these values in the `copy` column; `list -av --format json` includes
+  the same `copy` object. Backups without `meta.copy` have an empty cell or JSON `null`.
+  The listing reads light metadata, including the saved copy scopes and timestamp.
+  The copy becomes `created` once every scope is completed. Until then the report shows the
+  backup as `partial` with `backup_state: creating`, and the command exits with 0 if the copied
+  scopes succeed. Saved statuses are not trusted: a scope that is not copied is completed only if
+  the copy context and the target listing confirm all its objects, otherwise it becomes `pending`
+  again, e.g. after a failed delete. `--no-resume` overwrites objects of the scopes that are copied
+  and still checks the other scopes this way. Between scopes, the copy is in the state `creating`.
+  Copies in `creating` or `failed` with `files: completed` and `cloud_storage: pending` or `failed`
+  follow `backup.retain_count` and `backup.retain_time` in `purge` just like `created` backups,
+  regardless of `updated_at`. If retained backups include partial copies but none is complete,
+  `purge` also keeps the newest complete backup.
+  `delete --purge-partial` keeps these copies; explicit deletion by
+  name is still available. Other incomplete copies retain the temporary protection from `purge`
+  and `delete --purge-partial` while their `updated_at` is within
+  `backup.retain_incomplete_copy_time` (7 days by default, empty to disable).
+  Before relying on these retention rules, upgrade every node and scheduled job that can run
+  `purge` or `delete --purge-partial` against the same storage to a version implementing them.
+  Older versions can still delete backups protected by these rules.
+  With `--keep-going`, objects of a scope that failed to copy are listed in
+  `<backup>/copy_context/<id>/failed/<scope>.jsonl.gz` (source and target keys, size and error) and
+  the scope becomes `failed`; the next run of the scope copies only unconfirmed objects. The list is
+  rewritten by each run of the scope in which objects fail and removed once the scope completes.
+  Disk metadata that cannot be planned is not copied, so it never overwrites rewritten disk
+  metadata; a later run copies it. Copy scopes of one backup one after another: the local lock
+  serializes runs on one host, runs on different hosts require `lock.zk_flock`.
 - Copy acquires the configured source and target locks through completion, including retries and
   failure cleanup. To coordinate copy with delete and purge across processes, enable `lock.zk_flock`
   and use the same ZooKeeper ensemble and lock path for every operation on the respective storage.
-  Locking remains optional; the local file lock retains its shared semantics.
-- Deduplicated data parts of the backup are stored in older backups. If such a backup is already
-  present in the target storage, the deduplication link is kept. Otherwise, the data part is copied
+  Locking remains optional for ordinary operations; local file locks are exclusive.
+- Set `multiprocessing.metadata_read_threads` in the target configuration to control parallel
+  source and target light-metadata reads at copy startup (default: `4`, positive integer).
+  Each batch holds at most this many reads; set `1` for sequential reading.
+- `multiprocessing.full_metadata_read_threads` in the target configuration controls
+  full-metadata prefetch for `copy.deduplication_age_limit` (default: `2`). The limit includes
+  the candidate being indexed and queued reads; indexing remains sequential. Set `1` for
+  sequential loading. Increasing it retains more full metadata in memory.
+- By default, deduplicated data parts of the backup are stored in older backups. If such a backup is already
+  present in the target storage, the deduplication link is kept. A link to a local part is also kept
+  if the copy of that backup is not completed but already holds files of the part, e.g. after its
+  scope `files`, as deduplication of new backups does. Otherwise, the data part is copied
   into the copied backup. `--all` copies older backups first, so deduplication is kept in the target storage.
+- Set `copy.deduplication_age_limit: {days: 90}` in the target configuration to enable an
+  independent deduplication window for active parts on local disks. The default `{days: 0}`
+  disables this additional lookup; a zero duration keeps the existing source-link behavior.
+  The value accepts the same units as a Python `timedelta` (weeks through microseconds),
+  with finite nonnegative numbers. Target command-line configuration overrides the target file,
+  which overrides the main configuration, following the usual recursive merge rules.
+  When enabled, copy matches parts by database, table, name (allowing mutation suffix changes),
+  checksum, disk, size, file list, layout and encryption, even if source stores the part anew
+  or links to a different owner. The newest matching physical owner with available files is used.
+  Its original backup `start_time` must be within the period before the start of the copy command;
+  both bounds are inclusive and fixed before resolving `LAST` or waiting for locks.
+  Owners without a timestamp or with a future timestamp are skipped. Copying preserves the
+  original timestamp. A recent reference does not extend an old owner's window.
+  This additional lookup reuses only TAR parts, whose stored archive size can be checked.
+  Legacy per-file parts are copied from source because their metadata has no individual file sizes.
+  This applies to source links too: without an eligible target owner, the part is copied from source.
+  The window is independent of `backup.deduplication_age_limit`, `deduplication_start_time`
+  and `deduplicate_parts`; historical backups copied with `--all` use the same current-time bound.
+  Reading full metadata and listing part files in eligible target backups costs additional S3
+  requests. Each candidate's full metadata is read once for the index, file listings are grouped
+  by table, and index memory grows with the number of physical local parts in the window.
+  The index retains a fixed-size fingerprint of each file list instead of its file names.
+  Loading a candidate still requires memory proportional to that backup's full metadata.
+  Existing completed copies are skipped and existing duplicates are not compacted.
+  Cloud-storage and detached parts retain their existing behavior. Restore uses the existing
+  link format; delete and purge preserve referenced parts in partially deleted owners until
+  the references are removed, even when an owner is outside the deduplication window.
 - Full cloud-storage backups created with `--copy-cloud-storage-data` keep their data in the backup
   bucket. Copying them moves that data into the target backup bucket, including linked parts when
   their owning backup is absent there. No ClickHouse disk credentials or `--target-cloud-storage-bucket`
@@ -229,7 +507,22 @@ Behavior and limitations:
   Each file is limited to 1 MiB, checked and archived from the same bounded memory buffer.
   Larger disk metadata files also require `cloud_storage.encryption=true`.
   Such files require `cloud_storage.encryption=true`, and copying that backup requires a key.
-  The flag only controls disk metadata: blobs retain the encryption applied by ClickHouse or S3.
+  The flag only controls disk metadata. By default, blobs retain the encryption applied by ClickHouse
+  or S3. Set `copy.cloud_storage.encrypt_data=true` to encrypt copied blobs in the streaming pipeline.
+  Encryption settings come from the top-level `encryption` section by default; values under
+  `cloud_storage.data_encryption` override them, allowing a dedicated key on keyless copy workers.
+  The copy metadata stores the encryption type and chunk size, but never the key. An already encrypted
+  cloud-data copy cannot be encrypted again. Encrypting data of backups created with
+  `cloud_storage.copy_data=true` is not supported.
+  Restore decrypts encrypted blobs into `restore.cloud_storage.decryption_staging` before
+  creating the temporary ClickHouse disk. By default staging uses the destination disk's
+  endpoint, bucket and credentials; disks without static credentials use the storage SDK's
+  normal environment/provider chain. Overriding the staging endpoint or bucket requires both
+  `access_key_id` and `secret_access_key`. The staging path is exclusive to one restore and must
+  not overlap the encrypted source prefix in the same bucket, because ch-backup removes everything
+  below it before and after restore. Reserve staging capacity for the full restored cloud-storage
+  data volume. Decryption and downloading disk metadata a second time make this restore slower than
+  an unencrypted cloud-data restore.
   To use a separate worker, provide source endpoint, bucket, path and credentials explicitly;
   neither a local ClickHouse configuration nor a connection to the source server is required.
   Without the original disk configuration, leave the source path unset for V5 metadata to
@@ -432,6 +725,14 @@ can be used to pass additional arguments to underlying `behave` invocation.
 For example, `make test-integration BEHAVE_ARGS='-i ssl_support'` executes
 tests that belongs to SSL support feature (`ssl_support.feature`).
 
+After every executed scenario, including successful ones, the runner saves
+`ch-backup.log`, `boto.log` and `clickhouse-server.err.log` from ClickHouse
+containers, plus the broken proxy's stdout/stderr. Logs are collected before
+containers are reset, under `staging/logs/saved-logs/` for serial runs. Each
+container instance has its own directory, so later scenarios do not overwrite
+earlier ones. Files not created by a scenario are omitted. Full container logs,
+configuration and S3 exports are still collected on failure.
+
 #### Parallel integration tests on one Docker host
 
 ```bash
@@ -476,10 +777,51 @@ Results are printed at startup under `staging/parallel/<run-id>/results/`:
   IDs and actual ClickHouse versions. Features not started after a failure have
   status `not_run`, distinct from version skips.
 - Per-feature directories: full `behave.log` and standard Behave `junit/` reports,
-  including skipped scenarios. Failure-only stage diagnostics are written to
-  `stage-failures.jsonl`; worker logs and container diagnostics are retained for
-  failed runs. Exit codes, report completeness and stage failures determine the
-  result; unfinished scenarios cannot turn a run green.
+  including skipped scenarios. `saved-logs/` contains the selected container logs
+  described above, on both success and failure. Failure-only stage diagnostics
+  are written to `stage-failures.jsonl`; worker logs and container diagnostics
+  are retained for failed runs. Exit codes, report completeness and stage failures
+  determine the result; unfinished scenarios cannot turn a run green.
 
 All twelve existing CI combinations use three slots. JUnit and diagnostics are
 uploaded on both success and failure with run-attempt-specific artifact names.
+
+When light metadata is missing or unreadable, backup listing falls back to full
+metadata. This keeps deduplication references visible to `delete` and `purge`.
+Deleting a backup with readable full metadata preserves referenced parts and
+rewrites its light metadata through the normal deletion path. A referenced backup
+whose full metadata cannot be read is not partially deleted by default.
+
+Use `ch-backup delete BACKUP --delete-unreadable` or `ch-backup purge
+--delete-unreadable` to devalue unreadable backups (`backup.delete_unreadable: true`
+in config; default `false`). This includes temporary S3 read failures. Upgrade all
+writers first, enable `lock.zk_flock`, and use the same ZooKeeper ensemble/path
+for operations sharing storage. Explicit delete affects only its target; purge with retention also
+includes unreadable candidates whose age cannot be determined. Unknown references
+in retained backups, listing failures and unreadable markers stop deletion.
+
+`delete_pending.json` preserves the intent even if manifests return. Each attempt
+rereads retained references, keeps shared parts and cloud data, and records
+`referenced_by`; see `list -a -v --format=json`. Marked backups cannot be restored
+independently or reused for new deduplication. Existing dependent backups retain
+access. `delete BACKUP`, `delete BACKUP --purge-partial` and `purge` retry cleanup
+without the flag; purge retries even without retention. The marker is deleted last.
+Unknown original/copy provenance prevents automatic UNFREEZE.
+
+New cloud backups store restore settings in `cloud_storage_info.json` and claim an
+empty cloud prefix with `.cloud_storage_owner.json`. Legacy cloud data without
+proven ownership remains pending. Dependent cloud restore/copy requires readable
+manifests or the descriptor; settings are never guessed from object names.
+
+For a pre-upgrade cloud backup with readable full metadata, use
+`ch-backup adopt-cloud-storage BACKUP --confirm-owner` before delete/purge.
+Enable the shared `lock.zk_flock` first. The flag asserts that the entire sanitized
+prefix belongs exclusively to this backup, including historical objects; verify
+that from the storage's backup history before running it. The command rejects
+conflicting names, metadata or owner claims and writes no payload. It cannot prove
+historical ownership from LIST; leave ambiguous prefixes unclaimed. A successful
+adoption unblocks strict inventory and permits later cleanup of that cloud prefix.
+
+Writers also refuse nonempty cloud prefixes without an owner claim. Before
+resuming a legacy copy or deleting legacy cloud data, adopt its verified owner;
+readable manifests alone do not bypass the ownership check.

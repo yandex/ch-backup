@@ -46,6 +46,7 @@ class Worker:
             "INTEGRATION_ENV_ID": self.environment,
             "INTEGRATION_STAGE_FAILURES": str(output / "stage-failures.jsonl"),
             "INTEGRATION_FEATURE_FAILURE": str(output / "failure.json"),
+            "INTEGRATION_SAVED_LOGS": str(output / "saved-logs"),
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONUNBUFFERED": "1",
         }

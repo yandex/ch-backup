@@ -5,32 +5,51 @@ Copying of backups from one storage to another.
 # pylint: disable=too-many-lines
 
 import copy
+import json
 import os
-import re
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
+from datetime import datetime
 from functools import partial
-from itertools import chain
-from typing import Iterator, Sequence
-from urllib.parse import quote, urlparse
+from pathlib import PurePosixPath
+from typing import Callable, Iterator, NamedTuple, Sequence
+from urllib.parse import quote
 
 from ch_backup import logging
+from ch_backup.backup.copy_context import (
+    COPY_CONTEXT_DIR,
+    CopyContext,
+    FailedObjects,
+    source_dir,
+)
+from ch_backup.backup.copy_deduplication import (
+    CopyDeduplication,
+    copy_deduplication_cutoff,
+)
+from ch_backup.backup.copy_index import CopyEntries, CopyIndex, EntryIndex
 from ch_backup.backup.copy_report import BackupCopyResult, CopyReport
+from ch_backup.backup.deduplication import StoredFiles, _part_data_exists
 from ch_backup.backup.layout import (
     BACKUP_LIGHT_META_FNAME,
     BACKUP_META_FNAME,
     BackupLayout,
     get_data_part_file_names,
     get_data_part_relative_dirs,
+    read_metadata_in_batches,
 )
 from ch_backup.backup.metadata import (
     BackupMetadata,
     BackupState,
+    CopyScope,
+    CopyScopeStatus,
     PartMetadata,
     TableMetadata,
+    parse_copy_scopes,
     sanitize_backup_name,
 )
+from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageBackup
 from ch_backup.clickhouse.config import ClickhouseConfig
 from ch_backup.clickhouse.object_storage_metadata import (
+    FROZEN_METADATA_FNAME,
     ObjectStorageMetadata,
     ObjectStorageMetadataError,
     StorageObject,
@@ -38,36 +57,69 @@ from ch_backup.clickhouse.object_storage_metadata import (
     replace_object_keys,
 )
 from ch_backup.config import Config
+from ch_backup.encryption import (
+    calc_encrypted_size_from_config,
+    get_cloud_storage_data_encryption_config,
+    get_cloud_storage_data_encryption_metadata,
+    get_encryption,
+)
 from ch_backup.exceptions import (
     BackupNotFound,
     ClickhouseBackupError,
     ConfigurationError,
+    StorageError,
     TerminatingSignal,
     is_broken_executor,
 )
+from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.storage.engine import get_storage_engine
 from ch_backup.storage.engine.base import PipeLineCompatibleStorageEngine
+from ch_backup.storage.engine.s3 import S3RetryingError
+from ch_backup.storage.metadata_archive import (
+    MetadataArchiveWriter,
+    MetadataFiles,
+    TemporaryMetadataArchive,
+)
 from ch_backup.storage.object_copy import (
     CopyEntry,
+    ServerSideCopyMode,
+    get_s3_disk_location,
+    make_storage_config,
+    parse_server_side_copy_mode,
     server_side_copy_possible,
     storage_id,
 )
+from ch_backup.util import now, utcnow
 
-FROZEN_METADATA_FNAME = "frozen_metadata.txt"
+
+class _RewrittenTarball(NamedTuple):
+    """A target disk metadata tarball and its rewritten files."""
+
+    path: str
+    files: MetadataFiles
 
 
-class _CopyPlan:
+class _ScopePlan:
     """
-    Objects to copy and target storage locations where they are put.
+    Objects of a copy scope and target storage locations where they are put.
+
+    Rewritten metadata holds tarballs with disk metadata that are uploaded with modified
+    content instead of copying as is: (target path, files). A scope is planned if its
+    planning succeeded.
     """
 
     def __init__(self) -> None:
-        self.entries: list[CopyEntry] = []
-        # Tarballs with cloud storage metadata that are uploaded with modified content
-        # instead of copying as is: (target path, files).
-        self.rewritten_cloud_storage_metadata: list[
-            tuple[str, list[tuple[str, bytes]]]
-        ] = []
+        """Start an empty, unplanned copy scope."""
+        self.entries = CopyEntries()
+        self.rewritten_cloud_storage_metadata: list[_RewrittenTarball] = []
+        self.planned = False
+
+    def count(self) -> int:
+        """Return the number of objects and rewritten metadata tarballs."""
+        return len(self.entries) + len(self.rewritten_cloud_storage_metadata)
+
+
+_CopyPlan = dict[CopyScope, _ScopePlan]
 
 
 # pylint: disable=too-many-instance-attributes
@@ -75,10 +127,16 @@ class BackupCopier:
     """
     Copies backups from one storage to another.
 
-    Backup data is copied as is (without decryption), so both storages must use the same
-    encryption settings. Backup metadata is uploaded to the target storage before data with
-    the state "creating" and after with the state "created", so the copy becomes valid only
-    when all its data is in place. Interrupted copying is resumed by the next run.
+    Backup data is copied as is (without decryption), except that ClickHouse object storage
+    data can optionally be encrypted in transit. Backup metadata is uploaded to the target
+    storage before data with the state "creating" and after with the state "created", so the
+    copy becomes valid only when all its data is in place. Interrupted copying is resumed by
+    the next run, which skips objects confirmed by the copy context and still present in the
+    target storage.
+
+    Copying is split into scopes: "files" copies files of the backup, "cloud_storage" copies
+    data and metadata of object storage disks. Scopes may be copied separately, and the copy
+    becomes "created" once every scope is confirmed.
     """
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
@@ -90,6 +148,11 @@ class BackupCopier:
         target_layout: BackupLayout,
         ch_config: ClickhouseConfig,
     ) -> None:
+        """Initialize copy state and caches.
+
+        Target table listings map (backup, database, table) to part, file and size,
+        and are used to check links to incomplete copies.
+        """
         self._config = config
         self._target_config = target_config
         self._layout = layout
@@ -98,17 +161,33 @@ class BackupCopier:
         self._storage: dict = config["storage"]
         self._target_storage: dict = target_config["storage"]
         self._copy_config: dict = target_config["copy"]
+        self._metadata_read_threads = target_config["multiprocessing"][
+            "metadata_read_threads"
+        ]
+        self._encrypt_cloud_storage_data = bool(
+            self._copy_config["cloud_storage"].get("encrypt_data")
+        )
+        self._cloud_storage_data_encryption = (
+            get_cloud_storage_data_encryption_config(target_config)
+            if self._encrypt_cloud_storage_data
+            else None
+        )
 
         self._engines: dict[tuple, PipeLineCompatibleStorageEngine] = {}
         # Metadata of backups in target storage used to resolve deduplication links.
         self._target_backups: dict[str, BackupMetadata | None] = {}
+        self._target_table_files: StoredFiles = {}
         # Files of backups in source storage used to resolve deduplication links.
-        self._source_backup_files: dict[str, dict[str, int]] = {}
+        self._source_backup_files: dict[str, CopyIndex] = {}
         # Original part identity -> successfully materialized target owner and name.
         self._materialized_parts: dict[tuple, tuple[str, str]] = {}
+        self._target_deduplication: CopyDeduplication | None = None
         # Availability of server-side copy for bucket pairs with particular credentials.
         self._server_side_copy: dict[tuple, bool] = {}
+        self._copy_context: CopyContext | None = None
         self._keep_going = False
+        self._server_side_copy_mode = ServerSideCopyMode.AUTO
+        self._scopes: tuple[CopyScope, ...] = tuple(CopyScope)
         self._report = CopyReport()
 
     def copy(
@@ -117,20 +196,25 @@ class BackupCopier:
         *,
         keep_going: bool = False,
         report: CopyReport | None = None,
+        command_start: datetime | None = None,
     ) -> tuple[list[str], list[str]]:
         """
         Copy specified backups or all backups in the state "created" if names are not specified.
 
         Return names of copied backups and names of backups skipped as already copied.
+        A copy with scopes left to copy is reported as partial and stays "creating".
         With keep_going, attempt every viable backup before raising an aggregate error.
+        Copy scopes are taken from the target configuration, all of them by default.
+        The server-side copy mode is taken from the target configuration.
         """
         self._keep_going = keep_going
         self._report = report if report is not None else CopyReport()
         self._report.error = None
         self._report.backups.clear()
         self._materialized_parts.clear()
+        self._target_table_files.clear()
         try:
-            self._validate_configs()
+            self._validate_configs(utcnow() if command_start is None else command_start)
             backups = self._select_backups(backup_names)
             results = {result.name: result for result in self._report.backups}
             self._validate_backup_names(backups, results)
@@ -142,10 +226,15 @@ class BackupCopier:
                     continue
                 try:
                     if self._copy_backup(backup.name, result):
-                        result.status = "copied"
+                        result.status = (
+                            "copied"
+                            if result.backup_state == BackupState.CREATED.value
+                            else "partial"
+                        )
                         copied.append(backup.name)
                     else:
                         result.status = "skipped"
+                        result.backup_state = BackupState.CREATED.value
                         skipped.append(backup.name)
                 except (Exception, TerminatingSignal) as e:
                     if not result.errors:
@@ -189,7 +278,10 @@ class BackupCopier:
                         f"Backup with name {backup.name} conflicts with backup {existing} "
                         "in target storage: their sanitized names are equal"
                     )
-                if backup.cloud_storage.requires_source_bucket:
+                if (
+                    backup.cloud_storage.requires_source_bucket
+                    and CopyScope.CLOUD_STORAGE in self._scopes
+                ):
                     self._get_target_cloud_storage()
             except Exception as e:
                 results[backup.name].add_error(e, "validation")
@@ -201,24 +293,50 @@ class BackupCopier:
     ) -> dict[str, str]:
         """Reserve unreadable target names without blocking independent backups."""
         names = {}
+        candidates = []
+        readable_names = []
         for name in self._target_layout.get_backup_names():
-            try:
-                backup = self._target_layout.get_backup(name, use_light_meta=True)
-                if backup is None:
-                    continue
-                if backup.name != name:
-                    raise ClickhouseBackupError(
-                        f'Target backup metadata name does not match "{name}"'
-                    )
-                names[backup.get_sanitized_name()] = name
-            except Exception as e:
-                if name not in results:
-                    results[name] = BackupCopyResult(name)
-                    self._report.backups.append(results[name])
-                results[name].add_error(e, "target_selection")
-                if not self._keep_going or is_broken_executor(e):
-                    raise
+            if self._target_layout.get_delete_pending(name) is not None:
                 names[sanitize_backup_name(name)] = name
+            else:
+                readable_names.append(name)
+        with ThreadExecPool(self._metadata_read_threads) as pool:
+            for name, read in read_metadata_in_batches(
+                self._target_layout,
+                readable_names,
+                pool=pool,
+                workers=self._metadata_read_threads,
+                use_light_meta=True,
+            ):
+                try:
+                    backup = read.result()
+                    if backup is None:
+                        continue
+                    if backup.name != name:
+                        raise ClickhouseBackupError(
+                            f'Target backup metadata name does not match "{name}"'
+                        )
+                    names[backup.get_sanitized_name()] = name
+                    if (
+                        self._target_deduplication is not None
+                        and self._target_deduplication.eligible(backup)
+                    ):
+                        candidates.append(backup)
+                except Exception as e:
+                    if name not in results:
+                        results[name] = BackupCopyResult(name)
+                        self._report.backups.append(results[name])
+                    results[name].add_error(e, "target_selection")
+                    if not self._keep_going or is_broken_executor(e):
+                        raise
+                    names[sanitize_backup_name(name)] = name
+        if self._target_deduplication is not None:
+            self._target_deduplication.load(
+                candidates,
+                workers=self._target_config["multiprocessing"][
+                    "full_metadata_read_threads"
+                ],
+            )
         return names
 
     @contextmanager
@@ -231,7 +349,31 @@ class BackupCopier:
                 raise
             result.add_error(e, "planning", source=source)
 
-    def _validate_configs(self) -> None:
+    def _validate_configs(self, command_start: datetime) -> None:
+        """Validate copy settings before selecting backups or writing objects."""
+        self._server_side_copy_mode = parse_server_side_copy_mode(
+            self._copy_config["server_side_copy_mode"]
+        )
+        if (
+            self._server_side_copy_mode == ServerSideCopyMode.STRICT
+            and self._encrypt_cloud_storage_data
+        ):
+            raise ConfigurationError(
+                "Strict server-side copy is incompatible with copy.cloud_storage.encrypt_data"
+            )
+        self._scopes = parse_copy_scopes(self._copy_config["scopes"])
+        if not isinstance(self._copy_config["only_with_data"], bool):
+            raise ConfigurationError("copy.only_with_data must be a boolean")
+        cutoff = copy_deduplication_cutoff(self._copy_config, command_start)
+        self._target_deduplication = (
+            CopyDeduplication(self._target_layout, cutoff, command_start)
+            if cutoff is not None
+            else None
+        )
+        if cutoff is not None:
+            logging.info(
+                "Copy target deduplication window lower bound: {}", cutoff.isoformat()
+            )
         if storage_id(self._storage) == storage_id(self._target_storage) and _key(
             self._config["backup"]["path_root"]
         ).rstrip("/") == _key(self._target_config["backup"]["path_root"]).rstrip("/"):
@@ -250,56 +392,109 @@ class BackupCopier:
                         f'Config option "{section}.{key}" must be the same for source and target storages'
                     )
 
+        if (
+            self._cloud_storage_data_encryption is not None
+            and not self._cloud_storage_data_encryption.get("key")
+        ):
+            raise ConfigurationError(
+                "cloud_storage.data_encryption.key or encryption.key is required "
+                "when copy.cloud_storage.encrypt_data is enabled"
+            )
+
+        if self._cloud_storage_data_encryption is not None:
+            get_encryption(
+                self._cloud_storage_data_encryption["type"],
+                self._cloud_storage_data_encryption,
+            )
+
     def _select_backups(
         self, backup_names: Sequence[str] | None
     ) -> list[BackupMetadata]:
+        """
+        Select backups to copy, older ones first.
+
+        Without the scope "files", copies in target storage are selected instead, so the source
+        storage is not accessed: the specified ones, or all copies with the scope "cloud_storage"
+        not completed, or the newest of them for "LAST".
+        """
+        staged = CopyScope.FILES not in self._scopes
+        layout = self._target_layout if staged else self._layout
+        last = staged and list(backup_names or ()) == ["LAST"]
+        if last:
+            backup_names = None
         backups = []
         names = (
-            sorted(self._layout.get_backup_names())
-            if backup_names is None
-            else backup_names
+            sorted(layout.get_backup_names()) if backup_names is None else backup_names
         )
+        if backup_names is None:
+            names = [name for name in names if layout.get_delete_pending(name) is None]
         results = {name: BackupCopyResult(name) for name in dict.fromkeys(names)}
         self._report.backups.extend(results.values())
-        for name, result in results.items():
-            try:
-                backup = self._layout.get_backup(name, use_light_meta=True)
-                if backup_names is None and (
-                    not backup or backup.state != BackupState.CREATED
-                ):
-                    self._report.backups.remove(result)
-                    continue
-                if not backup:
-                    raise BackupNotFound(name)
-                _check_backup_state(backup)
-                if backup.name != name:
-                    raise ClickhouseBackupError(
-                        f'Backup metadata name does not match "{name}"'
-                    )
-                backups.append(backup)
-            except Exception as e:
-                result.add_error(e, "selection")
-                if not self._keep_going or is_broken_executor(e):
-                    raise
+        with ThreadExecPool(self._metadata_read_threads) as pool:
+            for name, read in read_metadata_in_batches(
+                layout,
+                results,
+                pool=pool,
+                workers=self._metadata_read_threads,
+                use_light_meta=True,
+            ):
+                result = results[name]
+                try:
+                    backup = read.result()
+                    if backup_names is None and (
+                        not backup
+                        or (
+                            not _ready_for_cloud_storage_copy(backup)
+                            if staged
+                            else backup.state != BackupState.CREATED
+                        )
+                        or (self._copy_config["only_with_data"] and backup.is_empty())
+                    ):
+                        self._report.backups.remove(result)
+                        continue
+                    if not backup:
+                        raise (
+                            _files_scope_required(name)
+                            if staged
+                            else BackupNotFound(name)
+                        )
+                    if not staged:
+                        _check_backup_state(backup)
+                    if backup.name != name:
+                        raise ClickhouseBackupError(
+                            f'Backup metadata name does not match "{name}"'
+                        )
+                    backups.append(backup)
+                except Exception as e:
+                    result.add_error(e, "selection")
+                    if not self._keep_going or is_broken_executor(e):
+                        raise
 
         # Older backups are copied first, so deduplicated data parts of newer backups
         # can be linked to the copies of older ones.
         backups.sort(key=lambda backup: backup.start_time)
+        if last:
+            backups = backups[-1:]
         self._report.backups[:] = [results[backup.name] for backup in backups] + [
             result for result in self._report.backups if result.status == "failed"
         ]
         return backups
 
+    # pylint: disable=too-many-branches
     def _copy_backup(self, backup_name: str, result: BackupCopyResult) -> bool:
         """
         Copy backup. Return False if the backup is already present in the target storage.
+
+        A scope that is not copied is planned only to check it once it is completed, so it needs
+        no settings or downloads before. Without data on object storage disks all scopes are planned,
+        and the scope "cloud_storage" is completed right away.
         """
         self._source_backup_files.clear()
         self._target_backups.clear()
-        backup = self._layout.get_backup(backup_name)
-        if not backup:
-            raise BackupNotFound(backup_name)
-        _check_backup_state(backup)
+        target_backup = self._target_layout.get_backup(
+            backup_name, use_light_meta=CopyScope.FILES in self._scopes
+        )
+        backup = self._get_source_backup(backup_name, target_backup)
         if backup.name != backup_name:
             raise ClickhouseBackupError(
                 f'Backup metadata name does not match "{backup_name}"'
@@ -307,8 +502,14 @@ class BackupCopier:
         _validate_relative_key(backup.name)
         for disk_name in backup.cloud_storage.disks:
             _validate_relative_key(disk_name)
-
-        target_backup = self._target_layout.get_backup(backup_name, use_light_meta=True)
+        target_data_encryption = (
+            get_cloud_storage_data_encryption_metadata(
+                self._cloud_storage_data_encryption
+            )
+            if self._cloud_storage_data_encryption and backup.cloud_storage.enabled
+            else backup.cloud_storage.data_encryption
+        )
+        target_meta = self._make_target_metadata(backup)
         if target_backup:
             if (
                 target_backup.start_time != backup.start_time
@@ -318,79 +519,274 @@ class BackupCopier:
                     f"Backup {backup_name} already exists in target storage and it is not a copy of the source backup"
                 )
             if target_backup.state == BackupState.CREATED:
-                if any(part.link for part in backup.get_parts()):
+                if (
+                    target_backup.cloud_storage.data_encryption
+                    != target_data_encryption
+                ):
+                    result.skip_reason = (
+                        "already present in target storage with different cloud "
+                        "storage data encryption"
+                    )
+                    logging.warning(
+                        "Backup {} {}, skipping it",
+                        backup.name,
+                        result.skip_reason,
+                    )
+                if any(
+                    part.link
+                    and (
+                        self._target_deduplication is None
+                        or part.disk_name in backup.cloud_storage.disks
+                    )
+                    for part in backup.get_parts()
+                ):
                     existing = self._target_layout.get_backup(backup_name)
                     if existing:
                         self._remember_materialized_parts(backup, existing)
-                logging.info(
-                    "Backup {} is already present in target storage, skipping it",
-                    backup_name,
-                )
+                if result.skip_reason is None:
+                    logging.info(
+                        "Backup {} is already present in target storage, skipping it",
+                        backup_name,
+                    )
                 return False
             logging.info(
-                'Restarting copying of all objects of backup {} (state in target storage: "{}")',
+                (
+                    'Resuming copying of backup {} (state in target storage: "{}")'
+                    if self._copy_config["resume"]
+                    else 'Restarting copying of all objects of backup {} (state in target storage: "{}")'
+                ),
                 backup_name,
                 target_backup.state.value,
             )
         else:
             logging.info("Copying backup {}", backup_name)
 
-        target_meta = self._make_target_metadata(backup)
-        plan = _CopyPlan()
-        self._plan_backup_files(backup, plan, result)
-        self._plan_linked_parts(backup, target_meta, plan, result)
-        if backup.cloud_storage.data_copied:
-            self._plan_full_cloud_storage_objects(backup, target_meta, plan, result)
-        elif backup.cloud_storage.enabled:
-            with self._planning_step(result, backup.name):
-                self._plan_cloud_storage_objects(backup, target_meta, plan, result)
+        if self._encrypt_cloud_storage_data:
+            if backup.cloud_storage.data_copied:
+                raise ClickhouseBackupError(
+                    f'Encrypting cloud storage data of backup "{backup.name}" created '
+                    "with cloud_storage.copy_data is not supported"
+                )
+            if backup.cloud_storage.data_encryption is not None:
+                raise ClickhouseBackupError(
+                    f'Cloud storage data of backup "{backup.name}" is already encrypted'
+                )
+
+        if self._target_deduplication is not None:
+            # A PARTIALLY_DELETED owner may be retried. If it fails, later backups
+            # must not reuse the old index entry after its state changes to FAILED.
+            self._target_deduplication.discard_backup(backup.name)
+        self._copy_context = CopyContext(
+            self._engine(self._target_storage),
+            self._target_layout.get_backup_path(backup.name),
+            backup,
+            data_encryption=target_data_encryption,
+        )
+        if target_backup and (
+            self._copy_config["resume"] or set(CopyScope) - set(self._scopes)
+        ):
+            self._copy_context.load()
+
+        previous = dict(target_backup.copy_scopes) if target_backup else {}
+        plan: _CopyPlan = {scope: _ScopePlan() for scope in CopyScope}
+        planners = {
+            CopyScope.FILES: self._plan_files_scope,
+            CopyScope.CLOUD_STORAGE: self._plan_cloud_storage_scope,
+        }
+        for scope, planner in planners.items():
+            if (
+                scope in self._scopes
+                or previous.get(scope) == CopyScopeStatus.COMPLETED
+                or not backup.cloud_storage.requires_source_bucket
+            ):
+                plan[scope].planned = self._plan_scope(
+                    scope, result, partial(planner, backup, target_meta, plan[scope])
+                )
         try:
             self._validate_destinations(backup, plan)
         except Exception as e:
             result.add_error(e, "validation")
             raise
 
-        rewritten_paths = {
-            _key(path) for path, _ in plan.rewritten_cloud_storage_metadata
-        }
-        plan.entries = [
-            entry
-            for entry in plan.entries
-            if storage_id(entry.dst_storage) != storage_id(self._target_storage)
-            or _key(entry.dst_path) not in rewritten_paths
-        ]
-        result.objects_total = len(plan.entries) + len(
-            plan.rewritten_cloud_storage_metadata
+        result.objects_total = sum(plan[scope].count() for scope in self._scopes)
+        self._source_backup_files.clear()
+        self._transfer_backup(
+            backup,
+            target_meta,
+            target_data_encryption,
+            plan,
+            previous,
+            result,
         )
-        self._transfer_backup(backup, target_meta, plan, result)
-        logging.info("Backup {} is copied", backup_name)
         return True
 
+    def _get_source_backup(
+        self, backup_name: str, target_backup: BackupMetadata | None
+    ) -> BackupMetadata:
+        """
+        Return metadata of the source backup.
+
+        Without the scope "files", use the copy's full metadata, which retains the source
+        cloud storage location until the copy is published, so source storage is not accessed.
+        """
+        if (
+            target_backup is None
+            and self._target_layout.get_cloud_storage_backup(backup_name) is not None
+        ):
+            raise ClickhouseBackupError(
+                f"Backup {backup_name} has cloud data but no readable metadata; delete it before copying"
+            )
+        if CopyScope.FILES in self._scopes:
+            backup = self._layout.get_backup(backup_name)
+            if not backup:
+                raise BackupNotFound(backup_name)
+            _check_backup_state(backup)
+            return backup
+        if target_backup and target_backup.state == BackupState.CREATED:
+            return target_backup
+        if not target_backup or not _files_copied(target_backup):
+            raise _files_scope_required(backup_name)
+        return target_backup
+
+    def _plan_scope(
+        self, scope: CopyScope, result: BackupCopyResult, planner: Callable
+    ) -> bool:
+        """
+        Plan objects of the copy scope. Return False if planning failed.
+
+        Failures of a scope that is not copied by this run are only logged:
+        the scope is not confirmed then, so the copy is not published.
+        """
+        if scope in self._scopes:
+            errors = len(result.errors)
+            planner(result)
+            return len(result.errors) == errors
+        scope_result = BackupCopyResult(result.name)
+        try:
+            planner(scope_result)
+        except Exception as e:
+            if is_broken_executor(e):
+                raise
+            scope_result.add_error(e, "planning")
+        for error in scope_result.errors:
+            logging.warning(
+                "Failed to check scope {} of copying of backup {}: {}",
+                scope.value,
+                result.name,
+                error["message"],
+            )
+        return not scope_result.errors
+
+    def _plan_files_scope(
+        self,
+        backup: BackupMetadata,
+        target_meta: BackupMetadata,
+        plan: _ScopePlan,
+        result: BackupCopyResult,
+    ) -> None:
+        """
+        Plan copying of files of the backup, its deduplicated data parts and data of object
+        storage disks copied into the backup.
+
+        Without the scope "files", objects saved by the run that copied it are checked instead,
+        so the source storage is not accessed.
+        """
+        if CopyScope.FILES not in self._scopes:
+            assert self._copy_context is not None
+            plan.entries = self._copy_context.load_manifest(CopyScope.FILES)
+            return
+        self._plan_backup_files(backup, plan, result)
+        self._plan_linked_parts(backup, target_meta, plan, result)
+        if backup.cloud_storage.data_copied:
+            self._plan_full_cloud_storage_objects(backup, target_meta, plan, result)
+
+    def _plan_cloud_storage_scope(
+        self,
+        backup: BackupMetadata,
+        _target_meta: BackupMetadata,
+        plan: _ScopePlan,
+        result: BackupCopyResult,
+    ) -> None:
+        """Plan copying of data of object storage disks kept in their buckets."""
+        if backup.cloud_storage.requires_source_bucket:
+            with self._planning_step(result, backup.name):
+                self._plan_cloud_storage_objects(backup, plan, result)
+
+    # pylint: disable=too-many-arguments,too-many-positional-arguments
     def _transfer_backup(
         self,
         backup: BackupMetadata,
         target_meta: BackupMetadata,
+        target_data_encryption: dict | None,
         plan: _CopyPlan,
+        previous: dict[CopyScope, CopyScopeStatus],
         result: BackupCopyResult,
     ) -> None:
-        """Publish CREATED only after transfer succeeds, preserving failures during cleanup."""
+        """
+        Copy selected scopes, publishing CREATED only when every scope is confirmed.
+
+        Statuses of scopes saved by previous runs are not trusted. Failures during cleanup
+        are preserved.
+        """
+        if backup.cloud_storage.enabled:
+            self._target_layout.claim_cloud_storage(backup.name)
+        files = plan[CopyScope.FILES].entries
+        self._leave_out_confirmed_objects(backup, plan, result)
+        statuses = self._scope_statuses(backup.name, plan, previous)
         stage = "metadata"
         try:
-            self._target_layout.upload_backup_metadata(target_meta)
+            self._upload_target_metadata(target_meta, result, statuses)
+            if (
+                CopyScope.FILES in self._scopes
+                and plan[CopyScope.FILES].planned
+                and backup.cloud_storage.requires_source_bucket
+            ):
+                assert self._copy_context is not None
+                self._copy_context.save_manifest(CopyScope.FILES, files)
             stage = "copy"
-            self._copy_objects(backup, plan, result)
+            for scope in self._scopes:
+                statuses[scope] = CopyScopeStatus.FAILED
+                if self._copy_scope(
+                    scope,
+                    backup,
+                    plan[scope],
+                    result,
+                    previous.get(scope) == CopyScopeStatus.FAILED,
+                ):
+                    statuses[scope] = CopyScopeStatus.COMPLETED
+            if result.errors:
+                raise ClickhouseBackupError(
+                    f"Failed to copy backup {backup.name}: {len(result.errors)} error(s), "
+                    f"{result.objects_failed} object transfer(s) failed"
+                )
             stage = "metadata"
-            target_meta.state = BackupState.CREATED
-            self._target_layout.upload_backup_metadata(target_meta)
+            if all(status == CopyScopeStatus.COMPLETED for status in statuses.values()):
+                target_meta.cloud_storage.data_encryption = target_data_encryption
+                target_meta.state = BackupState.CREATED
+            self._upload_target_metadata(target_meta, result, statuses)
             self._remember_materialized_parts(backup, target_meta)
+            if self._target_deduplication is not None:
+                self._target_deduplication.add_backup(target_meta, published=True)
+            if target_meta.state == BackupState.CREATED:
+                logging.info("Backup {} is copied", backup.name)
+            else:
+                logging.info(
+                    "Scopes {} of backup {} are copied, other scopes are pending",
+                    ", ".join(scope.value for scope in self._scopes),
+                    backup.name,
+                )
         except (Exception, TerminatingSignal) as e:
             logging.critical("Copying of backup {} failed", backup.name, exc_info=True)
             if stage == "metadata" or not result.errors:
                 result.add_error(e, stage)
             target_meta.state = BackupState.FAILED
+            target_meta.cloud_storage.source = backup.cloud_storage.source
+            target_meta.cloud_storage.data_encryption = (
+                backup.cloud_storage.data_encryption
+            )
             target_meta.exception = result.errors[0]["message"]
             try:
-                self._target_layout.upload_backup_metadata(target_meta)
+                self._upload_target_metadata(target_meta, result, statuses)
             except (Exception, TerminatingSignal) as metadata_error:
                 logging.exception(
                     "Saving FAILED metadata for backup {} failed", backup.name
@@ -404,8 +800,70 @@ class BackupCopier:
         finally:
             self._target_backups.pop(backup.name, None)
 
-    def _validate_destinations(self, backup: BackupMetadata, plan: _CopyPlan) -> None:
-        """Check the entire plan before publishing metadata or copying any objects."""
+    def _upload_target_metadata(
+        self,
+        target_meta: BackupMetadata,
+        result: BackupCopyResult,
+        statuses: dict[CopyScope, CopyScopeStatus],
+    ) -> None:
+        """Save scope statuses, switching the cloud source only for a completed copy."""
+        if (
+            target_meta.state == BackupState.CREATED
+            and target_meta.cloud_storage.requires_source_bucket
+        ):
+            storage, path = self._get_target_cloud_storage()
+            target_meta.cloud_storage.source = {
+                "endpoint_url": storage["credentials"]["endpoint_url"],
+                "bucket": storage["credentials"]["bucket"],
+                "path": os.path.join(path, target_meta.name),
+            }
+        scopes = {scope.value: status.value for scope, status in statuses.items()}
+        target_meta.copy_scopes = dict(statuses)
+        target_meta.copy_updated_at = now()
+        result.scopes = dict(scopes)
+        self._target_layout.upload_backup_metadata(target_meta)
+        result.backup_state = target_meta.state.value
+
+    def _scope_statuses(
+        self,
+        backup_name: str,
+        plan: _CopyPlan,
+        previous: dict[CopyScope, CopyScopeStatus],
+    ) -> dict[CopyScope, CopyScopeStatus]:
+        """
+        Return statuses of scopes before copying.
+
+        A scope that is not copied by this run is completed only if all its objects are confirmed.
+        """
+        statuses = {}
+        for scope in CopyScope:
+            if scope in self._scopes:
+                statuses[scope] = CopyScopeStatus.PENDING
+            elif plan[scope].planned and not plan[scope].count():
+                statuses[scope] = CopyScopeStatus.COMPLETED
+            else:
+                if previous.get(scope) == CopyScopeStatus.COMPLETED:
+                    logging.warning(
+                        "Completed scope {} of backup {} is not confirmed by the copy context "
+                        "and target storage, the scope must be copied again",
+                        scope.value,
+                        backup_name,
+                    )
+                statuses[scope] = (
+                    CopyScopeStatus.FAILED
+                    if previous.get(scope) == CopyScopeStatus.FAILED
+                    else CopyScopeStatus.PENDING
+                )
+        return statuses
+
+    def _target_prefixes(
+        self, backup: BackupMetadata, plan: _CopyPlan
+    ) -> list[tuple[dict, str]]:
+        """
+        Return storages and paths that hold all planned objects of the copied backup.
+
+        The target location of object storage data is needed only when its objects are planned.
+        """
         prefixes = [
             (self._target_storage, self._target_layout.get_backup_path(backup.name)),
             (
@@ -413,19 +871,22 @@ class BackupCopier:
                 self._target_layout.get_cloud_storage_path(backup.name),
             ),
         ]
-        if backup.cloud_storage.requires_source_bucket:
+        if (
+            backup.cloud_storage.requires_source_bucket
+            and plan[CopyScope.CLOUD_STORAGE].entries
+        ):
             storage, path = self._get_target_cloud_storage()
             prefixes.append((storage, os.path.join(path, backup.name)))
+        return prefixes
+
+    def _validate_destinations(self, backup: BackupMetadata, plan: _CopyPlan) -> None:
+        """Check the entire plan before publishing metadata or copying any objects."""
+        prefixes = self._target_prefixes(backup, plan)
         for _, prefix in prefixes:
             _validate_relative_key(_key(prefix).rstrip("/"))
-        destinations = chain(
-            ((entry.dst_storage, entry.dst_path) for entry in plan.entries),
-            (
-                (self._target_storage, path)
-                for path, _ in plan.rewritten_cloud_storage_metadata
-            ),
-        )
-        for storage, path in destinations:
+
+        def validate(storage: dict, path: str) -> None:
+            """Reject destinations outside the expected target prefixes."""
             key = _key(path)
             _validate_relative_key(key)
             if not any(
@@ -437,109 +898,184 @@ class BackupCopier:
                     f'Copy destination "{path}" is outside the target backup prefixes'
                 )
 
+        for scope_plan in plan.values():
+            continuation = None
+            while True:
+                batch, continuation = scope_plan.entries.read_batch(
+                    continuation, limit=128
+                )
+                for entry in batch:
+                    validate(entry.dst_storage, entry.dst_path)
+                if continuation is None:
+                    break
+            for path, _ in scope_plan.rewritten_cloud_storage_metadata:
+                validate(self._target_storage, path)
+
     def _make_target_metadata(self, backup: BackupMetadata) -> BackupMetadata:
+        """Prepare creating metadata, preserving the original source of a staged copy."""
         target_meta = copy.deepcopy(backup)
         # DEPRECATED: ``path`` is populated for backward compatibility
         # with older ch-backup versions and is not used by new code.
         target_meta.path = self._target_layout.get_backup_path(backup.name)
-        target_meta.copied_from = {
-            "endpoint_url": self._storage["credentials"]["endpoint_url"],
-            "bucket": self._storage["credentials"]["bucket"],
-            "path_root": self._config["backup"]["path_root"],
-        }
+        if CopyScope.FILES in self._scopes:
+            target_meta.copied_from = {
+                "endpoint_url": self._storage["credentials"]["endpoint_url"],
+                "bucket": self._storage["credentials"]["bucket"],
+                "path_root": self._config["backup"]["path_root"],
+            }
         target_meta.state = BackupState.CREATING
         target_meta.exception = None
         return target_meta
 
     def _plan_backup_files(
-        self, backup: BackupMetadata, plan: _CopyPlan, result: BackupCopyResult
+        self, backup: BackupMetadata, plan: _ScopePlan, result: BackupCopyResult
     ) -> None:
         """
         Plan copying of all files from the backup directory except metadata files.
+
+        Disk metadata is planned by the scope "cloud_storage". With data in buckets of object
+        storage disks, original disk metadata is also copied into the copy
+        context, so the scope "cloud_storage" can be copied without the source storage.
         """
-        exclude = {BACKUP_META_FNAME, BACKUP_LIGHT_META_FNAME}
+        exclude = {
+            BACKUP_META_FNAME,
+            BACKUP_LIGHT_META_FNAME,
+            COPY_CONTEXT_DIR,
+            "delete_pending.json",
+            "cloud_storage_info.json",
+            ".cloud_storage_owner.json",
+        }
         if backup.cloud_storage.data_copied:
             # Plan these from disk metadata, including objects held by older backups.
             exclude.update({"disks", "cloud_storage"})
+        elif backup.cloud_storage.enabled:
+            exclude.add("disks")
         with self._planning_step(result, backup.name):
             self._plan_directory(backup.name, plan, result, exclude=exclude)
+            if backup.cloud_storage.requires_source_bucket:
+                self._plan_source_metadata(backup, plan, result)
 
-        sanitized_name = backup.get_sanitized_name()
-        if (
-            backup.cloud_storage.enabled
-            and not backup.cloud_storage.data_copied
-            and sanitized_name != backup.name
-        ):
-            # Cloud storage metadata is stored in the directory named after sanitized backup name.
-            relative_path = os.path.join(sanitized_name, "disks")
-            with self._planning_step(result, relative_path):
-                self._plan_directory(relative_path, plan, result)
+    def _plan_source_metadata(
+        self, backup: BackupMetadata, plan: _ScopePlan, result: BackupCopyResult
+    ) -> None:
+        """Plan copying of original disk metadata into the copy context."""
+        dst_dir = self._target_layout.get_backup_path(
+            os.path.join(backup.name, source_dir(backup))
+        )
+        name = backup.get_sanitized_name()
+        src_dir = _key(self._layout.get_backup_path(name)).rstrip("/")
+        files = self._get_source_backup_files(name)
+        position = 0
+        while batch := files.read_batch(after=position, limit=128):
+            for position, file_path, blob in batch:
+                size = int(blob)
+                if not file_path.startswith("disks/") or file_path.endswith("/"):
+                    continue
+                with self._planning_step(result, f"{src_dir}/{file_path}"):
+                    _validate_relative_key(file_path)
+                    plan.entries.append(
+                        CopyEntry(
+                            self._storage,
+                            self._target_storage,
+                            f"{src_dir}/{file_path}",
+                            os.path.join(dst_dir, file_path),
+                            size,
+                            size,
+                        )
+                    )
 
     def _plan_directory(
         self,
         relative_path: str,
-        plan: _CopyPlan,
+        plan: _ScopePlan,
         result: BackupCopyResult,
-        exclude: set[str] | None = None,
+        exclude: set[str],
     ) -> None:
+        """Plan source files outside excluded top-level paths."""
         src_dir = _key(self._layout.get_backup_path(relative_path)).rstrip("/")
         dst_dir = self._target_layout.get_backup_path(relative_path)
 
-        for path, size in self._list(self._storage, src_dir).items():
-            # S3 consoles may create a zero-byte object for the directory itself.
-            if path == src_dir + "/" and size == 0:
-                continue
-            file_path = path[len(src_dir) + 1 :]
-            if exclude and file_path.split("/", 1)[0] in exclude:
-                continue
-            with self._planning_step(result, path):
-                _validate_relative_key(file_path)
-                plan.entries.append(
-                    CopyEntry(
-                        self._storage,
-                        self._target_storage,
-                        path,
-                        os.path.join(dst_dir, file_path),
-                        size,
+        files = self._get_source_backup_files(relative_path)
+        position = 0
+        while batch := files.read_batch(after=position, limit=128):
+            for position, file_path, blob in batch:
+                size = int(blob)
+                # S3 consoles may create a zero-byte object for the directory itself.
+                if not file_path and size == 0:
+                    continue
+                if file_path.split("/", 1)[0] in exclude:
+                    continue
+                path = f"{src_dir}/{file_path}"
+                with self._planning_step(result, path):
+                    _validate_relative_key(file_path)
+                    plan.entries.append(
+                        CopyEntry(
+                            self._storage,
+                            self._target_storage,
+                            path,
+                            os.path.join(dst_dir, file_path),
+                            size,
+                            size,
+                        )
                     )
-                )
 
     def _plan_linked_parts(
         self,
         backup: BackupMetadata,
         target_meta: BackupMetadata,
-        plan: _CopyPlan,
+        plan: _ScopePlan,
         result: BackupCopyResult,
     ) -> None:
         """
-        Plan copying of deduplicated data parts stored in other backups.
+        Resolve local parts against the independent target window when enabled.
 
-        Links are kept if the backup containing the part is already present in the target storage.
-        Otherwise, data parts are copied into the backup directory.
+        Without a target window, keep usable source links. Materialize unresolved links
+        from source and omit files of newly linked own parts from the copy plan.
         """
+        excluded_dirs = set()
         for part in backup.get_parts():
             if part.disk_name in backup.cloud_storage.disks:
                 # Cloud storage links refer to disk metadata, not local part tarballs.
                 continue
-            if not part.link:
-                continue
             with self._planning_step(
-                result, f"{part.link}/{part.database}/{part.table}/{part.name}"
+                result,
+                f"{part.link or backup.name}/{part.database}/{part.table}/{part.name}",
             ):
-                self._plan_linked_part(backup, target_meta, plan, part, result)
+                if self._target_deduplication is not None:
+                    owner = self._target_deduplication.find_part(part, backup.name)
+                    if owner is not None:
+                        target_meta.link_part(part, owner.backup_name, owner.part_name)
+                        if part.link is None:
+                            excluded_dirs.update(get_data_part_relative_dirs(part))
+                        continue
+                if part.link is not None:
+                    self._plan_linked_part(backup, target_meta, plan, part, result)
+        if excluded_dirs:
+            # Drop only the matched local part directories, preserving schema, detached and cloud data.
+            prefix = _key(self._layout.get_backup_path(backup.name)).rstrip("/") + "/"
+            plan.entries = plan.entries.filtered(
+                lambda entry: not entry.src_path.startswith(prefix)
+                or not any(
+                    str(parent) in excluded_dirs
+                    for parent in PurePosixPath(
+                        entry.src_path.removeprefix(prefix)
+                    ).parents
+                )
+            )
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     def _plan_linked_part(
         self,
         backup: BackupMetadata,
         target_meta: BackupMetadata,
-        plan: _CopyPlan,
+        plan: _ScopePlan,
         part: PartMetadata,
         result: BackupCopyResult,
     ) -> None:
         """Materialize one local part when its target link is unusable."""
-        if self._is_link_valid_in_target(part) or self._reuse_materialized_part(
-            part, target_meta
+        if self._target_deduplication is None and (
+            self._is_link_valid_in_target(part, local=True)
+            or self._reuse_materialized_part(part, target_meta)
         ):
             return
         assert part.link
@@ -548,7 +1084,9 @@ class BackupCopier:
         file_names = get_data_part_file_names(part)
         part_dirs = get_data_part_relative_dirs(part)
         for part_dir in part_dirs:
-            if all(os.path.join(part_dir, f) in source_files for f in file_names):
+            if all(
+                source_files.contains(os.path.join(part_dir, f)) for f in file_names
+            ):
                 break
         else:
             if not self._keep_going:
@@ -561,7 +1099,7 @@ class BackupCopier:
             part_dir = max(
                 part_dirs,
                 key=lambda path: sum(
-                    os.path.join(path, f) in source_files for f in file_names
+                    source_files.contains(os.path.join(path, f)) for f in file_names
                 ),
             )
 
@@ -585,7 +1123,8 @@ class BackupCopier:
                 result, os.path.join(part.link, part_dir, file_name)
             ):
                 _validate_relative_key(file_name)
-                if os.path.join(part_dir, file_name) not in source_files:
+                size = _listed_size(source_files, os.path.join(part_dir, file_name))
+                if size is None:
                     raise ClickhouseBackupError(
                         f'File "{file_name}" of part "{part.name}" of table '
                         f'"{part.database}"."{part.table}" deduplicated with backup '
@@ -598,7 +1137,8 @@ class BackupCopier:
                         self._target_storage,
                         os.path.join(src_dir, file_name),
                         os.path.join(dst_dir, dst_file_name),
-                        source_files[os.path.join(part_dir, file_name)],
+                        size,
+                        size,
                     )
                 )
         if len(result.errors) == error_count:
@@ -626,6 +1166,11 @@ class BackupCopier:
         for part in source.get_parts():
             if not part.link:
                 continue
+            if (
+                self._target_deduplication is not None
+                and part.disk_name not in source.cloud_storage.disks
+            ):
+                continue
             if part.disk_name in source.cloud_storage.disks and not (
                 source.cloud_storage.data_copied and target.cloud_storage.data_copied
             ):
@@ -650,18 +1195,20 @@ class BackupCopier:
         if owner is None:
             return False
         name, part_name = owner
-        raw_part = target.get_table(part.database, part.table).raw_metadata["parts"][
-            part.name
-        ]
-        raw_part["link"] = name
-        raw_part["link_part_name"] = part_name if part_name != part.name else None
+        target.link_part(part, name, part_name)
         return True
 
-    def _is_link_valid_in_target(self, part: PartMetadata) -> bool:
+    def _is_link_valid_in_target(self, part: PartMetadata, local: bool = False) -> bool:
         """
         Check that the backup containing deduplicated data part is present in target storage.
+
+        A local part is also valid in a copy that is not completed once files of the part are
+        stored there, as deduplication of new backups accepts: they are copied by its scope
+        "files", and delete and purge keep parts referenced by other backups.
         """
         assert part.link
+        if self._target_layout.get_delete_pending(part.link) is not None:
+            return False
         if part.link not in self._target_backups:
             try:
                 self._target_backups[part.link] = self._target_layout.get_backup(
@@ -678,14 +1225,14 @@ class BackupCopier:
                 self._target_backups[part.link] = None
 
         target_backup = self._target_backups[part.link]
-        if (
-            not target_backup
-            or target_backup.name != part.link
-            or target_backup.state
-            not in (
-                BackupState.CREATED,
-                BackupState.PARTIALLY_DELETED,
-            )
+        if not target_backup or target_backup.name != part.link:
+            return False
+        complete = target_backup.state in (
+            BackupState.CREATED,
+            BackupState.PARTIALLY_DELETED,
+        )
+        if not complete and not (
+            local and target_backup.state in (BackupState.CREATING, BackupState.FAILED)
         ):
             return False
 
@@ -696,18 +1243,45 @@ class BackupCopier:
             target_part
             and not target_part.link
             and target_part.checksum == part.checksum
+            and (
+                complete
+                or _part_data_exists(
+                    self._target_layout,
+                    target_backup.name,
+                    target_part,
+                    False,
+                    {},
+                    self._target_table_files,
+                )
+            )
         )
 
-    def _get_source_backup_files(self, backup_name: str) -> dict[str, int]:
+    def _get_source_backup_files(
+        self,
+        backup_name: str,
+        layout: BackupLayout | None = None,
+        storage: dict | None = None,
+    ) -> CopyIndex:
         """
         Return sizes of files of the backup in source storage keyed by path relative to backup directory.
+
+        Files of another layout and storage, such as source metadata in the copy context, are
+        listed the same way.
         """
         if backup_name not in self._source_backup_files:
-            backup_dir = _key(self._layout.get_backup_path(backup_name)).rstrip("/")
-            self._source_backup_files[backup_name] = {
-                path[len(backup_dir) + 1 :]: size
-                for path, size in self._list(self._storage, backup_dir).items()
-            }
+            layout = layout or self._layout
+            backup_dir = _key(layout.get_backup_path(backup_name)).rstrip("/")
+            files = CopyIndex()
+            continuation = None
+            while True:
+                page, continuation = self._engine(
+                    storage or self._storage
+                ).read_listing_page(backup_dir, continuation)
+                for path, size in page:
+                    files.put(path[len(backup_dir) + 1 :], str(size).encode("ascii"))
+                if continuation is None:
+                    break
+            self._source_backup_files[backup_name] = files
         return self._source_backup_files[backup_name]
 
     # pylint: disable=too-many-locals
@@ -715,7 +1289,7 @@ class BackupCopier:
         self,
         backup: BackupMetadata,
         target_meta: BackupMetadata,
-        plan: _CopyPlan,
+        plan: _ScopePlan,
         result: BackupCopyResult,
     ) -> None:
         """
@@ -724,7 +1298,7 @@ class BackupCopier:
         Materialize linked parts whose owning backup is absent at the destination.
         Each disk keeps its own object prefix, as expected by full-backup restore.
         """
-        entries: dict[str, CopyEntry] = {}
+        entries: EntryIndex = EntryIndex()
         for table in backup.get_tables():
             for disk_name in backup.cloud_storage.disks:
                 parts = [p for p in table.get_parts() if p.disk_name == disk_name]
@@ -748,7 +1322,7 @@ class BackupCopier:
                         entries,
                         result,
                     )
-                    if files:
+                    if files.count_files():
                         extension = (
                             ".tar.gz" if backup.cloud_storage.compressed else ".tar"
                         )
@@ -760,9 +1334,9 @@ class BackupCopier:
                             quote(table.name, safe="") + extension,
                         )
                         plan.rewritten_cloud_storage_metadata.append(
-                            (remote_path, files)
+                            _RewrittenTarball(remote_path, files)
                         )
-        plan.entries.extend(entries.values())
+        plan.entries.extend_index(entries)
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
     def _full_cloud_storage_metadata(
@@ -773,9 +1347,10 @@ class BackupCopier:
         disk_name: str,
         parts: list[PartMetadata],
         dst_prefix: str,
-        entries: dict[str, CopyEntry],
+        entries: EntryIndex,
         copy_result: BackupCopyResult,
-    ) -> list[tuple[str, bytes]]:
+    ) -> TemporaryMetadataArchive:
+        """Rewrite metadata and plan objects from each owning backup."""
         sources: dict[str, list[PartMetadata]] = {}
         for part in parts:
             if part.link and self._is_link_valid_in_target(part):
@@ -786,74 +1361,102 @@ class BackupCopier:
                 continue
             sources.setdefault(part.link or backup.name, []).append(part)
 
-        files = []
-        for source_name, source_parts in sources.items():
-            with self._planning_step(copy_result, source_name):
-                source = (
-                    backup
-                    if source_name == backup.name
-                    else self._layout.get_backup(source_name)
-                )
-                if source is None or not source.cloud_storage.data_copied:
-                    raise ClickhouseBackupError(
-                        f'Backup "{source_name}" holding cloud storage data is missing or holds no copied data'
-                    )
-                src_prefix = _key(
-                    self._layout.get_cloud_storage_data_path(source_name, disk_name)
-                )
-                names = {part.deduplicated_part_name: part for part in source_parts}
-                found = set()
-                for remote_path in self._layout.get_cloud_storage_metadata_remote_paths(
-                    source.get_sanitized_name(),
-                    disk_name,
-                    source.cloud_storage.compressed,
-                    [table],
-                ):
-                    with self._planning_step(copy_result, remote_path):
-                        metadata_files = self._layout.get_cloud_storage_metadata_files(
-                            source, remote_path
-                        )
-                        for file_name, data in metadata_files:
-                            with self._planning_step(
-                                copy_result, f"{remote_path}:{file_name}"
-                            ):
-                                components = file_name.split("/")
-                                # A part may contain projection subdirectories; match its directory
-                                # anywhere above the file rather than just its immediate parent.
-                                index = next(
-                                    (
-                                        i
-                                        for i, name in enumerate(components[:-1])
-                                        if name in names
-                                    ),
-                                    None,
-                                )
-                                if index is None:
-                                    continue
-                                part = names[components[index]]
-                                found.add(part.name)
-                                components[index] = part.name
-                                data = self._plan_metadata_objects(
-                                    data,
-                                    file_name,
-                                    remote_path,
-                                    self._storage,
-                                    src_prefix,
-                                    self._target_storage,
-                                    dst_prefix,
-                                    entries,
-                                    copy_result,
-                                )
-                                files.append(("/".join(components), data))
-                for part in source_parts:
-                    with self._planning_step(copy_result, f"{source_name}/{part.name}"):
-                        if part.name not in found:
-                            raise ClickhouseBackupError(
-                                f'Metadata of cloud storage part "{part.name}" is missing in backup "{source_name}"'
+        with closing(MetadataArchiveWriter()) as writer:
+            for source_name, source_parts in sources.items():
+                with self._planning_step(copy_result, source_name):
+                    source: BackupMetadata | CloudStorageBackup | None = backup
+                    if source_name != backup.name:
+                        try:
+                            source = self._layout.get_backup(
+                                source_name, allow_pending=True
                             )
-                        if part.link:
-                            target_meta.unlink_part(part)
-        return files
+                        except (StorageError, S3RetryingError):
+                            source = None
+                        if source is None:
+                            source = self._layout.get_cloud_storage_backup(source_name)
+                    if (
+                        isinstance(source, CloudStorageBackup)
+                        and disk_name not in source.cloud_storage.disks
+                    ):
+                        raise ClickhouseBackupError(
+                            f"Missing cloud disk {disk_name} in backup {source_name}"
+                        )
+                    if source is None or not source.cloud_storage.data_copied:
+                        raise ClickhouseBackupError(
+                            f'Backup "{source_name}" holding cloud storage data is missing or holds no copied data'
+                        )
+                    src_prefix = _key(
+                        self._layout.get_cloud_storage_data_path(source_name, disk_name)
+                    )
+                    names = {part.deduplicated_part_name: part for part in source_parts}
+                    found = set()
+                    for (
+                        remote_path
+                    ) in self._layout.get_cloud_storage_metadata_remote_paths(
+                        source.get_sanitized_name(),
+                        disk_name,
+                        source.cloud_storage.compressed,
+                        [table],
+                    ):
+                        with self._planning_step(copy_result, remote_path):
+                            metadata_files = (
+                                self._layout.download_cloud_storage_metadata_archive(
+                                    source, remote_path
+                                )
+                            )
+                            continuation = None
+                            while True:
+                                batch, continuation = metadata_files.read_batch(
+                                    continuation
+                                )
+                                for file_name, data in batch:
+                                    with self._planning_step(
+                                        copy_result, f"{remote_path}:{file_name}"
+                                    ):
+                                        components = file_name.split("/")
+                                        # A part may contain projection subdirectories; match its directory
+                                        # anywhere above the file rather than just its immediate parent.
+                                        index = next(
+                                            (
+                                                i
+                                                for i, name in enumerate(
+                                                    components[:-1]
+                                                )
+                                                if name in names
+                                            ),
+                                            None,
+                                        )
+                                        if index is None:
+                                            continue
+                                        part = names[components[index]]
+                                        found.add(part.name)
+                                        components[index] = part.name
+                                        data = self._plan_metadata_objects(
+                                            data,
+                                            file_name,
+                                            remote_path,
+                                            self._storage,
+                                            src_prefix,
+                                            self._target_storage,
+                                            dst_prefix,
+                                            entries,
+                                            copy_result,
+                                            source_data_encryption=source.cloud_storage.data_encryption,
+                                        )
+                                        writer.append(("/".join(components), data))
+                                if continuation is None:
+                                    break
+                    for part in source_parts:
+                        with self._planning_step(
+                            copy_result, f"{source_name}/{part.name}"
+                        ):
+                            if part.name not in found:
+                                raise ClickhouseBackupError(
+                                    f'Metadata of cloud storage part "{part.name}" is missing in backup "{source_name}"'
+                                )
+                            if part.link:
+                                target_meta.unlink_part(part)
+            return writer.finish()
 
     # pylint: disable=too-many-arguments,too-many-positional-arguments
     def _plan_metadata_objects(
@@ -865,11 +1468,13 @@ class BackupCopier:
         src_prefix: str | None,
         dst_storage: dict,
         dst_prefix: str,
-        entries: dict[str, CopyEntry],
+        entries: EntryIndex,
         result: BackupCopyResult,
         *,
+        source_data_encryption: dict | None = None,
         src_path_override: str | None = None,
     ) -> bytes:
+        """Plan referenced objects and rewrite their destination keys."""
         _validate_relative_key(file_name)
         if os.path.basename(file_name) == FROZEN_METADATA_FNAME:
             return data
@@ -884,6 +1489,12 @@ class BackupCopier:
                     dst_prefix,
                     obj,
                     metadata.full_object_keys,
+                    encrypt=self._encrypt_cloud_storage_data,
+                    data_encryption=(
+                        self._cloud_storage_data_encryption
+                        if self._encrypt_cloud_storage_data
+                        else source_data_encryption
+                    ),
                     src_path_override=src_path_override,
                 )
                 _add_cloud_storage_copy_entry(entries, entry)
@@ -900,8 +1511,7 @@ class BackupCopier:
     def _plan_cloud_storage_objects(
         self,
         backup: BackupMetadata,
-        target_meta: BackupMetadata,
-        plan: _CopyPlan,
+        plan: _ScopePlan,
         result: BackupCopyResult,
     ) -> None:
         """
@@ -910,67 +1520,96 @@ class BackupCopier:
         Objects are referenced from metadata files of frozen parts saved in the backup.
         Objects of the backup are copied under "<target path>/<backup name>/" keeping keys relative
         to the disk key prefix. Metadata files with full object keys are rewritten to reference
-        the copied objects.
+        the copied objects. Other disk metadata is copied as is from the copy context, where the
+        scope "files" copies it, unless it failed to be planned: it could overwrite rewritten disk
+        metadata uploaded by an earlier run. Without the scope "files", disk metadata is also read
+        from the copy context, so the source storage is not accessed.
         """
         target_storage, target_path = self._get_target_cloud_storage()
         dst_prefix = os.path.join(target_path, backup.name)
+        source_name = os.path.join(backup.name, source_dir(backup))
+        layout, storage, name = (
+            (self._layout, self._storage, backup.get_sanitized_name())
+            if CopyScope.FILES in self._scopes
+            else (self._target_layout, self._target_storage, source_name)
+        )
+        disks_dir = _key(os.path.join(layout.get_backup_path(name), "disks"))
+        source_disks_dir = os.path.join(
+            self._target_layout.get_backup_path(source_name), "disks"
+        )
+        dst_dir = os.path.join(
+            self._target_layout.get_cloud_storage_path(backup.name), "disks"
+        )
+        sizes = self._get_source_backup_files(name, layout, storage)
 
-        entries: dict[str, CopyEntry] = {}
+        entries: EntryIndex = EntryIndex()
         for disk_name in backup.cloud_storage.disks:
             with self._planning_step(result, disk_name):
                 src_storage, src_prefix, src_path_override = (
                     self._get_source_cloud_storage(backup, disk_name)
                 )
-                for remote_path in self._layout.get_cloud_storage_metadata_remote_paths(
-                    backup.get_sanitized_name(),
-                    disk_name,
-                    backup.cloud_storage.compressed,
-                    "all",
+                for remote_path in layout.get_cloud_storage_metadata_remote_paths(
+                    name, disk_name, backup.cloud_storage.compressed, "all"
                 ):
                     with self._planning_step(result, remote_path):
-                        files = self._layout.get_cloud_storage_metadata_files(
+                        errors = len(result.errors)
+                        relative_path = _key(remote_path)[len(disks_dir) + 1 :]
+                        dst_path = os.path.join(dst_dir, relative_path)
+                        source_files = layout.download_cloud_storage_metadata_archive(
                             backup, remote_path
                         )
-                        rewritten = False
-                        for i, (file_name, data) in enumerate(files):
-                            with self._planning_step(
-                                result, f"{remote_path}:{file_name}"
-                            ):
-                                rewritten_data = self._plan_metadata_objects(
-                                    data,
-                                    file_name,
-                                    remote_path,
-                                    src_storage,
-                                    src_prefix,
-                                    target_storage,
-                                    dst_prefix,
-                                    entries,
-                                    result,
-                                    src_path_override=src_path_override,
+                        with closing(MetadataArchiveWriter()) as writer:
+                            rewritten = False
+                            continuation = None
+                            while True:
+                                batch, continuation = source_files.read_batch(
+                                    continuation
                                 )
-                                if rewritten_data != data:
-                                    files[i] = (file_name, rewritten_data)
-                                    rewritten = True
+                                for file_name, data in batch:
+                                    rewritten_data = data
+                                    with self._planning_step(
+                                        result, f"{remote_path}:{file_name}"
+                                    ):
+                                        rewritten_data = self._plan_metadata_objects(
+                                            data,
+                                            file_name,
+                                            remote_path,
+                                            src_storage,
+                                            src_prefix,
+                                            target_storage,
+                                            dst_prefix,
+                                            entries,
+                                            result,
+                                            source_data_encryption=backup.cloud_storage.data_encryption,
+                                            src_path_override=src_path_override,
+                                        )
+                                        if rewritten_data != data:
+                                            rewritten = True
+                                    writer.append((file_name, rewritten_data))
+                                if continuation is None:
+                                    break
+                            files = writer.finish()
 
                         if rewritten:
                             plan.rewritten_cloud_storage_metadata.append(
-                                (self._get_target_path(remote_path), files)
+                                _RewrittenTarball(dst_path, files)
+                            )
+                        elif len(result.errors) == errors:
+                            size = _listed_size(sizes, f"disks/{relative_path}")
+                            if size is None:
+                                raise KeyError(f"disks/{relative_path}")
+                            plan.entries.append(
+                                CopyEntry(
+                                    self._target_storage,
+                                    self._target_storage,
+                                    os.path.join(source_disks_dir, relative_path),
+                                    dst_path,
+                                    size,
+                                    size,
+                                )
                             )
 
-        plan.entries.extend(entries.values())
-        target_meta.cloud_storage.source = {
-            "endpoint_url": target_storage["credentials"]["endpoint_url"],
-            "bucket": target_storage["credentials"]["bucket"],
-            "path": dst_prefix,
-        }
-
-    def _get_target_path(self, path: str) -> str:
-        """
-        Map path in source backup storage to the path in target backup storage.
-        """
-        src_root = _key(self._layout.get_backup_path("")).rstrip("/")
-        relative_path = _key(path)[len(src_root) + 1 :] if src_root else _key(path)
-        return self._target_layout.get_backup_path(relative_path)
+        plan.entries.extend_index(entries)
 
     def _get_target_cloud_storage(self) -> tuple[dict, str]:
         """
@@ -995,7 +1634,7 @@ class BackupCopier:
                 credentials["secret_access_key"],
             )
 
-        storage = _make_storage_config(
+        storage = make_storage_config(
             self._target_storage,
             endpoint_url=conf.get("endpoint_url") or credentials["endpoint_url"],
             bucket=conf["bucket"],
@@ -1060,7 +1699,7 @@ class BackupCopier:
                 self._storage["credentials"]["secret_access_key"],
             )
 
-        storage = _make_storage_config(
+        storage = make_storage_config(
             self._storage,
             endpoint_url=endpoint_url,
             bucket=bucket,
@@ -1088,23 +1727,7 @@ class BackupCopier:
         Return endpoint URL, bucket and key prefix of the object storage disk from ClickHouse config.
         Support path-style and S3 virtual-host endpoints.
         """
-        disk_config = self._get_disk_config(disk_name) or {}
-        endpoint = disk_config.get("endpoint")
-        if not isinstance(endpoint, str):
-            return None
-
-        url = urlparse(endpoint)
-        # Follow ClickHouse's S3 host recognition; AWS PrivateLink uses path-style buckets.
-        virtual_host = re.fullmatch(r"(.+)\.(s3[.-][a-z0-9.:-]+)", url.netloc)
-        private_link = re.fullmatch(
-            r"bucket\.vpce-[a-z0-9.-]+\.vpce\.amazonaws\.com(:\d{1,5})?", url.netloc
-        )
-        if virtual_host and not private_link:
-            bucket, host = virtual_host.groups()
-            return f"{url.scheme}://{host}", bucket, url.path.strip("/")
-
-        bucket, _, path = url.path.strip("/").partition("/")
-        return f"{url.scheme}://{url.netloc}", bucket, path
+        return get_s3_disk_location(self._get_disk_config(disk_name) or {})
 
     def _get_disk_credentials(self, disk_name: str) -> tuple[str, str] | None:
         disk_config = self._get_disk_config(disk_name) or {}
@@ -1114,66 +1737,158 @@ class BackupCopier:
             return access_key_id, secret_access_key
         return None
 
-    def _copy_objects(
+    def _leave_out_confirmed_objects(
         self, backup: BackupMetadata, plan: _CopyPlan, result: BackupCopyResult
     ) -> None:
-        # A matching size does not prove that an existing object belongs to this copy.
-        # Recopy every object when retrying an unfinished backup.
-        entries = self._resolve_copy_mode(plan.entries, result)
+        """
+        Leave out objects of each scope copied by previous runs.
 
-        logging.info(
-            "Copying {} objects ({} bytes)",
-            len(plan.entries),
-            sum(entry.size for entry in plan.entries),
+        A matching size alone does not prove that an existing object belongs to this copy,
+        and a record of the copy context alone does not prove that the object was not
+        deleted since then, e.g. by a failed or partial delete. Only objects with both
+        are left out. Without resuming, only scopes that are not copied by this run are checked.
+        """
+        context = self._copy_context
+        assert context is not None
+        if not context.has_records():
+            return
+        listing = self._list_target_objects(backup, plan)
+
+        def pending(entry: CopyEntry, sizes: CopyIndex = listing) -> bool:
+            """Keep objects unless both their target size and journal record match."""
+            blob = sizes.get(
+                json.dumps([storage_id(entry.dst_storage), _key(entry.dst_path)])
+            )
+            return (
+                blob is None
+                or int(blob) != entry.dst_size
+                or not context.is_recorded(entry)
+            )
+
+        for scope, scope_plan in plan.items():
+            if scope in self._scopes and not self._copy_config["resume"]:
+                continue
+            scope_plan.entries = scope_plan.entries.filtered(pending)
+            scope_plan.rewritten_cloud_storage_metadata = [
+                _RewrittenTarball(path, files)
+                for path, files in scope_plan.rewritten_cloud_storage_metadata
+                if not context.is_archive_recorded(
+                    self._target_storage,
+                    path,
+                    files,
+                    _listed_size(
+                        listing,
+                        json.dumps([storage_id(self._target_storage), _key(path)]),
+                    ),
+                )
+            ]
+        del listing, pending
+        context.forget()
+        total = result.objects_total or 0
+        result.objects_skipped = total - sum(
+            plan[scope].count() for scope in self._scopes
         )
+        logging.info(
+            "Resuming copying of backup {}: {} of {} objects are confirmed and skipped",
+            backup.name,
+            result.objects_skipped,
+            total,
+        )
+
+    def _copy_scope(
+        self,
+        scope: CopyScope,
+        backup: BackupMetadata,
+        plan: _ScopePlan,
+        result: BackupCopyResult,
+        failed_before: bool,
+    ) -> bool:
+        """
+        Copy objects of the scope. Return True if the scope is planned and copied completely.
+
+        Objects that failed to copy are listed in the copy context. The list is replaced
+        when objects fail and removed only once the scope succeeds, also when objects left
+        by the failed run are confirmed copied.
+        """
+        context = self._copy_context
+        assert context is not None
+        errors = len(result.errors)
+        copied = False
+        with FailedObjects() as failures:
+            try:
+                self._copy_objects(backup, plan, result, failures)
+                copied = True
+            except Exception as e:
+                if not self._keep_going or is_broken_executor(e):
+                    raise
+            finally:
+                if failures or (
+                    copied and plan.planned and (plan.count() or failed_before)
+                ):
+                    context.save_failures(scope, failures)
+        return plan.planned and len(result.errors) == errors
+
+    # pylint: disable=too-many-locals,too-many-statements
+    def _copy_objects(
+        self,
+        backup: BackupMetadata,
+        plan: _ScopePlan,
+        result: BackupCopyResult,
+        failures: FailedObjects,
+    ) -> None:
+        """
+        Copy objects and upload rewritten metadata tarballs, recording them in the copy context.
+
+        Objects that failed to copy are added to failures.
+        """
+        context = self._copy_context
+        assert context is not None
+        errors = len(result.errors)
+        total_size = 0
+        continuation = None
+        while True:
+            batch, continuation = plan.entries.read_batch(continuation, limit=128)
+            total_size += sum(entry.size for entry in batch)
+            if continuation is None:
+                break
+        logging.info("Copying {} objects ({} bytes)", len(plan.entries), total_size)
+
+        def completed(entry: CopyEntry) -> None:
+            """Count the copied object and record it in the copy context."""
+            result.completed(entry.size)
+            context.record(entry)
+            context.flush()
+
+        def failed(entry: CopyEntry, error: BaseException) -> None:
+            """Report the object that failed to copy."""
+            result.add_error(
+                error,
+                "copy",
+                source=entry.src_path,
+                target=entry.dst_path,
+                object_failed=True,
+            )
+            failures.append(entry, f"{type(error).__name__}: {error}")
+
+        uploaded_archives: list[_RewrittenTarball] = []
+
+        def uploaded(remote_path: str, files: MetadataFiles) -> None:
+            """Count the uploaded tarball and keep it to be recorded in the copy context."""
+            result.completed()
+            uploaded_archives.append(_RewrittenTarball(remote_path, files))
+
         try:
             self._target_layout.copy_objects(
-                entries,
+                self._resolve_copy_mode(plan.entries, result, on_error=failed),
                 keep_going=self._keep_going,
-                callback=lambda entry: result.completed(entry.size),
-                on_error=lambda entry, error: result.add_error(
-                    error,
-                    "copy",
-                    source=entry.src_path,
-                    target=entry.dst_path,
-                    object_failed=True,
-                ),
+                callback=completed,
+                on_error=failed,
             )
-            for index, (remote_path, files) in enumerate(
-                plan.rewritten_cloud_storage_metadata, 1
-            ):
-                errors_before_upload = len(result.errors)
-                try:
-                    self._target_layout.upload_cloud_storage_metadata_files(
-                        backup,
-                        remote_path,
-                        files,
-                        callback=result.completed,
-                        on_error=partial(
-                            result.add_error,
-                            stage="copy_metadata",
-                            target=remote_path,
-                            object_failed=True,
-                        ),
-                    )
-                except Exception as e:
-                    # Validation can fail before the upload registers its error callback.
-                    # Synchronous pipeline errors may already have called it.
-                    if len(result.errors) == errors_before_upload:
-                        result.add_error(
-                            e,
-                            "copy_metadata",
-                            target=remote_path,
-                            object_failed=True,
-                        )
-                    if not self._keep_going or is_broken_executor(e):
-                        raise
-                if index % 256 == 0:
-                    self._target_layout.wait(keep_going=self._keep_going)
+            self._upload_rewritten_metadata(backup, plan, result, uploaded)
         except (Exception, TerminatingSignal) as e:
             # Submission can fail after other uploads have already started. Wait before
             # publishing FAILED and releasing the locks, preserving the original error.
-            if not result.errors:
+            if len(result.errors) == errors:
                 result.add_error(e, "copy")
             try:
                 self._target_layout.wait(keep_going=True)
@@ -1184,16 +1899,101 @@ class BackupCopier:
                     raise
                 if is_broken_executor(drain_error):
                     raise e from drain_error
+            finally:
+                context.flush(force=True)
             raise
-        self._target_layout.wait(keep_going=self._keep_going)
-        if result.errors:
+        try:
+            self._target_layout.wait(keep_going=self._keep_going)
+            self._record_archives(backup, uploaded_archives)
+        finally:
+            context.flush(force=True)
+        if len(result.errors) > errors:
             raise ClickhouseBackupError(
                 f"Failed to copy backup {backup.name}: {len(result.errors)} error(s), "
                 f"{result.objects_failed} object transfer(s) failed"
             )
 
+    def _upload_rewritten_metadata(
+        self,
+        backup: BackupMetadata,
+        plan: _ScopePlan,
+        result: BackupCopyResult,
+        uploaded: Callable,
+    ) -> None:
+        """Schedule metadata uploads after object copies, waiting every 256 archives."""
+        for index, (remote_path, files) in enumerate(
+            plan.rewritten_cloud_storage_metadata, 1
+        ):
+            errors_before_upload = len(result.errors)
+            try:
+                self._target_layout.upload_cloud_storage_metadata_files(
+                    backup,
+                    remote_path,
+                    files,
+                    callback=partial(uploaded, remote_path, files),
+                    on_error=partial(
+                        result.add_error,
+                        stage="copy_metadata",
+                        target=remote_path,
+                        object_failed=True,
+                    ),
+                )
+            except Exception as e:
+                # Validation can fail before the upload registers its error callback.
+                # Synchronous pipeline errors may already have called it.
+                if len(result.errors) == errors_before_upload:
+                    result.add_error(
+                        e,
+                        "copy_metadata",
+                        target=remote_path,
+                        object_failed=True,
+                    )
+                if not self._keep_going or is_broken_executor(e):
+                    raise
+            if index % 256 == 0:
+                self._target_layout.wait(keep_going=self._keep_going)
+
+    def _record_archives(
+        self,
+        backup: BackupMetadata,
+        archives: list[_RewrittenTarball],
+    ) -> None:
+        """
+        Record uploaded rewritten metadata tarballs in the copy context with their sizes in the target storage.
+
+        Tarballs missing in the listing or uploaded when the listing fails are not recorded,
+        so the next run uploads them again.
+        """
+        context = self._copy_context
+        assert context is not None
+        if not archives:
+            return
+        try:
+            sizes = self._list(
+                self._target_storage,
+                _key(
+                    os.path.join(
+                        self._target_layout.get_cloud_storage_path(backup.name), "disks"
+                    )
+                ),
+            )
+        except Exception as e:
+            if is_broken_executor(e):
+                raise
+            logging.warning(
+                "Failed to list disk metadata of backup {}: {}", backup.name, e
+            )
+            return
+        for path, files in archives:
+            size = _listed_size(sizes, _key(path))
+            if size is not None:
+                context.record_archive(self._target_storage, path, files, size)
+
     def _resolve_copy_mode(
-        self, entries: list[CopyEntry], copy_result: BackupCopyResult | None = None
+        self,
+        entries: CopyEntries,
+        copy_result: BackupCopyResult | None = None,
+        on_error: Callable[[CopyEntry, BaseException], None] | None = None,
     ) -> Iterator[CopyEntry]:
         """
         Mark objects that can be copied on the server side.
@@ -1201,21 +2001,51 @@ class BackupCopier:
         Availability of server-side copy is checked by copying the first object of each pair
         of source and target buckets with the same credentials. Such objects are excluded from the result.
         """
-        if not self._copy_config["server_side_copy"]:
-            yield from entries
-            return
+        continuation = None
+        while True:
+            batch, continuation = entries.read_batch(continuation, limit=128)
+            for entry in batch:
+                if self._server_side_copy_mode == ServerSideCopyMode.DISABLED:
+                    yield entry
+                    continue
+                try:
+                    resolved = self._resolve_object_copy_mode(entry, copy_result)
+                except Exception as e:
+                    if (
+                        self._server_side_copy_mode != ServerSideCopyMode.STRICT
+                        or is_broken_executor(e)
+                    ):
+                        raise
+                    if on_error is not None:
+                        on_error(entry, e)
+                    if not self._keep_going:
+                        raise
+                    continue
+                if resolved is not None:
+                    yield resolved
+            if continuation is None:
+                break
 
-        for entry in entries:
-            if not server_side_copy_possible(entry.src_storage, entry.dst_storage):
-                yield entry._replace(server_side=False)
-                continue
+    def _resolve_object_copy_mode(
+        self, entry: CopyEntry, copy_result: BackupCopyResult | None
+    ) -> CopyEntry | None:
+        """Resolve one object's mode, returning None when the probe already copied it."""
+        if entry.encrypt or entry.decrypt:
+            if self._server_side_copy_mode == ServerSideCopyMode.STRICT:
+                raise StorageError(
+                    "Transformed objects cannot be copied on the server side"
+                )
+            return entry._replace(server_side=False)
 
-            pair = (storage_id(entry.src_storage), storage_id(entry.dst_storage))
-            cache_key = (
-                _storage_cache_key(entry.src_storage),
-                _storage_cache_key(entry.dst_storage),
-            )
-            if cache_key not in self._server_side_copy:
+        pair = (storage_id(entry.src_storage), storage_id(entry.dst_storage))
+        cache_key = (
+            _storage_cache_key(entry.src_storage),
+            _storage_cache_key(entry.dst_storage),
+        )
+        available = self._server_side_copy.get(cache_key)
+        if available is None:
+            available = False
+            if server_side_copy_possible(entry.src_storage, entry.dst_storage):
                 try:
                     available = self._engine(entry.dst_storage).try_copy_object(
                         entry.src_storage["credentials"]["bucket"],
@@ -1223,32 +2053,93 @@ class BackupCopier:
                         entry.dst_path,
                     )
                 except Exception as e:
-                    if not self._keep_going or is_broken_executor(e):
+                    if (
+                        self._server_side_copy_mode == ServerSideCopyMode.STRICT
+                        or is_broken_executor(e)
+                    ):
                         raise
                     logging.warning(
                         "Server-side copy probe failed, using streamed copy: {}", e
                     )
-                    available = False
-                self._server_side_copy[cache_key] = available
-                if available:
-                    if copy_result is not None:
-                        copy_result.completed(entry.size)
-                    logging.info(
-                        "Objects are copied on the server side from {} to {}",
-                        *pair,
-                    )
-                    continue
+                    # A failed probe does not establish that this pair cannot copy server-side.
+                    return entry._replace(server_side=False)
+            self._server_side_copy[cache_key] = available
+            if available:
+                if copy_result is not None:
+                    copy_result.completed(entry.size)
+                if self._copy_context is not None:
+                    self._copy_context.record(entry)
+                logging.info(
+                    "Objects are copied on the server side from {} to {}",
+                    *pair,
+                )
+                return None
+            if self._server_side_copy_mode != ServerSideCopyMode.STRICT:
                 logging.warning(
                     "Server-side copy from {} to {} is not available, objects are copied through ch-backup",
                     *pair,
                 )
 
-            yield entry._replace(server_side=self._server_side_copy[cache_key])
+        if self._server_side_copy_mode == ServerSideCopyMode.STRICT and not available:
+            raise StorageError(
+                f"Server-side copy from {pair[0]} to {pair[1]} is not available"
+            )
+        return entry._replace(server_side=available)
 
-    def _list(self, storage: dict, prefix: str) -> dict[str, int]:
-        return self._engine(storage).list_dir_with_sizes(prefix)
+    def _list_target_objects(
+        self, backup: BackupMetadata, plan: _CopyPlan
+    ) -> CopyIndex:
+        """
+        Return sizes of objects of the copied backup in target storages.
+
+        On failure nothing is returned, so all objects are copied again.
+        """
+        listing: CopyIndex = CopyIndex()
+        listed = set()
+        try:
+            for storage, prefix in self._target_prefixes(backup, plan):
+                key = (storage_id(storage), _key(prefix).rstrip("/"))
+                if key in listed:
+                    continue
+                listed.add(key)
+                continuation = None
+                while True:
+                    page, continuation = self._engine(storage).read_listing_page(
+                        key[1], continuation
+                    )
+                    for path, size in page:
+                        listing.put(
+                            json.dumps([key[0], path]), str(size).encode("ascii")
+                        )
+                    if continuation is None:
+                        break
+        except Exception as e:
+            if is_broken_executor(e):
+                raise
+            logging.warning(
+                "Failed to list copied objects of backup {}, copying all objects: {}",
+                backup.name,
+                e,
+            )
+            listing.clear()
+        return listing
+
+    def _list(self, storage: dict, prefix: str) -> CopyIndex:
+        """Index a listing without retaining all keys in RAM."""
+        listing: CopyIndex = CopyIndex()
+        continuation = None
+        while True:
+            page, continuation = self._engine(storage).read_listing_page(
+                prefix, continuation
+            )
+            for path, size in page:
+                listing.put(path, str(size).encode("ascii"))
+            if continuation is None:
+                break
+        return listing
 
     def _engine(self, storage: dict) -> PipeLineCompatibleStorageEngine:
+        """Reuse a client for the same storage credentials and configuration."""
         key = _storage_cache_key(storage)
         if key not in self._engines:
             self._engines[key] = get_storage_engine(storage)
@@ -1262,6 +2153,13 @@ def _storage_cache_key(storage: dict) -> tuple:
         storage_id(storage),
         credentials.get("access_key_id"),
         credentials.get("secret_access_key"),
+        json.dumps(
+            {
+                name: storage.get(name, {})
+                for name in ("boto_config", "module_config", "proxy_resolver")
+            },
+            sort_keys=True,
+        ),
     )
 
 
@@ -1285,6 +2183,8 @@ def _cloud_storage_copy_entry(
     obj: StorageObject,
     full_object_key: bool,
     *,
+    encrypt: bool = False,
+    data_encryption: dict | None = None,
     src_path_override: str | None = None,
 ) -> CopyEntry:
     """
@@ -1323,12 +2223,19 @@ def _cloud_storage_copy_entry(
         raise ClickhouseBackupError(
             f'Copy destination "{destination}" escapes "{dst_prefix}"'
         )
+    dst_size = (
+        calc_encrypted_size_from_config(data_encryption, obj.size)
+        if data_encryption is not None
+        else obj.size
+    )
     return CopyEntry(
         src_storage,
         dst_storage,
         src_path,
         destination,
         obj.size,
+        dst_size,
+        encrypt=encrypt,
     )
 
 
@@ -1338,10 +2245,9 @@ def _validate_relative_key(key: str) -> None:
         raise ClickhouseBackupError(f'Unsafe copy object key "{key}"')
 
 
-def _add_cloud_storage_copy_entry(
-    entries: dict[str, CopyEntry], entry: CopyEntry
-) -> None:
-    planned = entries.setdefault(entry.dst_path, entry)
+def _add_cloud_storage_copy_entry(entries: EntryIndex, entry: CopyEntry) -> None:
+    """Deduplicate object destinations and reject conflicting sources or sizes."""
+    planned = entries.get_or_insert(entry.dst_path, entry)
     if (storage_id(planned.src_storage), planned.src_path, planned.size) != (
         storage_id(entry.src_storage),
         entry.src_path,
@@ -1360,26 +2266,29 @@ def _check_backup_state(backup: BackupMetadata) -> None:
         )
 
 
-def _make_storage_config(
-    base: dict,
-    endpoint_url: str,
-    bucket: str,
-    access_key_id: str | None,
-    secret_access_key: str | None,
-) -> dict:
-    """
-    Make storage config for the bucket with other settings taken from the base storage config.
-    """
-    storage = copy.deepcopy(base)
-    storage["credentials"] = {
-        "endpoint_url": endpoint_url,
-        "bucket": bucket,
-        "access_key_id": access_key_id,
-        "secret_access_key": secret_access_key,
-    }
-    # Proxy is configured for backup storage only.
-    storage["proxy_resolver"] = {"uri": None, "proxy_port": None}
-    return storage
+def _files_scope_required(backup_name: str) -> ClickhouseBackupError:
+    """Return the error for copying of the scope "cloud_storage" before the scope "files"."""
+    return ClickhouseBackupError(
+        f"Source metadata of backup {backup_name} is not found in target storage, "
+        'its scope "files" must be copied first'
+    )
+
+
+def _files_copied(backup: BackupMetadata) -> bool:
+    """Check that the backup is an incomplete copy with the scope "files" completed."""
+    return (
+        backup.state in (BackupState.CREATING, BackupState.FAILED)
+        and backup.copy_scopes.get(CopyScope.FILES) == CopyScopeStatus.COMPLETED
+    )
+
+
+def _ready_for_cloud_storage_copy(backup: BackupMetadata) -> bool:
+    """Check that the scope "cloud_storage" of the copy is not completed and can be copied alone."""
+    return (
+        _files_copied(backup)
+        and backup.cloud_storage.requires_source_bucket
+        and backup.copy_scopes.get(CopyScope.CLOUD_STORAGE) != CopyScopeStatus.COMPLETED
+    )
 
 
 def _key(path: str | None) -> str:
@@ -1387,3 +2296,9 @@ def _key(path: str | None) -> str:
     Return object key for the path.
     """
     return (path or "").lstrip("/")
+
+
+def _listed_size(index: CopyIndex, key: str) -> int | None:
+    """Decode a listed size while preserving absent objects."""
+    blob = index.get(key)
+    return None if blob is None else int(blob)

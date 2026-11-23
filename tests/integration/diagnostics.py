@@ -19,8 +19,11 @@ def record_stage_failure(stage: str, error: object = None) -> None:
     failure = {"stage": stage}
     if error is not None:
         failure["error"] = str(error)
-    with Path(destination).open("a", encoding="utf-8") as output:
-        output.write(json.dumps(failure) + "\n")
+    try:
+        with Path(destination).open("a", encoding="utf-8") as output:
+            output.write(json.dumps(failure) + "\n")
+    except OSError as write_error:
+        logging.warning("Cannot record integration stage failure: {}", write_error)
 
 
 def record_step_failure(context: ContextT, step: Step) -> None:

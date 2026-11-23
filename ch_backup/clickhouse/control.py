@@ -7,11 +7,12 @@ Clickhouse-control classes module
 import os
 import re
 import shutil
+import time
 from contextlib import contextmanager, suppress
 from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE  # type: ignore
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Generator, Iterable, Sequence
 
 from ch_backup import logging
 from ch_backup.backup.metadata import DetachedPartMetadata, TableMetadata
@@ -28,6 +29,7 @@ from ch_backup.clickhouse.models import (
     Table,
     WorkloadEntityType,
 )
+from ch_backup.clickhouse.storage_schema import StoragePolicy
 from ch_backup.exceptions import ClickhouseBackupError, ConfigurationError
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.util import (
@@ -130,6 +132,9 @@ GET_TABLES_SQL_23_8 = strip_query(
 """
 )
 
+# engine_full shares the CREATE AST already read for create_table_query.
+# It adds no catalog lookup and lets _make_table resolve cold TableProxy engines.
+# Exclude external databases before table enumeration, which accesses their sources.
 GET_TABLES_SHORT_SQL = strip_query(
     """
     SELECT
@@ -137,10 +142,15 @@ GET_TABLES_SHORT_SQL = strip_query(
         name,
         uuid,
         engine,
+        engine_full,
         create_table_query
     FROM system.tables
     WHERE ({db_condition})
       AND ({tables_condition})
+      AND database IN (
+          SELECT name FROM system.databases
+          WHERE engine NOT IN ('MySQL', 'MaterializedMySQL', 'PostgreSQL', 'MaterializedPostgreSQL')
+      )
     ORDER BY metadata_modification_time
     FORMAT JSON
 """
@@ -185,6 +195,29 @@ CHECK_TABLE_SQL = strip_query(
     FROM system.tables
     WHERE database = {db_name} AND name = {table_name}
     FORMAT TSVRaw
+"""
+)
+
+GET_REFRESHABLE_MATERIALIZED_VIEWS_SQL = strip_query(
+    """
+    SELECT
+        database,
+        view
+    FROM system.view_refreshes
+    {status_condition}
+    FORMAT JSON
+"""
+)
+
+SYSTEM_STOP_VIEW_SQL = strip_query(
+    """
+    SYSTEM STOP VIEW `{db_name}`.`{view_name}`
+"""
+)
+
+SYSTEM_START_VIEW_SQL = strip_query(
+    """
+    SYSTEM START VIEW `{db_name}`.`{view_name}`
 """
 )
 
@@ -291,10 +324,8 @@ GET_DDL_QUEUE_STATUS_SQL = strip_query(
     """
     SELECT
         entry,
-        query,
         status,
-        exception_code,
-        exception_text
+        exception_code
     FROM system.distributed_ddl_queue
     WHERE cluster = {db_name}
       AND status != 'Finished'
@@ -638,6 +669,9 @@ class ClickhouseCTL:
         self._freeze_timeout = self._ch_ctl_config["freeze_timeout"]
         self._unfreeze_timeout = self._ch_ctl_config["unfreeze_timeout"]
         self._restore_replica_timeout = self._ch_ctl_config["restore_replica_timeout"]
+        self._refreshable_views_stop_timeout = self._ch_ctl_config[
+            "refreshable_views_stop_timeout"
+        ]
         self._drop_replica_timeout = self._ch_ctl_config["drop_replica_timeout"]
         settings = self._ch_ctl_config.get("settings")
         if settings is not None and not isinstance(settings, dict):
@@ -647,6 +681,7 @@ class ClickhouseCTL:
         self._ch_client = ClickhouseClient(self._ch_ctl_config)
         self._ch_version = self._ch_client.query(GET_VERSION_SQL)
         self._disks = self.get_disks()
+        self._missing_detached_disks_warned: set[str] = set()
         if settings is None:
             settings = {
                 "allow_deprecated_database_ordinary": 1,
@@ -1066,13 +1101,13 @@ class ClickhouseCTL:
         """
         Restore database.
         """
-        self._ch_client.query(database_schema)
+        self._ch_client.query(database_schema, sensitive=True)
 
     def restore_udf(self, udf_statement):
         """
         Restore user defined function.
         """
-        self._ch_client.query(udf_statement)
+        self._ch_client.query(udf_statement, sensitive=True)
 
     def restore_named_collection(self, nc_statement):
         """
@@ -1176,7 +1211,7 @@ class ClickhouseCTL:
         """
         Restore workload entity (WORKLOAD or RESOURCE).
         """
-        self._ch_client.query(entity_statement)
+        self._ch_client.query(entity_statement, sensitive=True)
 
     def create_table(self, table: Table) -> None:
         """
@@ -1189,7 +1224,7 @@ class ClickhouseCTL:
         settings = (
             {"allow_experimental_unique_key": 1} if table.has_unique_key() else None
         )
-        self._ch_client.query(table.create_statement, settings=settings)
+        self._ch_client.query(table.create_statement, settings=settings, sensitive=True)
 
     def restore_replica(self, table: Table) -> None:
         """
@@ -1202,6 +1237,66 @@ class ClickhouseCTL:
             ),
             timeout=self._restore_replica_timeout,
         )
+
+    def _get_refreshable_materialized_views(
+        self, running_only: bool = False
+    ) -> list[tuple[str, str]]:
+        if not self.ch_version_ge("23.12"):
+            return []
+
+        return [
+            (row["database"], row["view"])
+            for row in self._ch_client.query(
+                GET_REFRESHABLE_MATERIALIZED_VIEWS_SQL.format(
+                    status_condition="WHERE status = 'Running'" if running_only else ""
+                )
+            )["data"]
+        ]
+
+    def _set_refreshable_materialized_views_running(self, running: bool) -> None:
+        query = SYSTEM_START_VIEW_SQL if running else SYSTEM_STOP_VIEW_SQL
+        for database, view in self._get_refreshable_materialized_views():
+            self._ch_client.query(
+                query.format(db_name=escape(database), view_name=escape(view))
+            )
+
+    def _wait_for_refreshable_materialized_views_to_stop(self) -> None:
+        deadline = time.monotonic() + self._refreshable_views_stop_timeout
+        while running_views := self._get_refreshable_materialized_views(
+            running_only=True
+        ):
+            if time.monotonic() >= deadline:
+                views = ", ".join(
+                    f"{database}.{view}" for database, view in running_views
+                )
+                raise ClickhouseBackupError(
+                    f"Timed out waiting for refreshable materialized views to stop: {views}"
+                )
+            time.sleep(1)
+
+    @contextmanager
+    def stop_refreshable_materialized_views_for_restore(
+        self, databases: Sequence[str]
+    ) -> Generator[None, None, None]:
+        """Pause refreshable views while table restore is in progress."""
+        if not databases or not self.ch_version_ge("23.12"):
+            yield
+            return
+
+        try:
+            self._set_refreshable_materialized_views_running(False)
+            self._wait_for_refreshable_materialized_views_to_stop()
+            yield
+        except BaseException:
+            try:
+                self._set_refreshable_materialized_views_running(True)
+            except Exception:
+                logging.error(
+                    "Failed to start refreshable materialized views while restore was failing",
+                    exc_info=True,
+                )
+            raise
+        self._set_refreshable_materialized_views_running(True)
 
     def get_parts_of_other_replicas(
         self, table: Table, zk_ctl: ZookeeperCTL
@@ -1290,7 +1385,7 @@ class ClickhouseCTL:
     def get_ddl_queue_unfinished_status(self, db_name: str) -> list[dict]:
         """
         Get pending DDL entries from system.distributed_ddl_queue for a replicated database.
-        Returns list of entries with status, exception_code and exception_text.
+        Returns entry names, statuses and exception codes.
         An empty list means all DDL entries have been processed (sync is complete).
         """
         try:
@@ -1320,6 +1415,10 @@ class ClickhouseCTL:
         """
         Get filesystem absolute path to detached data part.
         """
+        if part_name in {"", ".", ".."} or os.path.basename(part_name) != part_name:
+            raise ClickhouseBackupError(
+                f'Invalid detached part directory name: "{part_name}"'
+            )
         return os.path.join(self._get_table_detached_path(table, disk_name), part_name)
 
     @staticmethod
@@ -1364,7 +1463,13 @@ class ClickhouseCTL:
             for disk_name in dict.fromkeys(disk_names):
                 disk = self._disks.get(disk_name)
                 if disk is None:
-                    raise RuntimeError(f"Disk not found: {disk_name}")
+                    if disk_name not in self._missing_detached_disks_warned:
+                        logging.warning(
+                            'Detached-parts disk "{}" is not reported by system.disks; skipping it',
+                            disk_name,
+                        )
+                        self._missing_detached_disks_warned.add(disk_name)
+                    continue
                 selected.extend(
                     (disk_name, disk, data_path)
                     for data_path, table_disk in table.paths_with_disks
@@ -1704,7 +1809,8 @@ class ClickhouseCTL:
         # Hex encoding preserves quotes, backslashes and whitespace in the input.
         query_hex = query.encode("utf-8").hex()
         resp = self._ch_client.query(
-            f"SELECT formatQuerySingleLine(unhex('{query_hex}')) AS query FORMAT JSON"
+            f"SELECT formatQuerySingleLine(unhex('{query_hex}')) AS query FORMAT JSON",
+            sensitive=True,
         )
         return resp["data"][0]["query"]
 
@@ -1790,17 +1896,57 @@ class ClickhouseCTL:
             for row in disks_resp.get("data", [])
         }
 
+    def get_storage_policies(self) -> dict[str, StoragePolicy]:
+        """Snapshot policies in volume priority and disk order."""
+        # Read effective server policies, including implicit defaults absent from
+        # XML. Their order defines the fallback disk for restored local parts.
+        rows = self._ch_client.query(
+            "SELECT policy_name, volume_name, disks FROM system.storage_policies "
+            "ORDER BY policy_name, volume_priority, volume_name FORMAT JSON"
+        ).get("data", [])
+        disks = self.get_disks()
+        volumes_by_policy: dict[str, list[str]] = {}
+        disks_by_policy: dict[str, list[str]] = {}
+        for row in rows:
+            name = row["policy_name"]
+            volumes_by_policy.setdefault(name, []).append(row["volume_name"])
+            disks_by_policy.setdefault(name, []).extend(row["disks"])
+        # All policy disks/volumes are valid TTL destinations. Part remapping uses
+        # only local disks; remove duplicates while preserving the server's order.
+        return {
+            name: StoragePolicy(
+                name,
+                tuple(volumes),
+                tuple(dict.fromkeys(disks_by_policy[name])),
+                tuple(
+                    dict.fromkeys(
+                        disk
+                        for disk in disks_by_policy[name]
+                        if disk in disks and disks[disk].type == "local"
+                    )
+                ),
+            )
+            for name, volumes in volumes_by_policy.items()
+        }
+
     def _make_table(self, record: dict) -> Table:
+        engine = record["engine"]
+        if engine == "TableProxy":
+            # A paths query can load the table after its engine column was read.
+            # Use the stored engine definition, also available without loading.
+            match = re.match(r"[A-Za-z_][A-Za-z0-9_]*", record.get("engine_full") or "")
+            if not match:
+                raise ClickhouseBackupError(
+                    f"Cannot determine engine of lazy table {record['database']}.{record['name']}"
+                )
+            engine = match.group()
+
         return Table(
             database=record["database"],
             name=record["name"],
-            engine=record.get("engine", None),
+            engine=engine,
             disks=list(self._disks.values()),
-            data_paths=(
-                record.get("data_paths", [])
-                if "MergeTree" in record.get("engine", "")
-                else []
-            ),
+            data_paths=(record.get("data_paths", []) if "MergeTree" in engine else []),
             metadata_path=self._get_metadata_path(record),
             create_statement=record["create_table_query"],
             uuid=record.get("uuid", None),

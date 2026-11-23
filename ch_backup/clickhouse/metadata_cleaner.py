@@ -46,7 +46,7 @@ def _is_table_was_not_dropped_error(error: ClickhouseError) -> bool:
             return True
 
     # Fallback to message-based matching
-    message = str(error)
+    message = error.server_message
     return "TABLE_WAS_NOT_DROPPED" in message or "There is a local table" in message
 
 
@@ -54,7 +54,7 @@ def _is_not_table_path_error(error: ClickhouseError) -> bool:
     """
     Detect ClickHouse errors indicating the ZK path does not look like a table path.
     """
-    return "does not look like a table path" in str(error)
+    return "does not look like a table path" in error.server_message
 
 
 def select_replica_drop(replica_name: str | None, macros: dict) -> str:
@@ -292,9 +292,11 @@ class MetadataCleaner:
                     "Successful zk metadata cleanup for database {}", database_name
                 )
             except ClickhouseError as ch_error:
-                if "does not look like a path of Replicated database" in str(
-                    ch_error
-                ) or "node doesn't exist" in str(ch_error):
+                if (
+                    "does not look like a path of Replicated database"
+                    in ch_error.server_message
+                    or "node doesn't exist" in ch_error.server_message
+                ):
                     logging.warning(
                         "System drop database replica failed with: {}\n Will ignore it, probably different configuration for zookeeper or database schema.",
                         repr(ch_error),

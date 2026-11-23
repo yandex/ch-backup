@@ -6,9 +6,10 @@ import copy
 import json
 import os
 import socket
+from contextlib import suppress
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
 
 from ch_backup.backup.metadata.access_control_metadata import AccessControlMetadata
 from ch_backup.backup.metadata.cloud_storage_metadata import CloudStorageMetadata
@@ -17,7 +18,11 @@ from ch_backup.backup.metadata.detached_part_metadata import DetachedPartMetadat
 from ch_backup.backup.metadata.part_metadata import PartMetadata
 from ch_backup.backup.metadata.table_metadata import DataSkippedReason, TableMetadata
 from ch_backup.clickhouse.models import Database
-from ch_backup.exceptions import InvalidBackupStruct, UnknownBackupStateError
+from ch_backup.exceptions import (
+    ConfigurationError,
+    InvalidBackupStruct,
+    UnknownBackupStateError,
+)
 from ch_backup.util import now
 
 
@@ -39,6 +44,38 @@ class BackupState(Enum):
     CREATING = "creating"
     DELETING = "deleting"
     PARTIALLY_DELETED = "partially_deleted"
+    FAILED = "failed"
+
+
+class CopyScope(Enum):
+    """
+    Parts of a backup copied by the "copy" command.
+    """
+
+    FILES = "files"
+    CLOUD_STORAGE = "cloud_storage"
+
+
+def parse_copy_scopes(value: Any) -> tuple[CopyScope, ...]:
+    """Validate configured copy scopes and return them in execution order."""
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(name not in [scope.value for scope in CopyScope] for name in value)
+    ):
+        raise ConfigurationError(
+            'copy.scopes must be a non-empty list of "files" and/or "cloud_storage"'
+        )
+    return tuple(scope for scope in CopyScope if scope.value in value)
+
+
+class CopyScopeStatus(Enum):
+    """
+    Statuses of copying of a scope saved in metadata of the copy.
+    """
+
+    PENDING = "pending"
+    COMPLETED = "completed"
     FAILED = "failed"
 
 
@@ -89,6 +126,8 @@ class BackupMetadata:
         self.cloud_storage: CloudStorageMetadata = CloudStorageMetadata()
         # Location of the storage the backup was copied from (for backups created by "copy" command).
         self.copied_from: dict | None = None
+        self.copy_scopes: dict[CopyScope, CopyScopeStatus] = {}
+        self.copy_updated_at: datetime | None = None
         self._skipped_data_counts = (0, 0)
 
         self._state = BackupState.CREATING
@@ -148,23 +187,24 @@ class BackupMetadata:
         self.end_time = now()
 
     def dump(self, light: bool = False) -> dict:
-        """
-        Serialize backup metadata.
-        """
-        if light:
-            databases: dict[str, dict] = {}
-        else:
-            # Rewrite ``link`` of every part from a plain backup name back to a
-            # full storage path (``<path_root>/<source_backup_name>``) so that
-            # older ch-backup versions, which expect the legacy full-path
-            # format, can still read backups produced by this version.
-            # DEPRECATED: this conversion will be removed once the legacy
-            # format is no longer supported.
-            databases = self._databases_with_legacy_part_links()
+        """Serialize metadata with legacy part links for older readers."""
+        databases = {} if light else self._databases_with_legacy_part_links()
+        return self._dump_fields(databases, light)
 
+    def _dump_fields(self, databases: dict[str, dict], light: bool) -> dict:
+        """Build metadata fields around the supplied database tree."""
         meta: dict[str, Any] = {}
         if self.copied_from:
             meta["copied_from"] = self.copied_from
+        if self.copy_scopes or self.copy_updated_at:
+            meta["copy"] = {
+                "scopes": {
+                    scope.value: status.value
+                    for scope, status in self.copy_scopes.items()
+                }
+            }
+            if self.copy_updated_at:
+                meta["copy"]["updated_at"] = self._format_time(self.copy_updated_at)
         data_skipped_tables, incomplete_tables = self.count_skipped_data_tables()
         if data_skipped_tables:
             meta["data_skipped_tables"] = data_skipped_tables
@@ -207,32 +247,51 @@ class BackupMetadata:
 
     def _databases_with_legacy_part_links(self) -> dict[str, dict]:
         """
-        Return a deep-copy of ``self._databases`` where every part's ``link``
+        Return a copy of ``self._databases`` where every part's ``link``
         field is rewritten from a plain backup name (new format) to a full
         storage path (legacy format).
 
         Required for backward compatibility with ch-backup versions that
         still read the ``link`` field as a full storage path.
+
+        Dictionaries of databases, tables and parts are copied, so the result
+        can be changed without changing the metadata. Other values, such as
+        lists of part files, are shared: deep copying of them took most of the
+        time of saving metadata of a large backup.
         """
         # ``self.path`` is in the form "<path_root>/<backup_name>". Strip the
         # backup name to obtain the path root that prefixes any source backup.
         path_root = os.path.dirname(self.path) if self.path else ""
 
-        databases = copy.deepcopy(self._databases)
         # Defensive: in some test fixtures ``_databases`` may be an empty list.
-        if not isinstance(databases, dict):
-            return databases
-        for db in databases.values():
-            for table in db.get("tables", {}).values():
-                for part in table.get("parts", {}).values():
+        if not isinstance(self._databases, dict):
+            return copy.deepcopy(self._databases)
+        databases = {}
+        for db_name, raw_db in self._databases.items():
+            db = databases[db_name] = dict(raw_db)
+            if "tables" not in db:
+                continue
+            tables = db["tables"] = {}
+            for table_name, raw_table in raw_db["tables"].items():
+                table = tables[table_name] = dict(raw_table)
+                if "parts" not in table:
+                    continue
+                parts = table["parts"] = {}
+                for part_name, raw_part in raw_table["parts"].items():
+                    part = parts[part_name] = dict(raw_part)
                     link = part.get("link")
-                    if not link:
-                        continue
                     # Skip already legacy-formatted links (defensive).
-                    if "/" in link:
-                        continue
-                    part["link"] = os.path.join(path_root, link) if path_root else link
+                    if link and "/" not in link and path_root:
+                        part["link"] = os.path.join(path_root, link)
         return databases
+
+    def iter_json(self) -> Iterator[str]:
+        """Serialize without copying the database tree; copy parts only to convert links."""
+        encoder = json.JSONEncoder(separators=(",", ":"))
+        path_root = os.path.dirname(self.path) if self.path else ""
+        yield from _iter_json_with_legacy_part_links(
+            self._dump_fields(self._databases, False), encoder, path_root, ()
+        )
 
     def dump_json(
         self,
@@ -349,6 +408,16 @@ class BackupMetadata:
             backup.encrypted = meta.get("encrypted", True)
             backup.metadata_encrypted = meta.get("metadata_encrypted")
             backup.copied_from = meta.get("copied_from")
+            backup.copy_scopes = {}
+            copy_meta = meta.get("copy") or {}
+            for scope in CopyScope:
+                with suppress(ValueError):
+                    backup.copy_scopes[scope] = CopyScopeStatus(
+                        (copy_meta.get("scopes") or {}).get(scope.value)
+                    )
+            backup.copy_updated_at = cls._load_time(
+                copy_meta, "updated_at", backup.time_format
+            )
             backup._skipped_data_counts = (
                 meta.get("data_skipped_tables", 0),
                 meta.get("incomplete_tables", 0),
@@ -375,8 +444,20 @@ class BackupMetadata:
     def load_json(cls, data):
         """
         Deserialize backup metadata from JSON representation.
+
+        Equal names of part files are loaded as one string object. Lists of files
+        make up most of the metadata of a large backup, and the same names repeat
+        in parts of a table. Every part keeps its own list.
         """
-        return cls.load(json.loads(data))
+        names: dict[str, str] = {}
+
+        def share_file_names(obj: dict) -> dict:
+            files = obj.get("files")
+            if isinstance(files, list) and "checksum" in obj:
+                obj["files"] = [names.setdefault(name, name) for name in files]
+            return obj
+
+        return cls.load(json.loads(data, object_hook=share_file_names))
 
     def get_databases(self) -> Sequence[str]:
         """
@@ -556,6 +637,16 @@ class BackupMetadata:
         raw_part["link_part_name"] = None
         self.real_size += part.size
 
+    def link_part(self, part: PartMetadata, backup_name: str, part_name: str) -> None:
+        """Reference a physical owner, preserving the logical size of this backup."""
+        raw_part = self._databases[part.database]["tables"][part.table]["parts"][
+            part.name
+        ]
+        if not raw_part.get("link"):
+            self.real_size -= part.size
+        raw_part["link"] = backup_name
+        raw_part["link_part_name"] = part_name if part_name != part.name else None
+
     def skip_table_data(self, db_name: str, table_name: str, reason: str) -> None:
         """
         Drop data parts of a table and record why its data was left out.
@@ -678,13 +769,46 @@ class BackupMetadata:
         return value.strftime(self.time_format)
 
     @staticmethod
-    def _load_time(meta: dict, attr: str) -> datetime | None:
+    def _load_time(
+        meta: dict, attr: str, time_format: str | None = None
+    ) -> datetime | None:
+        """Read a timestamp using the supplied format or the metadata format."""
         attr_value = meta.get(attr)
         if not attr_value:
             return None
 
-        result = datetime.strptime(attr_value, meta["time_format"])
+        result = datetime.strptime(attr_value, time_format or meta["time_format"])
         if result.tzinfo is None:
             result = result.replace(tzinfo=timezone.utc)
 
         return result
+
+
+def _iter_json_with_legacy_part_links(
+    value: Any, encoder: json.JSONEncoder, path_root: str, field_path: tuple[str, ...]
+) -> Iterator[str]:
+    """Convert links along databases/<db>/tables/<table>/parts/<part> while encoding."""
+    contains_part_metadata = not field_path or field_path[0] == "databases"
+    if len(field_path) >= 3:
+        contains_part_metadata = contains_part_metadata and field_path[2] == "tables"
+    if len(field_path) >= 5:
+        contains_part_metadata = contains_part_metadata and field_path[4] == "parts"
+    if not isinstance(value, dict) or not contains_part_metadata:
+        yield from encoder.iterencode(value)
+        return
+    if len(field_path) == 6:
+        link = value.get("link")
+        if link and "/" not in link and path_root:
+            value = {**value, "link": os.path.join(path_root, link)}
+        yield encoder.encode(value)
+        return
+    yield "{"
+    for index, (key, child) in enumerate(value.items()):
+        if index:
+            yield ","
+        yield encoder.encode(key)
+        yield ":"
+        yield from _iter_json_with_legacy_part_links(
+            child, encoder, path_root, (*field_path, key)
+        )
+    yield "}"

@@ -43,6 +43,64 @@ Feature: Backup of tables with different engines and configurations
       | PostgreSQL  | PostgreSQL('postgre:1111', 'test', 'test_table', 'test_user', 'clickhouse')                                 |
       | MongoDB     | MongoDB('mongo:1111', 'test', 'test_table', 'test_user', 'clickhouse')                                      |
 
+  @unreachable_mysql_database
+  Scenario: Backup and restore with an unreachable MySQL database
+    Given remote databases are visible in system tables on clickhouse01
+    And remote databases are visible in system tables on clickhouse02
+    And we have executed queries on clickhouse01
+    """
+    CREATE DATABASE test_db ENGINE = Atomic;
+    CREATE TABLE test_db.local_data (n UInt64) ENGINE = MergeTree ORDER BY n;
+    INSERT INTO test_db.local_data VALUES (1), (2), (3);
+    CREATE TABLE test_db.local_mysql (n UInt64)
+    ENGINE = MySQL('127.0.0.1:1', 'remote_db', 'remote_table', 'user', 'password');
+    ATTACH DATABASE remote_mysql ENGINE = MySQL('127.0.0.1:1', 'remote_db', 'user', 'password');
+    """
+    When we create clickhouse01 clickhouse backup
+    And we restore clickhouse backup #0 to clickhouse02
+    And we execute query on clickhouse02
+    """
+    SELECT n FROM test_db.local_data ORDER BY n
+    """
+    Then we get response
+    """
+    1
+    2
+    3
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT engine FROM system.tables WHERE database = 'test_db' AND name = 'local_mysql'
+    """
+    Then we get response
+    """
+    MySQL
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT engine FROM system.databases WHERE name = 'remote_mysql'
+    """
+    Then we get response
+    """
+    MySQL
+    """
+    When we try to execute command on clickhouse02
+    """
+    clickhouse-client --query 'SHOW TABLES FROM remote_mysql'
+    """
+    Then we get response contains
+    """
+    Connections to mysql failed
+    """
+    When we try to execute command on clickhouse02
+    """
+    clickhouse-client --query 'SELECT * FROM test_db.local_mysql'
+    """
+    Then we get response contains
+    """
+    Connections to mysql failed
+    """
+
   @S3
   Scenario: Create backup containing s3 tables
     Given we execute query on clickhouse01
@@ -426,6 +484,24 @@ Feature: Backup of tables with different engines and configurations
       | num | state    | data_count | link_count   |
       | 0   | created  | 20         | 0            |
     When we restore clickhouse backup #0 to clickhouse02
+    When we execute queries on clickhouse02
+    """
+    SYSTEM FLUSH LOGS;
+    """
+    When we execute query on clickhouse02
+    """
+    SELECT countIf(query LIKE 'SYSTEM START VIEW %') = 1
+      AND minIf(query_start_time_microseconds, query LIKE 'ATTACH MATERIALIZED VIEW%')
+        > maxIf(query_start_time_microseconds, query LIKE 'ALTER TABLE%ATTACH PART%')
+      AND minIf(query_start_time_microseconds, query LIKE 'SYSTEM START VIEW %')
+        > maxIf(query_start_time_microseconds, query LIKE 'ATTACH MATERIALIZED VIEW%')
+    FROM system.query_log
+    WHERE type = 'QueryFinish'
+    """
+    Then we get response
+    """
+    1
+    """
     Then clickhouse02 has same schema as clickhouse01
     And we got same clickhouse data at clickhouse01 clickhouse02
 
@@ -486,16 +562,39 @@ Feature: Backup of tables with different engines and configurations
     And we got same clickhouse data at clickhouse01 clickhouse02
 
   @storage_proxy
-  Scenario: Create backup containing StorageProxy table
+  Scenario Outline: Backup and restore unreachable source with <loading> tables
     Given we have executed queries on clickhouse01
     """
-    CREATE DATABASE test_db;
-
-    CREATE TABLE test_db.table_01 (date Date, n Int32) AS url('http://127.0.0.1:12345/', CSV)
+    CREATE DATABASE test_db ENGINE = Atomic <settings>;
+    CREATE TABLE test_db.table_01 (date Date, n Int32) AS url('http://127.0.0.1:12345/', CSV);
+    CREATE TABLE test_db.table_02 (n Int32) ENGINE = MergeTree ORDER BY n;
+    INSERT INTO test_db.table_02 VALUES (1), (2), (3);
+    DETACH DATABASE test_db;
+    ATTACH DATABASE test_db;
     """
     When we create clickhouse01 clickhouse backup
     Then we got the following backups on clickhouse01
       | num | state   | data_count | link_count |
-      | 0   | created | 0          | 0          |
+      | 0   | created | 1          | 0          |
     When we restore clickhouse backup #0 to clickhouse02
     Then clickhouse02 has same schema as clickhouse01
+
+    When we execute query on clickhouse02
+    """
+    SELECT n FROM test_db.table_02 ORDER BY n
+    """
+    Then we get response
+    """
+    1
+    2
+    3
+    """
+
+    Examples:
+      | loading | settings |
+      | eager   |          |
+
+    @require_version_26.2
+    Examples:
+      | loading | settings                      |
+      | lazy    | SETTINGS lazy_load_tables=1   |

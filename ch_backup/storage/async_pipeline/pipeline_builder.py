@@ -56,6 +56,8 @@ class PipelineBuilder:
     def __init__(self, config: dict) -> None:
         self._config = config
         self._stages: list[PypelnStage] = []
+        # Process-wide pypeln setting, set per pipeline since spawned workers do not inherit it.
+        pypeln_utils.TIMEOUT = config["pipeline"]["queue_poll_interval"]
 
     def build_iterable_stage(self, iterable: Iterable[Any]) -> "PipelineBuilder":
         """
@@ -105,9 +107,10 @@ class PipelineBuilder:
         queue_size = stage_config["queue_size"]
 
         self.append(
-            thread_map(
+            thread_flat_map(
                 DecompressStage(
                     compressor,
+                    self._config[WriteFilesStage.stype]["chunk_size"],
                 ),
                 maxsize=queue_size,
             )
@@ -179,11 +182,13 @@ class PipelineBuilder:
 
         return self
 
-    def build_encrypt_stage(self) -> "PipelineBuilder":
+    def build_encrypt_stage(
+        self, encryption_config: dict | None = None
+    ) -> "PipelineBuilder":
         """
         Build encrypting stage.
         """
-        stage_config = self._config[EncryptStage.stype]
+        stage_config = encryption_config or self._config[EncryptStage.stype]
 
         buffer_size = stage_config["buffer_size"]
         chunk_size = stage_config["chunk_size"]
@@ -197,11 +202,13 @@ class PipelineBuilder:
 
         return self
 
-    def build_decrypt_stage(self) -> "PipelineBuilder":
+    def build_decrypt_stage(
+        self, encryption_config: dict | None = None
+    ) -> "PipelineBuilder":
         """
         Build decrypting stage.
         """
-        stage_config = self._config[EncryptStage.stype]
+        stage_config = encryption_config or self._config[EncryptStage.stype]
 
         buffer_size = stage_config["buffer_size"]
         chunk_size = stage_config["chunk_size"]
@@ -343,12 +350,14 @@ class PipelineBuilder:
         """
         stage_config = self._config[WriteFilesStage.stype]
         buffer_size = stage_config["buffer_size"]
+        chunk_size = stage_config["chunk_size"]
         queue_size = stage_config["queue_size"]
 
         self.append(
+            thread_flat_map(ChunkingStage(chunk_size, chunk_size), maxsize=queue_size),
             thread_map(
                 UnpackTarballStage(stage_config, buffer_size), maxsize=queue_size
-            )
+            ),
         )
         return self
 

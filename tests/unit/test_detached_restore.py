@@ -1,5 +1,6 @@
 """Unit tests for restoring detached ClickHouse data parts."""
 
+from functools import partial
 from typing import Any, Callable
 from unittest.mock import MagicMock, patch
 
@@ -10,6 +11,7 @@ from ch_backup.backup.metadata import (
     DetachedPartMetadata,
     TableMetadata,
 )
+from ch_backup.clickhouse.control import ClickhouseCTL
 from ch_backup.clickhouse.models import Database, Table
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.logic.table import TableBackup
@@ -55,8 +57,11 @@ def _context(part: DetachedPartMetadata) -> tuple[MagicMock, TableMetadata, Tabl
     table_meta.add_detached_part(part)
     table = _table()
     context.ch_ctl.get_table.return_value = table
-    context.ch_ctl.get_detached_part_path.side_effect = (
-        lambda _table, disk, name: f"/data/{disk}/detached/{name}"
+    context.ch_ctl.get_detached_part_path.side_effect = partial(
+        ClickhouseCTL.get_detached_part_path, context.ch_ctl
+    )
+    context.ch_ctl._get_table_detached_path.side_effect = (  # pylint: disable=protected-access
+        lambda _table, disk: f"/data/{disk}/detached"
     )
     return context, table_meta, table
 
