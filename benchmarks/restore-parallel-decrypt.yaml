@@ -1,0 +1,5 @@
+restore:
+  local_data:
+    decrypt_threads: auto
+filesystem:
+  chunk_size: 8388608

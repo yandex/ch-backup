@@ -1,5 +1,7 @@
 """Validate bounded local restore pipeline settings."""
 
+import os
+
 from ch_backup.config import DEFAULT_CONFIG, Config
 from ch_backup.exceptions import ConfigurationError
 
@@ -11,6 +13,14 @@ def local_restore_options(config: Config | dict) -> dict:
     if not isinstance(configured, dict):
         raise ConfigurationError("restore.local_data must be a mapping")
     options = {**DEFAULT_CONFIG["restore"]["local_data"], **configured}
+    if options["decrypt_threads"] == "auto":
+        get_affinity = getattr(os, "sched_getaffinity", None)
+        try:
+            available = len(get_affinity(0)) if get_affinity else None
+        except (OSError, NotImplementedError):
+            available = None
+        options["decrypt_threads"] = available or os.cpu_count() or 1
+
     for name in ("encryption_queue_size", "filesystem_queue_size", "decrypt_threads"):
         value = options[name]
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:

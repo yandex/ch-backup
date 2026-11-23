@@ -52,7 +52,7 @@ class BytesFIFO:
 
         return ret
 
-    def write(self, data: bytes) -> int:
+    def write(self, data: bytes | memoryview) -> int:
         """
         Write as many bytes of ``data`` as are free in the FIFO.
 

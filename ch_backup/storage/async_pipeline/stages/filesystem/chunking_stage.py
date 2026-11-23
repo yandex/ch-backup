@@ -37,13 +37,14 @@ class ChunkingStage(Handler):
             offset = 0
             if not self._buffer.empty():
                 offset = min(self._chunk_size - len(self._buffer), len(value))
-                self._buffer.write(value[:offset])
+                self._buffer.write(memoryview(value)[:offset])
                 if self._buffer.full():
                     yield self._buffer.read()
             while offset + self._chunk_size <= len(value):
                 yield value[offset : offset + self._chunk_size]
                 offset += self._chunk_size
-            self._buffer.write(value[offset:])
+            if offset < len(value):
+                self._buffer.write(memoryview(value)[offset:])
             return
 
         while len(value) > 0:
