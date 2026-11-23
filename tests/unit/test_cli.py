@@ -242,7 +242,7 @@ def test_copy_command_masks_config_parameter_secrets_in_log(
     assert secret not in logged
     assert "also-secret" not in logged
     assert "resolver-user" not in logged and "resolver-password" not in logged
-    assert "visible" in logged
+    assert "visible" not in logged
     assert "[HIDDEN]" in logged
 
 

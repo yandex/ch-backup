@@ -115,6 +115,10 @@ class Table(SimpleNamespace):
             path, disk = self.paths_with_disks[0]
             self.path_on_disk = os.path.relpath(path, disk.path)
 
+    def __repr__(self) -> str:
+        """Identify the table without exposing its schema or storage credentials."""
+        return f"Table(database={self.database!r}, name={self.name!r})"
+
     @property
     def uuid(self) -> str | None:
         """
@@ -277,6 +281,10 @@ class Database(SimpleNamespace):
         self.uuid = uuid
         self.engine_full = engine_full
 
+    def __repr__(self) -> str:
+        """Identify the database without exposing engine arguments."""
+        return f"Database(name={self.name!r})"
+
     def is_atomic(self) -> bool:
         """
         Return True if database engine is Atomic or derived.
@@ -319,7 +327,7 @@ class Database(SimpleNamespace):
         match = re.search(r"(?i)Engine\s*=\s*(?P<engine>\S+)", db_sql)
         if match is None:
             ch_backup.logging.warning(
-                f'Failed to parse engine for database "{self.name}", from query: "{db_sql}"'
+                f'Failed to parse engine for database "{self.name}"'
             )
         else:
             self.engine = match.group("engine")

@@ -72,9 +72,7 @@ class WorkloadEntity:
                 parent=None,
             )
 
-        raise RuntimeError(
-            f"Cannot parse workload entity from statement: {create_statement!r}",
-        )
+        raise RuntimeError("Cannot parse workload entity from statement")
 
 
 class WorkloadEntitiesBackup(BackupManager):

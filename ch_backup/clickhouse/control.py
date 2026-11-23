@@ -324,10 +324,8 @@ GET_DDL_QUEUE_STATUS_SQL = strip_query(
     """
     SELECT
         entry,
-        query,
         status,
-        exception_code,
-        exception_text
+        exception_code
     FROM system.distributed_ddl_queue
     WHERE cluster = {db_name}
       AND status != 'Finished'
@@ -1103,13 +1101,13 @@ class ClickhouseCTL:
         """
         Restore database.
         """
-        self._ch_client.query(database_schema)
+        self._ch_client.query(database_schema, sensitive=True)
 
     def restore_udf(self, udf_statement):
         """
         Restore user defined function.
         """
-        self._ch_client.query(udf_statement)
+        self._ch_client.query(udf_statement, sensitive=True)
 
     def restore_named_collection(self, nc_statement):
         """
@@ -1213,7 +1211,7 @@ class ClickhouseCTL:
         """
         Restore workload entity (WORKLOAD or RESOURCE).
         """
-        self._ch_client.query(entity_statement)
+        self._ch_client.query(entity_statement, sensitive=True)
 
     def create_table(self, table: Table) -> None:
         """
@@ -1226,7 +1224,7 @@ class ClickhouseCTL:
         settings = (
             {"allow_experimental_unique_key": 1} if table.has_unique_key() else None
         )
-        self._ch_client.query(table.create_statement, settings=settings)
+        self._ch_client.query(table.create_statement, settings=settings, sensitive=True)
 
     def restore_replica(self, table: Table) -> None:
         """
@@ -1387,7 +1385,7 @@ class ClickhouseCTL:
     def get_ddl_queue_unfinished_status(self, db_name: str) -> list[dict]:
         """
         Get pending DDL entries from system.distributed_ddl_queue for a replicated database.
-        Returns list of entries with status, exception_code and exception_text.
+        Returns entry names, statuses and exception codes.
         An empty list means all DDL entries have been processed (sync is complete).
         """
         try:
@@ -1811,7 +1809,8 @@ class ClickhouseCTL:
         # Hex encoding preserves quotes, backslashes and whitespace in the input.
         query_hex = query.encode("utf-8").hex()
         resp = self._ch_client.query(
-            f"SELECT formatQuerySingleLine(unhex('{query_hex}')) AS query FORMAT JSON"
+            f"SELECT formatQuerySingleLine(unhex('{query_hex}')) AS query FORMAT JSON",
+            sensitive=True,
         )
         return resp["data"][0]["query"]
 
