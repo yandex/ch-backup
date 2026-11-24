@@ -137,7 +137,7 @@ def test_restore_attaches_parts_in_source_order(tmp_path, newest_source):
     assert all(context.restore_context.part_restored(part) for part in parts)
 
 
-def test_restore_recovers_all_actual_local_disks_before_skipping_restored_parts(
+def test_restore_clears_only_local_workspaces_for_already_restored_parts(
     tmp_path,
 ):
     context = _make_backup_context()
@@ -150,17 +150,22 @@ def test_restore_recovers_all_actual_local_disks_before_skipping_restored_parts(
     context.restore_context.change_part_state(PartState.RESTORED, part)
     context.ch_ctl = controller = Mock()
     context.backup_layout = layout = Mock()
-    paths = [tmp_path / "first", tmp_path / "second"]
-    controller.get_table.return_value.paths_with_disks = [
-        (str(path), Disk(path.name, str(path), "Local")) for path in paths
+    disks = [
+        Disk(name, str(tmp_path / name), kind)
+        for name, kind in [("first", "Local"), ("second", "Local"), ("archive", "S3")]
     ]
-    roots = [path / "detached" / ".ch-backup-restore" for path in paths]
-    for root in roots:
+    controller.get_table.return_value.paths_with_disks = [
+        (disk.path, disk) for disk in disks
+    ]
+    roots = {
+        disk.name: Path(disk.path) / "detached" / ".ch-backup-restore" for disk in disks
+    }
+    for root in roots.values():
         (root / "incoming" / "all_2_2_0").mkdir(parents=True)
     TableBackup._restore_data(  # pylint: disable=protected-access
         context, [metadata], Mock(), False, False
     )
-    assert all(not root.exists() for root in roots)
+    assert {name for name, root in roots.items() if root.exists()} == {"archive"}
     controller.get_detached_part_path.assert_not_called()
     layout.download_data_part.assert_not_called()
     controller.attach_part.assert_not_called()

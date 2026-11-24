@@ -20,6 +20,7 @@ from ch_backup.clickhouse.disks import (
     ClickHouseTemporaryDisks,
 )
 from ch_backup.clickhouse.object_storage_metadata import parse_object_storage_metadata
+from ch_backup.logic.part_restore import LOCAL_RESTORE_DIR
 from ch_backup.storage.engine.s3.s3_engine import S3StorageEngine
 
 
@@ -125,16 +126,16 @@ def interrupt_inplace_copy(filename: str, arguments: list[str]) -> None:
 
 def interrupt_local_publication(part: str, arguments: list[str]) -> None:
     """Exit between removing the old detached part and publishing its replacement."""
-    rename = os.rename
+    rmtree = shutil.rmtree
 
-    def interrupted_rename(source, destination):
-        if Path(source).parts[-2:] == ("incoming", part):
-            assert Path(destination).parts[-2:] == ("detached", part)
-            assert not os.path.lexists(destination)
+    def interrupt_after_removal(path, *args, **kwargs):
+        rmtree(path, *args, **kwargs)
+        if Path(path).parts[-2:] == ("detached", part):
+            staged = Path(path).parent / LOCAL_RESTORE_DIR / "incoming" / part
+            assert (staged / "checksums.txt").stat().st_size > 0
             os._exit(86)
-        rename(source, destination)
 
-    with patch("ch_backup.logic.part_restore.os.rename", interrupted_rename):
+    with patch("ch_backup.logic.part_restore.shutil.rmtree", interrupt_after_removal):
         _run_patched_cli(arguments)
 
 

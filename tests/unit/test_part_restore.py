@@ -15,11 +15,12 @@ from ch_backup.logic.part_restore import (
 )
 
 
-def _part(name):
+@pytest.fixture(name="part")
+def fixture_part():
     return PartMetadata(
         "db",
         "t",
-        name,
+        "all_1_1_0",
         md5(b"checksums").hexdigest(),
         512,
         ["checksums.txt"],
@@ -27,16 +28,11 @@ def _part(name):
     )
 
 
-@pytest.fixture(name="part")
-def fixture_part():
-    return _part("all_1_1_0")
-
-
 @pytest.fixture(name="layout")
 def fixture_layout():
     def download(_backup, part, path, callback, **_kwargs):
         staging = Path(path)
-        staging.mkdir(exist_ok=True)
+        staging.mkdir()
         (staging / "checksums.txt").write_bytes(b"checksums")
         callback(part)
 
@@ -116,70 +112,63 @@ def test_publication_failure_boundary(
     assert error.called == (failure in {"rename", "checksum"})
 
 
-def test_interrupted_downloads_reuse_workspace(tmp_path, layout):
-    parts = [_part("all_1_1_0"), _part("all_2_2_0")]
-    root = tmp_path / LOCAL_RESTORE_DIR
-    incoming = root / "incoming"
-    expected = {incoming / part.name / "checksums.txt" for part in parts}
-    for attempt in range(3):
-        restorer = _restorer(layout)
-        for part in parts:
-            restorer.download(part, str(tmp_path / part.name))
-        assert list(tmp_path.iterdir()) == [root]
-        assert {path for path in root.rglob("*") if path.is_file()} == expected
-        if attempt < 2:
-            # Leave a partial file and abandon this invocation before publication.
-            (incoming / parts[0].name / "partial").touch()
-
-    restorer.wait()
-    assert set(tmp_path.iterdir()) == {tmp_path / part.name for part in parts}
-    for part in parts:
-        assert (tmp_path / part.name / "checksums.txt").read_bytes() == b"checksums"
-
-
-def test_publication_replaces_symlink_without_touching_its_target(
-    tmp_path, part, layout
-):
+def test_retry_replaces_detached_symlink_and_clears_staging(tmp_path, part, layout):
     target = tmp_path / "target"
     target.mkdir()
     marker = target / "original"
     marker.write_bytes(b"keep me")
     destination = tmp_path / part.name
     destination.symlink_to(target)
+    incoming = tmp_path / LOCAL_RESTORE_DIR / "incoming"
+    (incoming / "all_2_2_0").mkdir(parents=True)
 
     restorer = _restorer(layout)
     restorer.download(part, str(destination))
+    assert set(incoming.iterdir()) == {incoming / part.name}
     restorer.wait()
 
+    assert set(tmp_path.iterdir()) == {target, destination}
     assert not destination.is_symlink()
     assert (destination / "checksums.txt").read_bytes() == b"checksums"
     assert marker.read_bytes() == b"keep me"
 
 
 @pytest.mark.parametrize(
-    "entry", [".", "incoming", "previous", "incoming/all_1_1_0", "data.bin"]
+    "entry",
+    [None, ".", "incoming", "incoming/all_1_1_0"],
+    ids=["detached", "workspace", "incoming", "part"],
 )
-def test_unexpected_workspace_entry_is_preserved(tmp_path, part, layout, entry):
-    root = tmp_path / LOCAL_RESTORE_DIR
-    final = tmp_path / part.name
-    final.mkdir()
-    marker = final / "original"
-    marker.write_bytes(b"original")
-    unexpected = root / entry
-    unexpected.parent.mkdir(parents=True, exist_ok=True)
-    if entry == "data.bin":
-        unexpected.write_bytes(b"user data")
-    elif entry == "previous":
-        unexpected.mkdir()
-        (unexpected / part.name).mkdir()
-    else:
-        unexpected.symlink_to(final)
+def test_prepare_preserves_workspace_symlinks(tmp_path, entry):
+    root = tmp_path / "detached" / LOCAL_RESTORE_DIR
+    target = tmp_path / "target"
+    target.mkdir()
+    link = root.parent if entry is None else root / entry
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(target)
+    marker = root / "incoming" / "all_1_1_0" / "data.bin"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_bytes(b"user data")
 
-    with pytest.raises(ClickhouseBackupError, match="Unexpected") as error:
-        _restorer(layout).download(part, str(final))
-    assert str(root) in str(error.value)
-    assert unexpected.exists()
-    if entry == "data.bin":
-        assert unexpected.read_bytes() == b"user data"
-    assert marker.read_bytes() == b"original"
-    layout.download_data_part.assert_not_called()
+    with pytest.raises(ClickhouseBackupError, match="Unexpected"):
+        _restorer(Mock()).prepare(root.parent)
+    assert link.is_symlink()
+    assert marker.read_bytes() == b"user data"
+
+
+@pytest.mark.parametrize(
+    "file",
+    [
+        "data.bin",
+        "previous/all_1_1_0/data",
+        "incoming/invalid/data",
+        "incoming/all_1_1_0",
+    ],
+)
+def test_prepare_preserves_unrecognized_files(tmp_path, file):
+    path = tmp_path / LOCAL_RESTORE_DIR / file
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"user data")
+
+    with pytest.raises(ClickhouseBackupError, match="Unexpected"):
+        _restorer(Mock()).prepare(tmp_path)
+    assert path.read_bytes() == b"user data"

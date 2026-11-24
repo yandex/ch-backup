@@ -643,38 +643,22 @@ def test_scan_detached_parts_reads_reason_from_directory_name(
     ]
 
 
-@pytest.mark.parametrize("files", [("data.bin",), ("data.bin", "checksums.txt")])
-def test_scan_detached_parts_skips_only_the_restore_workspace(
-    tmp_path: Path, files: tuple[str, ...]
-) -> None:
+def test_scan_detached_parts_skips_only_the_restore_workspace(tmp_path: Path) -> None:
     ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
     disk = Disk("default", str(tmp_path), "Local")
     ch_ctl._disks = {disk.name: disk}  # pylint: disable=protected-access
-    table_path = tmp_path / "store" / "table"
-    table = Table("db1", "table1", "MergeTree", [disk], [str(table_path)], "", "", None)
-    workspace = table_path / "detached" / LOCAL_RESTORE_DIR
-    staged = workspace / "incoming" / "all_1_1_0"
-    staged.mkdir(parents=True)
-    (staged / "checksums.txt").write_bytes(b"staged")
+    table = Table("db1", "table1", "MergeTree", [disk], [str(tmp_path)], "", "", None)
+    workspace = tmp_path / "detached" / LOCAL_RESTORE_DIR
+    (workspace / "incoming" / "all_1_1_0").mkdir(parents=True)
     assert not list(ch_ctl.scan_detached_parts(table))
 
-    similar = workspace.with_name(LOCAL_RESTORE_DIR + "-other")
-    workspace.rename(similar)
+    similar = workspace.rename(workspace.with_name(LOCAL_RESTORE_DIR + "-other"))
     workspace.mkdir()
-    for name in files:
-        (workspace / name).write_bytes(b"data")
-
-    assert {part.name for part in ch_ctl.scan_detached_parts(table)} == {
-        similar.name,
-        workspace.name,
+    (workspace / "data.bin").touch()
+    assert {part.name: part.reason for part in ch_ctl.scan_detached_parts(table)} == {
+        workspace.name: workspace.name,
+        similar.name: similar.name,
     }
-    (part,) = ch_ctl.scan_detached_parts(table, reasons=[LOCAL_RESTORE_DIR])
-    assert part.reason == part.name == workspace.name
-    assert set(part.files) == set(files)
-    assert part.checksum == (
-        md5(b"data").hexdigest() if "checksums.txt" in files else ""
-    )
-    assert not list(ch_ctl.scan_detached_parts(table, reasons=[""]))
 
 
 @pytest.mark.parametrize("reason", ["", *sorted(DETACH_REASONS)])

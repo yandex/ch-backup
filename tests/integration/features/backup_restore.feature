@@ -875,7 +875,7 @@ Feature: Backup & Restore
     TO long_names.babacaba;
     """
 
-  Scenario: A truncated local part stays private and a retry restores complete data
+  Scenario: Interrupted replacement reads the backup again and keeps a truncated part private
     Given ch-backup configuration on clickhouse01
     """
     encryption:
@@ -900,7 +900,17 @@ Feature: Backup & Restore
     name: atomic_retry
     tables: [test_db.atomic_retry]
     """
-    And we save and truncate file "data/test_db/atomic_retry/0_1_1_0/0_1_1_0.tar" in clickhouse01 backup #0
+    And we try to execute ch-backup on clickhouse02 with ATTACH failing for test_db.atomic_retry
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf restore atomic_retry --keep-going
+    """
+    Then command exits with code 0
+    When we interrupt a local restore after removing part "0_1_1_0" on clickhouse02
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf restore atomic_retry
+    """
+    Then part "0_1_1_0" of test_db.atomic_retry is not published on clickhouse02
+    When we save and truncate file "data/test_db/atomic_retry/0_1_1_0/0_1_1_0.tar" in clickhouse01 backup #0
     And we restore clickhouse backup #0 to clickhouse02
     """
     keep_going: true
@@ -926,7 +936,7 @@ Feature: Backup & Restore
     100,4950
     """
 
-  Scenario Outline: Retry an interrupted local part replacement from a <layout> backup
+  Scenario Outline: Replace an existing local part after a complete <layout> download
     Given ch-backup configuration on clickhouse01
     """
     backup:
@@ -959,12 +969,7 @@ Feature: Backup & Restore
     table_path=$(clickhouse-client -q "SELECT data_paths[1] FROM system.tables WHERE database='test_db' AND name='atomic_<layout>' FORMAT TSVRaw")
     echo stale > "${table_path}/detached/all_1_1_0/stale.txt"
     """
-    And we interrupt a local restore after removing part "all_1_1_0" on clickhouse02
-    """
-    -c /etc/yandex/ch-backup/ch-backup.conf restore atomic_<layout>
-    """
-    Then part "all_1_1_0" of test_db.atomic_<layout> is not published on clickhouse02
-    When we restore clickhouse backup "atomic_<layout>" to clickhouse02
+    And we restore clickhouse backup "atomic_<layout>" to clickhouse02
     Then part "all_1_1_0" of test_db.atomic_<layout> has restore state "restored" on clickhouse02
     When we execute query on clickhouse02
     """
