@@ -33,7 +33,7 @@ regardless of download completion order. Saved failure details survive restores
 of other tables; a part's error is removed after that part is successfully attached.
 Only failures from the current invocation affect its exit code.
 
-Local parts are downloaded to `detached/.ch-backup-restore/incoming/<part>` on
+Local parts are downloaded to `detached/.ch-backup-restore/<part>` on
 each destination disk. Each part name must be a single directory name. Nested
 paths in per-file backups must stay inside staging. Restore accepts early TAR
 backups that omit all padding after the last complete file.
@@ -591,9 +591,8 @@ metadata, and an individual detached-part failure does not fail the regular
 table backup. Executor failures and termination signals still abort the backup.
 
 The local restore workspace at `detached/.ch-backup-restore` is excluded from
-detached-part backups if it is empty or its only entry is an `incoming` directory.
-Each entry under `incoming` must be a directory with a valid MergeTree part name.
-The workspace, `incoming` and the part directories must all be real directories.
+detached-part backups if it is empty or contains only directories with valid
+MergeTree part names. The workspace and the part directories must all be real directories.
 A user-created directory with this exact name and layout is also
 treated as a workspace and may be removed during restore. A user-detached
 directory of the same name with other contents is eligible for backup under the

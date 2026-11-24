@@ -119,12 +119,12 @@ def test_retry_replaces_detached_symlink_and_clears_staging(tmp_path, part, layo
     marker.write_bytes(b"keep me")
     destination = tmp_path / part.name
     destination.symlink_to(target)
-    incoming = tmp_path / LOCAL_RESTORE_DIR / "incoming"
-    (incoming / "all_2_2_0").mkdir(parents=True)
+    workspace = tmp_path / LOCAL_RESTORE_DIR
+    (workspace / "all_2_2_0").mkdir(parents=True)
 
     restorer = _restorer(layout)
     restorer.download(part, str(destination))
-    assert set(incoming.iterdir()) == {incoming / part.name}
+    assert set(workspace.iterdir()) == {workspace / part.name}
     restorer.wait()
 
     assert set(tmp_path.iterdir()) == {target, destination}
@@ -135,8 +135,8 @@ def test_retry_replaces_detached_symlink_and_clears_staging(tmp_path, part, layo
 
 @pytest.mark.parametrize(
     "entry",
-    [None, ".", "incoming", "incoming/all_1_1_0"],
-    ids=["detached", "workspace", "incoming", "part"],
+    [None, ".", "all_1_1_0"],
+    ids=["detached", "workspace", "part"],
 )
 def test_prepare_preserves_workspace_symlinks(tmp_path, entry):
     root = tmp_path / "detached" / LOCAL_RESTORE_DIR
@@ -145,7 +145,7 @@ def test_prepare_preserves_workspace_symlinks(tmp_path, entry):
     link = root.parent if entry is None else root / entry
     link.parent.mkdir(parents=True, exist_ok=True)
     link.symlink_to(target)
-    marker = root / "incoming" / "all_1_1_0" / "data.bin"
+    marker = root / "all_1_1_0" / "data.bin"
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_bytes(b"user data")
 
@@ -157,12 +157,7 @@ def test_prepare_preserves_workspace_symlinks(tmp_path, entry):
 
 @pytest.mark.parametrize(
     "file",
-    [
-        "data.bin",
-        "previous/all_1_1_0/data",
-        "incoming/invalid/data",
-        "incoming/all_1_1_0",
-    ],
+    ["invalid/data", "all_1_1_0"],
 )
 def test_prepare_preserves_unrecognized_files(tmp_path, file):
     path = tmp_path / LOCAL_RESTORE_DIR / file

@@ -20,20 +20,13 @@ def is_local_restore_workspace(root: Path) -> bool:
     """Recognize the reserved staging layout, even before it contains parts."""
     if root.name != LOCAL_RESTORE_DIR or root.is_symlink() or not root.is_dir():
         return False
-    for directory in root.iterdir():
-        if (
-            directory.name != "incoming"
-            or directory.is_symlink()
-            or not directory.is_dir()
-        ):
+    for entry in root.iterdir():
+        if entry.is_symlink() or not entry.is_dir():
             return False
-        for entry in directory.iterdir():
-            try:
-                split_part_name(entry.name)
-            except ValueError:
-                return False
-            if entry.is_symlink() or not entry.is_dir():
-                return False
+        try:
+            split_part_name(entry.name)
+        except ValueError:
+            return False
     return True
 
 
@@ -113,8 +106,8 @@ class LocalPartRestorer:
         final = Path(destination)
         self.prepare(final.parent)
         root = final.parent / LOCAL_RESTORE_DIR
-        staging = root / "incoming" / final.name
-        staging.parent.mkdir(parents=True, exist_ok=True)
+        root.mkdir(parents=True, exist_ok=True)
+        staging = root / final.name
 
         def downloaded(_part: PartMetadata) -> None:
             self._completed.append((part, staging, final))

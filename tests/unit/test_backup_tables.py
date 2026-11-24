@@ -161,7 +161,7 @@ def test_restore_clears_only_local_workspaces_for_already_restored_parts(
         disk.name: Path(disk.path) / "detached" / ".ch-backup-restore" for disk in disks
     }
     for root in roots.values():
-        (root / "incoming" / "all_2_2_0").mkdir(parents=True)
+        (root / "all_2_2_0").mkdir(parents=True)
     TableBackup._restore_data(  # pylint: disable=protected-access
         context, [metadata], Mock(), False, False
     )

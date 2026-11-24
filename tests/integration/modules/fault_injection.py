@@ -131,7 +131,7 @@ def interrupt_local_publication(part: str, arguments: list[str]) -> None:
     def interrupt_after_removal(path, *args, **kwargs):
         rmtree(path, *args, **kwargs)
         if Path(path).parts[-2:] == ("detached", part):
-            staged = Path(path).parent / LOCAL_RESTORE_DIR / "incoming" / part
+            staged = Path(path).parent / LOCAL_RESTORE_DIR / part
             assert (staged / "checksums.txt").stat().st_size > 0
             os._exit(86)
 

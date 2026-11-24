@@ -649,7 +649,7 @@ def test_scan_detached_parts_skips_only_the_restore_workspace(tmp_path: Path) ->
     ch_ctl._disks = {disk.name: disk}  # pylint: disable=protected-access
     table = Table("db1", "table1", "MergeTree", [disk], [str(tmp_path)], "", "", None)
     workspace = tmp_path / "detached" / LOCAL_RESTORE_DIR
-    (workspace / "incoming" / "all_1_1_0").mkdir(parents=True)
+    (workspace / "all_1_1_0").mkdir(parents=True)
     assert not list(ch_ctl.scan_detached_parts(table))
 
     similar = workspace.rename(workspace.with_name(LOCAL_RESTORE_DIR + "-other"))
