@@ -17,10 +17,6 @@ from ch_backup import logging
 from ch_backup.backup.metadata import DetachedPartMetadata, TableMetadata
 from ch_backup.backup.metadata.table_metadata import split_part_name
 from ch_backup.backup.restore_context import RestoreContext
-from ch_backup.backup.restore_workspace import (
-    LOCAL_RESTORE_DIR,
-    is_local_restore_workspace,
-)
 from ch_backup.calculators import calc_aligned_files_size
 from ch_backup.clickhouse.client import ClickhouseClient
 from ch_backup.clickhouse.models import (
@@ -34,6 +30,10 @@ from ch_backup.clickhouse.models import (
 )
 from ch_backup.clickhouse.storage_schema import StoragePolicy
 from ch_backup.exceptions import ClickhouseBackupError, ConfigurationError
+from ch_backup.logic.part_restore import (
+    LOCAL_RESTORE_DIR,
+    is_local_restore_workspace,
+)
 from ch_backup.storage.async_pipeline.base_pipeline.exec_pool import ThreadExecPool
 from ch_backup.util import (
     CLOUD_STORAGE_EXCLUDE_FILE_NAMES,

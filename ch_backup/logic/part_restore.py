@@ -10,14 +10,37 @@ from typing import Callable
 
 from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
-from ch_backup.backup.metadata import BackupMetadata, PartMetadata
-from ch_backup.backup.restore_workspace import (
-    LOCAL_RESTORE_DIR,
-    is_local_restore_workspace,
-)
+from ch_backup.backup.metadata import BackupMetadata, PartMetadata, split_part_name
 from ch_backup.calculators import calc_aligned_files_size
 from ch_backup.exceptions import ClickhouseBackupError
 from ch_backup.util import scan_dir_files
+
+LOCAL_RESTORE_DIR = ".ch-backup-restore"
+
+
+def is_local_restore_workspace(root: Path) -> bool:
+    """Recognize the reserved staging layout, even before it contains parts."""
+    if root.name != LOCAL_RESTORE_DIR or root.is_symlink() or not root.is_dir():
+        return False
+    for directory in root.iterdir():
+        if (
+            directory.name not in {"incoming", "previous"}
+            or directory.is_symlink()
+            or not directory.is_dir()
+        ):
+            return False
+        for entry in directory.iterdir():
+            try:
+                split_part_name(entry.name)
+            except ValueError:
+                return False
+            # An old detached destination may itself have been a symlink.
+            if entry.is_symlink():
+                if directory.name != "previous":
+                    return False
+            elif not entry.is_dir():
+                return False
+    return True
 
 
 def check_local_part(part: PartMetadata, path: str) -> None:

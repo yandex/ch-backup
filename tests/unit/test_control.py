@@ -8,7 +8,6 @@ from unittest import mock
 import pytest
 
 from ch_backup.backup.metadata import DetachedPartMetadata
-from ch_backup.backup.restore_workspace import LOCAL_RESTORE_DIR
 from ch_backup.clickhouse.control import (
     ClickhouseCTL,
     _format_string_array,
@@ -17,6 +16,7 @@ from ch_backup.clickhouse.control import (
 )
 from ch_backup.clickhouse.models import DETACH_REASONS, Disk, Table
 from ch_backup.exceptions import ClickhouseBackupError
+from ch_backup.logic.part_restore import LOCAL_RESTORE_DIR
 from tests.unit.utils import parametrize
 
 

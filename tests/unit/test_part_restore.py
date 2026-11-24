@@ -8,9 +8,12 @@ from unittest.mock import Mock
 import pytest
 
 from ch_backup.backup.metadata import PartMetadata
-from ch_backup.backup.restore_workspace import LOCAL_RESTORE_DIR
 from ch_backup.exceptions import ClickhouseBackupError
-from ch_backup.logic.part_restore import LocalPartRestorer, check_local_part
+from ch_backup.logic.part_restore import (
+    LOCAL_RESTORE_DIR,
+    LocalPartRestorer,
+    check_local_part,
+)
 
 
 @pytest.fixture(name="part")

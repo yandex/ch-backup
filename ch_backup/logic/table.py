@@ -22,7 +22,6 @@ from ch_backup.backup.deduplication import StoredFiles, deduplicate_parts
 from ch_backup.backup.metadata import DetachedPartMetadata, PartMetadata, TableMetadata
 from ch_backup.backup.metadata.table_metadata import DataSkippedReason, split_part_name
 from ch_backup.backup.restore_context import PartState
-from ch_backup.backup.restore_workspace import LOCAL_RESTORE_DIR
 from ch_backup.backup_context import BackupContext
 from ch_backup.clickhouse.client import ClickhouseError
 from ch_backup.clickhouse.disks import ClickHouseBackupDisks, ClickHouseTemporaryDisks
@@ -36,7 +35,7 @@ from ch_backup.clickhouse.schema import (
 )
 from ch_backup.exceptions import ClickhouseBackupError, is_broken_executor
 from ch_backup.logic.backup_manager import BackupManager
-from ch_backup.logic.part_restore import LocalPartRestorer
+from ch_backup.logic.part_restore import LOCAL_RESTORE_DIR, LocalPartRestorer
 from ch_backup.logic.storage_schema_restore import (
     StorageSchemaRestore,
     restore_disk_name,
