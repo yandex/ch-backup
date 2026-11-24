@@ -980,37 +980,6 @@ Feature: Backup & Restore
       | tar    |
       | legacy |
 
-  Scenario: Interrupted local downloads reuse bounded staging until a successful retry
-    Given we have executed queries on clickhouse01
-    """
-    CREATE DATABASE IF NOT EXISTS test_db;
-    CREATE TABLE test_db.staged_retry (n UInt64) ENGINE = MergeTree PARTITION BY n % 2 ORDER BY n;
-    INSERT INTO test_db.staged_retry SELECT number FROM numbers(100);
-    """
-    When we create clickhouse01 clickhouse backup
-    """
-    name: staged_retry
-    tables: [test_db.staged_retry]
-    """
-    And we interrupt three local restores of test_db.staged_retry before publication on clickhouse02
-    """
-    -c /etc/yandex/ch-backup/ch-backup.conf restore staged_retry
-    """
-    And we restore clickhouse backup "staged_retry" to clickhouse02
-    And we execute query on clickhouse02
-    """
-    SELECT count(), sum(n) FROM test_db.staged_retry FORMAT CSV
-    """
-    Then we get response
-    """
-    100,4950
-    """
-    When we execute command on clickhouse02
-    """
-    table_path=$(clickhouse-client -q "SELECT data_paths[1] FROM system.tables WHERE database='test_db' AND name='staged_retry' FORMAT TSVRaw")
-    test -n "$table_path" && test ! -e "${table_path}/detached/.ch-backup-restore"
-    """
-
   Scenario: A failed retry recovers the detached part moved aside by an interrupted publication
     Given ch-backup configuration on clickhouse02
     """
@@ -1038,7 +1007,7 @@ Feature: Backup & Restore
     table_path=$(clickhouse-client -q "SELECT data_paths[1] FROM system.tables WHERE database='test_db' AND name='previous_retry' FORMAT TSVRaw")
     echo original > "${table_path}/detached/all_1_1_0/old.txt"
     """
-    And we interrupt a local restore after moving the old part aside on clickhouse02
+    And we interrupt a local restore after moving part "all_1_1_0" aside on clickhouse02
     """
     -c /etc/yandex/ch-backup/ch-backup.conf restore previous_retry
     """

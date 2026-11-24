@@ -114,18 +114,16 @@ Feature: Detached parts backup and restore
     """
     When we create clickhouse01 clickhouse backup
     """
-    tables:
-      - detached_db.reserved_name
+    tables: [detached_db.reserved_name]
     detached_parts: true
-    detached_parts_disks:
-      - default
+    detached_parts_disks: [default]
     """
-    And we drop all databases at clickhouse02
-    And we restore clickhouse backup #0 to clickhouse02
+    Then detached archives of "detached_db"."reserved_name" on disk "default" in clickhouse01 backup #0 match source parts
+    When we restore clickhouse backup #0 to clickhouse02
     """
     restore_detached_parts: true
     """
-    Then detached part ".ch-backup-restore_try1" of "detached_db"."reserved_name" on clickhouse02 matches ".ch-backup-restore" on clickhouse01
+    Then detached archives of "detached_db"."reserved_name" on disk "default" in clickhouse01 backup #0 match parts with suffix "_try1" on clickhouse02
 
   Scenario: Detached parts are not backed up by default
     Given we have executed queries on clickhouse01

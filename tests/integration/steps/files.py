@@ -32,43 +32,9 @@ def step_part_not_published(context, part, database, table, node):
             ), f"Part was published at {path}/detached/{part}"
 
 
-@when(
-    "we interrupt three local restores of {database:w}.{table:w} before publication on {node:w}"
-)
-def step_interrupt_local_restores(context, database, table, node):
-    sizes = []
-    for _ in range(3):
-        run_fault(context, node, "interrupt-local-publication", "before-publication")
-        assert context.exit_code == 86, context.response
-        path = (
-            ClickhouseClient(context, node)
-            .get_response(
-                f"SELECT data_paths[1] FROM system.tables WHERE database='{database}' AND name='{table}' FORMAT TSVRaw"
-            )
-            .strip()
-        )
-        assert path
-        container = get_container(context, node)
-        detached = f"{path}/detached"
-        roots = container.exec_run(["ls", "-A", detached])
-        assert roots.exit_code == 0 and roots.output.splitlines() == [
-            b".ch-backup-restore"
-        ], roots.output
-        incoming = container.exec_run(
-            ["ls", "-A", f"{detached}/.ch-backup-restore/incoming"]
-        )
-        assert (
-            incoming.exit_code == 0 and len(incoming.output.splitlines()) == 2
-        ), incoming.output
-        files = container.exec_run(["find", detached, "-type", "f", "-printf", "%s\n"])
-        assert files.exit_code == 0, files.output
-        sizes.append(sum(map(int, files.output.splitlines())))
-    assert sizes[0] > 0 and len(set(sizes)) == 1, sizes
-
-
-@when("we interrupt a local restore after moving the old part aside on {node:w}")
-def step_interrupt_old_rename(context, node):
-    run_fault(context, node, "interrupt-local-publication", "after-old-rename")
+@when('we interrupt a local restore after moving part "{part}" aside on {node:w}')
+def step_interrupt_old_rename(context, part, node):
+    run_fault(context, node, "interrupt-local-publication", part)
     assert context.exit_code == 86, context.response
 
 

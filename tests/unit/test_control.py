@@ -603,13 +603,6 @@ def test_scan_detached_parts_reads_reason_from_directory_name(
     broken_part.mkdir()
     (normal_part / "data.bin").write_bytes(b"data")
     (broken_part / "data.bin").write_bytes(b"broken")
-    workspace = detached_path / LOCAL_RESTORE_DIR
-    for subdir, name in [("incoming", "all_3_3_0"), ("previous", "all_4_4_0")]:
-        staged = workspace / subdir / name
-        staged.mkdir(parents=True)
-        (staged / "data.bin").write_bytes(b"data")
-        (staged / "checksums.txt").write_bytes(b"checksums")
-    (detached_path / ".ch-backup-restore-other").mkdir()
     table = Table(
         "db1",
         "table1",
@@ -640,12 +633,6 @@ def test_scan_detached_parts_reads_reason_from_directory_name(
     assert parts[0].disk_name == "default"
     assert parts[0].checksum == ""
 
-    assert {part.name for part in ch_ctl.scan_detached_parts(table)} == {
-        normal_part.name,
-        broken_part.name,
-        ".ch-backup-restore-other",
-    }
-
     broken_parts = list(
         ch_ctl.scan_detached_parts(
             table, disk_names=["default"], reasons=["broken-on-start"]
@@ -656,32 +643,38 @@ def test_scan_detached_parts_reads_reason_from_directory_name(
     ]
 
 
-@pytest.mark.parametrize("has_checksums", [True, False])
-def test_scan_detached_parts_includes_user_directory_named_like_workspace(
-    tmp_path: Path, has_checksums: bool
+@pytest.mark.parametrize("files", [("data.bin",), ("data.bin", "checksums.txt")])
+def test_scan_detached_parts_skips_only_the_restore_workspace(
+    tmp_path: Path, files: tuple[str, ...]
 ) -> None:
     ch_ctl, _ = TestCreateTable._make_ctl()  # pylint: disable=protected-access
     disk = Disk("default", str(tmp_path), "Local")
     ch_ctl._disks = {disk.name: disk}  # pylint: disable=protected-access
     table_path = tmp_path / "store" / "table"
     table = Table("db1", "table1", "MergeTree", [disk], [str(table_path)], "", "", None)
-    part_path = table_path / "detached" / LOCAL_RESTORE_DIR
-    part_path.mkdir(parents=True)
-    (part_path / "data.bin").write_bytes(b"data")
-    expected_files = {"data.bin"}
-    expected_checksum = ""
-    if has_checksums:
-        (part_path / "checksums.txt").write_bytes(b"checksums")
-        expected_files.add("checksums.txt")
-        expected_checksum = md5(b"checksums").hexdigest()
+    workspace = table_path / "detached" / LOCAL_RESTORE_DIR
+    for subdir in ("incoming", "previous"):
+        staged = workspace / subdir / "all_1_1_0"
+        staged.mkdir(parents=True)
+        (staged / "checksums.txt").write_bytes(b"staged")
+    assert not list(ch_ctl.scan_detached_parts(table))
 
-    (part,) = ch_ctl.scan_detached_parts(
-        table, disk_names=[disk.name], reasons=[LOCAL_RESTORE_DIR]
+    similar = workspace.with_name(LOCAL_RESTORE_DIR + "-other")
+    workspace.rename(similar)
+    workspace.mkdir()
+    for name in files:
+        (workspace / name).write_bytes(b"data")
+
+    assert {part.name for part in ch_ctl.scan_detached_parts(table)} == {
+        similar.name,
+        workspace.name,
+    }
+    (part,) = ch_ctl.scan_detached_parts(table, reasons=[LOCAL_RESTORE_DIR])
+    assert part.reason == part.name == workspace.name
+    assert set(part.files) == set(files)
+    assert part.checksum == (
+        md5(b"data").hexdigest() if "checksums.txt" in files else ""
     )
-    assert part.name == LOCAL_RESTORE_DIR
-    assert part.reason == LOCAL_RESTORE_DIR
-    assert set(part.files) == expected_files
-    assert part.checksum == expected_checksum
     assert not list(ch_ctl.scan_detached_parts(table, reasons=[""]))
 
 

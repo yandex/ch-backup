@@ -272,69 +272,50 @@ def step_check_backups_conditions(context, node, allow_unreadable=False):
     'detached archives of "{db:w}"."{table:w}" on disk "{disk:w}" in '
     "{node:w} backup #{backup_id:d} match source parts"
 )
+@then(
+    'detached archives of "{db:w}"."{table:w}" on disk "{disk:w}" in '
+    '{node:w} backup #{backup_id:d} match parts with suffix "{suffix}" on {target:w}'
+)
 # pylint: disable=too-many-positional-arguments
-def step_detached_archives_match_source(context, db, table, disk, node, backup_id):
-    """Download, unpack and compare detached archives with their source parts."""
+def step_detached_archives_match_parts(
+    context, db, table, disk, node, backup_id, suffix="", target=None
+):
+    """Compare archived files with the corresponding directories on a ClickHouse node."""
     archives = BackupManager(context, node).download_detached_part_files(
         backup_id, db, table, disk
     )
     assert_that(bool(archives), equal_to(True), "No detached archives were found")
 
-    data_paths = _table_data_paths(context, node, db, table)
-    container = get_container(context, node)
-
-    for part_name, archived_files in archives.items():
-        source_path = _find_detached_source_path(container, data_paths, part_name)
-
-        listed = container.exec_run(
-            ["find", source_path, "-type", "f", "-printf", "%P\n"], user="root"
-        )
-        assert listed.exit_code == 0, listed.output.decode(errors="replace")
-        source_files = set(listed.output.decode().splitlines())
-        assert_that(set(archived_files), equal_to(source_files))
-
-        for file_name, archived_data in archived_files.items():
-            source = container.exec_run(
-                ["cat", f"{source_path}/{file_name}"], user="root"
-            )
-            assert source.exit_code == 0, source.output.decode(errors="replace")
-            assert_that(archived_data, equal_to(source.output))
-
-
-@then(
-    'detached part "{target_part}" of "{db:w}"."{table:w}" on {target:w} '
-    'matches "{source_part}" on {source:w}'
-)
-# pylint: disable=too-many-arguments,too-many-positional-arguments
-def step_detached_parts_match(
-    context, target_part, db, table, target, source_part, source
-):
-    """Compare the relative filenames and contents of detached parts on two nodes."""
-    manifests = []
-    for node, part in [(source, source_part), (target, target_part)]:
-        container = get_container(context, node)
-        data_paths = _table_data_paths(context, node, db, table)
-        path = _find_detached_source_path(container, data_paths, part)
-        result = container.exec_run(
-            ["find", ".", "-type", "f", "-exec", "sha256sum", "{}", "+"],
-            user="root",
-            workdir=path,
-        )
-        assert result.exit_code == 0, result.output.decode(errors="replace")
-        manifests.append(sorted(result.output.splitlines()))
-    assert manifests[0], "The source detached part has no files"
-    assert_that(manifests[1], equal_to(manifests[0]))
-
-
-def _table_data_paths(context, node, db, table):
-    return (
-        ClickhouseClient(context, node)
+    target = target or node
+    data_paths = (
+        ClickhouseClient(context, target)
         .get_response(
             f"SELECT arrayJoin(data_paths) FROM system.tables "
             f"WHERE database = '{db}' AND name = '{table}' FORMAT TSVRaw"
         )
         .splitlines()
     )
+    container = get_container(context, target)
+
+    for part_name, archived_files in archives.items():
+        part_path = _find_detached_source_path(
+            container, data_paths, part_name + suffix
+        )
+
+        listed = container.exec_run(
+            ["find", part_path, "-type", "f", "-printf", "%P\n"], user="root"
+        )
+        assert listed.exit_code == 0, listed.output.decode(errors="replace")
+        assert_that(
+            set(archived_files), equal_to(set(listed.output.decode().splitlines()))
+        )
+
+        for file_name, archived_data in archived_files.items():
+            source = container.exec_run(
+                ["cat", f"{part_path}/{file_name}"], user="root"
+            )
+            assert source.exit_code == 0, source.output.decode(errors="replace")
+            assert_that(archived_data, equal_to(source.output))
 
 
 def _find_detached_source_path(container, data_paths, part_name):

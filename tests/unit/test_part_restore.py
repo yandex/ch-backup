@@ -16,16 +16,37 @@ from ch_backup.logic.part_restore import (
 )
 
 
-@pytest.fixture(name="part")
-def fixture_part():
+def _part(name):
     return PartMetadata(
         "db",
         "t",
-        "all_1_1_0",
+        name,
         md5(b"checksums").hexdigest(),
         512,
         ["checksums.txt"],
         True,
+    )
+
+
+@pytest.fixture(name="part")
+def fixture_part():
+    return _part("all_1_1_0")
+
+
+@pytest.fixture(name="layout")
+def fixture_layout():
+    def download(_backup, part, path, callback, **_kwargs):
+        staging = Path(path)
+        staging.mkdir(exist_ok=True)
+        (staging / "checksums.txt").write_bytes(b"checksums")
+        callback(part)
+
+    return Mock(download_data_part=Mock(side_effect=download))
+
+
+def _restorer(layout):
+    return LocalPartRestorer(
+        layout, Mock(), keep_going=False, on_success=Mock(), on_error=Mock()
     )
 
 
@@ -53,17 +74,10 @@ def test_download_metadata_validation(tmp_path, part, change):
 
 @pytest.mark.parametrize("failure", ["rename", "state", "wait", "checksum"])
 @pytest.mark.parametrize("keep_going", [False, True])
-def test_publication_failure_boundary(tmp_path, part, failure, keep_going, monkeypatch):
-    layout, success, error = Mock(), Mock(), Mock()
-    paths = []
-
-    def download(_backup, downloaded_part, path, callback, **_kwargs):
-        Path(path).mkdir()
-        (Path(path) / "checksums.txt").write_bytes(b"checksums")
-        paths.append(Path(path))
-        callback(downloaded_part)
-
-    layout.download_data_part.side_effect = download
+def test_publication_failure_boundary(
+    tmp_path, part, layout, failure, keep_going, *, monkeypatch
+):
+    success, error = Mock(), Mock()
     if failure == "wait":
         layout.wait.side_effect = RuntimeError("wait")
     if failure == "state":
@@ -73,16 +87,17 @@ def test_publication_failure_boundary(tmp_path, part, failure, keep_going, monke
     )
     destination = tmp_path / part.name
     restorer.download(part, str(destination))
+    staging = Path(layout.download_data_part.call_args.args[2])
     assert not destination.exists()
     if failure in {"rename", "checksum"}:
         destination.mkdir()
         (destination / "original").write_bytes(b"keep me")
     if failure == "checksum":
-        (paths[0] / "checksums.txt").write_bytes(b"corrupt")
+        (staging / "checksums.txt").write_bytes(b"corrupt")
     if failure == "rename":
 
         def fail_publication(src, dst):
-            if Path(src) == paths[0] and Path(dst) == destination:
+            if Path(src) == staging and Path(dst) == destination:
                 raise OSError("rename")
             rename(src, dst)
 
@@ -97,19 +112,36 @@ def test_publication_failure_boundary(tmp_path, part, failure, keep_going, monke
     assert destination.exists() == (failure != "wait")
     if failure in {"rename", "checksum"}:
         assert (destination / "original").read_bytes() == b"keep me"
-    assert paths[0].exists() == (failure == "wait")
+    assert staging.exists() == (failure == "wait")
     assert success.called == (failure == "state")
     assert error.called == (failure in {"rename", "checksum"})
 
 
-@pytest.mark.parametrize(
-    "final_exists,incoming_exists", [(False, True), (True, False), (True, True)]
-)
+def test_interrupted_downloads_reuse_workspace(tmp_path, layout):
+    parts = [_part("all_1_1_0"), _part("all_2_2_0")]
+    root = tmp_path / LOCAL_RESTORE_DIR
+    incoming = root / "incoming"
+    expected = {incoming / part.name / "checksums.txt" for part in parts}
+    for attempt in range(3):
+        restorer = _restorer(layout)
+        for part in parts:
+            restorer.download(part, str(tmp_path / part.name))
+        assert list(tmp_path.iterdir()) == [root]
+        assert {path for path in root.rglob("*") if path.is_file()} == expected
+        if attempt < 2:
+            # Leave a partial file and abandon this invocation before publication.
+            (incoming / parts[0].name / "partial").touch()
+
+    restorer.wait()
+    assert set(tmp_path.iterdir()) == {tmp_path / part.name for part in parts}
+    for part in parts:
+        assert (tmp_path / part.name / "checksums.txt").read_bytes() == b"checksums"
+
+
+@pytest.mark.parametrize("published", [False, True])
 @pytest.mark.parametrize("old_symlink", [False, True])
-def test_recovery_of_interrupted_publication(
-    tmp_path, part, final_exists, incoming_exists, old_symlink
-):
-    root = tmp_path / ".ch-backup-restore"
+def test_recovery_of_interrupted_publication(tmp_path, part, published, old_symlink):
+    root = tmp_path / LOCAL_RESTORE_DIR
     old = root / "previous" / part.name
     staging = root / "incoming" / part.name
     final = tmp_path / part.name
@@ -121,94 +153,60 @@ def test_recovery_of_interrupted_publication(
         old.symlink_to(original)
     else:
         original.rename(old)
-    if incoming_exists:
-        staging.mkdir(parents=True)
-        (staging / "data").write_bytes(b"incoming")
-    if final_exists:
+    if published:
         final.mkdir()
         (final / "data").write_bytes(b"new")
-    restorer = LocalPartRestorer(
-        Mock(), Mock(), keep_going=False, on_success=Mock(), on_error=Mock()
-    )
-    if final_exists and incoming_exists:
-        with pytest.raises(ClickhouseBackupError, match="Conflicting restore paths"):
-            restorer.prepare(tmp_path)
-        assert (old / "data").read_bytes() == b"old"
-        assert (staging / "data").read_bytes() == b"incoming"
     else:
-        restorer.prepare(tmp_path)
-        assert not root.exists()
-        assert final.is_symlink() == (old_symlink and not final_exists)
-    assert (final / "data").read_bytes() == (b"new" if final_exists else b"old")
+        staging.mkdir(parents=True)
+
+    _restorer(Mock()).prepare(tmp_path)
+    assert not root.exists()
+    assert final.is_symlink() == (old_symlink and not published)
+    assert (final / "data").read_bytes() == (b"new" if published else b"old")
     if old_symlink:
         assert (original / "data").read_bytes() == b"old"
 
 
 @pytest.mark.parametrize(
-    "entry", [".", "incoming", "previous", "incoming/all_1_1_0", "unknown"]
+    "entry", [".", "incoming", "previous", "incoming/all_1_1_0", "unknown", "data.bin"]
 )
-def test_unexpected_workspace_entry_is_preserved(tmp_path, entry):
-    root = tmp_path / ".ch-backup-restore"
-    external = tmp_path / "external"
-    external.mkdir()
-    (external / "marker").touch()
-    unexpected = root / entry
-    unexpected.parent.mkdir(parents=True, exist_ok=True)
-    if entry == "unknown":
-        unexpected.mkdir()
-    else:
-        unexpected.symlink_to(external)
-    restorer = LocalPartRestorer(
-        Mock(), Mock(), keep_going=False, on_success=Mock(), on_error=Mock()
-    )
-    with pytest.raises(ClickhouseBackupError, match="Unexpected"):
-        restorer.prepare(tmp_path)
-    assert unexpected.exists()
-    assert (external / "marker").exists()
-
-
-def test_restore_preserves_user_directory_named_like_workspace(tmp_path, part):
+def test_unexpected_workspace_entry_is_preserved(tmp_path, part, layout, entry):
     root = tmp_path / LOCAL_RESTORE_DIR
-    root.mkdir()
-    (root / "checksums.txt").write_bytes(b"user checksums")
-    (root / "data.bin").write_bytes(b"user data")
     final = tmp_path / part.name
     final.mkdir()
-    (final / "data.bin").write_bytes(b"original data")
-    layout = Mock()
-    restorer = LocalPartRestorer(
-        layout, Mock(), keep_going=False, on_success=Mock(), on_error=Mock()
-    )
+    marker = final / "original"
+    marker.write_bytes(b"original")
+    unexpected = root / entry
+    unexpected.parent.mkdir(parents=True, exist_ok=True)
+    if entry == "data.bin":
+        unexpected.write_bytes(b"user data")
+    elif entry == "unknown":
+        unexpected.mkdir()
+    else:
+        unexpected.symlink_to(final)
 
-    with pytest.raises(ClickhouseBackupError) as error:
-        restorer.download(part, str(final))
-
+    with pytest.raises(ClickhouseBackupError, match="Unexpected") as error:
+        _restorer(layout).download(part, str(final))
     assert str(root) in str(error.value)
-    assert set(root.iterdir()) == {root / "checksums.txt", root / "data.bin"}
-    assert (root / "checksums.txt").read_bytes() == b"user checksums"
-    assert (root / "data.bin").read_bytes() == b"user data"
-    assert (final / "data.bin").read_bytes() == b"original data"
+    assert unexpected.exists()
+    if entry == "data.bin":
+        assert unexpected.read_bytes() == b"user data"
+    assert marker.read_bytes() == b"original"
     layout.download_data_part.assert_not_called()
 
 
+@pytest.mark.parametrize("old_symlink", [False, True])
 def test_failed_publication_and_rollback_preserve_conflict_on_retry(
-    tmp_path, part, monkeypatch
+    tmp_path, part, layout, monkeypatch, old_symlink
 ):
-    root = tmp_path / ".ch-backup-restore"
+    root = tmp_path / LOCAL_RESTORE_DIR
     destination = tmp_path / part.name
-    destination.mkdir()
-    (destination / "data").write_bytes(b"original")
-    layout = Mock()
-
-    def download(_backup, downloaded_part, path, callback, **_kwargs):
-        Path(path).mkdir()
-        (Path(path) / "checksums.txt").write_bytes(b"checksums")
-        callback(downloaded_part)
-
-    layout.download_data_part.side_effect = download
-    restorer = LocalPartRestorer(
-        layout, Mock(), keep_going=False, on_success=Mock(), on_error=Mock()
-    )
+    original = tmp_path / "original" if old_symlink else destination
+    original.mkdir()
+    (original / "data").write_bytes(b"original")
+    if old_symlink:
+        destination.symlink_to(original)
+    restorer = _restorer(layout)
     restorer.download(part, str(destination))
 
     def conflicting_rename(source, target):
@@ -221,13 +219,12 @@ def test_failed_publication_and_rollback_preserve_conflict_on_retry(
     with pytest.raises(OSError):
         restorer.wait()
 
-    retry = LocalPartRestorer(
-        layout, Mock(), keep_going=False, on_success=Mock(), on_error=Mock()
-    )
     with pytest.raises(ClickhouseBackupError, match="Conflicting restore paths"):
-        retry.prepare(tmp_path)
+        _restorer(layout).prepare(tmp_path)
     assert (destination / "data").read_bytes() == b"unexpected"
-    assert (root / "previous" / part.name / "data").read_bytes() == b"original"
+    previous = root / "previous" / part.name
+    assert previous.is_symlink() == old_symlink
+    assert (previous / "data").read_bytes() == b"original"
     assert (
         root / "incoming" / part.name / "checksums.txt"
     ).read_bytes() == b"checksums"

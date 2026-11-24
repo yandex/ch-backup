@@ -144,28 +144,17 @@ def test_restore_recovers_all_actual_local_disks_before_skipping_restored_parts(
     context.config["restore_context_path"] = str(tmp_path / "restore.json")
     metadata = TableMetadata("db1", "tbl", "MergeTree", None)
     part = PartMetadata(
-        "db1",
-        "tbl",
-        "all_1_1_0",
-        "checksum",
-        512,
-        ["checksums.txt"],
-        True,
-        disk_name="removed_disk",
+        "db1", "tbl", "all_1_1_0", "", 0, [], True, disk_name="removed_disk"
     )
     metadata.add_part(part)
     context.restore_context.change_part_state(PartState.RESTORED, part)
     context.ch_ctl = controller = Mock()
     context.backup_layout = layout = Mock()
-    table = controller.get_table.return_value
-    table.paths_with_disks = [
-        (str(tmp_path / name), Disk(name, str(tmp_path / name), "Local"))
-        for name in ("first", "second")
+    paths = [tmp_path / "first", tmp_path / "second"]
+    controller.get_table.return_value.paths_with_disks = [
+        (str(path), Disk(path.name, str(path), "Local")) for path in paths
     ]
-    roots = [
-        Path(path) / "detached" / ".ch-backup-restore"
-        for path, _ in table.paths_with_disks
-    ]
+    roots = [path / "detached" / ".ch-backup-restore" for path in paths]
     for root in roots:
         (root / "incoming" / "all_2_2_0").mkdir(parents=True)
     TableBackup._restore_data(  # pylint: disable=protected-access
