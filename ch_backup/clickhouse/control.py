@@ -1422,12 +1422,12 @@ class ClickhouseCTL:
         return os.path.join(self._get_table_detached_path(table, disk_name), part_name)
 
     @staticmethod
-    def detached_part_matches(part: DetachedPartMetadata, part_path: str) -> bool:
+    def detached_part_matches(
+        part: DetachedPartMetadata, part_path: str, *, strict: bool = False
+    ) -> bool:
         """Return whether an existing directory matches backed-up part metadata."""
-        if not os.path.isdir(part_path):
-            return False
         try:
-            files = list_dir_files(part_path)
+            files = list(scan_dir_files(Path(part_path)))
             if sorted(files) != sorted(part.files):
                 return False
             abs_paths = [Path(part_path) / file for file in files]
@@ -1435,6 +1435,8 @@ class ClickhouseCTL:
                 return False
             if not part.checksum:
                 return True
+            if not part.object_storage and "checksums.txt" not in files:
+                return False
             checksum = (
                 _get_cloud_part_checksum_and_size(part_path, files)[0]
                 if part.object_storage
@@ -1442,6 +1444,8 @@ class ClickhouseCTL:
             )
             return checksum == part.checksum
         except OSError:
+            if strict:
+                raise
             return False
 
     def scan_detached_parts(

@@ -21,6 +21,10 @@ class ClickhouseBackupError(Exception):
     """
 
 
+class BackupCheckError(ClickhouseBackupError):
+    """The backup check could not finish."""
+
+
 class StorageError(ClickhouseBackupError):
     """
     Storage layer error (e.g. save or load of data failed).
