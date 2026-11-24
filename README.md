@@ -37,27 +37,23 @@ Local parts are downloaded to `detached/.ch-backup-restore/incoming/<part>` on
 each destination disk. Each part name must be a single directory name. Nested
 paths in per-file backups must stay inside staging. Restore accepts early TAR
 backups that omit all padding after the last complete file.
-After all files have been written, restore checks their
-file list, recorded size and the checksum of `checksums.txt`, replaces any
-existing destination directory and publishes the part with `rename` before
-recording `DOWNLOADED` or attaching it. This does not hash every data file.
-Local parts saved as `DOWNLOADED` are downloaded again on retry. Failed downloads
-leave the existing destination untouched. During replacement the previous part
-is moved aside until publication succeeds. If the publish rename fails, restore
-moves the old part back. If that rollback fails, the error log gives its path.
-Run only one restore at a time for the same table and disk, even when restoring
-disjoint sets of parts. After an interruption, wait for the previous restore and
-all its transfer workers to exit before retrying. Between the interruption and
-the retry, leave the contents of `incoming`, `previous`, and
-`detached/<part>` for affected parts as they were. The retry reuses the same
-workspace. It moves `previous/<part>` back when the destination is missing
-and discards partial downloads before scheduling new ones. If the incoming part
-is absent and its destination exists, the retry treats the publication rename
-as complete and removes the previous part. Manually removing or replacing any
-of these paths makes that inference unreliable. If all three paths exist for a
-part, restore stops and preserves them for inspection. Successful restores
-remove the workspace. Older releases used `.ch-backup-<uuid>` directories that
-cannot be matched to their destination automatically. After workers have stopped,
+After download, restore validates the file list, recorded size and checksum of
+`checksums.txt`. Download or validation failures leave the existing
+`detached/<part>` untouched. Once validation succeeds, restore removes any
+existing directory at that path and renames the staged part into place before
+recording `DOWNLOADED` or attaching it. If the destination is a symlink, restore
+removes the link itself. Any data unique to the old directory is lost when it
+is removed.
+
+Run one restore at a time for the same table and disk, even for disjoint sets
+of parts. After an interruption, wait for the process and its transfer workers
+to exit before retrying. The retry clears the staging workspace and downloads
+local parts that still need to be attached, including those marked `DOWNLOADED`.
+If the process stopped between removal and rename, this download replaces the
+missing part. A successful restore removes the workspace.
+
+Older releases used `.ch-backup-<uuid>` directories that cannot be matched to
+their destination automatically. After workers have stopped,
 inspect legacy `.ch-backup-<uuid>.previous` directories for old parts to recover
 before manually removing obsolete staging directories.
 
@@ -595,10 +591,10 @@ metadata, and an individual detached-part failure does not fail the regular
 table backup. Executor failures and termination signals still abort the backup.
 
 The local restore workspace at `detached/.ch-backup-restore` is excluded from
-detached-part backups when it is empty or contains only real `incoming` and/or
-`previous` directories. Their entries must have valid MergeTree part names and
-be directories, with symlinks allowed only for entries directly under
-`previous`. A user-created directory with this exact name and layout is also
+detached-part backups if it is empty or its only entry is an `incoming` directory.
+Each entry under `incoming` must be a directory with a valid MergeTree part name.
+The workspace, `incoming` and the part directories must all be real directories.
+A user-created directory with this exact name and layout is also
 treated as a workspace and may be removed during restore. A user-detached
 directory of the same name with other contents is eligible for backup under the
 usual disk and reason filters, even if its `checksums.txt` is missing. If a

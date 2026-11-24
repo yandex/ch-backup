@@ -2,13 +2,11 @@
 
 import os
 import shutil
-from errno import ENOTEMPTY
 from hashlib import md5
 from pathlib import Path
 from tarfile import BLOCKSIZE
 from typing import Callable
 
-from ch_backup import logging
 from ch_backup.backup.layout import BackupLayout
 from ch_backup.backup.metadata import BackupMetadata, PartMetadata, split_part_name
 from ch_backup.calculators import calc_aligned_files_size
@@ -24,7 +22,7 @@ def is_local_restore_workspace(root: Path) -> bool:
         return False
     for directory in root.iterdir():
         if (
-            directory.name not in {"incoming", "previous"}
+            directory.name != "incoming"
             or directory.is_symlink()
             or not directory.is_dir()
         ):
@@ -34,11 +32,7 @@ def is_local_restore_workspace(root: Path) -> bool:
                 split_part_name(entry.name)
             except ValueError:
                 return False
-            # An old detached destination may itself have been a symlink.
-            if entry.is_symlink():
-                if directory.name != "previous":
-                    return False
-            elif not entry.is_dir():
+            if entry.is_symlink() or not entry.is_dir():
                 return False
     return True
 
@@ -61,35 +55,8 @@ def check_local_part(part: PartMetadata, path: str) -> None:
         raise ClickhouseBackupError(f'Part checksum does not match backup: "{path}"')
 
 
-def _remove_part(path: Path) -> None:
-    if path.is_symlink():
-        path.unlink()
-    else:
-        shutil.rmtree(path)
-
-
-def _discard_downloads(root: Path) -> None:
-    try:
-        (root / "previous").rmdir()
-    except FileNotFoundError:
-        pass
-    except OSError as error:
-        if error.errno != ENOTEMPTY:
-            raise
-        # Keep the entire rename state for recovery, including incoming if an
-        # unexpected destination prevented both publication and rollback.
-        return
-    incoming = root / "incoming"
-    if incoming.exists():
-        shutil.rmtree(incoming)
-    try:
-        root.rmdir()
-    except FileNotFoundError:
-        pass
-
-
-def _recover_workspace(root: Path) -> None:
-    """Reconcile the two publication renames before accepting new writes."""
+def _clear_workspace(root: Path) -> None:
+    """Discard staged downloads after verifying the workspace belongs to restore."""
     if root.parent.is_symlink():
         raise ClickhouseBackupError(
             f"Unexpected symlink to detached directory: {root.parent}"
@@ -102,50 +69,16 @@ def _recover_workspace(root: Path) -> None:
             "Inspect the path and move any user-detached part aside before retrying."
         )
 
-    incoming, previous = root / "incoming", root / "previous"
-    old_parts = list(previous.iterdir()) if previous.exists() else []
-    for old in old_parts:
-        destination = root.parent / old.name
-        if os.path.lexists(destination) and (
-            (incoming / old.name).exists()
-            or not (destination.is_symlink() or destination.is_dir())
-        ):
-            raise ClickhouseBackupError(
-                f"Conflicting restore paths for {destination} in {root}"
-            )
-    for old in old_parts:
-        destination = root.parent / old.name
-        if os.path.lexists(destination):
-            _remove_part(old)
-        else:
-            os.rename(old, destination)
-    _discard_downloads(root)
+    shutil.rmtree(root)
 
 
 def _publish_local_part(staging: Path, destination: Path) -> None:
-    """Publish the validated part, retaining the old directory until rename succeeds."""
-    if not (destination.is_symlink() or destination.is_dir()):
-        os.rename(staging, destination)
-        return
-
-    previous = destination.parent / LOCAL_RESTORE_DIR / "previous" / destination.name
-    previous.parent.mkdir(exist_ok=True)
-    os.rename(destination, previous)
-    try:
-        os.rename(staging, destination)
-    except BaseException:
-        try:
-            os.rename(previous, destination)
-        except OSError as error:
-            logging.error(
-                "Rollback of {} failed: {}. Previous part retained at {}",
-                destination,
-                error,
-                previous,
-            )
-        raise
-
-    _remove_part(previous)
+    """Remove the old detached part and publish the validated download."""
+    if destination.is_symlink():
+        destination.unlink()
+    elif destination.is_dir():
+        shutil.rmtree(destination)
+    os.rename(staging, destination)
 
 
 class LocalPartRestorer:
@@ -169,14 +102,14 @@ class LocalPartRestorer:
         self._completed: list[tuple[PartMetadata, Path, Path]] = []
 
     def prepare(self, detached: Path) -> None:
-        """Recover once per target path, including disks with only restored parts."""
+        """Clear abandoned downloads once per target path, including disks with only restored parts."""
         root = detached / LOCAL_RESTORE_DIR
         if root not in self._roots:
-            _recover_workspace(root)
+            _clear_workspace(root)
             self._roots.add(root)
 
     def download(self, part: PartMetadata, destination: str) -> None:
-        """Schedule a download into the recovered workspace on the target disk."""
+        """Schedule a download into the workspace on the target disk."""
         final = Path(destination)
         self.prepare(final.parent)
         root = final.parent / LOCAL_RESTORE_DIR
@@ -213,4 +146,4 @@ class LocalPartRestorer:
                 self._on_success(part)
         finally:
             for root in self._roots:
-                _discard_downloads(root)
+                _clear_workspace(root)

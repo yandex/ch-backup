@@ -653,10 +653,9 @@ def test_scan_detached_parts_skips_only_the_restore_workspace(
     table_path = tmp_path / "store" / "table"
     table = Table("db1", "table1", "MergeTree", [disk], [str(table_path)], "", "", None)
     workspace = table_path / "detached" / LOCAL_RESTORE_DIR
-    for subdir in ("incoming", "previous"):
-        staged = workspace / subdir / "all_1_1_0"
-        staged.mkdir(parents=True)
-        (staged / "checksums.txt").write_bytes(b"staged")
+    staged = workspace / "incoming" / "all_1_1_0"
+    staged.mkdir(parents=True)
+    (staged / "checksums.txt").write_bytes(b"staged")
     assert not list(ch_ctl.scan_detached_parts(table))
 
     similar = workspace.with_name(LOCAL_RESTORE_DIR + "-other")

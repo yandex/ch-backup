@@ -926,7 +926,7 @@ Feature: Backup & Restore
     100,4950
     """
 
-  Scenario Outline: Replace an existing local part after a complete <layout> download
+  Scenario Outline: Retry an interrupted local part replacement from a <layout> backup
     Given ch-backup configuration on clickhouse01
     """
     backup:
@@ -959,7 +959,12 @@ Feature: Backup & Restore
     table_path=$(clickhouse-client -q "SELECT data_paths[1] FROM system.tables WHERE database='test_db' AND name='atomic_<layout>' FORMAT TSVRaw")
     echo stale > "${table_path}/detached/all_1_1_0/stale.txt"
     """
-    And we restore clickhouse backup "atomic_<layout>" to clickhouse02
+    And we interrupt a local restore after removing part "all_1_1_0" on clickhouse02
+    """
+    -c /etc/yandex/ch-backup/ch-backup.conf restore atomic_<layout>
+    """
+    Then part "all_1_1_0" of test_db.atomic_<layout> is not published on clickhouse02
+    When we restore clickhouse backup "atomic_<layout>" to clickhouse02
     Then part "all_1_1_0" of test_db.atomic_<layout> has restore state "restored" on clickhouse02
     When we execute query on clickhouse02
     """
@@ -979,47 +984,3 @@ Feature: Backup & Restore
       | layout |
       | tar    |
       | legacy |
-
-  Scenario: A failed retry recovers the detached part moved aside by an interrupted publication
-    Given ch-backup configuration on clickhouse02
-    """
-    backup:
-        restore_fail_on_attach_error: true
-    """
-    And we have executed queries on clickhouse01
-    """
-    CREATE DATABASE IF NOT EXISTS test_db;
-    CREATE TABLE test_db.previous_retry (n UInt64) ENGINE = MergeTree ORDER BY n;
-    INSERT INTO test_db.previous_retry SELECT number FROM numbers(100);
-    """
-    When we create clickhouse01 clickhouse backup
-    """
-    name: previous_retry
-    tables: [test_db.previous_retry]
-    """
-    And we try to execute ch-backup on clickhouse02 with ATTACH failing for test_db.previous_retry
-    """
-    -c /etc/yandex/ch-backup/ch-backup.conf restore previous_retry
-    """
-    Then command exits with code 1
-    When we execute command on clickhouse02
-    """
-    table_path=$(clickhouse-client -q "SELECT data_paths[1] FROM system.tables WHERE database='test_db' AND name='previous_retry' FORMAT TSVRaw")
-    echo original > "${table_path}/detached/all_1_1_0/old.txt"
-    """
-    And we interrupt a local restore after moving part "all_1_1_0" aside on clickhouse02
-    """
-    -c /etc/yandex/ch-backup/ch-backup.conf restore previous_retry
-    """
-    Then part "all_1_1_0" of test_db.previous_retry is not published on clickhouse02
-    Given file "data/test_db/previous_retry/all_1_1_0/all_1_1_0.tar" in clickhouse01 backup #0 is empty
-    When we try to execute command on clickhouse02
-    """
-    ch-backup -c /etc/yandex/ch-backup/ch-backup.conf restore previous_retry --keep-going
-    """
-    Then command exits with code 1
-    When we execute command on clickhouse02
-    """
-    table_path=$(clickhouse-client -q "SELECT data_paths[1] FROM system.tables WHERE database='test_db' AND name='previous_retry' FORMAT TSVRaw")
-    grep -Fx original "${table_path}/detached/all_1_1_0/old.txt" && test ! -e "${table_path}/detached/.ch-backup-restore"
-    """

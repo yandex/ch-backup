@@ -32,8 +32,8 @@ def step_part_not_published(context, part, database, table, node):
             ), f"Part was published at {path}/detached/{part}"
 
 
-@when('we interrupt a local restore after moving part "{part}" aside on {node:w}')
-def step_interrupt_old_rename(context, part, node):
+@when('we interrupt a local restore after removing part "{part}" on {node:w}')
+def step_interrupt_local_publication(context, part, node):
     run_fault(context, node, "interrupt-local-publication", part)
     assert context.exit_code == 86, context.response
 

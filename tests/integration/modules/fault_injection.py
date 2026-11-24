@@ -124,13 +124,15 @@ def interrupt_inplace_copy(filename: str, arguments: list[str]) -> None:
 
 
 def interrupt_local_publication(part: str, arguments: list[str]) -> None:
-    """Exit immediately after the previous detached part has been moved aside."""
+    """Exit between removing the old detached part and publishing its replacement."""
     rename = os.rename
 
     def interrupted_rename(source, destination):
-        rename(source, destination)
-        if Path(destination).parts[-2:] == ("previous", part):
+        if Path(source).parts[-2:] == ("incoming", part):
+            assert Path(destination).parts[-2:] == ("detached", part)
+            assert not os.path.lexists(destination)
             os._exit(86)
+        rename(source, destination)
 
     with patch("ch_backup.logic.part_restore.os.rename", interrupted_rename):
         _run_patched_cli(arguments)
